@@ -70,6 +70,28 @@ flowchart LR
 
 The containerized applications are still exercised constantly: by the cloud simulation below, by CI image builds, and by running the shipped compose file before every release.
 
+### Running each component
+
+```
+# dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+docker compose -f deploy/compose/dev.yml up -d
+
+# backend, from backend/
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/uvicorn app.main:app --reload          # http://localhost:8000/api/v1/health
+.venv/bin/ruff check . && .venv/bin/pytest       # lint and tests
+
+# frontend, from frontend/
+npm install
+npm run dev                                      # http://localhost:5173
+npm run lint && npm run check                    # format check and type check
+
+# worker, from worker/
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m worker                       # inference arrives with issue #15
+.venv/bin/ruff check . && .venv/bin/pytest
+```
+
 ## The local cloud simulation
 
 The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud topology with generic containers, which the pluggable seams make cheap: the code cannot tell nginx from an ALB or MinIO from S3, and that is the point of the seams.
