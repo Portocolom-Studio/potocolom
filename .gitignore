@@ -29,5 +29,7 @@ data/
 *.swp
 .DS_Store
 
-# Local scratch, not part of the project
+# Local scratch and private notes, never committed
 prompt.md
+CLAUDE.md
+.local/
