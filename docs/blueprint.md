@@ -1,0 +1,381 @@
+# Implementation blueprint
+
+This document sits between [architecture.md](architecture.md) and real code. It gives each load-bearing mechanism a concrete shape: configuration keys, Redis layout, load balancer definition, authentication flows, the scheduler loop, the worker protocol and the seam interfaces. The pseudocode is normative for structure and naming, not for syntax: implementation refines the low level details but should not change the shape without updating this document and [decisions.md](decisions.md).
+
+## Configuration and profiles
+
+All mode differences are environment variables read once at startup into a settings object. Nothing branches on "self-hosted or cloud"; code branches on the specific setting.
+
+```
+AUTH_MODE            = none | local | oauth      # default none
+OAUTH_PROVIDERS      = google,github,apple       # only read when AUTH_MODE=oauth
+BILLING_ENABLED      = false | true              # default false
+SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
+DATABASE_URL         = postgresql://...
+REDIS_URL            = ""                        # empty: in-process fallbacks (self-host)
+REDIS_URL_CACHE      = $REDIS_URL                # per-concern endpoints; set individually
+REDIS_URL_QUEUE      = $REDIS_URL                # to split Redis later without code changes
+REDIS_URL_PUBSUB     = $REDIS_URL
+REDIS_URL_RATE       = $REDIS_URL
+STORAGE_BACKEND      = local | s3
+STORAGE_LOCAL_PATH   = /data/assets              # local backend
+STORAGE_S3_BUCKET    = ...                       # s3 backend, plus region and credentials
+QUOTA_SERVICE_URL    = ""                        # empty: unlimited default implementation
+FLEET_TOKEN_KEY      = ...                       # verifies worker tokens; self-host uses a static shared secret
+EMAIL_BACKEND        = none | smtp | ses
+PUBLIC_URL           = https://app.potocolom.com
+```
+
+The frontend learns everything it needs at runtime:
+
+```python
+@app.get("/api/v1/config")
+async def config():
+    return {
+        "auth_methods": auth_provider.methods(),   # e.g. [] | ["local"] | ["local","google","github","apple"]
+        "billing_enabled": settings.billing_enabled,
+        "languages": ["en", "es"],
+    }
+```
+
+## Redis layout
+
+One instance at launch. Every key belongs to exactly one concern, every concern gets its client from its own `REDIS_URL_*` setting, so splitting into multiple servers later is a configuration change. PostgreSQL is always the source of truth; every structure below can be rebuilt from it.
+
+| Key or channel | Type | TTL | Purpose |
+|---|---|---|---|
+| `sessions:{token_hash}` | hash | 300 s | cache of the session row; miss falls back to PostgreSQL |
+| `rate:{bucket}:{subject}` | counter | window | rate limit windows per user id or IP |
+| `queue:jobs` | sorted set | none | job ids scored by tier priority then enqueue time |
+| `queue:admission` | sorted set | none | waiting realtime session requests, same scoring |
+| `rt:{session_id}:to_worker` | pub/sub | n/a | browser to worker leg of the frame relay |
+| `rt:{session_id}:to_browser` | pub/sub | n/a | worker to browser leg |
+| `worker:{worker_id}` | hash | 90 s | connected worker: models, slots, slots_in_use, protocol_version, api_replica |
+| `session:{session_id}` | hash | none | realtime session state: user, worker, state, last_input_ms |
+| `sched:leader` | string | 10 s | scheduler leader lease, value is the replica id |
+| `invalidate:sessions` | pub/sub | n/a | replicas drop cached sessions on logout or revocation |
+
+Scoring for both queues, lower pops first:
+
+```python
+def score(tier: int, now_ms: int) -> float:
+    # tier: 0 = resuming idle session, 1 = paid, 2 = trial
+    return tier * 1e13 + now_ms
+```
+
+Atomic pop, so two schedulers (during a leader handover) can never dispatch the same entry:
+
+```lua
+-- pop_best.lua  KEYS[1] = queue key
+local e = redis.call('ZPOPMIN', KEYS[1], 1)
+if #e == 0 then return nil end
+return e[1]
+```
+
+Fixed window rate limit, one round trip:
+
+```lua
+-- rate_check.lua  KEYS[1] = rate key, ARGV[1] = limit, ARGV[2] = window seconds
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+return n <= tonumber(ARGV[1]) and 1 or 0
+```
+
+Queue position for the waiting room UI is one call: `ZRANK queue:admission {request_id}`.
+
+Self-hosted installs set no `REDIS_URL` and get in-process implementations of the same interfaces, which is the whole trick that keeps Redis out of the compose file:
+
+```python
+class Queues(Protocol):
+    async def push(self, queue: str, id: str, tier: int) -> None
+    async def pop(self, queue: str) -> str | None
+    async def position(self, queue: str, id: str) -> int | None
+
+class RedisQueues(Queues): ...      # sorted sets + pop_best.lua
+class InProcessQueues(Queues): ...  # a heap in the single API process
+
+class FrameBus(Protocol):
+    async def publish(self, channel: str, payload: bytes) -> None
+    def subscribe(self, channel: str) -> AsyncIterator[bytes]
+
+class RedisFrameBus(FrameBus): ...      # pub/sub between replicas
+class InProcessFrameBus(FrameBus): ...  # asyncio queues in one process
+```
+
+When load justifies it, the split path is: move `REDIS_URL_PUBSUB` first (frame relay is the latency and throughput hot spot), then `REDIS_URL_QUEUE`; the cache and rate keys can share an instance indefinitely.
+
+## Load balancer
+
+The ALB definition, as Terraform-shaped pseudocode. The commentary in [cloud-infrastructure.md](cloud-infrastructure.md) explains each number.
+
+```hcl
+resource "aws_lb" "main" {
+  load_balancer_type = "application"
+  subnets            = module.vpc.public_subnets
+  idle_timeout       = 120            # heartbeats every 30 s keep sockets alive at 4x margin
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = aws_acm_certificate.api.arn
+  default_action    { forward { target_group = aws_lb_target_group.api } }
+}
+
+resource "aws_lb_listener" "http_redirect" {
+  port     = 80
+  protocol = "HTTP"
+  default_action { redirect { port = 443, status_code = "HTTP_301" } }
+}
+
+resource "aws_lb_listener_rule" "stripe_webhooks" {
+  listener_arn = aws_lb_listener.https.arn
+  condition    { path_pattern { values = ["/webhooks/stripe*"] } }
+  action       { forward { target_group = aws_lb_target_group.billing } }
+}
+
+resource "aws_lb_target_group" "api" {
+  target_type          = "ip"        # required for Fargate
+  port                 = 8080
+  protocol             = "HTTP"
+  deregistration_delay = 120         # lets the app close WebSockets cleanly on deploy
+  health_check {
+    path                = "/api/v1/health"
+    interval            = 15
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+  # no stickiness block, deliberately: frames cross replicas via Redis pub/sub
+}
+```
+
+`GET /api/v1/health` answers from process state only (no database round trip), so a database incident does not convince the ALB to kill healthy tasks and make everything worse.
+
+## Authentication
+
+### Session middleware
+
+Every request passes one middleware. Opaque token in an httpOnly cookie, hash stored server side, cache in front of PostgreSQL.
+
+```python
+async def session_middleware(request, call_next):
+    request.user = None
+    token = request.cookies.get("session")
+    if token:
+        h = sha256(token)
+        s = await cache.get(f"sessions:{h}")
+        if s is None:
+            s = await db.sessions.active(token_hash=h)     # source of truth
+            if s:
+                await cache.set(f"sessions:{h}", s, ttl=300)
+        if s and not s.user.deleted_at:
+            request.user = s.user
+    return await call_next(request)
+```
+
+Logout and revocation delete the row, delete the cache key and publish on `invalidate:sessions` so every replica drops its copy; the five minute cache TTL is only the backstop.
+
+### Local registration and login
+
+```python
+@app.post("/api/v1/auth/register")            # AUTH_MODE=local or oauth
+async def register(email, password, attest_18):
+    await rate.check(f"rate:signup:{client_ip}", limit=5, window=3600)
+    require(attest_18)                        # cloud terms
+    require(not disposable_domain(email))     # cloud only
+    user = await db.users.insert(email=email, role="user")
+    await db.auth_identities.insert(user, provider="local",
+                                    password_hash=argon2id.hash(password))  # OWASP parameters
+    await email_backend.send_verification(user)   # EMAIL_BACKEND=none skips, marks verified
+
+@app.post("/api/v1/auth/login")
+async def login(email, password, persistent: bool):
+    await rate.check(f"rate:login:{client_ip}", limit=10, window=300)
+    await rate.check(f"rate:login:{email}",     limit=10, window=300)
+    ident = await db.auth_identities.get(provider="local", subject=email)
+    if not ident or not argon2id.verify(ident.password_hash, password):
+        raise Unauthorized                    # same response either way
+    token = secrets.token_urlsafe(32)
+    await db.sessions.insert(user=ident.user, token_hash=sha256(token),
+                             persistent=persistent,
+                             expires_at=now() + (days(30) if persistent else hours(12)))
+    await email_backend.notify_new_signin(ident.user)
+    set_cookie("session", token, httponly=True, secure=True, samesite="lax")
+```
+
+### OAuth callback
+
+```python
+@app.get("/api/v1/auth/callback/{provider}")   # google, github, apple
+async def oauth_callback(provider, code, state):
+    verify_state(state)                        # CSRF: state minted at redirect time
+    claims = await providers[provider].exchange(code)   # id token or userinfo
+    ident = await db.auth_identities.get(provider=provider, subject=claims.sub)
+    if not ident:
+        user = await db.users.find_or_create(email=claims.email)
+        ident = await db.auth_identities.insert(user, provider, subject=claims.sub)
+    # from here identical to local login: mint token, insert session, set cookie
+```
+
+### The mode seam
+
+```python
+class AuthProvider(Protocol):
+    def methods(self) -> list[str]
+    def mounts(self) -> list[Route]           # which endpoints exist in this mode
+
+NoneAuth   # methods() = [];        middleware maps every request to the single local user
+LocalAuth  # methods() = ["local"]; register, login, verify, reset
+OAuthAuth  # methods() = ["local", *providers]; LocalAuth plus redirect and callback routes
+```
+
+## Scheduler
+
+One logical scheduler, leader elected among API replicas with a Redis lease. Self-hosted there is one process, so it is simply always the leader.
+
+```python
+async def scheduler_task():                    # runs in every replica
+    while True:
+        if await redis.set("sched:leader", replica_id, nx=True, ex=10):
+            await lead()                       # returns if the lease is ever lost
+        await sleep(2)
+
+async def lead():
+    while await renew_lease():                 # SET XX with value check, every 3 s
+        await step()
+        await sleep(0.1)
+
+async def step():
+    # 1. Reconcile: forget workers whose heartbeat hash expired; their jobs
+    #    requeue (attempt 2) or fail; their sessions enter Reassigning.
+    await reconcile_workers()
+
+    # 2. Idle release: sessions with last_input_ms older than 60 s
+    #    release their slot, stop metering, state = Idle.
+    await release_idle_sessions()
+
+    # 3. Admission: fill free realtime slots from queue:admission.
+    while (slot := free_realtime_slot()) is not None:
+        req = await queues.pop("queue:admission")
+        if req is None: break
+        await preempt_job_if_running(slot)     # pause between denoising steps, requeue
+        await open_session(req, slot)          # via the worker's WebSocket
+
+    # 4. Jobs: hand queue:jobs entries to workers with idle capacity,
+    #    respecting the hot set (prefer a worker with the model loaded;
+    #    otherwise trigger an on-demand load and report it on the job).
+    while (w := worker_with_capacity()) is not None:
+        job = await queues.pop("queue:jobs")
+        if job is None: break
+        await dispatch(job, w)
+```
+
+Everything the loop mutates lives in Redis hashes (`worker:*`, `session:*`), so a leader handover picks up mid-flight state; anything ambiguous after a crash is rebuilt from PostgreSQL rows. Resuming idle sessions re-enter `queue:admission` with tier 0, ahead of new sessions of any plan.
+
+## Worker protocol
+
+One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a short lived fleet token (cloud) or the shared secret (self-host). Text messages are JSON control; binary messages are image payloads.
+
+| Direction | Message | Payload |
+|---|---|---|
+| worker to api | `hello` | protocol_version, models from manifests, realtime_slots, gpu info |
+| api to worker | `registered` or `rejected` | rejected carries min_supported_version |
+| worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
+| api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
+| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms; failed carries reason |
+| api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
+| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames |
+| both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
+| api to browser | `credits_tick` | on the browser socket: live drain display while Active |
+
+Version gate at registration, implementing the N-1 promise:
+
+```python
+if hello.protocol_version < CURRENT_PROTOCOL - 1:
+    send(rejected(min_supported_version=CURRENT_PROTOCOL - 1)); close()
+```
+
+The browser's realtime socket speaks the same shape: JSON control (`open`, `ready`, `queued` with position, `prompt_update`, `idle`, `resuming`, `credits_tick`), binary canvas frames up, binary generated frames down.
+
+## The generation request path
+
+Rejects cheapest first; nothing touches a GPU until everything else passed.
+
+```python
+@app.post("/api/v1/generations")
+async def create_generation(req, user = require_user()):
+    await rate.check(f"rate:jobs:{user.id}", limit=..., window=60)
+    if settings.safety_checks:
+        await safety.screen_prompt(req.prompt)          # blocklist + classifier, raises
+    reservation = await quota.reserve(user, estimate_gpu_ms(req))   # raises InsufficientCredits
+    job = await db.jobs.insert(user, req.model_id, req.params, state="queued",
+                               reservation=reservation.id, attempt=1)
+    await queues.push("queue:jobs", job.id, tier(user))
+    return {"job_id": job.id}
+```
+
+Worker death mid job: the scheduler's reconcile step requeues `attempt=1` jobs as `attempt=2`; a job failing at `attempt=2` becomes `state=failed`, `quota.refund(reservation)`, and the frontend shows the retry button. Completion runs the output safety check on the worker, uploads to a presigned URL, then `quota.commit(reservation, actual_gpu_ms, images)`.
+
+## Seam interfaces
+
+The four seams from [architecture.md](architecture.md), as they appear in code. Each has exactly two implementations at launch; which one loads is pure configuration.
+
+```python
+class QuotaService(Protocol):
+    async def reserve(self, user, estimated_gpu_ms) -> Reservation   # raises InsufficientCredits
+    async def commit(self, reservation, gpu_ms, images) -> None
+    async def refund(self, reservation) -> None
+
+UnlimitedQuota   # default: reserve always succeeds, commit records a metering event, refund no-op
+BillingQuota     # HTTP calls to QUOTA_SERVICE_URL (the private billing service)
+
+class Storage(Protocol):
+    async def upload_target(self, key) -> UploadTarget   # presigned S3 PUT, or an internal API route
+    async def url(self, key, ttl) -> str                 # signed CloudFront URL, or /files/{key}
+    async def delete(self, key) -> None
+
+LocalStorage     # files under STORAGE_LOCAL_PATH
+S3Storage        # bucket + CloudFront signing
+
+# Queues and FrameBus are specified in the Redis section above.
+```
+
+## Self-hosted compose shape
+
+```yaml
+services:
+  api:
+    image: ghcr.io/portocolom-studio/potocolom-api:v0.x
+    ports: ["8080:8080"]
+    environment:
+      AUTH_MODE: none            # or local
+      DATABASE_URL: postgresql://potocolom:...@postgres/potocolom
+      STORAGE_BACKEND: local
+      FLEET_TOKEN_KEY: ${FLEET_SECRET}
+    volumes: ["assets:/data/assets"]
+    depends_on: [postgres]       # migrates automatically on startup
+
+  postgres:
+    image: postgres:16
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  worker:
+    image: ghcr.io/portocolom-studio/potocolom-worker:v0.x-cuda   # or -rocm, see local-development.md
+    environment:
+      DEVICE: cuda               # cuda | rocm | cpu
+      API_URL: ws://api:8080/api/v1/fleet
+      FLEET_TOKEN: ${FLEET_SECRET}
+    volumes: ["models:/models"]  # weights + manifests, pulled from Hugging Face
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+    # AMD variant instead passes /dev/kfd and /dev/dri and joins the video group
+```
+
+No Redis, no billing, no safety services: the in-process implementations and the unlimited quota cover their roles.
+
+## Open questions
+
+None at this level. Every fork that changes the shape above has been decided and recorded in [decisions.md](decisions.md). What remains is code-level convention (exact rate limit numbers, cookie names, retry backoff constants), which belongs in the implementation issues and code review, not here.
