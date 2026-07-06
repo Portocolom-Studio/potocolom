@@ -9,6 +9,7 @@ description = "potocolom inference worker"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-settings>=2.4",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]

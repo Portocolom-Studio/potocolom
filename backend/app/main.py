@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 
+from app.realtime import router as realtime_router
 from app.settings import get_settings
 
 app = FastAPI(title="potocolom")
+app.include_router(realtime_router)
 
 
 @app.get("/api/v1/health")
