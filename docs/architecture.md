@@ -103,7 +103,7 @@ flowchart TB
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code.
 
-- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google, GitHub and Apple at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. `GET /api/v1/auth/methods` tells the frontend which methods are available.
+- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google, GitHub and Apple at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve and commit operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
@@ -251,7 +251,7 @@ flowchart TB
     M -->|"oauth"| O["Provider buttons, Google first<br>after the token exchange the session<br>behaves exactly like local mode"]
 ```
 
-The frontend never hardcodes this: it builds the login screen from `GET /api/v1/auth/methods` and `GET /api/v1/config`.
+The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`.
 
 ### Registration and login
 
@@ -265,8 +265,8 @@ sequenceDiagram
     participant A as API server
     participant G as OAuth provider
     participant E as Email service
-    B->>A: GET /api/v1/auth/methods
-    A-->>B: available methods and credential types
+    B->>A: GET /api/v1/config
+    A-->>B: auth_methods and credential types
     alt local registration
         B->>A: register with email and password
         A->>E: send verification link

@@ -201,7 +201,10 @@ async def login(email, password, persistent: bool):
                              persistent=persistent,
                              expires_at=now() + (days(30) if persistent else hours(12)))
     await email_backend.notify_new_signin(ident.user)
-    set_cookie("session", token, httponly=True, secure=True, samesite="lax")
+    # secure only when served over HTTPS: browsers drop Secure cookies on plain
+    # http://localhost, which local development and LAN self-hosting both use
+    set_cookie("session", token, httponly=True,
+               secure=settings.public_url.startswith("https"), samesite="lax")
 ```
 
 ### OAuth callback
