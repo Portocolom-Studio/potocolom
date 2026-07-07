@@ -250,4 +250,265 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram id="environments" name="Environments and setup">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="dev" value="Developer desktop (AMD RX 7600, ROCm)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="420" height="420" as="geometry" />
+        </mxCell>
+        <mxCell id="dev_native" value="Native, hot reload:&#10;SvelteKit dev server (5173)&#10;uvicorn app.main:app (8000)&#10;python -m worker, DEVICE=rocm" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="100" width="360" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="dev_compose" value="deploy/compose/dev.yml:&#10;PostgreSQL 5432, Redis 6379&#10;MinIO 9100/9101, Mailpit 1125/8125&#10;(host ports offset, defaults occupied)" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="70" y="220" width="360" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="dev_make" value="make setup | deps | verify | simulate&#10;verify runs exactly what CI runs" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="70" y="350" width="360" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ci" value="GitHub Actions, one workflow per component, path triggered (issue 13)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="60" width="420" height="200 " as="geometry" />
+        </mxCell>
+        <mxCell id="ci_jobs" value="frontend: npm ci, prettier, svelte-check, build&#10;backend: pip, ruff (+scripts), mypy, pytest&#10;worker: pip, ruff, mypy, pytest&#10;simulation: full stack over real TCP" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="550" y="100" width="360" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="sim" value="cloud-sim compose (validates the cloud seams locally, zero cost)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="300" width="420" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="sim_inner" value="nginx (ALB stand-in)&#10;API replica 1 + API replica 2&#10;Redis (queues, pub/sub relay)&#10;PostgreSQL, MinIO (S3), Mailpit (SES)&#10;fake QuotaService (100 lines)&#10;worker, previous tag for N-1 checks" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="550" y="340" width="360" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="selfhost" value="Self-hosted install (one machine, one GPU)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="60" width="420" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="selfhost_inner" value="docker compose: api (serves the SPA build),&#10;postgres, worker (:v0.x-cuda or -rocm)&#10;No Redis, no billing: in-process seams,&#10;UnlimitedQuota, AUTH_MODE none or local" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="100" width="360" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="aws" value="AWS staging (scaled down) + production" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#8C4FFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="320" width="420" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="aws_inner" value="Route 53, CloudFront + S3, ALB,&#10;ECS Fargate API, RDS, ElastiCache, SES&#10;GPU pool on RunPod/vast.ai, weights from R2&#10;Terraform managed; see the AWS page&#10;Only rung 6 of the testing ladder costs money" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#e6d0f5;strokeColor=#8C4FFF;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="360" width="360" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="ghcr" value="GHCR public images&#10;api, worker-cuda, worker-rocm&#10;one version tag per release" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="580" y="640" width="300" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="env_e1" value="push, pull request" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="dev" target="ci">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="env_e2" value="make simulate runs it locally too" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;" edge="1" parent="1" source="dev" target="sim">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="env_e3" value="on main: build and publish" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="ci" target="ghcr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="env_e4" value="same images" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="ghcr" target="selfhost">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="env_e5" value="same images via ECR" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="ghcr" target="aws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="journey" name="User API journey">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1560" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="legend" value="green: implemented today.   amber: planned, labeled with its issue.   Arrows top to bottom are one customer's lifetime." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="20" width="900" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_cb" value="Customer browser" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#dae8fc;strokeColor=#6c8ebf;opacity=30;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="60" width="380" height="1440" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_api2" value="API server" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#d5e8d4;strokeColor=#82b366;opacity=30;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="60" width="380" height="1440" as="geometry" />
+        </mxCell>
+        <mxCell id="lane_ws" value="Worker and storage" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#ffe6cc;strokeColor=#d79b00;opacity=30;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="940" y="60" width="380" height="1440" as="geometry" />
+        </mxCell>
+        <mxCell id="j1" value="load the SPA&#10;(API serves it self-hosted, CDN in the cloud)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="100" y="110" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j2" value="GET /api/v1/config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="100" y="200" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="j2a" value="auth_methods, billing_enabled, languages&#10;drives what the login screen shows" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="540" y="190" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j3" value="POST /api/v1/auth/register + attest_18&#10;then the verification link (issue 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="280" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j3a" value="argon2 hash, rate limits, SES email&#10;session cookie on verify (issue 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="280" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j4" value="GET /api/v1/models (issue 11)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="380" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="j4a" value="manifests: capabilities + JSON Schema&#10;frontend renders generic controls (issue 11)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="370" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j5" value="POST /api/v1/generations&#10;model_id + params (issue 16)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="460" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j5a" value="rate limit, prompt screen (cloud),&#10;quota reserve, job row, dispatch (issue 16)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="460" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j5b" value="inference, output safety check (cloud),&#10;upload via presigned URL (issues 15, 17)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="980" y="460" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j6" value="GET /api/v1/generations/id, then the&#10;signed asset URL renders (issues 16, 17)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="560" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j7" value="WS /api/v1/realtime, open sd-sim" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="100" y="660" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="j7a" value="pick worker, open_session,&#10;session_ready, then ready" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="540" y="650" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j8" value="binary canvas frames up,&#10;generated frames down, 2-4 fps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="100" y="740" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j8a" value="latest input wins on the worker;&#10;stale frames dropped, fresher shown" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="980" y="740" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j9" value="worker machine vanishes:&#10;interrupted, then resumed;&#10;browser re-sends the canvas" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="540" y="830" width="300" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="j10" value="idle 60s: slot released, credits stop;&#10;next stroke resumes at tier 0 (issue 19)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="930" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j11" value="queued with live position when the&#10;pool is full, paid tier first (issues 19, 20)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="1020" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j12" value="POST /api/v1/assets/id/share (issue 17)&#10;a friend opens /shared/token, no account" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1120" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j13" value="subscription checkout and portal,&#10;hosted by Stripe; credits_tick while&#10;drawing (issues 19, 21, private repo)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1220" width="300" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="j14" value="GET /api/v1/account/export, then&#10;DELETE /api/v1/account (issue 10)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1330" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="j14a" value="deactivate now, hard delete rows and&#10;assets within 30 days (issue 10)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="540" y="1330" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="je1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j2" target="j2a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j3" target="j3a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j4" target="j4a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j5" target="j5a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j5a" target="j5b"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j7" target="j7a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j8" target="j8a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;" edge="1" parent="1" source="j8a" target="j9"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="je9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="j12" target="j14"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="dataflow" name="Generation dataflow">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="d0" value="Rejects cheapest first: a rate limited request costs one Redis lookup, a refused prompt costs no GPU time, an over-quota request never reaches the queue." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="20" width="1100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="d1" value="POST /api/v1/generations&#10;model_id + params" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="60" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d2" value="rate limit&#10;token bucket per user and IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="320" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d3" value="prompt screen&#10;blocklist + classifier, cloud only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="580" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d4" value="quota reserve&#10;QuotaService: unlimited default,&#10;billing service in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="840" y="70" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="d5" value="job row in PostgreSQL&#10;the source of truth, state=queued" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="80" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d6" value="dispatch&#10;direct to the connected worker self-hosted;&#10;Redis sorted set + scheduler in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="220" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="d7" value="worker inference&#10;jobs fill idle capacity, realtime&#10;sessions preempt between steps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="840" y="220" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="d8" value="output safety check&#10;diffusers checker, cloud only;&#10;flagged images never stored" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="580" y="220" width="200" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="d9" value="upload via presigned URL&#10;never through the API containers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="320" y="230" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d10" value="commit quota (gpu_ms, images),&#10;record history, notify the browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="60" y="230" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d11" value="browser renders the signed asset URL;&#10;trial assets carry expires_at, subscribers keep theirs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="60" y="360" width="320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="d12" value="failure path: worker dies mid job:&#10;requeue once (attempt 2) on another worker;&#10;a second failure = state failed, credits refunded,&#10;retry button in the UI. Never more than one automatic retry." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="580" y="360" width="360" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="de1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d1" target="d2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d2" target="d3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d3" target="d4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d4" target="d5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d5" target="d6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d6" target="d7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d7" target="d8"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d8" target="d9"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d9" target="d10"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="d10" target="d11"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de11" value="spot reclaim" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;" edge="1" parent="1" source="d7" target="d12"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="datamodel" name="Data model">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="m0" value="Tables owned by the open source backend. Credit balances and invoices live in the private billing service; the backend only emits metering events." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="20" width="1100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_users" value="users&#10;id, email, role (user|admin)&#10;deleted_at (30 day purge), created_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="540" y="80" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ident" value="auth_identities&#10;user_id, provider (local|google|github|apple)&#10;subject, password_hash (argon2), totp_secret (reserved)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="60" y="220" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_sess" value="sessions&#10;user_id, token_hash, persistent, expires_at&#10;(opaque cookie tokens, instantly revocable)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="60" y="340" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_models" value="models&#10;id, name, capabilities, parameters_schema&#10;min_vram_gb (from worker manifests)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1000" y="220" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_workers" value="workers&#10;id, model_ids, realtime_slots&#10;protocol_version, last_seen" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1000" y="340" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_jobs" value="jobs&#10;user_id, model_id, params, state&#10;(queued|running|succeeded|failed), gpu_ms, created_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="540" y="460" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_assets" value="assets&#10;user_id, job_id, storage_key, mime, width, height&#10;share_token (null unless shared), expires_at (trial)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="540" y="580" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_rts" value="realtime_sessions&#10;user_id, model_id, worker_id&#10;gpu_ms, frames, started_at, ended_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1000" y="460" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_meter" value="metering_events&#10;user_id, kind (job|realtime), gpu_ms, images, created_at&#10;(the license boundary: consumed by the billing service)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="60" y="460" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="me1" value="has" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_ident"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me2" value="has" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_sess"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me3" value="creates" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_jobs"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me4" value="accrues" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_meter"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me5" value="runs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_models" target="t_jobs"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me6" value="produces" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_jobs" target="t_assets"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me7" value="hosts" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_workers" target="t_rts"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="me8" value="opens" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_rts"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>

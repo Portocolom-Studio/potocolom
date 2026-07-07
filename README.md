@@ -5,6 +5,7 @@ Open-source real-time generative AI platform that enables users to generate, edi
 
 - [Architecture](docs/architecture.md)
 - [Implementation blueprint](docs/blueprint.md)
+- [API reference and user journeys](docs/api.md)
 - [Connection handling](docs/connection-handling.md)
 - [Local development and testing](docs/local-development.md)
 - [Cloud infrastructure](docs/cloud-infrastructure.md)
