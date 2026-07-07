@@ -7,12 +7,15 @@ registration, heartbeats, latest input wins) is the real behavior.
 
 import asyncio
 import json
+import logging
 import random
 import uuid
 
 import websockets
 
 from worker.settings import Settings, get_settings
+
+logger = logging.getLogger("potocolom.worker")
 
 # Wire constants; keep in sync with backend/app/realtime.py.
 PROTOCOL_VERSION = 1
@@ -52,6 +55,8 @@ class SessionRunner:
             await self.arrived.wait()
             self.arrived.clear()
             payload, self.pending = self.pending, None
+            if payload is None:  # spurious wake, nothing to render
+                continue
             await asyncio.sleep(inference_seconds)  # simulated GPU time
             self.frames += 1
             await ws.send(bytes([GENERATED_FRAME]) + self.session_id.bytes + payload)
@@ -76,7 +81,7 @@ async def serve_connection(ws, settings: Settings) -> None:
         )
     if response["type"] != "registered":
         raise RegistrationRejected(f"unexpected registration reply: {response}")
-    print(f"worker {settings.worker_id}: registered", flush=True)
+    logger.info("registered as %s", settings.worker_id)
 
     runners: dict[uuid.UUID, SessionRunner] = {}
 
@@ -124,11 +129,9 @@ async def run() -> None:
                 delay = BACKOFF_INITIAL
                 await serve_connection(ws, settings)
         except RegistrationRejected as error:
-            print(f"worker {settings.worker_id}: registration rejected ({error}); "
-                  f"update this worker, not retrying", flush=True)
+            logger.error("registration rejected (%s); update this worker, not retrying", error)
             return
         except (OSError, websockets.WebSocketException) as error:
-            print(f"worker {settings.worker_id}: connection lost ({error}), "
-                  f"retrying in {delay:.0f}s", flush=True)
+            logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
         await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
         delay = min(delay * 2, BACKOFF_CAP)

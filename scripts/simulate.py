@@ -14,6 +14,7 @@ import json
 import os
 import struct
 import subprocess
+import sys
 import time
 import urllib.request
 import uuid
@@ -21,13 +22,21 @@ from pathlib import Path
 
 import websockets
 
-# Importable because this script runs with backend/.venv, where the app
-# package is installed; the wire constants stay single-sourced.
+# Importable because this script runs in an environment where the app package
+# is installed (backend/.venv locally, one shared env in CI); the wire
+# constants stay single-sourced.
 from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 8901
 START = time.monotonic()
+
+
+def interpreter(component: str) -> str:
+    """Component venv locally; the current interpreter in CI, where both
+    packages are installed into one environment."""
+    venv_python = ROOT / component / ".venv/bin/python"
+    return str(venv_python) if venv_python.exists() else sys.executable
 
 
 def log(who: str, text: str) -> None:
@@ -36,7 +45,7 @@ def log(who: str, text: str) -> None:
 
 def spawn_api() -> subprocess.Popen:
     return subprocess.Popen(
-        [str(ROOT / "backend/.venv/bin/python"), "-m", "uvicorn", "app.main:app",
+        [interpreter("backend"), "-m", "uvicorn", "app.main:app",
          "--port", str(PORT), "--log-level", "warning"],
         cwd=ROOT / "backend",
     )
@@ -50,8 +59,8 @@ def spawn_worker(number: int) -> subprocess.Popen:
         "HEARTBEAT_SECONDS": "5",
     }
     process = subprocess.Popen(
-        [str(ROOT / "worker/.venv/bin/python"), "-m", "worker"],
-        env=env, stdout=subprocess.DEVNULL,
+        [interpreter("worker"), "-m", "worker"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     log("chaos", f"started worker-{number} (pid {process.pid})")
     return process
@@ -107,41 +116,55 @@ class BrowserSim:
             await asyncio.sleep(1 / fps)
 
 
+async def open_browser() -> tuple:
+    """Connect and open a session, retrying while the first worker registers.
+    Fixed sleeps are not reliable on slow CI runners."""
+    for _ in range(30):
+        ws = await websockets.connect(f"ws://127.0.0.1:{PORT}/api/v1/realtime")
+        browser = BrowserSim(ws)
+        try:
+            await browser.open("sd-sim")
+            return ws, browser
+        except AssertionError:  # no registered worker serves the model yet
+            await ws.close()
+            await asyncio.sleep(0.5)
+    raise RuntimeError("no worker accepted the session in time")
+
+
 async def main() -> None:
     api = spawn_api()
     worker_1 = worker_2 = None
+    ws = None
     try:
         await wait_for_api()
         worker_1 = spawn_worker(1)
-        await asyncio.sleep(1.0)  # registration
+        ws, browser = await open_browser()
+        # single reader from here on: the receiver owns recv()
+        receiver = asyncio.create_task(browser.receiver())
+        log("browser", "drawing at 10 fps against 0.12 s inference "
+                       "(latest input wins should drop some)")
+        await browser.stream(frames=30, fps=10)
 
-        async with websockets.connect(f"ws://127.0.0.1:{PORT}/api/v1/realtime") as ws:
-            browser = BrowserSim(ws)
-            await browser.open("sd-sim")
-            # single reader from here on: the receiver owns recv()
-            receiver = asyncio.create_task(browser.receiver())
-            log("browser", "drawing at 10 fps against 0.12 s inference "
-                           "(latest input wins should drop some)")
-            await browser.stream(frames=30, fps=10)
+        worker_2 = spawn_worker(2)
+        await asyncio.sleep(2.0)  # registration; nothing to retry against here
+        log("chaos", "killing worker-1 mid session")
+        worker_1.kill()
 
-            worker_2 = spawn_worker(2)
-            await asyncio.sleep(1.0)  # registration
-            log("chaos", "killing worker-1 mid session")
-            worker_1.kill()
+        await asyncio.wait_for(browser.resumed.wait(), timeout=10)
+        log("browser", "re-sending current canvas, drawing continues")
+        await browser.stream(frames=20, fps=10)
 
-            await asyncio.wait_for(browser.resumed.wait(), timeout=10)
-            log("browser", "re-sending current canvas, drawing continues")
-            await browser.stream(frames=20, fps=10)
+        await asyncio.sleep(0.5)  # let the last frames render
+        await ws.send(json.dumps({"type": "close"}))
+        receiver.cancel()
 
-            await asyncio.sleep(0.5)  # let the last frames render
-            await ws.send(json.dumps({"type": "close"}))
-            receiver.cancel()
-
-            average = sum(browser.latencies) / len(browser.latencies)
-            log("summary", f"sent={browser.sent} rendered={browser.rendered} "
-                           f"dropped_by_latest_input_wins={browser.sent - browser.rendered} "
-                           f"avg_latency={average * 1000:.0f} ms")
+        average = sum(browser.latencies) / len(browser.latencies)
+        log("summary", f"sent={browser.sent} rendered={browser.rendered} "
+                       f"dropped_by_latest_input_wins={browser.sent - browser.rendered} "
+                       f"avg_latency={average * 1000:.0f} ms")
     finally:
+        if ws is not None:
+            await ws.close()
         for process in (worker_1, worker_2, api):
             if process is not None:
                 process.kill()

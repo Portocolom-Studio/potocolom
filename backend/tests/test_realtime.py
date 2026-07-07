@@ -136,6 +136,50 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
         assert realtime.workers["w-silent"].slots_in_use == 0
 
 
+def test_reassign_moves_the_session_with_correct_accounting():
+    # TestClient runs each WebSocket connection on its own event loop, so the
+    # cross-connection recovery flow cannot be driven through it; the CI
+    # simulation covers that end to end over real TCP. This drives reassign()
+    # directly on one loop and pins message order and slot accounting.
+    import asyncio
+
+    class FakeSocket:
+        def __init__(self):
+            self.sent = []
+            self.close_code = None
+
+        async def send_json(self, message):
+            self.sent.append(message)
+
+        async def close(self, code=1000):
+            self.close_code = code
+
+    async def scenario():
+        browser = FakeSocket()
+        replacement_ws = FakeSocket()
+        replacement = realtime.Worker(id="w-replacement", ws=replacement_ws,
+                                      models=["sd-sim"], realtime_slots=1)
+        realtime.workers[replacement.id] = replacement
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.reassign(session))
+            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            assert replacement_ws.sent[0]["type"] == "open_session"
+            assert replacement_ws.sent[0]["session_id"] == str(session.id)
+            session.ready.set()  # what the fleet handler does on session_ready
+            await task
+            assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
+            assert session.worker is replacement
+            assert replacement.slots_in_use == 1
+            assert browser.close_code is None  # the session survived
+        finally:
+            realtime.workers.pop(replacement.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
 def test_reaper_closes_silent_workers():
     class FakeSocket:
         def __init__(self):

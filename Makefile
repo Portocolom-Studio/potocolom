@@ -14,8 +14,8 @@ deps-down:
 	docker compose -f deploy/compose/dev.yml down
 
 lint:
-	cd backend && .venv/bin/ruff check . ../scripts
-	cd worker && .venv/bin/ruff check .
+	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy
+	cd worker && .venv/bin/ruff check . && .venv/bin/mypy
 	cd frontend && npm run lint
 
 test:

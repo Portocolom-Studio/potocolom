@@ -40,6 +40,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - run: pip install -e ".[dev]"
       - run: ruff check . ../scripts
+      - run: mypy
       - run: pytest
 
   worker:
@@ -56,4 +57,22 @@ jobs:
           cache-dependency-path: worker/pyproject.toml
       - run: pip install -e ".[dev]"
       - run: ruff check .
+      - run: mypy
       - run: pytest
+
+  # The one test that exercises the whole stack over real TCP: API and two
+  # workers as subprocesses, a simulated browser, a worker killed mid session.
+  simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            worker/pyproject.toml
+      - run: pip install -e ./backend -e ./worker
+      - run: python scripts/simulate.py
+        timeout-minutes: 3

@@ -1,13 +1,17 @@
 import asyncio
+import logging
 
 from worker.client import run
+from worker.logs import setup_logging
 from worker.settings import get_settings
 
 
 def main() -> None:
     settings = get_settings()
-    print(f"potocolom worker: id={settings.worker_id} device={settings.device} "
-          f"api_url={settings.api_url}", flush=True)
+    setup_logging(settings.log_format)
+    logging.getLogger("potocolom.worker").info(
+        "starting: id=%s device=%s api_url=%s",
+        settings.worker_id, settings.device, settings.api_url)
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

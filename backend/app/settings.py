@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     auth_mode: Literal["none", "local", "oauth"] = "none"
     oauth_providers: str = ""  # comma separated, read only when auth_mode is oauth
     billing_enabled: bool = False
+    log_format: Literal["plain", "json"] = "plain"
 
     @property
     def auth_methods(self) -> list[str]:

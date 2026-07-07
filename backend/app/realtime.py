@@ -11,12 +11,15 @@ written back, so an in-flight heartbeat cannot undo a just-committed slot.
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, WebSocket
+
+logger = logging.getLogger("potocolom.realtime")
 
 # Wire constants; keep in sync with worker/worker/client.py.
 PROTOCOL_VERSION = 1
@@ -133,6 +136,7 @@ async def reassign(session: Session) -> None:
         await session.browser.send_json({"type": "interrupted"})
     replacement = pick_worker(session.model_id)
     if replacement is None or not await assign(session, replacement):
+        logger.warning("session %s lost its worker and no replacement was available", session.id)
         with suppress(RuntimeError):
             await session.browser.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
                                              "message": "no worker capacity"})
@@ -141,6 +145,7 @@ async def reassign(session: Session) -> None:
     if session.id not in sessions:  # browser disconnected while we assigned
         await release(session)
         return
+    logger.info("session %s resumed on worker %s", session.id, replacement.id)
     with suppress(RuntimeError):
         await session.browser.send_json({"type": "resumed"})
 
@@ -148,6 +153,7 @@ async def reassign(session: Session) -> None:
 async def reap_once() -> None:
     cutoff = time.monotonic() - WORKER_DEAD_SECONDS
     for worker in [w for w in workers.values() if w.last_seen < cutoff]:
+        logger.warning("worker %s silent for %ds, closing", worker.id, int(WORKER_DEAD_SECONDS))
         with suppress(RuntimeError):
             # Closing server side wakes the fleet handler, whose cleanup
             # removes the worker and reassigns its sessions.
@@ -174,11 +180,15 @@ async def fleet(ws: WebSocket) -> None:
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
     if version < MIN_SUPPORTED_VERSION:
+        logger.warning("worker %s rejected: protocol version %s below %s",
+                       worker.id, version, MIN_SUPPORTED_VERSION)
         await ws.send_json({"type": "rejected", "reason": "unsupported protocol version",
                             "min_supported_version": MIN_SUPPORTED_VERSION})
         await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
         return
     workers[worker.id] = worker
+    logger.info("worker %s registered models=%s slots=%d",
+                worker.id, worker.models, worker.realtime_slots)
     await ws.send_json({"type": "registered"})
     try:
         while True:
@@ -203,12 +213,16 @@ async def fleet(ws: WebSocket) -> None:
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.
             except (ProtocolError, KeyError, ValueError):
+                logger.warning("worker %s violated the protocol, closing", worker.id)
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break
     finally:
         if workers.get(worker.id) is worker:
             del workers[worker.id]
         orphaned = [s for s in sessions.values() if s.worker is worker]
+        if orphaned:
+            logger.info("worker %s disconnected with %d sessions to reassign",
+                        worker.id, len(orphaned))
         for session in orphaned:
             asyncio.ensure_future(reassign(session))
 
