@@ -89,7 +89,7 @@ The version gate implements the N-1 promise: with current protocol version N, ve
 | Idle slot release | 60 s without canvas input | credit metering stops; canvas stays in the browser |
 | Simulated inference time | configurable | the prototype sleeps instead of denoising |
 
-TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible.
+TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. The idle slot release is specified here but ships with the realtime protocol issue (#19); until then a slot stays pinned from `ready` to close. Everything else in the table is implemented.
 
 ## Reconnection and resume
 

@@ -21,9 +21,12 @@ from pathlib import Path
 
 import websockets
 
+# Importable because this script runs with backend/.venv, where the app
+# package is installed; the wire constants stay single-sourced.
+from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES
+
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 8901
-CANVAS_FRAME = 0x01
 START = time.monotonic()
 
 
@@ -78,7 +81,8 @@ class BrowserSim:
         async for message in self.ws:
             if isinstance(message, bytes):
                 self.rendered += 1
-                latency = time.monotonic() - struct.unpack("d", message[17:25])[0]
+                stamp = message[FRAME_HEADER_BYTES:FRAME_HEADER_BYTES + 8]
+                latency = time.monotonic() - struct.unpack("d", stamp)[0]
                 self.latencies.append(latency)
                 if self.rendered == 1 or self.rendered % 10 == 0:
                     log("browser", f"frame {self.rendered} rendered, {latency * 1000:.0f} ms")

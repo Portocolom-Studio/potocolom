@@ -14,11 +14,16 @@ import websockets
 
 from worker.settings import Settings, get_settings
 
+# Wire constants; keep in sync with backend/app/realtime.py.
 PROTOCOL_VERSION = 1
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
 
 SIMULATED_MODELS = ["sd-sim"]
+
+
+class RegistrationRejected(Exception):
+    """The API refused this worker's protocol version; do not retry."""
 
 BACKOFF_INITIAL = 1.0
 BACKOFF_CAP = 30.0
@@ -64,8 +69,13 @@ async def serve_connection(ws, settings: Settings) -> None:
         "realtime_slots": settings.realtime_slots,
     }))
     response = json.loads(await ws.recv())
+    if response["type"] == "rejected":
+        raise RegistrationRejected(
+            f"{response.get('reason', 'rejected')}; "
+            f"minimum supported version {response.get('min_supported_version')}"
+        )
     if response["type"] != "registered":
-        raise RuntimeError(f"registration refused: {response}")
+        raise RegistrationRejected(f"unexpected registration reply: {response}")
     print(f"worker {settings.worker_id}: registered", flush=True)
 
     runners: dict[uuid.UUID, SessionRunner] = {}
@@ -79,6 +89,8 @@ async def serve_connection(ws, settings: Settings) -> None:
     try:
         async for message in ws:
             if isinstance(message, bytes):
+                if len(message) < FRAME_HEADER_BYTES:
+                    continue  # malformed frame; the API is trusted, do not die over it
                 session_id = uuid.UUID(bytes=message[1:FRAME_HEADER_BYTES])
                 if session_id in runners:
                     runners[session_id].submit(message[FRAME_HEADER_BYTES:])
@@ -111,6 +123,10 @@ async def run() -> None:
             async with websockets.connect(settings.api_url) as ws:
                 delay = BACKOFF_INITIAL
                 await serve_connection(ws, settings)
+        except RegistrationRejected as error:
+            print(f"worker {settings.worker_id}: registration rejected ({error}); "
+                  f"update this worker, not retrying", flush=True)
+            return
         except (OSError, websockets.WebSocketException) as error:
             print(f"worker {settings.worker_id}: connection lost ({error}), "
                   f"retrying in {delay:.0f}s", flush=True)

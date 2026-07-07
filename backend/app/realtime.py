@@ -3,16 +3,22 @@
 Single process, in-memory state: this is the self-hosted dispatch path. The
 cloud profile replaces the in-process relay with Redis pub/sub behind the same
 message flow (docs/blueprint.md); nothing on the wire changes.
+
+Slot accounting has exactly one writer: assign() and release() on this side.
+Worker heartbeats refresh liveness only; their self-reported counts are never
+written back, so an in-flight heartbeat cannot undo a just-committed slot.
 """
 
 import asyncio
 import json
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, WebSocket
 
+# Wire constants; keep in sync with worker/worker/client.py.
 PROTOCOL_VERSION = 1
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
 
@@ -26,8 +32,29 @@ CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
 
 SESSION_READY_TIMEOUT = 10.0
+WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
 
 router = APIRouter()
+
+
+class ProtocolError(Exception):
+    """The peer violated docs/connection-handling.md; close with 4000."""
+
+
+def parse_control(text: str) -> dict:
+    try:
+        control = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ProtocolError("malformed JSON") from error
+    if not isinstance(control, dict) or "type" not in control:
+        raise ProtocolError("control message without a type")
+    return control
+
+
+def frame_session_id(data: bytes) -> uuid.UUID:
+    if len(data) < FRAME_HEADER_BYTES:
+        raise ProtocolError("binary frame shorter than the header")
+    return uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES])
 
 
 @dataclass
@@ -67,16 +94,22 @@ def model_known(model_id: str) -> bool:
 
 
 async def assign(session: Session, worker: Worker) -> bool:
-    """Open the session on a worker and wait for its slot. True when ready."""
+    """Open the session on a worker and wait for its slot. True when ready.
+
+    On any failure the slot increment is compensated here, so no caller can
+    leak a slot by abandoning the session mid-assignment.
+    """
     session.worker = worker
     session.ready.clear()
     worker.slots_in_use += 1
-    await worker.ws.send_json(
-        {"type": "open_session", "session_id": str(session.id), "model_id": session.model_id}
-    )
     try:
+        await worker.ws.send_json(
+            {"type": "open_session", "session_id": str(session.id), "model_id": session.model_id}
+        )
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
-    except TimeoutError:
+    except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
+        worker.slots_in_use -= 1
+        session.worker = None
         return False
     return True
 
@@ -86,37 +119,65 @@ async def release(session: Session) -> None:
         return
     worker, session.worker = session.worker, None
     worker.slots_in_use -= 1
-    if worker.id in workers:  # still connected
-        await worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
+    if workers.get(worker.id) is worker:  # still connected, same incarnation
+        with suppress(RuntimeError):
+            await worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
 
 
 async def reassign(session: Session) -> None:
     """The session's worker vanished: interrupted, new worker, resumed."""
     session.worker = None
-    await session.browser.send_json({"type": "interrupted"})
+    if session.id not in sessions:  # browser already gone
+        return
+    with suppress(RuntimeError):
+        await session.browser.send_json({"type": "interrupted"})
     replacement = pick_worker(session.model_id)
     if replacement is None or not await assign(session, replacement):
-        await session.browser.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
-                                         "message": "no worker capacity"})
-        await session.browser.close(code=CLOSE_NO_CAPACITY)
+        with suppress(RuntimeError):
+            await session.browser.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
+                                             "message": "no worker capacity"})
+            await session.browser.close(code=CLOSE_NO_CAPACITY)
         return
-    await session.browser.send_json({"type": "resumed"})
+    if session.id not in sessions:  # browser disconnected while we assigned
+        await release(session)
+        return
+    with suppress(RuntimeError):
+        await session.browser.send_json({"type": "resumed"})
+
+
+async def reap_once() -> None:
+    cutoff = time.monotonic() - WORKER_DEAD_SECONDS
+    for worker in [w for w in workers.values() if w.last_seen < cutoff]:
+        with suppress(RuntimeError):
+            # Closing server side wakes the fleet handler, whose cleanup
+            # removes the worker and reassigns its sessions.
+            await worker.ws.close()
+
+
+async def reap_dead_workers() -> None:
+    while True:
+        await asyncio.sleep(WORKER_DEAD_SECONDS / 3)
+        await reap_once()
 
 
 @router.websocket("/api/v1/fleet")
 async def fleet(ws: WebSocket) -> None:
     await ws.accept()
-    hello = json.loads(await ws.receive_text())
-    if hello.get("type") != "hello":
+    try:
+        hello = parse_control(await ws.receive_text())
+        if hello["type"] != "hello":
+            raise ProtocolError("first message must be hello")
+        version = hello["protocol_version"]
+        worker = Worker(id=hello["worker_id"], ws=ws, models=hello["models"],
+                        realtime_slots=hello["realtime_slots"])
+    except (ProtocolError, KeyError):
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
-    if hello["protocol_version"] < MIN_SUPPORTED_VERSION:
+    if version < MIN_SUPPORTED_VERSION:
         await ws.send_json({"type": "rejected", "reason": "unsupported protocol version",
                             "min_supported_version": MIN_SUPPORTED_VERSION})
         await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
         return
-    worker = Worker(id=hello["worker_id"], ws=ws, models=hello["models"],
-                    realtime_slots=hello["realtime_slots"])
     workers[worker.id] = worker
     await ws.send_json({"type": "registered"})
     try:
@@ -124,22 +185,29 @@ async def fleet(ws: WebSocket) -> None:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
                 break
-            if message.get("bytes") is not None:
-                data = message["bytes"]
-                session = sessions.get(uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES]))
-                if session is not None:
-                    await session.browser.send_bytes(data)
-            elif message.get("text") is not None:
-                control = json.loads(message["text"])
-                worker.last_seen = time.monotonic()
-                if control["type"] == "heartbeat":
-                    worker.slots_in_use = control["slots_in_use"]
-                elif control["type"] == "session_ready":
-                    session = sessions.get(uuid.UUID(control["session_id"]))
+            try:
+                if message.get("bytes") is not None:
+                    data = message["bytes"]
+                    session = sessions.get(frame_session_id(data))
                     if session is not None:
-                        session.ready.set()
+                        with suppress(RuntimeError):  # browser just closed
+                            await session.browser.send_bytes(data)
+                elif message.get("text") is not None:
+                    control = parse_control(message["text"])
+                    worker.last_seen = time.monotonic()
+                    if control["type"] == "session_ready":
+                        session = sessions.get(uuid.UUID(control["session_id"]))
+                        if session is not None:
+                            session.ready.set()
+                    # Heartbeats refresh last_seen only; slot accounting has
+                    # one writer (assign/release), so self-reported counts
+                    # are deliberately not written back.
+            except (ProtocolError, KeyError, ValueError):
+                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+                break
     finally:
-        workers.pop(worker.id, None)
+        if workers.get(worker.id) is worker:
+            del workers[worker.id]
         orphaned = [s for s in sessions.values() if s.worker is worker]
         for session in orphaned:
             asyncio.ensure_future(reassign(session))
@@ -148,11 +216,14 @@ async def fleet(ws: WebSocket) -> None:
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
     await ws.accept()
-    opening = json.loads(await ws.receive_text())
-    if opening.get("type") != "open":
+    try:
+        opening = parse_control(await ws.receive_text())
+        if opening["type"] != "open":
+            raise ProtocolError("first message must be open")
+        model_id = opening["model_id"]
+    except (ProtocolError, KeyError):
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
-    model_id = opening["model_id"]
     if not model_known(model_id):
         await ws.send_json({"type": "error", "code": CLOSE_UNKNOWN_MODEL,
                             "message": "unknown model"})
@@ -177,11 +248,18 @@ async def realtime(ws: WebSocket) -> None:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
                 break
-            if message.get("bytes") is not None and session.worker is not None:
-                await session.worker.ws.send_bytes(message["bytes"])
-            elif message.get("text") is not None:
-                if json.loads(message["text"])["type"] == "close":
-                    break
+            try:
+                if message.get("bytes") is not None:
+                    frame_session_id(message["bytes"])  # length gate, worker side trusts it
+                    if session.worker is not None:
+                        with suppress(RuntimeError):  # worker died, reassign in flight
+                            await session.worker.ws.send_bytes(message["bytes"])
+                elif message.get("text") is not None:
+                    if parse_control(message["text"])["type"] == "close":
+                        break
+            except ProtocolError:
+                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+                break
     finally:
         sessions.pop(session.id, None)
         await release(session)

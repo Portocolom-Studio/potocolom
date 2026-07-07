@@ -88,7 +88,8 @@ npm run lint && npm run check                    # format check and type check
 
 # worker, from worker/
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m worker                       # inference arrives with issue #15
+.venv/bin/python -m worker                       # dials the API and retries until one
+                                                 # is running; Ctrl+C to stop
 .venv/bin/ruff check . && .venv/bin/pytest
 ```
 
