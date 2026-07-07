@@ -14,6 +14,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
 
@@ -42,6 +43,19 @@ router = APIRouter()
 
 class ProtocolError(Exception):
     """The peer violated docs/connection-handling.md; close with 4000."""
+
+
+async def safe_send(sending: "Coroutine[object, object, None]") -> None:
+    """Send to a peer that may have just closed; a dead socket is not an error here."""
+    with suppress(RuntimeError):
+        await sending
+
+
+async def refuse(ws: WebSocket, code: int, message: str) -> None:
+    """Send a terminal error and close, tolerating a peer that is already gone."""
+    with suppress(RuntimeError):
+        await ws.send_json({"type": "error", "code": code, "message": message})
+        await ws.close(code=code)
 
 
 def parse_control(text: str) -> dict:
@@ -81,6 +95,11 @@ class Session:
     browser: WebSocket
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+    @property
+    def is_live(self) -> bool:
+        """False once the browser handler's teardown has removed the session."""
+        return self.id in sessions
 
 
 workers: dict[str, Worker] = {}
@@ -123,41 +142,36 @@ async def release(session: Session) -> None:
     worker, session.worker = session.worker, None
     worker.slots_in_use -= 1
     if workers.get(worker.id) is worker:  # still connected, same incarnation
-        with suppress(RuntimeError):
-            await worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
+        await safe_send(
+            worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
+        )
 
 
 async def reassign(session: Session) -> None:
     """The session's worker vanished: interrupted, new worker, resumed."""
     session.worker = None
-    if session.id not in sessions:  # browser already gone
+    if not session.is_live:  # browser already gone
         return
-    with suppress(RuntimeError):
-        await session.browser.send_json({"type": "interrupted"})
+    await safe_send(session.browser.send_json({"type": "interrupted"}))
     replacement = pick_worker(session.model_id)
     if replacement is None or not await assign(session, replacement):
         logger.warning("session %s lost its worker and no replacement was available", session.id)
-        with suppress(RuntimeError):
-            await session.browser.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
-                                             "message": "no worker capacity"})
-            await session.browser.close(code=CLOSE_NO_CAPACITY)
+        await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
         return
-    if session.id not in sessions:  # browser disconnected while we assigned
+    if not session.is_live:  # browser disconnected while we assigned
         await release(session)
         return
     logger.info("session %s resumed on worker %s", session.id, replacement.id)
-    with suppress(RuntimeError):
-        await session.browser.send_json({"type": "resumed"})
+    await safe_send(session.browser.send_json({"type": "resumed"}))
 
 
 async def reap_once() -> None:
     cutoff = time.monotonic() - WORKER_DEAD_SECONDS
     for worker in [w for w in workers.values() if w.last_seen < cutoff]:
         logger.warning("worker %s silent for %ds, closing", worker.id, int(WORKER_DEAD_SECONDS))
-        with suppress(RuntimeError):
-            # Closing server side wakes the fleet handler, whose cleanup
-            # removes the worker and reassigns its sessions.
-            await worker.ws.close()
+        # Closing server side wakes the fleet handler, whose cleanup
+        # removes the worker and reassigns its sessions.
+        await safe_send(worker.ws.close())
 
 
 async def reap_dead_workers() -> None:
@@ -199,9 +213,8 @@ async def fleet(ws: WebSocket) -> None:
                 if message.get("bytes") is not None:
                     data = message["bytes"]
                     session = sessions.get(frame_session_id(data))
-                    if session is not None:
-                        with suppress(RuntimeError):  # browser just closed
-                            await session.browser.send_bytes(data)
+                    if session is not None:  # browser may have just closed
+                        await safe_send(session.browser.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
@@ -239,23 +252,17 @@ async def realtime(ws: WebSocket) -> None:
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
     if not model_known(model_id):
-        await ws.send_json({"type": "error", "code": CLOSE_UNKNOWN_MODEL,
-                            "message": "unknown model"})
-        await ws.close(code=CLOSE_UNKNOWN_MODEL)
+        await refuse(ws, CLOSE_UNKNOWN_MODEL, "unknown model")
         return
     worker = pick_worker(model_id)
     if worker is None:
-        await ws.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
-                            "message": "no worker capacity"})
-        await ws.close(code=CLOSE_NO_CAPACITY)
+        await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
         return
     session = Session(id=uuid.uuid4(), model_id=model_id, browser=ws)
     sessions[session.id] = session
     try:
         if not await assign(session, worker):
-            await ws.send_json({"type": "error", "code": CLOSE_NO_CAPACITY,
-                                "message": "worker did not become ready"})
-            await ws.close(code=CLOSE_NO_CAPACITY)
+            await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
         await ws.send_json({"type": "ready", "session_id": str(session.id)})
         while True:
@@ -265,9 +272,8 @@ async def realtime(ws: WebSocket) -> None:
             try:
                 if message.get("bytes") is not None:
                     frame_session_id(message["bytes"])  # length gate, worker side trusts it
-                    if session.worker is not None:
-                        with suppress(RuntimeError):  # worker died, reassign in flight
-                            await session.worker.ws.send_bytes(message["bytes"])
+                    if session.worker is not None:  # a dead worker means reassign is in flight
+                        await safe_send(session.worker.ws.send_bytes(message["bytes"]))
                 elif message.get("text") is not None:
                     if parse_control(message["text"])["type"] == "close":
                         break

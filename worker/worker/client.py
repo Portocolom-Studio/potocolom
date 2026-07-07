@@ -55,7 +55,7 @@ class SessionRunner:
             await self.arrived.wait()
             self.arrived.clear()
             payload, self.pending = self.pending, None
-            if payload is None:  # spurious wake, nothing to render
+            if payload is None:  # unreachable today; narrows the Optional for mypy
                 continue
             await asyncio.sleep(inference_seconds)  # simulated GPU time
             self.frames += 1

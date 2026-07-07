@@ -66,13 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No pip cache: this job's combined key would never be shared with the
+      # per-component jobs, so it would only store duplicate wheels.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            backend/pyproject.toml
-            worker/pyproject.toml
       - run: pip install -e ./backend -e ./worker
       - run: python scripts/simulate.py
         timeout-minutes: 3

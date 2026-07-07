@@ -9,11 +9,9 @@ from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.settings import get_settings
 
-setup_logging(get_settings().log_format)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_logging(get_settings().log_format)
     reaper = asyncio.create_task(reap_dead_workers())
     yield
     reaper.cancel()

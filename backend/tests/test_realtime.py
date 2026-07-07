@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 
@@ -10,6 +11,20 @@ from app.main import app
 from app.realtime import CANVAS_FRAME, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
 
 client = TestClient(app)
+
+
+class FakeSocket:
+    """Minimal WebSocket stand-in for driving realtime helpers on one loop."""
+
+    def __init__(self):
+        self.sent = []
+        self.close_code = None
+
+    async def send_json(self, message):
+        self.sent.append(message)
+
+    async def close(self, code=1000):
+        self.close_code = code
 
 
 def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slots=1):
@@ -141,19 +156,6 @@ def test_reassign_moves_the_session_with_correct_accounting():
     # cross-connection recovery flow cannot be driven through it; the CI
     # simulation covers that end to end over real TCP. This drives reassign()
     # directly on one loop and pins message order and slot accounting.
-    import asyncio
-
-    class FakeSocket:
-        def __init__(self):
-            self.sent = []
-            self.close_code = None
-
-        async def send_json(self, message):
-            self.sent.append(message)
-
-        async def close(self, code=1000):
-            self.close_code = code
-
     async def scenario():
         browser = FakeSocket()
         replacement_ws = FakeSocket()
@@ -181,23 +183,14 @@ def test_reassign_moves_the_session_with_correct_accounting():
 
 
 def test_reaper_closes_silent_workers():
-    class FakeSocket:
-        def __init__(self):
-            self.closed = False
-
-        async def close(self, code=1000):
-            self.closed = True
-
-    import asyncio
-
     stale = realtime.Worker(id="w-stale", ws=FakeSocket(), models=[], realtime_slots=1,
                             last_seen=time.monotonic() - realtime.WORKER_DEAD_SECONDS - 1)
     fresh = realtime.Worker(id="w-fresh", ws=FakeSocket(), models=[], realtime_slots=1)
     realtime.workers.update({stale.id: stale, fresh.id: fresh})
     try:
         asyncio.run(realtime.reap_once())
-        assert stale.ws.closed is True
-        assert fresh.ws.closed is False
+        assert stale.ws.close_code is not None
+        assert fresh.ws.close_code is None
     finally:
         realtime.workers.pop("w-stale", None)
         realtime.workers.pop("w-fresh", None)
