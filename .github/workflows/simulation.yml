@@ -1,0 +1,36 @@
+# The one test that exercises the whole stack over real TCP: API and two
+# workers as subprocesses, a simulated browser, a worker killed mid session.
+# Triggered by changes to anything it spans.
+name: simulation
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "worker/**"
+      - "scripts/**"
+      - ".github/workflows/simulation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "worker/**"
+      - "scripts/**"
+      - ".github/workflows/simulation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No pip cache: this job's combined key would never be shared with the
+      # per-component workflows, so it would only store duplicate wheels.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ./backend -e ./worker
+      - run: python scripts/simulate.py
+        timeout-minutes: 3

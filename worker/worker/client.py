@@ -21,6 +21,7 @@ logger = logging.getLogger("potocolom.worker")
 PROTOCOL_VERSION = 1
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
+CLOSE_PROTOCOL_VIOLATION = 4000
 
 SIMULATED_MODELS = ["sd-sim"]
 
@@ -73,13 +74,19 @@ async def serve_connection(ws, settings: Settings) -> None:
         "models": SIMULATED_MODELS,
         "realtime_slots": settings.realtime_slots,
     }))
-    response = json.loads(await ws.recv())
-    if response["type"] == "rejected":
+    try:
+        response = json.loads(await ws.recv())
+        reply_type = response["type"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        logger.warning("malformed registration reply (%s), closing to reconnect", error)
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+        return
+    if reply_type == "rejected":
         raise RegistrationRejected(
             f"{response.get('reason', 'rejected')}; "
             f"minimum supported version {response.get('min_supported_version')}"
         )
-    if response["type"] != "registered":
+    if reply_type != "registered":
         raise RegistrationRejected(f"unexpected registration reply: {response}")
     logger.info("registered as %s", settings.worker_id)
 
@@ -93,27 +100,34 @@ async def serve_connection(ws, settings: Settings) -> None:
     heartbeat_task = asyncio.create_task(heartbeats())
     try:
         async for message in ws:
-            if isinstance(message, bytes):
-                if len(message) < FRAME_HEADER_BYTES:
-                    continue  # malformed frame; the API is trusted, do not die over it
-                session_id = uuid.UUID(bytes=message[1:FRAME_HEADER_BYTES])
-                if session_id in runners:
-                    runners[session_id].submit(message[FRAME_HEADER_BYTES:])
-            else:
-                control = json.loads(message)
-                if control["type"] == "open_session":
-                    session_id = uuid.UUID(control["session_id"])
-                    runners[session_id] = SessionRunner(session_id, ws,
-                                                        settings.inference_seconds)
-                    await ws.send(json.dumps({"type": "session_ready",
-                                              "session_id": control["session_id"]}))
-                elif control["type"] == "close_session":
-                    runner = runners.pop(uuid.UUID(control["session_id"]), None)
-                    if runner is not None:
-                        runner.close()
-                        await ws.send(json.dumps({"type": "session_closed",
-                                                  "session_id": control["session_id"],
-                                                  "frames": runner.frames}))
+            try:
+                if isinstance(message, bytes):
+                    if len(message) < FRAME_HEADER_BYTES:
+                        raise ValueError("binary frame shorter than the header")
+                    session_id = uuid.UUID(bytes=message[1:FRAME_HEADER_BYTES])
+                    if session_id in runners:
+                        runners[session_id].submit(message[FRAME_HEADER_BYTES:])
+                else:
+                    control = json.loads(message)
+                    if control["type"] == "open_session":
+                        session_id = uuid.UUID(control["session_id"])
+                        runners[session_id] = SessionRunner(session_id, ws,
+                                                            settings.inference_seconds)
+                        await ws.send(json.dumps({"type": "session_ready",
+                                                  "session_id": control["session_id"]}))
+                    elif control["type"] == "close_session":
+                        runner = runners.pop(uuid.UUID(control["session_id"]), None)
+                        if runner is not None:
+                            runner.close()
+                            await ws.send(json.dumps({"type": "session_closed",
+                                                      "session_id": control["session_id"],
+                                                      "frames": runner.frames}))
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
+                # docs/connection-handling.md: protocol violations close with
+                # 4000 from either side; run() then reconnects with backoff.
+                logger.warning("protocol violation from the API (%s), closing", error)
+                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+                return
     finally:
         heartbeat_task.cancel()
         for runner in runners.values():

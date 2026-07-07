@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
@@ -15,6 +15,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reaper = asyncio.create_task(reap_dead_workers())
     yield
     reaper.cancel()
+    with suppress(asyncio.CancelledError):
+        await reaper
 
 
 app = FastAPI(title="potocolom", lifespan=lifespan)

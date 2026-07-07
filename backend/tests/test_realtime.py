@@ -100,6 +100,31 @@ def test_hello_missing_fields_closes_with_protocol_violation():
         assert closed.value.code == 4000
 
 
+def test_hello_wrong_types_close_with_protocol_violation():
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(version="1"))  # string, not int
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+        assert closed.value.code == 4000
+
+
+def test_frame_for_another_session_closes_with_protocol_violation():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-crossframe"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            foreign = bytes([CANVAS_FRAME]) + uuid.uuid4().bytes + b"not-my-session"
+            browser_ws.send_bytes(foreign)
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_bytes()
+            assert closed.value.code == 4000
+
+
 def test_short_binary_frame_closes_browser_with_protocol_violation():
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-shortframe"))

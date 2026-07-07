@@ -34,6 +34,35 @@ def test_latest_input_wins():
     assert socket.sent[0][FRAME_HEADER_BYTES:] == b"third"
 
 
+def test_malformed_control_closes_and_returns_for_reconnect():
+    class ScriptedSocket:
+        def __init__(self, messages):
+            self.messages = list(messages)
+            self.sent = []
+            self.close_code = None
+
+        async def send(self, data):
+            self.sent.append(data)
+
+        async def recv(self):
+            return json.dumps({"type": "registered"})
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.messages:
+                raise StopAsyncIteration
+            return self.messages.pop(0)
+
+        async def close(self, code=1000):
+            self.close_code = code
+
+    socket = ScriptedSocket(messages=["this is not json"])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-mangled")))
+    assert socket.close_code == 4000
+
+
 def test_rejected_registration_raises_cleanly():
     class RejectingSocket:
         async def send(self, data):

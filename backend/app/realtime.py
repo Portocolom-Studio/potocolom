@@ -190,6 +190,10 @@ async def fleet(ws: WebSocket) -> None:
         version = hello["protocol_version"]
         worker = Worker(id=hello["worker_id"], ws=ws, models=hello["models"],
                         realtime_slots=hello["realtime_slots"])
+        if not (isinstance(version, int) and isinstance(worker.id, str)
+                and isinstance(worker.models, list)
+                and isinstance(worker.realtime_slots, int)):
+            raise ProtocolError("hello fields have wrong types")
     except (ProtocolError, KeyError):
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
@@ -271,9 +275,13 @@ async def realtime(ws: WebSocket) -> None:
                 break
             try:
                 if message.get("bytes") is not None:
-                    frame_session_id(message["bytes"])  # length gate, worker side trusts it
+                    data = message["bytes"]
+                    # The browser is untrusted: frames must be canvas frames
+                    # for this connection's own session, nothing else.
+                    if frame_session_id(data) != session.id or data[0] != CANVAS_FRAME:
+                        raise ProtocolError("frame does not belong to this session")
                     if session.worker is not None:  # a dead worker means reassign is in flight
-                        await safe_send(session.worker.ws.send_bytes(message["bytes"]))
+                        await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
                     if parse_control(message["text"])["type"] == "close":
                         break
