@@ -166,14 +166,16 @@ Not in AWS and not in Terraform (the autoscaler rents machines at runtime):
 
 ## 11. Terraform layout and environments
 
+The project's Terraform lives in the private repository, not here: environment shapes, sizes and account wiring are commercial operational data ([repository-boundary.md](repository-boundary.md)). Its layout, for orientation:
+
 ```
-deploy/terraform/
+terraform/            (private repository)
   modules/        network, ecs-service, rds, redis, cdn, dns
   envs/staging/   one API task, db.t4g.micro, no always-on GPU
   envs/prod/      the sizes above
 ```
 
-Staging and production are separate state files against the same bucket. The GPU fleet is deliberately absent from Terraform. Apply order on a fresh account: state bootstrap (section 1), OIDC (2), then `envs/staging` end to end before touching prod.
+Staging and production are separate state files against the same bucket. The GPU fleet is deliberately absent from Terraform. Apply order on a fresh account: state bootstrap (section 1), OIDC (2), then `envs/staging` end to end before touching prod. An operator standing up their own cloud from this guide keeps their Terraform wherever they like; only the project's own is private.
 
 ## 12. Go-live checklist
 

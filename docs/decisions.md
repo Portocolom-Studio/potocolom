@@ -362,6 +362,18 @@ When several workers can take a queued job, the scheduler prefers workers servin
 
 Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
 
+## License: GPL-3.0 stays, AGPL rejected
+
+The public repository remains GPL-3.0. The cloud runs the same unmodified GPL images, so GPL's lack of a network clause costs the project nothing; the closed layer (billing, autoscaler, infrastructure) is protected by being separate processes in a private repository behind HTTP boundaries, not by the license. Full analysis in [repository-boundary.md](repository-boundary.md).
+
+Rejected alternative: AGPL-3.0 as a defense against competitors hosting the product. A competitor hosting unmodified AGPL code owes nothing beyond pointing at already-public source; AGPL only forces disclosure of modifications, while its adoption stigma (many organizations ban AGPL dependencies) would hurt exactly the self-hosted community the license exists to serve. The moat is the closed business layer and operations, not copyleft strength.
+
+## Cloud infrastructure code: private repository
+
+The Terraform environments, state, sizes and account wiring live in the private repository alongside the billing service and autoscaler; they are commercial operational data. The public [aws-setup.md](aws-setup.md) guide stays, documenting how anyone could stand up their own cloud. The public repository's `deploy/` carries compose files only.
+
+Rejected alternative: public Terraform under `deploy/terraform/` (as earlier drafts sketched). It would publish the commercial deployment's exact shape and sizes for zero community benefit, since a self-hoster deploying to AWS follows the guide with their own parameters anyway.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

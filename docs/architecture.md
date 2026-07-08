@@ -538,7 +538,7 @@ This repository is licensed under GPL 3.0 and contains everything needed to self
 - Billing service: Stripe integration, subscriptions and the credit ledger.
 - Fleet orchestrator: rents and scales the GPU machines that run the worker pool.
 
-They integrate over HTTP through interfaces defined in this repository (QuotaService, metering events, worker registration). Nothing here depends on them: the default implementations allow everything, and the platform is fully functional without them.
+They integrate over HTTP through interfaces defined in this repository (QuotaService, metering events, worker registration). Nothing here depends on them: the default implementations allow everything, and the platform is fully functional without them. The full boundary, including the licensing analysis, the repository split and the delivery pipeline handoff, is specified in [repository-boundary.md](repository-boundary.md).
 
 ## Technology summary
 
