@@ -307,8 +307,10 @@ The issue #11 goal: no frontend release needed.
 
 ```
 1. Drop weights + manifest into the worker's models directory
-2. Worker validates the manifest and loads the pipeline
-3. Worker registers the model with the API server
+2. Worker validates the manifest, measures free VRAM and picks a
+   memory ladder rung (full residency, model offload, group offload)
+3. Worker registers the model with capabilities as measured:
+   realtime only at full residency
 4. GET /api/v1/models now lists it: capabilities + parameter JSON Schema
 5. Frontend renders generic controls from the schema
    -> usable before any model-specific frontend work exists

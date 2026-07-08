@@ -51,7 +51,7 @@ The scaled self-hosted column deserves a note: it is not a separately designed p
 |---|---|---|
 | REST and WebSocket API | every endpoint, request, response, close code in [api.md](api.md) | nothing |
 | Frontend | one static build; behavior driven by `GET /api/v1/config` | the values that endpoint returns |
-| Worker | the whole worker, protocol, manifests, `DEVICE=cuda/rocm/cpu` | the hostname it dials, where weights come from (HF or R2) |
+| Worker | the whole worker, protocol, manifests, `DEVICE=cuda/rocm/cpu`, the low VRAM memory ladder (`MEMORY_MODE`, [architecture.md](architecture.md)) | the hostname it dials, where weights come from (HF or R2); the ladder matters on consumer GPUs, the cloud fleet runs fully resident |
 | Database schema | identical, one migration history | instance it runs on |
 | Dispatch and relay | the interfaces and the scheduler logic | in-process vs Redis implementation |
 | Storage | the interface, storage keys, asset rows | filesystem vs S3; plain paths vs signed URLs |
