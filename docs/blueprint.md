@@ -282,7 +282,7 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models from manifests, realtime_slots, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
 | api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
@@ -367,6 +367,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-worker:v0.x-cuda   # or -rocm, see local-development.md
     environment:
       DEVICE: cuda               # cuda | rocm | cpu
+      MEMORY_MODE: auto          # auto | full | model_offload | group_offload, see architecture.md
       API_URL: ws://api:8080/api/v1/fleet
       FLEET_TOKEN: ${FLEET_SECRET}
     volumes: ["models:/models"]  # weights + manifests, pulled from Hugging Face
