@@ -198,6 +198,7 @@ sequenceDiagram
     participant W as Worker
     participant S as Storage
     B->>A: POST /api/v1/generations
+    A->>A: resolve model, tier routing when model_id absent
     A->>A: quota reserve, create job row
     A-->>B: job id
     A->>W: dispatch, direct self-hosted or Redis queue in cloud

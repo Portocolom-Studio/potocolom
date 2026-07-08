@@ -309,10 +309,11 @@ Rejects cheapest first; nothing touches a GPU until everything else passed.
 @app.post("/api/v1/generations")
 async def create_generation(req, user = require_user()):
     await rate.check(f"rate:jobs:{user.id}", limit=..., window=60)
+    model = registry.resolve(req.model_id, req.params)   # tier routing when model_id is absent
     if settings.safety_checks:
         await safety.screen_prompt(req.prompt)          # blocklist + classifier, raises
     reservation = await quota.reserve(user, estimate_gpu_ms(req))   # raises InsufficientCredits
-    job = await db.jobs.insert(user, req.model_id, req.params, state="queued",
+    job = await db.jobs.insert(user, model.id, req.params, state="queued",
                                reservation=reservation.id, attempt=1)
     await queues.push("queue:jobs", job.id, tier(user))
     return {"job_id": job.id}
