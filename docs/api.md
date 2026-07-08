@@ -94,6 +94,7 @@ GET /api/v1/models
     "id": "sd-turbo",
     "name": "SD Turbo",
     "capabilities": ["image_to_image", "realtime"],
+    "tier": "draft",
     "min_vram_gb": 8,
     "parameters": {
       "type": "object",
@@ -113,6 +114,8 @@ GET /api/v1/models
 
 ```
 POST /api/v1/generations     {"model_id": "sd-turbo", "params": {"prompt": "a castle at sunset"}}
+                             model_id is optional: omitted, the API routes to the cheapest
+                             tier that satisfies the request (see architecture.md, Model routing)
                              202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
                              402 when credits are insufficient, 422 when params fail the model's schema
 GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed", "asset": {...} when succeeded}

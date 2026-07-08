@@ -338,6 +338,30 @@ Models larger than a card's VRAM run through a per-model memory ladder in the wo
 
 Rejected alternatives: adopting airLLM itself (it targets transformer LLMs through the transformers library and cannot drive diffusion pipelines; its layer streaming and prefetching ideas are exactly what diffusers group offloading already implements for our models); a custom layer streamer (reimplements accelerate's hook machinery for zero gain); requiring full residency (locks self-hosters with 4 to 8 GB cards out of larger generation models, on the exact deployment the project exists to serve).
 
+## Model routing: request tiers resolved in the API, no difficulty classifier
+
+When a generation request does not pin a `model_id`, the API resolves the cheapest registered model whose tier, capabilities and parameters satisfy the request; manifests carry a `tier` field (`draft`, `standard`, `premium`). Our workloads announce their own difficulty through the interface: a drawing stroke is realtime and lands on a turbo-class model, a refine click is a queued job and routes to a heavier one. The router is a small selection policy inside the existing dispatch path.
+
+Rejected alternatives: an ML difficulty classifier in front of the models (burns GPU time to guess what the UI action already states, and misclassification is user-visible); a separate routing proxy service (a deployment and a failure mode for what is one function in the API).
+
+## Worker performance: compile and channels_last at warmup
+
+Hot-set models are warmed with `torch.compile` and `channels_last` memory format when loaded, worth roughly a fifth to a third off denoising time on diffusion pipelines for zero new dependencies. The extra compile minute hides inside the existing model loading state. The attention backend is configuration through diffusers' `set_attention_backend`.
+
+Rejected alternatives: skipping compilation (leaves the single largest free speedup on the table, and GPU seconds are the priced resource); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
+
+## Image codecs off the event loop
+
+WebP and PNG encoding and decoding, the main per-frame CPU cost in both the worker and the API relay, always run in a thread executor, never on the asyncio loop. This keeps frame pacing and WebSocket heartbeats steady at the 2 to 4 fps bar. Binding for issues #15, #16 and #19.
+
+Rejected alternative: SIMD image libraries (pillow-simd, libvips) before a profile shows Pillow in an executor is the bottleneck.
+
+## Job placement: offloaded workers first, micro-batching deferred
+
+When several workers can take a queued job, the scheduler prefers workers serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. One comparator in worker selection. Micro-batching same-model queued jobs is deliberately deferred until a real cloud fleet exists: it raises throughput but complicates slot accounting and preemption, and at a one or two GPU scale there is nothing to batch.
+
+Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
