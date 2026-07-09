@@ -12,6 +12,7 @@ Open-source real-time generative AI platform that enables users to generate, edi
 - [Cloud infrastructure](docs/cloud-infrastructure.md)
 - [AWS setup guide](docs/aws-setup.md)
 - [Repository boundary, licensing and delivery pipeline](docs/repository-boundary.md)
+- [Usage metrics and telemetry](docs/metrics.md)
 - [Design decisions](docs/decisions.md)
 
 Editable diagram sources (draw.io, with AWS service icons) live in [docs/diagrams/](docs/diagrams/).

@@ -35,6 +35,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |
 | DELETE `/api/v1/assets/{id}/share` | issue #17 | revoke the share token |
 | GET `/shared/{token}` | issue #17 | public share link target (CDN path in the cloud) |
+| GET `/api/v1/telemetry/preview` | issue #29 | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints
 

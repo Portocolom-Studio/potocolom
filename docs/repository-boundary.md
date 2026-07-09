@@ -36,6 +36,43 @@ What lives where, at the edges:
 2. The contract is the tested artifact. The public repository tests the API against the fake QuotaService; the private repository's CI pulls the public images from GHCR and runs the same simulation against the real billing service. If both pass, the boundary holds. No shared code, no shared types: the contract lives in [blueprint.md](blueprint.md) and [api.md](api.md) plus the fake.
 3. The contract is versioned like the worker protocol. A `/v1/` path on the quota and metering endpoints, expand-contract changes only, and the private repository pins which public release it deploys against. Worker to API already promises N-1 ([connection-handling.md](connection-handling.md)); the quota boundary gets the same discipline.
 
+## Adding a feature: where the code goes and how it reaches each mode
+
+One codebase means a feature is never built twice. The question is where its single implementation lives and how its behavior is selected per mode. Four cases cover everything, and the first one is almost all of them.
+
+```mermaid
+flowchart TD
+    F["A feature to add"] --> Q1{"Product functionality<br>a user interacts with?"}
+    Q1 -->|"No: billing math, GPU renting,<br>investor analytics, infrastructure"| PRIV["Private repo,<br>behind the HTTP contract"]
+    Q1 -->|"Yes"| Q2{"Same behavior<br>in both modes?"}
+    Q2 -->|"Yes: most features"| PUBA["Public repo, no flag.<br>One build ships it to both"]
+    Q2 -->|"No"| Q3{"An existing flag or seam<br>already draws this line?"}
+    Q3 -->|"Yes"| PUBB["Public repo, behind that flag.<br>Default is the self-hosted behavior"]
+    Q3 -->|"No: a genuinely new axis"| PUBC["Public repo + one new seam,<br>two implementations,<br>self-hosted default wins"]
+    PRIV --> C{"Does the public side<br>need a new hook?"}
+    C -->|"Yes"| CONTRACT["Add a /v1 endpoint against the fake<br>first, expand-contract;<br>private pins that release"]
+    C -->|"No"| DONEP["Cloud deploy only,<br>self-hosters never see it"]
+```
+
+The editable version is the Feature placement page in [diagrams/](diagrams/).
+
+| Case | Where | How the mode is selected | Example |
+|---|---|---|---|
+| Shared behavior | Public repo, no flag | Nothing; it is the same everywhere | A new drawing tool, a new model parameter, the usage_events row |
+| Mode-conditional | Public repo, behind an existing flag or seam | `AUTH_MODE`, `BILLING_ENABLED`, `STORAGE_BACKEND`, `REDIS_URL`, `SAFETY_CHECKS`, `TELEMETRY`, or a seam implementation | The plan management panel appears only when `billing_enabled`; URLs are signed only when `STORAGE_BACKEND=s3` |
+| New axis of difference | Public repo, plus one new seam | A new flag or `Protocol` with two implementations; the default is always the self-hosted one | Hypothetically, pluggable email was this once, now settled as `EMAIL_BACKEND` |
+| Commercial only | Private repo | Not deployed to self-hosters at all; reached over HTTP if the app needs it | Stripe subscription tiers, the fleet autoscaler's bidding, the analytics warehouse |
+
+Two rules keep the table honest. A new seam is a cost, so YAGNI applies hard: reach for case three only when a real second implementation exists now, not because a difference might appear later; until then it is case two behind a flag, or case one. And a mode-specific feature still puts its code in the public repository. Cloud-only UI like the billing panel is public code gated by `billing_enabled`; only the commercial logic behind the HTTP contract is private. The test for "does this go private" is not "is it cloud-only," it is "is it business rather than product."
+
+### The workflow per case
+
+- Cases one to three (public): the existing flow. An issue, a stacked draft PR that `Closes` it, CI runs lint, type check, test, build and the connection simulation, it merges, and the next release tag publishes one set of images to GHCR. Self-hosters pull that image; the cloud mirrors the identical digest to ECR. The feature reaches both modes through the same single build, whether its behavior is shared or flag-gated.
+- Case four (private): an issue and PR in potocolom-cloud. Its CI pulls the pinned public image from GHCR and runs the contract simulation against the real billing service, then deploys to the cloud only. Self-hosters are never involved because the code was never in their image.
+- The crossing case (four with a public hook): the public repository adds the endpoint against the fake QuotaService first and releases it; the private repository then pins that release and implements the real side. Expand-contract ordering makes this safe in one direction: the fake and the `/v1` contract change in a public PR, ship, and only then does the private implementation follow. The reverse order would deploy a caller before the thing it calls exists.
+
+The through line: self-hosted is never a reduced build of the cloud, and the cloud is never a fork of self-hosted. Both are the same public images; the cloud only adds private processes beside them, reached over HTTP, plus a handful of environment variables. Adding a feature is choosing which of those two places its code belongs, and for product features the answer is almost always the public repository.
+
 ## Delivery pipeline
 
 The handoff point between the repositories is the container registry:

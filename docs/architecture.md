@@ -382,6 +382,10 @@ Privacy: assets are private to their owner by default and served through short l
 
 Account deletion and data export are self serve, since GDPR makes both obligations rather than features. Deletion deactivates the account immediately and hard deletes its rows and assets within 30 days; the window also absorbs accidental or malicious deletions of a paying user's library. Export produces the account's data as JSON plus an archive of images. Self-hosted installs get both for free.
 
+## Usage metrics and telemetry
+
+Two streams, specified in [metrics.md](metrics.md). Usage events: every completed job and closed realtime session writes one user-linked row (action, model, tier, output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the deployment's own `usage_events` table - the same code in both modes, never crosses the network, dies with the account purge, and stores no prompts or images. Telemetry: self-hosted installs additionally send anonymous daily aggregates to project infrastructure, on by default with `TELEMETRY=false` to disable; the payload is documented, previewable and contains nothing joinable to a person. There are no cookies beyond the session cookie and no client side analytics anywhere.
+
 ## Data model
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
@@ -394,6 +398,7 @@ erDiagram
     users ||--o{ assets : owns
     users ||--o{ realtime_sessions : opens
     users ||--o{ metering_events : accrues
+    users ||--o{ usage_events : generates
     models ||--o{ jobs : runs
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
@@ -471,6 +476,18 @@ erDiagram
         text kind "job or realtime"
         int gpu_ms
         int images
+        timestamptz created_at
+    }
+    usage_events {
+        uuid id PK
+        uuid user_id FK "deleted with the account"
+        text kind "job or realtime"
+        text action "generate, draw, edit, enhance"
+        text model_id
+        text tier
+        text category "CLIP zero-shot on the output"
+        int gpu_ms
+        int duration_ms
         timestamptz created_at
     }
 ```

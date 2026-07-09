@@ -312,6 +312,154 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram id="profilecompare" name="Profile comparison">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="pc0" value="One codebase, two profiles. Both columns run identical container images and expose identical endpoints; every row below differs by one environment variable or one seam implementation, never a code branch (deployment-profiles.md)." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="20" width="1360" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pcH1" value="Self-hosted: GPL, your hardware, free" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="320" y="80" width="520" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pcH2" value="Cloud: same images, paid subscriptions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="880" y="80" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL1" value="Request path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="140" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS1" value="Browser talks to the API container directly;&#10;the API serves the SPA, REST and WebSockets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="140" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC1" value="SPA from CloudFront; REST and WebSockets&#10;through the ALB to stateless API replicas on ECS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="880" y="140" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL2" value="Authentication" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="230" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS2" value="AUTH_MODE=none (auto login, account UI hidden)&#10;or local email and password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="230" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC2" value="AUTH_MODE=oauth: email and password signup&#10;plus Google, GitHub and Apple; same session cookie" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="880" y="230" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL3" value="Payments and quota" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="320" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS3" value="UnlimitedQuota: no billing, no credits&#10;(QUOTA_SERVICE_URL empty, BILLING_ENABLED=false)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="320" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service&#10;(private repo): Stripe subscriptions, credit reserve/commit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="880" y="320" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL4" value="Models and dispatch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="410" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS4" value="Your own GPU worker(s), in-process dispatch;&#10;the memory ladder makes small VRAM work" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="410" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC4" value="Rented GPU fleet, autoscaled (private repo);&#10;Redis queue and scheduler, fully resident models, tier routing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="880" y="410" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL5" value="Storage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="500" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS5" value="Local disk behind the storage adapter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="500" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC5" value="S3 plus short lived signed CloudFront URLs,&#10;same adapter interface" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="880" y="500" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcL6" value="Metrics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="590" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcS6" value="usage_events in the install&#39;s own PostgreSQL;&#10;daily anonymous telemetry, TELEMETRY=false stops it (metrics.md)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="590" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcC6" value="usage_events in RDS, read by the analytics&#10;warehouse (private repo); the cloud is the telemetry destination" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="880" y="590" width="540" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pc9" value="Orange marks a hop into the private repository, always over HTTP, never an import (repository-boundary.md). Everything else in both columns is the same GPL code." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="690" width="1360" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="featureplacement" name="Feature placement">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="fp0" value="Adding a feature is choosing where its single implementation lives; one codebase is never built twice (repository-boundary.md). Green and amber are the public GPL repo, orange is the private repo reached over HTTP. Product functionality is public even when it is cloud-only; only business logic goes private." style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1440" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="fpF" value="A feature&#10;to add" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="340" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="fpQ1" value="Product functionality&#10;a user interacts with?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="250" y="325" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="fpPRIV" value="Private repo&#10;behind the HTTP contract" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="540" y="120" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="fpC" value="Does the public side&#10;need a new hook?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="880" y="105" width="220" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="fpCONTRACT" value="Add a /v1 endpoint against the&#10;fake first, expand-contract;&#10;private pins that release" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="40" width="280" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="fpDONEP" value="Cloud deploy only;&#10;self-hosters never see it" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="150" width="280" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="fpQ2" value="Same behavior&#10;in both modes?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="540" y="490" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="fpPUBA" value="Public repo, no flag&#10;one build ships it to both&#10;(most features)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="880" y="370" width="300" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="fpQ3" value="An existing flag or seam&#10;already draws this line?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="880" y="510" width="220" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="fpPUBB" value="Public repo, behind that flag&#10;AUTH_MODE, BILLING_ENABLED, STORAGE_BACKEND,&#10;REDIS_URL, SAFETY_CHECKS, TELEMETRY&#10;default is the self-hosted behavior" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="470" width="300" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="fpPUBC" value="Public repo + one new seam&#10;two implementations,&#10;self-hosted default wins" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="610" width="300" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpF" target="fpQ1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe2" value="no: billing, GPU renting, analytics, infra" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ1" target="fpPRIV">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe3" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ1" target="fpQ2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpPRIV" target="fpC">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe5" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;" edge="1" parent="1" source="fpC" target="fpCONTRACT">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe6" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpC" target="fpDONEP">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe7" value="yes: most features" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ2" target="fpPUBA">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe8" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ2" target="fpQ3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe9" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ3" target="fpPUBB">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fpe10" value="no: a genuinely new axis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="fpQ3" target="fpPUBC">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
   <diagram id="journey" name="User API journey">
     <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1560" math="0" shadow="0">
       <root>

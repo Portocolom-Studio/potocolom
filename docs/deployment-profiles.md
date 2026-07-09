@@ -35,6 +35,7 @@ flowchart LR
 | OAUTH_PROVIDERS | | | | | google,github,apple |
 | BILLING_ENABLED | false | false | false | true (fake) | true |
 | SAFETY_CHECKS | false | false | false | false | true |
+| TELEMETRY | false | true (default) | true | false | false, not applicable |
 | DATABASE_URL | dev compose | compose postgres | compose postgres | compose postgres | RDS |
 | REDIS_URL | empty | empty | compose redis | compose redis | ElastiCache |
 | STORAGE_BACKEND | local | local | local | s3 (MinIO) | s3 + CloudFront signing |
@@ -57,7 +58,34 @@ The scaled self-hosted column deserves a note: it is not a separately designed p
 | Storage | the interface, storage keys, asset rows | filesystem vs S3; plain paths vs signed URLs |
 | Quota | the reserve/commit/refund interface, metering events | unlimited vs the billing service |
 | Auth | session mechanics, cookie, revocation | which methods exist |
-| Not shared at all | | AWS infrastructure; the private billing and autoscaler services |
+| Metrics | `usage_events` schema, output categorizer, admin usage view ([metrics.md](metrics.md)) | self-hosted sends daily anonymous telemetry; the analytics warehouse is cloud only, private repo |
+| Not shared at all | | AWS infrastructure; the private billing, autoscaler and analytics services |
+
+## Side by side: the same request through both profiles
+
+Both columns run identical container images and expose identical endpoints; every difference below is one environment variable or one seam implementation, never a code branch.
+
+```mermaid
+flowchart TB
+    subgraph SH["Self-hosted: GPL, your hardware, free"]
+        B1["Browser"] -->|"SPA, REST and WS served by the API itself"| A1["API server, one container"]
+        A1 --> AU1["Auth: none (auto login) or local email+password"]
+        A1 --> Q1["Quota: UnlimitedQuota, no payments"]
+        A1 -->|"in-process dispatch"| W1["Your GPU worker(s)<br>memory ladder for small VRAM"]
+        A1 --> S1["Storage: local disk"]
+        A1 --> M1["Metrics: usage_events in own PostgreSQL<br>+ daily anonymous telemetry, TELEMETRY=false to stop"]
+    end
+    subgraph CL["Cloud: same images, paid subscriptions"]
+        B2["Browser"] -->|"SPA via CloudFront, REST and WS via the ALB"| A2["API replicas on ECS"]
+        A2 --> AU2["Auth: email+password, Google, GitHub, Apple"]
+        A2 --> Q2["Quota: billing service over HTTP (private repo)<br>Stripe subscriptions and credits"]
+        A2 -->|"Redis queue + scheduler"| W2["Rented GPU fleet, autoscaled (private repo)<br>fully resident models, tier routing"]
+        A2 --> S2["Storage: S3 + signed CloudFront URLs"]
+        A2 --> M2["Metrics: usage_events in RDS<br>-> analytics warehouse (private repo)"]
+    end
+```
+
+The corresponding editable diagram is the Profile comparison page in [diagrams/](diagrams/).
 
 ## Migration paths
 

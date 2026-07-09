@@ -11,6 +11,7 @@ AUTH_MODE            = none | local | oauth      # default none
 OAUTH_PROVIDERS      = google,github,apple       # only read when AUTH_MODE=oauth
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
+TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
 DATABASE_URL         = postgresql://...
 REDIS_URL            = ""                        # empty: in-process fallbacks (self-host)
 REDIS_URL_CACHE      = $REDIS_URL                # per-concern endpoints; set individually
@@ -286,9 +287,9 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
 | api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
-| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms; failed carries reason |
+| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
-| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames |
+| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
 
