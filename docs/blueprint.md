@@ -285,7 +285,7 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 |---|---|---|
 | worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
-| worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
+| worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
 | api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
 | worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |

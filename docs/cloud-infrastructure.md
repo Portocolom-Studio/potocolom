@@ -171,8 +171,9 @@ The stated tolerance at launch: an availability zone failure may cost up to five
 
 ## Observability
 
-- CloudWatch holds structured JSON logs from every service and the metrics that matter: queue depth, realtime slot utilization, admission queue wait, 5xx rate, request latency, worker heartbeat gaps, plus the RDS and ElastiCache basics.
-- Alarms on queue depth, error rate, missing worker heartbeats and database capacity notify through SNS.
+- CloudWatch holds structured JSON logs from every service and the metrics that matter: queue depth, realtime slot utilization, admission queue wait, 5xx rate, request latency, worker heartbeat gaps, fleet GPU aggregates from worker heartbeats, per-model frame-time p95, settlement outbox depth and autoscaler spend pace, plus the RDS and ElastiCache basics. Export paths and the aggregate-versus-detail rule are specified in [metrics.md](metrics.md).
+- Alarms on queue depth, error rate, missing worker heartbeats, database capacity, a non-empty settlement outbox that persists, webhook signature failures, frame-time p95 over the realtime bar, log ingestion volume, and fleet utilization sustained below the pricing floor - all notify through SNS.
+- Three CloudWatch dashboards: fleet (workers, slots, GPU aggregates, frame times), product operations (queues, latency, errors), money (outbox, spend pace, utilization).
 - Sentry (free tier) captures exceptions with stack traces from the API, the worker and the frontend. This is where the 3am Python traceback is found; CloudWatch is where the capacity trend is found.
 
 ## Environments and infrastructure as code

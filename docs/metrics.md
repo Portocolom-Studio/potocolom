@@ -64,6 +64,32 @@ POST https://telemetry.potocolom.com/v1/report
 
 A failed send is dropped, never queued: telemetry must never affect the install that emits it.
 
+## Operational metrics: planes and export paths
+
+Usage events and telemetry are the product plane. Three more planes cover operating the system, each with one export path and one rule about where detail lives:
+
+| Plane | Source | Export path | Where it lands |
+|---|---|---|---|
+| Fleet and GPU | worker heartbeat samples | the existing WSS connection - workers are never AWS principals | Redis worker hash (live), CloudWatch fleet aggregates, one JSON log line per heartbeat |
+| Service | API and private services | `PutMetricData` in the `potocolom` namespace + structured JSON logs | CloudWatch metrics, Logs Insights |
+| Money path | API outbox, billing webhooks, autoscaler | same as service plane | CloudWatch metrics and alarms; machine-hour rows in the autoscaler's store |
+
+The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, detail stays in Redis (live) and logs (history). Per-worker CloudWatch dimensions would multiply ephemeral worker ids by metric names at a price per metric; the admin fleet view and Logs Insights already answer per-worker questions for free.
+
+## GPU fleet metrics
+
+The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - via NVML on CUDA and amd-smi on ROCm, behind the same device layer as inference. The API fans each heartbeat out three ways: the `worker:{id}` Redis hash (the admin fleet view and the autoscaler read this), fleet-level CloudWatch aggregates (workers connected, slots in use and free, average and max GPU utilization, minimum VRAM free), and one JSON log line for history.
+
+A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
+
+## Frame loop metrics
+
+Two recorded decisions depend on observing the realtime loop, so its numbers are first class: per-model p95 frame time, measured at the worker (inference) and at the relay (end to end), and the frame drop rate from latest-input-wins. Worker-side p95 feeds the slot calibration benchmark's ongoing sanity check; relay-side p95 is the explicit trigger for the gateway extraction ([decisions.md](decisions.md), "Realtime relay"); a rising drop rate says sessions are degrading before users say it.
+
+## Unit economics
+
+The number the pricing model stands on is utilization: gpu_ms sold (summed from `usage_events`) divided by machine-hours bought (the autoscaler's per-machine-hour accounting rows). The warehouse computes it by joining the two; it is reviewed weekly against the pricing assumptions, and a sustained fall below the assumed floor is a money alarm, not a curiosity.
+
 ## Dashboards and the boundary
 
 - Both modes: the admin area (issue #28) gains a usage view over the instance's own `usage_events` - top models, categories, active users, GPU time.
