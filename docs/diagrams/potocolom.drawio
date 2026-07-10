@@ -350,7 +350,7 @@
         <mxCell id="pcS3" value="UnlimitedQuota: no billing, no credits&#10;(QUOTA_SERVICE_URL empty, BILLING_ENABLED=false)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="320" y="320" width="520" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service&#10;(private repo): Stripe subscriptions, credit reserve/commit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+        <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service (private repo):&#10;Stripe subscriptions; idempotent reserve/commit/refund&#10;on caller-supplied reservation ids with a TTL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="880" y="320" width="540" height="70" as="geometry" />
         </mxCell>
         <mxCell id="pcL4" value="Models and dispatch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -584,7 +584,7 @@
         <mxCell id="d3" value="prompt screen&#10;blocklist + classifier, cloud only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="580" y="80" width="200" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="d4" value="quota reserve&#10;QuotaService: unlimited default,&#10;billing service in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="d4" value="quota reserve (reservation id + TTL)&#10;QuotaService: unlimited default,&#10;billing service in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="840" y="70" width="220" height="80" as="geometry" />
         </mxCell>
         <mxCell id="d5" value="job row in PostgreSQL&#10;the source of truth, state=queued" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
