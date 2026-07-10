@@ -8,6 +8,8 @@ The inference worker is Python regardless, because the model ecosystem (diffuser
 
 Rejected alternative: a TypeScript API server sharing types with the frontend. It would add a second backend language next to the unavoidable Python worker.
 
+Re-examined against a Go port and reaffirmed. FastAPI's native plumbing (uvloop over libuv, httptools over llhttp, pydantic-core in Rust) covers I/O, parsing and validation while handlers stay interpreted Python; Go's real web-tier advantage therefore optimizes the wrong bottleneck, because GPU seconds are the priced resource and the relay at target scale moves only thousands of small messages per second. A port would trade away the integrated validation, OpenAPI generation and DI, re-prove both WebSocket protocols, and still leave a two-language backend since the worker cannot leave Python. Go enters where its shape pays instead: the pre-planned relay gateway (see "Realtime relay") and the private billing service.
+
 ## Frontend: SvelteKit as a static SPA
 
 The application is a login gated interactive tool (canvas drawing, live previews, tool views), so server side rendering adds nothing. SvelteKit with the static adapter produces one build artifact that the API server can serve when self-hosted and a CDN can serve in the cloud. Runtime configuration comes from the API, never from build flags.
@@ -67,6 +69,8 @@ Rejected alternative: JWTs. They remove the store lookup, but instant revocation
 The browser's WebSocket and the worker's persistent connection usually terminate on different API replicas. Frames hop between replicas over Redis pub/sub channels keyed by session id: sub millisecond inside the VPC, built on Redis we already run, and it removes any need for sticky sessions. Self-hosted, the relay is an in-process call behind the same interface.
 
 Rejected alternatives: a dedicated realtime gateway service (cleanest latency path, but one more deployment that duplicates auth); having the worker redial the specific replica holding the browser (breaks the workers-dial-one-endpoint rule and fights Fargate networking).
+
+The rejected gateway is pre-planned as a scale-stage extraction with an explicit trigger; see "Realtime relay: planned extraction into a Go gateway at scale" below.
 
 ## GPU pool: shared between jobs and realtime, realtime first
 
@@ -411,6 +415,12 @@ Rejected alternatives: server-generated reservation ids (a timeout on reserve le
 When the billing service is unreachable, `reserve` fails closed: the user sees a billing-unavailable error and no GPU time is granted on credit. `commit` and `refund` fail open: they enqueue in an outbox table in the API's PostgreSQL and retry until acknowledged, and the ledger's unique source keys make redelivery harmless, so settlement is effectively exactly-once. A billing outage therefore never hands out free GPU time and never loses a finished generation's charge, in that order of importance.
 
 Rejected alternatives: failing open on reserve (an outage becomes a free GPU faucet precisely when nobody is watching); synchronous retries without persistence (an API restart mid-retry loses the charge).
+
+## Realtime relay: planned extraction into a Go gateway at scale
+
+The Redis pub/sub relay between API replicas stands, and no gateway code exists today. This entry records the exit plan for the day profiling shows relay frame pacing threatening the 2 to 4 fps bar or relay work crowding API replicas: a stateless gateway service terminates the browser realtime socket and the worker fleet socket, relays binary frames in memory when both legs land on the same instance (affinity by session id) and over Redis pub/sub otherwise, and forwards JSON control traffic to the API, which keeps the scheduler and all authority. Browsers authenticate to it with short-lived tickets minted by the API; workers keep their fleet tokens. The ALB already routes by path, so `/api/v1/realtime` and `/api/v1/fleet` move to the gateway's target group without touching anything else; the FrameBus seam and the no-stickiness design are what make the split configuration plus one new service rather than a redesign. The gateway is written in Go: many sockets, small messages, no model code, a static binary, exactly the shape Go serves best. The API stays Python per its own decision; within this repository the gateway is the only planned Go component. The private repository's services choose their own stack behind the HTTP contracts.
+
+Rejected alternatives: building the gateway now (a deployment and a duplicated auth surface before any profile justifies it, the same reason the frame routing decision rejected it); a full Go port of the API (recreates the two-language backend the FastAPI decision exists to avoid, spending a rewrite on headroom the GPU-bound economics cannot use, since session count and therefore relay load track fleet size, which tracks revenue).
 
 ## Supporting defaults
 
