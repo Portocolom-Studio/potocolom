@@ -324,6 +324,32 @@ async def create_generation(req, user = require_user()):
 
 Worker death mid job: the scheduler's reconcile step requeues `attempt=1` jobs as `attempt=2`; a job failing at `attempt=2` becomes `state=failed`, `quota.refund(reservation_id)`, and the frontend shows the retry button. Completion runs the output safety check on the worker, uploads to a presigned URL, then `quota.commit(reservation_id, actual_gpu_ms, images)`. Actual usage may exceed the estimate; commit charges actuals, and a balance briefly going negative only blocks new reservations until the next grant. Idempotency, expiry and the outage posture of these calls are specified under Quota contract semantics below.
 
+## Prompt screening
+
+Cloud profile only (`SAFETY_CHECKS=true`). Runs in the API before `quota.reserve`, so a refused prompt costs neither GPU time nor credits, and on the realtime socket for `open` and every `prompt_update`, where a rejection refuses the update but keeps the session alive.
+
+```python
+def normalize(prompt: str) -> str:
+    # NFKC fold, casefold, strip zero-width characters,
+    # homoglyph and leetspeak mapping - evasion dies here or nowhere
+
+async def screen_prompt(prompt: str, user) -> None:
+    text = normalize(prompt)
+    verdict = rules.match(text)                       # curated patterns; combination
+                                                      # rules (age x sexual), not words
+    if verdict is None:
+        verdict = await classifier.classify(text)     # small CPU model, multi-label,
+                                                      # milliseconds, in-process
+    if verdict.hard:                                  # above all: any sexualization of minors
+        await strikes.record(user, verdict.category)  # category + timestamp only,
+                                                      # never the prompt text
+        raise PromptRejected(message=GENERIC_POLICY_MESSAGE)
+    if verdict.soft:                                  # ToS-prohibited, not radioactive
+        raise PromptRejected(message=category_message(verdict.category))
+```
+
+Hard verdicts answer with one generic message (the screen never teaches which pattern tripped) and count as strikes; crossing the strike threshold sets the same suspended-pending-review flag the payment dispute path uses, and a suspended account cannot reserve. The baseline rule list ships in this repository, so a self-hosted install that enables `SAFETY_CHECKS` gets real protection; the cloud loads a supplementary private list from a configured path. The output-side backstop is the worker's safety checker on generated images (see [decisions.md](decisions.md), "Content safety"), which also covers what no text screen can see: the canvas stream itself.
+
 ## Seam interfaces
 
 The four seams from [architecture.md](architecture.md), as they appear in code. Each has exactly two implementations at launch; which one loads is pure configuration.
