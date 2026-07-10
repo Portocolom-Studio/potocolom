@@ -820,4 +820,93 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram id="metrics-observability" name="Metrics and observability">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="660" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="moTitle" value="Metrics and observability - four planes, one export path each" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="14" width="1160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="moSub" value="Workers export over the connection they already hold and are never AWS principals; aggregates become CloudWatch metrics, per-worker detail stays in Redis and logs; no client-side analytics anywhere." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="46" width="1160" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="moW" value="GPU workers - one process per GPU&#10;NVML / amd-smi sample on every 30 s heartbeat&#10;(util, VRAM, temperature, power)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="84" width="270" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="moAPI" value="API replicas + private services&#10;JSON logs + PutMetricData" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="214" width="270" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="moRedis" value="Redis worker:{id} hash&#10;live fleet state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="84" width="250" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="moCW" value="CloudWatch - potocolom namespace&#10;fleet aggregates, queue depth, frame p95,&#10;outbox depth, spend pace" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="174" width="300" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="moLogs" value="JSON logs - Logs Insights&#10;per-worker history, forensics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="284" width="300" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="moAdmin" value="admin fleet view (issue 28)&#10;the live many-GPU console" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="74" width="250" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="moAuto" value="fleet autoscaler&#10;(private repo)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="74" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="moAlarms" value="alarms - SNS&#10;p95 breach, outbox stuck, utilization floor,&#10;heartbeat gaps, log ingestion" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="720" y="184" width="260" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="moDash" value="3 dashboards:&#10;fleet / product ops / money" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="184" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="moFrameNote" value="frame p95 feeds slot calibration and is the gateway extraction trigger" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=top;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="380" y="346" width="300" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="moUE" value="usage_events - the deployment's own PostgreSQL&#10;action, model, tier, CLIP category, gpu_ms&#10;no prompts, no images, no IPs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="434" width="340" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="moETL" value="nightly ETL (private repo)&#10;usage_events + machine_hours + ledger aggregates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="460" y="444" width="320" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="moParq" value="Parquet in a private S3 bucket&#10;DuckDB queries, the investor report&#10;Athena as the growth path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="434" width="320" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="moTel" value="telemetry ingest (private repo)&#10;POST /v1/report, aggregates only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="460" y="554" width="320" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="moUtil" value="utilization = gpu_ms sold / machine-hours bought - the number the pricing model stands on, reviewed weekly" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=top;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="860" y="544" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="moSH" value="self-hosted installs&#10;daily anonymous aggregate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="574" width="270" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="moE1" value="heartbeat over the one outbound WSS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="moW" target="moAPI"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moAPI" target="moRedis"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moAPI" target="moCW"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.8;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moAPI" target="moLogs"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moRedis" target="moAdmin"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="moRedis" target="moAuto">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="655" y="152" />
+              <mxPoint x="1095" y="152" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="moE7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.4;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moCW" target="moAlarms"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.8;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="moCW" target="moDash">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="276" />
+              <mxPoint x="1110" y="276" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="moE9" value="one row per completed job / closed session" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="moAPI" target="moUE"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="moUE" target="moETL"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="moETL" target="moParq"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="moTel" target="moETL"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="moE13" value="POST /v1/report daily" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="moSH" target="moTel"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
