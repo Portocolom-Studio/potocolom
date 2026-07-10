@@ -69,14 +69,15 @@ Permissions policy for the role, least privilege: ECR push to the project reposi
 | VPC CIDR | 10.0.0.0/16, two AZs (eu-west-1a, eu-west-1b) |
 | Public subnets | 10.0.0.0/20, 10.0.16.0/20 (ALB, one NAT gateway) |
 | Private subnets | 10.0.128.0/20, 10.0.144.0/20 (Fargate tasks, RDS, Redis) |
-| NAT | one gateway (cost decision; a second is an availability upgrade later) |
+| NAT | one NAT instance, fck-nat pattern on t4g.nano ([decisions.md](decisions.md), "AWS baseline"); a managed gateway is the availability upgrade later |
+| VPC endpoints | S3 gateway endpoint (free), so image and weights traffic never crosses NAT |
 
 Security groups, each referencing the previous rather than CIDRs: `alb-sg` allows 443 from the internet; `api-sg` allows 8080 from `alb-sg` only; `rds-sg` allows 5432 from `api-sg` and the private services' SG; `redis-sg` allows 6379 the same way. Nothing in a private subnet is reachable from outside the VPC.
 
 ## 4. Data stores
 
 - RDS PostgreSQL 16: `db.t4g.small`, 50 GB gp3, single AZ, automated backups with a 14 day PITR window, deletion protection on, master credentials generated into SSM (never in Terraform state as plain values). Staging: `db.t4g.micro`.
-- ElastiCache Redis 7: `cache.t4g.micro`, one node, no replica at launch (the resilience decision: Redis is never the source of truth).
+- ElastiCache, Valkey engine: `cache.t4g.micro`, one node, no replica at launch (the resilience decision: Redis-protocol state is never the source of truth). Valkey is protocol-compatible; the application configures a Redis URL and cannot tell the difference.
 
 ## 5. Buckets, CDN, DNS, certificates
 
@@ -110,7 +111,7 @@ One cluster, three services (API public repo; billing and autoscaler from the pr
 }
 ```
 
-API task definition: 0.5 vCPU, 1 GB, image from ECR, port 8080, `awslogs` driver to `/potocolom/<env>/api` (30 day retention). Service: 2 tasks in the private subnets, the ALB target group from [blueprint.md](blueprint.md) (IP targets, health check `/api/v1/health`, deregistration delay 120), autoscaling 2 to 6 tasks on 60 percent average CPU.
+API task definition: 0.5 vCPU, 1 GB, Graviton (`runtimePlatform` ARM64, images built multi-arch), image from ECR, port 8080, `awslogs` driver to `/potocolom/<env>/api` (30 day retention). Service: 2 tasks in the private subnets, the ALB target group from [blueprint.md](blueprint.md) (IP targets, health check `/api/v1/health`, deregistration delay 120), autoscaling 2 to 6 tasks on 60 percent average CPU.
 
 Environment for the API task, values resolved from SSM where secret:
 

@@ -440,6 +440,30 @@ Deepens "Content safety: prompt screening and output checking in the cloud". The
 
 Rejected alternatives: storing flagged prompts for human review (creates exactly the sensitive archive the no-prompt posture exists to avoid, and GDPR-scopes it); LLM-based moderation per prompt (latency and cost in a path that must also gate 2 to 4 fps prompt updates); silent shadow-banning (a support nightmare that teaches abusers nothing and honest users less); detailed refusal messages for hard categories (an oracle for evasion testing).
 
+## GPU session density: calibrated slots now, worker-internal batching later
+
+Realtime slots per worker stop being a configured guess: at model warmup the worker benchmarks ms/frame at batch sizes 1..N and advertises the largest session count that holds p95 frame time under the 2 to 4 fps bar. This lands with the real inference issue and replaces the most expensive guess in the system with a measurement. The density ladder beyond that is designed and deliberately deferred: cross-session frame batching inside the worker (frames from concurrent same-model sessions collected in a ~30-50 ms window and run as one batch - invisible to the scheduler, because it lives below the slot abstraction, which is why this does not reopen the deferred scheduler-level micro-batching decision), then StreamDiffusion-class pipeline work (batched denoising steps across consecutive frames, dropping classifier-free guidance on turbo models, tiny-autoencoder decode for the live preview with full VAE on refine). Trigger: when fleet spend makes density the cheapest capacity, which is measurable from the machine-hour accounting.
+
+Rejected alternatives: implementing batching in the launch scope (worker complexity before concurrent users exist to batch, on a one or two GPU fleet); keeping static guessed slots (leaves per-GPU economics unmeasured through exactly the period when pricing is being validated).
+
+## Fleet card: chosen by bake-off, not assumption
+
+When real inference lands, rent an RTX 4090, an RTX 5090 and an A40 for an afternoon and measure the numbers that matter: sessions held at the realtime bar per dollar-hour, and queued images per dollar-hour. The winner becomes the launch card. The metric is $/session-at-bar, not $/hour - a cheaper card that fails the bar or a pricier card that doubles sessions can each win. The scheduler and autoscaler are card-agnostic (slots are the only currency), so this is fleet configuration, not code.
+
+Rejected alternatives: committing to the 4090 unmeasured (probably right, but "probably" on the number that dominates COGS); optimizing pure $/hour (the A40 is cheapest per hour and likely worst per session at the bar).
+
+## AWS baseline: Graviton, Valkey, S3 endpoint, NAT instance
+
+Four cost decisions that touch no architecture: ECS tasks run on Graviton (ARM64, multi-arch images, roughly 20 percent off Fargate compute); ElastiCache runs the Valkey engine (protocol-compatible with Redis, zero application change, 20 to 30 percent cheaper); an S3 gateway VPC endpoint (free) keeps S3 traffic off NAT data charges; and outbound NAT is a small NAT instance (fck-nat pattern on t4g.nano) instead of the managed NAT gateway, saving roughly 30 USD per month as the one deliberately accepted pet in an otherwise pet-free design. A CloudWatch log-ingestion alarm guards the classic runaway. Together roughly 30 percent off the pre-GPU baseline.
+
+Rejected alternatives: Fargate Spot for API replicas (WebSocket churn on every reclaim for about 10 USD per month at launch scale; revisit with the relay gateway); keeping the managed NAT gateway (simplest, but 35 USD per month for a single-AZ launch posture that already accepts bigger risks than a NAT instance).
+
+## GPU floor: scheduled, not always-on
+
+The always-on worker floor follows a schedule: floor 1 during European waking hours, floor 0 overnight at launch. A quiet-hour first session sees the existing waiting room for the one to two minutes a machine takes to boot - a bounded, honest UX cost that saves roughly a third of the floor machine's monthly cost. The schedule is autoscaler configuration per environment; raising it as the user base spreads across timezones is a config change informed by the admission-wait metric.
+
+Rejected alternatives: a 24/7 floor (best first impression at every hour, full cost from day one before there are night users to impress); pure scale-to-zero (daytime users also hit cold starts whenever demand gaps outlast the idle timeout).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
