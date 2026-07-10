@@ -434,6 +434,12 @@ An AWS Organization with two member accounts, staging and production; the manage
 
 Rejected alternatives: a single account separated by names and tags (soft IAM boundaries, and splitting into accounts later is a painful migration); Control Tower (audit and log-archive accounts plus SCP guardrails are enterprise machinery this scale does not pay for; guardrails can be added to the plain Organization later).
 
+## Content safety enforcement: strikes without prompt retention
+
+Deepens "Content safety: prompt screening and output checking in the cloud". The screen is normalize (unicode folding, homoglyphs), then curated combination rules, then a lightweight CPU classifier, in that order, before quota reserve and on every realtime prompt update - mechanics in [blueprint.md](blueprint.md). The enforcement posture: hard-category attempts (above all, any sexualization of minors) are refused with one deliberately generic message and recorded as strikes holding category and timestamp only - prompt text is never retained anywhere, consistent with the metrics privacy posture. Repeated strikes suspend the account behind the same pending-review flag the payment dispute path uses. Soft categories get a clear message and no strike. The baseline rule list is public so self-hosted installs that enable `SAFETY_CHECKS` get real protection; the cloud appends a private supplementary list.
+
+Rejected alternatives: storing flagged prompts for human review (creates exactly the sensitive archive the no-prompt posture exists to avoid, and GDPR-scopes it); LLM-based moderation per prompt (latency and cost in a path that must also gate 2 to 4 fps prompt updates); silent shadow-banning (a support nightmare that teaches abusers nothing and honest users less); detailed refusal messages for hard categories (an oracle for evasion testing).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

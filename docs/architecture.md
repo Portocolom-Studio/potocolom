@@ -375,7 +375,7 @@ Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are 
 
 Two checks run in the cloud profile; self-hosted installs have both disabled by default, as profile flags rather than forks:
 
-- Prompt screening in the API before dispatch: a blocklist plus a lightweight classifier. A refused prompt never consumes GPU time.
+- Prompt screening in the API before dispatch: normalization (unicode folding, homoglyph mapping), curated combination rules, then a lightweight CPU classifier. A refused prompt never consumes GPU time or credits, and the screen also gates every realtime prompt update. Hard-category attempts - above all, any sexualization of minors - are refused generically and counted as strikes; repeated strikes suspend the account for review. Enforcement retains category and timestamp, never prompt text. Pipeline in [blueprint.md](blueprint.md), posture in [decisions.md](decisions.md).
 - The standard diffusers safety checker on the worker's outputs: flagged images are blocked, never stored, and the event is logged.
 
 Both exist because a public service that turns prompts into images answers to GPU providers' terms of service and to payment processors, not only to its own policy.
