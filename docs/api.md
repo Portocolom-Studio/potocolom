@@ -67,7 +67,7 @@ The drawing tool's connection. Text messages are JSON control, binary messages a
 
 Browser to API: `{"type": "open", "model_id": "sd-sim"}` first, then binary canvas frames carrying the session id, then `{"type": "close"}`.
 
-API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). Terminal failures arrive as `error` messages before the close. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, prompt updates and `credits_tick`.
+API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). Terminal failures arrive as `error` messages before the close. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, prompt updates, `credits_tick`, and an out of credits close (an `error` message then the close) when a session's chunked reservation cannot be extended.
 
 ## Planned endpoints, shapes fixed by the blueprint
 

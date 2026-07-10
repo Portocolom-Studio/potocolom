@@ -8,6 +8,8 @@ The inference worker is Python regardless, because the model ecosystem (diffuser
 
 Rejected alternative: a TypeScript API server sharing types with the frontend. It would add a second backend language next to the unavoidable Python worker.
 
+Re-examined against a Go port and reaffirmed. FastAPI's native plumbing (uvloop over libuv, httptools over llhttp, pydantic-core in Rust) covers I/O, parsing and validation while handlers stay interpreted Python; Go's real web-tier advantage therefore optimizes the wrong bottleneck, because GPU seconds are the priced resource and the relay at target scale moves only thousands of small messages per second. A port would trade away the integrated validation, OpenAPI generation and DI, re-prove both WebSocket protocols, and still leave a two-language backend since the worker cannot leave Python. Go enters where its shape pays instead: the pre-planned relay gateway (see "Realtime relay") and the private billing service.
+
 ## Frontend: SvelteKit as a static SPA
 
 The application is a login gated interactive tool (canvas drawing, live previews, tool views), so server side rendering adds nothing. SvelteKit with the static adapter produces one build artifact that the API server can serve when self-hosted and a CDN can serve in the cloud. Runtime configuration comes from the API, never from build flags.
@@ -67,6 +69,8 @@ Rejected alternative: JWTs. They remove the store lookup, but instant revocation
 The browser's WebSocket and the worker's persistent connection usually terminate on different API replicas. Frames hop between replicas over Redis pub/sub channels keyed by session id: sub millisecond inside the VPC, built on Redis we already run, and it removes any need for sticky sessions. Self-hosted, the relay is an in-process call behind the same interface.
 
 Rejected alternatives: a dedicated realtime gateway service (cleanest latency path, but one more deployment that duplicates auth); having the worker redial the specific replica holding the browser (breaks the workers-dial-one-endpoint rule and fights Fargate networking).
+
+The rejected gateway is pre-planned as a scale-stage extraction with an explicit trigger; see "Realtime relay: planned extraction into a Go gateway at scale" below.
 
 ## GPU pool: shared between jobs and realtime, realtime first
 
@@ -387,6 +391,48 @@ Rejected alternatives: a third party analytics product (PostHog, Amplitude: clie
 Supersedes "Telemetry: none from self-hosted installs". Self-hosted installs post one anonymous daily aggregate (counts by action, category and tier, active user count, worker device and memory mode, version, random install id) to a project ingest endpoint, on by default, disabled with `TELEMETRY=false`. Three properties keep opt-out defensible to a GPL audience: the payload is aggregates only and joinable to no person, the exact payload is documented publicly and previewable locally, and the API logs the destination and the off switch at every startup. A failed send is dropped, never queued. Specified in [metrics.md](metrics.md).
 
 Rejected alternatives: keeping zero phone-home (the original decision: cleanest position, but it makes the install base invisible exactly when install counts and usage mix are the numbers the project needs to show); opt-in (single digit opt-in rates make the data unusable); local-only metrics with no reporting (same blindness with extra steps).
+
+## Credit lifecycle: balance resets each billing period
+
+Each paid invoice sets the balance to the tier's grant; unused credits expire when the period ends. A failed renewal claws nothing back: the remaining balance stays spendable until the period ends, Stripe's retries and dunning emails run in that window, and if payment never lands the subscription cancels and the account drops to the free tier with a zero balance. No one-time top-up packs at launch; heavy users change tier through the hosted portal. One payment flow, the simplest possible ledger, and liability bounded by one month's grant per user.
+
+Rejected alternatives: capped rollover (friendlier to light users, but more ledger rules and standing liability; revisit if churn data blames expiry); credits that never expire while subscribed (unbounded accrued liability and a dunning claw-back problem); top-up packs at launch (a second Checkout flow, fulfillment webhook, refund path and expiry rule before any real user has hit a ceiling).
+
+## Payment processing: idempotent by construction
+
+Stripe delivers webhooks at least once and out of order, and HTTP calls between the API and the billing service will be retried, so nothing about payments may depend on exactly-once delivery. Three rules make every money path safe to replay. Webhook events are recorded in a table keyed by the Stripe event id and inserted in the same transaction that processes them, so a redelivery hits the unique constraint and no-ops; handlers read state from the event's object, never infer it from event ordering. The credit ledger is append-only: every balance change is one row (user, delta, reason, source type, source id) with a unique constraint on the source, so a renewal grant keyed by its invoice id, a trial grant keyed by the user, and a spend keyed by its reservation id physically cannot apply twice; the balance is a cached column rebuilt from the ledger. Refunds claw back as negative entries keyed by the refund id (a balance may go negative, which only blocks new reservations until it recovers), and a chargeback dispute suspends the account pending manual review.
+
+Rejected alternatives: deduplicating in handler code without constraints (works until a crash lands between the side effect and the marker); the balance column as the source of truth (unauditable and unrepairable when it drifts).
+
+## Quota contract: caller-supplied reservation ids with expiry
+
+`reserve` carries a reservation UUID generated by the API and a TTL, so a timed-out call can be retried with the same id and at most one reservation exists. A reservation is a one-way state machine, reserved to exactly one of committed, refunded or expired: repeating a transition is a no-op, a conflicting one is an error, and the billing service expires uncommitted reservations after the TTL and returns the credits, so a crash between reserve and enqueue cannot strand them. Realtime sessions meter through the same contract in chunks: reserve roughly 60 GPU-seconds at admission, extend chunk by chunk while Active, commit actuals at idle release or close. A failed extension ends the session gracefully with an out of credits message, so overdraft exposure is bounded by one chunk. The fake QuotaService in cloud-sim implements these exact semantics; they are part of the versioned `/v1` contract, not private implementation detail.
+
+Rejected alternatives: server-generated reservation ids (a timeout on reserve leaves the caller unable to retry safely, which is the whole failure mode); per-tick metering for sessions (couples billing to the frame loop and multiplies contract calls for no precision that matters); trusting commit to always arrive (a crashed worker or API would leak reserved credits forever without the TTL).
+
+## Billing outage posture: reserve fails closed, settlement retries through an outbox
+
+When the billing service is unreachable, `reserve` fails closed: the user sees a billing-unavailable error and no GPU time is granted on credit. `commit` and `refund` fail open: they enqueue in an outbox table in the API's PostgreSQL and retry until acknowledged, and the ledger's unique source keys make redelivery harmless, so settlement is effectively exactly-once. A billing outage therefore never hands out free GPU time and never loses a finished generation's charge, in that order of importance.
+
+Rejected alternatives: failing open on reserve (an outage becomes a free GPU faucet precisely when nobody is watching); synchronous retries without persistence (an API restart mid-retry loses the charge).
+
+## Realtime relay: planned extraction into a Go gateway at scale
+
+The Redis pub/sub relay between API replicas stands, and no gateway code exists today. This entry records the exit plan for the day profiling shows relay frame pacing threatening the 2 to 4 fps bar or relay work crowding API replicas: a stateless gateway service terminates the browser realtime socket and the worker fleet socket, relays binary frames in memory when both legs land on the same instance (affinity by session id) and over Redis pub/sub otherwise, and forwards JSON control traffic to the API, which keeps the scheduler and all authority. Browsers authenticate to it with short-lived tickets minted by the API; workers keep their fleet tokens. The ALB already routes by path, so `/api/v1/realtime` and `/api/v1/fleet` move to the gateway's target group without touching anything else; the FrameBus seam and the no-stickiness design are what make the split configuration plus one new service rather than a redesign. The gateway is written in Go: many sockets, small messages, no model code, a static binary, exactly the shape Go serves best. The API stays Python per its own decision; within this repository the gateway is the only planned Go component. The private repository's services choose their own stack behind the HTTP contracts.
+
+Rejected alternatives: building the gateway now (a deployment and a duplicated auth surface before any profile justifies it, the same reason the frame routing decision rejected it); a full Go port of the API (recreates the two-language backend the FastAPI decision exists to avoid, spending a rewrite on headroom the GPU-bound economics cannot use, since session count and therefore relay load track fleet size, which tracks revenue).
+
+## Cloud delivery: Terraform and push-based pipelines, no Kubernetes
+
+All infrastructure is Terraform in the private repository, and git is the source of truth for both the infrastructure and the deployed image digests; nothing changes in the console outside break-glass. Delivery is push-based: GitHub Actions assumes per-environment IAM roles through OIDC (no long-lived AWS keys exist), `terraform plan` posts on every pull request, merging applies to staging, and production waits for a manual approval on the pipeline. Services roll with ECS's native rolling update plus the deployment circuit breaker and alarm-based rollback; the ALB's 120 second deregistration delay drains WebSockets during deploys. A scheduled `terraform plan` fails loudly on drift, which is the useful half of GitOps done as a nightly check instead of a resident controller.
+
+Rejected alternatives: EKS with ArgoCD or Flux (pull-based GitOps needs a Kubernetes cluster to reconcile; that is a monthly control plane bill and standing cluster operations for three stateless services and one migration task, while the GPU fleet lives outside AWS and outside Kubernetes reach anyway); AWS CodePipeline (a second CI system next to GitHub Actions for no capability gain); blue/green through CodeDeploy (doubled capacity during deploys and extra machinery for rollback the circuit breaker already provides at this scale); automatic promotion to production after a staging soak (trusts alarm coverage that does not have history yet; revisit once it does).
+
+## AWS accounts: an Organization with staging and production members
+
+An AWS Organization with two member accounts, staging and production; the management account holds consolidated billing, the organization CloudTrail and nothing else. Account boundaries make blast radius and IAM trivial - a staging mistake cannot touch production by construction - and each account gets its own OIDC deploy roles and its own Terraform state bootstrap. Humans go through IAM Identity Center with short-lived credentials: read-only for daily inspection, administrator as break-glass only. The full access model is in [cloud-delivery.md](cloud-delivery.md).
+
+Rejected alternatives: a single account separated by names and tags (soft IAM boundaries, and splitting into accounts later is a painful migration); Control Tower (audit and log-archive accounts plus SCP guardrails are enterprise machinery this scale does not pay for; guardrails can be added to the plain Organization later).
 
 ## Supporting defaults
 

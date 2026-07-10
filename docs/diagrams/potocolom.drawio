@@ -350,7 +350,7 @@
         <mxCell id="pcS3" value="UnlimitedQuota: no billing, no credits&#10;(QUOTA_SERVICE_URL empty, BILLING_ENABLED=false)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="320" y="320" width="520" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service&#10;(private repo): Stripe subscriptions, credit reserve/commit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+        <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service (private repo):&#10;Stripe subscriptions; idempotent reserve/commit/refund&#10;on caller-supplied reservation ids with a TTL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="880" y="320" width="540" height="70" as="geometry" />
         </mxCell>
         <mxCell id="pcL4" value="Models and dispatch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -584,7 +584,7 @@
         <mxCell id="d3" value="prompt screen&#10;blocklist + classifier, cloud only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="580" y="80" width="200" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="d4" value="quota reserve&#10;QuotaService: unlimited default,&#10;billing service in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="d4" value="quota reserve (reservation id + TTL)&#10;QuotaService: unlimited default,&#10;billing service in the cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="840" y="70" width="220" height="80" as="geometry" />
         </mxCell>
         <mxCell id="d5" value="job row in PostgreSQL&#10;the source of truth, state=queued" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -721,6 +721,102 @@
         <mxCell id="me6" value="produces" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_jobs" target="t_assets"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="me7" value="hosts" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_workers" target="t_rts"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="me8" value="opens" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="t_users" target="t_rts"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="accounts-delivery" name="Accounts and delivery">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="820" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="adTitle" value="Accounts and delivery - from a pull request to production" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="16" width="1160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="adPub" value="Public repository (GPL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="540" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="adPub1" value="PR + CI ladder&#10;lint, unit, tiny-model,&#10;simulation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="95" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adPub2" value="tag vX.Y.Z&#10;release.yml builds&#10;three images" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="240" y="95" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adPub3" value="GHCR&#10;images by digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="95" width="140" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adE1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adPub1" target="adPub2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adPub2" target="adPub3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adPriv" value="Private repository (commercial)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="640" y="60" width="560" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="adPriv1" value="promotion PR:&#10;bump the pinned&#10;release digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="95" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adPriv2" value="terraform plan&#10;posts on the PR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="95" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adPriv3" value="merge to main" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="95" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adE3" value="pin" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;" edge="1" parent="1" source="adPub3" target="adPriv1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adPriv1" target="adPriv2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adPriv2" target="adPriv3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adStg" value="Staging account - OIDC roles: infra (terraform), deploy (ECR/ECS, least privilege)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="240" width="1160" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="adS1" value="mirror GHCR to ECR&#10;by digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="285" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adS2" value="contract simulation vs&#10;the real billing service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="290" y="285" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adS3" value="gated migration task&#10;expand-contract, N-1 safe" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="285" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adS4" value="ECS rolling deploy&#10;circuit breaker + alarms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="770" y="285" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adS5" value="smoke: health, config,&#10;one realtime session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="285" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="adE6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adS1" target="adS2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adS2" target="adS3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adS3" target="adS4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="adS4" target="adS5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adE10" value="OIDC on merge" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="adPriv3" target="adS1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="155" y="215" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="adGate" value="manual approval&#10;GitHub environment&#10;protection" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="430" width="200" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="adE11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="adS5" target="adGate">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="412" />
+              <mxPoint x="630" y="412" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="adProd" value="Production account - same pipeline, same digests, nothing rebuilt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="560" width="720" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="adP1" value="mirror, migrate, roll, smoke - replayed against production; rollback = revert the promotion PR (previous digests) or the ECS circuit breaker on failed health checks; schema never rolls back (expand-contract)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;align=left;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="60" y="592" width="680" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="adE12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="adGate" target="adProd"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="adId" value="Identity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="800" y="430" width="400" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="adId1" value="Humans: IAM Identity Center, no long-lived keys.&#10;ReadOnly daily, Admin break-glass (then codified).&#10;&#10;Pipelines: GitHub OIDC only; the public repo has&#10;no AWS access at all - its release ends at GHCR.&#10;&#10;Workloads: execution role (image + own SSM prefix)&#10;plus a task role limited to what the code does.&#10;Workers are not AWS principals: rented machines,&#10;short-lived fleet tokens to the API." style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=top;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="815" y="458" width="370" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="adMgmt" value="Management account: consolidated billing + organization CloudTrail, no workloads" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="700" width="720" height="40" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
