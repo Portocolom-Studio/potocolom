@@ -11,18 +11,6 @@
 <svelte:head>
 	<title>potocolom</title>
 	<meta name="description" content={t('hero.sub')} />
-	<meta property="og:type" content="website" />
-	<meta property="og:site_name" content="potocolom" />
-	<meta property="og:title" content="potocolom - Draw it. Watch it render." />
-	<meta property="og:description" content={t('hero.sub')} />
-	<meta property="og:url" content="https://potocolom.leonfuller.com/" />
-	<meta property="og:image" content="https://potocolom.leonfuller.com/og.png" />
-	<meta property="og:image:width" content="1200" />
-	<meta property="og:image:height" content="630" />
-	<meta name="twitter:card" content="summary_large_image" />
-	<meta name="twitter:title" content="potocolom - Draw it. Watch it render." />
-	<meta name="twitter:description" content={t('hero.sub')} />
-	<meta name="twitter:image" content="https://potocolom.leonfuller.com/og.png" />
 </svelte:head>
 
 <header>

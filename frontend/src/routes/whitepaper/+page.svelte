@@ -19,12 +19,6 @@
 <svelte:head>
 	<title>potocolom - {t('wp.title')}</title>
 	<meta name="description" content={t('wp.sub')} />
-	<meta property="og:type" content="article" />
-	<meta property="og:site_name" content="potocolom" />
-	<meta property="og:title" content="potocolom - {t('wp.title')}" />
-	<meta property="og:description" content={t('wp.sub')} />
-	<meta property="og:image" content="https://potocolom.leonfuller.com/og.png" />
-	<meta name="twitter:card" content="summary_large_image" />
 </svelte:head>
 
 <header>
