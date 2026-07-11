@@ -85,6 +85,7 @@
 	"app.enhance_placeholder": "One-click enhance routes a draft to a heavier model. It lands with model routing.",
 	"app.back": "Back to the landing page",
 
+	"ui.language": "Language",
 	"footer.legal": "Legal notice",
 	"footer.privacy": "Privacy",
 	"footer.contact": "Contact",

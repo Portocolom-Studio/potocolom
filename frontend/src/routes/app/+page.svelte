@@ -18,7 +18,12 @@
 		<a class="logo" href={resolve('/')} title={t('app.back')}>potocolom<span>_</span></a>
 		<nav aria-label={t('app.title')}>
 			{#each tabs as tab (tab)}
-				<button type="button" class={{ active: active === tab }} onclick={() => (active = tab)}>
+				<button
+					type="button"
+					class={{ active: active === tab }}
+					aria-pressed={active === tab}
+					onclick={() => (active = tab)}
+				>
 					{t(`app.tab_${tab}`)}
 				</button>
 			{/each}

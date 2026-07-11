@@ -17,6 +17,7 @@ function initialLocale(): Locale {
 }
 
 const state = $state({ locale: initialLocale() });
+if (typeof document !== 'undefined') document.documentElement.lang = state.locale;
 
 export function getLocale(): Locale {
 	return state.locale;

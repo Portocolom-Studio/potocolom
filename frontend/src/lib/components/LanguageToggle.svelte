@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { getLocale, setLocale, locales } from '$lib/i18n.svelte';
+	import { getLocale, setLocale, locales, t } from '$lib/i18n.svelte';
 </script>
 
-<div role="group" aria-label="Language">
+<div role="group" aria-label={t('ui.language')}>
 	{#each locales as locale (locale)}
 		<button
 			type="button"
 			class={{ active: getLocale() === locale }}
+			aria-pressed={getLocale() === locale}
 			onclick={() => setLocale(locale)}
 		>
 			{locale.toUpperCase()}
