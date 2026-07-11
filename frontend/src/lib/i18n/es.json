@@ -3,7 +3,6 @@
 	"nav.features": "Funciones",
 	"nav.open": "Código abierto",
 	"nav.launch": "Abrir la app",
-
 	"hero.kicker": "Imágenes generativas en tiempo real, código abierto",
 	"hero.title1": "Dibújalo.",
 	"hero.title2": "Míralo renderizarse.",
@@ -13,15 +12,6 @@
 	"hero.badge_license": "GPL 3.0",
 	"hero.badge_fps": "2-4 fps en tiempo real",
 	"hero.badge_gpu": "CUDA + ROCm",
-
-	"how.title": "Cómo funciona",
-	"how.step1_title": "Dibuja",
-	"how.step1_body": "Dibuja sobre el lienzo. Cada trazo llega a una GPU en el momento.",
-	"how.step2_title": "Renderiza",
-	"how.step2_body": "Un modelo de difusión turbo pinta sobre tus trazos en vivo, fotograma a fotograma.",
-	"how.step3_title": "Refina",
-	"how.step3_body": "Un clic envía el resultado a un modelo más potente para la imagen final.",
-
 	"features.title": "Hecho para los dos mundos",
 	"features.sub": "Un solo código detrás de todo: la instalación gratuita en tu escritorio y la nube gestionada son la misma aplicación.",
 	"features.f1_title": "Un bucle en vivo, no una cola",
@@ -32,7 +22,6 @@
 	"features.f3_body": "Añade el manifiesto de un modelo y la interfaz se adapta a sus parámetros. Sin publicar una nueva versión.",
 	"features.f4_title": "Privado por defecto",
 	"features.f4_body": "Sin galería pública. Tus imágenes viven tras enlaces firmados que puedes compartir y revocar, y tus datos se exportan con un clic.",
-
 	"split.title": "Gratis donde debe serlo, de pago donde tiene que serlo",
 	"split.oss_title": "Autoalojado",
 	"split.oss_p1": "GPL 3.0, completo y sin límites",
@@ -42,11 +31,28 @@
 	"split.cloud_p1": "Sin GPU propia, dibujando en segundos",
 	"split.cloud_p2": "Suscripciones con créditos transparentes",
 	"split.cloud_p3": "La misma aplicación, operada por nosotros",
-
 	"footer.tagline": "Un solo código GPL, autoalojado o en la nube.",
 	"footer.github": "GitHub",
 	"footer.docs": "Documentación",
-
+	"nav.pricing": "Precios",
+	"pricing.kicker": "Precios beta",
+	"pricing.title": "Planes simples, créditos honestos",
+	"pricing.sub": "Los créditos miden segundos de GPU con transparencia: dibujar los consume en vivo y cada generación cuesta unos pocos. Precios beta, sujetos a cambio antes del lanzamiento público - la lista de espera se entera primero.",
+	"pricing.month": "al mes",
+	"pricing.t1_name": "Starter",
+	"pricing.t1_b1": "10.000 créditos cada mes",
+	"pricing.t1_b2": "Unas 2,7 horas de dibujo en vivo",
+	"pricing.t1_b3": "O unos miles de generaciones rápidas",
+	"pricing.t2_name": "Pro",
+	"pricing.t2_badge": "El más elegido",
+	"pricing.t2_b1": "35.000 créditos cada mes",
+	"pricing.t2_b2": "Unas 9,5 horas de dibujo en vivo",
+	"pricing.t2_b3": "Prioridad en la cola",
+	"pricing.t3_name": "Studio",
+	"pricing.t3_b1": "100.000 créditos cada mes",
+	"pricing.t3_b2": "Unas 27 horas de dibujo en vivo",
+	"pricing.t3_b3": "Máxima prioridad en la cola",
+	"pricing.trial": "Cada invitación a la beta incluye una prueba única gratuita - sin tarjeta para probar.",
 	"nav.whitepaper": "Whitepaper",
 	"wp.kicker": "Whitepaper",
 	"wp.title": "Cómo funciona potocolom",
@@ -71,7 +77,6 @@
 	"wp.s7_title": "La frontera del código abierto",
 	"wp.s7_body": "El producto es GPL 3.0 y está completo por sí solo: las implementaciones por defecto lo permiten todo, que es exactamente el comportamiento autoalojado. Solo la capa de negocio - facturación con Stripe, el libro mayor de créditos, la orquestación de la flota de GPU - es privada, protegida por ser un proceso separado tras contratos HTTP y no por trucos de licencia. La nube ejecuta las mismas imágenes GPL sin modificar que cualquiera puede descargar.",
 	"wp.cta_docs": "Lee la documentación completa en GitHub",
-
 	"app.title": "Estudio",
 	"app.tab_draw": "Dibujar",
 	"app.tab_generate": "Generar",
@@ -84,9 +89,7 @@
 	"app.edit_placeholder": "La edición de imágenes llegará después de la herramienta de dibujo.",
 	"app.enhance_placeholder": "Mejorar con un clic envía un borrador a un modelo más potente. Llega con el enrutado de modelos.",
 	"app.back": "Volver a la página principal",
-
 	"ui.language": "Idioma",
-
 	"wl.kicker": "Beta en la nube",
 	"wl.title": "Sé el primero en el lienzo",
 	"wl.sub": "La nube abre como beta con invitación. Apúntate a la lista y sabrás de nosotros exactamente dos veces: en el lanzamiento autoalojado y cuando tu invitación esté lista.",
@@ -100,12 +103,10 @@
 	"footer.legal": "Aviso legal",
 	"footer.privacy": "Privacidad",
 	"footer.contact": "Contacto",
-
 	"error.title404": "Página no encontrada",
 	"error.titleOther": "Algo ha ido mal",
 	"error.message": "En esta dirección no vive nada. El lienzo, en cambio, está muy vivo.",
 	"error.home": "Volver al inicio",
-
 	"legal.title": "Aviso legal",
 	"legal.operator_h": "Titular del sitio",
 	"legal.operator_body": "Este sitio web y el proyecto potocolom son operados por Leon Elliott Fuller. Contacto: admin@leonfuller.com.",
@@ -113,7 +114,6 @@
 	"legal.purpose_body": "potocolom.leonfuller.com presenta el proyecto de código abierto potocolom y recoge inscripciones en la lista de espera de su futuro servicio en la nube. Hoy no se vende nada en este sitio; este aviso se ampliará con los datos completos de identificación antes de abrir el servicio de pago.",
 	"legal.law_h": "Legislación aplicable",
 	"legal.law_body": "Este aviso se facilita conforme a la Ley 34/2002 de servicios de la sociedad de la información (LSSI-CE). El servicio se opera desde España; se aplica la legislación española y de la Unión Europea.",
-
 	"privacy.title": "Privacidad",
 	"privacy.intro": "La versión corta: este sitio no instala cookies, no usa rastreadores de terceros y no recoge nada sobre ti salvo la dirección de correo que tú decidas darnos.",
 	"privacy.waitlist_h": "La lista de espera",

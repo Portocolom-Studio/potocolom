@@ -28,8 +28,8 @@
 <header>
 	<a class="logo" href={resolve('/')}>potocolom<span>_</span></a>
 	<nav>
-		<a href="#how">{t('nav.how')}</a>
 		<a href="#features">{t('nav.features')}</a>
+		<a href="#pricing">{t('nav.pricing')}</a>
 		<a href="#open">{t('nav.open')}</a>
 		<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 	</nav>
@@ -61,26 +61,7 @@
 		</div>
 	</section>
 
-	<section id="how" class="band">
-		<h2>{t('how.title')}</h2>
-		<ol class="steps">
-			<li>
-				<span class="step-index">01</span>
-				<h3>{t('how.step1_title')}</h3>
-				<p>{t('how.step1_body')}</p>
-			</li>
-			<li>
-				<span class="step-index">02</span>
-				<h3>{t('how.step2_title')}</h3>
-				<p>{t('how.step2_body')}</p>
-			</li>
-			<li>
-				<span class="step-index">03</span>
-				<h3>{t('how.step3_title')}</h3>
-				<p>{t('how.step3_body')}</p>
-			</li>
-		</ol>
-	</section>
+	<WaitlistForm />
 
 	<section id="features" class="band">
 		<h2>{t('features.title')}</h2>
@@ -103,6 +84,43 @@
 				<p>{t('features.f4_body')}</p>
 			</article>
 		</div>
+	</section>
+
+	<section id="pricing" class="band">
+		<p class="kicker">{t('pricing.kicker')}</p>
+		<h2>{t('pricing.title')}</h2>
+		<p class="band-sub">{t('pricing.sub')}</p>
+		<div class="tiers">
+			<article>
+				<h3>{t('pricing.t1_name')}</h3>
+				<p class="price">&euro;9 <span>{t('pricing.month')}</span></p>
+				<ul>
+					<li>{t('pricing.t1_b1')}</li>
+					<li>{t('pricing.t1_b2')}</li>
+					<li>{t('pricing.t1_b3')}</li>
+				</ul>
+			</article>
+			<article class="featured">
+				<p class="badge">{t('pricing.t2_badge')}</p>
+				<h3>{t('pricing.t2_name')}</h3>
+				<p class="price">&euro;24 <span>{t('pricing.month')}</span></p>
+				<ul>
+					<li>{t('pricing.t2_b1')}</li>
+					<li>{t('pricing.t2_b2')}</li>
+					<li>{t('pricing.t2_b3')}</li>
+				</ul>
+			</article>
+			<article>
+				<h3>{t('pricing.t3_name')}</h3>
+				<p class="price">&euro;59 <span>{t('pricing.month')}</span></p>
+				<ul>
+					<li>{t('pricing.t3_b1')}</li>
+					<li>{t('pricing.t3_b2')}</li>
+					<li>{t('pricing.t3_b3')}</li>
+				</ul>
+			</article>
+		</div>
+		<p class="trial-note">{t('pricing.trial')}</p>
 	</section>
 
 	<section id="open" class="band">
@@ -128,8 +146,6 @@
 			</article>
 		</div>
 	</section>
-
-	<WaitlistForm />
 </main>
 
 <footer>
@@ -338,42 +354,16 @@
 		margin-bottom: 2.5rem;
 	}
 
-	.steps {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-		gap: 1rem;
-		list-style: none;
-		padding: 0;
-	}
-
-	.steps li {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: 1.5rem;
-		background: var(--surface);
-	}
-
-	.step-index {
-		font-size: 0.8rem;
-		color: var(--accent-2);
-		letter-spacing: 0.2em;
-	}
-
-	.steps h3 {
-		margin: 0.6rem 0 0.3rem;
-		font-size: 1.15rem;
-	}
-
-	.steps p {
-		color: var(--text-muted);
-		font-size: 0.95rem;
-		margin: 0;
-	}
-
 	.cards {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 1rem;
+	}
+
+	@media (max-width: 640px) {
+		.cards {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.cards article {
@@ -399,6 +389,96 @@
 		color: var(--text-muted);
 		font-size: 0.95rem;
 		margin: 0;
+	}
+
+	.tiers {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1rem;
+		align-items: start;
+	}
+
+	@media (max-width: 760px) {
+		.tiers {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.tiers article {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1.8rem;
+		background: var(--surface);
+		position: relative;
+	}
+
+	.tiers article.featured {
+		border-color: rgba(124, 111, 255, 0.5);
+		background: linear-gradient(160deg, rgba(124, 111, 255, 0.12), rgba(34, 211, 238, 0.05));
+	}
+
+	.badge {
+		position: absolute;
+		top: -0.7rem;
+		right: 1.2rem;
+		background: var(--gradient-accent);
+		color: #06080f;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		padding: 0.25rem 0.8rem;
+		border-radius: 999px;
+		margin: 0;
+	}
+
+	.tiers h3 {
+		font-size: 1.05rem;
+		color: var(--text-muted);
+		margin-bottom: 0.2rem;
+	}
+
+	.price {
+		font-size: 2.1rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		margin: 0 0 1rem;
+	}
+
+	.price span {
+		font-size: 0.85rem;
+		font-weight: 500;
+		color: var(--text-muted);
+		letter-spacing: 0;
+	}
+
+	.tiers ul {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		color: var(--text-muted);
+		font-size: 0.95rem;
+	}
+
+	.tiers li {
+		padding: 0.35rem 0 0.35rem 1.4rem;
+		position: relative;
+	}
+
+	.tiers li::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: 0.85em;
+		width: 0.55em;
+		height: 0.55em;
+		border-radius: 2px;
+		background: var(--gradient-accent);
+	}
+
+	.trial-note {
+		color: var(--text-muted);
+		font-size: 0.9rem;
+		margin-top: 1.6rem;
 	}
 
 	.split {

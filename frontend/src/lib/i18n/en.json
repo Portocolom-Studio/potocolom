@@ -3,7 +3,6 @@
 	"nav.features": "Features",
 	"nav.open": "Open source",
 	"nav.launch": "Launch the app",
-
 	"hero.kicker": "Open source, real time generative images",
 	"hero.title1": "Draw it.",
 	"hero.title2": "Watch it render.",
@@ -13,15 +12,6 @@
 	"hero.badge_license": "GPL 3.0",
 	"hero.badge_fps": "2-4 fps realtime",
 	"hero.badge_gpu": "CUDA + ROCm",
-
-	"how.title": "How it works",
-	"how.step1_title": "Draw",
-	"how.step1_body": "Sketch on the canvas. Every stroke streams to a GPU as you make it.",
-	"how.step2_title": "Render",
-	"how.step2_body": "A turbo diffusion model paints over your strokes live, frame after frame.",
-	"how.step3_title": "Refine",
-	"how.step3_body": "One click hands the result to a heavier model for the final image.",
-
 	"features.title": "Built for both worlds",
 	"features.sub": "One codebase behind everything: the free install on your desk and the managed cloud are the same application.",
 	"features.f1_title": "A live loop, not a queue",
@@ -32,7 +22,6 @@
 	"features.f3_body": "Drop a model manifest and the interface adapts to its parameters. No frontend release required.",
 	"features.f4_title": "Private by default",
 	"features.f4_body": "No public gallery. Your images live behind signed links you can share and revoke, and your data exports in one click.",
-
 	"split.title": "Free where it should be, paid where it must be",
 	"split.oss_title": "Self-hosted",
 	"split.oss_p1": "GPL 3.0, complete and unlimited",
@@ -42,11 +31,28 @@
 	"split.cloud_p1": "No GPU needed, drawing in seconds",
 	"split.cloud_p2": "Subscriptions with transparent credits",
 	"split.cloud_p3": "The same application, operated for you",
-
 	"footer.tagline": "One GPL codebase, self-hosted or in the cloud.",
 	"footer.github": "GitHub",
 	"footer.docs": "Documentation",
-
+	"nav.pricing": "Pricing",
+	"pricing.kicker": "Beta pricing",
+	"pricing.title": "Simple tiers, honest credits",
+	"pricing.sub": "Credits meter GPU seconds transparently: drawing drains them live, generations cost a handful each. Beta pricing, subject to change before public launch - the waitlist hears first.",
+	"pricing.month": "per month",
+	"pricing.t1_name": "Starter",
+	"pricing.t1_b1": "10,000 credits every month",
+	"pricing.t1_b2": "About 2.7 hours of live drawing",
+	"pricing.t1_b3": "Or a few thousand quick generations",
+	"pricing.t2_name": "Pro",
+	"pricing.t2_badge": "Most popular",
+	"pricing.t2_b1": "35,000 credits every month",
+	"pricing.t2_b2": "About 9.5 hours of live drawing",
+	"pricing.t2_b3": "Priority in the queue",
+	"pricing.t3_name": "Studio",
+	"pricing.t3_b1": "100,000 credits every month",
+	"pricing.t3_b2": "About 27 hours of live drawing",
+	"pricing.t3_b3": "Top queue priority",
+	"pricing.trial": "Every beta invite includes a one-time trial grant - no card needed to try.",
 	"nav.whitepaper": "Whitepaper",
 	"wp.kicker": "Whitepaper",
 	"wp.title": "How potocolom works",
@@ -71,7 +77,6 @@
 	"wp.s7_title": "The open source boundary",
 	"wp.s7_body": "The product is GPL 3.0 and complete on its own: the default implementations allow everything, which is exactly the self-hosted behavior. Only the business layer - Stripe billing, the credit ledger, GPU fleet orchestration - is private, protected by being a separate process behind HTTP contracts rather than by license tricks. The cloud runs the same unmodified GPL images anyone can download.",
 	"wp.cta_docs": "Read the full docs on GitHub",
-
 	"app.title": "Studio",
 	"app.tab_draw": "Draw",
 	"app.tab_generate": "Generate",
@@ -84,9 +89,7 @@
 	"app.edit_placeholder": "Image editing joins after the drawing tool ships.",
 	"app.enhance_placeholder": "One-click enhance routes a draft to a heavier model. It lands with model routing.",
 	"app.back": "Back to the landing page",
-
 	"ui.language": "Language",
-
 	"wl.kicker": "Cloud beta",
 	"wl.title": "Be first on the canvas",
 	"wl.sub": "The cloud opens as an invite-only beta. Join the waitlist and you will hear exactly twice: at the self-host launch and when your invite is ready.",
@@ -100,12 +103,10 @@
 	"footer.legal": "Legal notice",
 	"footer.privacy": "Privacy",
 	"footer.contact": "Contact",
-
 	"error.title404": "Page not found",
 	"error.titleOther": "Something went wrong",
 	"error.message": "Nothing lives at this address. The canvas, however, is very much alive.",
 	"error.home": "Back to the start",
-
 	"legal.title": "Legal notice",
 	"legal.operator_h": "Site operator",
 	"legal.operator_body": "This website and the potocolom project are operated by Leon Elliott Fuller. Contact: admin@leonfuller.com.",
@@ -113,7 +114,6 @@
 	"legal.purpose_body": "potocolom.leonfuller.com presents the open source potocolom project and collects waitlist signups for its upcoming cloud service. Nothing is sold on this site today; this notice will be extended with full identification details before the paid service opens.",
 	"legal.law_h": "Applicable law",
 	"legal.law_body": "This notice is provided pursuant to Spain's Law 34/2002 on information society services (LSSI-CE). The service operates from Spain; Spanish and European Union law apply.",
-
 	"privacy.title": "Privacy",
 	"privacy.intro": "The short version: this site sets no cookies, runs no third-party trackers, and collects nothing about you except an email address you choose to give us.",
 	"privacy.waitlist_h": "The waitlist",
