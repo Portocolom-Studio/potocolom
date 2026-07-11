@@ -83,5 +83,33 @@
 	"app.generate_placeholder": "La generación a partir de un prompt, con historial, llega con las issues #2 y #16.",
 	"app.edit_placeholder": "La edición de imágenes llegará después de la herramienta de dibujo.",
 	"app.enhance_placeholder": "Mejorar con un clic envía un borrador a un modelo más potente. Llega con el enrutado de modelos.",
-	"app.back": "Volver a la página principal"
+	"app.back": "Volver a la página principal",
+
+	"footer.legal": "Aviso legal",
+	"footer.privacy": "Privacidad",
+	"footer.contact": "Contacto",
+
+	"error.title404": "Página no encontrada",
+	"error.titleOther": "Algo ha ido mal",
+	"error.message": "En esta dirección no vive nada. El lienzo, en cambio, está muy vivo.",
+	"error.home": "Volver al inicio",
+
+	"legal.title": "Aviso legal",
+	"legal.operator_h": "Titular del sitio",
+	"legal.operator_body": "Este sitio web y el proyecto potocolom son operados por Leon Elliott Fuller. Contacto: hello@potocolom.com.",
+	"legal.purpose_h": "Finalidad",
+	"legal.purpose_body": "potocolom.com presenta el proyecto de código abierto potocolom y recoge inscripciones en la lista de espera de su futuro servicio en la nube. Hoy no se vende nada en este sitio; este aviso se ampliará con los datos completos de identificación antes de abrir el servicio de pago.",
+	"legal.law_h": "Legislación aplicable",
+	"legal.law_body": "Este aviso se facilita conforme a la Ley 34/2002 de servicios de la sociedad de la información (LSSI-CE). El servicio se opera desde España; se aplica la legislación española y de la Unión Europea.",
+
+	"privacy.title": "Privacidad",
+	"privacy.intro": "La versión corta: este sitio no instala cookies, no usa rastreadores de terceros y no recoge nada sobre ti salvo la dirección de correo que tú decidas darnos.",
+	"privacy.waitlist_h": "La lista de espera",
+	"privacy.waitlist_body": "Si te apuntas a la lista de espera guardamos tu correo y tu idioma de interfaz, y los usamos para exactamente una cosa: avisarte del lanzamiento y la beta de potocolom. Sin boletines más allá de eso, sin compartirlos, sin perfilado. Un correo a hello@potocolom.com y la dirección se elimina.",
+	"privacy.cookies_h": "Cookies y analítica",
+	"privacy.cookies_body": "Este sitio no instala cookies. Las estadísticas de tráfico, si es que se recogen, provienen de recuentos agregados en el servidor, sin baliza alguna en el navegador y sin datos personales.",
+	"privacy.processors_h": "Dónde viven los datos",
+	"privacy.processors_body": "El sitio y la lista de espera funcionan sobre infraestructura de Cloudflare, que actúa como encargado del tratamiento. Cuando el servicio en la nube se lance tendrá su propia política de privacidad, incluidos los proveedores de GPU que utilice.",
+	"privacy.rights_h": "Tus derechos",
+	"privacy.rights_body": "Se aplica íntegramente el RGPD: acceso, rectificación, supresión y portabilidad. Escribe a hello@potocolom.com. Responsable del tratamiento: Leon Elliott Fuller."
 }
