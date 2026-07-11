@@ -108,20 +108,20 @@
 
 	"legal.title": "Legal notice",
 	"legal.operator_h": "Site operator",
-	"legal.operator_body": "This website and the potocolom project are operated by Leon Elliott Fuller. Contact: hello@potocolom.com.",
+	"legal.operator_body": "This website and the potocolom project are operated by Leon Elliott Fuller. Contact: admin@leonfuller.com.",
 	"legal.purpose_h": "Purpose",
-	"legal.purpose_body": "potocolom.com presents the open source potocolom project and collects waitlist signups for its upcoming cloud service. Nothing is sold on this site today; this notice will be extended with full identification details before the paid service opens.",
+	"legal.purpose_body": "potocolom.leonfuller.com presents the open source potocolom project and collects waitlist signups for its upcoming cloud service. Nothing is sold on this site today; this notice will be extended with full identification details before the paid service opens.",
 	"legal.law_h": "Applicable law",
 	"legal.law_body": "This notice is provided pursuant to Spain's Law 34/2002 on information society services (LSSI-CE). The service operates from Spain; Spanish and European Union law apply.",
 
 	"privacy.title": "Privacy",
 	"privacy.intro": "The short version: this site sets no cookies, runs no third-party trackers, and collects nothing about you except an email address you choose to give us.",
 	"privacy.waitlist_h": "The waitlist",
-	"privacy.waitlist_body": "If you join the waitlist we store your email address and interface language, and use them for exactly one thing: contacting you about the potocolom launch and beta. No newsletters beyond that, no sharing, no profiling. One email to hello@potocolom.com and the address is deleted.",
+	"privacy.waitlist_body": "If you join the waitlist we store your email address and interface language, and use them for exactly one thing: contacting you about the potocolom launch and beta. No newsletters beyond that, no sharing, no profiling. One email to admin@leonfuller.com and the address is deleted.",
 	"privacy.cookies_h": "Cookies and analytics",
 	"privacy.cookies_body": "No cookies are set by this site. Traffic statistics, if collected at all, come from server-side aggregate counts with no client-side beacon and no personal data.",
 	"privacy.processors_h": "Where data lives",
 	"privacy.processors_body": "The site and waitlist run on Cloudflare infrastructure, which acts as a processor. When the cloud service launches it will carry its own privacy policy, including the GPU providers it uses.",
 	"privacy.rights_h": "Your rights",
-	"privacy.rights_body": "The GDPR applies in full: access, rectification, deletion and portability. Write to hello@potocolom.com. Data controller: Leon Elliott Fuller."
+	"privacy.rights_body": "The GDPR applies in full: access, rectification, deletion and portability. Write to admin@leonfuller.com. Data controller: Leon Elliott Fuller."
 }

@@ -23,7 +23,7 @@
 	<meta property="og:site_name" content="potocolom" />
 	<meta property="og:title" content="potocolom - {t('wp.title')}" />
 	<meta property="og:description" content={t('wp.sub')} />
-	<meta property="og:image" content="https://potocolom.com/og.png" />
+	<meta property="og:image" content="https://potocolom.leonfuller.com/og.png" />
 	<meta name="twitter:card" content="summary_large_image" />
 </svelte:head>
 
@@ -113,7 +113,7 @@
 		<a href="{repoUrl}/tree/main/docs">{t('footer.docs')}</a>
 		<a href={resolve('/legal')}>{t('footer.legal')}</a>
 		<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
-		<a href="mailto:hello@potocolom.com">{t('footer.contact')}</a>
+		<a href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>
 	</nav>
 </footer>
 

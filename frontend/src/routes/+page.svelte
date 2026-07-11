@@ -15,14 +15,14 @@
 	<meta property="og:site_name" content="potocolom" />
 	<meta property="og:title" content="potocolom - Draw it. Watch it render." />
 	<meta property="og:description" content={t('hero.sub')} />
-	<meta property="og:url" content="https://potocolom.com/" />
-	<meta property="og:image" content="https://potocolom.com/og.png" />
+	<meta property="og:url" content="https://potocolom.leonfuller.com/" />
+	<meta property="og:image" content="https://potocolom.leonfuller.com/og.png" />
 	<meta property="og:image:width" content="1200" />
 	<meta property="og:image:height" content="630" />
 	<meta name="twitter:card" content="summary_large_image" />
 	<meta name="twitter:title" content="potocolom - Draw it. Watch it render." />
 	<meta name="twitter:description" content={t('hero.sub')} />
-	<meta name="twitter:image" content="https://potocolom.com/og.png" />
+	<meta name="twitter:image" content="https://potocolom.leonfuller.com/og.png" />
 </svelte:head>
 
 <header>
@@ -140,7 +140,7 @@
 		<a href="{repoUrl}/tree/main/docs">{t('footer.docs')}</a>
 		<a href={resolve('/legal')}>{t('footer.legal')}</a>
 		<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
-		<a href="mailto:hello@potocolom.com">{t('footer.contact')}</a>
+		<a href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>
 	</nav>
 </footer>
 
