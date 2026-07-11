@@ -13,7 +13,7 @@ node_modules
 Thumbs.db
 
 # Env
-.env
+# .env here carries only PUBLIC_ build defaults, never secrets
 .env.*
 !.env.example
 !.env.test

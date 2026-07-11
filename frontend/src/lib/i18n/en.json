@@ -86,6 +86,17 @@
 	"app.back": "Back to the landing page",
 
 	"ui.language": "Language",
+
+	"wl.kicker": "Cloud beta",
+	"wl.title": "Be first on the canvas",
+	"wl.sub": "The cloud opens as an invite-only beta. Join the waitlist and you will hear exactly twice: at the self-host launch and when your invite is ready.",
+	"wl.placeholder": "you@example.com",
+	"wl.cta": "Join the waitlist",
+	"wl.sending": "Joining...",
+	"wl.done": "You are on the list. Talk soon.",
+	"wl.already": "That address is already on the list.",
+	"wl.error": "That did not work - mind trying again?",
+	"wl.privacy_note": "One address, one purpose, deletable on request.",
 	"footer.legal": "Legal notice",
 	"footer.privacy": "Privacy",
 	"footer.contact": "Contact",

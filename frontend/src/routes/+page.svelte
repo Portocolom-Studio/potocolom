@@ -1,6 +1,7 @@
 <script lang="ts">
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
@@ -127,6 +128,8 @@
 			</article>
 		</div>
 	</section>
+
+	<WaitlistForm />
 </main>
 
 <footer>

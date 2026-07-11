@@ -86,6 +86,17 @@
 	"app.back": "Volver a la página principal",
 
 	"ui.language": "Idioma",
+
+	"wl.kicker": "Beta en la nube",
+	"wl.title": "Sé el primero en el lienzo",
+	"wl.sub": "La nube abre como beta con invitación. Apúntate a la lista y sabrás de nosotros exactamente dos veces: en el lanzamiento autoalojado y cuando tu invitación esté lista.",
+	"wl.placeholder": "tu@ejemplo.com",
+	"wl.cta": "Unirme a la lista",
+	"wl.sending": "Apuntando...",
+	"wl.done": "Estás en la lista. Hablamos pronto.",
+	"wl.already": "Esa dirección ya está en la lista.",
+	"wl.error": "Algo ha fallado. Prueba otra vez, por favor.",
+	"wl.privacy_note": "Una dirección, un propósito, eliminable cuando quieras.",
 	"footer.legal": "Aviso legal",
 	"footer.privacy": "Privacidad",
 	"footer.contact": "Contacto",
