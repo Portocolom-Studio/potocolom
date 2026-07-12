@@ -338,6 +338,8 @@ The theme system (issue #1) is built on hand-rolled design tokens as CSS custom 
 
 Rejected alternatives: Tailwind (fast iteration, but the theme system, which is the entire point of issue #1, becomes Tailwind's); a component library (fastest to decent, hardest to make not look templated); Paraglide or svelte-i18n (typed messages and ICU plurals for what is today two flat dictionaries of static strings, adopt one the day plural-heavy content appears).
 
+The Tailwind and component-library rejections are superseded by "Frontend components: shadcn-svelte on Tailwind" below, after the first hand-rolled version was judged against a real deployment. The i18n and Vitest choices stand.
+
 ## Low VRAM operation: the diffusers offloading ladder, not airLLM
 
 Models larger than a card's VRAM run through a per-model memory ladder in the worker: full residency when the pipeline fits, model CPU offload when only the largest component fits, group offloading with stream prefetch (and disk spill when system RAM is short) below that. All rungs are native diffusers and accelerate features, so the ladder is configuration of the already-chosen inference stack, not new machinery. The rung is picked automatically from measured free VRAM at model load and can be pinned with the worker's `MEMORY_MODE` setting. Only full residency meets the 2 to 4 fps realtime bar, so lower rungs advertise the model without its `realtime` capability; queued jobs tolerate the slowdown, drawing sessions never see it. This mainly serves self-hosters on consumer GPUs; the cloud fleet rents cards sized for full residency. Details in [architecture.md](architecture.md).
@@ -469,6 +471,12 @@ Rejected alternatives: a 24/7 floor (best first impression at every hour, full c
 GPU hardware metrics (utilization, VRAM, temperature, power) are sampled by the worker via NVML or amd-smi and ride the existing 30 second heartbeat - rented machines export monitoring over the one outbound connection they already hold and are never AWS principals. The API fans each heartbeat out three ways: the worker's Redis hash (the live admin fleet view and the autoscaler), fleet-level CloudWatch aggregates (worker count, slot usage, average and max utilization, minimum free VRAM), and one JSON log line per worker for history. Multi-GPU machines run one worker process per GPU by device index, so every GPU is individually one connection, one heartbeat and one slot set. Frame-loop numbers (per-model p95 frame time at worker and relay, drop rate) are first-class metrics because the slot calibration and the gateway-extraction trigger read them. Specified in [metrics.md](metrics.md).
 
 Rejected alternatives: a metrics agent on rented machines (the CloudWatch agent needs AWS credentials on untrusted hardware - never); Prometheus and Grafana (already rejected under Observability; the revisit trigger is fleet size making aggregate-level CloudWatch blindness expensive, around scaling stage 2); per-worker CloudWatch dimensions (ephemeral worker ids times metric names is a paid cardinality explosion, and Redis plus logs already hold the per-worker detail).
+
+## Frontend components: shadcn-svelte on Tailwind
+
+Supersedes the Tailwind and component-library rejections in "Frontend foundation" above, decided after the first fully hand-rolled landing shipped and its styling read as generic. shadcn-svelte vendors component source into the repository (the code is owned, not imported), sits on headless bits-ui primitives, and its semantic token system (`--background`, `--primary`, ...) plays the role the hand-rolled custom properties played - the theme is still ours, expressed as one variables block in `app.css`. Dark values live on `:root` (dark is the designed theme; light later is a variable block, not a redesign). The hand-rolled i18n store, the bundled Space Grotesk, and the canvas hero survive unchanged; glowing shadows do not, and the hero headline gradient is the one deliberate flourish kept.
+
+Rejected alternatives: keeping everything hand-rolled (every new surface repays the same styling tax, and the first attempt demonstrated the failure mode); a styled component library like Skeleton or Flowbite (themes owned by the library, harder to leave); headless bits-ui directly without the shadcn layer (saves nothing - shadcn is that layer, pre-written).
 
 ## Supporting defaults
 

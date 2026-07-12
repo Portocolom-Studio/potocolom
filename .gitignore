@@ -38,3 +38,6 @@ data/
 prompt.md
 CLAUDE.md
 .local/
+
+# Local agent/editor tooling
+.mcp.json

@@ -9,63 +9,24 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
-<header>
-	<a class="logo" href={resolve('/')}>potocolom<span>_</span></a>
-	<LanguageToggle />
+<header class="border-b">
+	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+		<a class="text-base font-bold tracking-tight" href={resolve('/')}>
+			potocolom<span class="text-primary">_</span>
+		</a>
+		<LanguageToggle />
+	</div>
 </header>
 
-<article>
-	<h1>{t('privacy.title')}</h1>
-	<p class="intro">{t('privacy.intro')}</p>
-	<h2>{t('privacy.waitlist_h')}</h2>
-	<p>{t('privacy.waitlist_body')}</p>
-	<h2>{t('privacy.cookies_h')}</h2>
-	<p>{t('privacy.cookies_body')}</p>
-	<h2>{t('privacy.processors_h')}</h2>
-	<p>{t('privacy.processors_body')}</p>
-	<h2>{t('privacy.rights_h')}</h2>
-	<p>{t('privacy.rights_body')}</p>
+<article class="mx-auto max-w-[68ch] px-4 py-12 sm:px-6">
+	<h1 class="text-3xl font-semibold tracking-tight">{t('privacy.title')}</h1>
+	<p class="mt-4 text-base">{t('privacy.intro')}</p>
+	<h2 class="mt-8 text-lg font-medium">{t('privacy.waitlist_h')}</h2>
+	<p class="text-muted-foreground mt-2">{t('privacy.waitlist_body')}</p>
+	<h2 class="mt-8 text-lg font-medium">{t('privacy.cookies_h')}</h2>
+	<p class="text-muted-foreground mt-2">{t('privacy.cookies_body')}</p>
+	<h2 class="mt-8 text-lg font-medium">{t('privacy.processors_h')}</h2>
+	<p class="text-muted-foreground mt-2">{t('privacy.processors_body')}</p>
+	<h2 class="mt-8 text-lg font-medium">{t('privacy.rights_h')}</h2>
+	<p class="text-muted-foreground mt-2">{t('privacy.rights_body')}</p>
 </article>
-
-<style>
-	header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0.9rem clamp(1rem, 4vw, 3rem);
-		border-bottom: 1px solid var(--border);
-	}
-
-	.logo {
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.logo span {
-		color: var(--accent-2);
-	}
-
-	article {
-		max-width: 68ch;
-		margin: 0 auto;
-		padding: 3rem clamp(1rem, 4vw, 3rem) 5rem;
-	}
-
-	h1 {
-		font-size: 2rem;
-	}
-
-	.intro {
-		font-size: 1.05rem;
-		color: var(--text);
-	}
-
-	h2 {
-		font-size: 1.15rem;
-		margin-top: 2rem;
-	}
-
-	p {
-		color: var(--text-muted);
-	}
-</style>

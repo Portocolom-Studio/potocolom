@@ -1,5 +1,4 @@
 {
-	"nav.how": "Cómo funciona",
 	"nav.features": "Funciones",
 	"nav.open": "Código abierto",
 	"nav.launch": "Abrir la app",
@@ -93,6 +92,7 @@
 	"wl.kicker": "Beta en la nube",
 	"wl.title": "Sé el primero en el lienzo",
 	"wl.sub": "La nube abre como beta con invitación. Apúntate a la lista y sabrás de nosotros exactamente dos veces: en el lanzamiento autoalojado y cuando tu invitación esté lista.",
+	"wl.email_label": "Correo",
 	"wl.placeholder": "tu@ejemplo.com",
 	"wl.cta": "Unirme a la lista",
 	"wl.sending": "Apuntando...",

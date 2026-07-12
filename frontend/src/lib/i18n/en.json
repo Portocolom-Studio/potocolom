@@ -1,5 +1,4 @@
 {
-	"nav.how": "How it works",
 	"nav.features": "Features",
 	"nav.open": "Open source",
 	"nav.launch": "Launch the app",
@@ -93,6 +92,7 @@
 	"wl.kicker": "Cloud beta",
 	"wl.title": "Be first on the canvas",
 	"wl.sub": "The cloud opens as an invite-only beta. Join the waitlist and you will hear exactly twice: at the self-host launch and when your invite is ready.",
+	"wl.email_label": "Email",
 	"wl.placeholder": "you@example.com",
 	"wl.cta": "Join the waitlist",
 	"wl.sending": "Joining...",
