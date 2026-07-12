@@ -39,13 +39,7 @@
 				landing && collageLandingTileClass(image)
 			)}
 		>
-			<img
-				src={image.src}
-				alt={image.alt}
-				class="block h-auto w-full"
-				loading={loading}
-				decoding="async"
-			/>
+			<img src={image.src} alt={image.alt} class="block h-auto w-full" {loading} decoding="async" />
 		</figure>
 	{/each}
 </div>

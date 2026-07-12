@@ -96,7 +96,9 @@
 		class="text-rotate-inner"
 		style:--row-height={rowHeight ? `${rowHeight}px` : undefined}
 		style:transform={rowHeight ? `translateY(-${index * rowHeight}px)` : undefined}
-		style:transition={animate ? `transform ${transitionMs}ms cubic-bezier(0.45, 0.05, 0.55, 0.95)` : 'none'}
+		style:transition={animate
+			? `transform ${transitionMs}ms cubic-bezier(0.45, 0.05, 0.55, 0.95)`
+			: 'none'}
 		ontransitionend={onTransitionEnd}
 	>
 		{#each displayWords as word, i (`${word.label}-${i}`)}

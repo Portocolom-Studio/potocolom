@@ -98,11 +98,7 @@
 	});
 </script>
 
-<div
-	bind:this={viewportEl}
-	class="w-full overflow-hidden"
-	class:min-h-[12rem]={!ready}
->
+<div bind:this={viewportEl} class="w-full overflow-hidden" class:min-h-[12rem]={!ready}>
 	<div
 		bind:this={contentEl}
 		class="w-full transition-opacity duration-200"
