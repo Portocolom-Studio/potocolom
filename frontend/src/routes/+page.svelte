@@ -14,6 +14,12 @@
 
 	const features = ['f1', 'f2', 'f3', 'f4'] as const;
 	const points = ['p1', 'p2', 'p3'] as const;
+	const forkPoints = ['b1', 'b2', 'b3'] as const;
+	const forkCommands = [
+		{ cmd: 'fork.cmd1', out: 'fork.out1' },
+		{ cmd: 'fork.cmd2', out: 'fork.out2' },
+		{ cmd: 'fork.cmd3', out: 'fork.out3' }
+	] as const;
 	const tiers = [
 		{ key: 't1', price: '9', featured: false, bullets: ['b1', 'b2', 'b3'] },
 		{ key: 't2', price: '24', featured: true, bullets: ['b1', 'b2', 'b3'] },
@@ -76,12 +82,14 @@
 
 	<section id="features" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
 		<h2 class="text-3xl font-semibold">{t('features.title')}</h2>
-		<p class="text-muted-foreground mt-3 max-w-xl text-base leading-relaxed">{t('features.sub')}</p>
-		<div class="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2">
+		<p class="text-muted-foreground mt-4 max-w-2xl text-base leading-relaxed">
+			{t('features.sub')}
+		</p>
+		<div class="mt-12 grid grid-cols-1 gap-8 sm:grid-cols-2">
 			{#each features as feature (feature)}
-				<Card.Root>
-					<Card.Header>
-						<Card.Title class="text-xl">{t(`features.${feature}_title`)}</Card.Title>
+				<Card.Root class="h-full [--card-spacing:--spacing(6)]">
+					<Card.Header class="gap-4">
+						<Card.Title class="text-xl leading-snug">{t(`features.${feature}_title`)}</Card.Title>
 						<Card.Description class="text-base leading-relaxed">
 							{t(`features.${feature}_body`)}
 						</Card.Description>
@@ -167,6 +175,43 @@
 					<Button href={resolve('/app')}>{t('nav.launch')}</Button>
 				</Card.Footer>
 			</Card.Root>
+		</div>
+	</section>
+
+	<section id="fork" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
+		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">{t('fork.kicker')}</p>
+		<div class="mt-10 grid grid-cols-1 items-start gap-10 lg:grid-cols-2 lg:gap-12">
+			<div>
+				<h2 class="max-w-lg text-3xl font-semibold">{t('fork.title')}</h2>
+				<ul class="mt-8 flex flex-col gap-4 text-base leading-relaxed">
+					{#each forkPoints as point (point)}
+						<li class="text-muted-foreground flex items-start gap-2">
+							<CheckIcon class="text-primary mt-0.5 size-4 shrink-0" />
+							{t(`fork.${point}`)}
+						</li>
+					{/each}
+				</ul>
+				<div class="mt-8 flex flex-wrap items-center gap-3">
+					<Badge variant="outline">{t('fork.badge_license')}</Badge>
+					<Button variant="outline" href={repoUrl}>{t('footer.github')}</Button>
+				</div>
+			</div>
+			<div class="border-border overflow-hidden rounded-xl border">
+				<div class="text-muted-foreground border-border border-b px-4 py-2.5 font-mono text-xs">
+					~/potocolom
+				</div>
+				<div class="flex flex-col gap-4 p-4 font-mono text-sm leading-relaxed">
+					{#each forkCommands as line (line.cmd)}
+						<div>
+							<p>
+								<span class="text-primary">$</span>
+								<span class="text-foreground ms-2">{t(line.cmd)}</span>
+							</p>
+							<p class="text-muted-foreground mt-1 ps-4">{t(line.out)}</p>
+						</div>
+					{/each}
+				</div>
+			</div>
 		</div>
 	</section>
 </main>

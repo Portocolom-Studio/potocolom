@@ -27,8 +27,11 @@
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ email, locale: getLocale() })
 			});
-			if (!response.ok) throw new Error(String(response.status));
-			const result = await response.json();
+			const contentType = response.headers.get('content-type') ?? '';
+			if (!response.ok || !contentType.includes('application/json')) {
+				throw new Error(String(response.status));
+			}
+			const result = (await response.json()) as { status?: string };
 			status = result.status === 'exists' ? 'already' : 'done';
 		} catch {
 			status = 'error';
