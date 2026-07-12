@@ -33,6 +33,9 @@
 	const working = $derived(
 		studio.history.filter((g) => g.state === 'queued' || g.state === 'running').length
 	);
+	const runningProgress = $derived(
+		studio.history.find((g) => g.state === 'running' && g.progress !== null)?.progress ?? null
+	);
 
 	// The manifest schema decides which resolutions a model supports
 	// (docs/architecture.md, model manifests); no enum means unconstrained.
@@ -143,7 +146,9 @@
 					{#if working > 0}
 						<p class="text-muted-foreground text-sm">
 							{working}
-							{t('app.gen.working_suffix')}
+							{t('app.gen.working_suffix')}{runningProgress !== null
+								? ` (${Math.round(runningProgress * 100)}%)`
+								: ''}
 						</p>
 					{/if}
 					{#if errorText !== ''}
@@ -203,13 +208,21 @@
 						</button>
 					{:else}
 						<div
-							class="border-border/60 text-muted-foreground grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
+							class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
 						>
 							<Badge variant="outline">
 								{generation.state === 'failed'
 									? t('app.gen.badge_failed')
 									: t('app.gen.badge_working')}
 							</Badge>
+							{#if generation.state === 'running' && generation.progress !== null}
+								<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
+									<div
+										class="bg-primary h-1 rounded-full transition-[width]"
+										style={`width: ${Math.round(generation.progress * 100)}%`}
+									></div>
+								</div>
+							{/if}
 						</div>
 					{/if}
 				{/each}

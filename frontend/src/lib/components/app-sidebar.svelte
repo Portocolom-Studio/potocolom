@@ -1,8 +1,5 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
-	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
-	import BookOpenIcon from '@lucide/svelte/icons/book-open';
-	import Settings2Icon from '@lucide/svelte/icons/settings-2';
 	import LifeBuoyIcon from '@lucide/svelte/icons/life-buoy';
 	import SendIcon from '@lucide/svelte/icons/send';
 	import FrameIcon from '@lucide/svelte/icons/frame';
@@ -13,9 +10,7 @@
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import NavGallery from './nav-gallery.svelte';
-	import NavHistory from './nav-history.svelte';
-	import NavMain from './nav-main.svelte';
-	import NavModels from './nav-models.svelte';
+	import NavPlayground from './nav-playground.svelte';
 	import NavProjects from './nav-projects.svelte';
 	import NavSecondary from './nav-secondary.svelte';
 	import NavUser from './nav-user.svelte';
@@ -27,41 +22,6 @@
 		email: t('app.shell.user_email'),
 		avatar: ''
 	});
-
-	const navMain = $derived([
-		{
-			title: t('app.shell.playground'),
-			url: '#',
-			icon: SquareTerminalIcon,
-			isActive: true,
-			items: [
-				{ title: t('app.shell.starred'), url: '#' },
-				{ title: t('app.shell.settings'), url: '#' }
-			]
-		},
-		{
-			title: t('app.shell.documentation'),
-			url: '#',
-			icon: BookOpenIcon,
-			items: [
-				{ title: t('app.shell.introduction'), url: '#' },
-				{ title: t('app.shell.get_started'), url: '#' },
-				{ title: t('app.shell.tutorials'), url: '#' },
-				{ title: t('app.shell.changelog'), url: '#' }
-			]
-		},
-		{
-			title: t('app.shell.settings'),
-			url: '#',
-			icon: Settings2Icon,
-			items: [
-				{ title: t('app.shell.general'), url: '#' },
-				{ title: t('app.shell.team'), url: '#' },
-				{ title: t('app.shell.billing'), url: '#' },
-				{ title: t('app.shell.limits'), url: '#' }
-			]
-		}
-	]);
 
 	const navSecondary = $derived([
 		{ title: t('app.shell.support'), url: '#', icon: LifeBuoyIcon },
@@ -104,10 +64,8 @@
 		</Sidebar.Menu>
 	</Sidebar.Header>
 	<Sidebar.Content>
-		<NavModels />
-		<NavHistory />
+		<NavPlayground />
 		<NavGallery />
-		<NavMain items={navMain} />
 		<NavProjects {projects} />
 		<NavSecondary items={navSecondary} class="mt-auto" />
 	</Sidebar.Content>

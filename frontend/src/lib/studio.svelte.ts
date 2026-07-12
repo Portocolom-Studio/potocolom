@@ -17,6 +17,7 @@ export type Generation = {
 	model_id: string;
 	params: { prompt?: string } & Record<string, unknown>;
 	state: string;
+	progress: number | null; // denoising fraction while running, else null
 	gpu_ms: number | null;
 	created_at: string;
 	assets: Asset[];

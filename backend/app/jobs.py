@@ -86,6 +86,10 @@ class InFlight:
 inflight: dict[uuid.UUID, InFlight] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
+# Latest reported denoising fraction per running job. Transient by design:
+# the job row is the source of truth for state, progress is display only.
+live_progress: dict[uuid.UUID, float] = {}
+
 # SSE subscribers per job; events are transient, the job row is the truth.
 subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}
 
@@ -143,6 +147,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "model_id": job.model_id,
             "params": job.params,
             "state": job.state,
+            "progress": live_progress.get(job.id) if job.state == "running" else None,
             "gpu_ms": job.gpu_ms,
             "created_at": job.created_at.isoformat(),
             "assets": [
@@ -316,9 +321,11 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = uuid.UUID(control["job_id"])
     if control["type"] == "job_progress":
+        live_progress[job_id] = float(control.get("progress") or 0.0)
         publish(job_id, {"state": "running", "progress": control.get("progress")})
         return
     entry = inflight.pop(job_id, None)
+    live_progress.pop(job_id, None)
     worker.job_busy = False
     if entry is None:
         return  # stale report from a previous incarnation
@@ -385,6 +392,7 @@ def on_worker_lost(worker: realtime.Worker) -> None:
     for job_id, entry in list(inflight.items()):
         if entry.worker is worker:
             del inflight[job_id]
+            live_progress.pop(job_id, None)
             lost_jobs.append(job_id)
 
 
