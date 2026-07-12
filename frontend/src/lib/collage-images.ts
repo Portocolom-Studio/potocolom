@@ -16,6 +16,19 @@ const image = (file: string, alt: string, width: number, height: number): Collag
 	height
 });
 
+/** URL slug for generated landing WebP variants (see scripts/generate-gallery-images.mjs). */
+export function collageLandingSlug(file: string): string {
+	return file.replace(/\.[^.]+$/, '').replace(/\s+/g, '-');
+}
+
+export function collageLandingSources(image: CollageImage) {
+	const slug = collageLandingSlug(image.file);
+	return {
+		src: `/images/gallery/${slug}-480.webp`,
+		srcset: `/images/gallery/${slug}-320.webp 320w, /images/gallery/${slug}-480.webp 480w`
+	};
+}
+
 /** Full catalog of gallery-eligible images (excludes branding assets). */
 const collageCatalog: CollageImage[] = [
 	image('squirrel.jpg', 'Squirrel in the forest', 5184, 3456),

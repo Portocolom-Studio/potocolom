@@ -117,15 +117,15 @@
 
 	<div
 		bind:this={terminalBody}
-		class="text-foreground flex-1 overflow-y-auto p-4 font-mono text-[0.8125rem] leading-relaxed"
+		class="text-foreground flex-1 overflow-x-auto overflow-y-auto p-4 font-mono text-[0.8125rem] leading-relaxed"
 		aria-live="polite"
 		aria-label="Terminal simulation"
 	>
 		{#each history as line, index (index)}
 			{#if line.kind === 'cmd'}
-				<div class="terminal-prompt break-all whitespace-pre-wrap">
-					<span class="text-primary">{promptPath}</span>
-					<span class="text-foreground">$</span>
+				<div class="terminal-prompt whitespace-nowrap">
+					<span class="text-primary shrink-0">{promptPath}</span>
+					<span class="text-foreground shrink-0">$</span>
 					<span>{line.text}</span>
 				</div>
 			{:else}
@@ -134,9 +134,9 @@
 		{/each}
 
 		{#if draft}
-			<div class="terminal-prompt break-all whitespace-pre-wrap">
-				<span class="text-primary">{promptPath}</span>
-				<span class="text-foreground">$</span>
+			<div class="terminal-prompt whitespace-nowrap">
+				<span class="text-primary shrink-0">{promptPath}</span>
+				<span class="text-foreground shrink-0">$</span>
 				<span>{draft}</span><span class="terminal-cursor" class:terminal-cursor-off={!cursorOn}
 					>█</span
 				>
@@ -146,9 +146,9 @@
 				{streamOut}<span class="terminal-cursor" class:terminal-cursor-off={!cursorOn}>█</span>
 			</div>
 		{:else}
-			<div class="terminal-prompt break-all whitespace-pre-wrap">
-				<span class="text-primary">{promptPath}</span>
-				<span class="text-foreground">$</span>
+			<div class="terminal-prompt whitespace-nowrap">
+				<span class="text-primary shrink-0">{promptPath}</span>
+				<span class="text-foreground shrink-0">$</span>
 				<span class="terminal-cursor" class:terminal-cursor-off={!cursorOn}>█</span>
 			</div>
 		{/if}
@@ -158,9 +158,9 @@
 <style>
 	.terminal-prompt {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		align-items: baseline;
-		column-gap: 1rem;
+		column-gap: 0.5rem;
 	}
 
 	.terminal-cursor {

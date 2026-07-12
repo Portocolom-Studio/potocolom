@@ -229,7 +229,9 @@
 
 	<section id="fork" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
 		<h2 class="text-4xl font-semibold tracking-tight sm:text-5xl">{t('fork.title')}</h2>
-		<div class="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
+		<div
+			class="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.12fr)] lg:items-stretch"
+		>
 			<div
 				class="border-border flex h-full min-h-[22rem] flex-col rounded-xl border p-6 sm:p-8 lg:min-h-0"
 			>

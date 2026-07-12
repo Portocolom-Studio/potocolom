@@ -13,6 +13,7 @@
 		"lint": "prettier --check .",
 		"format": "prettier --write .",
 		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
+		"generate:gallery-images": "node scripts/generate-gallery-images.mjs",
 		"compare:collages": "node scripts/compare-collages.mjs"
 	},
 	"devDependencies": {
@@ -26,6 +27,7 @@
 		"prettier": "^3.6.2",
 		"prettier-plugin-svelte": "^4.0.3",
 		"puppeteer-core": "^24.36.1",
+		"sharp": "^0.34.5",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"tailwindcss": "^4.3.2",

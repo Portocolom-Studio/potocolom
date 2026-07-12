@@ -4,6 +4,7 @@
 
 	const maxHeightPx = 42 * 16;
 	const maxHeightVh = 0.72;
+	const eagerCount = 4;
 
 	let viewportEl = $state<HTMLDivElement | null>(null);
 	let contentEl = $state<HTMLDivElement | null>(null);
@@ -13,23 +14,6 @@
 	function maxViewportHeight() {
 		if (typeof window === 'undefined') return maxHeightPx;
 		return Math.min(window.innerHeight * maxHeightVh, maxHeightPx);
-	}
-
-	async function waitForImages(container: HTMLElement) {
-		const images = [...container.querySelectorAll('img')];
-		await Promise.all(
-			images.map(
-				(image) =>
-					new Promise<void>((resolve) => {
-						if (image.complete && image.naturalWidth > 0) {
-							resolve();
-							return;
-						}
-						image.addEventListener('load', () => resolve(), { once: true });
-						image.addEventListener('error', () => resolve(), { once: true });
-					})
-			)
-		);
 	}
 
 	async function fitContent() {
@@ -48,7 +32,6 @@
 		for (let width = maxWidth; width >= minWidth; width -= step) {
 			columnWidth = width;
 			await tick();
-			await waitForImages(contentEl);
 
 			const height = contentEl.scrollHeight;
 			if (height > 0 && height <= heightCap) {
@@ -62,14 +45,12 @@
 
 		columnWidth = chosenWidth;
 		await tick();
-		await waitForImages(contentEl);
 		ready = true;
 	}
 
 	$effect(() => {
 		if (!viewportEl || !contentEl) return;
 
-		const content = contentEl;
 		let cancelled = false;
 		let fitting = false;
 
@@ -87,7 +68,6 @@
 		observer.observe(viewportEl);
 
 		void (async () => {
-			await waitForImages(content);
 			if (!cancelled) await fitContent();
 		})();
 
@@ -106,11 +86,11 @@
 	>
 		<CollageMasonry
 			{columnWidth}
+			{eagerCount}
 			columnGap="gap-1.5"
 			tileMargin="mb-1.5"
 			radius="rounded-lg"
 			landing
-			loading="eager"
 		/>
 	</div>
 </div>
