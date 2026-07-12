@@ -20,9 +20,19 @@ class Manifest(BaseModel):
     parameters: dict = {}  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     source: str = ""  # weights location, worker side only
+    vae: str = ""  # optional fp16-safe VAE replacement, worker side only
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source"})
+        return self.model_dump(exclude={"source", "vae"})
+
+    def with_defaults(self, params: dict) -> dict:
+        """Fill missing keys from the schema's declared defaults, so a bare
+        prompt renders with the model's intended settings."""
+        filled = dict(params)
+        for key, prop in self.parameters.get("properties", {}).items():
+            if key not in filled and isinstance(prop, dict) and "default" in prop:
+                filled[key] = prop["default"]
+        return filled
 
 
 # What the worker serves when no models directory is configured: every

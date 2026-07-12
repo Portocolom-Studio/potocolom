@@ -4,13 +4,17 @@
   "capabilities": ["text_to_image", "image_to_image", "realtime"],
   "min_vram_gb": 10,
   "source": "stabilityai/sdxl-turbo",
+  "vae": "madebyollin/sdxl-vae-fp16-fix",
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": { "type": "string" },
       "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
       "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
-      "seed": { "type": "integer" }
+      "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512], "default": 512 },
+      "height": { "type": "integer", "enum": [512], "default": 512 }
     },
     "required": ["prompt"]
   }

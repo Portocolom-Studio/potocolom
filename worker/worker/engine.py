@@ -97,35 +97,63 @@ class DiffusersEngine:
     def _pipeline(self, manifest: Manifest, mode: str) -> Any:
         key = (manifest.id, mode)
         if key not in self._pipelines:
-            from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
-
-            cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
-            loaded = self._pipelines.get((manifest.id, "i2i" if mode == "t2i" else "t2i"))
-            if loaded is not None:
-                pipeline = cls.from_pipe(loaded)  # shares weights already on the device
-            else:
-                pipeline = self._from_pretrained(cls, manifest.source or manifest.id)
-                pipeline = pipeline.to(self.device)
-                if self.device == "cuda":
-                    # Conv-heavy UNets run measurably faster in NHWC; part of
-                    # the recorded warmup optimizations (docs/decisions.md).
-                    for name in ("unet", "vae"):
-                        module = getattr(pipeline, name, None)
-                        if module is not None:
-                            module.to(memory_format=self.torch.channels_last)
-            pipeline.set_progress_bar_config(disable=True)
-            self._pipelines[key] = pipeline
+            try:
+                self._pipelines[key] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError:
+                # A 16 GB card fits roughly one XL model plus headroom: evict
+                # every other model and retry once. A real eviction policy
+                # (LRU with a min-warm TTL) lands with issue #15.
+                self._evict_except(manifest.id)
+                self._pipelines[key] = self._load(manifest, mode)
         return self._pipelines[key]
 
-    def _from_pretrained(self, cls: Any, source: str) -> Any:
+    def _load(self, manifest: Manifest, mode: str) -> Any:
+        from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
+
+        cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
+        loaded = self._pipelines.get((manifest.id, "i2i" if mode == "t2i" else "t2i"))
+        if loaded is not None:
+            pipeline = cls.from_pipe(loaded)  # shares weights already on the device
+        else:
+            pipeline = self._from_pretrained(cls, manifest)
+            if self.device == "cuda":
+                # Conv-heavy UNets run measurably faster in NHWC; converted
+                # while still on the CPU so the move needs no VRAM transient.
+                for name in ("unet", "vae"):
+                    module = getattr(pipeline, name, None)
+                    if module is not None:
+                        module.to(memory_format=self.torch.channels_last)
+            pipeline = pipeline.to(self.device)
+        pipeline.set_progress_bar_config(disable=True)
+        return pipeline
+
+    def _evict_except(self, model_id: str) -> None:
+        import gc
+
+        evicted = [key for key in self._pipelines if key[0] != model_id]
+        for key in evicted:
+            del self._pipelines[key]
+        gc.collect()
+        self.torch.cuda.empty_cache()
+
+    def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
+        source = manifest.source or manifest.id
+        kwargs: dict[str, Any] = {"torch_dtype": self.dtype}
+        if manifest.vae:
+            from diffusers import AutoencoderKL
+
+            # SDXL's stock VAE upcasts itself to fp32 at decode time (fp16
+            # overflows), which spikes VRAM past a 16 GB card; manifests name
+            # an fp16-safe replacement instead.
+            kwargs["vae"] = AutoencoderKL.from_pretrained(manifest.vae, torch_dtype=self.dtype)
         if self.dtype is self.torch.float16:
             try:
                 # fp16 variants halve the download and the disk footprint;
                 # not every repository ships one.
-                return cls.from_pretrained(source, torch_dtype=self.dtype, variant="fp16")
+                return cls.from_pretrained(source, variant="fp16", **kwargs)
             except Exception:
                 pass
-        return cls.from_pretrained(source, torch_dtype=self.dtype)
+        return cls.from_pretrained(source, **kwargs)
 
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn
@@ -134,7 +162,15 @@ class DiffusersEngine:
             raise ValueError(f"model {manifest.id} does not support text_to_image jobs")
         loop = asyncio.get_running_loop()
         async with self._gpu:
-            return await asyncio.to_thread(self._generate, manifest, dict(params), progress, loop)
+            try:
+                return await asyncio.to_thread(self._generate, manifest, dict(params),
+                                               progress, loop)
+            except self.torch.OutOfMemoryError:
+                # Two resident models plus activations can exceed a 16 GB
+                # card mid-denoise; free the others and run once more.
+                self._evict_except(manifest.id)
+                return await asyncio.to_thread(self._generate, manifest, dict(params),
+                                               progress, loop)
 
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop) -> GeneratedImage:
@@ -148,13 +184,17 @@ class DiffusersEngine:
             loop.call_soon_threadsafe(progress, (step + 1) / steps)
             return kwargs
 
+        # Absent dimensions fall through as None: the pipeline renders at the
+        # model's native size (512 for SD class, 1024 for SDXL base class).
+        width = params.get("width")
+        height = params.get("height")
         start = time.monotonic()
         image = pipeline(
             prompt=str(params.get("prompt", "")),
             num_inference_steps=steps,
             guidance_scale=float(params.get("guidance", 0.0)),
-            width=int(params.get("width", REALTIME_SIZE)),
-            height=int(params.get("height", REALTIME_SIZE)),
+            width=int(width) if width else None,
+            height=int(height) if height else None,
             generator=generator,
             callback_on_step_end=on_step,
         ).images[0]
@@ -163,7 +203,11 @@ class DiffusersEngine:
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         async with self._gpu:
-            return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+            try:
+                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+            except self.torch.OutOfMemoryError:
+                self._evict_except(manifest.id)
+                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
 
     def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         canvas = Image.open(io.BytesIO(payload)).convert("RGB")

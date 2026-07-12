@@ -102,7 +102,8 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                                       "progress": round(fraction, 4)}))
 
     try:
-        result = await engine.generate(manifest, control.get("params") or {}, progress)
+        params = manifest.with_defaults(control.get("params") or {})
+        result = await engine.generate(manifest, params, progress)
         upload = control["upload"]
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
@@ -171,9 +172,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                     control = json.loads(message)
                     if control["type"] == "open_session":
                         session_id = uuid.UUID(control["session_id"])
+                        manifest = by_id[control["model_id"]]
                         runners[session_id] = SessionRunner(
-                            session_id, ws, engine, by_id[control["model_id"]],
-                            control.get("params") or {})
+                            session_id, ws, engine, manifest,
+                            manifest.with_defaults(control.get("params") or {}))
                         await ws.send(json.dumps({"type": "session_ready",
                                                   "session_id": control["session_id"]}))
                     elif control["type"] == "close_session":
