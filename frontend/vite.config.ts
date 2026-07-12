@@ -4,7 +4,15 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { waitlistProxy } from './vite.waitlist-proxy.js';
 
+// The dev loop runs the API natively on :8000 (docs/local-development.md);
+// the SPA calls it with relative /api/v1 paths in every deployment.
+const apiProxy = {
+	'/api/v1': { target: 'http://localhost:8000', changeOrigin: true, ws: true }
+};
+
 export default defineConfig({
+	server: { proxy: apiProxy },
+	preview: { proxy: apiProxy },
 	plugins: [
 		waitlistProxy(),
 		tailwindcss(),
