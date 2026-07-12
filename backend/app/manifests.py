@@ -17,6 +17,7 @@ class Manifest(BaseModel):
     capabilities: list[str]
     parameters: dict = {}  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
+    default: bool = False  # preselected by clients when nothing is pinned
 
 
 def parse_manifests(raw: object) -> list[Manifest]:

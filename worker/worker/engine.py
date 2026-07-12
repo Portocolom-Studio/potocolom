@@ -124,8 +124,22 @@ class DiffusersEngine:
                     if module is not None:
                         module.to(memory_format=self.torch.channels_last)
             pipeline = pipeline.to(self.device)
+        if manifest.scheduler:
+            pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
+
+    def _scheduler(self, name: str, config: Any) -> Any:
+        if name == "dpmsolver":
+            from diffusers import DPMSolverMultistepScheduler
+
+            # DPM++ 2M Karras, the robust workhorse for SDXL class quality;
+            # the stock Euler config trips a sigma indexing bug at some step
+            # counts (25 fails, 20 passes) in diffusers 0.39.
+            return DPMSolverMultistepScheduler.from_config(
+                config, algorithm_type="dpmsolver++", use_karras_sigmas=True
+            )
+        raise ValueError(f"unknown scheduler override: {name}")
 
     def _evict_except(self, model_id: str) -> None:
         import gc

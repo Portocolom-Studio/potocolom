@@ -30,7 +30,8 @@ def main() -> None:
         models = client.get("/api/v1/models").json()
         if not models:
             sys.exit("no models registered; is a worker connected?")
-        model_id = args.model or models[0]["id"]
+        preferred = next((m for m in models if m.get("default")), models[0])
+        model_id = args.model or preferred["id"]
 
         created = client.post("/api/v1/generations",
                               json={"model_id": model_id, "params": {"prompt": args.prompt}})

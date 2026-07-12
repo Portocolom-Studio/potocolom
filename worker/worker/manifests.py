@@ -19,11 +19,13 @@ class Manifest(BaseModel):
     capabilities: list[str]  # text_to_image, image_to_image, realtime
     parameters: dict = {}  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
+    default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
+    scheduler: str = ""  # optional scheduler override, worker side only
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae"})
+        return self.model_dump(exclude={"source", "vae", "scheduler"})
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare

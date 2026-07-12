@@ -5,6 +5,7 @@ export type Model = {
 	id: string;
 	name: string;
 	capabilities: string[];
+	default: boolean;
 	parameters: {
 		properties?: Record<string, { enum?: number[]; default?: unknown }>;
 	} & Record<string, unknown>;
@@ -37,7 +38,9 @@ export async function loadModels(): Promise<void> {
 	const response = await fetch('/api/v1/models');
 	if (!response.ok) return;
 	studio.models = (await response.json()) as Model[];
-	if (!studio.modelId && studio.models.length > 0) studio.modelId = studio.models[0].id;
+	if (!studio.modelId && studio.models.length > 0) {
+		studio.modelId = (studio.models.find((m) => m.default) ?? studio.models[0]).id;
+	}
 }
 
 export async function loadHistory(): Promise<void> {

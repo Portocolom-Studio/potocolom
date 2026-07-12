@@ -1,10 +1,12 @@
 {
   "id": "sdxl-base",
-  "name": "SDXL (quality)",
+  "name": "SDXL (default)",
   "capabilities": ["text_to_image"],
   "min_vram_gb": 10,
+  "default": true,
   "source": "stabilityai/stable-diffusion-xl-base-1.0",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "scheduler": "dpmsolver",
   "parameters": {
     "type": "object",
     "properties": {
