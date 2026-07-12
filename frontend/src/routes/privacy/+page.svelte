@@ -20,13 +20,13 @@
 
 <article class="mx-auto max-w-[68ch] px-4 py-12 sm:px-6">
 	<h1 class="text-3xl font-semibold tracking-tight">{t('privacy.title')}</h1>
-	<p class="mt-4 text-base">{t('privacy.intro')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('privacy.waitlist_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('privacy.waitlist_body')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('privacy.cookies_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('privacy.cookies_body')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('privacy.processors_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('privacy.processors_body')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('privacy.rights_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('privacy.rights_body')}</p>
+	<p class="mt-4 text-base leading-relaxed">{t('privacy.intro')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('privacy.waitlist_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.waitlist_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('privacy.cookies_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.cookies_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('privacy.processors_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.processors_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('privacy.rights_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.rights_body')}</p>
 </article>

@@ -37,10 +37,12 @@
 </script>
 
 {#if endpoint}
-	<section id="waitlist" class="mx-auto w-full max-w-2xl px-4 py-20 text-center sm:px-6">
+	<section id="waitlist" class="mx-auto w-full max-w-2xl px-4 py-24 text-center sm:px-6">
 		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">{t('wl.kicker')}</p>
-		<h2 class="mt-2 text-3xl font-semibold tracking-tight">{t('wl.title')}</h2>
-		<p class="text-muted-foreground mx-auto mt-3 max-w-lg">{t('wl.sub')}</p>
+		<h2 class="mt-2 text-3xl font-semibold">{t('wl.title')}</h2>
+		<p class="text-muted-foreground mx-auto mt-3 max-w-lg text-base leading-relaxed">
+			{t('wl.sub')}
+		</p>
 
 		{#if status === 'done' || status === 'already'}
 			<Alert.Root class="mx-auto mt-8 max-w-md text-left">
@@ -56,6 +58,7 @@
 						type="email"
 						name="email"
 						required
+						class="h-11 rounded-full px-5"
 						placeholder={t('wl.placeholder')}
 						bind:value={email}
 						disabled={status === 'sending'}

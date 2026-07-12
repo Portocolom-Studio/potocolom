@@ -62,18 +62,18 @@
 	</Sidebar.Root>
 
 	<Sidebar.Inset>
-		<header class="flex h-14 items-center gap-3 border-b px-4">
+		<header class="flex h-16 items-center gap-3 border-b px-4">
 			<Sidebar.Trigger />
 			<Separator orientation="vertical" class="h-5" />
-			<h1 class="text-sm font-medium">{t(`app.tab_${active}`)}</h1>
+			<h1 class="text-base font-medium">{t(`app.tab_${active}`)}</h1>
 			<div class="ml-auto">
 				<LanguageToggle />
 			</div>
 		</header>
 
-		<main class="flex flex-1 flex-col gap-4 p-4">
+		<main class="flex flex-1 flex-col gap-6 p-6">
 			{#if active === 'draw'}
-				<div class="grid min-h-[60vh] flex-1 grid-cols-1 gap-4 md:grid-cols-2">
+				<div class="grid min-h-[60vh] flex-1 grid-cols-1 gap-6 md:grid-cols-2">
 					<div class="bg-card/50 grid place-items-center rounded-xl border border-dashed">
 						<span class="text-muted-foreground text-xs tracking-[0.14em] uppercase">
 							{t('app.canvas_hint')}
@@ -85,10 +85,12 @@
 						</span>
 					</div>
 				</div>
-				<p class="text-muted-foreground text-sm">{t('app.draw_placeholder')}</p>
+				<p class="text-muted-foreground text-base leading-relaxed">{t('app.draw_placeholder')}</p>
 			{:else}
 				<div class="bg-card/50 grid min-h-[60vh] flex-1 rounded-xl border border-dashed"></div>
-				<p class="text-muted-foreground text-sm">{t(`app.${active}_placeholder`)}</p>
+				<p class="text-muted-foreground text-base leading-relaxed">
+					{t(`app.${active}_placeholder`)}
+				</p>
 			{/if}
 		</main>
 	</Sidebar.Inset>

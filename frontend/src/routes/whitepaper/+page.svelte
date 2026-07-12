@@ -62,8 +62,10 @@
 
 	<article>
 		<section id="s1" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s1_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s1_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s1_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s1_body')}
+			</p>
 			<figure class="mt-6 rounded-xl border bg-white p-3">
 				<img
 					class="w-full rounded-lg"
@@ -76,8 +78,10 @@
 		</section>
 
 		<section id="s2" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s2_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s2_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s2_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s2_body')}
+			</p>
 			<figure class="mt-6 rounded-xl border bg-white p-3">
 				<img
 					class="w-full rounded-lg"
@@ -90,18 +94,24 @@
 		</section>
 
 		<section id="s3" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s3_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s3_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s3_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s3_body')}
+			</p>
 		</section>
 
 		<section id="s4" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s4_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s4_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s4_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s4_body')}
+			</p>
 		</section>
 
 		<section id="s5" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s5_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s5_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s5_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s5_body')}
+			</p>
 			<figure class="mt-6 rounded-xl border bg-white p-3">
 				<img
 					class="w-full rounded-lg"
@@ -114,8 +124,10 @@
 		</section>
 
 		<section id="s6" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s6_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s6_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s6_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s6_body')}
+			</p>
 			<figure class="mt-6 rounded-xl border bg-white p-3">
 				<img
 					class="w-full rounded-lg"
@@ -128,8 +140,10 @@
 		</section>
 
 		<section id="s7" class="scroll-mt-20">
-			<h2 class="text-2xl font-semibold tracking-tight">{t('wp.s7_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch]">{t('wp.s7_body')}</p>
+			<h2 class="text-2xl font-semibold">{t('wp.s7_title')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('wp.s7_body')}
+			</p>
 			<Button class="mt-6" variant="outline" href="{repoUrl}/tree/main/docs">
 				{t('wp.cta_docs')}
 			</Button>

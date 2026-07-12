@@ -20,10 +20,10 @@
 
 <article class="mx-auto max-w-[68ch] px-4 py-12 sm:px-6">
 	<h1 class="text-3xl font-semibold tracking-tight">{t('legal.title')}</h1>
-	<h2 class="mt-8 text-lg font-medium">{t('legal.operator_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('legal.operator_body')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('legal.purpose_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('legal.purpose_body')}</p>
-	<h2 class="mt-8 text-lg font-medium">{t('legal.law_h')}</h2>
-	<p class="text-muted-foreground mt-2">{t('legal.law_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.operator_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.operator_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.purpose_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.purpose_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.law_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.law_body')}</p>
 </article>

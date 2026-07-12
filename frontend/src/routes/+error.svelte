@@ -15,7 +15,7 @@
 		<h1 class="text-2xl font-semibold tracking-tight">
 			{page.status === 404 ? t('error.title404') : t('error.titleOther')}
 		</h1>
-		<p class="text-muted-foreground max-w-md">{t('error.message')}</p>
+		<p class="text-muted-foreground max-w-md text-base leading-relaxed">{t('error.message')}</p>
 		<Button class="mt-4" variant="outline" href={resolve('/')}>{t('error.home')}</Button>
 	</div>
 </main>
