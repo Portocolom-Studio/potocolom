@@ -28,6 +28,7 @@ inference = [
     "diffusers>=0.30",
     "transformers>=4.44",
     "accelerate>=0.33",
+    "peft>=0.13",
 ]
 
 [tool.hatch.build.targets.wheel]

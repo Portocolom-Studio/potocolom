@@ -44,8 +44,10 @@ live in [docs/decisions.md](docs/decisions.md).
   One DEVICE setting covers cuda, rocm and cpu.
 - Survival on one card: out-of-memory during a load or a run evicts the other
   resident models and retries once, so model switching works on 16 GB.
-- Models shipped: SD Turbo and SDXL Turbo (512, realtime class) and
-  SDXL (default) at 1024 with DPM++ 2M Karras.
+- Models shipped: SD Turbo and SDXL Turbo (512, realtime class),
+  SDXL (default) at 1024 with DPM++ 2M Karras (steps default 20), and
+  SDXL Fast (Lightning 8-step LoRA fused at load via the manifest lora
+  field, Euler trailing spacing, ~4 gpu_s per 1024 image).
 
 ### Studio UI (sketch scope, ahead of the frontend track)
 

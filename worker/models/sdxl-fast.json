@@ -1,0 +1,22 @@
+{
+  "id": "sdxl-fast",
+  "name": "SDXL Fast",
+  "capabilities": ["text_to_image"],
+  "min_vram_gb": 10,
+  "source": "stabilityai/stable-diffusion-xl-base-1.0",
+  "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "scheduler": "euler-trailing",
+  "lora": "ByteDance/SDXL-Lightning/sdxl_lightning_8step_lora.safetensors",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "steps": { "type": "integer", "minimum": 4, "maximum": 8, "default": 8 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [1024], "default": 1024 },
+      "height": { "type": "integer", "enum": [1024], "default": 1024 }
+    },
+    "required": ["prompt"]
+  }
+}

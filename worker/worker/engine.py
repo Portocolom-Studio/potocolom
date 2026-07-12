@@ -100,6 +100,11 @@ class DiffusersEngine:
             try:
                 self._pipelines[key] = self._load(manifest, mode)
             except self.torch.OutOfMemoryError:
+                # Retry OUTSIDE this block: while the except frame is alive,
+                # its traceback pins the half-moved weights of the failed
+                # attempt and the eviction below could not reclaim them.
+                pass
+            if key not in self._pipelines:
                 # A 16 GB card fits roughly one XL model plus headroom: evict
                 # every other model and retry once. A real eviction policy
                 # (LRU with a min-warm TTL) lands with issue #15.
@@ -116,6 +121,13 @@ class DiffusersEngine:
             pipeline = cls.from_pipe(loaded)  # shares weights already on the device
         else:
             pipeline = self._from_pretrained(cls, manifest)
+            if manifest.lora:
+                # "org/repo/file.safetensors": a distillation LoRA (Lightning,
+                # Hyper-SD class) fused into the weights while still on the
+                # CPU, so the device move carries the final tensors.
+                repo, _, weight = manifest.lora.rpartition("/")
+                pipeline.load_lora_weights(repo, weight_name=weight)
+                pipeline.fuse_lora()
             if self.device == "cuda":
                 # Conv-heavy UNets run measurably faster in NHWC; converted
                 # while still on the CPU so the move needs no VRAM transient.
@@ -139,6 +151,11 @@ class DiffusersEngine:
             return DPMSolverMultistepScheduler.from_config(
                 config, algorithm_type="dpmsolver++", use_karras_sigmas=True
             )
+        if name == "euler-trailing":
+            from diffusers import EulerDiscreteScheduler
+
+            # The documented recipe for Lightning class distillation LoRAs.
+            return EulerDiscreteScheduler.from_config(config, timestep_spacing="trailing")
         raise ValueError(f"unknown scheduler override: {name}")
 
     def _evict_except(self, model_id: str) -> None:
@@ -180,11 +197,12 @@ class DiffusersEngine:
                 return await asyncio.to_thread(self._generate, manifest, dict(params),
                                                progress, loop)
             except self.torch.OutOfMemoryError:
-                # Two resident models plus activations can exceed a 16 GB
-                # card mid-denoise; free the others and run once more.
-                self._evict_except(manifest.id)
-                return await asyncio.to_thread(self._generate, manifest, dict(params),
-                                               progress, loop)
+                pass  # retry outside: the live traceback pins failed tensors
+            # Two resident models plus activations can exceed a 16 GB card
+            # mid-denoise; free the others and run once more.
+            self._evict_except(manifest.id)
+            return await asyncio.to_thread(self._generate, manifest, dict(params),
+                                           progress, loop)
 
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop) -> GeneratedImage:
@@ -220,8 +238,9 @@ class DiffusersEngine:
             try:
                 return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
             except self.torch.OutOfMemoryError:
-                self._evict_except(manifest.id)
-                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+                pass  # retry outside: the live traceback pins failed tensors
+            self._evict_except(manifest.id)
+            return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
 
     def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         canvas = Image.open(io.BytesIO(payload)).convert("RGB")

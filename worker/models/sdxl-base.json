@@ -11,7 +11,7 @@
     "type": "object",
     "properties": {
       "prompt": { "type": "string" },
-      "steps": { "type": "integer", "minimum": 10, "maximum": 50, "default": 25 },
+      "steps": { "type": "integer", "minimum": 10, "maximum": 50, "default": 20 },
       "guidance": { "type": "number", "minimum": 0, "maximum": 15, "default": 6 },
       "seed": { "type": "integer" },
       "width": { "type": "integer", "enum": [768, 1024], "default": 1024 },

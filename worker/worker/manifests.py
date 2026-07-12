@@ -23,9 +23,10 @@ class Manifest(BaseModel):
     source: str = ""  # weights location, worker side only
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
     scheduler: str = ""  # optional scheduler override, worker side only
+    lora: str = ""  # optional distillation LoRA to fuse, worker side only
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae", "scheduler"})
+        return self.model_dump(exclude={"source", "vae", "scheduler", "lora"})
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare
