@@ -38,13 +38,18 @@
 	let guidance = $state('');
 	let seed = $state('');
 	let size = $state('512');
-	let busy = $state(false);
-	let statusKey = $state<'idle' | 'queued' | 'running' | 'failed'>('idle');
-	let progress = $state<number | null>(null);
+	let count = $state('1');
 	let errorText = $state('');
 	let history = $state<Generation[]>([]);
 
 	const latest = $derived(history.find((g) => g.assets.length > 0) ?? null);
+	// Jobs queue server side; submitting never blocks the form (docs/blueprint.md,
+	// the generation request path returns a job id immediately).
+	const working = $derived(
+		history.filter((g) => g.state === 'queued' || g.state === 'running').length
+	);
+
+	let polling = false;
 
 	async function loadModels(): Promise<void> {
 		const response = await fetch('/api/v1/models');
@@ -59,61 +64,38 @@
 		history = (await response.json()) as Generation[];
 	}
 
+	async function pollWhileWorking(): Promise<void> {
+		if (polling) return;
+		polling = true;
+		try {
+			while (history.some((g) => g.state === 'queued' || g.state === 'running')) {
+				await new Promise((resolve) => setTimeout(resolve, 1500));
+				await loadHistory();
+			}
+		} finally {
+			polling = false;
+		}
+	}
+
 	$effect(() => {
 		void loadModels();
-		void loadHistory();
+		void loadHistory().then(pollWhileWorking);
 	});
-
-	function follow(jobId: string): void {
-		const source = new EventSource(`/api/v1/generations/${jobId}/events`);
-		source.onmessage = (event) => {
-			const data = JSON.parse(event.data) as {
-				state: string;
-				progress?: number;
-				reason?: string;
-			};
-			if (data.state === 'running') {
-				statusKey = 'running';
-				progress = data.progress ?? null;
-			} else if (data.state === 'succeeded') {
-				source.close();
-				busy = false;
-				statusKey = 'idle';
-				progress = null;
-				void loadHistory();
-			} else if (data.state === 'failed') {
-				source.close();
-				busy = false;
-				statusKey = 'failed';
-				progress = null;
-				errorText = data.reason ?? t('app.gen.failed');
-				void loadHistory();
-			}
-		};
-		source.onerror = () => {
-			// The stream keeps itself alive with comments; an error here means
-			// the connection is gone. Fall back to one refresh.
-			source.close();
-			busy = false;
-			statusKey = 'idle';
-			void loadHistory();
-		};
-	}
 
 	async function generate(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		errorText = '';
-		const params: Record<string, unknown> = { prompt };
-		if (steps !== '') params.steps = Number(steps);
-		if (guidance !== '') params.guidance = Number(guidance);
-		if (seed !== '') params.seed = Number(seed);
-		if (size !== '512') {
-			params.width = Number(size);
-			params.height = Number(size);
-		}
-		busy = true;
-		statusKey = 'queued';
-		try {
+		const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
+		for (let index = 0; index < jobs; index += 1) {
+			const params: Record<string, unknown> = { prompt };
+			if (steps !== '') params.steps = Number(steps);
+			if (guidance !== '') params.guidance = Number(guidance);
+			// A fixed seed still varies across a batch, or every image would be identical.
+			if (seed !== '') params.seed = Number(seed) + index;
+			if (size !== '512') {
+				params.width = Number(size);
+				params.height = Number(size);
+			}
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
@@ -121,16 +103,12 @@
 			});
 			if (!response.ok) {
 				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-				throw new Error(body?.detail ?? response.statusText);
+				errorText = body?.detail ?? response.statusText;
+				break;
 			}
-			const { job_id } = (await response.json()) as { job_id: string };
-			void loadHistory();
-			follow(job_id);
-		} catch (error) {
-			busy = false;
-			statusKey = 'failed';
-			errorText = error instanceof Error ? error.message : String(error);
 		}
+		await loadHistory();
+		void pollWhileWorking();
 	}
 </script>
 
@@ -163,6 +141,18 @@
 					</div>
 					<div class="grid grid-cols-2 gap-3">
 						<div class="flex flex-col gap-2">
+							<Label for="gen-count">{t('app.gen.count')}</Label>
+							<Input id="gen-count" type="number" min="1" max="8" bind:value={count} />
+						</div>
+						<div class="flex flex-col gap-2">
+							<Label for="gen-size">{t('app.gen.size')}</Label>
+							<select id="gen-size" class={fieldClass + ' h-8'} bind:value={size}>
+								<option value="512">512 x 512</option>
+								<option value="768">768 x 768</option>
+								<option value="1024">1024 x 1024</option>
+							</select>
+						</div>
+						<div class="flex flex-col gap-2">
 							<Label for="gen-steps">{t('app.gen.steps')}</Label>
 							<Input id="gen-steps" type="number" min="1" max="50" bind:value={steps} />
 						</div>
@@ -174,25 +164,14 @@
 							<Label for="gen-seed">{t('app.gen.seed')}</Label>
 							<Input id="gen-seed" type="number" bind:value={seed} />
 						</div>
-						<div class="flex flex-col gap-2">
-							<Label for="gen-size">{t('app.gen.size')}</Label>
-							<select id="gen-size" class={fieldClass + ' h-8'} bind:value={size}>
-								<option value="512">512 x 512</option>
-								<option value="768">768 x 768</option>
-								<option value="1024">1024 x 1024</option>
-							</select>
-						</div>
 					</div>
-					<Button type="submit" disabled={busy || prompt.trim() === ''}>
-						{busy ? t('app.gen.generating') : t('app.gen.generate')}
+					<Button type="submit" disabled={prompt.trim() === ''}>
+						{t('app.gen.generate')}
 					</Button>
-					{#if statusKey === 'queued'}
-						<p class="text-muted-foreground text-sm">{t('app.gen.state_queued')}</p>
-					{:else if statusKey === 'running'}
+					{#if working > 0}
 						<p class="text-muted-foreground text-sm">
-							{t('app.gen.state_running')}{progress !== null
-								? ` ${Math.round(progress * 100)}%`
-								: ''}
+							{working}
+							{t('app.gen.working_suffix')}
 						</p>
 					{/if}
 					{#if errorText !== ''}
