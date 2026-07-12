@@ -18,9 +18,9 @@
 		</Button>
 		<Separator orientation="vertical" class="me-2 h-4" />
 		<Breadcrumb.Root class="hidden sm:block">
-			<Breadcrumb.List>
+			<Breadcrumb.List class="text-foreground/70">
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="##">{t('app.title')}</Breadcrumb.Link>
+					<Breadcrumb.Link href="#">{t('app.title')}</Breadcrumb.Link>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator />
 				<Breadcrumb.Item>

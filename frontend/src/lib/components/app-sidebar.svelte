@@ -86,7 +86,7 @@
 
 <Sidebar.Root
 	bind:ref
-	class="top-(--header-height) h-[calc(100svh-var(--header-height))]!"
+	class="top-(--header-height) !h-[calc(100svh-var(--header-height))]"
 	{...restProps}
 >
 	<Sidebar.Header>
@@ -102,7 +102,7 @@
 							</div>
 							<div class="grid flex-1 text-start text-sm leading-tight">
 								<span class="truncate font-medium">
-									potocolom<span class="text-sidebar-primary">_</span>
+									potocolom<span class="text-foreground">_</span>
 								</span>
 								<span class="truncate text-xs">{t('app.title')}</span>
 							</div>

@@ -55,7 +55,7 @@
 </script>
 
 <!--
-Discriminated Unions + Destructing (required for bindable) do not
+Discriminated Unions + Destructuring (required for bindable) do not
 get along, so we shut typescript up by casting `value` to `never`.
 -->
 <ToggleGroupPrimitive.Root

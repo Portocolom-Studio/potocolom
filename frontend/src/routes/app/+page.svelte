@@ -19,21 +19,21 @@
 					<div class="grid h-full min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-2">
 						<div class="border-border/60 relative min-h-0 rounded-xl border border-dashed">
 							<span
-								class="text-muted-foreground absolute inset-0 grid place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
+								class="text-foreground/55 absolute inset-0 grid place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
 							>
 								{t('app.canvas_hint')}
 							</span>
 						</div>
 						<div class="border-border/60 relative min-h-0 rounded-xl border border-dashed">
 							<span
-								class="text-muted-foreground absolute inset-0 grid place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
+								class="text-foreground/55 absolute inset-0 grid place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
 							>
 								{t('app.result_hint')}
 							</span>
 						</div>
 					</div>
 					<p
-						class="text-muted-foreground pointer-events-none absolute inset-x-6 bottom-5 text-center text-sm leading-relaxed"
+						class="text-foreground/70 pointer-events-none absolute inset-x-6 bottom-5 text-center text-sm leading-relaxed"
 					>
 						{t('app.draw_placeholder')}
 					</p>

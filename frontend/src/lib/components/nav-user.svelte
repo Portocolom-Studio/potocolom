@@ -29,7 +29,7 @@
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
 				{#snippet child({ props })}
-					<Sidebar.MenuButton size="lg" class="data-[state=open]:text-primary" {...props}>
+					<Sidebar.MenuButton size="lg" class="data-[state=open]:text-foreground" {...props}>
 						<Avatar.Root class="size-8 rounded-lg">
 							{#if user.avatar}
 								<Avatar.Image src={user.avatar} alt={user.name} />
