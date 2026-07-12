@@ -11,6 +11,7 @@ inference thread directly.
 import asyncio
 import io
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,6 +79,11 @@ class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str):
+        if device == "rocm":
+            # RDNA3 consumer cards gate their fused attention kernels behind
+            # this flag; the fallback is math attention, several times slower.
+            # Read at first SDPA dispatch, so it must precede any inference.
+            os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
         import torch
 
         self.torch = torch
@@ -100,6 +106,13 @@ class DiffusersEngine:
             else:
                 pipeline = self._from_pretrained(cls, manifest.source or manifest.id)
                 pipeline = pipeline.to(self.device)
+                if self.device == "cuda":
+                    # Conv-heavy UNets run measurably faster in NHWC; part of
+                    # the recorded warmup optimizations (docs/decisions.md).
+                    for name in ("unet", "vae"):
+                        module = getattr(pipeline, name, None)
+                        if module is not None:
+                            module.to(memory_format=self.torch.channels_last)
             pipeline.set_progress_bar_config(disable=True)
             self._pipelines[key] = pipeline
         return self._pipelines[key]
