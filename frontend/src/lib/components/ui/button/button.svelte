@@ -8,6 +8,9 @@
 		variants: {
 			variant: {
 				default: 'bg-primary text-primary-foreground hover:bg-primary/80',
+				gradient:
+					'[background-image:var(--gradient-accent)] text-[#06080f] shadow-[0_0_24px_rgba(124,111,255,0.35)] hover:-translate-y-0.5 hover:shadow-[0_0_34px_rgba(34,211,238,0.4)] hover:brightness-105',
+				light: 'bg-white text-[#06080f] hover:bg-white/90',
 				outline:
 					'border-border bg-background hover:bg-muted hover:text-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 aria-expanded:bg-muted aria-expanded:text-foreground',
 				secondary:

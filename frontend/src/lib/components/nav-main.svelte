@@ -19,30 +19,37 @@
 			}[];
 		}[];
 	} = $props();
+
+	let openStates = $state<boolean[]>([]);
+
+	$effect.pre(() => {
+		if (openStates.length !== items.length) {
+			openStates = items.map((item, index) => openStates[index] ?? item.isActive ?? false);
+		}
+	});
 </script>
 
 <Sidebar.Group>
 	<Sidebar.GroupLabel>{t('app.shell.platform')}</Sidebar.GroupLabel>
 	<Sidebar.Menu>
-		{#each items as item (item.title)}
-			<Collapsible.Root open={item.isActive}>
-				{#snippet child({ props })}
-					<Sidebar.MenuItem {...props}>
-						<Sidebar.MenuButton tooltipContent={item.title}>
-							{#snippet child({ props })}
-								<a href={item.url} {...props}>
-									<item.icon />
-									<span>{item.title}</span>
-								</a>
-							{/snippet}
-						</Sidebar.MenuButton>
-						{#if item.items?.length}
+		{#each items as item, index (item.title)}
+			{#if item.items?.length}
+				<Collapsible.Root bind:open={openStates[index]} class="group/collapsible">
+					{#snippet child({ props })}
+						<Sidebar.MenuItem {...props}>
 							<Collapsible.Trigger>
-								{#snippet child({ props })}
-									<Sidebar.MenuAction {...props} class="data-[state=open]:rotate-90">
-										<ChevronRightIcon />
-										<span class="sr-only">{t('app.shell.toggle')}</span>
-									</Sidebar.MenuAction>
+								{#snippet child({ props: triggerProps })}
+									<Sidebar.MenuButton tooltipContent={item.title} {...triggerProps}>
+										{#snippet child({ props: buttonProps })}
+											<button type="button" {...buttonProps}>
+												<item.icon />
+												<span>{item.title}</span>
+												<ChevronRightIcon
+													class="ms-auto transition-transform group-data-[state=open]/collapsible:rotate-90"
+												/>
+											</button>
+										{/snippet}
+									</Sidebar.MenuButton>
 								{/snippet}
 							</Collapsible.Trigger>
 							<Collapsible.Content>
@@ -60,10 +67,21 @@
 									{/each}
 								</Sidebar.MenuSub>
 							</Collapsible.Content>
-						{/if}
-					</Sidebar.MenuItem>
-				{/snippet}
-			</Collapsible.Root>
+						</Sidebar.MenuItem>
+					{/snippet}
+				</Collapsible.Root>
+			{:else}
+				<Sidebar.MenuItem>
+					<Sidebar.MenuButton tooltipContent={item.title}>
+						{#snippet child({ props })}
+							<a href={item.url} {...props}>
+								<item.icon />
+								<span>{item.title}</span>
+							</a>
+						{/snippet}
+					</Sidebar.MenuButton>
+				</Sidebar.MenuItem>
+			{/if}
 		{/each}
 	</Sidebar.Menu>
 </Sidebar.Group>
