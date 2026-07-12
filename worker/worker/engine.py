@@ -98,12 +98,21 @@ class DiffusersEngine:
             if loaded is not None:
                 pipeline = cls.from_pipe(loaded)  # shares weights already on the device
             else:
-                pipeline = cls.from_pretrained(
-                    manifest.source or manifest.id, torch_dtype=self.dtype
-                ).to(self.device)
+                pipeline = self._from_pretrained(cls, manifest.source or manifest.id)
+                pipeline = pipeline.to(self.device)
             pipeline.set_progress_bar_config(disable=True)
             self._pipelines[key] = pipeline
         return self._pipelines[key]
+
+    def _from_pretrained(self, cls: Any, source: str) -> Any:
+        if self.dtype is self.torch.float16:
+            try:
+                # fp16 variants halve the download and the disk footprint;
+                # not every repository ships one.
+                return cls.from_pretrained(source, torch_dtype=self.dtype, variant="fp16")
+            except Exception:
+                pass
+        return cls.from_pretrained(source, torch_dtype=self.dtype)
 
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn

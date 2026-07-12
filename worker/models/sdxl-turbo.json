@@ -1,0 +1,17 @@
+{
+  "id": "sdxl-turbo",
+  "name": "SDXL Turbo",
+  "capabilities": ["text_to_image", "image_to_image", "realtime"],
+  "min_vram_gb": 10,
+  "source": "stabilityai/sdxl-turbo",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
+      "seed": { "type": "integer" }
+    },
+    "required": ["prompt"]
+  }
+}
