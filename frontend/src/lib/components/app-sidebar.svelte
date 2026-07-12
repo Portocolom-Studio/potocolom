@@ -1,4 +1,5 @@
-<script lang="ts" module>
+<script lang="ts">
+	import type { ComponentProps } from 'svelte';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
@@ -9,134 +10,6 @@
 	import PieChartIcon from '@lucide/svelte/icons/pie-chart';
 	import MapIcon from '@lucide/svelte/icons/map';
 	import CommandIcon from '@lucide/svelte/icons/command';
-
-	const data = {
-		user: {
-			name: 'shadcn',
-			email: 'm@example.com',
-			avatar: '/avatars/shadcn.jpg'
-		},
-		navMain: [
-			{
-				title: 'Playground',
-				url: '#',
-				icon: SquareTerminalIcon,
-				isActive: true,
-				items: [
-					{
-						title: 'History',
-						url: '#'
-					},
-					{
-						title: 'Starred',
-						url: '#'
-					},
-					{
-						title: 'Settings',
-						url: '#'
-					}
-				]
-			},
-			{
-				title: 'Models',
-				url: '#',
-				icon: BotIcon,
-				items: [
-					{
-						title: 'Genesis',
-						url: '#'
-					},
-					{
-						title: 'Explorer',
-						url: '#'
-					},
-					{
-						title: 'Quantum',
-						url: '#'
-					}
-				]
-			},
-			{
-				title: 'Documentation',
-				url: '#',
-				icon: BookOpenIcon,
-				items: [
-					{
-						title: 'Introduction',
-						url: '#'
-					},
-					{
-						title: 'Get Started',
-						url: '#'
-					},
-					{
-						title: 'Tutorials',
-						url: '#'
-					},
-					{
-						title: 'Changelog',
-						url: '#'
-					}
-				]
-			},
-			{
-				title: 'Settings',
-				url: '#',
-				icon: Settings2Icon,
-				items: [
-					{
-						title: 'General',
-						url: '#'
-					},
-					{
-						title: 'Team',
-						url: '#'
-					},
-					{
-						title: 'Billing',
-						url: '#'
-					},
-					{
-						title: 'Limits',
-						url: '#'
-					}
-				]
-			}
-		],
-		navSecondary: [
-			{
-				title: 'Support',
-				url: '#',
-				icon: LifeBuoyIcon
-			},
-			{
-				title: 'Feedback',
-				url: '#',
-				icon: SendIcon
-			}
-		],
-		projects: [
-			{
-				name: 'Design Engineering',
-				url: '#',
-				icon: FrameIcon
-			},
-			{
-				name: 'Sales & Marketing',
-				url: '#',
-				icon: PieChartIcon
-			},
-			{
-				name: 'Travel',
-				url: '#',
-				icon: MapIcon
-			}
-		]
-	};
-</script>
-
-<script lang="ts">
-	import type { ComponentProps } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
@@ -146,9 +19,72 @@
 	import NavUser from './nav-user.svelte';
 
 	let { ref = $bindable(null), ...restProps }: ComponentProps<typeof Sidebar.Root> = $props();
+
+	const user = $derived({
+		name: t('app.shell.user_name'),
+		email: t('app.shell.user_email'),
+		avatar: ''
+	});
+
+	const navMain = $derived([
+		{
+			title: t('app.shell.playground'),
+			url: '#',
+			icon: SquareTerminalIcon,
+			isActive: true,
+			items: [
+				{ title: t('app.shell.history'), url: '#' },
+				{ title: t('app.shell.starred'), url: '#' },
+				{ title: t('app.shell.settings'), url: '#' }
+			]
+		},
+		{
+			title: t('app.shell.models'),
+			url: '#',
+			icon: BotIcon,
+			items: [
+				{ title: t('app.shell.genesis'), url: '#' },
+				{ title: t('app.shell.explorer'), url: '#' },
+				{ title: t('app.shell.quantum'), url: '#' }
+			]
+		},
+		{
+			title: t('app.shell.documentation'),
+			url: '#',
+			icon: BookOpenIcon,
+			items: [
+				{ title: t('app.shell.introduction'), url: '#' },
+				{ title: t('app.shell.get_started'), url: '#' },
+				{ title: t('app.shell.tutorials'), url: '#' },
+				{ title: t('app.shell.changelog'), url: '#' }
+			]
+		},
+		{
+			title: t('app.shell.settings'),
+			url: '#',
+			icon: Settings2Icon,
+			items: [
+				{ title: t('app.shell.general'), url: '#' },
+				{ title: t('app.shell.team'), url: '#' },
+				{ title: t('app.shell.billing'), url: '#' },
+				{ title: t('app.shell.limits'), url: '#' }
+			]
+		}
+	]);
+
+	const navSecondary = $derived([
+		{ title: t('app.shell.support'), url: '#', icon: LifeBuoyIcon },
+		{ title: t('app.shell.feedback'), url: '#', icon: SendIcon }
+	]);
+
+	const projects = $derived([
+		{ name: t('app.shell.project_design'), url: '#', icon: FrameIcon },
+		{ name: t('app.shell.project_sales'), url: '#', icon: PieChartIcon },
+		{ name: t('app.shell.project_travel'), url: '#', icon: MapIcon }
+	]);
 </script>
 
-<Sidebar.Root class="top-(--header-height) h-[calc(100svh-var(--header-height))]!" {...restProps}>
+<Sidebar.Root bind:ref class="top-(--header-height) h-[calc(100svh-var(--header-height))]!" {...restProps}>
 	<Sidebar.Header>
 		<Sidebar.Menu>
 			<Sidebar.MenuItem>
@@ -173,11 +109,11 @@
 		</Sidebar.Menu>
 	</Sidebar.Header>
 	<Sidebar.Content>
-		<NavMain items={data.navMain} />
-		<NavProjects projects={data.projects} />
-		<NavSecondary items={data.navSecondary} class="mt-auto" />
+		<NavMain items={navMain} />
+		<NavProjects projects={projects} />
+		<NavSecondary items={navSecondary} class="mt-auto" />
 	</Sidebar.Content>
 	<Sidebar.Footer>
-		<NavUser user={data.user} />
+		<NavUser user={user} />
 	</Sidebar.Footer>
 </Sidebar.Root>

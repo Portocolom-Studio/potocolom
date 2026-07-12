@@ -9,6 +9,7 @@
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		user
@@ -30,7 +31,9 @@
 				{#snippet child({ props })}
 					<Sidebar.MenuButton size="lg" class="data-[state=open]:text-primary" {...props}>
 						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Image src={user.avatar} alt={user.name} />
+							{#if user.avatar}
+								<Avatar.Image src={user.avatar} alt={user.name} />
+							{/if}
 							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
 								>CN</Avatar.Fallback
 							>
@@ -52,7 +55,9 @@
 				<DropdownMenu.Label class="p-0 font-normal">
 					<div class="flex items-center gap-2 px-1 py-1.5 text-start text-sm">
 						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Image src={user.avatar} alt={user.name} />
+							{#if user.avatar}
+								<Avatar.Image src={user.avatar} alt={user.name} />
+							{/if}
 							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
 								>CN</Avatar.Fallback
 							>
@@ -67,28 +72,28 @@
 				<DropdownMenu.Group>
 					<DropdownMenu.Item>
 						<SparklesIcon />
-						Upgrade to Pro
+						{t('app.shell.upgrade_pro')}
 					</DropdownMenu.Item>
 				</DropdownMenu.Group>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Group>
 					<DropdownMenu.Item>
 						<BadgeCheckIcon />
-						Account
+						{t('app.shell.account')}
 					</DropdownMenu.Item>
 					<DropdownMenu.Item>
 						<CreditCardIcon />
-						Billing
+						{t('app.shell.billing')}
 					</DropdownMenu.Item>
 					<DropdownMenu.Item>
 						<BellIcon />
-						Notifications
+						{t('app.shell.notifications')}
 					</DropdownMenu.Item>
 				</DropdownMenu.Group>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item>
 					<LogOutIcon />
-					Log out
+					{t('app.shell.log_out')}
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>

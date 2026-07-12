@@ -91,8 +91,7 @@
 		<p class="mt-5 text-xs">
 			<a
 				class="text-muted-foreground hover:text-foreground underline underline-offset-4"
-				href={resolve('/privacy')}>{t('wl.privacy_note')}</a
-			>
+				href={resolve('/privacy')}>{t('wl.privacy_note')}</a>
 		</p>
 	</section>
 {/if}

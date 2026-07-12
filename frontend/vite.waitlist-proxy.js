@@ -1,5 +1,6 @@
 // @ts-nocheck — Vite dev middleware; Node request types not in frontend tsconfig.
-const WAITLIST_TARGET = 'https://potocolom.leonfuller.com';
+const WAITLIST_TARGET =
+	process.env.WAITLIST_PROXY_TARGET ?? 'https://potocolom.leonfuller.com';
 
 async function readRequestBody(req) {
 	let data = '';
