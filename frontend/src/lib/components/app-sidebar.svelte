@@ -84,7 +84,11 @@
 	]);
 </script>
 
-<Sidebar.Root bind:ref class="top-(--header-height) h-[calc(100svh-var(--header-height))]!" {...restProps}>
+<Sidebar.Root
+	bind:ref
+	class="top-(--header-height) h-[calc(100svh-var(--header-height))]!"
+	{...restProps}
+>
 	<Sidebar.Header>
 		<Sidebar.Menu>
 			<Sidebar.MenuItem>
@@ -110,10 +114,10 @@
 	</Sidebar.Header>
 	<Sidebar.Content>
 		<NavMain items={navMain} />
-		<NavProjects projects={projects} />
+		<NavProjects {projects} />
 		<NavSecondary items={navSecondary} class="mt-auto" />
 	</Sidebar.Content>
 	<Sidebar.Footer>
-		<NavUser user={user} />
+		<NavUser {user} />
 	</Sidebar.Footer>
 </Sidebar.Root>

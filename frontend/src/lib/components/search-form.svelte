@@ -12,11 +12,7 @@
 <form {...restProps} bind:this={ref}>
 	<div class="relative">
 		<Label for="search" class="sr-only">{t('app.shell.search_label')}</Label>
-		<Sidebar.Input
-			id="search"
-			placeholder={t('app.shell.search_placeholder')}
-			class="h-8 ps-7"
-		/>
+		<Sidebar.Input id="search" placeholder={t('app.shell.search_placeholder')} class="h-8 ps-7" />
 		<SearchIcon
 			class="pointer-events-none absolute start-2 top-1/2 size-4 -translate-y-1/2 opacity-50 select-none"
 		/>
