@@ -3,6 +3,8 @@
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
+	import UserGenerationGallery from '$lib/components/UserGenerationGallery.svelte';
+	import TextRotate from '$lib/components/TextRotate.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 	import * as Card from '$lib/components/ui/card';
@@ -24,6 +26,21 @@
 		{ key: 't2', price: '24', featured: true, bullets: ['b1', 'b2', 'b3'] },
 		{ key: 't3', price: '59', featured: false, bullets: ['b1', 'b2', 'b3'] }
 	] as const;
+
+	const galleryWords = $derived([
+		{
+			label: t('gallery.word_making'),
+			class: 'rounded-md bg-primary/20 px-2 py-0.5 text-primary leading-none'
+		},
+		{
+			label: t('gallery.word_designing'),
+			class: 'rounded-md bg-chart-2/20 px-2 py-0.5 text-chart-2 leading-none'
+		},
+		{
+			label: t('gallery.word_creating'),
+			class: 'rounded-md bg-chart-3/20 px-2 py-0.5 text-chart-3 leading-none'
+		}
+	]);
 </script>
 
 <svelte:head>
@@ -53,7 +70,16 @@
 
 <main>
 	<section class="relative grid min-h-[92vh] place-items-center overflow-hidden">
-		<div class="hero-canvas absolute inset-0"><LatentCanvas /></div>
+		<div class="hero-canvas absolute inset-0">
+			<img
+				src="/hero-poster.png"
+				alt=""
+				class="absolute inset-0 size-full object-cover"
+				decoding="async"
+				fetchpriority="high"
+			/>
+			<div class="absolute inset-0"><LatentCanvas /></div>
+		</div>
 		<div class="relative max-w-3xl px-6 pt-28 pb-16 text-center">
 			<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase sm:text-sm">
 				{t('hero.kicker')}
@@ -95,6 +121,23 @@
 					</Card.Header>
 				</Card.Root>
 			{/each}
+		</div>
+	</section>
+
+	<section id="gallery" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
+		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">
+			{t('gallery.kicker')}
+		</p>
+		<h2 class="mt-2 flex flex-wrap items-baseline gap-x-2 text-3xl font-semibold">
+			<span>{t('gallery.title_before')}</span>
+			<TextRotate words={galleryWords} />
+			<span class="sr-only">
+				{t('gallery.word_making')}, {t('gallery.word_designing')}, {t('gallery.word_creating')}
+			</span>
+		</h2>
+		<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">{t('gallery.sub')}</p>
+		<div class="mt-10">
+			<UserGenerationGallery />
 		</div>
 	</section>
 

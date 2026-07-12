@@ -11,7 +11,9 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check .",
-		"format": "prettier --write ."
+		"format": "prettier --write .",
+		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
+		"compare:collages": "node scripts/compare-collages.mjs"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.2",
@@ -23,6 +25,7 @@
 		"bits-ui": "^2.18.1",
 		"prettier": "^3.6.2",
 		"prettier-plugin-svelte": "^4.0.3",
+		"puppeteer-core": "^24.36.1",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"tailwindcss": "^4.3.2",
