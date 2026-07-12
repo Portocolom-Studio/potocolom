@@ -32,7 +32,7 @@ flowchart LR
 | Setting | Local dev | Self-hosted | Scaled self-hosted | cloud-sim | Cloud |
 |---|---|---|---|---|---|
 | AUTH_MODE | none | none or local | local | local | oauth |
-| OAUTH_PROVIDERS | | | | | google,github,apple |
+| OAUTH_PROVIDERS | | | | | google,github |
 | BILLING_ENABLED | false | false | false | true (fake) | true |
 | SAFETY_CHECKS | false | false | false | false | true |
 | TELEMETRY | false | true (default) | true | false | false, not applicable |

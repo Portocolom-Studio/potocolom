@@ -8,7 +8,7 @@ All mode differences are environment variables read once at startup into a setti
 
 ```
 AUTH_MODE            = none | local | oauth      # default none
-OAUTH_PROVIDERS      = google,github,apple       # only read when AUTH_MODE=oauth
+OAUTH_PROVIDERS      = google,github             # only read when AUTH_MODE=oauth
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
 TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
@@ -33,7 +33,7 @@ The frontend learns everything it needs at runtime:
 @app.get("/api/v1/config")
 async def config():
     return {
-        "auth_methods": auth_provider.methods(),   # e.g. [] | ["local"] | ["local","google","github","apple"]
+        "auth_methods": auth_provider.methods(),   # e.g. [] | ["local"] | ["local","google","github"]
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
     }
@@ -211,7 +211,7 @@ async def login(email, password, persistent: bool):
 ### OAuth callback
 
 ```python
-@app.get("/api/v1/auth/callback/{provider}")   # google, github, apple
+@app.get("/api/v1/auth/callback/{provider}")   # google, github
 async def oauth_callback(provider, code, state):
     verify_state(state)                        # CSRF: state minted at redirect time
     claims = await providers[provider].exchange(code)   # id token or userinfo

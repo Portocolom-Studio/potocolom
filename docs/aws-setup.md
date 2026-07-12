@@ -118,7 +118,7 @@ Environment for the API task, values resolved from SSM where secret:
 | Variable | Value |
 |---|---|
 | AUTH_MODE | `oauth` |
-| OAUTH_PROVIDERS | `google,github,apple` |
+| OAUTH_PROVIDERS | `google,github` |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |
 | LOG_FORMAT | `json` |
@@ -140,7 +140,6 @@ All SecureString under one prefix per environment; the execution roles are scope
 /potocolom/prod/cloudfront_signing_key
 /potocolom/prod/oauth/google_client_id       oauth/google_client_secret
 /potocolom/prod/oauth/github_client_id       oauth/github_client_secret
-/potocolom/prod/oauth/apple_key_id           oauth/apple_private_key
 /potocolom/prod/sentry_dsn_api               sentry_dsn_worker    sentry_dsn_frontend
 /potocolom/prod/stripe_webhook_secret        (billing service)
 /potocolom/prod/runpod_api_key               (fleet autoscaler)

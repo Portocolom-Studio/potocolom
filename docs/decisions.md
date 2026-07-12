@@ -60,7 +60,7 @@ Rejected alternative: a VPN overlay such as Tailscale or WireGuard between the V
 
 ## Sessions: opaque server-side tokens
 
-Logged in state is a random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud. This gives instant revocation and a real active-sessions list, which the session management in issue #5 needs; one Redis lookup per request is nothing at the target scale.
+Logged in state is a random token in an httpOnly cookie (invisible to page JavaScript, so a script injection cannot exfiltrate the session), mapped to a session row in PostgreSQL and cached in Redis in the cloud. This gives instant revocation and a real active-sessions list, which the session management in issue #5 needs; one Redis lookup per request is nothing at the target scale.
 
 Rejected alternative: JWTs. They remove the store lookup, but instant revocation then needs a denylist, which reintroduces the store while keeping the JWT complexity.
 
@@ -144,11 +144,11 @@ Users see credits, not GPU time: one credit is roughly one GPU second internally
 
 Rejected alternatives: raw GPU minutes (honest but unpredictable per image); image-and-minute bundles (two parallel meters, and every model change silently reprices an image).
 
-## OAuth at launch: Google, GitHub and Apple
+## OAuth at launch: Google and GitHub
 
-Google for reach, GitHub for the self-hosting crowd who arrive first, Apple chosen with eyes open: it requires the paid Apple developer account and key rotation, and mainly pays off if a native iOS app ships later.
+Google for reach, GitHub for the self-hosting crowd who arrive first. Amended after peer review on the docs PR: Apple, originally in the launch set, is deferred - it requires the paid Apple developer account and key rotation, and mainly pays off if a native iOS app ships later, so it buys nothing for the beta.
 
-Rejected alternative: Discord, despite hosting the AI art communities; it can be added when the audience demands it.
+Rejected alternatives: Apple at launch (the cost above, ahead of any native app); Discord, despite hosting the AI art communities; both can be added when the audience demands them.
 
 ## Observability: CloudWatch plus Sentry
 
@@ -220,7 +220,7 @@ Rejected alternatives: migrate on startup everywhere (replicas race, and a bad m
 
 ## Admin: minimal in-app admin area
 
-An admin role flag unlocks hidden views in the same SPA: worker fleet status, user lookup and disable, job and session debugging. Self-hosters get the same views for their own install, so the work is shared rather than cloud only.
+An admin role flag unlocks hidden views in the same SPA: worker fleet status, user lookup and disable, job and session debugging. Every admin endpoint enforces the role server-side; hiding the views is presentation, never the authorization. Self-hosters get the same views for their own install, so the work is shared rather than cloud only.
 
 Rejected alternatives: CLI scripts only (fine solo, hostile to anyone who joins later); nothing at launch (every incident handled through psql until the pain forces the admin area anyway).
 
