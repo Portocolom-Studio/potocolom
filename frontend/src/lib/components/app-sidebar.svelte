@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
-	import BotIcon from '@lucide/svelte/icons/bot';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import Settings2Icon from '@lucide/svelte/icons/settings-2';
 	import LifeBuoyIcon from '@lucide/svelte/icons/life-buoy';
@@ -13,7 +12,9 @@
 	import { resolve } from '$app/paths';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import NavGallery from './nav-gallery.svelte';
 	import NavMain from './nav-main.svelte';
+	import NavModels from './nav-models.svelte';
 	import NavProjects from './nav-projects.svelte';
 	import NavSecondary from './nav-secondary.svelte';
 	import NavUser from './nav-user.svelte';
@@ -36,16 +37,6 @@
 				{ title: t('app.shell.history'), url: '#' },
 				{ title: t('app.shell.starred'), url: '#' },
 				{ title: t('app.shell.settings'), url: '#' }
-			]
-		},
-		{
-			title: t('app.shell.models'),
-			url: '#',
-			icon: BotIcon,
-			items: [
-				{ title: t('app.shell.genesis'), url: '#' },
-				{ title: t('app.shell.explorer'), url: '#' },
-				{ title: t('app.shell.quantum'), url: '#' }
 			]
 		},
 		{
@@ -113,6 +104,8 @@
 		</Sidebar.Menu>
 	</Sidebar.Header>
 	<Sidebar.Content>
+		<NavModels />
+		<NavGallery />
 		<NavMain items={navMain} />
 		<NavProjects {projects} />
 		<NavSecondary items={navSecondary} class="mt-auto" />

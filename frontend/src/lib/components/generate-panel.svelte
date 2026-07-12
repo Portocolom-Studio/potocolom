@@ -5,23 +5,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-
-	type Model = {
-		id: string;
-		name: string;
-		capabilities: string[];
-		parameters: Record<string, unknown>;
-	};
-	type Asset = { id: string; url: string; width: number; height: number };
-	type Generation = {
-		id: string;
-		model_id: string;
-		params: { prompt?: string } & Record<string, unknown>;
-		state: string;
-		gpu_ms: number | null;
-		created_at: string;
-		assets: Asset[];
-	};
+	import { loadHistory, loadModels, pollWhileWorking, studio } from '$lib/studio.svelte';
 
 	// Matches the Input component's field styling for the native controls it
 	// does not vendor (select, textarea).
@@ -31,8 +15,6 @@
 		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
 
-	let models = $state<Model[]>([]);
-	let modelId = $state('');
 	let prompt = $state('');
 	let steps = $state('');
 	let guidance = $state('');
@@ -40,42 +22,24 @@
 	let size = $state('512');
 	let count = $state('1');
 	let errorText = $state('');
-	let history = $state<Generation[]>([]);
 
-	const latest = $derived(history.find((g) => g.assets.length > 0) ?? null);
+	const latest = $derived(studio.history.find((g) => g.assets.length > 0) ?? null);
 	// Jobs queue server side; submitting never blocks the form (docs/blueprint.md,
 	// the generation request path returns a job id immediately).
 	const working = $derived(
-		history.filter((g) => g.state === 'queued' || g.state === 'running').length
+		studio.history.filter((g) => g.state === 'queued' || g.state === 'running').length
 	);
 
-	let polling = false;
+	// The manifest schema decides which resolutions a model supports
+	// (docs/architecture.md, model manifests); no enum means unconstrained.
+	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
+	const sizeOptions = $derived(
+		selectedModel?.parameters.properties?.width?.enum ?? [512, 768, 1024]
+	);
 
-	async function loadModels(): Promise<void> {
-		const response = await fetch('/api/v1/models');
-		if (!response.ok) return;
-		models = (await response.json()) as Model[];
-		if (!modelId && models.length > 0) modelId = models[0].id;
-	}
-
-	async function loadHistory(): Promise<void> {
-		const response = await fetch('/api/v1/generations');
-		if (!response.ok) return; // degraded API: history needs the database
-		history = (await response.json()) as Generation[];
-	}
-
-	async function pollWhileWorking(): Promise<void> {
-		if (polling) return;
-		polling = true;
-		try {
-			while (history.some((g) => g.state === 'queued' || g.state === 'running')) {
-				await new Promise((resolve) => setTimeout(resolve, 1500));
-				await loadHistory();
-			}
-		} finally {
-			polling = false;
-		}
-	}
+	$effect(() => {
+		if (!sizeOptions.includes(Number(size))) size = String(sizeOptions[0]);
+	});
 
 	$effect(() => {
 		void loadModels();
@@ -92,14 +56,12 @@
 			if (guidance !== '') params.guidance = Number(guidance);
 			// A fixed seed still varies across a batch, or every image would be identical.
 			if (seed !== '') params.seed = Number(seed) + index;
-			if (size !== '512') {
-				params.width = Number(size);
-				params.height = Number(size);
-			}
+			params.width = Number(size);
+			params.height = Number(size);
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ model_id: modelId, params })
+				body: JSON.stringify({ model_id: studio.modelId, params })
 			});
 			if (!response.ok) {
 				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -119,14 +81,14 @@
 			<Card.Description>{t('app.gen.sub')}</Card.Description>
 		</Card.Header>
 		<Card.Content>
-			{#if models.length === 0}
+			{#if studio.models.length === 0}
 				<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
 			{:else}
 				<form class="flex flex-col gap-4" onsubmit={generate}>
 					<div class="flex flex-col gap-2">
 						<Label for="gen-model">{t('app.gen.model')}</Label>
-						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={modelId}>
-							{#each models as model (model.id)}
+						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
+							{#each studio.models as model (model.id)}
 								<option value={model.id}>{model.name}</option>
 							{/each}
 						</select>
@@ -146,10 +108,15 @@
 						</div>
 						<div class="flex flex-col gap-2">
 							<Label for="gen-size">{t('app.gen.size')}</Label>
-							<select id="gen-size" class={fieldClass + ' h-8'} bind:value={size}>
-								<option value="512">512 x 512</option>
-								<option value="768">768 x 768</option>
-								<option value="1024">1024 x 1024</option>
+							<select
+								id="gen-size"
+								class={fieldClass + ' h-8'}
+								bind:value={size}
+								disabled={sizeOptions.length === 1}
+							>
+								{#each sizeOptions as option (option)}
+									<option value={String(option)}>{option} x {option}</option>
+								{/each}
 							</select>
 						</div>
 						<div class="flex flex-col gap-2">
@@ -186,11 +153,19 @@
 		<Card.Root class="min-h-0 flex-1">
 			<Card.Content class="h-full min-h-0 p-4">
 				{#if latest !== null}
-					<img
-						src={latest.assets[0].url}
-						alt={latest.params.prompt ?? t('app.gen.result')}
-						class="h-full w-full rounded-lg object-contain"
-					/>
+					<a
+						href={latest.assets[0].url}
+						target="_blank"
+						rel="noopener"
+						class="block h-full w-full"
+						title={t('app.gen.open_full')}
+					>
+						<img
+							src={latest.assets[0].url}
+							alt={latest.params.prompt ?? t('app.gen.result')}
+							class="h-full w-full rounded-lg object-contain"
+						/>
+					</a>
 				{:else}
 					<div
 						class="text-foreground/55 grid h-full place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
@@ -200,16 +175,23 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-		{#if history.length > 0}
+		{#if studio.history.length > 0}
 			<div class="flex shrink-0 gap-2 overflow-x-auto pb-1">
-				{#each history as generation (generation.id)}
+				{#each studio.history as generation (generation.id)}
 					{#if generation.assets.length > 0}
-						<img
-							src={generation.assets[0].url}
-							alt={generation.params.prompt ?? generation.id}
+						<a
+							href={generation.assets[0].url}
+							target="_blank"
+							rel="noopener"
+							class="shrink-0"
 							title={generation.params.prompt}
-							class="border-border h-24 w-24 shrink-0 rounded-lg border object-cover"
-						/>
+						>
+							<img
+								src={generation.assets[0].url}
+								alt={generation.params.prompt ?? generation.id}
+								class="border-border h-24 w-24 rounded-lg border object-cover"
+							/>
+						</a>
 					{:else}
 						<div
 							class="border-border/60 text-muted-foreground grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
