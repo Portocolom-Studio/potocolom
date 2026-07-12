@@ -4,6 +4,7 @@
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import UserGenerationGallery from '$lib/components/UserGenerationGallery.svelte';
+	import PromptMarquee from '$lib/components/PromptMarquee.svelte';
 	import TextRotate from '$lib/components/TextRotate.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
@@ -139,6 +140,7 @@
 		<div class="mt-10">
 			<UserGenerationGallery />
 		</div>
+		<PromptMarquee />
 	</section>
 
 	<section id="pricing" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
