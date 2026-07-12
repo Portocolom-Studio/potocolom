@@ -25,6 +25,8 @@ export type Generation = {
 export const studio = $state({
 	models: [] as Model[],
 	modelId: '',
+	prompt: '',
+	selectedId: null as string | null, // generation pinned in the viewer
 	history: [] as Generation[]
 });
 

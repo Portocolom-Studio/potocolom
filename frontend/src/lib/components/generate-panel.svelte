@@ -15,7 +15,6 @@
 		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
 
-	let prompt = $state('');
 	let steps = $state('');
 	let guidance = $state('');
 	let seed = $state('');
@@ -23,7 +22,12 @@
 	let count = $state('1');
 	let errorText = $state('');
 
-	const latest = $derived(studio.history.find((g) => g.assets.length > 0) ?? null);
+	// The viewer shows the clicked generation, or the newest finished one.
+	const shown = $derived(
+		studio.history.find((g) => g.id === studio.selectedId && g.assets.length > 0) ??
+			studio.history.find((g) => g.assets.length > 0) ??
+			null
+	);
 	// Jobs queue server side; submitting never blocks the form (docs/blueprint.md,
 	// the generation request path returns a job id immediately).
 	const working = $derived(
@@ -49,9 +53,10 @@
 	async function generate(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		errorText = '';
+		studio.selectedId = null; // let fresh results take the viewer back
 		const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
 		for (let index = 0; index < jobs; index += 1) {
-			const params: Record<string, unknown> = { prompt };
+			const params: Record<string, unknown> = { prompt: studio.prompt };
 			if (steps !== '') params.steps = Number(steps);
 			if (guidance !== '') params.guidance = Number(guidance);
 			// A fixed seed still varies across a batch, or every image would be identical.
@@ -99,7 +104,7 @@
 							id="gen-prompt"
 							class={fieldClass + ' min-h-24 resize-y py-2'}
 							placeholder={t('app.gen.prompt_placeholder')}
-							bind:value={prompt}></textarea>
+							bind:value={studio.prompt}></textarea>
 					</div>
 					<div class="grid grid-cols-2 gap-3">
 						<div class="flex flex-col gap-2">
@@ -132,7 +137,7 @@
 							<Input id="gen-seed" type="number" bind:value={seed} />
 						</div>
 					</div>
-					<Button type="submit" disabled={prompt.trim() === ''}>
+					<Button type="submit" disabled={studio.prompt.trim() === ''}>
 						{t('app.gen.generate')}
 					</Button>
 					{#if working > 0}
@@ -149,23 +154,27 @@
 		</Card.Content>
 	</Card.Root>
 
-	<div class="flex min-h-0 flex-col gap-4">
+	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
+	<div class="flex min-h-0 min-w-0 flex-col gap-4">
 		<Card.Root class="min-h-0 flex-1">
-			<Card.Content class="h-full min-h-0 p-4">
-				{#if latest !== null}
+			<Card.Content class="flex h-full min-h-0 flex-col gap-2 p-4">
+				{#if shown !== null}
 					<a
-						href={latest.assets[0].url}
+						href={shown.assets[0].url}
 						target="_blank"
 						rel="noopener"
-						class="block h-full w-full"
+						class="block min-h-0 flex-1"
 						title={t('app.gen.open_full')}
 					>
 						<img
-							src={latest.assets[0].url}
-							alt={latest.params.prompt ?? t('app.gen.result')}
+							src={shown.assets[0].url}
+							alt={shown.params.prompt ?? t('app.gen.result')}
 							class="h-full w-full rounded-lg object-contain"
 						/>
 					</a>
+					<p class="text-muted-foreground shrink-0 truncate text-center text-xs">
+						{shown.params.prompt}
+					</p>
 				{:else}
 					<div
 						class="text-foreground/55 grid h-full place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
@@ -179,19 +188,19 @@
 			<div class="flex shrink-0 gap-2 overflow-x-auto pb-1">
 				{#each studio.history as generation (generation.id)}
 					{#if generation.assets.length > 0}
-						<a
-							href={generation.assets[0].url}
-							target="_blank"
-							rel="noopener"
+						<button
+							type="button"
 							class="shrink-0"
 							title={generation.params.prompt}
+							onclick={() => (studio.selectedId = generation.id)}
 						>
 							<img
 								src={generation.assets[0].url}
 								alt={generation.params.prompt ?? generation.id}
-								class="border-border h-24 w-24 rounded-lg border object-cover"
+								class={'h-24 w-24 rounded-lg border object-cover ' +
+									(shown?.id === generation.id ? 'border-primary' : 'border-border')}
 							/>
-						</a>
+						</button>
 					{:else}
 						<div
 							class="border-border/60 text-muted-foreground grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"

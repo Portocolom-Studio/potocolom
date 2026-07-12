@@ -12,14 +12,18 @@
 		<Sidebar.GroupContent>
 			<div class="grid grid-cols-3 gap-1.5 px-2">
 				{#each finished as generation (generation.id)}
-					<a href={generation.assets[0].url} target="_blank" rel="noopener">
+					<button
+						type="button"
+						title={generation.params.prompt}
+						onclick={() => (studio.selectedId = generation.id)}
+					>
 						<img
 							src={generation.assets[0].url}
 							alt={generation.params.prompt ?? generation.id}
-							title={generation.params.prompt}
-							class="border-border aspect-square w-full rounded-md border object-cover"
+							class={'aspect-square w-full rounded-md border object-cover ' +
+								(studio.selectedId === generation.id ? 'border-primary' : 'border-border')}
 						/>
-					</a>
+					</button>
 				{/each}
 			</div>
 		</Sidebar.GroupContent>
