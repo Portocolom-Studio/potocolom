@@ -17,6 +17,8 @@ node_modules/
 # Environment
 .env
 .env.*
+# frontend/.env carries only PUBLIC_ build defaults, never secrets
+!frontend/.env
 !.env.example
 
 # Model weights and generated data; manifests are versioned, weights are not
@@ -37,3 +39,6 @@ data/
 prompt.md
 CLAUDE.md
 .local/
+
+# Local agent/editor tooling
+.mcp.json

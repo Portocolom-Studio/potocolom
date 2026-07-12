@@ -1,13 +1,42 @@
 # potocolom
-Open-source real-time generative AI platform that enables users to generate, edit, and enhance images through an intuitive interface
+
+Draw it. Watch it render.
+
+potocolom is an open source, real time generative image platform: you sketch on a canvas and a diffusion model paints over your strokes live, at 2 to 4 frames per second, then one click hands the result to a heavier model for the final image. One GPL codebase runs it both ways - self-hosted on your own GPU for free, or as a managed cloud with subscriptions.
+
+![Draw it. Watch it render.](frontend/static/og.png)
+
+## Status
+
+Pre-alpha, under active development in the open. The architecture, protocols and economics are fully documented below; the walking skeleton (a real generation, end to end, on a self-hosted install) is the current milestone, and v0.1 tags when it passes. The cloud service opens later as an invite-only beta - the waitlist lives at [potocolom.leonfuller.com](https://potocolom.leonfuller.com).
+
+## What makes it different
+
+- A live loop, not a prompt queue: canvas frames stream to a GPU worker over one WebSocket and generated frames stream back while you draw.
+- One codebase, two modes: the self-hosted install and the paid cloud run the same three container images; every difference is configuration behind documented seams.
+- Self-hosting is a first-class citizen: docker compose, one machine, NVIDIA (CUDA) or AMD (ROCm), no account, no telemetry you cannot see and switch off.
+- Models without releases: drop a model manifest and the interface adapts to its parameters.
+- Private by default: no public gallery, signed URLs, self-serve GDPR export and deletion.
+
+## Self-hosting
+
+The compose file ships with v0.1. Until then, the development setup below runs everything from source.
 
 ## Documentation
 
+The design is documentation-first: every load-bearing decision is recorded with its rejected alternatives before the code lands.
+
 - [Architecture](docs/architecture.md)
+- [Deployment profiles and migration](docs/deployment-profiles.md)
 - [Implementation blueprint](docs/blueprint.md)
+- [API reference and user journeys](docs/api.md)
 - [Connection handling](docs/connection-handling.md)
 - [Local development and testing](docs/local-development.md)
 - [Cloud infrastructure](docs/cloud-infrastructure.md)
+- [AWS setup guide](docs/aws-setup.md)
+- [Cloud delivery and access model](docs/cloud-delivery.md)
+- [Repository boundary, licensing and delivery pipeline](docs/repository-boundary.md)
+- [Usage metrics and telemetry](docs/metrics.md)
 - [Design decisions](docs/decisions.md)
 
 Editable diagram sources (draw.io, with AWS service icons) live in [docs/diagrams/](docs/diagrams/).
@@ -33,3 +62,7 @@ make simulate   # live connection handling demo (API + workers + simulated brows
 ```
 
 See [Local development and testing](docs/local-development.md) for running each component individually.
+
+## License
+
+GPL-3.0. The full product in this repository is self-hostable forever; the commercial cloud's billing and fleet orchestration live in a separate private repository behind documented HTTP contracts, and the cloud runs the same unmodified images published here. The reasoning is in [the repository boundary document](docs/repository-boundary.md).

@@ -11,6 +11,7 @@ AUTH_MODE            = none | local | oauth      # default none
 OAUTH_PROVIDERS      = google,github,apple       # only read when AUTH_MODE=oauth
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
+TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
 DATABASE_URL         = postgresql://...
 REDIS_URL            = ""                        # empty: in-process fallbacks (self-host)
 REDIS_URL_CACHE      = $REDIS_URL                # per-concern endpoints; set individually
@@ -282,13 +283,13 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models from manifests, realtime_slots, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
-| worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
+| worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
 | api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
-| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms; failed carries reason |
+| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
-| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames |
+| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
 
@@ -309,16 +310,45 @@ Rejects cheapest first; nothing touches a GPU until everything else passed.
 @app.post("/api/v1/generations")
 async def create_generation(req, user = require_user()):
     await rate.check(f"rate:jobs:{user.id}", limit=..., window=60)
+    model = registry.resolve(req.model_id, req.params)   # tier routing when model_id is absent
     if settings.safety_checks:
         await safety.screen_prompt(req.prompt)          # blocklist + classifier, raises
-    reservation = await quota.reserve(user, estimate_gpu_ms(req))   # raises InsufficientCredits
-    job = await db.jobs.insert(user, req.model_id, req.params, state="queued",
-                               reservation=reservation.id, attempt=1)
+    reservation_id = uuid4()                             # caller-supplied: retries are idempotent
+    await quota.reserve(user, reservation_id, estimate_gpu_ms(req),
+                        ttl_s=900)                       # raises InsufficientCredits
+    job = await db.jobs.insert(user, model.id, req.params, state="queued",
+                               reservation=reservation_id, attempt=1)
     await queues.push("queue:jobs", job.id, tier(user))
     return {"job_id": job.id}
 ```
 
-Worker death mid job: the scheduler's reconcile step requeues `attempt=1` jobs as `attempt=2`; a job failing at `attempt=2` becomes `state=failed`, `quota.refund(reservation)`, and the frontend shows the retry button. Completion runs the output safety check on the worker, uploads to a presigned URL, then `quota.commit(reservation, actual_gpu_ms, images)`.
+Worker death mid job: the scheduler's reconcile step requeues `attempt=1` jobs as `attempt=2`; a job failing at `attempt=2` becomes `state=failed`, `quota.refund(reservation_id)`, and the frontend shows the retry button. Completion runs the output safety check on the worker, uploads to a presigned URL, then `quota.commit(reservation_id, actual_gpu_ms, images)`. Actual usage may exceed the estimate; commit charges actuals, and a balance briefly going negative only blocks new reservations until the next grant. Idempotency, expiry and the outage posture of these calls are specified under Quota contract semantics below.
+
+## Prompt screening
+
+Cloud profile only (`SAFETY_CHECKS=true`). Runs in the API before `quota.reserve`, so a refused prompt costs neither GPU time nor credits, and on the realtime socket for `open` and every `prompt_update`, where a rejection refuses the update but keeps the session alive.
+
+```python
+def normalize(prompt: str) -> str:
+    # NFKC fold, casefold, strip zero-width characters,
+    # homoglyph and leetspeak mapping - evasion dies here or nowhere
+
+async def screen_prompt(prompt: str, user) -> None:
+    text = normalize(prompt)
+    verdict = rules.match(text)                       # curated patterns; combination
+                                                      # rules (age x sexual), not words
+    if verdict is None:
+        verdict = await classifier.classify(text)     # small CPU model, multi-label,
+                                                      # milliseconds, in-process
+    if verdict.hard:                                  # above all: any sexualization of minors
+        await strikes.record(user, verdict.category)  # category + timestamp only,
+                                                      # never the prompt text
+        raise PromptRejected(message=GENERIC_POLICY_MESSAGE)
+    if verdict.soft:                                  # ToS-prohibited, not radioactive
+        raise PromptRejected(message=category_message(verdict.category))
+```
+
+Hard verdicts answer with one generic message (the screen never teaches which pattern tripped) and count as strikes; crossing the strike threshold sets the same suspended-pending-review flag the payment dispute path uses, and a suspended account cannot reserve. The baseline rule list ships in this repository, so a self-hosted install that enables `SAFETY_CHECKS` gets real protection; the cloud loads a supplementary private list from a configured path. The output-side backstop is the worker's safety checker on generated images (see [decisions.md](decisions.md), "Content safety"), which also covers what no text screen can see: the canvas stream itself.
 
 ## Seam interfaces
 
@@ -326,9 +356,11 @@ The four seams from [architecture.md](architecture.md), as they appear in code. 
 
 ```python
 class QuotaService(Protocol):
-    async def reserve(self, user, estimated_gpu_ms) -> Reservation   # raises InsufficientCredits
-    async def commit(self, reservation, gpu_ms, images) -> None
-    async def refund(self, reservation) -> None
+    # reservation_id is generated by the caller, so a timed-out call retries with
+    # the same id and at most one reservation exists. raises InsufficientCredits.
+    async def reserve(self, user, reservation_id, estimated_gpu_ms, ttl_s) -> None
+    async def commit(self, reservation_id, gpu_ms, images) -> None
+    async def refund(self, reservation_id) -> None
 
 UnlimitedQuota   # default: reserve always succeeds, commit records a metering event, refund no-op
 BillingQuota     # HTTP calls to QUOTA_SERVICE_URL (the private billing service)
@@ -343,6 +375,45 @@ S3Storage        # bucket + CloudFront signing
 
 # Queues and FrameBus are specified in the Redis section above.
 ```
+
+### Quota contract semantics
+
+The wire shape of `BillingQuota`, part of the versioned public contract the fake QuotaService also implements (see [repository-boundary.md](repository-boundary.md)):
+
+```
+PUT  /v1/reservations/{id}            {user, estimated_gpu_ms, ttl_s}
+                                      201 created | 200 already exists (idempotent retry)
+                                      402 insufficient credits | 409 not in reserved state
+POST /v1/reservations/{id}/commit     {gpu_ms, images}
+POST /v1/reservations/{id}/refund     {}
+```
+
+A reservation is a one-way state machine: `reserved -> committed | refunded | expired`. Repeating a transition returns 200 and changes nothing; a conflicting transition returns 409. The billing service expires reservations still `reserved` after `ttl_s` and returns the credits, which is what makes a crash between reserve and enqueue harmless. Rationale in [decisions.md](decisions.md), "Quota contract: caller-supplied reservation ids with expiry".
+
+Outage posture ([decisions.md](decisions.md), "Billing outage posture"): `reserve` fails closed and surfaces the 503 to the user; `commit` and `refund` enqueue in an outbox table in the API's PostgreSQL and a background task retries them until acknowledged. The ledger's unique source keys make redelivery a no-op, so settlement is effectively exactly-once.
+
+Realtime sessions meter through the same contract in chunks:
+
+```python
+CHUNK_GPU_MS = 60_000
+
+async def on_admit(session):                       # entering Active
+    session.chunk_id = uuid4()
+    await quota.reserve(session.user, session.chunk_id, CHUNK_GPU_MS, ttl_s=300)
+
+async def on_chunk_exhausted(session):             # measured gpu_ms reaches the chunk
+    await quota.commit(session.chunk_id, gpu_ms=CHUNK_GPU_MS, images=0)
+    session.chunk_id = uuid4()
+    try:
+        await quota.reserve(session.user, session.chunk_id, CHUNK_GPU_MS, ttl_s=300)
+    except InsufficientCredits:
+        await close_session(session, reason="out_of_credits")   # error message, then close
+
+async def on_release(session):                     # idle release, close, worker loss
+    await quota.commit(session.chunk_id, gpu_ms=session.chunk_used_ms, images=0)
+```
+
+Overdraft exposure is bounded by one chunk; the `credits_tick` message on the browser socket displays the live drain against the same numbers.
 
 ## Self-hosted compose shape
 
@@ -367,6 +438,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-worker:v0.x-cuda   # or -rocm, see local-development.md
     environment:
       DEVICE: cuda               # cuda | rocm | cpu
+      MEMORY_MODE: auto          # auto | full | model_offload | group_offload, see architecture.md
       API_URL: ws://api:8080/api/v1/fleet
       FLEET_TOKEN: ${FLEET_SECRET}
     volumes: ["models:/models"]  # weights + manifests, pulled from Hugging Face

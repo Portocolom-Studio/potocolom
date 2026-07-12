@@ -28,7 +28,7 @@ Fleet connection, worker to API:
 
 | type | Fields | Notes |
 |---|---|---|
-| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots` | first message after connect; `models` is the manifest list |
+| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers) |
 | `heartbeat` | `slots_in_use` | every 30 seconds |
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames` | worker side accounting |

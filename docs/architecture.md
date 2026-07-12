@@ -101,11 +101,11 @@ flowchart TB
 
 ## Pluggable seams
 
-The differences between the two modes are concentrated in four interfaces. Everything else is shared code.
+The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
 - Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google, GitHub and Apple at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
-- Quota: a QuotaService interface with reserve and commit operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
+- Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
 
 ## GPU scheduling
@@ -114,11 +114,11 @@ GPU seconds are the scarce and expensive resource, so how work maps onto workers
 
 ### Capacity and the real time bar
 
-The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. At that bar one GPU carries one or two concurrent drawing sessions, so each worker advertises a fixed number of real time slots in its registration (per model, from the manifest and measured hardware). The scheduler admits sessions against slots, never against hope: it does not oversubscribe.
+The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Each worker advertises its real time slots in its registration, and the count is measured, not configured: at model warmup the worker benchmarks frame time at increasing batch sizes and advertises the largest session count that holds p95 frame time under the bar. The scheduler admits sessions against slots, never against hope: it does not oversubscribe. Density beyond calibration - batching frames from concurrent sessions inside the worker, StreamDiffusion-class pipeline optimizations - is designed and deferred with an explicit trigger in [decisions.md](decisions.md) ("GPU session density"); it all lives below the slot abstraction, so the scheduler never changes.
 
 ### One pool, real time first
 
-Queued jobs and real time sessions share the same workers. Jobs fill idle capacity; an arriving session request preempts queued work (the worker finishes or checkpoints the current job between denoising steps, then frees the slot), and queued work resumes when sessions end. This is the right trade at launch scale, where the pool may be one or two GPUs and a dedicated real time pool would mean paying for an idle machine. The scheduler treats pool membership as configuration, so splitting into dedicated real time and batch pools later (scaling stage 2) is a config change, not a redesign.
+Queued jobs and real time sessions share the same workers. Jobs fill idle capacity; an arriving session request preempts queued work (the worker finishes or checkpoints the current job between denoising steps, then frees the slot), and queued work resumes when sessions end. When several workers can take a job, the scheduler prefers those serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. This is the right trade at launch scale, where the pool may be one or two GPUs and a dedicated real time pool would mean paying for an idle machine. The scheduler treats pool membership as configuration, so splitting into dedicated real time and batch pools later (scaling stage 2) is a config change, not a redesign.
 
 ### Model placement
 
@@ -126,6 +126,29 @@ A worker's VRAM holds roughly one or two models, so balancing users onto models 
 
 - A hot set, defined in fleet configuration, stays pinned: the real time model always, plus the most used generation models. Requests for these never wait on a model load.
 - Everything else loads on demand: the scheduler picks a worker, the user sees a loading state (about 60 seconds) once, and the model stays warm for a while afterward so a second request is instant.
+
+### Model routing
+
+A request that pins a `model_id` gets that model. A request that does not is resolved by the API to the cheapest registered model whose `tier` (`draft`, `standard`, `premium`, from the manifest), capabilities and parameter schema satisfy it. Difficulty needs no classifier because the interface states it: drawing strokes are realtime work on a draft-tier turbo model, a refine action is a queued job routed to a heavier tier. This is a selection function inside dispatch, not a service; the draft-then-refine loop it enables is frontend composition of the two workflows below.
+
+### Low VRAM operation: the memory ladder
+
+`min_vram_gb` in a manifest is the full residency requirement, but full residency is not the only way to run a model. Layer streaming tools like airLLM proved that models far larger than VRAM can run by holding only the executing layers on the GPU; diffusers ships the same techniques natively (model CPU offload, and group offloading with stream prefetch and optional disk backing), so the worker exposes them as a ladder rather than adding any dependency. At model load the worker measures free VRAM and takes the highest rung that fits:
+
+```mermaid
+flowchart TD
+    LOAD["Load model"] --> Q1{"Pipeline fits<br>in free VRAM?"}
+    Q1 -->|yes| FULL["full residency<br>all manifest capabilities,<br>including realtime"]
+    Q1 -->|no| Q2{"Largest component<br>fits?"}
+    Q2 -->|yes| MO["model offload<br>components swap per stage;<br>jobs only, modest slowdown"]
+    Q2 -->|no| GO["group offload<br>layer groups stream through VRAM,<br>prefetched; spills to disk when<br>RAM is short; jobs only, slow"]
+```
+
+- Full residency: the pipeline lives on the GPU. The only rung that meets the 2 to 4 fps realtime bar, so it is the only rung that advertises the `realtime` capability.
+- Model offload: whole components (text encoder, UNet, VAE) move to the GPU only for their stage of the pipeline. VRAM drops to the largest single component; a generation gets slower by roughly the transfer time per stage.
+- Group offload: layer groups stream through the GPU while the next group is prefetched on a parallel stream, the airLLM technique applied through `enable_group_offload`. VRAM drops to a few layers; when system RAM cannot hold the model either, groups spill to disk under the models directory. A generation takes several times longer, which a queued job tolerates and a drawing session does not.
+
+The rung is per model, not per worker: an 8 GB card can hold sd-turbo fully resident for drawing sessions while running a much larger generation model on group offload beside it. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
 
 ### When the pool is full
 
@@ -175,6 +198,7 @@ sequenceDiagram
     participant W as Worker
     participant S as Storage
     B->>A: POST /api/v1/generations
+    A->>A: resolve model, tier routing when model_id absent
     A->>A: quota reserve, create job row
     A-->>B: job id
     A->>W: dispatch, direct self-hosted or Redis queue in cloud
@@ -288,8 +312,10 @@ The issue #11 goal: no frontend release needed.
 
 ```
 1. Drop weights + manifest into the worker's models directory
-2. Worker validates the manifest and loads the pipeline
-3. Worker registers the model with the API server
+2. Worker validates the manifest, measures free VRAM and picks a
+   memory ladder rung (full residency, model offload, group offload)
+3. Worker registers the model with capabilities as measured:
+   realtime only at full residency
 4. GET /api/v1/models now lists it: capabilities + parameter JSON Schema
 5. Frontend renders generic controls from the schema
    -> usable before any model-specific frontend work exists
@@ -315,6 +341,8 @@ sequenceDiagram
     BS->>BS: deduct credits
 ```
 
+Every step above tolerates replay: webhooks deduplicate on the Stripe event id, the credit ledger is append-only with unique source keys, and reserve, commit and refund are idempotent on a caller-supplied reservation id with a TTL that returns stranded credits. Balances reset to the tier grant each paid period; realtime sessions meter through the same reserve and commit calls in chunks. When the billing service is unreachable, reserve fails closed and settlement retries through an outbox. The mechanisms are specified under Quota contract semantics in [blueprint.md](blueprint.md) and the rationale in [decisions.md](decisions.md).
+
 ## Model manifests
 
 Every model the worker can serve is described by a manifest. Example:
@@ -324,6 +352,7 @@ Every model the worker can serve is described by a manifest. Example:
   "id": "sd-turbo",
   "name": "SD Turbo",
   "capabilities": ["image_to_image", "realtime"],
+  "tier": "draft",
   "min_vram_gb": 8,
   "parameters": {
     "type": "object",
@@ -336,6 +365,8 @@ Every model the worker can serve is described by a manifest. Example:
 }
 ```
 
+`min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. `tier` feeds model routing: requests that do not pin a model resolve to the cheapest tier that satisfies them.
+
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
@@ -344,7 +375,7 @@ Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are 
 
 Two checks run in the cloud profile; self-hosted installs have both disabled by default, as profile flags rather than forks:
 
-- Prompt screening in the API before dispatch: a blocklist plus a lightweight classifier. A refused prompt never consumes GPU time.
+- Prompt screening in the API before dispatch: normalization (unicode folding, homoglyph mapping), curated combination rules, then a lightweight CPU classifier. A refused prompt never consumes GPU time or credits, and the screen also gates every realtime prompt update. Hard-category attempts - above all, any sexualization of minors - are refused generically and counted as strikes; repeated strikes suspend the account for review. Enforcement retains category and timestamp, never prompt text. Pipeline in [blueprint.md](blueprint.md), posture in [decisions.md](decisions.md).
 - The standard diffusers safety checker on the worker's outputs: flagged images are blocked, never stored, and the event is logged.
 
 Both exist because a public service that turns prompts into images answers to GPU providers' terms of service and to payment processors, not only to its own policy.
@@ -352,6 +383,10 @@ Both exist because a public service that turns prompts into images answers to GP
 Privacy: assets are private to their owner by default and served through short lived signed URLs in the cloud. A user can mint a share link, which makes one asset publicly reachable under an unguessable token, and revoke it later. There is no public gallery.
 
 Account deletion and data export are self serve, since GDPR makes both obligations rather than features. Deletion deactivates the account immediately and hard deletes its rows and assets within 30 days; the window also absorbs accidental or malicious deletions of a paying user's library. Export produces the account's data as JSON plus an archive of images. Self-hosted installs get both for free.
+
+## Usage metrics and telemetry
+
+Two streams, specified in [metrics.md](metrics.md). Usage events: every completed job and closed realtime session writes one user-linked row (action, model, tier, output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the deployment's own `usage_events` table - the same code in both modes, never crosses the network, dies with the account purge, and stores no prompts or images. Telemetry: self-hosted installs additionally send anonymous daily aggregates to project infrastructure, on by default with `TELEMETRY=false` to disable; the payload is documented, previewable and contains nothing joinable to a person. There are no cookies beyond the session cookie and no client side analytics anywhere.
 
 ## Data model
 
@@ -365,6 +400,7 @@ erDiagram
     users ||--o{ assets : owns
     users ||--o{ realtime_sessions : opens
     users ||--o{ metering_events : accrues
+    users ||--o{ usage_events : generates
     models ||--o{ jobs : runs
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
@@ -444,6 +480,18 @@ erDiagram
         int images
         timestamptz created_at
     }
+    usage_events {
+        uuid id PK
+        uuid user_id FK "deleted with the account"
+        text kind "job or realtime"
+        text action "generate, draw, edit, enhance"
+        text model_id
+        text tier
+        text category "CLIP zero-shot on the output"
+        int gpu_ms
+        int duration_ms
+        timestamptz created_at
+    }
 ```
 
 ## UI structure
@@ -509,7 +557,7 @@ This repository is licensed under GPL 3.0 and contains everything needed to self
 - Billing service: Stripe integration, subscriptions and the credit ledger.
 - Fleet orchestrator: rents and scales the GPU machines that run the worker pool.
 
-They integrate over HTTP through interfaces defined in this repository (QuotaService, metering events, worker registration). Nothing here depends on them: the default implementations allow everything, and the platform is fully functional without them.
+They integrate over HTTP through interfaces defined in this repository (QuotaService, metering events, worker registration). Nothing here depends on them: the default implementations allow everything, and the platform is fully functional without them. The full boundary, including the licensing analysis, the repository split and the delivery pipeline handoff, is specified in [repository-boundary.md](repository-boundary.md).
 
 ## Technology summary
 
