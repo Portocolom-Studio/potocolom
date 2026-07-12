@@ -19,8 +19,9 @@ node_modules/
 .env.*
 !.env.example
 
-# Model weights and generated data
-worker/models/
+# Model weights and generated data; manifests are versioned, weights are not
+worker/models/*
+!worker/models/*.json
 data/
 
 # Logs
