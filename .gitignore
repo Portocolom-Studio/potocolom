@@ -42,3 +42,4 @@ CLAUDE.md
 
 # Local agent/editor tooling
 .mcp.json
+.cursor/
