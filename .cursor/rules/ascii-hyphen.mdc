@@ -1,0 +1,17 @@
+---
+description: Use ASCII hyphen-minus only for dashes in code and copy
+alwaysApply: true
+---
+
+# ASCII hyphen only
+
+Use the ASCII hyphen-minus `-` (U+002D) for all dashes in source code, UI strings, docs, and comments.
+
+Do not use:
+- en dash `–` (U+2013)
+- em dash `—` (U+2014)
+
+Examples:
+- Ranges: `4-6 GB`, `10-50`, `heatMin - heatMax`
+- Separators in prose: `already running - exiting`
+- List labels: `Preflight - GET /api/...`
