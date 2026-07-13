@@ -6,7 +6,9 @@ Tests marked db skip when PostgreSQL is unreachable; `make deps` starts it.
 """
 
 import asyncio
+import atexit
 import os
+import shutil
 import tempfile
 from urllib.parse import urlsplit
 
@@ -14,7 +16,9 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/potocolom_test")
-os.environ.setdefault("STORAGE_LOCAL_PATH", tempfile.mkdtemp(prefix="potocolom-test-"))
+_storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
+os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
+atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
 
 
 def _prepare_database() -> bool:

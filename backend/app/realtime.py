@@ -15,7 +15,6 @@ import logging
 import time
 import uuid
 from collections.abc import Coroutine
-from contextlib import suppress
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, HTTPException, WebSocket
@@ -51,15 +50,23 @@ async def safe_send(sending: "Coroutine[object, object, None]") -> None:
     """Send to a peer that may have just closed; a dead socket is not an error
     here. Dead sockets surface as RuntimeError or transport-specific errors
     depending on the server, so this is deliberately broad."""
-    with suppress(Exception):
+    try:
         await sending
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 async def refuse(ws: WebSocket, code: int, message: str) -> None:
     """Send a terminal error and close, tolerating a peer that is already gone."""
-    with suppress(Exception):
+    try:
         await ws.send_json({"type": "error", "code": code, "message": message})
         await ws.close(code=code)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 def parse_control(text: str) -> dict:

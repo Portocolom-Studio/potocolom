@@ -4,7 +4,7 @@ Workers describe their models with these in the fleet hello; the registry
 persists them and GET /api/v1/models exposes them to the frontend.
 """
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class Manifest(BaseModel):
@@ -15,7 +15,7 @@ class Manifest(BaseModel):
     id: str
     name: str
     capabilities: list[str]
-    parameters: dict = {}  # JSON Schema for the model's call parameters
+    parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI

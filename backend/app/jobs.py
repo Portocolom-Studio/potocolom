@@ -21,7 +21,7 @@ from typing import Protocol
 import jsonschema
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -104,7 +104,7 @@ class GenerationRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_id: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
 
 
 @router.post("/api/v1/generations", status_code=202)
@@ -338,9 +338,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         return
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
-    worker.job_busy = False
     if entry is None:
         return  # stale report from a previous incarnation
+    worker.job_busy = False
     if db.session_factory is None:
         return
     if control["type"] == "job_done":

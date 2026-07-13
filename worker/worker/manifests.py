@@ -6,7 +6,7 @@ repository or local path the pipeline loads from and never crosses the wire.
 import logging
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -17,7 +17,7 @@ class Manifest(BaseModel):
     id: str
     name: str
     capabilities: list[str]  # text_to_image, image_to_image, realtime
-    parameters: dict = {}  # JSON Schema for the model's call parameters
+    parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only

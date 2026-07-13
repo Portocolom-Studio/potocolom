@@ -92,9 +92,10 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     """One queued job: generate, upload to the given target, report the result.
     Failures are reported, never raised: the connection outlives the job."""
     job_id = control["job_id"]
+    progress_tasks: list[asyncio.Task[None]] = []
 
     def progress(fraction: float) -> None:
-        asyncio.ensure_future(send_progress(fraction))
+        progress_tasks.append(asyncio.create_task(send_progress(fraction)))
 
     async def send_progress(fraction: float) -> None:
         with suppress(websockets.WebSocketException):
@@ -104,6 +105,8 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     try:
         params = manifest.with_defaults(control.get("params") or {})
         result = await engine.generate(manifest, params, progress)
+        if progress_tasks:
+            await asyncio.gather(*progress_tasks, return_exceptions=True)
         upload = control["upload"]
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
