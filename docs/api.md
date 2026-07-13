@@ -59,7 +59,7 @@ The SPA's first call. One build artifact serves every deployment; this response 
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none` (self-hosted default: auto login, account UI hidden), `["local"]` for email and password, and `["local", "google", "github", "apple"]` when OAuth is configured.
+`auth_methods` is empty in `AUTH_MODE=none` (self-hosted default: auto login, account UI hidden), `["local"]` for email and password, and `["local", "google", "github"]` when OAuth is configured.
 
 ### WS /api/v1/realtime
 
