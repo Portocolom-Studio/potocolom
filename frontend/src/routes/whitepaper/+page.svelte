@@ -26,9 +26,8 @@
 
 <SiteLandingHeader current="whitepaper" />
 
-<div class="mx-auto max-w-6xl px-4 pt-16 sm:px-6">
-	<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase">{t('wp.kicker')}</p>
-	<h1 class="mt-2 max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('wp.title')}</h1>
+<div class="mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-28">
+	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('wp.title')}</h1>
 	<p class="text-muted-foreground mt-4 max-w-2xl text-lg">{t('wp.sub')}</p>
 </div>
 
