@@ -422,6 +422,18 @@ The Redis pub/sub relay between API replicas stands, and no gateway code exists 
 
 Rejected alternatives: building the gateway now (a deployment and a duplicated auth surface before any profile justifies it, the same reason the frame routing decision rejected it); a full Go port of the API (recreates the two-language backend the FastAPI decision exists to avoid, spending a rewrite on headroom the GPU-bound economics cannot use, since session count and therefore relay load track fleet size, which tracks revenue).
 
+## Cloud delivery: Terraform and push-based pipelines, no Kubernetes
+
+All infrastructure is Terraform in the private repository, and git is the source of truth for both the infrastructure and the deployed image digests; nothing changes in the console outside break-glass. Delivery is push-based: GitHub Actions assumes per-environment IAM roles through OIDC (no long-lived AWS keys exist), `terraform plan` posts on every pull request, merging applies to staging, and production waits for a manual approval on the pipeline. Services roll with ECS's native rolling update plus the deployment circuit breaker and alarm-based rollback; the ALB's 120 second deregistration delay drains WebSockets during deploys. A scheduled `terraform plan` fails loudly on drift, which is the useful half of GitOps done as a nightly check instead of a resident controller.
+
+Rejected alternatives: EKS with ArgoCD or Flux (pull-based GitOps needs a Kubernetes cluster to reconcile; that is a monthly control plane bill and standing cluster operations for three stateless services and one migration task, while the GPU fleet lives outside AWS and outside Kubernetes reach anyway); AWS CodePipeline (a second CI system next to GitHub Actions for no capability gain); blue/green through CodeDeploy (doubled capacity during deploys and extra machinery for rollback the circuit breaker already provides at this scale); automatic promotion to production after a staging soak (trusts alarm coverage that does not have history yet; revisit once it does).
+
+## AWS accounts: an Organization with staging and production members
+
+An AWS Organization with two member accounts, staging and production; the management account holds consolidated billing, the organization CloudTrail and nothing else. Account boundaries make blast radius and IAM trivial - a staging mistake cannot touch production by construction - and each account gets its own OIDC deploy roles and its own Terraform state bootstrap. Humans go through IAM Identity Center with short-lived credentials: read-only for daily inspection, administrator as break-glass only. The full access model is in [cloud-delivery.md](cloud-delivery.md).
+
+Rejected alternatives: a single account separated by names and tags (soft IAM boundaries, and splitting into accounts later is a painful migration); Control Tower (audit and log-archive accounts plus SCP guardrails are enterprise machinery this scale does not pay for; guardrails can be added to the plain Organization later).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

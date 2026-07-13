@@ -11,6 +11,7 @@ Open-source real-time generative AI platform that enables users to generate, edi
 - [Local development and testing](docs/local-development.md)
 - [Cloud infrastructure](docs/cloud-infrastructure.md)
 - [AWS setup guide](docs/aws-setup.md)
+- [Cloud delivery and access model](docs/cloud-delivery.md)
 - [Repository boundary, licensing and delivery pipeline](docs/repository-boundary.md)
 - [Usage metrics and telemetry](docs/metrics.md)
 - [Design decisions](docs/decisions.md)

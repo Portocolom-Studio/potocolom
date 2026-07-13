@@ -21,7 +21,7 @@ What the cloud adds is outside the application: this infrastructure, and the two
 
 ## 0. Prerequisites
 
-- An AWS account with administrator access for the bootstrap; day-to-day changes then go through Terraform and the CI role.
+- An AWS Organization with two member accounts, staging and production (the management account holds only consolidated billing), with administrator access for the bootstrap; day-to-day changes then go through Terraform and the CI roles. See [decisions.md](decisions.md), "AWS accounts".
 - The domain (potocolom.com) in a Route 53 hosted zone.
 - Terraform 1.7 or newer, AWS CLI v2, and repository admin on GitHub (for the OIDC deploy role).
 - Accounts at the non-AWS parties: Cloudflare (R2 weights mirror), RunPod or vast.ai (GPU fleet), Stripe (billing service, private repo), Sentry (error tracking, free tier).
@@ -175,7 +175,9 @@ terraform/            (private repository)
   envs/prod/      the sizes above
 ```
 
-Staging and production are separate state files against the same bucket. The GPU fleet is deliberately absent from Terraform. Apply order on a fresh account: state bootstrap (section 1), OIDC (2), then `envs/staging` end to end before touching prod. An operator standing up their own cloud from this guide keeps their Terraform wherever they like; only the project's own is private.
+Staging and production are separate member accounts, so the section 1 state bootstrap and the section 2 OIDC role are created once per account. The GPU fleet is deliberately absent from Terraform. Apply order on a fresh account: state bootstrap (section 1), OIDC (2), then `envs/staging` end to end before touching prod. An operator standing up their own cloud from this guide keeps their Terraform wherever they like; only the project's own is private.
+
+The delivery workflow, recorded in [decisions.md](decisions.md) ("Cloud delivery"): `terraform plan` posts on every private-repo pull request and merging applies to staging; application deploys follow the pipeline in [repository-boundary.md](repository-boundary.md) (GHCR to ECR by digest, contract simulation, gated migration task, ECS staging roll); production waits behind a manual approval. Rollout is ECS rolling update with the deployment circuit breaker and alarm-based rollback. A scheduled nightly `terraform plan` reports drift. There is no Kubernetes anywhere in this deployment. The full picture - accounts, every principal's permissions, the stage-by-stage promotion path and rollback - is in [cloud-delivery.md](cloud-delivery.md).
 
 ## 12. Go-live checklist
 
