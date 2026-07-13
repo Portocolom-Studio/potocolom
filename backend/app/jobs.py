@@ -277,9 +277,17 @@ async def dispatch_step() -> None:
         job_id = await queues.pop(JOB_QUEUE)
         if job_id is None:
             return
+        job_uuid = uuid.UUID(job_id)
         try:
-            dispatched = await dispatch(uuid.UUID(job_id))
+            dispatched = await dispatch(job_uuid)
         except Exception:
+            if job_uuid in inflight:
+                # Worker may already be running; requeue would double-dispatch.
+                logger.exception(
+                    "dispatch failed after worker send for job %s; skipping requeue",
+                    job_id,
+                )
+                return
             await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)  # never lose the entry
             raise
         if not dispatched:

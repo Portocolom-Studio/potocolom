@@ -100,7 +100,7 @@ cleanup-failed: ## remove failed generation jobs from the database
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py "$(PROMPT)"
 
-# Full run: 24 prompts x 3 models x 5 variants = 360 images (~hours on GPU).
+# Full run: 24 prompts x 4 models x 5 variants = 480 images (~hours on GPU).
 BENCHMARK_DIR ?= $(CURDIR)/data/benchmark
 BENCHMARK_STAMP := $(shell date -u +%Y%m%d-%H%M%S)
 BENCHMARK_OUT ?= $(BENCHMARK_DIR)/$(BENCHMARK_STAMP)
@@ -111,7 +111,7 @@ BENCHMARK_CONTINUE ?=
 BENCHMARK_FORCE ?=
 BENCHMARK_INCLUDE_CAPPED ?=
 
-benchmark: ## multi-model suite: make benchmark [IDS=1-3] [FORCE=1]
+benchmark: ## multi-model suite: make benchmark [BENCHMARK_IDS=1-3] [BENCHMARK_FORCE=1]
 	backend/.venv/bin/python scripts/benchmark.py \
 		--out-dir "$(BENCHMARK_OUT)" \
 		$(if $(BENCHMARK_IDS),--ids $(BENCHMARK_IDS),) \

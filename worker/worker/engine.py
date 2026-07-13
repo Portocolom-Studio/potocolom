@@ -269,7 +269,7 @@ class DiffusersEngine:
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop) -> GeneratedImage:
         pipeline = self._pipeline(manifest, "t2i")
-        steps = int(params.get("steps", 2))
+        steps = max(1, int(params.get("steps", 2)))
         generator = None
         if params.get("seed") is not None:
             generator = self.torch.Generator(self.device).manual_seed(int(params["seed"]))
