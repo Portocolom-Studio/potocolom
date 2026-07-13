@@ -9,13 +9,35 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	const sections = [
-		{ id: 's1', title: 'wp.s1_title' },
-		{ id: 's2', title: 'wp.s2_title' },
-		{ id: 's3', title: 'wp.s3_title' },
-		{ id: 's4', title: 'wp.s4_title' },
-		{ id: 's5', title: 'wp.s5_title' },
-		{ id: 's6', title: 'wp.s6_title' },
-		{ id: 's7', title: 'wp.s7_title' }
+		{ id: 's1', title: 'wp.s1_title', paragraphs: ['wp.s1_p1', 'wp.s1_p2'] },
+		{
+			id: 's2',
+			title: 'wp.s2_title',
+			paragraphs: ['wp.s2_p1', 'wp.s2_p2', 'wp.s2_p3'],
+			figure: { src: '/whitepaper/under-the-hood.png', cap: 'wp.fig_arch_cap' }
+		},
+		{
+			id: 's3',
+			title: 'wp.s3_title',
+			paragraphs: ['wp.s3_p1', 'wp.s3_p2', 'wp.s3_p3'],
+			figure: { src: '/whitepaper/realtime-loop.png', cap: 'wp.fig_loop_cap' }
+		},
+		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
+		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
+		{ id: 's6', title: 'wp.s6_title', paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3'] },
+		{
+			id: 's7',
+			title: 'wp.s7_title',
+			paragraphs: ['wp.s7_p1', 'wp.s7_p2', 'wp.s7_p3'],
+			figure: { src: '/whitepaper/credit-lifecycle.png', cap: 'wp.fig_credits_cap' }
+		},
+		{
+			id: 's8',
+			title: 'wp.s8_title',
+			paragraphs: ['wp.s8_p1', 'wp.s8_p2'],
+			figure: { src: '/whitepaper/failure-map.png', cap: 'wp.fig_failures_cap' }
+		},
+		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
 	] as const;
 </script>
 
@@ -51,93 +73,40 @@
 	</aside>
 
 	<article>
-		<section id="s1" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s1_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s1_body')}
-			</p>
-			<figure class="mt-6 rounded-xl border bg-white p-3">
-				<img
-					class="w-full rounded-lg"
-					src="/whitepaper/platform-overview.png"
-					alt={t('wp.fig1_cap')}
-					loading="lazy"
-				/>
-				<figcaption class="pt-2 pl-1 text-xs text-slate-600">{t('wp.fig1_cap')}</figcaption>
-			</figure>
-		</section>
-
-		<section id="s2" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s2_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s2_body')}
-			</p>
-			<figure class="mt-6 rounded-xl border bg-white p-3">
-				<img
-					class="w-full rounded-lg"
-					src="/whitepaper/realtime-loop.png"
-					alt={t('wp.fig2_cap')}
-					loading="lazy"
-				/>
-				<figcaption class="pt-2 pl-1 text-xs text-slate-600">{t('wp.fig2_cap')}</figcaption>
-			</figure>
-		</section>
-
-		<section id="s3" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s3_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s3_body')}
-			</p>
-		</section>
-
-		<section id="s4" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s4_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s4_body')}
-			</p>
-		</section>
-
-		<section id="s5" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s5_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s5_body')}
-			</p>
-			<figure class="mt-6 rounded-xl border bg-white p-3">
-				<img
-					class="w-full rounded-lg"
-					src="/whitepaper/credit-lifecycle.png"
-					alt={t('wp.fig3_cap')}
-					loading="lazy"
-				/>
-				<figcaption class="pt-2 pl-1 text-xs text-slate-600">{t('wp.fig3_cap')}</figcaption>
-			</figure>
-		</section>
-
-		<section id="s6" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s6_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s6_body')}
-			</p>
-			<figure class="mt-6 rounded-xl border bg-white p-3">
-				<img
-					class="w-full rounded-lg"
-					src="/whitepaper/failure-map.png"
-					alt={t('wp.fig4_cap')}
-					loading="lazy"
-				/>
-				<figcaption class="pt-2 pl-1 text-xs text-slate-600">{t('wp.fig4_cap')}</figcaption>
-			</figure>
-		</section>
-
-		<section id="s7" class="scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('wp.s7_title')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('wp.s7_body')}
-			</p>
-			<Button class="mt-6" variant="outline" href="{repoUrl}/tree/main/docs">
+		{#each sections as section, index (section.id)}
+			<section
+				id={section.id}
+				class={index === sections.length - 1 ? 'scroll-mt-20' : 'mb-14 scroll-mt-20'}
+			>
+				<h2 class="text-2xl font-semibold">{t(section.title)}</h2>
+				{#each section.paragraphs as paragraph (paragraph)}
+					<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+						{t(paragraph)}
+					</p>
+				{/each}
+				{#if 'figure' in section}
+					<figure class="mt-6 rounded-xl border bg-white p-3">
+						<img
+							class="w-full rounded-lg"
+							src={section.figure.src}
+							alt={t(section.figure.cap)}
+							loading="lazy"
+						/>
+						<figcaption class="pt-2 pl-1 text-xs text-slate-600">
+							{t(section.figure.cap)}
+						</figcaption>
+					</figure>
+				{/if}
+			</section>
+		{/each}
+		<div class="mt-6 flex flex-wrap gap-3">
+			<Button variant="outline" href="{repoUrl}/tree/main/docs">
 				{t('wp.cta_docs')}
 			</Button>
-		</section>
+			<Button variant="outline" href={resolve('/benchmark')}>
+				{t('wp.cta_benchmark')}
+			</Button>
+		</div>
 	</article>
 </div>
 
