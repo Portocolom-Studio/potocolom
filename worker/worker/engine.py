@@ -37,7 +37,8 @@ class GeneratedImage:
 
 class Engine(Protocol):
     async def generate(
-        self, manifest: Manifest, params: dict, progress: ProgressFn
+        self, manifest: Manifest, params: dict, progress: ProgressFn,
+        *, input_image: bytes | None = None,
     ) -> GeneratedImage: ...
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
@@ -88,18 +89,35 @@ class SimulatedEngine:
         self._loaded.clear()
 
     async def generate(
-        self, manifest: Manifest, params: dict, progress: ProgressFn
+        self, manifest: Manifest, params: dict, progress: ProgressFn,
+        *, input_image: bytes | None = None,
     ) -> GeneratedImage:
+        if input_image is not None and "image_to_image" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
         steps = 4
         start = time.monotonic()
         for step in range(steps):
             await asyncio.sleep(self.inference_seconds / steps)
             progress((step + 1) / steps)
         color = sha256(str(params.get("prompt", "")).encode()).digest()
-        image = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE),
-                          (color[0], color[1], color[2]))
+        if input_image is not None:
+            source = Image.open(io.BytesIO(input_image)).convert("RGB")
+            width = params.get("width")
+            height = params.get("height")
+            if width and height:
+                width, height = int(width), int(height)
+                source = source.resize((width, height), Image.Resampling.LANCZOS)
+            else:
+                width, height = source.size
+            color = sha256((str(params.get("prompt", "")) + ":i2i").encode()).digest()
+            rgb = (color[0], color[1], color[2])
+            image = Image.new("RGB", (width, height), rgb)
+        else:
+            width = height = REALTIME_SIZE
+            rgb = (color[0], color[1], color[2])
+            image = Image.new("RGB", (width, height), rgb)
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), REALTIME_SIZE, REALTIME_SIZE, gpu_ms)
+        return GeneratedImage(encode_webp(image), width, height, gpu_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         await asyncio.sleep(self.inference_seconds)
@@ -256,25 +274,33 @@ class DiffusersEngine:
         return cls.from_pretrained(source, **kwargs)
 
     async def generate(
-        self, manifest: Manifest, params: dict, progress: ProgressFn
+        self, manifest: Manifest, params: dict, progress: ProgressFn,
+        *, input_image: bytes | None = None,
     ) -> GeneratedImage:
-        if "text_to_image" not in manifest.capabilities:
-            raise ValueError(f"model {manifest.id} does not support text_to_image jobs")
+        if input_image is not None:
+            if "image_to_image" not in manifest.capabilities:
+                raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
+            runner = self._generate_i2i
+        else:
+            if "text_to_image" not in manifest.capabilities:
+                raise ValueError(f"model {manifest.id} does not support text_to_image jobs")
+            runner = self._generate
         loop = asyncio.get_running_loop()
         async with self._gpu:
             try:
-                return await asyncio.to_thread(self._generate, manifest, dict(params),
-                                               progress, loop)
+                return await asyncio.to_thread(runner, manifest, dict(params),
+                                               progress, loop, input_image)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             # Two resident models plus activations can exceed a 16 GB card
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
-            return await asyncio.to_thread(self._generate, manifest, dict(params),
-                                           progress, loop)
+            return await asyncio.to_thread(runner, manifest, dict(params),
+                                           progress, loop, input_image)
 
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
-                  loop: asyncio.AbstractEventLoop) -> GeneratedImage:
+                  loop: asyncio.AbstractEventLoop,
+                  input_image: bytes | None = None) -> GeneratedImage:
         pipeline = self._pipeline(manifest, "t2i")
         steps = max(1, int(params.get("steps", 2)))
         generator = None
@@ -300,6 +326,42 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
+        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms)
+
+    def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
+                      loop: asyncio.AbstractEventLoop,
+                      input_image: bytes | None) -> GeneratedImage:
+        if input_image is None:
+            raise ValueError("image_to_image job requires input_image")
+        pipeline = self._pipeline(manifest, "i2i")
+        source = Image.open(io.BytesIO(input_image)).convert("RGB")
+        width = params.get("width")
+        height = params.get("height")
+        if width and height:
+            source = source.resize((int(width), int(height)), Image.Resampling.LANCZOS)
+        steps = max(1, int(params.get("steps", 2)))
+        strength = min(max(float(params.get("strength", 0.75)), 0.05), 1.0)
+        actual_steps = max(1, math.ceil(steps * strength))
+        generator = None
+        if params.get("seed") is not None:
+            generator = self.torch.Generator(self.device).manual_seed(int(params["seed"]))
+
+        def on_step(pipe: Any, step: int, timestep: Any, kwargs: dict) -> dict:
+            loop.call_soon_threadsafe(progress, (step + 1) / actual_steps)
+            return kwargs
+
+        start = time.monotonic()
+        image = pipeline(
+            prompt=str(params.get("prompt", "")),
+            image=source,
+            num_inference_steps=steps,
+            strength=strength,
+            guidance_scale=float(params.get("guidance", 0.0)),
+            generator=generator,
+            callback_on_step_end=on_step,
+        ).images[0]
+        gpu_ms = int((time.monotonic() - start) * 1000)
+        loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:

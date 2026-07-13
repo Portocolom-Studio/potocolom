@@ -138,11 +138,18 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     keepalive_task = asyncio.create_task(progress_keepalive())
     try:
         params = manifest.with_defaults(control.get("params") or {})
-        result = await engine.generate(manifest, params, progress)
         upload = control["upload"]
         thumb_upload = control.get("thumb_upload")
         has_thumbnail = False
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
+            input_image = None
+            input_spec = control.get("input")
+            if input_spec and input_spec.get("url"):
+                response = await client.get(input_spec["url"])
+                response.raise_for_status()
+                input_image = response.content
+            result = await engine.generate(manifest, params, progress,
+                                           input_image=input_image)
             response = await client.put(upload["url"], content=result.data,
                                         headers=upload.get("headers") or {})
             response.raise_for_status()

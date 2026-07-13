@@ -28,6 +28,8 @@ class Storage(Protocol):
 
     async def url(self, key: str) -> str: ...
 
+    async def worker_fetch_url(self, key: str) -> str: ...
+
     async def delete(self, key: str) -> None: ...
 
 
@@ -50,6 +52,9 @@ class LocalStorage:
 
     async def url(self, key: str) -> str:
         return f"{self.public_url}/api/v1/files/{key}"
+
+    async def worker_fetch_url(self, key: str) -> str:
+        return f"{self.worker_url}/api/v1/files/{key}"
 
     async def delete(self, key: str) -> None:
         self.path(key).unlink(missing_ok=True)
@@ -91,6 +96,9 @@ class S3Storage:
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=SIGNED_URL_TTL,
         )
+
+    async def worker_fetch_url(self, key: str) -> str:
+        return await self.url(key)
 
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(self.client.delete_object, Bucket=self.bucket, Key=key)
