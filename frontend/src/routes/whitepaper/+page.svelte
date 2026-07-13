@@ -1,5 +1,6 @@
 <script lang="ts">
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
@@ -23,21 +24,10 @@
 	<meta name="description" content={t('wp.sub')} />
 </svelte:head>
 
-<header class="bg-background/70 sticky top-0 z-50 border-b backdrop-blur-md">
-	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-		<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-			potocolom<span class="text-primary">_</span>
-		</a>
-		<div class="flex items-center gap-3">
-			<LanguageToggle />
-			<Button size="sm" href={resolve('/app')}>{t('nav.launch')}</Button>
-		</div>
-	</div>
-</header>
+<SiteLandingHeader current="whitepaper" />
 
-<div class="mx-auto max-w-6xl px-4 pt-14 sm:px-6">
-	<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase">{t('wp.kicker')}</p>
-	<h1 class="mt-2 max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('wp.title')}</h1>
+<div class="mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-28">
+	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('wp.title')}</h1>
 	<p class="text-muted-foreground mt-4 max-w-2xl text-lg">{t('wp.sub')}</p>
 </div>
 
@@ -173,3 +163,5 @@
 		</a>
 	</nav>
 </footer>
+
+<ScrollToTop />

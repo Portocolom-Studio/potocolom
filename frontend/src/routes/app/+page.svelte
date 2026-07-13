@@ -1,10 +1,16 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import type { LatentCanvasApi } from '$lib/latent-canvas-scene';
+	import { loadModels } from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
+
+	onMount(() => {
+		void loadModels();
+	});
 
 	let leftPanelEl = $state<HTMLDivElement | null>(null);
 	let rightPanelEl = $state<HTMLDivElement | null>(null);

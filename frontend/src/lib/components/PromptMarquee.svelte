@@ -25,10 +25,10 @@
 	}
 </script>
 
-<div class="mt-12">
-	<p class="text-muted-foreground text-center text-sm">{t('gallery.prompts_hint')}</p>
+<div class="mt-12 overflow-x-clip">
+	<p class="text-muted-foreground px-4 text-center text-sm sm:px-6">{t('gallery.prompts_hint')}</p>
 	<div
-		class="relative left-1/2 mt-5 flex w-screen -translate-x-1/2 flex-col gap-4"
+		class="mt-5 flex w-full flex-col gap-4 overflow-x-clip"
 		aria-label={t('gallery.prompts_aria')}
 	>
 		{#if showCopied}
