@@ -132,8 +132,8 @@ benchmark-publish: ## minify results.json into frontend static assets
 WAITLIST_URL ?= /api/waitlist
 PAGES_PROJECT ?= potocolom
 
-site-build: ## build the frontend with the waitlist endpoint baked in
-	cd frontend && PUBLIC_WAITLIST_URL=$(WAITLIST_URL) npm run build
+site-build: ## build the frontend in landing mode with the waitlist endpoint baked in
+	cd frontend && PUBLIC_WAITLIST_URL=$(WAITLIST_URL) PUBLIC_SITE_MODE=landing npm run build
 
 site-deploy: site-build ## build and deploy the site to Cloudflare Pages
 	cd frontend && npx wrangler pages deploy build --project-name $(PAGES_PROJECT)
