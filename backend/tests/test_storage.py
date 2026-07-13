@@ -31,6 +31,7 @@ def test_s3_storage_presigns_offline():
     target = asyncio.run(storage.upload_target("u/j.webp"))
     assert "u/j.webp" in target.url
     assert "X-Amz-Signature" in target.url
+    assert target.headers == {"Content-Type": "image/webp"}
 
 
 def test_files_get_after_direct_write():

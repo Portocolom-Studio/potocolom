@@ -10,11 +10,7 @@
 	import { cn } from '$lib/utils.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-	import { loadHistory, studio, starredGenerations } from '$lib/studio.svelte';
-
-	$effect(() => {
-		void loadHistory();
-	});
+	import { studio, starredGenerations } from '$lib/studio.svelte';
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {

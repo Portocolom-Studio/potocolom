@@ -82,7 +82,12 @@ class SessionRunner:
                                  self.session_id)
                 continue
             self.frames += 1
-            await ws.send(bytes([GENERATED_FRAME]) + self.session_id.bytes + generated)
+            try:
+                await ws.send(bytes([GENERATED_FRAME]) + self.session_id.bytes + generated)
+            except websockets.WebSocketException:
+                logger.warning("session %s lost the connection while sending a frame",
+                               self.session_id)
+                return
 
     def close(self) -> None:
         self._task.cancel()
@@ -255,11 +260,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 return
     finally:
         heartbeat_task.cancel()
+        runner_tasks: list[asyncio.Task] = []
         for runner in runners.values():
             runner.close()
+            runner_tasks.append(runner._task)
         for task in jobs:
             task.cancel()
-        await asyncio.gather(heartbeat_task, *jobs, return_exceptions=True)
+        await asyncio.gather(heartbeat_task, *jobs, *runner_tasks, return_exceptions=True)
 
 
 async def run() -> None:
