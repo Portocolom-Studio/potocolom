@@ -39,16 +39,19 @@ async def upload(key: str, request: Request) -> dict:
         path = storage.path(key)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    path.parent.mkdir(parents=True, exist_ok=True)
 
-    size = 0
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="upload too large")
+        body.extend(chunk)
+
+    def write_file() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
     try:
-        with path.open("wb") as handle:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="upload too large")
-                await asyncio.to_thread(handle.write, chunk)
+        await asyncio.to_thread(write_file)
     except Exception:
         path.unlink(missing_ok=True)
         raise

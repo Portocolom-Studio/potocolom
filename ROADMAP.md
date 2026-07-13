@@ -112,3 +112,5 @@ live in [docs/decisions.md](docs/decisions.md).
 - Worker-internal batching (StreamDiffusion-class step batching, CFG drop)
   and TAESD preview decode: trigger is fleet spend, not local speed.
 - Dedicated realtime/batch pools: a configuration change at scaling stage 2.
+- Job execution watchdog (#61): fail or requeue jobs stuck in `running` when
+  a connected worker stops reporting progress.

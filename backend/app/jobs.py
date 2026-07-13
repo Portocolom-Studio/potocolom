@@ -233,7 +233,14 @@ async def generation_events(
             if not listeners:
                 subscribers.pop(job_id, None)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
