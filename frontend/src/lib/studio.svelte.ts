@@ -1,6 +1,8 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { STUDIO_MODELS } from '$lib/studio-models';
+
 export type Model = {
 	id: string;
 	name: string;
@@ -70,12 +72,23 @@ export const studio = $state({
 
 let polling = false;
 
+function applyModels(models: Model[]): void {
+	studio.models = models;
+	if (!studio.modelId && models.length > 0) {
+		studio.modelId = (models.find((m) => m.default) ?? models[0]).id;
+	}
+}
+
 export async function loadModels(): Promise<void> {
-	const response = await fetch('/api/v1/models');
-	if (!response.ok) return;
-	studio.models = (await response.json()) as Model[];
-	if (!studio.modelId && studio.models.length > 0) {
-		studio.modelId = (studio.models.find((m) => m.default) ?? studio.models[0]).id;
+	applyModels(STUDIO_MODELS);
+
+	// Prefer live worker registry when the API is available (self-hosted stack).
+	try {
+		const response = await fetch('/api/v1/models');
+		if (!response.ok) return;
+		applyModels((await response.json()) as Model[]);
+	} catch {
+		// Hardcoded list above is enough for the redesign preview.
 	}
 }
 
@@ -165,7 +178,9 @@ export async function loadStarredGenerations(): Promise<void> {
 			return generation.state !== 'failed' && generation.assets.length > 0 ? generation : null;
 		})
 	);
-	studio.starredExtras = fetched.filter((generation): generation is Generation => generation !== null);
+	studio.starredExtras = fetched.filter(
+		(generation): generation is Generation => generation !== null
+	);
 }
 
 export function resetHistoryToRecent(): void {
