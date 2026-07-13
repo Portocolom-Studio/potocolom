@@ -18,8 +18,7 @@ export type BenchmarkResult = {
 /** Reference timings only - not offered in the studio UI. */
 export const CAPPED_BENCHMARK_MODELS = new Set([
 	'sd-turbo',
-	'sdxl-turbo',
-	'krea-2-turbo'
+	'sdxl-turbo'
 ]);
 
 export function isReferenceOnlyModel(modelId: string): boolean {
@@ -127,7 +126,7 @@ export function chartColor(index: number): string {
 	return CHART_COLORS[index % CHART_COLORS.length];
 }
 
-/** Bar width 2–100 %; optional log scale for load times that span orders of magnitude. */
+/** Bar width 2-100 %; optional log scale for load times that span orders of magnitude. */
 export function barScale(value: number, max: number, log = false): number {
 	if (value <= 0 || max <= 0) return 0;
 	if (log) {

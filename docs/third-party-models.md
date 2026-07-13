@@ -13,7 +13,6 @@ select them. Reference timings may still appear on `/benchmark`.
 | Model | License | Product status |
 | --- | --- | --- |
 | sd-turbo, sdxl-turbo | Stability AI Community | Benchmark reference |
-| krea-2-turbo | Krea 2 Community | Benchmark reference |
 
 If you later offer any of these in the product, the obligations below apply.
 
@@ -36,23 +35,6 @@ requires:
   `This Stability AI Model is licensed under the Stability AI Community License, Copyright © Stability AI Ltd. All Rights Reserved`
 - **Prominent display** of **"Powered by Stability AI"** on the website, user
   interface, or product documentation.
-
-## Krea 2 Community License (krea-2-turbo)
-
-Same **$1M trailing-twelve-month revenue cap** (you and affiliates, all sources).
-Above that threshold, cease commercial use or contact `opensource@krea.ai` for
-an enterprise license.
-
-**When offering a product or service that uses Krea 2**, the license requires:
-
-- A **Notice** file with:
-  `Krea 2 is licensed under the Krea 2 Community License Agreement. For more information, visit https://krea.ai/krea-2-licensing.`
-- **Content filters** to prevent prohibited outputs (the cloud safety stack may
-  satisfy this — verify against the [Krea AUP](https://www.krea.ai/krea-2-licensing)).
-- Compliance with the incorporated Acceptable Use Policy.
-
-Unlike Stability, Krea does **not** require a separate registration form for
-commercial use under the cap.
 
 ## Unrestricted product models
 

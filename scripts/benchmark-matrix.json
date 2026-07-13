@@ -5,8 +5,8 @@
     {
       "id": "sdxl-base",
       "license": "CreativeML Open RAIL++-M",
-      "commercial": "yes — no revenue cap; RAIL use restrictions (no illegal/harmful outputs)",
-      "notes": "Full SDXL quality at 768/1024; ~16–20 gpu_s at 1024/20 steps on RX 7600 XT (issue #60).",
+      "commercial": "yes - no revenue cap; RAIL use restrictions (no illegal/harmful outputs)",
+      "notes": "Full SDXL quality at 768/1024; ~16-20 gpu_s at 1024/20 steps on RX 7600 XT (issue #60).",
       "variants": [
         { "label": "1024-default", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 6, "seed": 100 } },
         { "label": "768-default", "params": { "width": 768, "height": 768, "steps": 20, "guidance": 6, "seed": 100 } },
@@ -18,7 +18,7 @@
     {
       "id": "sdxl-fast",
       "license": "CreativeML Open RAIL++-M (base) + ByteDance SDXL Lightning LoRA",
-      "commercial": "yes — no revenue cap; RAIL use restrictions on base weights",
+      "commercial": "yes - no revenue cap; RAIL use restrictions on base weights",
       "notes": "Lightning LoRA fused at load; ~3.9 gpu_s at 1024/8 steps on RX 7600 XT (issue #60).",
       "variants": [
         { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
@@ -31,7 +31,7 @@
     {
       "id": "ssd-1b",
       "license": "Apache 2.0",
-      "commercial": "yes — unrestricted commercial use",
+      "commercial": "yes - unrestricted commercial use",
       "notes": "Distilled SDXL (~1.3B); good speed/quality tradeoff at 8 GB.",
       "variants": [
         { "label": "1024-20step", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 7, "seed": 100 } },
@@ -44,8 +44,8 @@
     {
       "id": "dreamshaper-lcm",
       "license": "CreativeML Open RAIL-M (SD 1.5 derivative)",
-      "commercial": "yes — no revenue cap; RAIL use restrictions",
-      "notes": "SD 1.5 LCM fine-tune; ~4–6 GB resident; strong stylized/illustration output.",
+      "commercial": "yes - no revenue cap; RAIL use restrictions",
+      "notes": "SD 1.5 LCM fine-tune; ~4-6 GB resident; strong stylized/illustration output.",
       "variants": [
         { "label": "4-step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
         { "label": "8-step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 1.5, "seed": 100 } },
@@ -81,36 +81,18 @@
         { "label": "512-1step-alt-seed", "params": { "width": 512, "height": 512, "steps": 1, "guidance": 0, "seed": 200 } },
         { "label": "512-2step-guidance0.5", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0.5, "seed": 100 } }
       ]
-    },
-    {
-      "id": "krea-2-turbo",
-      "license": "Krea 2 Community License",
-      "commercial": "yes while annual revenue ≤ $1M; see krea.ai/krea-2-licensing",
-      "notes": "12B DiT distilled to 8 steps; ~16 GB bf16. Benchmark reference only, not offered in the app.",
-      "variants": [
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } },
-        { "label": "1024-8step-guidance1", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 1, "seed": 100 } }
-      ]
     }
   ],
   "excluded": [
     {
       "id": "sd-turbo",
       "license": "Stability AI Community License",
-      "reason": "In capped_commercial — usable under $1M annual revenue with registration; see BENCHMARK.md."
+      "reason": "In capped_commercial - usable under $1M annual revenue with registration; see BENCHMARK.md."
     },
     {
       "id": "sdxl-turbo",
       "license": "Stability AI Community License",
-      "reason": "In capped_commercial — same $1M cap and registration as sd-turbo."
-    },
-    {
-      "id": "krea-2-turbo",
-      "license": "Krea 2 Community License",
-      "reason": "In capped_commercial — benchmark reference only; not offered in the app."
+      "reason": "In capped_commercial - same $1M cap and registration as sd-turbo."
     },
     {
       "id": "flux-schnell",

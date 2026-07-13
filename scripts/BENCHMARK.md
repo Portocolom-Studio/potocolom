@@ -15,13 +15,13 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **sdxl-base** | Open RAIL++-M | ~8 GB tight | 768 / 1024 | Highest quality |
 | **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
-| **dreamshaper-lcm** | Open RAIL-M | ~4–6 GB | 512 / 768 | Illustration, stylized art |
+| **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
 
 ## Capped commercial models (benchmark reference only)
 
-Models under a **$1M annual revenue cap** (Stability AI Community License, Krea 2
-Community License). They live in `capped_commercial` in `benchmark-matrix.json`
-and in `worker/models/` with **`benchmark_only: true`** — the worker can run them
+Models under a **$1M annual revenue cap** (Stability AI Community License).
+They live in `capped_commercial` in `benchmark-matrix.json`
+and in `worker/models/` with **`benchmark_only: true`** - the worker can run them
 for benchmarks, but **`GET /api/v1/models` hides them** so users cannot select
 them in the app.
 
@@ -29,16 +29,15 @@ them in the app.
 | --- | --- | --- | --- |
 | **sd-turbo** | Stability Community | ~8 GB | ~290 gpu_ms @ 512 (issue #60) |
 | **sdxl-turbo** | Stability Community | ~10 GB | ~310 gpu_ms @ 512 |
-| **krea-2-turbo** | Krea 2 Community | ~16 GB bf16 | 12B DiT, 8-step distilled |
 
 Timings from these models **can appear on `/benchmark`** (reference hardware
 metrics). They are **not offered** in the studio UI.
 
 ```bash
 # Capped models only (smoke)
-make benchmark BENCHMARK_MODELS=sd-turbo,krea-2-turbo BENCHMARK_IDS=1-3
+make benchmark BENCHMARK_MODELS=sd-turbo BENCHMARK_IDS=1-3
 
-# Full unrestricted + capped (long run; needs 16 GB for Krea)
+# Full unrestricted + capped
 make benchmark BENCHMARK_INCLUDE_CAPPED=1
 ```
 
@@ -46,29 +45,29 @@ License obligations if you ever ship them to users: [docs/third-party-models.md]
 
 ## Execution flow
 
-1. **Preflight** — `GET /api/v1/benchmark/gpu`. If any model is resident, abort
+1. **Preflight** - `GET /api/v1/benchmark/gpu`. If any model is resident, abort
    (or pass `--force` to unload first).
-2. **Per model** — explicit load → all prompts × variants → explicit unload.
-3. **Summarize** — `results.json`, `report.md`, `report.html` with `load_ms`,
+2. **Per model** - explicit load → all prompts × variants → explicit unload.
+3. **Summarize** - `results.json`, `report.md`, `report.html` with `load_ms`,
    `gpu_ms`, and `wall_s` per image.
-4. **Cleanup** — unload anything still on the GPU (even after errors).
+4. **Cleanup** - unload anything still on the GPU (even after errors).
 
 Load and unload go through the API → fleet socket → worker `DiffusersEngine`,
 so the benchmark controls VRAM instead of relying on lazy load / OOM eviction.
 
 First-time model pulls download from Hugging Face and can stall the log for
-several minutes with no new lines — watch the worker terminal or HF cache size.
+several minutes with no new lines - watch the worker terminal or HF cache size.
 
 ## Models excluded entirely
 
 | Model | Why excluded |
 | --- | --- |
-| **FLUX.1 Schnell** | Apache 2.0 (good license) but needs 12–16 GB+ or memory ladder (#15) |
+| **FLUX.1 Schnell** | Apache 2.0 (good license) but needs 12-16 GB+ or memory ladder (#15) |
 | **FLUX.1 Dev** | Non-commercial license |
 | **SD 3.5 Medium/Large** | Community License ($1M cap) or 12 GB+ VRAM |
 
 When the worker memory ladder lands, FLUX.1 Schnell becomes the top candidate to
-add — it is the planned quality ceiling on the license shortlist (see ROADMAP).
+add - it is the planned quality ceiling on the license shortlist (see ROADMAP).
 
 ## Output layout
 
@@ -107,6 +106,6 @@ make benchmark BENCHMARK_MODELS=sdxl-fast,ssd-1b
 
 ## References
 
-- [Issue #60 — Inference speed baseline and backlog](https://github.com/portocolom-studio/potocolom/issues/60)
+- [Issue #60 - Inference speed baseline and backlog](https://github.com/portocolom-studio/potocolom/issues/60)
 - Measured timings on RX 7600 XT in ROADMAP.md
 - VRAM guidance from Stability AI / Black Forest Labs docs, Hugging Face model cards, and community tables

@@ -3,8 +3,8 @@
     backend/.venv/bin/python scripts/benchmark.py
 
 Requires the API and a worker (docs/local-development.md). Configuration:
-  benchmark-prompts.json  — 24 curated prompts
-  benchmark-matrix.json   — models, 5 parameter variants each
+  benchmark-prompts.json  - 24 curated prompts
+  benchmark-matrix.json   - models, 5 parameter variants each
 
 See scripts/BENCHMARK.md for 8 GB VRAM model research and usage notes.
 """
@@ -133,7 +133,7 @@ def require_clean_gpu(client: httpx.Client, api: str, force: bool) -> None:
             raise SystemExit(f"could not clear GPU: still loaded: {loaded}")
         return
     raise SystemExit(
-        f"GPU not clean — loaded: {', '.join(loaded)}. "
+        f"GPU not clean - loaded: {', '.join(loaded)}. "
         "Restart the worker or re-run with --force to unload first."
     )
 
@@ -351,7 +351,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true",
                         help="unload resident models instead of aborting preflight")
     parser.add_argument("--include-capped", action="store_true",
-                        help="include capped_commercial models (Stability, Krea)")
+                        help="include capped_commercial models (Stability)")
     args = parser.parse_args()
 
     all_prompts = json.loads(PROMPTS_PATH.read_text())

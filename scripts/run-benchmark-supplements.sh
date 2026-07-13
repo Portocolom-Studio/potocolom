@@ -12,7 +12,7 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >>"$LOG"; }
 
 exec 9>"$LOCK"
 if ! flock -n 9; then
-  log "another supplement pipeline is already running — exiting"
+  log "another supplement pipeline is already running - exiting"
   exit 0
 fi
 
@@ -50,34 +50,9 @@ api_up() {
   curl -sf --max-time 5 "$API/api/v1/models" >/dev/null 2>&1
 }
 
-worker_models() {
-  curl -sf --max-time 5 "$API/api/v1/benchmark/models" 2>/dev/null \
-    || curl -sf --max-time 5 "$API/api/v1/models"
-}
-
-has_model() {
-  local model_id="$1"
-  worker_models | "$PYTHON" -c 'import json,sys; ids={m["id"] for m in json.load(sys.stdin)}; sys.exit(0 if sys.argv[1] in ids else 1)' "$model_id"
-}
-
 restart_stack() {
   if api_up && curl -sf --max-time 5 "$API/api/v1/benchmark/gpu" >/dev/null 2>&1; then
-    log "API and worker already up — skipping restart"
-    if ! has_model krea-2-turbo; then
-      log "restarting worker only (krea-2-turbo not registered)"
-      for pid in $(pgrep -f "worker/\.venv/bin/python -m worker"); do kill "$pid" 2>/dev/null; done
-      sleep 10
-      nohup bash -c "cd '$ROOT/worker' && MODELS_DIR=models DEVICE=rocm .venv/bin/python -m worker" \
-        >>"$ROOT/data/benchmark/worker-overnight.log" 2>&1 &
-      log "worker pid $!"
-      for _ in $(seq 1 180); do
-        if curl -sf --max-time 5 "$API/api/v1/benchmark/gpu" >/dev/null 2>&1; then
-          log "worker reconnected"
-          break
-        fi
-        sleep 10
-      done
-    fi
+    log "API and worker already up - skipping restart"
     return 0
   fi
 
@@ -136,13 +111,13 @@ restart_stack
 
 run_bench "$ROOT/data/benchmark/supplement-sdxl-fast" --models sdxl-fast
 
-for model in sd-turbo sdxl-turbo krea-2-turbo; do
+for model in sd-turbo sdxl-turbo; do
   run_bench "$ROOT/data/benchmark/supplement-$model" --models "$model"
 done
 
 log "=== merge ==="
 MERGE_SOURCES=("$FULL_RUN" "$ROOT/data/benchmark/supplement-sdxl-fast/results.json")
-for model in sd-turbo sdxl-turbo krea-2-turbo; do
+for model in sd-turbo sdxl-turbo; do
   path="$ROOT/data/benchmark/supplement-$model/results.json"
   if [[ -f "$path" ]]; then
     MERGE_SOURCES+=("$path")

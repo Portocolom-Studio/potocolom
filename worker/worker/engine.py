@@ -137,17 +137,6 @@ class DiffusersEngine:
         return self._pipelines[key]
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
-        if manifest.pipeline == "krea2":
-            if mode != "t2i":
-                raise ValueError(f"model {manifest.id} does not support image_to_image")
-            from diffusers import Krea2Pipeline
-
-            source = manifest.source or manifest.id
-            dtype = self.torch.bfloat16 if self.device == "cuda" else self.torch.float32
-            pipeline = Krea2Pipeline.from_pretrained(source, torch_dtype=dtype)
-            pipeline.set_progress_bar_config(disable=True)
-            return pipeline.to(self.device)
-
         from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 
         cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image

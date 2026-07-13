@@ -480,9 +480,9 @@ Rejected alternatives: keeping everything hand-rolled (every new surface repays 
 
 ## Stability Community License models in the product
 
-sd-turbo, sdxl-turbo, and krea-2-turbo ship in the worker manifests with `benchmark_only: true`. They are available to the benchmark harness and hidden from `GET /api/v1/models`, so end users cannot select them in the studio. Timings may still appear on the public `/benchmark` page as reference hardware metrics.
+sd-turbo and sdxl-turbo ship in the worker manifests with `benchmark_only: true`. They are available to the benchmark harness and hidden from `GET /api/v1/models`, so end users cannot select them in the studio. Timings may still appear on the public `/benchmark` page as reference hardware metrics.
 
-If these models are ever offered in the product, the same $1M annual revenue cap applies (Stability AI Community License or Krea 2 Community License respectively); above that threshold the community license terminates and an enterprise license is required. Stability commercial use also requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
+If these models are ever offered in the product, the same $1M annual revenue cap applies (Stability AI Community License); above that threshold the community license terminates and an enterprise license is required. Stability commercial use also requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
 
 Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
 
