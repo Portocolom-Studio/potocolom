@@ -18,6 +18,7 @@ class Manifest(BaseModel):
     parameters: dict = {}  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
+    benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
 
 
 def parse_manifests(raw: object) -> list[Manifest]:

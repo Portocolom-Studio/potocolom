@@ -5,6 +5,12 @@
   "min_vram_gb": 10,
   "source": "stabilityai/sdxl-turbo",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "license_id": "stability-ai-community",
+  "license_url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md",
+  "commercial_max_revenue_usd": 1000000,
+  "license_registration_url": "https://stability.ai/community-license",
+  "requires_attribution": "Powered by Stability AI",
+  "benchmark_only": true,
   "parameters": {
     "type": "object",
     "properties": {

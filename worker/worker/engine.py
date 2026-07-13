@@ -42,6 +42,14 @@ class Engine(Protocol):
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
 
+    def loaded_models(self) -> list[str]: ...
+
+    async def load_model(self, manifest: Manifest) -> int: ...
+
+    async def unload_model(self, model_id: str) -> None: ...
+
+    async def unload_all(self) -> None: ...
+
 
 def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
@@ -55,6 +63,22 @@ class SimulatedEngine:
 
     def __init__(self, inference_seconds: float):
         self.inference_seconds = inference_seconds
+        self._loaded: set[str] = set()
+
+    def loaded_models(self) -> list[str]:
+        return sorted(self._loaded)
+
+    async def load_model(self, manifest: Manifest) -> int:
+        start = time.monotonic()
+        await asyncio.sleep(self.inference_seconds / 4)
+        self._loaded = {manifest.id}
+        return int((time.monotonic() - start) * 1000)
+
+    async def unload_model(self, model_id: str) -> None:
+        self._loaded.discard(model_id)
+
+    async def unload_all(self) -> None:
+        self._loaded.clear()
 
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn
@@ -113,6 +137,17 @@ class DiffusersEngine:
         return self._pipelines[key]
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
+        if manifest.pipeline == "krea2":
+            if mode != "t2i":
+                raise ValueError(f"model {manifest.id} does not support image_to_image")
+            from diffusers import Krea2Pipeline
+
+            source = manifest.source or manifest.id
+            dtype = self.torch.bfloat16 if self.device == "cuda" else self.torch.float32
+            pipeline = Krea2Pipeline.from_pretrained(source, torch_dtype=dtype)
+            pipeline.set_progress_bar_config(disable=True)
+            return pipeline.to(self.device)
+
         from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 
         cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
@@ -158,14 +193,52 @@ class DiffusersEngine:
             return EulerDiscreteScheduler.from_config(config, timestep_spacing="trailing")
         raise ValueError(f"unknown scheduler override: {name}")
 
-    def _evict_except(self, model_id: str) -> None:
+    def loaded_models(self) -> list[str]:
+        return sorted({key[0] for key in self._pipelines})
+
+    def _free_gpu_cache(self) -> None:
         import gc
 
+        gc.collect()
+        if self.device == "cuda":
+            self.torch.cuda.empty_cache()
+
+    def _evict_except(self, model_id: str) -> None:
         evicted = [key for key in self._pipelines if key[0] != model_id]
         for key in evicted:
             del self._pipelines[key]
-        gc.collect()
-        self.torch.cuda.empty_cache()
+        self._free_gpu_cache()
+
+    def _evict_model(self, model_id: str) -> None:
+        for key in [key for key in self._pipelines if key[0] == model_id]:
+            del self._pipelines[key]
+        self._free_gpu_cache()
+
+    def _evict_all(self) -> None:
+        self._pipelines.clear()
+        self._free_gpu_cache()
+
+    async def load_model(self, manifest: Manifest) -> int:
+        async with self._gpu:
+            return await asyncio.to_thread(self._load_model, manifest)
+
+    def _load_model(self, manifest: Manifest) -> int:
+        self._evict_all()
+        start = time.monotonic()
+        try:
+            self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
+        except self.torch.OutOfMemoryError:
+            self._evict_all()
+            self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
+        return int((time.monotonic() - start) * 1000)
+
+    async def unload_model(self, model_id: str) -> None:
+        async with self._gpu:
+            await asyncio.to_thread(self._evict_model, model_id)
+
+    async def unload_all(self) -> None:
+        async with self._gpu:
+            await asyncio.to_thread(self._evict_all)
 
     def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
         source = manifest.source or manifest.id

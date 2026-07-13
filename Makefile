@@ -6,7 +6,7 @@
 # Self-hosted packaging (one compose file for everything) is issue #18.
 
 .PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
-	api worker-rocm worker-sim web generate \
+	api worker-rocm worker-sim web generate benchmark benchmark-publish benchmark-overnight \
 	site-build site-deploy worker-deploy
 
 setup: ## create virtualenvs and install all dependencies
@@ -61,6 +61,36 @@ web: ## studio dev server; proxies /api/v1 to localhost:8000
 
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py "$(PROMPT)"
+
+# Full run: 24 prompts x 3 models x 5 variants = 360 images (~hours on GPU).
+BENCHMARK_DIR ?= $(CURDIR)/data/benchmark
+BENCHMARK_STAMP := $(shell date -u +%Y%m%d-%H%M%S)
+BENCHMARK_OUT ?= $(BENCHMARK_DIR)/$(BENCHMARK_STAMP)
+BENCHMARK_IDS ?=
+BENCHMARK_MODELS ?=
+BENCHMARK_QUICK ?=
+BENCHMARK_CONTINUE ?=
+BENCHMARK_FORCE ?=
+BENCHMARK_INCLUDE_CAPPED ?=
+
+benchmark: ## multi-model suite: make benchmark [IDS=1-3] [FORCE=1]
+	backend/.venv/bin/python scripts/benchmark.py \
+		--out-dir "$(BENCHMARK_OUT)" \
+		$(if $(BENCHMARK_IDS),--ids $(BENCHMARK_IDS),) \
+		$(if $(BENCHMARK_MODELS),--models $(BENCHMARK_MODELS),) \
+		$(if $(BENCHMARK_QUICK),--quick,) \
+		$(if $(BENCHMARK_CONTINUE),--continue-on-error,) \
+		$(if $(BENCHMARK_FORCE),--force,) \
+		$(if $(BENCHMARK_INCLUDE_CAPPED),--include-capped,)
+
+BENCHMARK_PUBLISH ?= $(BENCHMARK_DIR)/full-run
+
+benchmark-publish: ## copy results.json into frontend static assets
+	test -f "$(BENCHMARK_PUBLISH)/results.json"
+	cp "$(BENCHMARK_PUBLISH)/results.json" frontend/static/benchmark/results.json
+
+benchmark-overnight: ## wait for full-run, then supplements + publish (unattended)
+	MAX_WAIT_HOURS=10 nohup scripts/run-benchmark-supplements.sh </dev/null >/dev/null 2>&1 &
 
 # Site deployment (Cloudflare Pages). Anyone deploying their own copy
 # overrides the variables; the waitlist worker lives outside this repo.

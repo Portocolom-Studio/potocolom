@@ -124,6 +124,49 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                                       "reason": str(error)}))
 
 
+async def _gpu_load(ws, engine: Engine, by_id: dict[str, Manifest], control: dict) -> None:
+    request_id = control["request_id"]
+    try:
+        manifest = by_id[control["model_id"]]
+        load_ms = await engine.load_model(manifest)
+        await ws.send(json.dumps({
+            "type": "model_loaded",
+            "request_id": request_id,
+            "model_id": manifest.id,
+            "load_ms": load_ms,
+            "loaded_models": engine.loaded_models(),
+        }))
+    except Exception as error:
+        logger.exception("load_model %s failed", control.get("model_id"))
+        await ws.send(json.dumps({
+            "type": "gpu_error",
+            "request_id": request_id,
+            "reason": str(error),
+        }))
+
+
+async def _gpu_unload(ws, engine: Engine, control: dict) -> None:
+    request_id = control["request_id"]
+    try:
+        model_id = control.get("model_id")
+        if model_id:
+            await engine.unload_model(model_id)
+        else:
+            await engine.unload_all()
+        await ws.send(json.dumps({
+            "type": "model_unloaded",
+            "request_id": request_id,
+            "loaded_models": engine.loaded_models(),
+        }))
+    except Exception as error:
+        logger.exception("unload_model failed")
+        await ws.send(json.dumps({
+            "type": "gpu_error",
+            "request_id": request_id,
+            "reason": str(error),
+        }))
+
+
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
     await ws.send(json.dumps({
@@ -190,6 +233,16 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             ws, engine, by_id[control["model_id"]], control))
                         jobs.add(task)
                         task.add_done_callback(jobs.discard)
+                    elif control["type"] == "gpu_status":
+                        await ws.send(json.dumps({
+                            "type": "gpu_status",
+                            "request_id": control["request_id"],
+                            "loaded_models": engine.loaded_models(),
+                        }))
+                    elif control["type"] == "load_model":
+                        await _gpu_load(ws, engine, by_id, control)
+                    elif control["type"] == "unload_model":
+                        await _gpu_unload(ws, engine, control)
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
                 # docs/connection-handling.md: protocol violations close with
                 # 4000 from either side; run() then reconnects with backoff.

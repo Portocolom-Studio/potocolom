@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 
 from app import db, jobs
+from app.benchmark import router as benchmark_router
 from app.files import router as files_router
 from app.jobs import router as jobs_router
 from app.logs import setup_logging
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="potocolom", lifespan=lifespan)
 app.include_router(realtime_router)
+app.include_router(benchmark_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)

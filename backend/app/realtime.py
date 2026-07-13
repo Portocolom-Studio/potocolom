@@ -18,7 +18,7 @@ from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, HTTPException, WebSocket
 
 from app.manifests import Manifest, parse_manifests
 
@@ -114,6 +114,43 @@ class Session:
 
 workers: dict[str, Worker] = {}
 sessions: dict[uuid.UUID, Session] = {}
+gpu_requests: dict[str, asyncio.Future] = {}
+
+
+def pick_any_worker() -> Worker | None:
+    return next(iter(workers.values()), None)
+
+
+def pick_worker_for_model(model_id: str) -> Worker | None:
+    for worker in workers.values():
+        if model_id in worker.models:
+            return worker
+    return None
+
+
+def resolve_gpu_request(control: dict) -> None:
+    request_id = control.get("request_id")
+    if not isinstance(request_id, str):
+        return
+    future = gpu_requests.pop(request_id, None)
+    if future is not None and not future.done():
+        future.set_result(control)
+
+
+async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> dict:
+    request_id = str(uuid.uuid4())
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    gpu_requests[request_id] = future
+    try:
+        await worker.ws.send_json({**command, "request_id": request_id})
+        result = await asyncio.wait_for(future, timeout)
+        return result
+    except TimeoutError as error:
+        raise HTTPException(status_code=504,
+                            detail="worker did not respond to gpu command") from error
+    finally:
+        gpu_requests.pop(request_id, None)
 
 
 def pick_worker(model_id: str) -> Worker | None:
@@ -245,6 +282,9 @@ async def fleet(ws: WebSocket) -> None:
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
+                    elif control["type"] in ("gpu_status", "model_loaded",
+                                             "model_unloaded", "gpu_error"):
+                        resolve_gpu_request(control)
                     # Heartbeats refresh last_seen only; slot accounting has
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.

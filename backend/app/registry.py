@@ -27,9 +27,17 @@ def available() -> dict[str, Manifest]:
     return manifests
 
 
+def public() -> dict[str, Manifest]:
+    return {model_id: manifest for model_id, manifest in available().items()
+            if not manifest.benchmark_only}
+
+
 @router.get("/api/v1/models")
 async def list_models() -> list[dict]:
-    return [manifest.model_dump() for _, manifest in sorted(available().items())]
+    return [
+        manifest.model_dump()
+        for _, manifest in sorted(public().items())
+    ]
 
 
 async def persist_manifests(manifests: list[Manifest]) -> None:
