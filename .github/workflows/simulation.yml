@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       # No pip cache: this job's combined key would never be shared with the
       # per-component workflows, so it would only store duplicate wheels.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: python -m pip install -e ./backend -e ./worker
