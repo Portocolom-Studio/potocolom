@@ -4,7 +4,6 @@
 		chartColor,
 		categoryLineSeries,
 		formatMs,
-		formatMsHeat,
 		leaderboardRows,
 		metricDisplay,
 		metricValue,
@@ -42,9 +41,13 @@
 	);
 
 	const chartW = 360;
-	const barH = 28;
-	const barGap = 10;
-	const barsH = $derived(rows.length * (barH + barGap) + 16);
+	const labelW = 210;
+	const barStart = labelW + 12;
+	const svgW = barStart + chartW + 104;
+	const rowH = 36;
+	const barGap = 12;
+	const metricBarH = 30;
+	const barsH = $derived(rows.length * (rowH + barGap) + 16);
 	const groupBarW = 14;
 	const groupGap = 6;
 
@@ -54,21 +57,33 @@
 		{ key: 'load', label: 'Load' }
 	];
 
-	function heatCell(ms: number): { bar: string; track: string } {
-		const span = Math.max(heatMax - heatMin, 1);
-		const t = Math.min(1, Math.max(0, (ms - heatMin) / span));
-		const bucket = Math.min(4, Math.floor(t * 5));
-		const colors = [
-			'var(--chart-4)',
-			'var(--chart-2)',
-			'var(--chart-5)',
-			'var(--chart-3)',
-			'var(--chart-1)'
-		] as const;
-		return {
-			bar: colors[bucket],
-			track: `color-mix(in oklch, ${colors[bucket]} 18%, var(--muted))`
-		};
+	const heatFast = 'oklch(0.72 0.11 205)';
+	const heatSlow = 'var(--card)';
+
+	/** 0 = fastest, 1 = slowest. Log-scaled so 330 ms vs 1.5 s reads clearly. */
+	function heatTone(ms: number): number {
+		if (ms <= 0) return 1;
+		const lo = Math.max(heatMin, 1);
+		const hi = Math.max(heatMax, lo * 1.01);
+		if (hi <= lo) return 0;
+		const logT =
+			(Math.log(Math.max(ms, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
+		return Math.min(1, Math.max(0, logT));
+	}
+
+	function heatLegendMs(fraction: number): number {
+		const lo = Math.max(heatMin, 1);
+		const hi = Math.max(heatMax, lo * 1.01);
+		return Math.exp(Math.log(lo) + fraction * (Math.log(hi) - Math.log(lo)));
+	}
+
+	/** Sequential fill: faster (lower ms) → lighter blue tint, slower → near card. */
+	function heatFill(ms: number): string {
+		if (ms <= 0) return heatSlow;
+		const slow = heatTone(ms);
+		const fast = 1 - Math.pow(slow, 0.82);
+		const mix = 2 + fast * 66;
+		return `color-mix(in oklch, ${heatFast} ${mix}%, ${heatSlow})`;
 	}
 
 	function shortModel(modelId: string): string {
@@ -143,34 +158,40 @@
 			</Card.Header>
 			<Card.Content>
 				<svg
-					viewBox="0 0 {chartW + 120} {barsH}"
-					class="w-full max-h-[280px]"
+					viewBox="0 0 {svgW} {barsH}"
+					class="w-full max-h-[360px]"
 					role="img"
 					aria-label={t('bench.chart_bars')}
 				>
 					{#each rows as row, i (row.model_id)}
-						{@const y = i * (barH + barGap) + 8}
+						{@const y = i * (rowH + barGap) + 8}
 						{@const val = metricValue(row, metric)}
 						{@const w =
 							metric === 'load'
 								? (Math.log10(Math.max(val, 1)) / Math.log10(Math.max(maxMetric, 1))) * chartW
 								: (val / maxMetric) * chartW}
-						<text x="0" y={y + barH * 0.72} class="fill-muted-foreground text-[10px]">
-							{row.model_id.length > 14 ? `${row.model_id.slice(0, 13)}…` : row.model_id}
+						<text
+							x="0"
+							y={y + rowH / 2}
+							dominant-baseline="middle"
+							class="fill-muted-foreground font-mono text-[20px]"
+						>
+							{row.model_id}
 						</text>
 						<rect
-							x="108"
-							{y}
+							x={barStart}
+							y={y + (rowH - metricBarH) / 2}
 							width={Math.max(2, w)}
-							height={barH}
+							height={metricBarH}
 							rx="6"
 							fill={chartColor(i)}
 							opacity="0.9"
 						/>
 						<text
-							x={108 + Math.max(w, 2) + 6}
-							y={y + barH * 0.72}
-							class="fill-foreground text-[10px] tabular-nums"
+							x={barStart + Math.max(w, 2) + 8}
+							y={y + rowH / 2}
+							dominant-baseline="middle"
+							class="fill-foreground font-mono text-[20px] tabular-nums"
 						>
 							{metricDisplay(row, metric)}
 						</text>
@@ -194,29 +215,36 @@
 			</Card.Header>
 			<Card.Content>
 				<svg
-					viewBox="0 0 {chartW + 120} {barsH}"
-					class="w-full max-h-[280px]"
+					viewBox="0 0 {svgW} {barsH}"
+					class="w-full max-h-[360px]"
 					role="img"
 					aria-label={t('bench.chart_grouped')}
 				>
 					{#each rows as row, i (row.model_id)}
-						{@const y = i * (barH + barGap) + 8}
+						{@const y = i * (rowH + barGap) + 8}
 						{@const gpuW = (row.gpu_ms / maxPair) * chartW}
 						{@const wallW = (row.wall_s * 1000) / maxPair * chartW}
-						<text x="0" y={y + barH * 0.72} class="fill-muted-foreground text-[10px]">
-							{row.model_id.length > 14 ? `${row.model_id.slice(0, 13)}…` : row.model_id}
+						{@const groupH = groupBarW * 2 + groupGap}
+						{@const groupTop = y + (rowH - groupH) / 2}
+						<text
+							x="0"
+							y={y + rowH / 2}
+							dominant-baseline="middle"
+							class="fill-muted-foreground font-mono text-[20px]"
+						>
+							{row.model_id}
 						</text>
 						<rect
-							x="108"
-							{y}
+							x={barStart}
+							y={groupTop}
 							width={Math.max(2, gpuW)}
 							height={groupBarW}
 							rx="4"
 							class="fill-chart-1"
 						/>
 						<rect
-							x="108"
-							y={y + groupBarW + groupGap}
+							x={barStart}
+							y={groupTop + groupBarW + groupGap}
 							width={Math.max(2, wallW)}
 							height={groupBarW}
 							rx="4"
@@ -228,12 +256,12 @@
 		</Card.Root>
 	</div>
 
-	<Card.Root class="[--card-spacing:--spacing(5)]">
-		<Card.Header class="gap-1">
+	<Card.Root class="gap-2 [--card-spacing:--spacing(5)]">
+		<Card.Header class="gap-1 pb-0">
 			<Card.Title class="text-base">{t('bench.chart_category')}</Card.Title>
 			<Card.Description class="text-sm">{t('bench.chart_category_desc')}</Card.Description>
 		</Card.Header>
-		<Card.Content>
+		<Card.Content class="pt-0">
 			<BenchmarkCategoryRadar categories={lineData.categories} series={lineData.series} />
 		</Card.Content>
 	</Card.Root>
@@ -244,33 +272,33 @@
 			<Card.Description class="text-sm">{t('bench.chart_heatmap_desc')}</Card.Description>
 			<div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
 				<span class="text-muted-foreground">{t('bench.heatmap_fast')}</span>
-				<div class="flex h-3 w-40 overflow-hidden rounded-full border">
+				<div class="border-border flex h-2 w-44 border">
 					{#each [0, 1, 2, 3, 4] as bucket (bucket)}
 						<div
 							class="h-full flex-1"
-							style:background={heatCell(heatMin + ((heatMax - heatMin) * bucket) / 4).bar}
+							style:background={heatFill(heatLegendMs(bucket / 4))}
 						></div>
 					{/each}
 				</div>
 				<span class="text-muted-foreground">{t('bench.heatmap_slow')}</span>
-				<span class="text-muted-foreground ms-auto font-mono tabular-nums">
+				<span class="text-muted-foreground ms-auto font-mono text-[11px] tabular-nums">
 					{formatMs(heatMin)} - {formatMs(heatMax)}
 				</span>
 			</div>
 		</Card.Header>
-		<Card.Content class="p-4">
+		<Card.Content class="p-0">
 			<div class="overflow-x-auto">
-				<table class="w-full min-w-[640px] border-separate border-spacing-1.5 text-xs">
+				<table class="w-full min-w-[640px] border-collapse text-xs">
 					<thead>
-						<tr>
+						<tr class="border-border border-b">
 							<th
-								class="text-muted-foreground sticky left-0 z-10 bg-card px-3 py-2 text-start text-sm font-medium"
+								class="text-muted-foreground border-border sticky left-0 z-10 border-r bg-card px-4 py-2.5 text-start text-[11px] font-medium tracking-wide uppercase"
 							>
 								{t('bench.heatmap_category')}
 							</th>
 							{#each report.models as modelId (modelId)}
 								<th
-									class="text-muted-foreground px-2 py-2 text-center font-mono text-[11px] font-medium"
+									class="text-muted-foreground border-border border-l px-2 py-2.5 text-center font-mono text-[11px] font-normal"
 									title={modelId}
 								>
 									{shortModel(modelId)}
@@ -280,9 +308,9 @@
 					</thead>
 					<tbody>
 						{#each lineData.categories as category (category)}
-							<tr>
+							<tr class="border-border/60 border-b last:border-b-0">
 								<td
-									class="text-foreground sticky left-0 z-10 bg-card px-3 py-2 text-sm font-medium capitalize"
+									class="text-foreground border-border sticky left-0 z-10 border-r bg-card px-4 py-2.5 text-sm font-medium capitalize"
 								>
 									{category}
 								</td>
@@ -291,27 +319,12 @@
 										lineData.series
 											.find((series) => series.model_id === modelId)
 											?.points.find((point) => point.category === category)?.avg_gpu_ms ?? 0}
-									{@const heat = heatCell(ms)}
-									{@const label = formatMsHeat(ms)}
-									<td class="p-0">
-										<div
-											class="bg-card flex min-w-[3.5rem] flex-col items-center rounded-lg border px-2 py-2.5"
-											style:background={heat.track}
-											title="{modelId} · {category}: {formatMs(ms)}"
-										>
-											<div
-												class="mb-2 h-1 w-full rounded-full"
-												style:background={heat.bar}
-											></div>
-											<span class="text-foreground text-base leading-none font-semibold tabular-nums">
-												{label.value}
-											</span>
-											{#if label.unit !== ''}
-												<span class="text-muted-foreground mt-1 text-[10px] leading-none uppercase">
-													{label.unit}
-												</span>
-											{/if}
-										</div>
+									<td
+										class="border-border/60 border-l px-3 py-2.5 text-center font-mono tabular-nums"
+										style:background={heatFill(ms)}
+										title="{modelId} · {category}: {formatMs(ms)}"
+									>
+										{formatMs(ms)}
 									</td>
 								{/each}
 							</tr>
