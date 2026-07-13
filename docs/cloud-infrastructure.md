@@ -13,17 +13,17 @@ AWS is the reference provider (see [decisions.md](decisions.md)). GPU workers de
 | SPA hosting | S3 + CloudFront | Static SvelteKit build; CloudFront serves index.html as the SPA fallback |
 | Generated images | S3 + CloudFront | Separate bucket and distribution with long cache lifetimes |
 | Load balancer | Application Load Balancer | WebSocket capable; idle timeout raised well above the heartbeat interval |
-| API runtime | ECS Fargate | The backend image, 2 or more tasks in private subnets, auto scaling on CPU and connection count |
+| API runtime | ECS Fargate | The backend image on Graviton (ARM64), 2 or more tasks in private subnets, auto scaling on CPU and connection count |
 | Billing service (private repo) | ECS Fargate | Small service; reachable by the API through ECS Service Connect, by Stripe through an ALB path |
 | Fleet autoscaler (private repo) | ECS Fargate | Watches queue depth and slot usage, calls the GPU provider API |
 | Database | RDS PostgreSQL | Start on db.t4g.small single AZ; Multi-AZ when revenue justifies it |
-| Queue, sessions, rate limits | ElastiCache Redis | Start on cache.t4g.micro |
+| Queue, sessions, rate limits | ElastiCache (Valkey engine) | Redis protocol compatible, 20 to 30 percent cheaper; start on cache.t4g.micro |
 | Container registry | ECR + GHCR | ECR for cloud deploys; GHCR publishes the same images publicly for self-hosters |
 | Auth emails | SES | Verification and password reset; requires leaving SES sandbox before launch |
 | Secrets | SSM Parameter Store | Database credentials, OAuth client secrets, worker fleet token signing key |
 | Logs, metrics, alarms | CloudWatch | API publishes queue depth and realtime slot metrics for the autoscaler |
 | Error tracking | Sentry (not AWS) | Free tier; exceptions with stack traces from API, worker and frontend |
-| Outbound internet for private subnets | NAT gateway | A fixed cost worth knowing about, see the cost sketch |
+| Outbound internet for private subnets | NAT instance | fck-nat pattern on t4g.nano, the one accepted pet; an S3 gateway endpoint keeps S3 traffic off it entirely ([decisions.md](decisions.md), "AWS baseline") |
 | GPU workers | Not AWS | RunPod or vast.ai machines running the public worker image |
 | Model weights | Cloudflare R2 (not AWS) | Zero egress mirror of vetted weights that workers pull and checksum at boot |
 
@@ -44,7 +44,7 @@ flowchart TB
     subgraph VPC["VPC"]
         subgraph PUB["Public subnets"]
             ALB["ALB, api.potocolom.com<br>WebSockets enabled"]
-            NAT["NAT gateway"]
+            NAT["NAT instance"]
         end
         subgraph PRV["Private subnets"]
             API["ECS Fargate: API server<br>2+ tasks, auto scaling"]
@@ -138,7 +138,7 @@ sequenceDiagram
     F->>RP: stop machine
 ```
 
-Scale up triggers: queued jobs above a threshold, or free real time slots below one. Scale down happens only through draining, so no user visible work is killed. A small floor of always-on workers keeps real time latency acceptable; everything above the floor follows demand.
+Scale up triggers: queued jobs above a threshold, or free real time slots below one. Scale down happens only through draining, so no user visible work is killed. The always-on worker floor follows a schedule (floor 1 during European waking hours, floor 0 overnight at launch; a quiet-hour first session sees the waiting room while a machine boots); everything above the floor follows demand.
 
 The autoscaler also enforces spend rails: an absolute machine ceiling and a monthly budget. Approaching either, it stops scaling up and the admission queues simply grow behind a high demand banner; raising the cap is a deliberate configuration change, never automatic. No bug, abuse wave or viral day can produce an unbounded GPU bill.
 
@@ -186,20 +186,20 @@ Rough monthly figures to size the commitment, not quotes. Verify current prices 
 | Item | USD per month |
 |---|---|
 | ALB | 20 |
-| ECS Fargate, 2 API tasks (0.5 vCPU, 1 GB each) | 35 |
-| ECS Fargate, billing service and autoscaler | 20 |
+| ECS Fargate on Graviton, 2 API tasks (0.5 vCPU, 1 GB each) | 28 |
+| ECS Fargate on Graviton, billing service and autoscaler | 16 |
 | RDS PostgreSQL db.t4g.small | 30 |
-| ElastiCache cache.t4g.micro | 12 |
-| NAT gateway | 35 plus data |
+| ElastiCache cache.t4g.micro (Valkey engine) | 9 |
+| NAT instance (t4g.nano) | 4 plus data; S3 traffic bypasses it via the free gateway endpoint |
 | S3 + CloudFront | 5 to 20 |
 | Route 53, SES, ECR, CloudWatch | 10 |
 | Cloudflare R2 weights mirror | 1 to 5 |
-| Baseline before GPUs | roughly 170 |
-| Scaled-down staging | 60 to 80 |
+| Baseline before GPUs | roughly 130 |
+| Scaled-down staging | 50 to 70 |
 
 Sentry stays on its free tier at this scale, and AWS WAF is deferred, so neither appears above.
 
-GPU economics dominate everything above. A single RTX 4090 class machine on RunPod runs roughly 0.35 to 0.70 USD per hour, so one always-on worker costs 250 to 500 USD per month. A real time drawing session occupies a worker slot continuously while the user draws, which is exactly why the billing model meters credits against GPU seconds: subscription prices must cover the GPU seconds a typical subscriber consumes. At hundreds of active users, GPU spend exceeds the entire AWS baseline several times over.
+GPU economics dominate everything above. A single RTX 4090 class machine on RunPod runs roughly 0.35 to 0.70 USD per hour, so one always-on worker costs 250 to 500 USD per month - the scheduled floor cuts roughly a third of that at launch, and the launch card itself is chosen by a measured bake-off rather than assumption ([decisions.md](decisions.md), "Fleet card"). A real time drawing session occupies a worker slot continuously while the user draws, which is exactly why the billing model meters credits against GPU seconds, and why slots per GPU are calibrated rather than guessed: every additional session a card holds at the bar cuts realtime cost per user proportionally. At hundreds of active users, GPU spend exceeds the entire AWS baseline several times over.
 
 ## Scaling stages
 
