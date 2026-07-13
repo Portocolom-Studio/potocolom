@@ -77,6 +77,18 @@ async def wait_for_api() -> None:
     raise RuntimeError("API did not come up")
 
 
+def customer_rest_calls() -> None:
+    """The REST calls a real SPA makes before any WebSocket work,
+    per docs/api.md: liveness, then runtime configuration."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/v1/health", timeout=2) as response:
+        log("customer", f"GET /api/v1/health -> {json.load(response)}")
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/v1/config", timeout=2) as response:
+        config = json.load(response)
+    log("customer", f"GET /api/v1/config -> auth_methods={config['auth_methods']} "
+                    f"billing_enabled={config['billing_enabled']} "
+                    f"languages={config['languages']}")
+
+
 class BrowserSim:
     def __init__(self, ws):
         self.ws = ws
@@ -137,6 +149,7 @@ async def main() -> None:
     ws = None
     try:
         await wait_for_api()
+        customer_rest_calls()
         worker_1 = spawn_worker(1)
         ws, browser = await open_browser()
         # single reader from here on: the receiver owns recv()

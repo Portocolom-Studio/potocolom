@@ -158,6 +158,8 @@ A self-hosted install makes zero calls to project infrastructure, not even an up
 
 Rejected alternatives: a startup update check (mild, but still a phone-home to explain); opt-in anonymous stats (even opt-in draws suspicion in self-host communities).
 
+Superseded by "Telemetry: opt-out anonymous aggregates from self-hosted installs" below, when usage analytics became a product requirement.
+
 ## Worker testing without GPUs: tiny model on CPU in CI
 
 CI runs the worker's real code path (manifest loading, scheduling, frame streaming, safety checker) against a deliberately tiny diffusion model on CPU: slow, ugly output, real execution. Unit tests mock the pipeline interface; a real GPU smoke test runs manually before releases.
@@ -289,6 +291,102 @@ Rejected alternatives: everything in containers (closest to what ships, but slow
 The cloud profile is validated locally by reproducing its topology, nginx in front of two API replicas, Redis, MinIO, Mailpit and a fake QuotaService, exercising exactly the seams the cloud uses. The application code cannot tell nginx from an ALB or MinIO from S3, which is what the seams are for. AWS-specific control plane (Terraform, IAM, ALB behavior, CloudFront signing, SES deliverability) is validated once on the real scaled-down staging, only when the cloud launch is being prepared. Until then the infrastructure cost of development is zero. Details in [local-development.md](local-development.md).
 
 Rejected alternative: LocalStack or similar AWS emulators. The two AWS APIs the application touches (S3, SMTP) are covered better by MinIO and Mailpit; the rest is control plane that emulators reproduce poorly, giving confidence that staging would immediately contradict.
+
+## Database access: async SQLAlchemy, migrations from the first table
+
+SQLAlchemy 2.0 in asyncio mode with asyncpg, because the backend is already async end to end (FastAPI endpoints, the realtime relay, the scheduler loop) and a sync engine would reintroduce threadpool hops exactly where latency matters. Alembic manages the schema from the very first table, so the startup auto-apply hook and the cloud's gated migration task exist from day one and every self-hosted install has an upgrade path, which the portability story in [deployment-profiles.md](deployment-profiles.md) depends on.
+
+Rejected alternatives: sync SQLAlchemy in FastAPI's threadpool (better debugged ecosystem, but the pure-async scheduler and realtime paths would need executor wrappers around every query); `create_all` until the schema settles (less migration churn during the walking skeleton, but anyone running v0.1 would be stranded at the first schema change).
+
+## Model registry: persistent rows with a live availability flag
+
+Models registered by workers persist in PostgreSQL, and `GET /api/v1/models` returns every known model with an `available` flag computed from live worker registrations. The UI greys out what cannot serve right now instead of having models flicker in and out on worker restarts, and history rows can always resolve the name and schema of the model that produced them.
+
+Rejected alternatives: listing only live models (simpler response, but a worker restart makes models vanish from the UI and orphans old history); returning the stored registry with no signal (the user discovers unavailability by a failed generation).
+
+## Stored outputs: PNG
+
+Generated images are stored as PNG: lossless, universal, no quality knobs to decide, written by Pillow with no extra dependency. Cloud storage cost is bounded by the retention decision rather than the format. The realtime wire keeps WebP; transport and storage are different concerns with different constraints.
+
+Rejected alternatives: WebP lossless storage (a quarter to a third smaller, worth revisiting when egress bills exist, not before); format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
+
+## Model manifests: JSON
+
+Manifests are JSON files. The `parameters` field is JSON Schema, so the manifest is JSON all the way down, the standard library parses it, and the API can return it verbatim from `GET /api/v1/models`.
+
+Rejected alternatives: YAML (nicer to hand-edit, but a pyyaml dependency and JSON Schema embedded in a second syntax); TOML (stdlib readable, but deeply nested schema objects are genuinely awkward in it).
+
+## Drawing surface: bitmap canvas
+
+The drawing tool paints strokes directly onto one `<canvas>` element; frame capture for the realtime loop is a native `canvas.toBlob("image/webp")`. Undo is a snapshot stack, and eraser and fill are plain pixel operations. The wire protocol already fixed rasterized frames, so the cheapest path from stroke to encoded frame wins at 2 to 4 fps.
+
+Rejected alternative: an SVG vector layer rasterized to a hidden canvas per frame (individually editable strokes, but every frame pays a serialize, draw and encode pipeline, plus hit-testing complexity, for editing semantics the realtime loop does not need).
+
+## First public release: after the walking skeleton, API level
+
+v0.1 tags when the M2 acceptance demo passes: a generation POSTed against the real worker completes end to end and CI's tiny-model CPU path is green. Self-hosters get the compose file and a working generation API, clearly marked pre-alpha. The point is early outside installs exercising the risky part, GPU setup on CUDA and ROCm, months before the UI is impressive.
+
+Rejected alternatives: first tag after M3 drawing (a better first impression, but zero outside feedback on installation pain in the meantime); after M4 accounts (`AUTH_MODE=none` already covers the single-user install, so accounts gate nothing).
+
+## Frontend foundation: CSS custom properties and a hand-rolled i18n store
+
+The theme system (issue #1) is built on hand-rolled design tokens as CSS custom properties, with dark and light driven by `prefers-color-scheme` plus a `data-theme` override; components are plain Svelte. Internationalization is two JSON dictionaries behind a tiny store, roughly thirty lines. Unit tests run under Vitest; a browser end-to-end rig arrives with the drawing issue, when there are real flows worth driving.
+
+Rejected alternatives: Tailwind (fast iteration, but the theme system, which is the entire point of issue #1, becomes Tailwind's); a component library (fastest to decent, hardest to make not look templated); Paraglide or svelte-i18n (typed messages and ICU plurals for what is today two flat dictionaries of static strings, adopt one the day plural-heavy content appears).
+
+## Low VRAM operation: the diffusers offloading ladder, not airLLM
+
+Models larger than a card's VRAM run through a per-model memory ladder in the worker: full residency when the pipeline fits, model CPU offload when only the largest component fits, group offloading with stream prefetch (and disk spill when system RAM is short) below that. All rungs are native diffusers and accelerate features, so the ladder is configuration of the already-chosen inference stack, not new machinery. The rung is picked automatically from measured free VRAM at model load and can be pinned with the worker's `MEMORY_MODE` setting. Only full residency meets the 2 to 4 fps realtime bar, so lower rungs advertise the model without its `realtime` capability; queued jobs tolerate the slowdown, drawing sessions never see it. This mainly serves self-hosters on consumer GPUs; the cloud fleet rents cards sized for full residency. Details in [architecture.md](architecture.md).
+
+Rejected alternatives: adopting airLLM itself (it targets transformer LLMs through the transformers library and cannot drive diffusion pipelines; its layer streaming and prefetching ideas are exactly what diffusers group offloading already implements for our models); a custom layer streamer (reimplements accelerate's hook machinery for zero gain); requiring full residency (locks self-hosters with 4 to 8 GB cards out of larger generation models, on the exact deployment the project exists to serve).
+
+## Model routing: request tiers resolved in the API, no difficulty classifier
+
+When a generation request does not pin a `model_id`, the API resolves the cheapest registered model whose tier, capabilities and parameters satisfy the request; manifests carry a `tier` field (`draft`, `standard`, `premium`). Our workloads announce their own difficulty through the interface: a drawing stroke is realtime and lands on a turbo-class model, a refine click is a queued job and routes to a heavier one. The router is a small selection policy inside the existing dispatch path.
+
+Rejected alternatives: an ML difficulty classifier in front of the models (burns GPU time to guess what the UI action already states, and misclassification is user-visible); a separate routing proxy service (a deployment and a failure mode for what is one function in the API).
+
+## Worker performance: compile and channels_last at warmup
+
+Hot-set models are warmed with `torch.compile` and `channels_last` memory format when loaded, worth roughly a fifth to a third off denoising time on diffusion pipelines for zero new dependencies. The extra compile minute hides inside the existing model loading state. The attention backend is configuration through diffusers' `set_attention_backend`.
+
+Rejected alternatives: skipping compilation (leaves the single largest free speedup on the table, and GPU seconds are the priced resource); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
+
+## Image codecs off the event loop
+
+WebP and PNG encoding and decoding, the main per-frame CPU cost in both the worker and the API relay, always run in a thread executor, never on the asyncio loop. This keeps frame pacing and WebSocket heartbeats steady at the 2 to 4 fps bar. Binding for issues #15, #16 and #19.
+
+Rejected alternative: SIMD image libraries (pillow-simd, libvips) before a profile shows Pillow in an executor is the bottleneck.
+
+## Job placement: offloaded workers first, micro-batching deferred
+
+When several workers can take a queued job, the scheduler prefers workers serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. One comparator in worker selection. Micro-batching same-model queued jobs is deliberately deferred until a real cloud fleet exists: it raises throughput but complicates slot accounting and preemption, and at a one or two GPU scale there is nothing to batch.
+
+Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
+
+## License: GPL-3.0 stays, AGPL rejected
+
+The public repository remains GPL-3.0. The cloud runs the same unmodified GPL images, so GPL's lack of a network clause costs the project nothing; the closed layer (billing, autoscaler, infrastructure) is protected by being separate processes in a private repository behind HTTP boundaries, not by the license. Full analysis in [repository-boundary.md](repository-boundary.md).
+
+Rejected alternative: AGPL-3.0 as a defense against competitors hosting the product. A competitor hosting unmodified AGPL code owes nothing beyond pointing at already-public source; AGPL only forces disclosure of modifications, while its adoption stigma (many organizations ban AGPL dependencies) would hurt exactly the self-hosted community the license exists to serve. The moat is the closed business layer and operations, not copyleft strength.
+
+## Cloud infrastructure code: private repository
+
+The Terraform environments, state, sizes and account wiring live in the private repository alongside the billing service and autoscaler; they are commercial operational data. The public [aws-setup.md](aws-setup.md) guide stays, documenting how anyone could stand up their own cloud. The public repository's `deploy/` carries compose files only.
+
+Rejected alternative: public Terraform under `deploy/terraform/` (as earlier drafts sketched). It would publish the commercial deployment's exact shape and sizes for zero community benefit, since a self-hoster deploying to AWS follows the guide with their own parameters anyway.
+
+## Usage metrics: per-event user-linked rows plus a CLIP output categorizer
+
+Every completed job and closed realtime session writes one user-linked row (action, model, tier, output category, gpu_ms, duration) to a `usage_events` table in the deployment's own PostgreSQL, in both modes; the worker attaches a category from a CLIP zero-shot pass over the output image at generation time. Per-event user-linked rows are what retention, cohort and funnel analysis need, which is what investors ask; the CLIP pass is nearly free because SD-class pipelines already hold a CLIP encoder and the image is already in memory. No prompts, images, IPs or user agents are stored; rows die with the account purge and appear in the GDPR export. Specified in [metrics.md](metrics.md).
+
+Rejected alternatives: a third party analytics product (PostHog, Amplitude: client side trackers and data sharing contradict the no-cookies posture and add a dependency); daily aggregates only (privacy-trivial but cannot answer retention or cohort questions); classifying the prompt text instead of the output (prompts are short, misleading or absent in drawing and enhance flows); pseudonymous ids (loses the join to plan and cohort, which is the point of the exercise).
+
+## Telemetry: opt-out anonymous aggregates from self-hosted installs
+
+Supersedes "Telemetry: none from self-hosted installs". Self-hosted installs post one anonymous daily aggregate (counts by action, category and tier, active user count, worker device and memory mode, version, random install id) to a project ingest endpoint, on by default, disabled with `TELEMETRY=false`. Three properties keep opt-out defensible to a GPL audience: the payload is aggregates only and joinable to no person, the exact payload is documented publicly and previewable locally, and the API logs the destination and the off switch at every startup. A failed send is dropped, never queued. Specified in [metrics.md](metrics.md).
+
+Rejected alternatives: keeping zero phone-home (the original decision: cleanest position, but it makes the install base invisible exactly when install counts and usage mix are the numbers the project needs to show); opt-in (single digit opt-in rates make the data unusable); local-only metrics with no reporting (same blindness with extra steps).
 
 ## Supporting defaults
 

@@ -11,6 +11,7 @@ AUTH_MODE            = none | local | oauth      # default none
 OAUTH_PROVIDERS      = google,github,apple       # only read when AUTH_MODE=oauth
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
+TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
 DATABASE_URL         = postgresql://...
 REDIS_URL            = ""                        # empty: in-process fallbacks (self-host)
 REDIS_URL_CACHE      = $REDIS_URL                # per-concern endpoints; set individually
@@ -282,13 +283,13 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models from manifests, realtime_slots, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models |
 | api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
-| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms; failed carries reason |
+| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
-| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames |
+| worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
 
@@ -309,10 +310,11 @@ Rejects cheapest first; nothing touches a GPU until everything else passed.
 @app.post("/api/v1/generations")
 async def create_generation(req, user = require_user()):
     await rate.check(f"rate:jobs:{user.id}", limit=..., window=60)
+    model = registry.resolve(req.model_id, req.params)   # tier routing when model_id is absent
     if settings.safety_checks:
         await safety.screen_prompt(req.prompt)          # blocklist + classifier, raises
     reservation = await quota.reserve(user, estimate_gpu_ms(req))   # raises InsufficientCredits
-    job = await db.jobs.insert(user, req.model_id, req.params, state="queued",
+    job = await db.jobs.insert(user, model.id, req.params, state="queued",
                                reservation=reservation.id, attempt=1)
     await queues.push("queue:jobs", job.id, tier(user))
     return {"job_id": job.id}
@@ -367,6 +369,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-worker:v0.x-cuda   # or -rocm, see local-development.md
     environment:
       DEVICE: cuda               # cuda | rocm | cpu
+      MEMORY_MODE: auto          # auto | full | model_offload | group_offload, see architecture.md
       API_URL: ws://api:8080/api/v1/fleet
       FLEET_TOKEN: ${FLEET_SECRET}
     volumes: ["models:/models"]  # weights + manifests, pulled from Hugging Face
