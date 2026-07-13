@@ -172,7 +172,9 @@ export function starredGenerations(): Generation[] {
 
 export async function loadStarredGenerations(): Promise<void> {
 	const inHistory = new Set(studio.history.map((generation) => generation.id));
-	const existingById = new Map(studio.starredExtras.map((generation) => [generation.id, generation]));
+	const existingById = new Map(
+		studio.starredExtras.map((generation) => [generation.id, generation])
+	);
 	const outsideHistory = studio.starredIds.filter((id) => !inHistory.has(id));
 	const alreadyLoaded = outsideHistory.flatMap((id) => {
 		const generation = existingById.get(id);
