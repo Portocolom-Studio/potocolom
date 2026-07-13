@@ -25,7 +25,7 @@ jobs:
   simulation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No pip cache: this job's combined key would never be shared with the
       # per-component workflows, so it would only store duplicate wheels.
       - uses: actions/setup-python@v6
