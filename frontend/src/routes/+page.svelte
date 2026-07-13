@@ -51,7 +51,7 @@
 
 <SiteLandingHeader />
 
-<main>
+<main class="overflow-x-clip">
 	<section class="relative grid min-h-[92vh] place-items-center overflow-hidden">
 		<div class="hero-canvas absolute inset-0"><LatentCanvas /></div>
 		<div class="relative max-w-3xl px-6 pt-28 pb-16 text-center">
@@ -98,25 +98,27 @@
 		</div>
 	</section>
 
-	<section id="gallery" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
-		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">
-			{t('gallery.kicker')}
-		</p>
-		<h2 class="mt-2 flex flex-wrap items-baseline gap-x-2 text-3xl font-semibold">
-			<span>{t('gallery.title_before')}</span>
-			<TextRotate words={galleryWords} />
-			<span class="sr-only">
-				{t('gallery.word_making')}, {t('gallery.word_designing')}, {t('gallery.word_creating')}
-			</span>
-		</h2>
-		<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">{t('gallery.sub')}</p>
-		<div class="mt-10">
-			<UserGenerationGallery />
+	<section id="gallery" class="scroll-mt-20 py-24">
+		<div class="mx-auto max-w-6xl px-4 sm:px-6">
+			<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">
+				{t('gallery.kicker')}
+			</p>
+			<h2 class="mt-2 flex flex-wrap items-baseline gap-x-2 text-3xl font-semibold">
+				<span>{t('gallery.title_before')}</span>
+				<TextRotate words={galleryWords} />
+				<span class="sr-only">
+					{t('gallery.word_making')}, {t('gallery.word_designing')}, {t('gallery.word_creating')}
+				</span>
+			</h2>
+			<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">{t('gallery.sub')}</p>
+			<div class="mt-10">
+				<UserGenerationGallery />
+			</div>
 		</div>
 		<PromptMarquee />
 	</section>
 
-	<section id="pricing" class="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
+	<section id="pricing" class="mx-auto max-w-6xl scroll-mt-20 overflow-x-clip px-4 py-24 sm:px-6">
 		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">
 			{t('pricing.kicker')}
 		</p>
