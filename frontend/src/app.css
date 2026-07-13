@@ -1,0 +1,86 @@
+/* Design tokens as CSS custom properties (docs/decisions.md, "Frontend foundation").
+   Dark is the designed theme for the base version; the light values and the
+   data-theme override land with issue #1's full token pass. */
+
+@font-face {
+	font-family: 'Space Grotesk';
+	src: url('/fonts/space-grotesk-latin-wght.woff2') format('woff2-variations');
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+}
+
+:root {
+	--bg: #070b14;
+	--bg-elevated: #0c1120;
+	--surface: rgba(255, 255, 255, 0.03);
+	--surface-hover: rgba(255, 255, 255, 0.06);
+	--border: rgba(255, 255, 255, 0.09);
+	--text: #e7ebf4;
+	--text-muted: #8b95ab;
+	--accent: #7c6fff;
+	--accent-2: #22d3ee;
+	--gradient-accent: linear-gradient(120deg, var(--accent), var(--accent-2));
+	--radius: 14px;
+	--radius-sm: 9px;
+	--font: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+	--content-width: 1080px;
+	color-scheme: dark;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html {
+	background: var(--bg);
+}
+
+body {
+	margin: 0;
+	font-family: var(--font);
+	background: var(--bg);
+	color: var(--text);
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+	line-height: 1.15;
+	letter-spacing: -0.02em;
+	font-weight: 600;
+	margin: 0 0 0.5em;
+}
+
+p {
+	margin: 0 0 1em;
+}
+
+a {
+	color: inherit;
+}
+
+button {
+	font: inherit;
+}
+
+::selection {
+	background: rgba(124, 111, 255, 0.35);
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent-2);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		transition-duration: 0.01ms !important;
+	}
+}
