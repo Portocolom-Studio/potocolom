@@ -46,6 +46,8 @@ class Job(Base):
     state: Mapped[str] = mapped_column(Text, default="queued")  # running, succeeded, failed
     attempt: Mapped[int] = mapped_column(default=1)  # retry once, then fail (docs/decisions.md)
     gpu_ms: Mapped[int | None]
+    source_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -55,6 +57,8 @@ class Asset(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id"))
+    parent_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"))
     storage_key: Mapped[str] = mapped_column(Text)
     mime: Mapped[str] = mapped_column(Text)
     width: Mapped[int]

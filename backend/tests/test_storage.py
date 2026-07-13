@@ -11,16 +11,16 @@ client = TestClient(app)
 
 
 def test_local_storage_rejects_escaping_keys(tmp_path):
-    storage = LocalStorage(str(tmp_path), "http://api")
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
     with pytest.raises(ValueError):
         storage.path("../escape.webp")
 
 
 def test_local_storage_urls(tmp_path):
-    storage = LocalStorage(str(tmp_path), "http://api/")
+    storage = LocalStorage(str(tmp_path), "http://browser/", "http://worker/")
     target = asyncio.run(storage.upload_target("u/j.webp"))
-    assert target.url == "http://api/api/v1/files/u/j.webp"
-    assert asyncio.run(storage.url("u/j.webp")) == "http://api/api/v1/files/u/j.webp"
+    assert target.url == "http://worker/api/v1/files/u/j.webp"
+    assert asyncio.run(storage.url("u/j.webp")) == "http://browser/api/v1/files/u/j.webp"
 
 
 def test_s3_storage_presigns_offline():

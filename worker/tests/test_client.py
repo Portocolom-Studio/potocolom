@@ -145,6 +145,7 @@ def dispatch_control():
         "model_id": "sd-sim",
         "params": {"prompt": "a test"},
         "upload": {"url": "http://api/api/v1/files/u/j-1.webp", "headers": {}},
+        "thumb_upload": {"url": "http://api/api/v1/files/u/j-1-thumb.webp", "headers": {}},
     }
 
 
@@ -156,9 +157,13 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
 
     asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, dispatch_control()))
 
+    assert len(FakeUpload.puts) == 2
     url, content = FakeUpload.puts[0]
     assert url.endswith("j-1.webp")
     assert content[:4] == b"RIFF"  # WebP container
+    thumb_url, thumb_content = FakeUpload.puts[1]
+    assert thumb_url.endswith("j-1-thumb.webp")
+    assert thumb_content[:4] == b"RIFF"
     reports = [json.loads(m) for m in socket.sent]
     types = [r["type"] for r in reports]
     assert "job_progress" in types

@@ -57,6 +57,13 @@ def encode_webp(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+def make_thumbnail_webp(data: bytes, max_edge: int = 320) -> bytes:
+    with Image.open(io.BytesIO(data)) as opened:
+        rgb = opened if opened.mode == "RGB" else opened.convert("RGB")
+        rgb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        return encode_webp(rgb)
+
+
 class SimulatedEngine:
     """Sleeps instead of denoising; frames echo back, jobs produce a flat
     image colored from the prompt so results are distinguishable."""
