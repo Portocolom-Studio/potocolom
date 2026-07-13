@@ -15,6 +15,8 @@ from app.storage import LocalStorage, get_storage
 
 router = APIRouter()
 
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
 
 def local_storage() -> LocalStorage:
     storage = get_storage()
@@ -25,13 +27,30 @@ def local_storage() -> LocalStorage:
 
 @router.put("/api/v1/files/{key:path}")
 async def upload(key: str, request: Request) -> dict:
+    from app import jobs
+
+    if not jobs.storage_key_in_flight(key):
+        raise HTTPException(status_code=403, detail="upload not authorized")
+
     storage = local_storage()
     try:
         path = storage.path(key)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(await request.body())
+
+    size = 0
+    try:
+        with path.open("wb") as handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="upload too large")
+                handle.write(chunk)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
+
     return {"stored": key}
 
 

@@ -86,6 +86,10 @@ class InFlight:
 inflight: dict[uuid.UUID, InFlight] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
+
+def storage_key_in_flight(key: str) -> bool:
+    return any(entry.storage_key == key for entry in inflight.values())
+
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
 live_progress: dict[uuid.UUID, float] = {}

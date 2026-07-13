@@ -18,6 +18,11 @@ class Manifest(BaseModel):
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
+    license_id: str = ""
+    license_url: str = ""
+    commercial_max_revenue_usd: int | None = None
+    license_registration_url: str = ""
+    requires_attribution: str = ""
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
 
 

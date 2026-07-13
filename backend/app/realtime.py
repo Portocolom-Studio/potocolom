@@ -17,7 +17,9 @@ import uuid
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 
+import jsonschema
 from fastapi import APIRouter, HTTPException, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from app.manifests import Manifest, parse_manifests
 
@@ -46,15 +48,16 @@ class ProtocolError(Exception):
     """The peer violated docs/connection-handling.md; close with 4000."""
 
 
+_SEND_FAILURES = (WebSocketDisconnect, RuntimeError, ConnectionError, BrokenPipeError)
+
+
 async def safe_send(sending: "Coroutine[object, object, None]") -> None:
-    """Send to a peer that may have just closed; a dead socket is not an error
-    here. Dead sockets surface as RuntimeError or transport-specific errors
-    depending on the server, so this is deliberately broad."""
+    """Send to a peer that may have just closed; a dead socket is not an error."""
     try:
         await sending
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except _SEND_FAILURES:
         return
 
 
@@ -65,7 +68,7 @@ async def refuse(ws: WebSocket, code: int, message: str) -> None:
         await ws.close(code=code)
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except _SEND_FAILURES:
         return
 
 
@@ -329,6 +332,15 @@ async def realtime(ws: WebSocket) -> None:
     if not model_known(model_id):
         await refuse(ws, CLOSE_UNKNOWN_MODEL, "unknown model")
         return
+    from app import registry
+
+    manifest = registry.available().get(model_id)
+    if manifest is not None:
+        try:
+            jsonschema.validate(instance=params, schema=manifest.parameters)
+        except jsonschema.ValidationError:
+            await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
+            return
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")

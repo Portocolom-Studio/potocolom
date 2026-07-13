@@ -105,8 +105,6 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     try:
         params = manifest.with_defaults(control.get("params") or {})
         result = await engine.generate(manifest, params, progress)
-        if progress_tasks:
-            await asyncio.gather(*progress_tasks, return_exceptions=True)
         upload = control["upload"]
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
@@ -125,6 +123,9 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
         with suppress(websockets.WebSocketException):
             await ws.send(json.dumps({"type": "job_failed", "job_id": job_id,
                                       "reason": str(error)}))
+    finally:
+        if progress_tasks:
+            await asyncio.gather(*progress_tasks, return_exceptions=True)
 
 
 async def _gpu_load(ws, engine: Engine, by_id: dict[str, Manifest], control: dict) -> None:
@@ -258,6 +259,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
             runner.close()
         for task in jobs:
             task.cancel()
+        await asyncio.gather(heartbeat_task, *jobs, return_exceptions=True)
 
 
 async def run() -> None:

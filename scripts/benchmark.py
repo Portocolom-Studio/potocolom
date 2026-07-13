@@ -225,7 +225,7 @@ def write_report_html(out_dir: Path, summary: dict, prompts: list[dict],
     css = """
     body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #111; color: #eee; }
     h1, h2 { font-weight: 600; }
-    table { border-collapse: collapse; width: 100%; margin-bottom 2rem; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
     th, td { border: 1px solid #333; padding: 0.4rem 0.6rem; vertical-align: top; }
     th { background: #1a1a1a; position: sticky; top: 0; }
     .prompt-col { min-width: 12rem; background: #161616; }
