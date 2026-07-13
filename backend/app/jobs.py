@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Protocol
 
-import jsonschema
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, realtime, registry
 from app.auth import current_user
+from app.manifests import validate_params
 from app.storage import get_storage
 from app.tables import Asset, Job, User
 
@@ -46,8 +46,6 @@ class Queues(Protocol):
 
     async def pop(self, queue: str) -> str | None: ...
 
-    async def position(self, queue: str, id: str) -> int | None: ...
-
 
 class InProcessQueues:
     """A heap in the single API process; RedisQueues replaces it in the cloud."""
@@ -64,13 +62,6 @@ class InProcessQueues:
         if not heap:
             return None
         return heapq.heappop(heap)[2]
-
-    async def position(self, queue: str, id: str) -> int | None:
-        entries = sorted(self._heaps.get(queue, []))
-        for index, (_, _, entry_id) in enumerate(entries):
-            if entry_id == id:
-                return index
-        return None
 
 
 queues: Queues = InProcessQueues()
@@ -120,13 +111,8 @@ async def create_generation(
     manifest = registry.public().get(request.model_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="unknown model")
-    try:
-        jsonschema.validate(instance=request.params, schema=manifest.parameters)
-    except jsonschema.ValidationError as error:
-        raise HTTPException(status_code=422, detail=f"params: {error.message}") from error
-    except jsonschema.SchemaError:
-        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
-                       manifest.id)
+    if error := validate_params(manifest, request.params):
+        raise HTTPException(status_code=422, detail=f"params: {error}")
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
     await registry.persist_manifests([manifest])
@@ -172,7 +158,6 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
 @router.get("/api/v1/generations")
 async def list_generations(
     limit: int = 50,
-    offset: int = 0,
     cursor: uuid.UUID | None = None,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
@@ -190,7 +175,6 @@ async def list_generations(
         )
     rows = await session.execute(
         query.order_by(Job.created_at.desc(), Job.id.desc())
-        .offset(max(offset, 0))
         .limit(min(max(limit, 1), 200))
     )
     return await serialize_jobs(session, list(rows.scalars()))
@@ -345,6 +329,8 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = uuid.UUID(control["job_id"])
     if control["type"] == "job_progress":
+        if job_id not in inflight:
+            return
         live_progress[job_id] = float(control.get("progress") or 0.0)
         publish(job_id, {"state": "running", "progress": control.get("progress")})
         return
@@ -354,6 +340,8 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         return  # stale report from a previous incarnation
     worker.job_busy = False
     if db.session_factory is None:
+        logger.warning("job %s finished on the worker but the database is unavailable",
+                       job_id)
         return
     if control["type"] == "job_done":
         async with db.session_factory() as session:
@@ -397,6 +385,10 @@ async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:
     async with db.session_factory() as session:
         job = await locked_job(session, job_id)
         if job is None or job.state in TERMINAL_STATES:
+            return
+        if job.state == "queued":
+            await queues.push(JOB_QUEUE, str(job_id), TIER_DEFAULT)
+            logger.info("job %s requeued after %s (never left queued)", job_id, reason)
             return
         if job.attempt == 1:
             job.attempt = 2

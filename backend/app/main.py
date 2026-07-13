@@ -34,7 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="potocolom", lifespan=lifespan)
 app.include_router(realtime_router)
-app.include_router(benchmark_router)
+if get_settings().benchmark_api:
+    app.include_router(benchmark_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)

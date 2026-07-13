@@ -4,7 +4,12 @@ Workers describe their models with these in the fleet hello; the registry
 persists them and GET /api/v1/models exposes them to the frontend.
 """
 
+import logging
+
+import jsonschema
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+logger = logging.getLogger("potocolom.manifests")
 
 
 class Manifest(BaseModel):
@@ -24,6 +29,18 @@ class Manifest(BaseModel):
     license_registration_url: str = ""
     requires_attribution: str = ""
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
+
+
+def validate_params(manifest: Manifest, params: dict) -> str | None:
+    """Return a validation error message, or None when params are acceptable."""
+    try:
+        jsonschema.validate(instance=params, schema=manifest.parameters)
+    except jsonschema.ValidationError as error:
+        return error.message
+    except jsonschema.SchemaError:
+        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
+                       manifest.id)
+    return None
 
 
 def parse_manifests(raw: object) -> list[Manifest]:

@@ -17,11 +17,10 @@ import uuid
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 
-import jsonschema
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from app.manifests import Manifest, parse_manifests
+from app.manifests import Manifest, parse_manifests, validate_params
 
 logger = logging.getLogger("potocolom.realtime")
 
@@ -336,14 +335,9 @@ async def realtime(ws: WebSocket) -> None:
 
     manifest = registry.available().get(model_id)
     if manifest is not None:
-        try:
-            jsonschema.validate(instance=params, schema=manifest.parameters)
-        except jsonschema.ValidationError:
+        if validate_params(manifest, params) is not None:
             await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
             return
-        except jsonschema.SchemaError:
-            logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
-                           manifest.id)
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")

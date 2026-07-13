@@ -129,13 +129,6 @@ export async function loadOlderHistory(): Promise<boolean> {
 
 	let unique = page.filter((generation) => !existing.has(generation.id));
 
-	// Older API processes ignore cursor and return the first page again.
-	if (unique.length === 0 && page.length > 0) {
-		page = await fetchPage(`offset=${studio.history.length}`);
-		if (page === null) return false;
-		unique = page.filter((generation) => !existing.has(generation.id));
-	}
-
 	if (unique.length === 0) {
 		studio.historyHasMore = false;
 		return false;

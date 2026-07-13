@@ -24,7 +24,7 @@ dev = [
 # wheels from the matching https://download.pytorch.org/whl/ index), then
 # install this extra. See docs/local-development.md for the ROCm notes.
 inference = [
-    "torch>=2.4",
+    "torch>=2.5",
     "diffusers>=0.30",
     "transformers>=4.44",
     "accelerate>=0.33",

@@ -105,8 +105,6 @@ def params_summary(params: dict) -> str:
 
 def fetch_registered_models(api: str, client: httpx.Client) -> set[str]:
     response = client.get(f"{api}/api/v1/benchmark/models")
-    if response.status_code == 404:
-        return {m["id"] for m in client.get(f"{api}/api/v1/models").json()}
     response.raise_for_status()
     return {m["id"] for m in response.json()}
 

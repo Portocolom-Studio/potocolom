@@ -1,14 +1,18 @@
 """The job dispatch and history flow (#16), driven with a fake worker over the
 real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
+import asyncio
 import time
+import uuid
 from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
+from app.tables import Job, Model
 
 MANIFEST = {
     "id": "sd-test",
@@ -108,3 +112,71 @@ def test_worker_loss_requeues_once():
             assert redispatch["job_id"] == job_id
             worker.send_json({"type": "job_failed", "job_id": job_id, "reason": "boom"})
             poll_until(client, job_id, "failed")
+
+
+async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
+    assert db.local_user_id is not None
+    assert db.session_factory is not None
+    queued_id = uuid.uuid4()
+    running_id = uuid.uuid4()
+    async with db.session_factory() as session:
+        if await session.get(Model, "sd-test") is None:
+            session.add(Model(
+                id="sd-test",
+                name="SD Test",
+                capabilities=["text_to_image"],
+                parameters_schema=MANIFEST["parameters"],
+                min_vram_gb=0,
+            ))
+        session.add(Job(
+            id=queued_id,
+            user_id=db.local_user_id,
+            model_id="sd-test",
+            params={"prompt": "queued"},
+            state="queued",
+            attempt=1,
+        ))
+        session.add(Job(
+            id=running_id,
+            user_id=db.local_user_id,
+            model_id="sd-test",
+            params={"prompt": "running"},
+            state="running",
+            attempt=1,
+        ))
+        await session.commit()
+    return queued_id, running_id
+
+
+@pytest.mark.db
+def test_recover_requeues_running_and_dispatches_queued():
+    async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
+        if not await db.connect():
+            pytest.skip("database unavailable")
+        ids = await _seed_recover_jobs()
+        await db.dispose()
+        return ids
+
+    queued_id, running_id = asyncio.run(prepare())
+
+    with TestClient(app) as client:
+        requeued = client.get(f"/api/v1/generations/{running_id}").json()
+        assert requeued["state"] == "queued"
+
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-recover")
+
+            first = worker.receive_json()
+            assert first["type"] == "dispatch_job"
+            first_id = first["job_id"]
+
+            upload_path = urlsplit(first["upload"]["url"]).path
+            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": first_id,
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            poll_until(client, first_id, "succeeded")
+
+            second = worker.receive_json()
+            assert second["type"] == "dispatch_job"
+            second_id = second["job_id"]
+            assert {first_id, second_id} == {str(queued_id), str(running_id)}

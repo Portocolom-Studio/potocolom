@@ -90,7 +90,6 @@ Self-hosted installs set no `REDIS_URL` and get in-process implementations of th
 class Queues(Protocol):
     async def push(self, queue: str, id: str, tier: int) -> None
     async def pop(self, queue: str) -> str | None
-    async def position(self, queue: str, id: str) -> int | None
 
 class RedisQueues(Queues): ...      # sorted sets + pop_best.lua
 class InProcessQueues(Queues): ...  # a heap in the single API process

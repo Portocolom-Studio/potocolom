@@ -8,7 +8,7 @@
 
 .PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
 	api worker-rocm worker-sim web dev-start dev-stop dev-restart cleanup-failed generate \
-	benchmark benchmark-publish benchmark-overnight \
+	benchmark benchmark-publish \
 	site-build site-deploy worker-deploy
 
 setup: ## create virtualenvs and install all dependencies
@@ -54,7 +54,7 @@ WEB_PORT ?= 5173
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
-		.venv/bin/uvicorn app.main:app --port 8000
+		BENCHMARK_API=1 .venv/bin/uvicorn app.main:app --port 8000
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm .venv/bin/python -m worker
@@ -111,7 +111,7 @@ BENCHMARK_CONTINUE ?=
 BENCHMARK_FORCE ?=
 BENCHMARK_INCLUDE_CAPPED ?=
 
-benchmark: ## multi-model suite: make benchmark [BENCHMARK_IDS=1-3] [BENCHMARK_FORCE=1]
+benchmark: ## multi-model suite: run API with BENCHMARK_API=1 first [BENCHMARK_IDS=1-3]
 	backend/.venv/bin/python scripts/benchmark.py \
 		--out-dir "$(BENCHMARK_OUT)" \
 		$(if $(BENCHMARK_IDS),--ids $(BENCHMARK_IDS),) \
@@ -126,9 +126,6 @@ BENCHMARK_PUBLISH ?= $(BENCHMARK_DIR)/full-run
 benchmark-publish: ## minify results.json into frontend static assets
 	test -f "$(BENCHMARK_PUBLISH)/results.json"
 	python3 -c 'import json, pathlib; src=pathlib.Path("$(BENCHMARK_PUBLISH)/results.json"); dst=pathlib.Path("frontend/static/benchmark/results.json"); dst.parent.mkdir(parents=True, exist_ok=True); dst.write_text(json.dumps(json.loads(src.read_text()), separators=(",", ":")))'
-
-benchmark-overnight: ## wait for full-run, then supplements + publish (unattended)
-	MAX_WAIT_HOURS=10 nohup scripts/run-benchmark-supplements.sh </dev/null >/dev/null 2>&1 &
 
 # Site deployment (Cloudflare Pages). Anyone deploying their own copy
 # overrides the variables; the waitlist worker lives outside this repo.

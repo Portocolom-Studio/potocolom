@@ -29,11 +29,10 @@ class Manifest(BaseModel):
     commercial_max_revenue_usd: int | None = None  # None = no cap
     license_registration_url: str = ""
     requires_attribution: str = ""  # e.g. "Powered by Stability AI"
-    pipeline: str = ""  # engine family override, worker side only
     benchmark_only: bool = False  # benchmark reference; hidden from GET /api/v1/models
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "pipeline"})
+        return self.model_dump(exclude={"source", "vae", "scheduler", "lora"})
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare

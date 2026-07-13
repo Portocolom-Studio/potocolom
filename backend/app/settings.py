@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
 
+    benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
+
     @property
     def auth_methods(self) -> list[str]:
         if self.auth_mode == "none":
