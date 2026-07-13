@@ -22,6 +22,8 @@
 		stepsSpec,
 		valueToNorm
 	} from '$lib/model-params';
+	import { formatMs } from '$lib/benchmark';
+	import { estimateGpuMs } from '$lib/gpu-estimate';
 	import {
 		generationById,
 		isStarred,
@@ -85,6 +87,14 @@
 	const guidanceValue = $derived(normToValue(guidanceNorm, guidanceRange));
 	const sizeValue = $derived(sizeOptions[sizeIndex] ?? sizeOptions[0]);
 	const sizeKey = $derived(String(sizeValue));
+	const gpuEstimateMs = $derived(
+		estimateGpuMs(selectedModel, {
+			steps: stepsValue,
+			width: sizeValue,
+			height: sizeValue
+		})
+	);
+	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
 
 	$effect(() => {
 		if (!selectedModel) return;
@@ -180,7 +190,11 @@
 						<Label for="gen-model">{t('app.gen.model')}</Label>
 						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
 							{#each studio.models as model (model.id)}
-								<option value={model.id}>{model.name}</option>
+								<option value={model.id}>
+									{model.name}{model.estimated_gpu_ms_default != null
+										? ` (~${formatMs(model.estimated_gpu_ms_default)})`
+										: ''}
+								</option>
 							{/each}
 						</select>
 					</div>
@@ -245,7 +259,7 @@
 						</div>
 					{/if}
 					<Button type="submit" disabled={studio.prompt.trim() === ''}>
-						{t('app.gen.generate')}
+						{t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
 					</Button>
 					{#if working > 0}
 						<p class="text-muted-foreground text-sm">

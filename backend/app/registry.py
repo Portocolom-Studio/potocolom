@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from sqlalchemy.dialects.postgresql import insert
 
 from app import db, realtime
+from app.estimates import estimate_gpu_ms, schema_defaults
 from app.manifests import Manifest
 from app.tables import Model
 
@@ -34,10 +35,13 @@ def public() -> dict[str, Manifest]:
 
 @router.get("/api/v1/models")
 async def list_models() -> list[dict]:
-    return [
-        manifest.model_dump()
-        for _, manifest in sorted(public().items())
-    ]
+    models = []
+    for _, manifest in sorted(public().items()):
+        payload = manifest.model_dump()
+        defaults = schema_defaults(manifest.parameters)
+        payload["estimated_gpu_ms_default"] = estimate_gpu_ms(manifest.id, defaults)
+        models.append(payload)
+    return models
 
 
 async def persist_manifests(manifests: list[Manifest]) -> None:
