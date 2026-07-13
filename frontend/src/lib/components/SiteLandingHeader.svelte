@@ -11,6 +11,17 @@
 	const navClass = (page?: 'benchmark' | 'whitepaper') =>
 		'hover:text-foreground transition-colors' +
 		(current === page ? ' text-foreground font-medium' : '');
+
+	$effect(() => {
+		const html = document.documentElement;
+		const body = document.body;
+		html.classList.add('no-scrollbar');
+		body.classList.add('no-scrollbar', 'overflow-x-clip');
+		return () => {
+			html.classList.remove('no-scrollbar');
+			body.classList.remove('no-scrollbar', 'overflow-x-clip');
+		};
+	});
 </script>
 
 <header class="bg-background/70 fixed inset-x-0 top-0 z-50 border-b backdrop-blur-md">
