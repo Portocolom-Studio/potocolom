@@ -6,8 +6,17 @@ export const load: PageLoad = async ({ fetch }) => {
 	if (!response.ok) {
 		return { report: null };
 	}
-	const report = (await response.json()) as BenchmarkReport;
-	if (!report.created_at || report.results.length === 0) {
+	let report: BenchmarkReport;
+	try {
+		report = await response.json();
+	} catch {
+		return { report: null };
+	}
+	if (
+		typeof report?.created_at !== 'string' ||
+		!Array.isArray(report?.results) ||
+		report.results.length === 0
+	) {
 		return { report: null };
 	}
 	return { report };
