@@ -1,0 +1,13 @@
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+WORKDIR /app
+
+COPY worker/pyproject.toml .
+COPY worker/worker ./worker
+
+RUN pip install --no-cache-dir ".[inference]"
+
+ENV DEVICE=cuda
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "worker"]

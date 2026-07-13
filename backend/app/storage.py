@@ -34,9 +34,10 @@ class Storage(Protocol):
 class LocalStorage:
     """Files under STORAGE_LOCAL_PATH, uploaded and served through the API."""
 
-    def __init__(self, root: str, public_url: str):
+    def __init__(self, root: str, public_url: str, worker_url: str):
         self.root = Path(root)
         self.public_url = public_url.rstrip("/")
+        self.worker_url = worker_url.rstrip("/")
 
     def path(self, key: str) -> Path:
         path = (self.root / key).resolve()
@@ -45,7 +46,7 @@ class LocalStorage:
         return path
 
     async def upload_target(self, key: str) -> UploadTarget:
-        return UploadTarget(url=f"{self.public_url}/api/v1/files/{key}")
+        return UploadTarget(url=f"{self.worker_url}/api/v1/files/{key}")
 
     async def url(self, key: str) -> str:
         return f"{self.public_url}/api/v1/files/{key}"
@@ -100,4 +101,4 @@ def get_storage() -> Storage:
     settings = get_settings()
     if settings.storage_backend == "s3":
         return S3Storage(settings)
-    return LocalStorage(settings.storage_local_path, settings.public_url)
+    return LocalStorage(settings.storage_local_path, settings.public_url, settings.worker_url)

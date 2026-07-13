@@ -1,0 +1,13 @@
+FROM rocm/pytorch:rocm6.3_ubuntu22.04_py3.11_pytorch_2.9.0
+
+WORKDIR /app
+
+COPY worker/pyproject.toml .
+COPY worker/worker ./worker
+
+RUN pip install --no-cache-dir ".[inference]"
+
+ENV DEVICE=rocm
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "worker"]
