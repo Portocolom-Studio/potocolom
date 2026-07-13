@@ -1,9 +1,16 @@
 <script lang="ts">
+	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
+	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
+
+	// The marketing site (Cloudflare Pages) is a static build with no API
+	// behind it: PUBLIC_SITE_MODE=landing shows the canvas preview instead
+	// of the studio. Product builds leave the variable empty.
+	const landing = PUBLIC_SITE_MODE === 'landing';
 </script>
 
 <svelte:head>
@@ -17,7 +24,11 @@
 			<AppSidebar />
 			<Sidebar.Inset class="min-h-0 overflow-hidden">
 				<div class="relative flex h-full min-h-0 flex-col p-4">
-					<GeneratePanel />
+					{#if landing}
+						<StudioPreview />
+					{:else}
+						<GeneratePanel />
+					{/if}
 				</div>
 			</Sidebar.Inset>
 		</div>
