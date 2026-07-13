@@ -148,6 +148,32 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     return queued_id, running_id
 
 
+def poll_until_attempt(client, job_id, attempt: int, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/v1/generations/{job_id}").json()
+        if job.get("attempt") == attempt:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} never reached attempt {attempt}")
+
+
+@pytest.mark.db
+def test_stalled_job_requeues_once(monkeypatch):
+    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-stall")
+            job_id = client.post("/api/v1/generations",
+                                 json={"model_id": "sd-test",
+                                       "params": {"prompt": "stall"}}).json()["job_id"]
+            assert worker.receive_json()["job_id"] == job_id
+            # Worker stays connected but sends no progress; stall requeues once.
+            poll_until_attempt(client, job_id, 2, timeout=3.0)
+
+
 @pytest.mark.db
 def test_recover_requeues_running_and_dispatches_queued():
     async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
