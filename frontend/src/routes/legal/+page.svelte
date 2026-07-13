@@ -9,55 +9,21 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
-<header>
-	<a class="logo" href={resolve('/')}>potocolom<span>_</span></a>
-	<LanguageToggle />
+<header class="border-b">
+	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+		<a class="text-base font-bold tracking-tight" href={resolve('/')}>
+			potocolom<span class="text-primary">_</span>
+		</a>
+		<LanguageToggle />
+	</div>
 </header>
 
-<article>
-	<h1>{t('legal.title')}</h1>
-	<h2>{t('legal.operator_h')}</h2>
-	<p>{t('legal.operator_body')}</p>
-	<h2>{t('legal.purpose_h')}</h2>
-	<p>{t('legal.purpose_body')}</p>
-	<h2>{t('legal.law_h')}</h2>
-	<p>{t('legal.law_body')}</p>
+<article class="mx-auto max-w-[68ch] px-4 py-12 sm:px-6">
+	<h1 class="text-3xl font-semibold tracking-tight">{t('legal.title')}</h1>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.operator_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.operator_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.purpose_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.purpose_body')}</p>
+	<h2 class="mt-10 text-lg font-medium">{t('legal.law_h')}</h2>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('legal.law_body')}</p>
 </article>
-
-<style>
-	header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0.9rem clamp(1rem, 4vw, 3rem);
-		border-bottom: 1px solid var(--border);
-	}
-
-	.logo {
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.logo span {
-		color: var(--accent-2);
-	}
-
-	article {
-		max-width: 68ch;
-		margin: 0 auto;
-		padding: 3rem clamp(1rem, 4vw, 3rem) 5rem;
-	}
-
-	h1 {
-		font-size: 2rem;
-	}
-
-	h2 {
-		font-size: 1.15rem;
-		margin-top: 2rem;
-	}
-
-	p {
-		color: var(--text-muted);
-	}
-</style>

@@ -1,173 +1,95 @@
 <script lang="ts">
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import { onMount } from 'svelte';
+	import AppSidebar from '$lib/components/app-sidebar.svelte';
+	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
+	import SiteHeader from '$lib/components/site-header.svelte';
+	import type { LatentCanvasApi } from '$lib/latent-canvas-scene';
+	import { loadModels } from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
-	import { resolve } from '$app/paths';
+	import * as Sidebar from '$lib/components/ui/sidebar';
 
-	const tabs = ['draw', 'generate', 'edit', 'enhance'] as const;
-	type Tab = (typeof tabs)[number];
+	onMount(() => {
+		void loadModels();
+	});
 
-	let active = $state<Tab>('draw');
+	let leftPanelEl = $state<HTMLDivElement | null>(null);
+	let rightPanelEl = $state<HTMLDivElement | null>(null);
+	let leftCanvasApi = $state<LatentCanvasApi | null>(null);
+	let rightCanvasApi = $state<LatentCanvasApi | null>(null);
+
+	function syncPreviewCursor(event: PointerEvent) {
+		if (!leftPanelEl || !rightPanelEl) return;
+
+		const leftRect = leftPanelEl.getBoundingClientRect();
+		const rightRect = rightPanelEl.getBoundingClientRect();
+
+		leftCanvasApi?.setCursor(event.clientX - leftRect.left, event.clientY - leftRect.top);
+		rightCanvasApi?.setCursor(event.clientX - rightRect.left, event.clientY - rightRect.top);
+	}
+
+	function clearPreviewCursor() {
+		leftCanvasApi?.setCursor(null, null);
+		rightCanvasApi?.setCursor(null, null);
+	}
 </script>
 
 <svelte:head>
 	<title>potocolom - {t('app.title')}</title>
 </svelte:head>
 
-<div class="shell">
-	<header>
-		<a class="logo" href={resolve('/')} title={t('app.back')}>potocolom<span>_</span></a>
-		<nav aria-label={t('app.title')}>
-			{#each tabs as tab (tab)}
-				<button
-					type="button"
-					class={{ active: active === tab }}
-					aria-pressed={active === tab}
-					onclick={() => (active = tab)}
-				>
-					{t(`app.tab_${tab}`)}
-				</button>
-			{/each}
-		</nav>
-		<LanguageToggle />
-	</header>
-
-	<main>
-		{#if active === 'draw'}
-			<div class="workspace">
-				<div class="pane">
-					<span class="pane-hint">{t('app.canvas_hint')}</span>
+<div class="[--header-height:calc(var(--spacing)*14)]">
+	<Sidebar.Provider class="flex h-svh flex-col overflow-hidden">
+		<SiteHeader />
+		<div class="flex min-h-0 flex-1">
+			<AppSidebar />
+			<Sidebar.Inset class="min-h-0 overflow-hidden">
+				<div class="relative flex h-full min-h-0 flex-col p-4">
+					<div
+						class="grid h-full min-h-0 flex-1 cursor-crosshair grid-cols-1 gap-4 md:grid-cols-2"
+						role="presentation"
+						onpointermove={syncPreviewCursor}
+						onpointerleave={clearPreviewCursor}
+					>
+						<div
+							bind:this={leftPanelEl}
+							class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
+						>
+							<LatentCanvas
+								animate
+								followCursor
+								seed={42}
+								onAttach={(api) => (leftCanvasApi = api)}
+							/>
+							<span
+								class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+							>
+								{t('app.canvas_hint')}
+							</span>
+						</div>
+						<div
+							bind:this={rightPanelEl}
+							class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
+						>
+							<LatentCanvas
+								animate
+								followCursor
+								seed={137}
+								onAttach={(api) => (rightCanvasApi = api)}
+							/>
+							<span
+								class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+							>
+								{t('app.result_hint')}
+							</span>
+						</div>
+					</div>
+					<p
+						class="text-foreground/70 pointer-events-none absolute inset-x-6 bottom-5 text-center text-sm leading-relaxed"
+					>
+						{t('app.draw_placeholder')}
+					</p>
 				</div>
-				<div class="pane">
-					<span class="pane-hint">{t('app.result_hint')}</span>
-				</div>
-			</div>
-			<p class="placeholder">{t('app.draw_placeholder')}</p>
-		{:else if active === 'generate'}
-			<div class="workspace single">
-				<div class="pane"></div>
-			</div>
-			<p class="placeholder">{t('app.generate_placeholder')}</p>
-		{:else if active === 'edit'}
-			<div class="workspace single">
-				<div class="pane"></div>
-			</div>
-			<p class="placeholder">{t('app.edit_placeholder')}</p>
-		{:else}
-			<div class="workspace single">
-				<div class="pane"></div>
-			</div>
-			<p class="placeholder">{t('app.enhance_placeholder')}</p>
-		{/if}
-	</main>
+			</Sidebar.Inset>
+		</div>
+	</Sidebar.Provider>
 </div>
-
-<style>
-	.shell {
-		min-height: 100vh;
-		display: flex;
-		flex-direction: column;
-	}
-
-	header {
-		display: flex;
-		align-items: center;
-		gap: 1.5rem;
-		padding: 0.8rem clamp(1rem, 3vw, 2rem);
-		border-bottom: 1px solid var(--border);
-		background: var(--bg-elevated);
-	}
-
-	.logo {
-		font-weight: 700;
-		text-decoration: none;
-	}
-
-	.logo span {
-		color: var(--accent-2);
-	}
-
-	nav {
-		display: flex;
-		gap: 0.3rem;
-		margin-right: auto;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		padding: 3px;
-	}
-
-	nav button {
-		border: none;
-		background: none;
-		color: var(--text-muted);
-		padding: 0.42rem 1.1rem;
-		border-radius: 999px;
-		font-size: 0.9rem;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	nav button.active {
-		background: var(--gradient-accent);
-		color: #06080f;
-		font-weight: 600;
-	}
-
-	main {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		padding: clamp(1rem, 3vw, 2rem);
-		gap: 1rem;
-	}
-
-	.workspace {
-		flex: 1;
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 1rem;
-		min-height: 55vh;
-	}
-
-	.workspace.single {
-		grid-template-columns: 1fr;
-	}
-
-	.pane {
-		border: 1px dashed var(--border);
-		border-radius: var(--radius);
-		background:
-			radial-gradient(ellipse 70% 60% at 50% 40%, rgba(124, 111, 255, 0.06), transparent),
-			var(--surface);
-		display: grid;
-		place-items: center;
-	}
-
-	.pane-hint {
-		color: var(--text-muted);
-		font-size: 0.85rem;
-		letter-spacing: 0.12em;
-		text-transform: uppercase;
-	}
-
-	.placeholder {
-		color: var(--text-muted);
-		font-size: 0.92rem;
-		margin: 0;
-	}
-
-	@media (max-width: 760px) {
-		.workspace {
-			grid-template-columns: 1fr;
-		}
-
-		nav {
-			order: 3;
-			width: 100%;
-			justify-content: space-between;
-		}
-
-		header {
-			flex-wrap: wrap;
-		}
-	}
-</style>

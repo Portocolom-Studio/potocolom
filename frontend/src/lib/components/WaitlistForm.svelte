@@ -4,6 +4,12 @@
 	import { PUBLIC_WAITLIST_URL } from '$env/static/public';
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
+	import * as Field from '$lib/components/ui/field';
+	import * as Alert from '$lib/components/ui/alert';
+	import { Input } from '$lib/components/ui/input';
+	import { Button } from '$lib/components/ui/button';
+	import CheckIcon from '@lucide/svelte/icons/check';
+	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 
 	const endpoint = PUBLIC_WAITLIST_URL;
 
@@ -21,8 +27,11 @@
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ email, locale: getLocale() })
 			});
-			if (!response.ok) throw new Error(String(response.status));
-			const result = await response.json();
+			const contentType = response.headers.get('content-type') ?? '';
+			if (!response.ok || !contentType.includes('application/json')) {
+				throw new Error(String(response.status));
+			}
+			const result = (await response.json()) as { status?: string };
 			status = result.status === 'exists' ? 'already' : 'done';
 		} catch {
 			status = 'error';
@@ -31,136 +40,128 @@
 </script>
 
 {#if endpoint}
-	<section id="waitlist">
-		<p class="kicker">{t('wl.kicker')}</p>
-		<h2>{t('wl.title')}</h2>
-		<p class="sub">{t('wl.sub')}</p>
+	<section id="waitlist" class="mx-auto w-full max-w-2xl px-4 py-24 text-center sm:px-6">
+		<p class="text-primary text-xs font-semibold tracking-[0.2em] uppercase">{t('wl.kicker')}</p>
+		<h2 class="mt-2 text-3xl font-semibold">{t('wl.title')}</h2>
+		<p class="text-muted-foreground mx-auto mt-3 max-w-lg text-base leading-relaxed">
+			{t('wl.sub')}
+		</p>
+
 		{#if status === 'done' || status === 'already'}
-			<p class="result" role="status">
-				{status === 'done' ? t('wl.done') : t('wl.already')}
-			</p>
+			<Alert.Root class="mx-auto mt-8 max-w-md text-left">
+				<CheckIcon />
+				<Alert.Title>{status === 'done' ? t('wl.done') : t('wl.already')}</Alert.Title>
+			</Alert.Root>
 		{:else}
-			<form onsubmit={submit}>
-				<input
-					type="email"
-					name="email"
-					required
-					placeholder={t('wl.placeholder')}
-					bind:value={email}
-					disabled={status === 'sending'}
-				/>
+			<form onsubmit={submit} class="mx-auto mt-8 flex w-full max-w-md items-start gap-2">
+				<Field.Field class="flex-1">
+					<Field.FieldLabel for="wl-email" class="sr-only">{t('wl.email_label')}</Field.FieldLabel>
+					<Input
+						id="wl-email"
+						type="email"
+						name="email"
+						required
+						class="h-11 rounded-full px-5"
+						placeholder={t('wl.placeholder')}
+						bind:value={email}
+						disabled={status === 'sending'}
+					/>
+				</Field.Field>
 				<input
 					type="text"
 					name="website"
-					class="hp"
+					class="absolute -left-[9999px] size-px opacity-0"
 					tabindex="-1"
 					autocomplete="off"
 					aria-hidden="true"
 					bind:value={honeypot}
 				/>
-				<button type="submit" disabled={status === 'sending'}>
-					{status === 'sending' ? t('wl.sending') : t('wl.cta')}
-				</button>
+				<div class="wl-aura wl-aura-dual text-primary shrink-0">
+					<Button type="submit" disabled={status === 'sending'}>
+						{status === 'sending' ? t('wl.sending') : t('wl.cta')}
+					</Button>
+				</div>
 			</form>
 			{#if status === 'error'}
-				<p class="error" role="alert">{t('wl.error')}</p>
+				<Alert.Root variant="destructive" class="mx-auto mt-4 max-w-md text-left">
+					<CircleAlertIcon />
+					<Alert.Title>{t('wl.error')}</Alert.Title>
+				</Alert.Root>
 			{/if}
 		{/if}
-		<p class="note"><a href={resolve('/privacy')}>{t('wl.privacy_note')}</a></p>
+
+		<p class="mt-5 text-xs">
+			<a
+				class="text-muted-foreground hover:text-foreground underline underline-offset-4"
+				href={resolve('/privacy')}
+			>
+				{t('wl.privacy_note')}
+			</a>
+		</p>
 	</section>
 {/if}
 
 <style>
-	section {
-		max-width: var(--content-width);
-		margin: 0 auto;
-		padding: 5.5rem clamp(1rem, 4vw, 3rem) 1rem;
-		text-align: center;
+	@property --wl-aura-angle {
+		syntax: '<angle>';
+		inherits: false;
+		initial-value: 0deg;
 	}
 
-	.kicker {
-		color: var(--accent-2);
-		font-size: 0.85rem;
-		font-weight: 500;
-		letter-spacing: 0.22em;
-		text-transform: uppercase;
-		margin-bottom: 0.4rem;
+	.wl-aura {
+		--aura-angle: var(--wl-aura-angle);
+		--aura-padding: 0.125rem;
+		--aura-radius: 9999px;
+		position: relative;
+		display: inline-block;
+		padding: var(--aura-padding);
+		border-radius: calc(var(--aura-padding) + var(--aura-radius));
+		animation: wl-aura 6s linear infinite;
+		background-image: conic-gradient(from var(--aura-angle), transparent 225deg, currentColor);
 	}
 
-	h2 {
-		font-size: clamp(1.7rem, 3.5vw, 2.4rem);
+	.wl-aura > :global(*) {
+		position: relative;
+		z-index: 1;
 	}
 
-	.sub {
-		color: var(--text-muted);
-		max-width: 520px;
-		margin: 0 auto 1.8rem;
-	}
-
-	form {
-		display: flex;
-		gap: 0.7rem;
-		justify-content: center;
-		flex-wrap: wrap;
-	}
-
-	input[type='email'] {
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		padding: 0.75rem 1.3rem;
-		color: var(--text);
-		font: inherit;
-		width: min(22rem, 100%);
-	}
-
-	input[type='email']:focus {
-		outline: 2px solid var(--accent-2);
-		outline-offset: 1px;
-		border-color: transparent;
-	}
-
-	.hp {
+	.wl-aura::before,
+	.wl-aura::after {
+		content: '';
 		position: absolute;
-		left: -9999px;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
-	}
-
-	button {
-		border: none;
-		border-radius: 999px;
-		padding: 0.75rem 1.6rem;
-		font-weight: 600;
-		font-size: 0.95rem;
-		cursor: pointer;
-		background: var(--gradient-accent);
-		color: #06080f;
-		box-shadow: 0 0 24px rgba(124, 111, 255, 0.35);
-	}
-
-	button:disabled {
+		top: 50%;
+		left: 50%;
+		z-index: 0;
+		display: block;
+		width: 100%;
+		height: 100%;
+		border-radius: inherit;
+		background-color: inherit;
+		background-image: inherit;
+		translate: -50% -50%;
 		opacity: 0.7;
-		cursor: wait;
+		filter: blur(0.25rem);
+		animation: inherit;
 	}
 
-	.result {
-		font-size: 1.1rem;
-		color: var(--accent-2);
+	.wl-aura::after {
+		opacity: 0.3;
+		filter: blur(1rem);
 	}
 
-	.error {
-		color: #f87171;
-		margin-top: 0.8rem;
+	.wl-aura-dual {
+		background-image: repeating-conic-gradient(
+			from var(--aura-angle),
+			transparent 0%,
+			transparent 40%,
+			currentColor 50%
+		);
 	}
 
-	.note {
-		margin-top: 1.2rem;
-		font-size: 0.8rem;
-	}
-
-	.note a {
-		color: var(--text-muted);
+	@keyframes wl-aura {
+		to {
+			--wl-aura-angle: 360deg;
+			transform: translateZ(1px);
+		}
 	}
 </style>

@@ -1,6 +1,8 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 
-.PHONY: setup deps deps-down lint test build verify simulate site-build site-deploy worker-deploy
+.PHONY: setup deps deps-down lint test build verify simulate site-build site-deploy worker-deploy benchmark-publish
+
+BENCHMARK_PUBLISH ?= data/benchmark/combined
 
 setup: ## create virtualenvs and install all dependencies
 	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
@@ -45,3 +47,7 @@ site-deploy: site-build ## build and deploy the site to Cloudflare Pages
 worker-deploy: ## deploy the waitlist worker (operator only, config in .local)
 	@test -d .local/waitlist-worker || { echo "no .local/waitlist-worker on this machine"; exit 1; }
 	cd .local/waitlist-worker && npx wrangler deploy
+
+benchmark-publish: ## minify results.json into frontend static assets
+	test -f "$(BENCHMARK_PUBLISH)/results.json"
+	python3 -c 'import json, pathlib; src=pathlib.Path("$(BENCHMARK_PUBLISH)/results.json"); dst=pathlib.Path("frontend/static/benchmark/results.json"); dst.parent.mkdir(parents=True, exist_ok=True); dst.write_text(json.dumps(json.loads(src.read_text()), separators=(",", ":")))'

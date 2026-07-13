@@ -1,43 +1,26 @@
 <script lang="ts">
-	import { getLocale, setLocale, locales, t } from '$lib/i18n.svelte';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group';
+	import { getLocale, setLocale, locales, t, type Locale } from '$lib/i18n.svelte';
 </script>
 
-<div role="group" aria-label={t('ui.language')}>
+<ToggleGroup.Root
+	type="single"
+	size="sm"
+	variant="outline"
+	spacing={2}
+	value={getLocale()}
+	onValueChange={(value) => {
+		if (value) setLocale(value as Locale);
+	}}
+	aria-label={t('ui.language')}
+	class="rounded-full border p-1"
+>
 	{#each locales as locale (locale)}
-		<button
-			type="button"
-			class={{ active: getLocale() === locale }}
-			aria-pressed={getLocale() === locale}
-			onclick={() => setLocale(locale)}
+		<ToggleGroup.Item
+			value={locale}
+			class="rounded-full px-4 text-xs font-semibold tracking-wide data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
 		>
 			{locale.toUpperCase()}
-		</button>
+		</ToggleGroup.Item>
 	{/each}
-</div>
-
-<style>
-	div {
-		display: inline-flex;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		padding: 2px;
-		gap: 2px;
-	}
-
-	button {
-		border: none;
-		background: none;
-		color: var(--text-muted);
-		font-size: 0.72rem;
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		padding: 0.3rem 0.65rem;
-		border-radius: 999px;
-		cursor: pointer;
-	}
-
-	button.active {
-		background: var(--surface-hover);
-		color: var(--text);
-	}
-</style>
+</ToggleGroup.Root>
