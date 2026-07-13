@@ -464,6 +464,12 @@ The always-on worker floor follows a schedule: floor 1 during European waking ho
 
 Rejected alternatives: a 24/7 floor (best first impression at every hour, full cost from day one before there are night users to impress); pure scale-to-zero (daytime users also hit cold starts whenever demand gaps outlast the idle timeout).
 
+## Fleet metrics: over the heartbeat, aggregates in CloudWatch
+
+GPU hardware metrics (utilization, VRAM, temperature, power) are sampled by the worker via NVML or amd-smi and ride the existing 30 second heartbeat - rented machines export monitoring over the one outbound connection they already hold and are never AWS principals. The API fans each heartbeat out three ways: the worker's Redis hash (the live admin fleet view and the autoscaler), fleet-level CloudWatch aggregates (worker count, slot usage, average and max utilization, minimum free VRAM), and one JSON log line per worker for history. Multi-GPU machines run one worker process per GPU by device index, so every GPU is individually one connection, one heartbeat and one slot set. Frame-loop numbers (per-model p95 frame time at worker and relay, drop rate) are first-class metrics because the slot calibration and the gateway-extraction trigger read them. Specified in [metrics.md](metrics.md).
+
+Rejected alternatives: a metrics agent on rented machines (the CloudWatch agent needs AWS credentials on untrusted hardware - never); Prometheus and Grafana (already rejected under Observability; the revisit trigger is fleet size making aggregate-level CloudWatch blindness expensive, around scaling stage 2); per-worker CloudWatch dimensions (ephemeral worker ids times metric names is a paid cardinality explosion, and Redis plus logs already hold the per-worker detail).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
