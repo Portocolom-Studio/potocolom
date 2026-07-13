@@ -1,9 +1,16 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
+	import { loadHistory, loadModels, pollWhileWorking } from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
+
+	onMount(() => {
+		void loadModels();
+		void loadHistory().then(pollWhileWorking);
+	});
 </script>
 
 <svelte:head>

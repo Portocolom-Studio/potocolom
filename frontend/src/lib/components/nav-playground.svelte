@@ -4,14 +4,17 @@
 	import Settings2Icon from '@lucide/svelte/icons/settings-2';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import HistoryIcon from '@lucide/svelte/icons/history';
-	import ImagesIcon from '@lucide/svelte/icons/images';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import { t } from '$lib/i18n.svelte';
 	import { cn } from '$lib/utils.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-	import { studio, starredGenerations } from '$lib/studio.svelte';
+	import { loadHistory, studio, starredGenerations } from '$lib/studio.svelte';
+
+	$effect(() => {
+		void loadHistory();
+	});
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -27,8 +30,6 @@
 		}
 		return recent;
 	});
-
-	const finished = $derived(studio.history.filter((g) => g.assets.length > 0));
 
 	const starred = $derived(starredGenerations());
 
@@ -129,7 +130,7 @@
 									</Sidebar.MenuSubItem>
 								{/snippet}
 							</Collapsible.Root>
-							<Collapsible.Root open={prompts.length > 0} class="group/collapsible">
+							<Collapsible.Root open class="group/collapsible">
 								{#snippet child({ props })}
 									<Sidebar.MenuSubItem {...props}>
 										<div class="flex w-full items-center">
@@ -182,56 +183,7 @@
 									</Sidebar.MenuSubItem>
 								{/snippet}
 							</Collapsible.Root>
-							<Collapsible.Root open={finished.length > 0} class="group/collapsible">
-								{#snippet child({ props })}
-									<Sidebar.MenuSubItem {...props}>
-										<div class="flex w-full items-center">
-											<Sidebar.MenuSubButton class="min-w-0 flex-1">
-												{#snippet child({ props: buttonProps })}
-													<div {...buttonProps}>
-														<ImagesIcon />
-														<span>{t('app.shell.gallery')}</span>
-													</div>
-												{/snippet}
-											</Sidebar.MenuSubButton>
-											<Collapsible.Trigger>
-												{#snippet child({ props: triggerProps })}
-													<button
-														type="button"
-														class="text-sidebar-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
-														{...triggerProps}
-													>
-														<ChevronRightIcon
-															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
-														/>
-													</button>
-												{/snippet}
-											</Collapsible.Trigger>
-										</div>
-										<Collapsible.Content>
-											<div class="grid grid-cols-3 gap-1.5 px-2 py-1">
-												{#each finished as generation (generation.id)}
-													<button
-														type="button"
-														title={generation.params.prompt}
-														onclick={() => (studio.selectedId = generation.id)}
-													>
-														<img
-															src={generation.assets[0].url}
-															alt={generation.params.prompt ?? generation.id}
-															class={'aspect-square w-full rounded-md border object-cover ' +
-																(studio.selectedId === generation.id
-																	? 'border-primary'
-																	: 'border-border')}
-														/>
-													</button>
-												{/each}
-											</div>
-										</Collapsible.Content>
-									</Sidebar.MenuSubItem>
-								{/snippet}
-							</Collapsible.Root>
-							<Collapsible.Root open={starred.length > 0} class="group/collapsible">
+							<Collapsible.Root open class="group/collapsible">
 								{#snippet child({ props })}
 									<Sidebar.MenuSubItem {...props}>
 										<div class="flex w-full items-center">
