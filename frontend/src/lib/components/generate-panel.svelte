@@ -9,6 +9,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		defaultSizeIndex,
@@ -22,6 +23,7 @@
 		valueToNorm
 	} from '$lib/model-params';
 	import {
+		generationById,
 		isStarred,
 		loadHistory,
 		loadModels,
@@ -41,7 +43,8 @@
 
 	let stepsNorm = $state(0);
 	let guidanceNorm = $state(0);
-	let sizeNorm = $state(0);
+	let sizeIndex = $state(0);
+	let sizeContext = $state({ modelId: '', optionCount: 0 });
 	let count = $state('1');
 	let normsReady = $state(false);
 	let seed = $state('');
@@ -49,9 +52,17 @@
 
 	// The viewer shows the clicked generation, or the newest finished one.
 	const shown = $derived(
-		studio.history.find((g) => g.id === studio.selectedId && g.assets.length > 0) ??
-			studio.history.find((g) => g.assets.length > 0) ??
-			null
+		(() => {
+			if (studio.selectedId) {
+				const selected = generationById(studio.selectedId);
+				if (selected !== undefined && selected.assets.length > 0) return selected;
+			}
+			return (
+				studio.history.find((g) => g.assets.length > 0) ??
+				studio.starredExtras.find((g) => g.assets.length > 0) ??
+				null
+			);
+		})()
 	);
 	// Jobs queue server side; submitting never blocks the form (docs/blueprint.md,
 	// the generation request path returns a job id immediately).
@@ -72,14 +83,40 @@
 	const sizeOptions = $derived(modelSizeOptions(selectedModel));
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
 	const guidanceValue = $derived(normToValue(guidanceNorm, guidanceRange));
-	const sizeIndex = $derived(normToEnumIndex(sizeNorm, sizeOptions.length));
 	const sizeValue = $derived(sizeOptions[sizeIndex] ?? sizeOptions[0]);
+	const sizeKey = $derived(String(sizeValue));
+
+	$effect(() => {
+		if (!selectedModel) return;
+		const count = sizeOptions.length;
+		if (count === 0) return;
+
+		if (sizeContext.modelId === '') {
+			sizeIndex = defaultSizeIndex(selectedModel, sizeOptions);
+			sizeContext = { modelId: selectedModel.id, optionCount: count };
+			return;
+		}
+
+		if (sizeContext.modelId !== selectedModel.id) {
+			if (sizeContext.optionCount > 1 && count > 1) {
+				sizeIndex = normToEnumIndex(
+					enumIndexToNorm(sizeIndex, sizeContext.optionCount),
+					count
+				);
+			} else {
+				sizeIndex = defaultSizeIndex(selectedModel, sizeOptions);
+			}
+			sizeContext = { modelId: selectedModel.id, optionCount: count };
+			return;
+		}
+
+		if (sizeIndex >= count) sizeIndex = count - 1;
+	});
 
 	$effect(() => {
 		if (!selectedModel || normsReady) return;
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
 		guidanceNorm = valueToNorm(guidanceRange.default, guidanceRange);
-		sizeNorm = enumIndexToNorm(defaultSizeIndex(selectedModel, sizeOptions), sizeOptions.length);
 		normsReady = true;
 	});
 
@@ -124,10 +161,15 @@
 	function starShown(): void {
 		if (shown !== null) toggleStarred(shown.id);
 	}
+
+	function onSizeChange(value: string): void {
+		const index = sizeOptions.indexOf(Number(value));
+		if (index >= 0) sizeIndex = index;
+	}
 </script>
 
 <div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
-	<Card.Root class="flex min-h-0 flex-col overflow-y-auto">
+	<Card.Root class="no-scrollbar flex min-h-0 flex-col overflow-y-auto">
 		<Card.Header>
 			<Card.Title>{t('app.gen.title')}</Card.Title>
 			<Card.Description>{t('app.gen.sub')}</Card.Description>
@@ -149,7 +191,7 @@
 						<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
 						<textarea
 							id="gen-prompt"
-							class={fieldClass + ' h-44 resize-none overflow-y-auto py-2'}
+							class={fieldClass + ' no-scrollbar h-44 resize-none overflow-y-auto py-2'}
 							placeholder={t('app.gen.prompt_placeholder')}
 							bind:value={studio.prompt}></textarea>
 					</div>
@@ -168,17 +210,25 @@
 							/>
 						</div>
 					</div>
+					<div class="flex flex-col gap-2">
+						<Label>{t('app.gen.size')}</Label>
+						<ToggleGroup.Root
+							type="single"
+							variant="outline"
+							spacing={0}
+							class="flex w-full"
+							value={sizeKey}
+							onValueChange={(value) => value && onSizeChange(value)}
+						>
+							{#each sizeOptions as option (option)}
+								<ToggleGroup.Item value={String(option)} class="min-w-0 flex-1 text-xs">
+									{option} x {option}
+								</ToggleGroup.Item>
+							{/each}
+						</ToggleGroup.Root>
+					</div>
 					{#if normsReady}
 						<div class="flex flex-col gap-4">
-						<ParamSliderField
-							id="gen-size"
-							label={t('app.gen.size')}
-							bind:norm={sizeNorm}
-							disabled={sizeOptions.length <= 1}
-							minLabel={`${sizeOptions[0]} x ${sizeOptions[0]}`}
-							maxLabel={`${sizeOptions.at(-1)} x ${sizeOptions.at(-1)}`}
-							valueLabel={`${sizeValue} x ${sizeValue}`}
-						/>
 						<ParamSliderField
 							id="gen-steps"
 							label={t('app.gen.steps')}
@@ -278,7 +328,7 @@
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
 	<div class="flex min-h-0 min-w-0 flex-col gap-4">
 		<Card.Root class="min-h-0 flex-1">
-			<Card.Content class="flex h-full min-h-0 flex-col gap-2 p-4">
+			<Card.Content class="flex h-full min-h-0 min-w-0 flex-col gap-2 p-4">
 				{#if shown !== null}
 					<a
 						href={shown.assets[0].url}
@@ -293,7 +343,7 @@
 							class="h-full w-full rounded-lg object-contain"
 						/>
 					</a>
-					<p class="text-muted-foreground shrink-0 truncate text-center text-xs">
+					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
 						{shown.params.prompt}
 					</p>
 				{:else}

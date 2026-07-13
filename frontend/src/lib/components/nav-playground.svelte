@@ -8,9 +8,10 @@
 	import StarIcon from '@lucide/svelte/icons/star';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import { t } from '$lib/i18n.svelte';
+	import { cn } from '$lib/utils.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-	import { studio } from '$lib/studio.svelte';
+	import { studio, starredGenerations } from '$lib/studio.svelte';
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -29,13 +30,7 @@
 
 	const finished = $derived(studio.history.filter((g) => g.assets.length > 0));
 
-	const starred = $derived.by(() => {
-		const byId = new Map(studio.history.map((generation) => [generation.id, generation]));
-		return studio.starredIds.flatMap((id) => {
-			const generation = byId.get(id);
-			return generation !== undefined && generation.assets.length > 0 ? [generation] : [];
-		});
-	});
+	const starred = $derived(starredGenerations());
 
 	// The placeholder sections keep their original shape (dead links until
 	// their issues land).
@@ -163,16 +158,17 @@
 										<Collapsible.Content>
 											<Sidebar.MenuSub>
 												{#each prompts as prompt (prompt)}
-													<Sidebar.MenuSubItem>
-														<Sidebar.MenuSubButton>
+													<Sidebar.MenuSubItem class="min-w-0">
+														<Sidebar.MenuSubButton class="min-w-0">
 															{#snippet child({ props })}
 																<button
 																	type="button"
 																	{...props}
+																	class={cn('min-w-0 w-full max-w-full', props.class as string | undefined)}
 																	title={prompt}
 																	onclick={() => (studio.prompt = prompt)}
 																>
-																	<span class="truncate">{prompt}</span>
+																	<span class="block min-w-0 truncate">{prompt}</span>
 																</button>
 															{/snippet}
 														</Sidebar.MenuSubButton>

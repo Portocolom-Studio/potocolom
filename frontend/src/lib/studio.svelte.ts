@@ -64,7 +64,8 @@ export const studio = $state({
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
 	historyHasMore: false,
 	historyExtended: false,
-	starredIds: loadStarredIds() as string[]
+	starredIds: loadStarredIds() as string[],
+	starredExtras: [] as Generation[] // starred jobs fetched outside the history pages
 });
 
 let polling = false;
@@ -86,6 +87,7 @@ export async function loadHistory(): Promise<void> {
 	studio.historyHasMore = recent.length === HISTORY_LIMIT;
 	if (!studio.historyExtended) {
 		studio.history = recent;
+		await loadStarredGenerations();
 		return;
 	}
 	// Keep older pages at the tail while refreshing the newest slice in place.
@@ -94,6 +96,7 @@ export async function loadHistory(): Promise<void> {
 		(generation) => !recentIds.has(generation.id) && generation.state !== 'failed'
 	);
 	studio.history = [...recent, ...olderTail];
+	await loadStarredGenerations();
 }
 
 export async function loadOlderHistory(): Promise<boolean> {
@@ -128,7 +131,41 @@ export async function loadOlderHistory(): Promise<boolean> {
 	studio.history = [...studio.history, ...unique];
 	studio.historyHasMore = page.length === HISTORY_LIMIT;
 	studio.historyExtended = studio.history.length > studio.historyRecent.length;
+	await loadStarredGenerations();
 	return true;
+}
+
+export function generationById(id: string): Generation | undefined {
+	return (
+		studio.history.find((generation) => generation.id === id) ??
+		studio.starredExtras.find((generation) => generation.id === id)
+	);
+}
+
+export function starredGenerations(): Generation[] {
+	return studio.starredIds.flatMap((id) => {
+		const generation = generationById(id);
+		return generation !== undefined && generation.assets.length > 0 ? [generation] : [];
+	});
+}
+
+export async function loadStarredGenerations(): Promise<void> {
+	const inHistory = new Set(studio.history.map((generation) => generation.id));
+	const missingIds = studio.starredIds.filter((id) => !inHistory.has(id));
+	if (missingIds.length === 0) {
+		studio.starredExtras = [];
+		return;
+	}
+
+	const fetched = await Promise.all(
+		missingIds.map(async (id) => {
+			const response = await fetch(`/api/v1/generations/${id}`);
+			if (!response.ok) return null;
+			const generation = (await response.json()) as Generation;
+			return generation.state !== 'failed' && generation.assets.length > 0 ? generation : null;
+		})
+	);
+	studio.starredExtras = fetched.filter((generation): generation is Generation => generation !== null);
 }
 
 export function resetHistoryToRecent(): void {
