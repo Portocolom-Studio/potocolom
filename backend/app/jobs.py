@@ -22,7 +22,7 @@ import jsonschema
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, realtime, registry
@@ -168,13 +168,25 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
 @router.get("/api/v1/generations")
 async def list_generations(
     limit: int = 50,
+    offset: int = 0,
+    cursor: uuid.UUID | None = None,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
+    query = select(Job).where(Job.user_id == user.id)
+    if cursor is not None:
+        anchor = await session.get(Job, cursor)
+        if anchor is None or anchor.user_id != user.id:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        query = query.where(
+            or_(
+                Job.created_at < anchor.created_at,
+                and_(Job.created_at == anchor.created_at, Job.id < anchor.id),
+            )
+        )
     rows = await session.execute(
-        select(Job)
-        .where(Job.user_id == user.id)
-        .order_by(Job.created_at.desc())
+        query.order_by(Job.created_at.desc(), Job.id.desc())
+        .offset(max(offset, 0))
         .limit(min(max(limit, 1), 200))
     )
     return await serialize_jobs(session, list(rows.scalars()))

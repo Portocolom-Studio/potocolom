@@ -3,10 +3,12 @@
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
 #   make worker-rocm           # terminal 2 (or worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
+# Or: make dev-start           # API + frontend in the background (logs under data/dev/)
 # Self-hosted packaging (one compose file for everything) is issue #18.
 
 .PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
-	api worker-rocm worker-sim web generate benchmark benchmark-publish benchmark-overnight \
+	api worker-rocm worker-sim web dev-start dev-stop dev-restart cleanup-failed generate \
+	benchmark benchmark-publish benchmark-overnight \
 	site-build site-deploy worker-deploy
 
 setup: ## create virtualenvs and install all dependencies
@@ -44,7 +46,11 @@ simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
 
 # The local M2 stack. Each target runs in the foreground in its own terminal.
+# Or use dev-start / dev-stop / dev-restart for API + frontend in the background.
 PROMPT ?= a castle on a hill at sunset, oil painting
+DEV_DIR := $(CURDIR)/data/dev
+API_PORT ?= 8000
+WEB_PORT ?= 5173
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
@@ -58,6 +64,38 @@ worker-sim: ## simulated worker: no GPU, echo frames, flat images
 
 web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
+
+dev-stop: ## stop background API (:8000) and frontend (:5173)
+	@if [ -f "$(DEV_DIR)/api.pid" ]; then \
+		kill $$(cat "$(DEV_DIR)/api.pid") 2>/dev/null || true; \
+	fi
+	@if [ -f "$(DEV_DIR)/web.pid" ]; then \
+		kill $$(cat "$(DEV_DIR)/web.pid") 2>/dev/null || true; \
+	fi
+	@fuser -k $(API_PORT)/tcp 2>/dev/null || true
+	@fuser -k $(WEB_PORT)/tcp 2>/dev/null || true
+	@rm -f "$(DEV_DIR)/api.pid" "$(DEV_DIR)/web.pid"
+
+dev-start: ## start API and frontend in the background (make deps first)
+	@mkdir -p "$(DEV_DIR)"
+	@$(MAKE) dev-stop
+	@echo "Starting API on :$(API_PORT)..."
+	@bash -c 'cd "$(CURDIR)/backend" && STORAGE_LOCAL_PATH="$(CURDIR)/data" \
+		nohup .venv/bin/uvicorn app.main:app --port $(API_PORT) \
+		> "$(DEV_DIR)/api.log" 2>&1 & echo $$! > "$(DEV_DIR)/api.pid"'
+	@echo "Starting frontend on :$(WEB_PORT)..."
+	@bash -c 'cd "$(CURDIR)/frontend" && \
+		nohup npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) \
+		> "$(DEV_DIR)/web.log" 2>&1 & echo $$! > "$(DEV_DIR)/web.pid"'
+	@echo "API log:  $(DEV_DIR)/api.log"
+	@echo "Web log:  $(DEV_DIR)/web.log"
+	@echo "API:      http://localhost:$(API_PORT)"
+	@echo "Studio:   http://localhost:$(WEB_PORT)"
+
+dev-restart: dev-stop dev-start ## restart background API and frontend
+
+cleanup-failed: ## remove failed generation jobs from the database
+	backend/.venv/bin/python scripts/cleanup-failed-jobs.py
 
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py "$(PROMPT)"

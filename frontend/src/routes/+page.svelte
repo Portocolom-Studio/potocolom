@@ -1,6 +1,6 @@
 <script lang="ts">
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import UserGenerationGallery from '$lib/components/UserGenerationGallery.svelte';
@@ -49,28 +49,7 @@
 	<meta name="description" content={t('hero.sub')} />
 </svelte:head>
 
-<header class="bg-background/70 fixed inset-x-0 top-0 z-50 border-b backdrop-blur-md">
-	<div class="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">
-		<a class="text-base font-bold" href={resolve('/')}>
-			potocolom<span class="text-primary">_</span>
-		</a>
-		<nav class="text-muted-foreground hidden gap-6 text-base md:flex">
-			<a class="hover:text-foreground transition-colors" href="#features">{t('nav.features')}</a>
-			<a class="hover:text-foreground transition-colors" href="#pricing">{t('nav.pricing')}</a>
-			<a class="hover:text-foreground transition-colors" href="#open">{t('nav.open')}</a>
-			<a class="hover:text-foreground transition-colors" href={resolve('/whitepaper')}>
-				{t('nav.whitepaper')}
-			</a>
-			<a class="hover:text-foreground transition-colors" href={resolve('/benchmark')}>
-				{t('nav.benchmark')}
-			</a>
-		</nav>
-		<div class="ml-auto flex items-center gap-3">
-			<LanguageToggle />
-			<Button size="sm" variant="gradient" href={resolve('/app')}>{t('nav.launch')}</Button>
-		</div>
-	</div>
-</header>
+<SiteLandingHeader />
 
 <main>
 	<section class="relative grid min-h-[92vh] place-items-center overflow-hidden">

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
 	import {
 		formatMs,
@@ -11,8 +12,6 @@
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
 	import { t } from '$lib/i18n.svelte';
-	import { resolve } from '$app/paths';
-	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Card from '$lib/components/ui/card';
 
@@ -32,9 +31,7 @@
 	const benchmarkedModels = $derived(new Set(report?.models ?? []));
 
 	const tocSections = $derived.by(() => {
-		const items: { id: string; label: string }[] = [
-			{ id: 'bench-specs', label: t('bench.toc_specs') }
-		];
+		const items: { id: string; label: string }[] = [];
 		if (hasData) {
 			items.push({ id: 'bench-charts', label: t('bench.toc_charts') });
 			if (report) {
@@ -43,6 +40,7 @@
 				}
 			}
 		}
+		items.push({ id: 'bench-specs', label: t('bench.toc_specs') });
 		return items;
 	});
 </script>
@@ -52,19 +50,9 @@
 	<meta name="description" content={t('bench.sub')} />
 </svelte:head>
 
-<header class="bg-background/70 sticky top-0 z-50 border-b backdrop-blur-md">
-	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-		<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-			potocolom<span class="text-primary">_</span>
-		</a>
-		<div class="flex items-center gap-3">
-			<LanguageToggle />
-			<Button size="sm" variant="gradient" href={resolve('/app')}>{t('nav.launch')}</Button>
-		</div>
-	</div>
-</header>
+<SiteLandingHeader current="benchmark" />
 
-<div class="mx-auto max-w-6xl px-4 pt-14 sm:px-6">
+<div class="mx-auto max-w-6xl px-4 pt-16 sm:px-6">
 	<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase">{t('bench.kicker')}</p>
 	<h1 class="mt-2 max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('bench.title')}</h1>
 	<p class="text-muted-foreground mt-4 max-w-2xl text-lg leading-relaxed">{t('bench.sub')}</p>
@@ -104,65 +92,8 @@
 	</aside>
 
 	<article class="min-w-0 pb-12">
-		<section id="bench-specs" class="mb-14 scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('bench.specs')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('bench.specs_note')}
-			</p>
-			<Card.Root class="mt-6 overflow-hidden p-0 [--card-spacing:0]">
-				<div class="overflow-x-auto">
-					<table class="w-full min-w-[960px] text-left text-sm">
-						<thead class="bg-muted/40 border-b">
-							<tr>
-								<th class="px-4 py-3 font-medium">{t('bench.col_model')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_arch')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_params')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_vram')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_resolution')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_steps')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_capabilities')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_license')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_commercial')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_studio')}</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each MODEL_SPECS as spec (spec.id)}
-								<tr
-									class="border-b last:border-b-0"
-									class:opacity-60={hasData && !benchmarkedModels.has(spec.id)}
-								>
-									<td class="px-4 py-3">
-										<p class="font-medium">{spec.name}</p>
-										<p class="text-muted-foreground mt-0.5 font-mono text-xs">{spec.id}</p>
-										{#if isReferenceOnlyModel(spec.id)}
-											<Badge class="mt-1" variant="secondary">{t('bench.reference_badge')}</Badge>
-										{/if}
-										{#if hasData && !benchmarkedModels.has(spec.id)}
-											<p class="text-muted-foreground mt-1 text-xs">{t('bench.no_timing')}</p>
-										{/if}
-									</td>
-									<td class="px-4 py-3">{spec.architecture}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.parameters}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.min_vram_gb} GB</td>
-									<td class="px-4 py-3 tabular-nums">{spec.resolutions}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.step_range}</td>
-									<td class="px-4 py-3 text-xs">{formatCapabilities(spec.capabilities)}</td>
-									<td class="px-4 py-3 text-xs">{spec.license}</td>
-									<td class="px-4 py-3 text-xs">{spec.commercial}</td>
-									<td class="px-4 py-3 text-xs">
-										{spec.studio ? t('bench.studio_yes') : t('bench.studio_no')}
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			</Card.Root>
-		</section>
-
 		{#if !hasData || !report}
-			<Card.Root class="[--card-spacing:--spacing(6)]">
+			<Card.Root class="mb-14 [--card-spacing:--spacing(6)]">
 				<Card.Header>
 					<Card.Title>{t('bench.empty_title')}</Card.Title>
 					<Card.Description class="text-base leading-relaxed">
@@ -171,7 +102,7 @@
 				</Card.Header>
 			</Card.Root>
 		{:else}
-			<section id="bench-charts" class="mb-10 scroll-mt-20">
+			<section id="bench-charts" class="mb-14 scroll-mt-20">
 				<h2 class="text-2xl font-semibold">{t('bench.charts')}</h2>
 				<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
 					{t('bench.charts_note')}
@@ -181,7 +112,7 @@
 				</div>
 			</section>
 
-			<section class="space-y-3">
+			<section class="mb-14 space-y-3">
 				<h2 class="text-lg font-semibold">{t('bench.details')}</h2>
 				<p class="text-muted-foreground text-sm">{t('bench.details_note')}</p>
 				{#each report.models as modelId (modelId)}
@@ -253,5 +184,64 @@
 				{/each}
 			</section>
 		{/if}
+
+		<section id="bench-specs" class="scroll-mt-20">
+			<h2 class="text-2xl font-semibold">{t('bench.specs')}</h2>
+			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
+				{t('bench.specs_note')}
+			</p>
+			<Card.Root class="mt-6 overflow-hidden p-0 [--card-spacing:0]">
+				<div class="overflow-x-auto">
+					<table class="w-full min-w-[960px] text-left text-sm">
+						<thead class="bg-muted/40 border-b">
+							<tr>
+								<th class="px-4 py-3 font-medium">{t('bench.col_model')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_arch')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_params')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_vram')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_resolution')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_steps')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_capabilities')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_license')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_commercial')}</th>
+								<th class="px-4 py-3 font-medium">{t('bench.col_studio')}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each MODEL_SPECS as spec (spec.id)}
+								<tr
+									class="border-b last:border-b-0"
+									class:opacity-60={hasData && !benchmarkedModels.has(spec.id)}
+								>
+									<td class="px-4 py-3">
+										<p class="font-medium">{spec.name}</p>
+										<p class="text-muted-foreground mt-0.5 font-mono text-xs">{spec.id}</p>
+										{#if isReferenceOnlyModel(spec.id)}
+											<Badge class="mt-1" variant="secondary">{t('bench.reference_badge')}</Badge>
+										{/if}
+										{#if hasData && !benchmarkedModels.has(spec.id)}
+											<p class="text-muted-foreground mt-1 text-xs">{t('bench.no_timing')}</p>
+										{/if}
+									</td>
+									<td class="px-4 py-3">{spec.architecture}</td>
+									<td class="px-4 py-3 tabular-nums">{spec.parameters}</td>
+									<td class="px-4 py-3 tabular-nums">{spec.min_vram_gb} GB</td>
+									<td class="px-4 py-3 tabular-nums">{spec.resolutions}</td>
+									<td class="px-4 py-3 tabular-nums">{spec.step_range}</td>
+									<td class="px-4 py-3 text-xs">{formatCapabilities(spec.capabilities)}</td>
+									<td class="px-4 py-3 text-xs">{spec.license}</td>
+									<td class="px-4 py-3 text-xs">{spec.commercial}</td>
+									<td class="px-4 py-3 text-xs">
+										{spec.studio ? t('bench.studio_yes') : t('bench.studio_no')}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</Card.Root>
+		</section>
 	</article>
 </div>
+
+<ScrollToTop />

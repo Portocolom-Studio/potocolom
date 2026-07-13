@@ -4,6 +4,7 @@
 	import Settings2Icon from '@lucide/svelte/icons/settings-2';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import ImagesIcon from '@lucide/svelte/icons/images';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import { t } from '$lib/i18n.svelte';
@@ -24,6 +25,16 @@
 			if (recent.length === 10) break;
 		}
 		return recent;
+	});
+
+	const finished = $derived(studio.history.filter((g) => g.assets.length > 0));
+
+	const starred = $derived.by(() => {
+		const byId = new Map(studio.history.map((generation) => [generation.id, generation]));
+		return studio.starredIds.flatMap((id) => {
+			const generation = byId.get(id);
+			return generation !== undefined && generation.assets.length > 0 ? [generation] : [];
+		});
 	});
 
 	// The placeholder sections keep their original shape (dead links until
@@ -56,36 +67,50 @@
 <Sidebar.Group>
 	<Sidebar.GroupLabel>{t('app.shell.platform')}</Sidebar.GroupLabel>
 	<Sidebar.Menu>
-		<Collapsible.Root open>
+		<Collapsible.Root open class="group/collapsible">
 			{#snippet child({ props })}
 				<Sidebar.MenuItem {...props}>
+					<Sidebar.MenuButton tooltipContent={t('app.shell.playground')}>
+						<SquareTerminalIcon />
+						<span>{t('app.shell.playground')}</span>
+					</Sidebar.MenuButton>
 					<Collapsible.Trigger>
-						{#snippet child({ props })}
-							<Sidebar.MenuButton {...props} tooltipContent={t('app.shell.playground')}>
-								<SquareTerminalIcon />
-								<span>{t('app.shell.playground')}</span>
+						{#snippet child({ props: triggerProps })}
+							<Sidebar.MenuAction {...triggerProps}>
 								<ChevronRightIcon
-									class="ml-auto transition-transform in-data-[state=open]:rotate-90"
+									class="transition-transform group-data-[state=open]/collapsible:rotate-90"
 								/>
-							</Sidebar.MenuButton>
+							</Sidebar.MenuAction>
 						{/snippet}
 					</Collapsible.Trigger>
 					<Collapsible.Content>
 						<Sidebar.MenuSub>
-							<Collapsible.Root open>
+							<Collapsible.Root open class="group/collapsible">
 								{#snippet child({ props })}
 									<Sidebar.MenuSubItem {...props}>
-										<Collapsible.Trigger>
-											{#snippet child({ props })}
-												<Sidebar.MenuSubButton {...props}>
-													<BotIcon />
-													<span>{t('app.shell.models')}</span>
-													<ChevronRightIcon
-														class="ml-auto transition-transform in-data-[state=open]:rotate-90"
-													/>
-												</Sidebar.MenuSubButton>
-											{/snippet}
-										</Collapsible.Trigger>
+										<div class="flex w-full items-center">
+											<Sidebar.MenuSubButton class="min-w-0 flex-1">
+												{#snippet child({ props: buttonProps })}
+													<div {...buttonProps}>
+														<BotIcon />
+														<span>{t('app.shell.models')}</span>
+													</div>
+												{/snippet}
+											</Sidebar.MenuSubButton>
+											<Collapsible.Trigger>
+												{#snippet child({ props: triggerProps })}
+													<button
+														type="button"
+														class="text-sidebar-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+														{...triggerProps}
+													>
+														<ChevronRightIcon
+															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
+														/>
+													</button>
+												{/snippet}
+											</Collapsible.Trigger>
+										</div>
 										<Collapsible.Content>
 											<Sidebar.MenuSub>
 												{#each studio.models as model (model.id)}
@@ -109,20 +134,32 @@
 									</Sidebar.MenuSubItem>
 								{/snippet}
 							</Collapsible.Root>
-							<Collapsible.Root open={prompts.length > 0}>
+							<Collapsible.Root open={prompts.length > 0} class="group/collapsible">
 								{#snippet child({ props })}
 									<Sidebar.MenuSubItem {...props}>
-										<Collapsible.Trigger>
-											{#snippet child({ props })}
-												<Sidebar.MenuSubButton {...props}>
-													<HistoryIcon />
-													<span>{t('app.shell.history')}</span>
-													<ChevronRightIcon
-														class="ml-auto transition-transform in-data-[state=open]:rotate-90"
-													/>
-												</Sidebar.MenuSubButton>
-											{/snippet}
-										</Collapsible.Trigger>
+										<div class="flex w-full items-center">
+											<Sidebar.MenuSubButton class="min-w-0 flex-1">
+												{#snippet child({ props: buttonProps })}
+													<div {...buttonProps}>
+														<HistoryIcon />
+														<span>{t('app.shell.history')}</span>
+													</div>
+												{/snippet}
+											</Sidebar.MenuSubButton>
+											<Collapsible.Trigger>
+												{#snippet child({ props: triggerProps })}
+													<button
+														type="button"
+														class="text-sidebar-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+														{...triggerProps}
+													>
+														<ChevronRightIcon
+															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
+														/>
+													</button>
+												{/snippet}
+											</Collapsible.Trigger>
+										</div>
 										<Collapsible.Content>
 											<Sidebar.MenuSub>
 												{#each prompts as prompt (prompt)}
@@ -146,34 +183,124 @@
 									</Sidebar.MenuSubItem>
 								{/snippet}
 							</Collapsible.Root>
-							<Sidebar.MenuSubItem>
-								<Sidebar.MenuSubButton>
-									{#snippet child({ props })}
-										<a href={deadLink} {...props}>
-											<StarIcon />
-											<span>{t('app.shell.starred')}</span>
-										</a>
-									{/snippet}
-								</Sidebar.MenuSubButton>
-							</Sidebar.MenuSubItem>
+							<Collapsible.Root open={finished.length > 0} class="group/collapsible">
+								{#snippet child({ props })}
+									<Sidebar.MenuSubItem {...props}>
+										<div class="flex w-full items-center">
+											<Sidebar.MenuSubButton class="min-w-0 flex-1">
+												{#snippet child({ props: buttonProps })}
+													<div {...buttonProps}>
+														<ImagesIcon />
+														<span>{t('app.shell.gallery')}</span>
+													</div>
+												{/snippet}
+											</Sidebar.MenuSubButton>
+											<Collapsible.Trigger>
+												{#snippet child({ props: triggerProps })}
+													<button
+														type="button"
+														class="text-sidebar-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+														{...triggerProps}
+													>
+														<ChevronRightIcon
+															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
+														/>
+													</button>
+												{/snippet}
+											</Collapsible.Trigger>
+										</div>
+										<Collapsible.Content>
+											<div class="grid grid-cols-3 gap-1.5 px-2 py-1">
+												{#each finished as generation (generation.id)}
+													<button
+														type="button"
+														title={generation.params.prompt}
+														onclick={() => (studio.selectedId = generation.id)}
+													>
+														<img
+															src={generation.assets[0].url}
+															alt={generation.params.prompt ?? generation.id}
+															class={'aspect-square w-full rounded-md border object-cover ' +
+																(studio.selectedId === generation.id
+																	? 'border-primary'
+																	: 'border-border')}
+														/>
+													</button>
+												{/each}
+											</div>
+										</Collapsible.Content>
+									</Sidebar.MenuSubItem>
+								{/snippet}
+							</Collapsible.Root>
+							<Collapsible.Root open={starred.length > 0} class="group/collapsible">
+								{#snippet child({ props })}
+									<Sidebar.MenuSubItem {...props}>
+										<div class="flex w-full items-center">
+											<Sidebar.MenuSubButton class="min-w-0 flex-1">
+												{#snippet child({ props: buttonProps })}
+													<div {...buttonProps}>
+														<StarIcon />
+														<span>{t('app.shell.starred')}</span>
+													</div>
+												{/snippet}
+											</Sidebar.MenuSubButton>
+											<Collapsible.Trigger>
+												{#snippet child({ props: triggerProps })}
+													<button
+														type="button"
+														class="text-sidebar-foreground hover:text-foreground flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+														{...triggerProps}
+													>
+														<ChevronRightIcon
+															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
+														/>
+													</button>
+												{/snippet}
+											</Collapsible.Trigger>
+										</div>
+										<Collapsible.Content>
+											<div class="grid grid-cols-3 gap-1.5 px-2 py-1">
+												{#each starred as generation (generation.id)}
+													<button
+														type="button"
+														title={generation.params.prompt}
+														onclick={() => (studio.selectedId = generation.id)}
+													>
+														<img
+															src={generation.assets[0].url}
+															alt={generation.params.prompt ?? generation.id}
+															class={'aspect-square w-full rounded-md border object-cover ' +
+																(studio.selectedId === generation.id
+																	? 'border-primary'
+																	: 'border-border')}
+														/>
+													</button>
+												{/each}
+											</div>
+										</Collapsible.Content>
+									</Sidebar.MenuSubItem>
+								{/snippet}
+							</Collapsible.Root>
 						</Sidebar.MenuSub>
 					</Collapsible.Content>
 				</Sidebar.MenuItem>
 			{/snippet}
 		</Collapsible.Root>
 		{#each placeholders as section (section.title)}
-			<Collapsible.Root>
+			<Collapsible.Root class="group/collapsible">
 				{#snippet child({ props })}
 					<Sidebar.MenuItem {...props}>
+						<Sidebar.MenuButton tooltipContent={section.title}>
+							<section.icon />
+							<span>{section.title}</span>
+						</Sidebar.MenuButton>
 						<Collapsible.Trigger>
-							{#snippet child({ props })}
-								<Sidebar.MenuButton {...props} tooltipContent={section.title}>
-									<section.icon />
-									<span>{section.title}</span>
+							{#snippet child({ props: triggerProps })}
+								<Sidebar.MenuAction {...triggerProps}>
 									<ChevronRightIcon
-										class="ml-auto transition-transform in-data-[state=open]:rotate-90"
+										class="transition-transform group-data-[state=open]/collapsible:rotate-90"
 									/>
-								</Sidebar.MenuButton>
+								</Sidebar.MenuAction>
 							{/snippet}
 						</Collapsible.Trigger>
 						<Collapsible.Content>

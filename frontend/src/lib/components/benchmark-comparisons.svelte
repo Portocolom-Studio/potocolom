@@ -1,7 +1,10 @@
 <script lang="ts">
+	import BenchmarkCategoryRadar from '$lib/components/benchmark-category-radar.svelte';
 	import {
 		chartColor,
 		categoryLineSeries,
+		formatMs,
+		formatMsHeat,
 		leaderboardRows,
 		metricDisplay,
 		metricValue,
@@ -20,15 +23,25 @@
 	const rows = $derived(leaderboardRows(report.model_stats));
 	const maxMetric = $derived(Math.max(...rows.map((r) => metricValue(r, metric)), 1));
 	const lineData = $derived(categoryLineSeries(report.results, report.models));
-	const lineMax = $derived(
-		Math.max(...lineData.series.flatMap((s) => s.points.map((p) => p.avg_gpu_ms)), 1)
+	const heatMax = $derived(
+		Math.max(
+			...lineData.series.flatMap((series) => series.points.map((point) => point.avg_gpu_ms)),
+			1
+		)
+	);
+	const heatMin = $derived(
+		Math.min(
+			...lineData.series.flatMap((series) =>
+				series.points.map((point) => point.avg_gpu_ms).filter((ms) => ms > 0)
+			),
+			heatMax
+		)
 	);
 	const maxPair = $derived(
 		Math.max(...rows.map((r) => Math.max(r.gpu_ms, r.wall_s * 1000)), 1)
 	);
 
 	const chartW = 360;
-	const chartH = 220;
 	const barH = 28;
 	const barGap = 10;
 	const barsH = $derived(rows.length * (barH + barGap) + 16);
@@ -41,21 +54,25 @@
 		{ key: 'load', label: 'Load' }
 	];
 
-	function linePath(values: number[]): string {
-		if (values.length === 0) return '';
-		const step = chartW / Math.max(values.length - 1, 1);
-		return values
-			.map((v, i) => {
-				const x = i * step;
-				const y = chartH - (v / lineMax) * (chartH - 20) - 10;
-				return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-			})
-			.join(' ');
+	function heatCell(ms: number): { bar: string; track: string } {
+		const span = Math.max(heatMax - heatMin, 1);
+		const t = Math.min(1, Math.max(0, (ms - heatMin) / span));
+		const bucket = Math.min(4, Math.floor(t * 5));
+		const colors = [
+			'var(--chart-4)',
+			'var(--chart-2)',
+			'var(--chart-5)',
+			'var(--chart-3)',
+			'var(--chart-1)'
+		] as const;
+		return {
+			bar: colors[bucket],
+			track: `color-mix(in oklch, ${colors[bucket]} 18%, var(--muted))`
+		};
 	}
 
-	function heatColor(ms: number): string {
-		const t = Math.min(1, ms / lineMax);
-		return `color-mix(in oklch, var(--chart-1) ${Math.round(t * 85 + 10)}%, transparent)`;
+	function shortModel(modelId: string): string {
+		return modelId.length > 12 ? `${modelId.slice(0, 11)}…` : modelId;
 	}
 </script>
 
@@ -211,118 +228,97 @@
 		</Card.Root>
 	</div>
 
-	<div class="grid gap-4 lg:grid-cols-5">
-		<Card.Root class="lg:col-span-3 [--card-spacing:--spacing(5)]">
-			<Card.Header class="gap-1">
-				<Card.Title class="text-base">{t('bench.chart_line')}</Card.Title>
-				<Card.Description class="text-sm">{t('bench.chart_line_desc')}</Card.Description>
-			</Card.Header>
-			<Card.Content>
-				<svg
-					viewBox="0 0 {chartW} {chartH + 36}"
-					class="w-full"
-					role="img"
-					aria-label={t('bench.chart_line')}
-				>
-					{#each [0, 0.25, 0.5, 0.75, 1] as tick (tick)}
-						<line
-							x1="0"
-							y1={chartH - tick * (chartH - 20) - 10}
-							x2={chartW}
-							y2={chartH - tick * (chartH - 20) - 10}
-							class="stroke-border/50"
-							stroke-width="1"
-							stroke-dasharray="4 4"
-						/>
-					{/each}
-					{#each lineData.series as series, si (series.model_id)}
-						<path
-							d={linePath(series.points.map((p) => p.avg_gpu_ms))}
-							fill="none"
-							stroke={series.color}
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						/>
-						{#each series.points as point, pi (point.category)}
-							<circle
-								cx={(pi / Math.max(lineData.categories.length - 1, 1)) * chartW}
-								cy={chartH - (point.avg_gpu_ms / lineMax) * (chartH - 20) - 10}
-								r="3"
-								fill={series.color}
-							>
-								<title>{series.model_id} · {point.category}: {Math.round(point.avg_gpu_ms)} ms</title>
-							</circle>
-						{/each}
-					{/each}
-					{#each lineData.categories as cat, i (cat)}
-						<text
-							x={(i / Math.max(lineData.categories.length - 1, 1)) * chartW}
-							y={chartH + 22}
-							text-anchor="middle"
-							class="fill-muted-foreground text-[9px]"
-						>
-							{cat.slice(0, 5)}
-						</text>
-					{/each}
-				</svg>
-				<div class="mt-3 flex flex-wrap gap-x-4 gap-y-1">
-					{#each lineData.series as series, i (series.model_id)}
-						<span class="flex items-center gap-1.5 text-[10px]">
-							<span
-								class="inline-block h-2 w-3 rounded-sm"
-								style:background={series.color}
-							></span>
-							<span class="font-mono">{series.model_id}</span>
-						</span>
+	<Card.Root class="[--card-spacing:--spacing(5)]">
+		<Card.Header class="gap-1">
+			<Card.Title class="text-base">{t('bench.chart_category')}</Card.Title>
+			<Card.Description class="text-sm">{t('bench.chart_category_desc')}</Card.Description>
+		</Card.Header>
+		<Card.Content>
+			<BenchmarkCategoryRadar categories={lineData.categories} series={lineData.series} />
+		</Card.Content>
+	</Card.Root>
+
+	<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
+		<Card.Header class="border-b px-5 py-4">
+			<Card.Title class="text-base">{t('bench.chart_heatmap')}</Card.Title>
+			<Card.Description class="text-sm">{t('bench.chart_heatmap_desc')}</Card.Description>
+			<div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
+				<span class="text-muted-foreground">{t('bench.heatmap_fast')}</span>
+				<div class="flex h-3 w-40 overflow-hidden rounded-full border">
+					{#each [0, 1, 2, 3, 4] as bucket (bucket)}
+						<div
+							class="h-full flex-1"
+							style:background={heatCell(heatMin + ((heatMax - heatMin) * bucket) / 4).bar}
+						></div>
 					{/each}
 				</div>
-			</Card.Content>
-		</Card.Root>
-
-		<Card.Root class="lg:col-span-2 [--card-spacing:--spacing(5)]">
-			<Card.Header class="gap-1">
-				<Card.Title class="text-base">{t('bench.chart_heatmap')}</Card.Title>
-				<Card.Description class="text-sm">{t('bench.chart_heatmap_desc')}</Card.Description>
-			</Card.Header>
-			<Card.Content>
-				<div class="overflow-x-auto">
-					<table class="w-full border-separate border-spacing-1 text-[10px]">
-						<thead>
+				<span class="text-muted-foreground">{t('bench.heatmap_slow')}</span>
+				<span class="text-muted-foreground ms-auto font-mono tabular-nums">
+					{formatMs(heatMin)} - {formatMs(heatMax)}
+				</span>
+			</div>
+		</Card.Header>
+		<Card.Content class="p-4">
+			<div class="overflow-x-auto">
+				<table class="w-full min-w-[640px] border-separate border-spacing-1.5 text-xs">
+					<thead>
+						<tr>
+							<th
+								class="text-muted-foreground sticky left-0 z-10 bg-card px-3 py-2 text-start text-sm font-medium"
+							>
+								{t('bench.heatmap_category')}
+							</th>
+							{#each report.models as modelId (modelId)}
+								<th
+									class="text-muted-foreground px-2 py-2 text-center font-mono text-[11px] font-medium"
+									title={modelId}
+								>
+									{shortModel(modelId)}
+								</th>
+							{/each}
+						</tr>
+					</thead>
+					<tbody>
+						{#each lineData.categories as category (category)}
 							<tr>
-								<th class="text-muted-foreground px-1 py-1 text-start font-medium"></th>
+								<td
+									class="text-foreground sticky left-0 z-10 bg-card px-3 py-2 text-sm font-medium capitalize"
+								>
+									{category}
+								</td>
 								{#each report.models as modelId (modelId)}
-									<th class="text-muted-foreground px-1 py-1 text-center font-mono font-medium">
-										{modelId.split('-')[0]}
-									</th>
+									{@const ms =
+										lineData.series
+											.find((series) => series.model_id === modelId)
+											?.points.find((point) => point.category === category)?.avg_gpu_ms ?? 0}
+									{@const heat = heatCell(ms)}
+									{@const label = formatMsHeat(ms)}
+									<td class="p-0">
+										<div
+											class="bg-card flex min-w-[3.5rem] flex-col items-center rounded-lg border px-2 py-2.5"
+											style:background={heat.track}
+											title="{modelId} · {category}: {formatMs(ms)}"
+										>
+											<div
+												class="mb-2 h-1 w-full rounded-full"
+												style:background={heat.bar}
+											></div>
+											<span class="text-foreground text-base leading-none font-semibold tabular-nums">
+												{label.value}
+											</span>
+											{#if label.unit !== ''}
+												<span class="text-muted-foreground mt-1 text-[10px] leading-none uppercase">
+													{label.unit}
+												</span>
+											{/if}
+										</div>
+									</td>
 								{/each}
 							</tr>
-						</thead>
-						<tbody>
-							{#each lineData.categories as category, ci (category)}
-								<tr>
-									<td class="text-muted-foreground px-1 py-1 capitalize">{category.slice(0, 7)}</td>
-									{#each report.models as modelId, mi (modelId)}
-										{@const ms =
-											lineData.series
-												.find((s) => s.model_id === modelId)
-												?.points.find((p) => p.category === category)?.avg_gpu_ms ?? 0}
-										<td class="p-0">
-											<div
-												class="flex h-7 min-w-[2rem] items-center justify-center rounded-md font-mono tabular-nums"
-												style:background={heatColor(ms)}
-												title="{modelId} · {category}: {Math.round(ms)} ms"
-											>
-												{ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}`}
-											</div>
-										</td>
-									{/each}
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			</Card.Content>
-		</Card.Root>
-	</div>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</Card.Content>
+	</Card.Root>
 </div>

@@ -1,11 +1,35 @@
 <script lang="ts">
+	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
+	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import StarIcon from '@lucide/svelte/icons/star';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { loadHistory, loadModels, pollWhileWorking, studio } from '$lib/studio.svelte';
+	import ParamSliderField from '$lib/components/param-slider-field.svelte';
+	import {
+		defaultSizeIndex,
+		enumIndexToNorm,
+		formatParamValue,
+		guidanceSpec,
+		normToEnumIndex,
+		normToValue,
+		sizeOptions as modelSizeOptions,
+		stepsSpec,
+		valueToNorm
+	} from '$lib/model-params';
+	import {
+		isStarred,
+		loadHistory,
+		loadModels,
+		pollWhileWorking,
+		studio,
+		toggleStarred
+	} from '$lib/studio.svelte';
+	import HistoryStrip from '$lib/components/history-strip.svelte';
 
 	// Matches the Input component's field styling for the native controls it
 	// does not vendor (select, textarea).
@@ -15,11 +39,12 @@
 		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
 
-	let steps = $state('');
-	let guidance = $state('');
-	let seed = $state('');
-	let size = $state('512');
+	let stepsNorm = $state(0);
+	let guidanceNorm = $state(0);
+	let sizeNorm = $state(0);
 	let count = $state('1');
+	let normsReady = $state(false);
+	let seed = $state('');
 	let errorText = $state('');
 
 	// The viewer shows the clicked generation, or the newest finished one.
@@ -36,16 +61,26 @@
 	const runningProgress = $derived(
 		studio.history.find((g) => g.state === 'running' && g.progress !== null)?.progress ?? null
 	);
+	const shownPrompt = $derived((shown?.params.prompt ?? '').trim());
+	const shownStarred = $derived(shown !== null && isStarred(shown.id));
 
 	// The manifest schema decides which resolutions a model supports
 	// (docs/architecture.md, model manifests); no enum means unconstrained.
 	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
-	const sizeOptions = $derived(
-		selectedModel?.parameters.properties?.width?.enum ?? [512, 768, 1024]
-	);
+	const stepsRange = $derived(stepsSpec(selectedModel));
+	const guidanceRange = $derived(guidanceSpec(selectedModel));
+	const sizeOptions = $derived(modelSizeOptions(selectedModel));
+	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
+	const guidanceValue = $derived(normToValue(guidanceNorm, guidanceRange));
+	const sizeIndex = $derived(normToEnumIndex(sizeNorm, sizeOptions.length));
+	const sizeValue = $derived(sizeOptions[sizeIndex] ?? sizeOptions[0]);
 
 	$effect(() => {
-		if (!sizeOptions.includes(Number(size))) size = String(sizeOptions[0]);
+		if (!selectedModel || normsReady) return;
+		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
+		guidanceNorm = valueToNorm(guidanceRange.default, guidanceRange);
+		sizeNorm = enumIndexToNorm(defaultSizeIndex(selectedModel, sizeOptions), sizeOptions.length);
+		normsReady = true;
 	});
 
 	$effect(() => {
@@ -59,13 +94,14 @@
 		studio.selectedId = null; // let fresh results take the viewer back
 		const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
 		for (let index = 0; index < jobs; index += 1) {
-			const params: Record<string, unknown> = { prompt: studio.prompt };
-			if (steps !== '') params.steps = Number(steps);
-			if (guidance !== '') params.guidance = Number(guidance);
-			// A fixed seed still varies across a batch, or every image would be identical.
-			if (seed !== '') params.seed = Number(seed) + index;
-			params.width = Number(size);
-			params.height = Number(size);
+			const params: Record<string, unknown> = {
+				prompt: studio.prompt,
+				steps: stepsValue,
+				guidance: guidanceValue,
+				width: sizeValue,
+				height: sizeValue
+			};
+			if (seed.trim() !== '') params.seed = Number(seed) + index;
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
@@ -80,19 +116,27 @@
 		await loadHistory();
 		void pollWhileWorking();
 	}
+
+	function insertPrompt(): void {
+		if (shownPrompt !== '') studio.prompt = shownPrompt;
+	}
+
+	function starShown(): void {
+		if (shown !== null) toggleStarred(shown.id);
+	}
 </script>
 
 <div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
-	<Card.Root class="min-h-0 overflow-y-auto">
+	<Card.Root class="flex min-h-0 flex-col overflow-y-auto">
 		<Card.Header>
 			<Card.Title>{t('app.gen.title')}</Card.Title>
 			<Card.Description>{t('app.gen.sub')}</Card.Description>
 		</Card.Header>
-		<Card.Content>
+		<Card.Content class="flex min-h-0 flex-1 flex-col">
 			{#if studio.models.length === 0}
 				<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
 			{:else}
-				<form class="flex flex-col gap-4" onsubmit={generate}>
+				<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>
 					<div class="flex flex-col gap-2">
 						<Label for="gen-model">{t('app.gen.model')}</Label>
 						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
@@ -105,7 +149,7 @@
 						<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
 						<textarea
 							id="gen-prompt"
-							class={fieldClass + ' min-h-24 resize-y py-2'}
+							class={fieldClass + ' h-44 resize-none overflow-y-auto py-2'}
 							placeholder={t('app.gen.prompt_placeholder')}
 							bind:value={studio.prompt}></textarea>
 					</div>
@@ -115,31 +159,44 @@
 							<Input id="gen-count" type="number" min="1" max="8" bind:value={count} />
 						</div>
 						<div class="flex flex-col gap-2">
-							<Label for="gen-size">{t('app.gen.size')}</Label>
-							<select
-								id="gen-size"
-								class={fieldClass + ' h-8'}
-								bind:value={size}
-								disabled={sizeOptions.length === 1}
-							>
-								{#each sizeOptions as option (option)}
-									<option value={String(option)}>{option} x {option}</option>
-								{/each}
-							</select>
-						</div>
-						<div class="flex flex-col gap-2">
-							<Label for="gen-steps">{t('app.gen.steps')}</Label>
-							<Input id="gen-steps" type="number" min="1" max="50" bind:value={steps} />
-						</div>
-						<div class="flex flex-col gap-2">
-							<Label for="gen-guidance">{t('app.gen.guidance')}</Label>
-							<Input id="gen-guidance" type="number" min="0" step="0.5" bind:value={guidance} />
-						</div>
-						<div class="flex flex-col gap-2">
 							<Label for="gen-seed">{t('app.gen.seed')}</Label>
-							<Input id="gen-seed" type="number" bind:value={seed} />
+							<Input
+								id="gen-seed"
+								type="number"
+								placeholder={t('app.gen.seed_placeholder')}
+								bind:value={seed}
+							/>
 						</div>
 					</div>
+					{#if normsReady}
+						<div class="flex flex-col gap-4">
+						<ParamSliderField
+							id="gen-size"
+							label={t('app.gen.size')}
+							bind:norm={sizeNorm}
+							disabled={sizeOptions.length <= 1}
+							minLabel={`${sizeOptions[0]} x ${sizeOptions[0]}`}
+							maxLabel={`${sizeOptions.at(-1)} x ${sizeOptions.at(-1)}`}
+							valueLabel={`${sizeValue} x ${sizeValue}`}
+						/>
+						<ParamSliderField
+							id="gen-steps"
+							label={t('app.gen.steps')}
+							bind:norm={stepsNorm}
+							minLabel={formatParamValue(stepsRange.min, stepsRange)}
+							maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+							valueLabel={formatParamValue(stepsValue, stepsRange)}
+						/>
+						<ParamSliderField
+							id="gen-guidance"
+							label={t('app.gen.guidance')}
+							bind:norm={guidanceNorm}
+							minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
+							maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
+							valueLabel={formatParamValue(guidanceValue, guidanceRange)}
+						/>
+						</div>
+					{/if}
 					<Button type="submit" disabled={studio.prompt.trim() === ''}>
 						{t('app.gen.generate')}
 					</Button>
@@ -154,6 +211,65 @@
 					{#if errorText !== ''}
 						<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
 					{/if}
+					<div class="border-border mt-auto flex flex-col gap-2 border-t pt-4">
+						<div class="grid grid-cols-2 gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="justify-start"
+								disabled={shownPrompt === ''}
+								onclick={insertPrompt}
+							>
+								<ClipboardPasteIcon />
+								{t('app.gen.insert_prompt')}
+							</Button>
+							<Button
+								type="button"
+								variant={shownStarred ? 'secondary' : 'outline'}
+								size="sm"
+								class="justify-start"
+								disabled={shown === null}
+								onclick={starShown}
+							>
+								<StarIcon class={shownStarred ? 'fill-current' : ''} />
+								{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="justify-start"
+								disabled
+								title={t('app.gen.coming_soon')}
+							>
+								<PencilIcon />
+								{t('app.gen.edit')}
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="justify-start"
+								disabled
+								title={t('app.gen.coming_soon')}
+							>
+								<ScanLineIcon />
+								{t('app.gen.upscale')}
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="col-span-2 justify-start"
+								disabled
+								title={t('app.gen.coming_soon')}
+							>
+								<Trash2Icon />
+								{t('app.gen.delete')}
+							</Button>
+						</div>
+					</div>
 				</form>
 			{/if}
 		</Card.Content>
@@ -189,44 +305,6 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-		{#if studio.history.length > 0}
-			<div class="flex shrink-0 gap-2 overflow-x-auto pb-1">
-				{#each studio.history as generation (generation.id)}
-					{#if generation.assets.length > 0}
-						<button
-							type="button"
-							class="shrink-0"
-							title={generation.params.prompt}
-							onclick={() => (studio.selectedId = generation.id)}
-						>
-							<img
-								src={generation.assets[0].url}
-								alt={generation.params.prompt ?? generation.id}
-								class={'h-24 w-24 rounded-lg border object-cover ' +
-									(shown?.id === generation.id ? 'border-primary' : 'border-border')}
-							/>
-						</button>
-					{:else}
-						<div
-							class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
-						>
-							<Badge variant="outline">
-								{generation.state === 'failed'
-									? t('app.gen.badge_failed')
-									: t('app.gen.badge_working')}
-							</Badge>
-							{#if generation.state === 'running' && generation.progress !== null}
-								<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
-									<div
-										class="bg-primary h-1 rounded-full transition-[width]"
-										style={`width: ${Math.round(generation.progress * 100)}%`}
-									></div>
-								</div>
-							{/if}
-						</div>
-					{/if}
-				{/each}
-			</div>
-		{/if}
+		<HistoryStrip />
 	</div>
 </div>

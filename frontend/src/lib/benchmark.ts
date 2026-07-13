@@ -15,7 +15,7 @@ export type BenchmarkResult = {
 	error?: string;
 };
 
-/** Reference timings only — not offered in the studio UI. */
+/** Reference timings only - not offered in the studio UI. */
 export const CAPPED_BENCHMARK_MODELS = new Set([
 	'sd-turbo',
 	'sdxl-turbo',
@@ -50,14 +50,22 @@ export type BenchmarkReport = {
 };
 
 export function formatMs(ms: number | null | undefined): string {
-	if (ms == null) return '—';
+	if (ms == null) return '-';
 	if (ms >= 1000) return `${(ms / 1000).toFixed(1)} s`;
 	return `${Math.round(ms)} ms`;
 }
 
 export function formatSeconds(seconds: number | null | undefined): string {
-	if (seconds == null) return '—';
+	if (seconds == null) return '-';
 	return `${seconds.toFixed(1)} s`;
+}
+
+/** Heatmap cells: large value + small unit for scannability. */
+export function formatMsHeat(ms: number): { value: string; unit: string } {
+	if (ms <= 0) return { value: '-', unit: '' };
+	if (ms >= 10_000) return { value: String(Math.round(ms / 1000)), unit: 's' };
+	if (ms >= 1000) return { value: (ms / 1000).toFixed(1), unit: 's' };
+	return { value: String(Math.round(ms)), unit: 'ms' };
 }
 
 /** Average gpu_ms per prompt for one model (successful runs only). */
