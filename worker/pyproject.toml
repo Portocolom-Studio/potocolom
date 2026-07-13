@@ -9,12 +9,14 @@ description = "potocolom inference worker"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-settings>=2.4",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -22,6 +24,14 @@ packages = ["worker"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+files = ["worker"]
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,8 +1,26 @@
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
+
 from fastapi import FastAPI
 
+from app.logs import setup_logging
+from app.realtime import reap_dead_workers
+from app.realtime import router as realtime_router
 from app.settings import get_settings
 
-app = FastAPI(title="potocolom")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_logging(get_settings().log_format)
+    reaper = asyncio.create_task(reap_dead_workers())
+    yield
+    reaper.cancel()
+    with suppress(asyncio.CancelledError):
+        await reaper
+
+
+app = FastAPI(title="potocolom", lifespan=lifespan)
+app.include_router(realtime_router)
 
 
 @app.get("/api/v1/health")

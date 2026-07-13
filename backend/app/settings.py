@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     auth_mode: Literal["none", "local", "oauth"] = "none"
     oauth_providers: str = ""  # comma separated, read only when auth_mode is oauth
     billing_enabled: bool = False
-    public_url: str = "http://localhost:8000"
+    log_format: Literal["plain", "json"] = "plain"
 
     @property
     def auth_methods(self) -> list[str]:
@@ -19,7 +19,7 @@ class Settings(BaseSettings):
             return []
         methods = ["local"]
         if self.auth_mode == "oauth":
-            methods += [p for p in self.oauth_providers.split(",") if p]
+            methods += [p.strip() for p in self.oauth_providers.split(",") if p.strip()]
         return methods
 
 

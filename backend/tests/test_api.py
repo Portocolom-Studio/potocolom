@@ -29,3 +29,9 @@ def test_auth_methods_by_mode():
         "google",
         "github",
     ]
+    # Whitespace around commas must not leak into method names.
+    assert Settings(auth_mode="oauth", oauth_providers="google, github, ").auth_methods == [
+        "local",
+        "google",
+        "github",
+    ]
