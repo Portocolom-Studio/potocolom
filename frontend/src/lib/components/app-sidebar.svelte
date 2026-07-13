@@ -25,9 +25,7 @@
 		{ title: t('app.shell.feedback'), url: '#', icon: SendIcon }
 	]);
 
-	const projects = $derived([
-		{ name: t('app.shell.project_design'), url: '#', icon: FrameIcon }
-	]);
+	const projects = $derived([{ name: t('app.shell.project_design'), url: '#', icon: FrameIcon }]);
 </script>
 
 <Sidebar.Root

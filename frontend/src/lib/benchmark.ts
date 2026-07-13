@@ -16,10 +16,7 @@ export type BenchmarkResult = {
 };
 
 /** Reference timings only - not offered in the studio UI. */
-export const CAPPED_BENCHMARK_MODELS = new Set([
-	'sd-turbo',
-	'sdxl-turbo'
-]);
+export const CAPPED_BENCHMARK_MODELS = new Set(['sd-turbo', 'sdxl-turbo']);
 
 export function isReferenceOnlyModel(modelId: string): boolean {
 	return CAPPED_BENCHMARK_MODELS.has(modelId);
@@ -217,7 +214,8 @@ export type LeaderboardRow = {
 
 export function leaderboardRows(modelStats: ModelStats[]): LeaderboardRow[] {
 	const sorted = [...modelStats].sort(
-		(a, b) => (a.avg_gpu_ms ?? Number.POSITIVE_INFINITY) - (b.avg_gpu_ms ?? Number.POSITIVE_INFINITY)
+		(a, b) =>
+			(a.avg_gpu_ms ?? Number.POSITIVE_INFINITY) - (b.avg_gpu_ms ?? Number.POSITIVE_INFINITY)
 	);
 	const maxGpu = Math.max(...sorted.map((r) => r.avg_gpu_ms ?? 0), 1);
 	const maxWall = Math.max(...sorted.map((r) => r.avg_wall_s), 0.001);
@@ -286,4 +284,3 @@ export function metricDisplay(row: LeaderboardRow, metric: MetricKey): string {
 	if (metric === 'wall') return row.wall_display;
 	return row.load_display;
 }
-

@@ -32,10 +32,7 @@ function inferStep(min: number, max: number, integer: boolean): number {
 	return 1;
 }
 
-function numberSpec(
-	prop: ModelParamProperty | undefined,
-	fallback: ParamRange
-): ParamRange {
+function numberSpec(prop: ModelParamProperty | undefined, fallback: ParamRange): ParamRange {
 	if (!prop) return fallback;
 	const min = prop.minimum ?? fallback.min;
 	const max = prop.maximum ?? fallback.max;
@@ -55,7 +52,10 @@ function numberSpec(
 	};
 }
 
-export function modelProperty(model: Model | undefined, key: string): ModelParamProperty | undefined {
+export function modelProperty(
+	model: Model | undefined,
+	key: string
+): ModelParamProperty | undefined {
 	return model?.parameters.properties?.[key] as ModelParamProperty | undefined;
 }
 

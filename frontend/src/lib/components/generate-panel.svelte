@@ -99,10 +99,7 @@
 
 		if (sizeContext.modelId !== selectedModel.id) {
 			if (sizeContext.optionCount > 1 && count > 1) {
-				sizeIndex = normToEnumIndex(
-					enumIndexToNorm(sizeIndex, sizeContext.optionCount),
-					count
-				);
+				sizeIndex = normToEnumIndex(enumIndexToNorm(sizeIndex, sizeContext.optionCount), count);
 			} else {
 				sizeIndex = defaultSizeIndex(selectedModel, sizeOptions);
 			}
@@ -229,22 +226,22 @@
 					</div>
 					{#if normsReady}
 						<div class="flex flex-col gap-4">
-						<ParamSliderField
-							id="gen-steps"
-							label={t('app.gen.steps')}
-							bind:norm={stepsNorm}
-							minLabel={formatParamValue(stepsRange.min, stepsRange)}
-							maxLabel={formatParamValue(stepsRange.max, stepsRange)}
-							valueLabel={formatParamValue(stepsValue, stepsRange)}
-						/>
-						<ParamSliderField
-							id="gen-guidance"
-							label={t('app.gen.guidance')}
-							bind:norm={guidanceNorm}
-							minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
-							maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
-							valueLabel={formatParamValue(guidanceValue, guidanceRange)}
-						/>
+							<ParamSliderField
+								id="gen-steps"
+								label={t('app.gen.steps')}
+								bind:norm={stepsNorm}
+								minLabel={formatParamValue(stepsRange.min, stepsRange)}
+								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+								valueLabel={formatParamValue(stepsValue, stepsRange)}
+							/>
+							<ParamSliderField
+								id="gen-guidance"
+								label={t('app.gen.guidance')}
+								bind:norm={guidanceNorm}
+								minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
+								maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
+								valueLabel={formatParamValue(guidanceValue, guidanceRange)}
+							/>
 						</div>
 					{/if}
 					<Button type="submit" disabled={studio.prompt.trim() === ''}>

@@ -110,7 +110,9 @@
 					{t('gallery.word_making')}, {t('gallery.word_designing')}, {t('gallery.word_creating')}
 				</span>
 			</h2>
-			<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">{t('gallery.sub')}</p>
+			<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">
+				{t('gallery.sub')}
+			</p>
 			<div class="mt-10">
 				<UserGenerationGallery />
 			</div>

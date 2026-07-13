@@ -36,9 +36,7 @@
 			heatMax
 		)
 	);
-	const maxPair = $derived(
-		Math.max(...rows.map((r) => Math.max(r.gpu_ms, r.wall_s * 1000)), 1)
-	);
+	const maxPair = $derived(Math.max(...rows.map((r) => Math.max(r.gpu_ms, r.wall_s * 1000)), 1));
 
 	const chartW = 360;
 	const labelW = 210;
@@ -66,8 +64,7 @@
 		const lo = Math.max(heatMin, 1);
 		const hi = Math.max(heatMax, lo * 1.01);
 		if (hi <= lo) return 0;
-		const logT =
-			(Math.log(Math.max(ms, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
+		const logT = (Math.log(Math.max(ms, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
 		return Math.min(1, Math.max(0, logT));
 	}
 
@@ -223,7 +220,7 @@
 					{#each rows as row, i (row.model_id)}
 						{@const y = i * (rowH + barGap) + 8}
 						{@const gpuW = (row.gpu_ms / maxPair) * chartW}
-						{@const wallW = (row.wall_s * 1000) / maxPair * chartW}
+						{@const wallW = ((row.wall_s * 1000) / maxPair) * chartW}
 						{@const groupH = groupBarW * 2 + groupGap}
 						{@const groupTop = y + (rowH - groupH) / 2}
 						<text
@@ -274,10 +271,7 @@
 				<span class="text-muted-foreground">{t('bench.heatmap_fast')}</span>
 				<div class="border-border flex h-2 w-44 border">
 					{#each [0, 1, 2, 3, 4] as bucket (bucket)}
-						<div
-							class="h-full flex-1"
-							style:background={heatFill(heatLegendMs(bucket / 4))}
-						></div>
+						<div class="h-full flex-1" style:background={heatFill(heatLegendMs(bucket / 4))}></div>
 					{/each}
 				</div>
 				<span class="text-muted-foreground">{t('bench.heatmap_slow')}</span>

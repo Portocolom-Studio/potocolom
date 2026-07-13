@@ -31,9 +31,7 @@
 	const categoryBounds = $derived(
 		categories.map((category) => {
 			const values = series
-				.map(
-					(row) => row.points.find((point) => point.category === category)?.avg_gpu_ms ?? 0
-				)
+				.map((row) => row.points.find((point) => point.category === category)?.avg_gpu_ms ?? 0)
 				.filter((ms) => ms > 0);
 			const max = Math.max(...values, 1);
 			const min = Math.min(...values, max);
@@ -58,12 +56,14 @@
 	}
 
 	function ringPath(scale: number): string {
-		return categories
-			.map((_, index) => {
-				const point = polar(index, scale);
-				return `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)},${point.y.toFixed(1)}`;
-			})
-			.join(' ') + ' Z';
+		return (
+			categories
+				.map((_, index) => {
+					const point = polar(index, scale);
+					return `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+				})
+				.join(' ') + ' Z'
+		);
 	}
 
 	function score(ms: number, categoryIndex: number): number {
@@ -128,10 +128,7 @@
 		if (angle < 0) angle += 2 * Math.PI;
 		if (angle >= 2 * Math.PI) angle -= 2 * Math.PI;
 
-		return Math.min(
-			categories.length - 1,
-			Math.floor((angle / (2 * Math.PI)) * categories.length)
-		);
+		return Math.min(categories.length - 1, Math.floor((angle / (2 * Math.PI)) * categories.length));
 	}
 
 	function pointInOuterRing(x: number, y: number): boolean {
@@ -142,18 +139,13 @@
 			const yi = verts[i].y;
 			const xj = verts[j].x;
 			const yj = verts[j].y;
-			const intersect =
-				yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+			const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
 			if (intersect) inside = !inside;
 		}
 		return inside;
 	}
 
-	function showTip(
-		event: PointerEvent,
-		categoryIndex: number,
-		seriesIndex?: number
-	) {
+	function showTip(event: PointerEvent, categoryIndex: number, seriesIndex?: number) {
 		if (!chartEl) return;
 		const rect = chartEl.getBoundingClientRect();
 		tip = {
@@ -260,7 +252,9 @@
 				y1={cy}
 				x2={outer.x}
 				y2={outer.y}
-				class="pointer-events-none {activeCategory === index ? 'stroke-primary/50' : 'stroke-border/50'}"
+				class="pointer-events-none {activeCategory === index
+					? 'stroke-primary/50'
+					: 'stroke-border/50'}"
 				stroke-width={activeCategory === index ? 2 : 1}
 			/>
 		{/each}
@@ -361,9 +355,7 @@
 						class:opacity-45={tip.seriesIndex != null && tip.seriesIndex !== row.seriesIndex}
 					>
 						<span class="flex min-w-0 items-center gap-1.5">
-							<span
-								class="inline-block h-2 w-2 shrink-0 rounded-full"
-								style:background={row.color}
+							<span class="inline-block h-2 w-2 shrink-0 rounded-full" style:background={row.color}
 							></span>
 							<span class="truncate font-mono">{row.model_id}</span>
 						</span>

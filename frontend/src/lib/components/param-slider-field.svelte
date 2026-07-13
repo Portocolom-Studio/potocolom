@@ -41,7 +41,7 @@
 		step={1}
 		{disabled}
 		value={sliderPosition}
-		onValueChange={onValueChange}
+		{onValueChange}
 		class="w-full"
 	/>
 	<div class="text-muted-foreground flex justify-between text-xs tabular-nums">

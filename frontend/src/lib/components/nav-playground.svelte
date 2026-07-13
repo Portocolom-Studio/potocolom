@@ -164,7 +164,10 @@
 																<button
 																	type="button"
 																	{...props}
-																	class={cn('min-w-0 w-full max-w-full', props.class as string | undefined)}
+																	class={cn(
+																		'min-w-0 w-full max-w-full',
+																		props.class as string | undefined
+																	)}
 																	title={prompt}
 																	onclick={() => (studio.prompt = prompt)}
 																>

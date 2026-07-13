@@ -30,8 +30,11 @@
 			potocolom<span class="text-primary">_</span>
 		</a>
 		<nav class="text-muted-foreground hidden gap-6 text-base md:flex">
-			<a class="hover:text-foreground transition-colors" href="{home}#features">{t('nav.features')}</a>
-			<a class="hover:text-foreground transition-colors" href="{home}#pricing">{t('nav.pricing')}</a>
+			<a class="hover:text-foreground transition-colors" href="{home}#features"
+				>{t('nav.features')}</a
+			>
+			<a class="hover:text-foreground transition-colors" href="{home}#pricing">{t('nav.pricing')}</a
+			>
 			<a class="hover:text-foreground transition-colors" href="{home}#open">{t('nav.open')}</a>
 			<a class={navClass('whitepaper')} href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 			<a class={navClass('benchmark')} href={resolve('/benchmark')}>{t('nav.benchmark')}</a>

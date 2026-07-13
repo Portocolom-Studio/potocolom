@@ -65,7 +65,8 @@
 				<Badge variant="surface">{report.target_vram_gb} GB VRAM</Badge>
 			{/if}
 			<Badge variant="surface">
-				{report.succeeded}/{report.total_jobs} {t('bench.images')}
+				{report.succeeded}/{report.total_jobs}
+				{t('bench.images')}
 			</Badge>
 		</div>
 	{/if}
