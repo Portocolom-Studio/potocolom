@@ -7,9 +7,9 @@
 # Self-hosted packaging (one compose file for everything) is issue #18.
 
 .PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
-	api worker-rocm worker-sim web dev-start dev-stop dev-restart cleanup-failed generate \
+	api worker-rocm worker-sim web web-landing dev-start dev-stop dev-restart cleanup-failed generate \
 	benchmark benchmark-publish \
-	site-build site-deploy worker-deploy
+	site-build site-preview site-deploy worker-deploy
 
 setup: ## create virtualenvs and install all dependencies
 	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
@@ -64,6 +64,12 @@ worker-sim: ## simulated worker: no GPU, echo frames, flat images
 
 web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
+
+web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
+	cd frontend && PUBLIC_SITE_MODE=landing npm run dev
+
+site-preview: site-build ## serve the exact marketing-site artifact locally
+	cd frontend && npm run preview
 
 dev-stop: ## stop background API (:8000) and frontend (:5173)
 	@if [ -f "$(DEV_DIR)/api.pid" ]; then \
