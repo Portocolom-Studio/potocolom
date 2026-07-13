@@ -1,0 +1,29 @@
+flowchart LR
+  subgraph BROWSER["Your browser"]
+    SPA["Studio SPA<br/>canvas, controls, gallery"]
+  end
+  subgraph PLATFORM["Platform API - stateless relay and scheduler"]
+    API["Session scheduler<br/>and job queue"]
+    PG[("PostgreSQL<br/>the source of truth")]
+  end
+  subgraph FLEET["GPU workers - any machine with a GPU"]
+    W["Diffusion engine<br/>loads models on demand"]
+  end
+  ST[("Asset storage")]
+
+  SPA <-- "frames both ways<br/>binary WebP, one WebSocket" --> API
+  W -- "dials out, no inbound ports<br/>announces models on connect" --> API
+  API -- "sessions, jobs,<br/>live progress" --> W
+  API --- PG
+  W -- "uploads results<br/>(signed URL)" --> ST
+  ST -- "serves images<br/>(signed URL)" --> SPA
+
+  style BROWSER fill:#f8fafc,stroke:#cbd5e1,color:#334155
+  style PLATFORM fill:#f8fafc,stroke:#cbd5e1,color:#334155
+  style FLEET fill:#f8fafc,stroke:#cbd5e1,color:#334155
+  classDef hot fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+  classDef box fill:#ffffff,stroke:#64748b,color:#0f172a
+  classDef store fill:#f1f5f9,stroke:#94a3b8,color:#0f172a
+  class SPA,W hot
+  class API box
+  class PG,ST store
