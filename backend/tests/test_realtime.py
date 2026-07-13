@@ -8,9 +8,14 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import realtime
 from app.main import app
+from app.manifests import Manifest
 from app.realtime import CANVAS_FRAME, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
 
 client = TestClient(app)
+
+
+def manifest(model_id="sd-sim") -> dict:
+    return {"id": model_id, "name": model_id, "capabilities": ["realtime"], "parameters": {}}
 
 
 class FakeSocket:
@@ -32,7 +37,7 @@ def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slot
         "type": "hello",
         "protocol_version": version,
         "worker_id": worker_id,
-        "models": list(models),
+        "models": [manifest(m) for m in models],
         "realtime_slots": slots,
     }
 
@@ -185,7 +190,8 @@ def test_reassign_moves_the_session_with_correct_accounting():
         browser = FakeSocket()
         replacement_ws = FakeSocket()
         replacement = realtime.Worker(id="w-replacement", ws=replacement_ws,
-                                      models=["sd-sim"], realtime_slots=1)
+                                      manifests=[Manifest.model_validate(manifest())],
+                                      realtime_slots=1)
         realtime.workers[replacement.id] = replacement
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
@@ -208,9 +214,9 @@ def test_reassign_moves_the_session_with_correct_accounting():
 
 
 def test_reaper_closes_silent_workers():
-    stale = realtime.Worker(id="w-stale", ws=FakeSocket(), models=[], realtime_slots=1,
+    stale = realtime.Worker(id="w-stale", ws=FakeSocket(), manifests=[], realtime_slots=1,
                             last_seen=time.monotonic() - realtime.WORKER_DEAD_SECONDS - 1)
-    fresh = realtime.Worker(id="w-fresh", ws=FakeSocket(), models=[], realtime_slots=1)
+    fresh = realtime.Worker(id="w-fresh", ws=FakeSocket(), manifests=[], realtime_slots=1)
     realtime.workers.update({stale.id: stale, fresh.id: fresh})
     try:
         asyncio.run(realtime.reap_once())

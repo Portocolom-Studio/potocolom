@@ -1,0 +1,146 @@
+[
+  {
+    "id": 1,
+    "title": "Rain-soaked neon alley",
+    "category": "photorealistic",
+    "prompt": "A narrow cyberpunk alley at night after heavy rain, wet asphalt reflecting magenta and teal neon signs in Japanese and English, steam rising from a street vent, a lone figure in a hooded jacket walking away from camera, shallow depth of field, 35mm film look, high contrast, chromatic aberration on the edges, cinematic color grading, ultra-detailed textures on brick and metal."
+  },
+  {
+    "id": 2,
+    "title": "Studio squirrel portrait",
+    "category": "photorealistic",
+    "prompt": "Extreme close-up portrait of a red squirrel holding an acorn, soft studio lighting with warm key light from the left and cool fill from the right, sharp focus on eyes and whiskers, creamy bokeh background in forest green, 85mm lens simulation, photorealistic fur detail, natural expression, subtle catchlights in the eyes."
+  },
+  {
+    "id": 3,
+    "title": "Runner in a storm",
+    "category": "photorealistic",
+    "prompt": "Athletic runner sprinting through a downpour on an empty city bridge at night, dramatic black and white photography, motion blur on legs and rain streaks, single streetlamp creating a hard rim light, high contrast silhouettes, grainy film texture, sense of urgency and isolation, wide-angle perspective from low to the ground."
+  },
+  {
+    "id": 4,
+    "title": "Ukiyo-e Fuji sunset",
+    "category": "illustration",
+    "prompt": "Mount Fuji at sunset in traditional ukiyo-e woodblock print style, bold flat color areas, indigo sky fading to coral and gold near the horizon, crisp mountain silhouette, fine linework on clouds and pine branches in the foreground, subtle paper texture, Hokusai-inspired composition with asymmetrical balance, limited palette of indigo, vermillion, ochre, and cream."
+  },
+  {
+    "id": 5,
+    "title": "Watercolor fox in autumn",
+    "category": "illustration",
+    "prompt": "A red fox sitting among fallen maple leaves, loose watercolor wash technique, bleeding edges, amber rust and burnt sienna palette, visible paper grain, soft wet-on-wet background suggesting a forest without hard detail, golden hour backlight through the canopy, expressive brushstrokes, dreamy and organic feel, white paper showing through as highlights."
+  },
+  {
+    "id": 6,
+    "title": "Aboriginal dot painting river",
+    "category": "illustration",
+    "prompt": "Aboriginal dot painting of a winding river under a dense star field, ochre red earth background, white and yellow dot patterns forming concentric circles for waterholes and celestial bodies, symmetrical composition, hand-painted texture, earthy pigments, spiritual and map-like quality, no literal perspective, flat symbolic landscape."
+  },
+  {
+    "id": 7,
+    "title": "Melting clocks on a ridge",
+    "category": "surreal",
+    "prompt": "Surrealist scene of bronze pocket watches melting over a jagged alpine ridge at dusk, long shadows stretching across snow patches, dreamlike stillness, Salvador Dali inspired forms but original composition, pale violet sky, hyperreal metal reflections on distorted clock faces, impossible physics, quiet and uncanny mood."
+  },
+  {
+    "id": 8,
+    "title": "Escher staircases in fog",
+    "category": "surreal",
+    "prompt": "Impossible marble staircases and archways floating in zero gravity above a sea of pale fog, precise one-point perspective lines, Escher-inspired geometry with original architecture, cool gray and white palette, tiny human silhouette for scale on a landing, mathematical clarity mixed with ethereal atmosphere, sharp edges on stone, soft diffusion below."
+  },
+  {
+    "id": 9,
+    "title": "Relativity room with clocks",
+    "category": "surreal",
+    "prompt": "Interior room inspired by Escher's Relativity with multiple gravity directions, grandfather clocks and pendulums on walls floor and ceiling, warm tungsten lighting from oil lamps, checkerboard floor tiles, figures climbing stairs in contradictory orientations, oil painting texture, rich browns and deep shadows, playful but meticulously constructed perspective."
+  },
+  {
+    "id": 10,
+    "title": "Chibi mountain hiker",
+    "category": "anime",
+    "prompt": "Chibi character with oversized boots and tiny canvas backpack hiking across snowy mountain peaks, pastel palette of soft pink sky and mint snow shadows, cheerful adventure mood, clean cel-shaded anime style, thick outlines, simplified clouds, wind-swept snow particles, cute proportions with large expressive eyes, sticker-art clarity."
+  },
+  {
+    "id": 11,
+    "title": "Merlin in the mist",
+    "category": "anime",
+    "prompt": "Merlin the wizard in an old-growth forest casting a spell, volumetric god-rays through mist, violet and gold magical energy swirling in his open palm, cinematic fantasy illustration, detailed robes with embroidered runes, moss-covered stones and ancient oaks, rim lighting on his profile, painterly but readable silhouette, Arthurian mood without copying existing IP likeness."
+  },
+  {
+    "id": 12,
+    "title": "Relaxed minion vacation",
+    "category": "anime",
+    "prompt": "A small yellow minion-like character lounging on a pool chair wearing mirrored sunglasses, photorealistic rendering of toy-like skin texture, turquoise pool water with caustic light patterns, harsh midday sun, tropical plants in background, humorous vacation postcard energy, saturated colors, crisp reflections in the lenses."
+  },
+  {
+    "id": 13,
+    "title": "Neon line cat",
+    "category": "abstract",
+    "prompt": "Abstract cat silhouette constructed entirely from electric cyan neon lines on matte black, geometric curves and sharp angles, glowing edges with subtle bloom, minimal negative space, vector-clean paths with slight hand-drawn jitter, futuristic poster aesthetic, single accent color with white core highlights on the brightest strokes."
+  },
+  {
+    "id": 14,
+    "title": "Flow field gold and purple",
+    "category": "abstract",
+    "prompt": "Generative flow-field visualization, thousands of fine particles following smooth curves, deep purple background with molten gold and copper stream lines, mathematical beauty, dark vignette, high resolution print quality, no recognizable objects, organic turbulence suggesting wind or magnetic fields, glossy particle trails."
+  },
+  {
+    "id": 15,
+    "title": "Flying feathers macro",
+    "category": "abstract",
+    "prompt": "Macro photograph of iridescent bird feathers spiraling in slow motion against dark velvet backdrop, shallow depth of field, sidelight revealing barb structure, rainbow oil-slick colors on edges, black negative space, elegant motion arc, studio product-photography precision, hyperdetailed texture."
+  },
+  {
+    "id": 16,
+    "title": "Sci-fi book cover",
+    "category": "graphic",
+    "prompt": "Science fiction book cover design, lone astronaut silhouette on a jagged moon ridge, bold condensed sans-serif title placeholder area at top, teal and orange nebula sky, distressed grain overlay, halftone dots in shadows, strong vertical composition for print, modern publishing layout, high contrast thumbnail readability."
+  },
+  {
+    "id": 17,
+    "title": "Brutalist poster",
+    "category": "graphic",
+    "prompt": "Swiss brutalist poster design, oversized Helvetica-style typography blocks, black white and signal red only, asymmetric grid, abstract geometric shapes suggesting a circuit board, heavy ink bleed on rough paper, 1970s avant-garde print aesthetic, no photography, pure graphic tension."
+  },
+  {
+    "id": 18,
+    "title": "Makako charcoal study",
+    "category": "traditional",
+    "prompt": "Portrait study of a makako monkey, charcoal on textured cotton paper, cross-hatched shadows around eyes and muzzle, focused intense gaze, raw paper tooth visible in highlights, smudged soft gradients on fur, academic life-drawing energy, square crop, high contrast without color."
+  },
+  {
+    "id": 19,
+    "title": "Merlin oil portrait (classical)",
+    "category": "traditional",
+    "prompt": "Classical oil portrait of an elderly wizard with long silver beard, Rembrandt lighting from upper left, dark umber background, visible brushstrokes on skin and fabric, rich impasto on highlights, museum-quality chiaroscuro, velvet robe in deep crimson, thoughtful expression, baroque composition."
+  },
+  {
+    "id": 20,
+    "title": "Cyberpunk koi hologram",
+    "category": "environment",
+    "prompt": "Cyberpunk street corner at night, holographic koi fish swimming through falling rain as translucent light sculptures, neon signage in kanji, wet reflective pavement, pedestrians with umbrellas blurred in background, teal and magenta color scheme, Blade Runner mood without direct copying, volumetric fog, 2.39:1 cinematic framing."
+  },
+  {
+    "id": 21,
+    "title": "Flying feathers over mountains",
+    "category": "environment",
+    "prompt": "Wide landscape of snow-capped mountains at dawn with a flock of luminous feathers drifting across the sky like seeds, soft pastel sunrise gradient, painterly atmospheric perspective, feathers catching pink light, serene and surreal, no human presence, emphasis on scale and quiet motion."
+  },
+  {
+    "id": 22,
+    "title": "Fujitsu retro tech still life",
+    "category": "environment",
+    "prompt": "Retro-futurist still life of a vintage computer terminal and floppy disks on a desk, 1980s Japanese industrial design aesthetic, soft office fluorescent light, beige plastic textures, green phosphor screen glow, meticulous product photography, nostalgic and clean, slight lens distortion like a catalog shoot from 1987."
+  },
+  {
+    "id": 23,
+    "title": "Abstract man in fragments",
+    "category": "mixed",
+    "prompt": "Abstract portrait of a man fragmented into geometric shards, cubist influence but digital glitch aesthetic, muted earth tones with electric blue fracture lines, face partially recognizable, background of horizontal scan lines, contemporary gallery art mood, mixed media feel combining collage and 3D render."
+  },
+  {
+    "id": 24,
+    "title": "Mountain chibi diorama",
+    "category": "mixed",
+    "prompt": "Isometric diorama of tiny chibi explorers crossing a snowy mountain pass, tilt-shift miniature effect, soft clay-like materials, pastel sky, cotton-ball clouds, toy photography lighting, whimsical scale with giant snow crystals in foreground, clean and collectible figurine aesthetic."
+  }
+]

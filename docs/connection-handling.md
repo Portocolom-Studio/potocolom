@@ -32,6 +32,9 @@ Fleet connection, worker to API:
 | `heartbeat` | `slots_in_use` | every 30 seconds |
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames` | worker side accounting |
+| `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
+| `job_done` | `job_id`, `gpu_ms`, `width`, `height` | sent after the result uploaded to the dispatch target |
+| `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
 
 Fleet connection, API to worker:
 
@@ -39,14 +42,15 @@ Fleet connection, API to worker:
 |---|---|---|
 | `registered` | | hello accepted |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
-| `open_session` | `session_id`, `model_id` | acquire a slot and warm the model |
+| `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
 | `close_session` | `session_id` | release the slot |
+| `dispatch_job` | `job_id`, `model_id`, `params`, `upload` | `upload.url` and `upload.headers`: where the worker PUTs the result |
 
 Realtime connection, browser to API:
 
 | type | Fields | Notes |
 |---|---|---|
-| `open` | `model_id` | first message after connect |
+| `open` | `model_id`, `params` (optional) | first message after connect; params follow the model's schema |
 | `close` | | end the session cleanly |
 
 Realtime connection, API to browser:

@@ -1,8 +1,6 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
-import { STUDIO_MODELS } from '$lib/studio-models';
-
 export type Model = {
 	id: string;
 	name: string;
@@ -57,6 +55,23 @@ function withoutFailed(generations: Generation[]): Generation[] {
 	return generations.filter((generation) => generation.state !== 'failed');
 }
 
+/** Keep stable asset URLs when a refresh only re-mints presigned links (S3). */
+function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Generation[] {
+	const byId = new Map(existing.map((generation) => [generation.id, generation]));
+	return incoming.map((generation) => {
+		const previous = byId.get(generation.id);
+		if (!previous || generation.state !== previous.state) return generation;
+		const urlByAssetId = new Map(previous.assets.map((asset) => [asset.id, asset.url]));
+		return {
+			...generation,
+			assets: generation.assets.map((asset) => {
+				const url = urlByAssetId.get(asset.id);
+				return url ? { ...asset, url } : asset;
+			})
+		};
+	});
+}
+
 export const studio = $state({
 	models: [] as Model[],
 	modelId: '',
@@ -80,22 +95,22 @@ function applyModels(models: Model[]): void {
 }
 
 export async function loadModels(): Promise<void> {
-	applyModels(STUDIO_MODELS);
-
-	// Prefer live worker registry when the API is available (self-hosted stack).
 	try {
 		const response = await fetch('/api/v1/models');
 		if (!response.ok) return;
 		applyModels((await response.json()) as Model[]);
 	} catch {
-		// Hardcoded list above is enough for the redesign preview.
+		// API unreachable; studio shows the empty-model state.
 	}
 }
 
 export async function loadHistory(): Promise<void> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
 	if (!response.ok) return;
-	const recent = withoutFailed((await response.json()) as Generation[]);
+	const recent = preserveAssetUrls(
+		withoutFailed((await response.json()) as Generation[]),
+		studio.history
+	);
 	studio.historyRecent = recent;
 	studio.historyHasMore = recent.length === HISTORY_LIMIT;
 	if (!studio.historyExtended) {
@@ -129,13 +144,6 @@ export async function loadOlderHistory(): Promise<boolean> {
 
 	let unique = page.filter((generation) => !existing.has(generation.id));
 
-	// Older API processes ignore cursor and return the first page again.
-	if (unique.length === 0 && page.length > 0) {
-		page = await fetchPage(`offset=${studio.history.length}`);
-		if (page === null) return false;
-		unique = page.filter((generation) => !existing.has(generation.id));
-	}
-
 	if (unique.length === 0) {
 		studio.historyHasMore = false;
 		return false;
@@ -164,23 +172,31 @@ export function starredGenerations(): Generation[] {
 
 export async function loadStarredGenerations(): Promise<void> {
 	const inHistory = new Set(studio.history.map((generation) => generation.id));
-	const missingIds = studio.starredIds.filter((id) => !inHistory.has(id));
-	if (missingIds.length === 0) {
-		studio.starredExtras = [];
+	const existingById = new Map(studio.starredExtras.map((generation) => [generation.id, generation]));
+	const outsideHistory = studio.starredIds.filter((id) => !inHistory.has(id));
+	const alreadyLoaded = outsideHistory.flatMap((id) => {
+		const generation = existingById.get(id);
+		return generation !== undefined ? [generation] : [];
+	});
+	const needFetch = outsideHistory.filter((id) => !existingById.has(id));
+
+	if (needFetch.length === 0) {
+		studio.starredExtras = alreadyLoaded;
 		return;
 	}
 
 	const fetched = await Promise.all(
-		missingIds.map(async (id) => {
+		needFetch.map(async (id) => {
 			const response = await fetch(`/api/v1/generations/${id}`);
 			if (!response.ok) return null;
 			const generation = (await response.json()) as Generation;
 			return generation.state !== 'failed' && generation.assets.length > 0 ? generation : null;
 		})
 	);
-	studio.starredExtras = fetched.filter(
-		(generation): generation is Generation => generation !== null
-	);
+	studio.starredExtras = [
+		...alreadyLoaded,
+		...fetched.filter((generation): generation is Generation => generation !== null)
+	];
 }
 
 export function resetHistoryToRecent(): void {
@@ -206,7 +222,11 @@ export async function pollWhileWorking(): Promise<void> {
 	try {
 		while (studio.history.some((g) => g.state === 'queued' || g.state === 'running')) {
 			await new Promise((resolve) => setTimeout(resolve, 1500));
-			await loadHistory();
+			try {
+				await loadHistory();
+			} catch {
+				continue;
+			}
 		}
 	} finally {
 		polling = false;

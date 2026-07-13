@@ -1,0 +1,19 @@
+{
+  "id": "dreamshaper-lcm",
+  "name": "DreamShaper 8 LCM",
+  "capabilities": ["text_to_image"],
+  "min_vram_gb": 6,
+  "source": "lykon/dreamshaper-8-lcm",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "steps": { "type": "integer", "minimum": 2, "maximum": 15, "default": 8 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 3, "default": 1.5 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512, 768], "default": 512 },
+      "height": { "type": "integer", "enum": [512, 768], "default": 512 }
+    },
+    "required": ["prompt"]
+  }
+}

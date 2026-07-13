@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     worker_id: str = Field(default_factory=lambda: f"worker-{uuid.uuid4().hex[:8]}")
     realtime_slots: int = 2
     heartbeat_seconds: float = 30.0
-    inference_seconds: float = 0.15  # simulated GPU time until issue #15
+    models_dir: str = ""  # manifests directory; empty runs the simulated engine
+    inference_seconds: float = 0.15  # simulated engine only
 
 
 @lru_cache

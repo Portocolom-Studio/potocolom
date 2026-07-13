@@ -1,0 +1,27 @@
+{
+  "id": "sdxl-turbo",
+  "name": "SDXL Turbo",
+  "capabilities": ["text_to_image", "image_to_image", "realtime"],
+  "min_vram_gb": 10,
+  "source": "stabilityai/sdxl-turbo",
+  "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "license_id": "stability-ai-community",
+  "license_url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md",
+  "commercial_max_revenue_usd": 1000000,
+  "license_registration_url": "https://stability.ai/community-license",
+  "requires_attribution": "Powered by Stability AI",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512], "default": 512 },
+      "height": { "type": "integer", "enum": [512], "default": 512 }
+    },
+    "required": ["prompt"]
+  }
+}

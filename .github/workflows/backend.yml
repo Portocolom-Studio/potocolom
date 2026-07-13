@@ -24,6 +24,21 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      # The db-marked tests run against this; without it they self-skip.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: potocolom
+          POSTGRES_PASSWORD: potocolom
+          POSTGRES_DB: potocolom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U potocolom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

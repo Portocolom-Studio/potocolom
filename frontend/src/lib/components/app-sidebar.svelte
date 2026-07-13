@@ -7,6 +7,7 @@
 	import { resolve } from '$app/paths';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import NavGallery from './nav-gallery.svelte';
 	import NavPlayground from './nav-playground.svelte';
 	import NavProjects from './nav-projects.svelte';
 	import NavSecondary from './nav-secondary.svelte';
@@ -54,6 +55,7 @@
 	</Sidebar.Header>
 	<Sidebar.Content>
 		<NavPlayground />
+		<NavGallery />
 		<NavProjects {projects} />
 		<NavSecondary items={navSecondary} class="mt-auto" />
 	</Sidebar.Content>
