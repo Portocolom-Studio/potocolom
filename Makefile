@@ -123,9 +123,9 @@ benchmark: ## multi-model suite: make benchmark [IDS=1-3] [FORCE=1]
 
 BENCHMARK_PUBLISH ?= $(BENCHMARK_DIR)/full-run
 
-benchmark-publish: ## copy results.json into frontend static assets
+benchmark-publish: ## minify results.json into frontend static assets
 	test -f "$(BENCHMARK_PUBLISH)/results.json"
-	cp "$(BENCHMARK_PUBLISH)/results.json" frontend/static/benchmark/results.json
+	python3 -c 'import json, pathlib; src=pathlib.Path("$(BENCHMARK_PUBLISH)/results.json"); dst=pathlib.Path("frontend/static/benchmark/results.json"); dst.parent.mkdir(parents=True, exist_ok=True); dst.write_text(json.dumps(json.loads(src.read_text()), separators=(",", ":")))'
 
 benchmark-overnight: ## wait for full-run, then supplements + publish (unattended)
 	MAX_WAIT_HOURS=10 nohup scripts/run-benchmark-supplements.sh </dev/null >/dev/null 2>&1 &
