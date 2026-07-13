@@ -29,6 +29,13 @@ def test_empty_models_dir_is_loud(tmp_path):
         load_manifests(str(tmp_path))
 
 
+def test_duplicate_manifest_ids_are_loud(tmp_path):
+    (tmp_path / "a.json").write_text(json.dumps(SD_TURBO))
+    (tmp_path / "b.json").write_text(json.dumps({**SD_TURBO, "name": "Other"}))
+    with pytest.raises(ValueError, match="duplicate manifest id"):
+        load_manifests(str(tmp_path))
+
+
 def test_unknown_manifest_field_is_loud(tmp_path):
     (tmp_path / "bad.json").write_text(json.dumps({**SD_TURBO, "vram": 8}))
     with pytest.raises(ValidationError):

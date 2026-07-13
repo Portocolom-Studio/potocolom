@@ -8,6 +8,8 @@ upload URL is unguessable; fleet authentication tightens this further when it
 lands (docs/blueprint.md, FLEET_TOKEN_KEY).
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
@@ -46,8 +48,8 @@ async def upload(key: str, request: Request) -> dict:
                 size += len(chunk)
                 if size > MAX_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="upload too large")
-                handle.write(chunk)
-    except HTTPException:
+                await asyncio.to_thread(handle.write, chunk)
+    except Exception:
         path.unlink(missing_ok=True)
         raise
 

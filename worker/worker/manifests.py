@@ -61,6 +61,11 @@ def load_manifests(models_dir: str) -> list[Manifest]:
     if not files:
         raise ValueError(f"no manifests found in {models_dir}")
     manifests = [Manifest.model_validate_json(file.read_text()) for file in files]
+    seen: set[str] = set()
+    for manifest in manifests:
+        if manifest.id in seen:
+            raise ValueError(f"duplicate manifest id: {manifest.id}")
+        seen.add(manifest.id)
     logger.info("loaded %d manifests from %s: %s",
                 len(manifests), models_dir, [m.id for m in manifests])
     return manifests

@@ -341,6 +341,9 @@ async def realtime(ws: WebSocket) -> None:
         except jsonschema.ValidationError:
             await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
             return
+        except jsonschema.SchemaError:
+            logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
+                           manifest.id)
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
