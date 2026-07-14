@@ -486,6 +486,16 @@ If these models are ever offered in the product, the same $1M annual revenue cap
 
 Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
 
+## Cloud asset storage: one bucket, prefix per tier
+
+All cloud images live in one private S3 bucket. Subscriber objects sit under `users/{user_id}/`; trial objects under `trial/{user_id}/` so an S3 lifecycle rule can expire the trial prefix after 30 days as a backstop to `expires_at` on asset rows. The API authorizes access: it mints short-lived CloudFront signed URLs only for assets the session owns. History queries the `assets` table, never `ListBucket`.
+
+Paying does not create AWS permissions for the user. Quota changes happen in the billing service over HTTP; storage authorization stays at the API layer.
+
+This entry records the cloud-profile design. The current S3 backend still uses the self-hosted key shape (`{user_id}/{job_id}.webp`) and presigned S3 GET URLs; the prefixes and CloudFront signing arrive with billing tiers and the CDN.
+
+Rejected alternatives: per-user IAM roles or buckets (account limits near one thousand of each, privileged control-plane calls on signup, authorization at the wrong layer); per-user S3 Access Points (ten-thousand cap, same wrong layer).
+
 ## Fast batch tier: SSD-1B + Lightning alongside SDXL Fast
 
 `ssd-1b-lightning` is a studio-shippable fast batch model. Issue #85 compared it against `sdxl-fast` on the shared three-prompt photorealistic suite at 1024/8step (clean GPU, RX 7600 XT): median 2777 ms gpu_ms vs 4005 ms for sdxl-fast (~31% faster), with comparable visual quality. Licensing matches the existing fast path (Apache 2.0 pruned base plus the same ByteDance SDXL Lightning LoRA `sdxl-fast` already fuses). It ships alongside `sdxl-fast`, not as a replacement: full SDXL base may retain edge-case quality; SSD-1B + Lightning wins on speed and fits the 8 GB floor.
