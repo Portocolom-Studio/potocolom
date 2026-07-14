@@ -62,8 +62,6 @@ api: ## API server on :8000; assets under ./data (make deps first)
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
 		API_URL=ws://127.0.0.1:8000/api/v1/fleet \
-		HSA_OVERRIDE_GFX_VERSION=11.0.2 \
-		TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
 		.venv/bin/python -m worker
 
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
@@ -93,6 +91,9 @@ dev-stop: ## stop background API (:8000), frontend (:5173), and worker
 	@rm -f "$(DEV_DIR)/api.pid" "$(DEV_DIR)/web.pid" "$(DEV_DIR)/worker.pid"
 
 dev-start: ## start API, frontend, and worker in the background (make deps first)
+	@if [ "$(WORKER)" != "rocm" ] && [ "$(WORKER)" != "sim" ] && [ "$(WORKER)" != "off" ]; then \
+		echo "Unknown WORKER=$(WORKER); use rocm, sim, or off" >&2; exit 1; \
+	fi
 	@mkdir -p "$(DEV_DIR)"
 	@$(MAKE) dev-stop
 	@echo "Starting API on :$(API_PORT)..."
@@ -106,8 +107,6 @@ dev-start: ## start API, frontend, and worker in the background (make deps first
 	@if [ "$(WORKER)" = "rocm" ]; then \
 		echo "Starting worker (rocm, MODELS_DIR=models)..."; \
 		bash -c 'cd "$(CURDIR)/worker" && MODELS_DIR=models DEVICE=rocm \
-			HSA_OVERRIDE_GFX_VERSION=11.0.2 \
-			TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
 			API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 			nohup .venv/bin/python -m worker \
 			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
@@ -116,8 +115,6 @@ dev-start: ## start API, frontend, and worker in the background (make deps first
 		bash -c 'cd "$(CURDIR)/worker" && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 			nohup .venv/bin/python -m worker \
 			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
-	elif [ "$(WORKER)" != "off" ]; then \
-		echo "Unknown WORKER=$(WORKER); use rocm, sim, or off" >&2; exit 1; \
 	fi
 	@echo "API log:    $(DEV_DIR)/api.log"
 	@echo "Web log:    $(DEV_DIR)/web.log"

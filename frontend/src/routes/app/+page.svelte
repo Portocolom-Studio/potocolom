@@ -5,7 +5,7 @@
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
-	import { loadHistory, loadModels } from '$lib/studio.svelte';
+	import { loadHistory, loadModels, pollWhileWorking } from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 
@@ -17,7 +17,9 @@
 	onMount(() => {
 		if (landing) return;
 		void loadModels();
-		void loadHistory();
+		void loadHistory()
+			.then(pollWhileWorking)
+			.catch(() => {});
 	});
 </script>
 

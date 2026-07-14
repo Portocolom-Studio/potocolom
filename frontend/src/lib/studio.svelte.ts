@@ -217,7 +217,7 @@ export function toggleStarred(id: string): void {
 		? studio.starredIds.filter((starredId) => starredId !== id)
 		: [...studio.starredIds, id];
 	saveStarredIds(studio.starredIds);
-	void loadStarredGenerations();
+	void loadStarredGenerations().catch(() => {});
 }
 
 export async function pollWhileWorking(): Promise<void> {

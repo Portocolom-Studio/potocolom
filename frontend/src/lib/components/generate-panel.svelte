@@ -28,7 +28,6 @@
 		generationById,
 		isStarred,
 		loadHistory,
-		loadModels,
 		pollWhileWorking,
 		studio,
 		toggleStarred
@@ -137,11 +136,6 @@
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
 		guidanceNorm = valueToNorm(guidanceRange.default, guidanceRange);
 		normsReady = true;
-	});
-
-	$effect(() => {
-		void loadModels();
-		void loadHistory().then(pollWhileWorking);
 	});
 
 	async function generate(event: SubmitEvent): Promise<void> {
