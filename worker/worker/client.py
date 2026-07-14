@@ -64,7 +64,11 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
     if settings.models_dir:
         from worker.engine import DiffusersEngine
 
-        return load_manifests(settings.models_dir), DiffusersEngine(settings.device)
+        return load_manifests(settings.models_dir), DiffusersEngine(
+            settings.device,
+            memory_mode=settings.memory_mode,
+            models_dir=settings.models_dir,
+        )
     return [SIMULATED_MANIFEST], SimulatedEngine(settings.inference_seconds)
 
 
@@ -244,12 +248,14 @@ async def _gpu_unload(ws, engine: Engine, control: dict) -> None:
 
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
+    wire_manifests = engine.measured_manifests(manifests)
     await ws.send(json.dumps({
         "type": "hello",
         "protocol_version": PROTOCOL_VERSION,
         "worker_id": settings.worker_id,
-        "models": [manifest.wire() for manifest in manifests],
-        "realtime_slots": settings.realtime_slots,
+        "models": wire_manifests,
+        "realtime_slots": engine.effective_realtime_slots(wire_manifests,
+                                                           settings.realtime_slots),
     }))
     try:
         response = json.loads(await ws.recv())

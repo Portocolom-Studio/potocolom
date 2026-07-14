@@ -25,7 +25,7 @@ dev = [
 # install this extra. See docs/local-development.md for the ROCm notes.
 inference = [
     "torch>=2.5",
-    "diffusers>=0.30",
+    "diffusers>=0.39",
     "transformers>=4.44",
     "accelerate>=0.33",
     "peft>=0.13",

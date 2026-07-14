@@ -16,11 +16,20 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Protocol
 
 from PIL import Image
 
 from worker.manifests import Manifest
+from worker.memory_ladder import (
+    MemoryMode,
+    MemoryRung,
+    measured_wire_manifest,
+    measured_wire_manifests,
+    rung_vram_bytes,
+    select_rung,
+)
 
 ProgressFn = Callable[[float], None]
 
@@ -44,6 +53,10 @@ class Engine(Protocol):
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
 
     def loaded_models(self) -> list[str]: ...
+
+    def measured_manifests(self, manifests: list[Manifest]) -> list[dict]: ...
+
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
 
     async def load_model(self, manifest: Manifest) -> int: ...
 
@@ -84,6 +97,14 @@ class SimulatedEngine:
 
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)
+
+    def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
+        return measured_wire_manifests(manifests, 1 << 60, "full", on_cpu=True)
+
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
+        from worker.memory_ladder import effective_realtime_slots
+
+        return effective_realtime_slots(wire_manifests, configured)
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -136,7 +157,8 @@ class SimulatedEngine:
 class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
-    def __init__(self, device: str):
+    def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
+                 models_dir: str = ""):
         if device == "rocm":
             # RDNA3 consumer cards gate their fused attention kernels behind
             # this flag; the fallback is math attention, several times slower.
@@ -149,12 +171,62 @@ class DiffusersEngine:
         # in which image variant and driver stack surrounds this process.
         self.device = "cuda" if device in ("cuda", "rocm") else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self.memory_mode = memory_mode
+        self.models_dir = models_dir
         self._pipelines: dict[tuple[str, str], Any] = {}
+        self._rungs: dict[str, MemoryRung] = {}
+        self._last_used: dict[str, float] = {}
         self._gpu = asyncio.Lock()
+
+    def _free_vram_bytes(self) -> int:
+        if self.device != "cuda":
+            return 1 << 60
+        free, _total = self.torch.cuda.mem_get_info()
+        return int(free)
+
+    def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
+        # Loaded models keep their pinned rung: an offloaded pipeline leaves
+        # VRAM looking free, and a reconnect must not re-advertise realtime
+        # for a model that _frame would refuse.
+        free = self._free_vram_bytes()
+        on_cpu = self.device != "cuda"
+        return [
+            measured_wire_manifest(
+                manifest,
+                self._rungs.get(manifest.id)
+                or select_rung(manifest.min_vram_gb, free, self.memory_mode,
+                               on_cpu=on_cpu),
+            )
+            for manifest in manifests
+        ]
+
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
+        from worker.memory_ladder import effective_realtime_slots
+
+        return effective_realtime_slots(wire_manifests, configured)
+
+    def model_rung(self, model_id: str) -> MemoryRung | None:
+        return self._rungs.get(model_id)
+
+    def _touch(self, model_id: str) -> None:
+        self._last_used[model_id] = time.monotonic()
+
+    def _ensure_vram(self, manifest: Manifest) -> None:
+        if self.memory_mode == "auto" and manifest.id not in self._rungs:
+            # Prefer evicting cold residents over degrading the new model to
+            # an offload rung: make room for full residency before picking.
+            wanted = rung_vram_bytes(manifest.min_vram_gb, "full")
+            if self._free_vram_bytes() < wanted:
+                self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
+        rung = self._pick_rung(manifest)
+        required = rung_vram_bytes(manifest.min_vram_gb, rung)
+        if self._free_vram_bytes() < required:
+            self._evict_cold(except_model_id=manifest.id, required_bytes=required)
 
     def _pipeline(self, manifest: Manifest, mode: str) -> Any:
         key = (manifest.id, mode)
         if key not in self._pipelines:
+            self._ensure_vram(manifest)
             try:
                 self._pipelines[key] = self._load(manifest, mode)
             except self.torch.OutOfMemoryError:
@@ -163,12 +235,44 @@ class DiffusersEngine:
                 # attempt and the eviction below could not reclaim them.
                 pass
             if key not in self._pipelines:
-                # A 16 GB card fits roughly one XL model plus headroom: evict
-                # every other model and retry once. A real eviction policy
-                # (LRU with a min-warm TTL) lands with issue #15.
-                self._evict_except(manifest.id)
+                self._evict_cold(except_model_id=manifest.id)
                 self._pipelines[key] = self._load(manifest, mode)
+        self._touch(manifest.id)
         return self._pipelines[key]
+
+    def _pick_rung(self, manifest: Manifest) -> MemoryRung:
+        if manifest.id in self._rungs:
+            return self._rungs[manifest.id]
+        rung = select_rung(
+            manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
+            on_cpu=self.device != "cuda",
+        )
+        self._rungs[manifest.id] = rung
+        return rung
+
+    def _apply_rung(self, pipeline: Any, manifest: Manifest, rung: MemoryRung) -> Any:
+        if rung == "full":
+            return pipeline.to(self.device)
+        if rung == "model_offload":
+            if self.device == "cuda":
+                pipeline.enable_model_cpu_offload(gpu_id=0)
+            else:
+                pipeline.enable_model_cpu_offload()
+            return pipeline
+        offload_dir = None
+        if self.models_dir:
+            safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
+            offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
+            Path(offload_dir).mkdir(parents=True, exist_ok=True)
+        pipeline.enable_group_offload(
+            onload_device=self.torch.device(self.device),
+            # leaf_level streams layer by layer and needs no block sizing;
+            # block_level raises when num_blocks_per_group is unset.
+            offload_type="leaf_level",
+            use_stream=True,
+            offload_to_disk_path=offload_dir,
+        )
+        return pipeline
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
         from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
@@ -193,7 +297,8 @@ class DiffusersEngine:
                     module = getattr(pipeline, name, None)
                     if module is not None:
                         module.to(memory_format=self.torch.channels_last)
-            pipeline = pipeline.to(self.device)
+            rung = self._pick_rung(manifest)
+            pipeline = self._apply_rung(pipeline, manifest, rung)
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
@@ -226,19 +331,29 @@ class DiffusersEngine:
         if self.device == "cuda":
             self.torch.cuda.empty_cache()
 
+    def _evict_cold(self, except_model_id: str, *, required_bytes: int = 0) -> None:
+        loaded = sorted({key[0] for key in self._pipelines})
+        candidates = [model_id for model_id in loaded if model_id != except_model_id]
+        candidates.sort(key=lambda model_id: self._last_used.get(model_id, 0.0))
+        for model_id in candidates:
+            if required_bytes and self._free_vram_bytes() >= required_bytes:
+                break
+            self._evict_model(model_id)
+
     def _evict_except(self, model_id: str) -> None:
-        evicted = [key for key in self._pipelines if key[0] != model_id]
-        for key in evicted:
-            del self._pipelines[key]
-        self._free_gpu_cache()
+        self._evict_cold(except_model_id=model_id)
 
     def _evict_model(self, model_id: str) -> None:
         for key in [key for key in self._pipelines if key[0] == model_id]:
             del self._pipelines[key]
+        self._rungs.pop(model_id, None)
+        self._last_used.pop(model_id, None)
         self._free_gpu_cache()
 
     def _evict_all(self) -> None:
         self._pipelines.clear()
+        self._rungs.clear()
+        self._last_used.clear()
         self._free_gpu_cache()
 
     async def load_model(self, manifest: Manifest) -> int:
@@ -247,12 +362,18 @@ class DiffusersEngine:
 
     def _load_model(self, manifest: Manifest) -> int:
         self._evict_all()
+        rung = select_rung(
+            manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
+            on_cpu=self.device != "cuda",
+        )
+        self._rungs[manifest.id] = rung
         start = time.monotonic()
         try:
             self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
         except self.torch.OutOfMemoryError:
             self._evict_all()
             self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
+        self._touch(manifest.id)
         return int((time.monotonic() - start) * 1000)
 
     async def unload_model(self, model_id: str) -> None:
@@ -384,6 +505,10 @@ class DiffusersEngine:
             return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
 
     def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+        if "realtime" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support realtime frames")
+        if self._pick_rung(manifest) != "full":
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
         canvas = Image.open(io.BytesIO(payload)).convert("RGB")
         canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
         strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)

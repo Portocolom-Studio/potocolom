@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     device: Literal["cuda", "rocm", "cpu"] = "cpu"
+    memory_mode: Literal["auto", "full", "model_offload", "group_offload"] = "auto"
     api_url: str = "ws://localhost:8000/api/v1/fleet"
     log_format: Literal["plain", "json"] = "plain"
     worker_id: str = Field(default_factory=lambda: f"worker-{uuid.uuid4().hex[:8]}")
