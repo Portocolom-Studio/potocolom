@@ -70,8 +70,11 @@ candidate for a follow-up promotion PR with `realtime` capability and measured
 ~4 s @ 1024 is on par with Lightning, not a license-clean turbo win). Stability
 Community models remain the capped commercial anchors.
 
-**ssd-1b-lightning** was not run in this sweep; run it alone if the combo
-mapping question still needs a recorded fail/pass.
+**ssd-1b-lightning** solo run (`data/benchmark/ssd-1b-lightning-run/`, clean GPU,
+2026-07-14): **load succeeded** - SDXL Lightning LoRA fuses onto the pruned
+SSD-1B UNet. 3/3 @ 1024/8step, median **2777 ms** gpu_ms (vs ~10 s for plain
+ssd-1b @ 1024/20). Faster than Lightning-on-SDXL-base at 1024 but still batch
+tier, not turbo-class; stays `benchmark_only` unless promoted separately.
 
 ## Capped commercial models (benchmark reference only)
 
