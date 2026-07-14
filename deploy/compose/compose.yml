@@ -44,6 +44,8 @@ services:
       MODELS_DIR: /models
     volumes:
       - models:/models
+      # Downloaded model weights survive container recreation.
+      - hf-cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -69,3 +71,4 @@ volumes:
   pgdata:
   assets:
   models:
+  hf-cache:

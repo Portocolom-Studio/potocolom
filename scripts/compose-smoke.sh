@@ -20,12 +20,13 @@ if (echo >/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
 fi
 
 export COMPOSE_SMOKE_PORT="$PORT"
-"${COMPOSE[@]}" up -d --build --remove-orphans
 
 cleanup() {
-  "${COMPOSE[@]}" down -v --remove-orphans
+  "${COMPOSE[@]}" down -v --remove-orphans || true
 }
 trap cleanup EXIT
+
+"${COMPOSE[@]}" up -d --build --remove-orphans
 
 base="http://localhost:${PORT}"
 for _ in $(seq 1 90); do

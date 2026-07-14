@@ -26,7 +26,7 @@ cp deploy/compose/.env.example deploy/compose/.env
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 ```
 
-Open http://localhost:8080. The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. The default worker image targets NVIDIA (CUDA); AMD hosts swap `deploy/docker/Dockerfile.worker-cuda` for `Dockerfile.worker-rocm` and the GPU device block in `deploy/compose/compose.yml` (see [local development](docs/local-development.md)). Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
+Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
 ## Documentation
 

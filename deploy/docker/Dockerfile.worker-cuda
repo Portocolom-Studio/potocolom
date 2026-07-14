@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY worker/pyproject.toml .
 COPY worker/worker ./worker
+# Default manifests seed the empty models volume on first boot.
+COPY worker/models /models
 
 RUN pip install --no-cache-dir ".[inference]"
 
