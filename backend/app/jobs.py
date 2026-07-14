@@ -280,7 +280,7 @@ async def sweep_stalled_jobs() -> None:
         live_progress.pop(job_id, None)
         last_progress_at.pop(job_id, None)
         entry.worker.job_busy = False
-        await requeue_or_fail(job_id, "no progress")
+        await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
 
 
 async def dispatch_step() -> None:
@@ -362,9 +362,12 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = uuid.UUID(control["job_id"])
+    # Only the worker recorded for the attempt may speak for the job: after a
+    # stall requeue the old worker may still be connected and reporting.
+    current = inflight.get(job_id)
+    if current is None or current.worker is not worker:
+        return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        if job_id not in inflight:
-            return
         live_progress[job_id] = float(control.get("progress") or 0.0)
         last_progress_at[job_id] = time.monotonic()
         publish(job_id, {"state": "running", "progress": control.get("progress")})
@@ -373,7 +376,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     live_progress.pop(job_id, None)
     last_progress_at.pop(job_id, None)
     if entry is None:
-        return  # stale report from a previous incarnation
+        return  # finished concurrently
     worker.job_busy = False
     if db.session_factory is None:
         logger.warning("job %s finished on the worker but the database is unavailable",
