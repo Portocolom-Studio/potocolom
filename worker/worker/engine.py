@@ -52,6 +52,15 @@ class Engine(Protocol):
     async def unload_all(self) -> None: ...
 
 
+def decode_input_image(data: bytes) -> Image.Image:
+    """Decode a job's source image; a clear ValueError beats a Pillow OSError."""
+    try:
+        with Image.open(io.BytesIO(data)) as opened:
+            return opened.convert("RGB")
+    except OSError as error:
+        raise ValueError("source image could not be decoded") from error
+
+
 def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
@@ -341,7 +350,8 @@ class DiffusersEngine:
             source = source.resize((int(width), int(height)), Image.Resampling.LANCZOS)
         steps = max(1, int(params.get("steps", 2)))
         strength = min(max(float(params.get("strength", 0.75)), 0.05), 1.0)
-        actual_steps = max(1, math.ceil(steps * strength))
+        # diffusers img2img floors the step count: int(steps * strength).
+        actual_steps = max(1, int(steps * strength))
         generator = None
         if params.get("seed") is not None:
             generator = self.torch.Generator(self.device).manual_seed(int(params["seed"]))
