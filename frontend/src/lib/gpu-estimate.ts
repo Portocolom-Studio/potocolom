@@ -11,9 +11,18 @@ export function estimateGpuMs(
 	const stepsDefault = stepsSpec(model).default;
 	const widthDefault = Number(modelProperty(model, 'width')?.default ?? params.width);
 	const heightDefault = Number(modelProperty(model, 'height')?.default ?? params.height);
-	if (stepsDefault <= 0 || widthDefault <= 0 || heightDefault <= 0) return null;
+	const inputs = [
+		stepsDefault,
+		widthDefault,
+		heightDefault,
+		params.steps,
+		params.width,
+		params.height
+	];
+	if (inputs.some((value) => !Number.isFinite(value) || value <= 0)) return null;
 
 	const stepScale = params.steps / stepsDefault;
 	const pixelScale = (params.width * params.height) / (widthDefault * heightDefault);
-	return Math.max(1, Math.round(baseMs * stepScale * pixelScale));
+	const estimate = Math.round(baseMs * stepScale * pixelScale);
+	return Number.isFinite(estimate) ? Math.max(1, estimate) : null;
 }

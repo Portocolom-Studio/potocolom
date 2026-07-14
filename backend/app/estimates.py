@@ -23,7 +23,7 @@ def _load_timings() -> dict[str, dict[str, int]]:
         if model_id.startswith("_") or not isinstance(entry, dict):
             continue
         try:
-            timings[model_id] = {
+            candidate = {
                 "gpu_ms": int(entry["gpu_ms"]),
                 "width": int(entry["width"]),
                 "height": int(entry["height"]),
@@ -31,6 +31,9 @@ def _load_timings() -> dict[str, dict[str, int]]:
             }
         except (KeyError, TypeError, ValueError):
             continue
+        if any(value <= 0 for value in candidate.values()):
+            continue  # a zero baseline would divide by zero downstream
+        timings[model_id] = candidate
     return timings
 
 
