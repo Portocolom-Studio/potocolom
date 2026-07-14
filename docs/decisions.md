@@ -492,6 +492,8 @@ All cloud images live in one private S3 bucket. Subscriber objects sit under `us
 
 Paying does not create AWS permissions for the user. Quota changes happen in the billing service over HTTP; storage authorization stays at the API layer.
 
+This entry records the cloud-profile design. The current S3 backend still uses the self-hosted key shape (`{user_id}/{job_id}.webp`) and presigned S3 GET URLs; the prefixes and CloudFront signing arrive with billing tiers and the CDN.
+
 Rejected alternatives: per-user IAM roles or buckets (account limits near one thousand of each, privileged control-plane calls on signup, authorization at the wrong layer); per-user S3 Access Points (ten-thousand cap, same wrong layer).
 
 ## Supporting defaults

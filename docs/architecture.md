@@ -373,7 +373,7 @@ Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are 
 
 ### Per-model time estimates
 
-`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. Self-hosted installs surface their own hardware's numbers, not marketing constants. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time.
+`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. The shipped baselines are measured on the reference card (RX 7600 XT); per-install measurement so self-hosted installs surface their own hardware's numbers is the open half of issue #47. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time.
 
 ## Asset storage and access
 
@@ -391,6 +391,8 @@ Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp`
 **Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
 **Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+
+**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.webp` key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
 **Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
 
