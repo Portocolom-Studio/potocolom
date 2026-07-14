@@ -6,7 +6,7 @@ Requires the API and a worker (docs/local-development.md). Configuration:
   benchmark-prompts.json  - 24 curated prompts
   benchmark-matrix.json   - models, 5 parameter variants each
 
-See scripts/BENCHMARK.md for 8 GB VRAM model research and usage notes.
+See scripts/BENCHMARK.md for 16 GB VRAM model research and usage notes.
 """
 
 from __future__ import annotations

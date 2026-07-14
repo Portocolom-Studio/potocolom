@@ -1,5 +1,5 @@
 {
-  "target_vram_gb": 8,
+  "target_vram_gb": 16,
   "images_per_prompt": 5,
   "models": [
     {
