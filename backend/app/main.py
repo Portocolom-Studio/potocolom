@@ -1,8 +1,11 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import FastAPI
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from app import db, jobs
 from app.benchmark import router as benchmark_router
@@ -56,3 +59,26 @@ async def config() -> dict:
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
     }
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve a built SPA: unknown GET paths fall back to index.html."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            # Unknown API paths must stay 404s; only page routes fall back.
+            is_api = path == "api" or path.startswith("api/")
+            if exc.status_code == 404 and scope["method"] == "GET" and not is_api:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+_settings = get_settings()
+if _settings.frontend_dist:
+    app.mount(
+        "/",
+        SPAStaticFiles(directory=Path(_settings.frontend_dist), html=True),
+        name="frontend",
+    )

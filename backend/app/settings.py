@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
 
+    # When set, the API serves the built SPA from this directory (self-hosted
+    # profile; docs/blueprint.md).
+    frontend_dist: str = ""
+
     # Requeue or fail running jobs with no dispatch/progress for this long (issue #61).
     job_stall_seconds: float = 600.0
 

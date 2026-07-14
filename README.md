@@ -20,7 +20,13 @@ Pre-alpha, under active development in the open. The architecture, protocols and
 
 ## Self-hosting
 
-The compose file ships with v0.1. Until then, the development setup below runs everything from source.
+```bash
+cp deploy/compose/.env.example deploy/compose/.env
+# edit POSTGRES_PASSWORD
+docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+```
+
+Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
 ## Documentation
 
