@@ -54,7 +54,7 @@
 	}
 
 	async function backToRecent(): Promise<void> {
-		resetHistoryToRecent();
+		await resetHistoryToRecent();
 		await tick();
 		stripEl?.scrollTo({ left: 0, behavior: 'smooth' });
 	}

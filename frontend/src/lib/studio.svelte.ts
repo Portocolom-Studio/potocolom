@@ -105,9 +105,16 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
+export function syncStarredIdsFromStorage(): void {
+	studio.starredIds = loadStarredIds();
+}
+
 export async function loadHistory(): Promise<void> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
-	if (!response.ok) return;
+	if (!response.ok) {
+		await loadStarredGenerations();
+		return;
+	}
 	const recent = preserveAssetUrls(
 		withoutFailed((await response.json()) as Generation[]),
 		studio.history
@@ -172,40 +179,55 @@ export function starredGenerations(): Generation[] {
 }
 
 export async function loadStarredGenerations(): Promise<void> {
-	const inHistory = new Set(studio.history.map((generation) => generation.id));
-	const existingById = new Map(
-		studio.starredExtras.map((generation) => [generation.id, generation])
-	);
-	const outsideHistory = studio.starredIds.filter((id) => !inHistory.has(id));
-	const alreadyLoaded = outsideHistory.flatMap((id) => {
-		const generation = existingById.get(id);
-		return generation !== undefined ? [generation] : [];
-	});
-	const needFetch = outsideHistory.filter((id) => !existingById.has(id));
+	const historyIds = new Set(studio.history.map((generation) => generation.id));
+	const extrasById = new Map(studio.starredExtras.map((generation) => [generation.id, generation]));
 
-	if (needFetch.length === 0) {
-		studio.starredExtras = alreadyLoaded;
-		return;
+	const resolved = new Map<string, Generation>();
+	for (const id of studio.starredIds) {
+		const fromHistory = studio.history.find((generation) => generation.id === id);
+		if (fromHistory !== undefined && fromHistory.assets.length > 0) {
+			resolved.set(id, fromHistory);
+			continue;
+		}
+		const cached = extrasById.get(id);
+		if (cached !== undefined && cached.assets.length > 0) {
+			resolved.set(id, cached);
+		}
 	}
 
-	const fetched = await Promise.all(
-		needFetch.map(async (id) => {
-			const response = await fetch(`/api/v1/generations/${id}`);
-			if (!response.ok) return null;
-			const generation = (await response.json()) as Generation;
-			return generation.state !== 'failed' && generation.assets.length > 0 ? generation : null;
-		})
-	);
-	studio.starredExtras = [
-		...alreadyLoaded,
-		...fetched.filter((generation): generation is Generation => generation !== null)
-	];
+	const missing = studio.starredIds.filter((id) => !resolved.has(id));
+	const fetched =
+		missing.length === 0
+			? []
+			: (
+					await Promise.all(
+						missing.map(async (id) => {
+							const response = await fetch(`/api/v1/generations/${id}`);
+							if (!response.ok) return null;
+							const generation = (await response.json()) as Generation;
+							return generation.state !== 'failed' && generation.assets.length > 0
+								? generation
+								: null;
+						})
+					)
+				).filter((generation): generation is Generation => generation !== null);
+
+	for (const generation of fetched) {
+		resolved.set(generation.id, generation);
+	}
+
+	studio.starredExtras = studio.starredIds.flatMap((id) => {
+		if (historyIds.has(id)) return [];
+		const generation = resolved.get(id);
+		return generation !== undefined ? [generation] : [];
+	});
 }
 
-export function resetHistoryToRecent(): void {
+export async function resetHistoryToRecent(): Promise<void> {
 	studio.history = studio.historyRecent;
 	studio.historyExtended = false;
 	studio.historyHasMore = studio.historyRecent.length === HISTORY_LIMIT;
+	await loadStarredGenerations();
 }
 
 export function isStarred(id: string): boolean {
