@@ -110,7 +110,7 @@ class SimulatedEngine:
             progress((step + 1) / steps)
         color = sha256(str(params.get("prompt", "")).encode()).digest()
         if input_image is not None:
-            source = Image.open(io.BytesIO(input_image)).convert("RGB")
+            source = decode_input_image(input_image)
             width = params.get("width")
             height = params.get("height")
             if width and height:
@@ -343,7 +343,7 @@ class DiffusersEngine:
         if input_image is None:
             raise ValueError("image_to_image job requires input_image")
         pipeline = self._pipeline(manifest, "i2i")
-        source = Image.open(io.BytesIO(input_image)).convert("RGB")
+        source = decode_input_image(input_image)
         width = params.get("width")
         height = params.get("height")
         if width and height:
