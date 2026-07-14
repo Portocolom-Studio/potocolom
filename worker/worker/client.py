@@ -132,8 +132,13 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
 
     async def progress_keepalive() -> None:
         while True:
-            await asyncio.sleep(PROGRESS_KEEPALIVE_SECONDS)
-            await send_progress(last_fraction)
+            try:
+                await asyncio.sleep(PROGRESS_KEEPALIVE_SECONDS)
+                await send_progress(last_fraction)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("job %s progress keepalive failed", job_id)
 
     keepalive_task = asyncio.create_task(progress_keepalive())
     try:
