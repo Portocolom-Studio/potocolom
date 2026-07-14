@@ -486,6 +486,14 @@ If these models are ever offered in the product, the same $1M annual revenue cap
 
 Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
 
+## Cloud asset storage: one bucket, prefix per tier
+
+All cloud images live in one private S3 bucket. Subscriber objects sit under `users/{user_id}/`; trial objects under `trial/{user_id}/` so an S3 lifecycle rule can expire the trial prefix after 30 days as a backstop to `expires_at` on asset rows. The API authorizes access: it mints short-lived CloudFront signed URLs only for assets the session owns. History queries the `assets` table, never `ListBucket`.
+
+Paying does not create AWS permissions for the user. Quota changes happen in the billing service over HTTP; storage authorization stays at the API layer.
+
+Rejected alternatives: per-user IAM roles or buckets (account limits near one thousand of each, privileged control-plane calls on signup, authorization at the wrong layer); per-user S3 Access Points (ten-thousand cap, same wrong layer).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

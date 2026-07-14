@@ -371,6 +371,31 @@ The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests 
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
 
+### Per-model time estimates
+
+`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. Self-hosted installs surface their own hardware's numbers, not marketing constants. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time.
+
+## Asset storage and access
+
+Generated images land in object storage through the storage adapter (local filesystem self-hosted, S3 compatible in the cloud). Workers upload via a presigned PUT target issued by the API; they never hold bucket credentials.
+
+**Cloud layout** (one private bucket, for example `potocolom-images`):
+
+| Prefix | Who | Lifecycle |
+| --- | --- | --- |
+| `users/{user_id}/` | Paying subscribers | Indefinite retention |
+| `trial/{user_id}/` | Trial accounts | `expires_at` on the asset row plus an S3 lifecycle rule expiring the prefix after 30 days |
+
+Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp` thumbnail. History is the `assets` table, never a bucket listing.
+
+**Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
+
+**Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+
+**Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
+
+Videos are out of scope at launch; the generic `mime` and `storage_key` columns make them additive later.
+
 ## Content safety and privacy
 
 Two checks run in the cloud profile; self-hosted installs have both disabled by default, as profile flags rather than forks:
