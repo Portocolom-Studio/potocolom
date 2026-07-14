@@ -96,6 +96,34 @@ def test_generation_end_to_end():
 
 
 @pytest.mark.db
+def test_benchmark_only_model_hidden_without_benchmark_api():
+    bench_manifest = {**MANIFEST, "id": "bench-only", "benchmark_only": True}
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-bench", manifest=bench_manifest)
+            missing = client.post("/api/v1/generations",
+                                  json={"model_id": "bench-only",
+                                        "params": {"prompt": "hidden"}})
+            assert missing.status_code == 404
+
+
+@pytest.mark.db
+def test_benchmark_only_model_allowed_when_benchmark_api_enabled(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_API", "1")
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
+    bench_manifest = {**MANIFEST, "id": "bench-only", "benchmark_only": True}
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-bench", manifest=bench_manifest)
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "bench-only",
+                                        "params": {"prompt": "benchmark"}})
+            assert created.status_code == 202
+
+
+@pytest.mark.db
 def test_unknown_model_and_invalid_params():
     with TestClient(app) as client:
         missing = client.post("/api/v1/generations", json={"model_id": "nope", "params": {}})
