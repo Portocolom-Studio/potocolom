@@ -131,7 +131,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 	{
 		id: 'ssd-1b-lightning',
 		name: 'SSD-1B + Lightning',
-		architecture: 'SSD-1B + Lightning LoRA (experimental)',
+		architecture: 'SSD-1B + Lightning LoRA',
 		parameters: '~1.3B',
 		min_vram_gb: 8,
 		resolutions: '1024',
@@ -139,7 +139,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'Apache 2.0 base + Open RAIL++-M LoRA',
 		commercial: 'RAIL use policy applies',
-		studio: false,
+		studio: true,
 		source: 'segmind/SSD-1B'
 	}
 ];

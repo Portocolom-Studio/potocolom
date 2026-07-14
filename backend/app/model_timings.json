@@ -35,5 +35,11 @@
     "width": 512,
     "height": 512,
     "steps": 1
+  },
+  "ssd-1b-lightning": {
+    "gpu_ms": 2777,
+    "width": 1024,
+    "height": 1024,
+    "steps": 8
   }
 }

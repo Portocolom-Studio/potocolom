@@ -50,6 +50,9 @@ def test_shipped_manifests_load():
     vega = next(m for m in manifests if m.id == "vega-rt")
     assert vega.scheduler == "lcm"
     assert vega.license_id == "apache-2.0"
+    lightning = next(m for m in manifests if m.id == "ssd-1b-lightning")
+    assert not lightning.benchmark_only
+    assert lightning.scheduler == "euler-trailing"
 
 
 def test_unknown_manifest_field_is_loud(tmp_path):

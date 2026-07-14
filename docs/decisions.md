@@ -486,6 +486,12 @@ If these models are ever offered in the product, the same $1M annual revenue cap
 
 Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
 
+## Fast batch tier: SSD-1B + Lightning alongside SDXL Fast
+
+`ssd-1b-lightning` is a studio-shippable fast batch model. Issue #85 compared it against `sdxl-fast` on the shared three-prompt photorealistic suite at 1024/8step (clean GPU, RX 7600 XT): median 2777 ms gpu_ms vs 4005 ms for sdxl-fast (~31% faster), with comparable visual quality. Licensing matches the existing fast path (Apache 2.0 pruned base plus the same ByteDance SDXL Lightning LoRA `sdxl-fast` already fuses). It ships alongside `sdxl-fast`, not as a replacement: full SDXL base may retain edge-case quality; SSD-1B + Lightning wins on speed and fits the 8 GB floor.
+
+Rejected alternative: keep `ssd-1b-lightning` benchmark-only after the successful fuse (issue #75 expected failure; the measurement would be lost).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
