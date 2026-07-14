@@ -486,6 +486,12 @@ If these models are ever offered in the product, the same $1M annual revenue cap
 
 Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
 
+## License-clean realtime model: VegaRT
+
+`vega-rt` is the studio-shippable realtime model. Issue #75 measured median 381 ms gpu_ms at 512/2 on the RX 7600 XT (clean GPU), within turbo-class range of the Stability benchmark anchors, under Apache 2.0 with no revenue cap. The manifest exposes `text_to_image`, `image_to_image`, and `realtime` with an LCM scheduler and fused VegaRT LoRA.
+
+Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75); sd-turbo and sdxl-turbo as product models - Stability Community License caps commercial use at USD $1M annual revenue (see "Stability Community License models in the product" above).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

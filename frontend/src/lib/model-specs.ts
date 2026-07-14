@@ -122,10 +122,10 @@ export const MODEL_SPECS: ModelSpec[] = [
 		min_vram_gb: 8,
 		resolutions: '512, 1024',
 		step_range: '2-8',
-		capabilities: ['text_to_image'],
+		capabilities: ['text_to_image', 'image_to_image', 'realtime'],
 		license: 'Apache 2.0',
 		commercial: 'Unrestricted',
-		studio: false,
+		studio: true,
 		source: 'segmind/Segmind-Vega'
 	},
 	{

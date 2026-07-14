@@ -1,19 +1,19 @@
 {
   "id": "vega-rt",
   "name": "Segmind VegaRT",
-  "capabilities": ["text_to_image"],
+  "capabilities": ["text_to_image", "image_to_image", "realtime"],
   "min_vram_gb": 8,
   "source": "segmind/Segmind-Vega",
   "scheduler": "lcm",
   "lora": "segmind/Segmind-VegaRT/pytorch_lora_weights.safetensors",
-  "benchmark_only": true,
   "license_id": "apache-2.0",
   "license_url": "https://huggingface.co/segmind/Segmind-VegaRT/blob/main/README.md",
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": { "type": "string" },
-      "steps": { "type": "integer", "minimum": 2, "maximum": 8, "default": 4 },
+      "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+      "steps": { "type": "integer", "minimum": 2, "maximum": 8, "default": 2 },
       "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
       "seed": { "type": "integer" },
       "width": { "type": "integer", "enum": [512, 1024], "default": 512 },

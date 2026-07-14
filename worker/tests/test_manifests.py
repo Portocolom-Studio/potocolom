@@ -48,8 +48,12 @@ def test_shipped_manifests_load():
     assert hypersd.benchmark_only
     assert hypersd.scheduler == "euler-trailing"
     vega = next(m for m in manifests if m.id == "vega-rt")
+    assert not vega.benchmark_only
     assert vega.scheduler == "lcm"
     assert vega.license_id == "apache-2.0"
+    assert "realtime" in vega.capabilities
+    assert "image_to_image" in vega.capabilities
+    assert "strength" in vega.parameters["properties"]
 
 
 def test_unknown_manifest_field_is_loud(tmp_path):

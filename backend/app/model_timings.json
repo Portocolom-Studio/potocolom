@@ -35,5 +35,11 @@
     "width": 512,
     "height": 512,
     "steps": 1
+  },
+  "vega-rt": {
+    "gpu_ms": 381,
+    "width": 512,
+    "height": 512,
+    "steps": 2
   }
 }
