@@ -44,7 +44,7 @@ Fleet connection, API to worker:
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
 | `close_session` | `session_id` | release the slot |
-| `dispatch_job` | `job_id`, `model_id`, `params`, `upload`, `thumb_upload` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. Older workers ignore the optional field (N-1 safe). |
+| `dispatch_job` | `job_id`, `model_id`, `params`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. Older workers ignore the optional fields (N-1 safe). |
 
 Realtime connection, browser to API:
 

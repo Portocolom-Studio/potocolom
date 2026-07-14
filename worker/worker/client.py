@@ -143,10 +143,20 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     keepalive_task = asyncio.create_task(progress_keepalive())
     try:
         params = manifest.with_defaults(control.get("params") or {})
-        result = await engine.generate(manifest, params, progress)
         upload = control["upload"]
         thumb_upload = control.get("thumb_upload")
         has_thumbnail = False
+        input_image = None
+        input_spec = control.get("input")
+        if input_spec and input_spec.get("url"):
+            # Short-lived client: inference can run for minutes and must not
+            # hold a connection pool open.
+            async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
+                response = await client.get(input_spec["url"])
+                response.raise_for_status()
+                input_image = response.content
+        result = await engine.generate(manifest, params, progress,
+                                        input_image=input_image)
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
                                         headers=upload.get("headers") or {})

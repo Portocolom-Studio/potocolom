@@ -125,6 +125,8 @@ async def create_generation(
         source = await session.get(Asset, source_asset_id)
         if source is None or source.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown source asset")
+        if "image_to_image" not in manifest.capabilities:
+            raise HTTPException(status_code=422, detail="model does not support image_to_image")
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
     await registry.persist_manifests([manifest])
@@ -362,15 +364,29 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                                     thumb_storage_key=thumb_storage_key, user_id=job.user_id)
         last_progress_at[job_id] = time.monotonic()
         job.state = "running"
+        dispatch_msg: dict = {
+            "type": "dispatch_job",
+            "job_id": str(job.id),
+            "model_id": job.model_id,
+            "params": job.params,
+            "upload": {"url": target.url, "headers": target.headers},
+            "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
+        }
+        if job.source_asset_id is not None:
+            source = await session.get(Asset, job.source_asset_id)
+            if source is None:
+                inflight.pop(job.id, None)
+                worker.job_busy = False
+                job.state = "failed"
+                await session.commit()
+                publish(job_id, {"state": "failed", "reason": "source asset not found"})
+                logger.warning("job %s failed: source asset not found", job_id)
+                return True
+            dispatch_msg["input"] = {
+                "url": await get_storage().worker_fetch_url(source.storage_key),
+            }
         try:
-            await worker.ws.send_json({
-                "type": "dispatch_job",
-                "job_id": str(job.id),
-                "model_id": job.model_id,
-                "params": job.params,
-                "upload": {"url": target.url, "headers": target.headers},
-                "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
-            })
+            await worker.ws.send_json(dispatch_msg)
         except Exception:  # the socket is dead however the transport spells it
             if realtime.workers.get(worker.id) is worker:
                 del realtime.workers[worker.id]  # what the reaper would conclude

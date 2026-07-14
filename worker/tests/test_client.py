@@ -1,8 +1,10 @@
 import asyncio
+import io
 import json
 import uuid
 
 import pytest
+from PIL import Image
 
 from worker.client import (
     FRAME_HEADER_BYTES,
@@ -115,6 +117,8 @@ class FakeUpload:
     """Stands in for httpx.AsyncClient; records the PUT it receives."""
 
     puts: list[tuple[str, bytes]] = []
+    gets: list[str] = []
+    get_body = b"input-webp"
     fail = False
     fail_thumb = False
 
@@ -126,6 +130,19 @@ class FakeUpload:
 
     async def __aexit__(self, *exc):
         return None
+
+    async def get(self, url, headers=None):
+        FakeUpload.gets.append(url)
+
+        class Response:
+            content = FakeUpload.get_body
+
+            @staticmethod
+            def raise_for_status():
+                if FakeUpload.fail:
+                    raise RuntimeError("download refused")
+
+        return Response()
 
     async def put(self, url, content=b"", headers=None):
         FakeUpload.puts.append((url, content))
@@ -208,3 +225,23 @@ def test_run_job_reports_failure(monkeypatch):
     failed = next(r for r in reports if r["type"] == "job_failed")
     assert failed["job_id"] == "j-1"
     assert "upload refused" in failed["reason"]
+
+
+def test_run_job_downloads_input_image(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.gets = []
+    FakeUpload.fail = False
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(buffer, "WEBP")
+    FakeUpload.get_body = buffer.getvalue()
+    socket = FakeSocket()
+    control = dispatch_control()
+    control["input"] = {"url": "http://api/api/v1/files/source.webp"}
+
+    asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, control))
+
+    assert FakeUpload.gets == ["http://api/api/v1/files/source.webp"]
+    assert len(FakeUpload.puts) == 2
+    reports = [json.loads(m) for m in socket.sent]
+    assert any(r["type"] == "job_done" for r in reports)

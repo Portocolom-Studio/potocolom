@@ -17,7 +17,7 @@ from app.tables import Job, Model
 MANIFEST = {
     "id": "sd-test",
     "name": "SD Test",
-    "capabilities": ["text_to_image"],
+    "capabilities": ["text_to_image", "image_to_image"],
     "parameters": {
         "type": "object",
         "properties": {"prompt": {"type": "string"}},
@@ -26,10 +26,16 @@ MANIFEST = {
     "min_vram_gb": 0,
 }
 
+MANIFEST_T2I_ONLY = {
+    **MANIFEST,
+    "id": "sd-t2i",
+    "capabilities": ["text_to_image"],
+}
 
-def fleet_hello(ws, worker_id):
+
+def fleet_hello(ws, worker_id, manifest=MANIFEST):
     ws.send_json({"type": "hello", "protocol_version": PROTOCOL_VERSION,
-                  "worker_id": worker_id, "models": [MANIFEST], "realtime_slots": 1})
+                  "worker_id": worker_id, "models": [manifest], "realtime_slots": 1})
     assert ws.receive_json()["type"] == "registered"
 
 
@@ -218,3 +224,71 @@ def test_recover_requeues_running_and_dispatches_queued():
             assert second["type"] == "dispatch_job"
             second_id = second["job_id"]
             assert {first_id, second_id} == {str(queued_id), str(running_id)}
+
+
+@pytest.mark.db
+def test_img2img_dispatch_includes_input_url():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-i2i")
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-test",
+                                        "params": {"prompt": "a lighthouse"}})
+            assert created.status_code == 202
+            source_job_id = created.json()["job_id"]
+
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            assert client.put(upload_path, content=b"source-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": source_job_id,
+                              "gpu_ms": 100, "width": 512, "height": 512})
+            source_job = poll_until(client, source_job_id, "succeeded")
+            source_asset_id = source_job["assets"][0]["id"]
+
+            edit = client.post("/api/v1/generations",
+                               json={"model_id": "sd-test",
+                                     "params": {"prompt": "a red lighthouse"},
+                                     "source_asset_id": source_asset_id})
+            assert edit.status_code == 202
+            edit_job_id = edit.json()["job_id"]
+
+            i2i_dispatch = worker.receive_json()
+            assert i2i_dispatch["type"] == "dispatch_job"
+            assert i2i_dispatch["job_id"] == edit_job_id
+            assert "input" in i2i_dispatch
+            input_path = urlsplit(i2i_dispatch["input"]["url"]).path
+            assert client.get(input_path).content == b"source-webp"
+
+            assert client.put(urlsplit(i2i_dispatch["upload"]["url"]).path,
+                              content=b"edited-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": edit_job_id,
+                              "gpu_ms": 200, "width": 512, "height": 512})
+            edit_job = poll_until(client, edit_job_id, "succeeded")
+            assert edit_job["assets"][0]["url"].endswith(".webp")
+
+
+@pytest.mark.db
+def test_img2img_rejects_model_without_capability():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-i2i-cap", MANIFEST_T2I_ONLY)
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-t2i",
+                                        "params": {"prompt": "seed"}})
+            job_id = created.json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            assert client.put(upload_path, content=b"source").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            source_job = poll_until(client, job_id, "succeeded")
+            source_asset_id = source_job["assets"][0]["id"]
+
+            rejected = client.post("/api/v1/generations",
+                                   json={"model_id": "sd-t2i",
+                                         "params": {"prompt": "edit"},
+                                         "source_asset_id": source_asset_id})
+            assert rejected.status_code == 422
+            assert "image_to_image" in rejected.json()["detail"]
