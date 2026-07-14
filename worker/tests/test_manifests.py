@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -34,6 +35,21 @@ def test_duplicate_manifest_ids_are_loud(tmp_path):
     (tmp_path / "b.json").write_text(json.dumps({**SD_TURBO, "name": "Other"}))
     with pytest.raises(ValueError, match="duplicate manifest id"):
         load_manifests(str(tmp_path))
+
+
+def test_shipped_manifests_load():
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    manifests = load_manifests(str(models_dir))
+    ids = {m.id for m in manifests}
+    assert "sdxl-hypersd" in ids
+    assert "vega-rt" in ids
+    assert "ssd-1b-lightning" in ids
+    hypersd = next(m for m in manifests if m.id == "sdxl-hypersd")
+    assert hypersd.benchmark_only
+    assert hypersd.scheduler == "euler-trailing"
+    vega = next(m for m in manifests if m.id == "vega-rt")
+    assert vega.scheduler == "lcm"
+    assert vega.license_id == "apache-2.0"
 
 
 def test_unknown_manifest_field_is_loud(tmp_path):

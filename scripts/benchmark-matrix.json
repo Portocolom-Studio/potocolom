@@ -53,6 +53,45 @@
         { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 1.5, "seed": 200 } },
         { "label": "4-step-alt-seed", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 300 } }
       ]
+    },
+    {
+      "id": "sdxl-hypersd",
+      "license": "CreativeML Open RAIL++-M (base) + ByteDance Hyper-SD LoRA",
+      "commercial": "yes - no revenue cap; RAIL use restrictions on base weights",
+      "notes": "Hyper-SD 8-step LoRA on SDXL base; euler-trailing scheduler (issue #75).",
+      "variants": [
+        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
+        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } },
+        { "label": "1024-8step-guidance1", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 1, "seed": 100 } }
+      ]
+    },
+    {
+      "id": "vega-rt",
+      "license": "Apache 2.0 (Segmind-Vega base + VegaRT LoRA)",
+      "commercial": "yes - unrestricted commercial use",
+      "notes": "Segmind-Vega + VegaRT LCM LoRA; turbo-class candidate with no revenue cap (issue #75).",
+      "variants": [
+        { "label": "512-2step", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0, "seed": 100 } },
+        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "512-8step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } }
+      ]
+    },
+    {
+      "id": "ssd-1b-lightning",
+      "license": "Apache 2.0 (base) + ByteDance Lightning LoRA",
+      "commercial": "yes - unrestricted; combo may fail load if LoRA does not map to pruned UNet",
+      "notes": "Experimental SSD-1B + SDXL Lightning LoRA; a failed load is a valid benchmark result (issue #75).",
+      "variants": [
+        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
+        { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 0, "seed": 200 } },
+        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 300 } }
+      ]
     }
   ],
   "capped_commercial": [

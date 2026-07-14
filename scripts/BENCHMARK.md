@@ -17,6 +17,31 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
 | **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
 
+## License-safe turbo candidates (benchmark reference only)
+
+Issue #75: evaluate Hyper-SD and VegaRT against the Stability turbo anchors before
+promoting either to the studio. Manifests set `benchmark_only: true` like
+sd-turbo and sdxl-turbo.
+
+| Model | License | VRAM | Resolution | Notes |
+| --- | --- | --- | --- | --- |
+| **sdxl-hypersd** | Open RAIL++-M + ByteDance Hyper-SD | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing |
+| **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
+| **ssd-1b-lightning** | Apache 2.0 + Lightning | ~8 GB | 1024 | Experimental combo; load may fail |
+
+```bash
+# Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
+make benchmark BENCHMARK_QUICK=1 BENCHMARK_INCLUDE_CAPPED=1 \
+  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+
+# Full candidate sweep including the experimental SSD-1B combo
+make benchmark BENCHMARK_INCLUDE_CAPPED=1 \
+  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,ssd-1b-lightning,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+```
+
+Measured numbers decide whether a follow-up PR promotes a winner to the product
+manifests (realtime capability, `min_vram_gb` from measurement).
+
 ## Capped commercial models (benchmark reference only)
 
 Models under a **$1M annual revenue cap** (Stability AI Community License).
@@ -107,5 +132,6 @@ make benchmark BENCHMARK_MODELS=sdxl-fast,ssd-1b
 ## References
 
 - [Issue #60 - Inference speed baseline and backlog](https://github.com/portocolom-studio/potocolom/issues/60)
+- [Issue #75 - License-safe turbo candidates (Hyper-SD, VegaRT)](https://github.com/portocolom-studio/potocolom/issues/75)
 - Measured timings on RX 7600 XT in ROADMAP.md
 - VRAM guidance from Stability AI / Black Forest Labs docs, Hugging Face model cards, and community tables
