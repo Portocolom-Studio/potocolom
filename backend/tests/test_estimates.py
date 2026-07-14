@@ -17,6 +17,11 @@ def test_estimate_gpu_ms_at_baseline_params():
     assert estimate_gpu_ms("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}) == 3736
 
 
+def test_estimate_gpu_ms_ssd_1b_lightning_baseline():
+    assert estimate_gpu_ms(
+        "ssd-1b-lightning", {"width": 1024, "height": 1024, "steps": 8}) == 2777
+
+
 def test_estimate_gpu_ms_scales_linearly_with_steps():
     baseline = estimate_gpu_ms("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8})
     half_steps = estimate_gpu_ms("sdxl-fast", {"width": 1024, "height": 1024, "steps": 4})

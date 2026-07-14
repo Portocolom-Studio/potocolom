@@ -15,6 +15,7 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **sdxl-base** | Open RAIL++-M | ~8 GB tight | 768 / 1024 | Highest quality |
 | **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
+| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Fast batch @ 1024 (~2.8 s, issue #85) |
 | **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
 
 ## License-safe turbo candidates (benchmark reference only)
@@ -27,7 +28,6 @@ sd-turbo and sdxl-turbo.
 | --- | --- | --- | --- | --- |
 | **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
 | **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
-| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Experimental combo; load may fail |
 
 ```bash
 # Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
@@ -73,8 +73,10 @@ Community models remain the capped commercial anchors.
 **ssd-1b-lightning** solo run (`data/benchmark/ssd-1b-lightning-run/`, clean GPU,
 2026-07-14): **load succeeded** - SDXL Lightning LoRA fuses onto the pruned
 SSD-1B UNet. 3/3 @ 1024/8step, median **2777 ms** gpu_ms (vs ~10 s for plain
-ssd-1b @ 1024/20). Faster than Lightning-on-SDXL-base at 1024 but still batch
-tier, not turbo-class; stays `benchmark_only` unless promoted separately.
+ssd-1b @ 1024/20, vs **4005 ms** for sdxl-fast in the #75 clean rerun).
+**Promoted in #85** alongside sdxl-fast: comparable quality on the shared
+three-prompt suite, ~31% faster, same Lightning LoRA licensing as sdxl-fast.
+Batch tier only - not realtime.
 
 ## Capped commercial models (benchmark reference only)
 

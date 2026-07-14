@@ -9,7 +9,6 @@
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "euler-trailing",
   "lora": "ByteDance/SDXL-Lightning/sdxl_lightning_8step_lora.safetensors",
-  "benchmark_only": true,
   "license_id": "openrail++",
   "license_url": "https://huggingface.co/ByteDance/SDXL-Lightning",
   "parameters": {
