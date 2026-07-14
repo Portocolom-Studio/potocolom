@@ -69,8 +69,8 @@ class SPAStaticFiles(StaticFiles):
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             # Unknown API paths must stay 404s; only page routes fall back.
-            if (exc.status_code == 404 and scope["method"] == "GET"
-                    and not path.startswith("api/")):
+            is_api = path == "api" or path.startswith("api/")
+            if exc.status_code == 404 and scope["method"] == "GET" and not is_api:
                 return await super().get_response("index.html", scope)
             raise
 

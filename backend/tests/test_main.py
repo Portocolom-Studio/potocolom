@@ -21,3 +21,7 @@ def test_spa_static_files_fallback_to_index(tmp_path: Path):
             response = client.get(path)
             assert response.status_code == 200
             assert "potocolom" in response.text
+        # API paths must stay 404s, never the SPA shell.
+        for path in ("/api", "/api/v1/no-such-endpoint"):
+            response = client.get(path)
+            assert response.status_code == 404
