@@ -4,9 +4,12 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import {
+		isStarred,
 		loadOlderHistory,
 		resetHistoryToRecent,
+		starredGenerations,
 		studio,
 		type Generation
 	} from '$lib/studio.svelte';
@@ -18,6 +21,23 @@
 	const shownId = $derived(
 		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
 	);
+
+	// Starred jobs outside the loaded history pages still appear at the front.
+	const stripGenerations = $derived.by(() => {
+		const seen = new Set<string>();
+		const items: Generation[] = [];
+		for (const generation of starredGenerations()) {
+			if (seen.has(generation.id)) continue;
+			seen.add(generation.id);
+			items.push(generation);
+		}
+		for (const generation of studio.history) {
+			if (generation.state === 'failed' || seen.has(generation.id)) continue;
+			seen.add(generation.id);
+			items.push(generation);
+		}
+		return items;
+	});
 
 	async function loadOlder(): Promise<void> {
 		if (!stripEl || loadingOlder) return;
@@ -50,7 +70,7 @@
 	}
 </script>
 
-{#if studio.history.length > 0}
+{#if stripGenerations.length > 0}
 	<div class="flex shrink-0 gap-2 overflow-x-auto pb-1" bind:this={stripEl}>
 		{#if studio.historyExtended}
 			<button
@@ -64,11 +84,11 @@
 			</button>
 		{/if}
 
-		{#each studio.history.filter((g) => g.state !== 'failed') as generation (generation.id)}
+		{#each stripGenerations as generation (generation.id)}
 			{#if generation.assets.length > 0}
 				<button
 					type="button"
-					class="shrink-0"
+					class="relative shrink-0"
 					title={generation.params.prompt}
 					onclick={() => select(generation)}
 				>
@@ -78,6 +98,14 @@
 						class={'h-24 w-24 rounded-lg border object-cover ' +
 							(shownId === generation.id ? 'border-primary' : 'border-border')}
 					/>
+					{#if isStarred(generation.id)}
+						<span
+							class="bg-background/80 pointer-events-none absolute end-1 top-1 rounded-full p-0.5"
+							aria-hidden="true"
+						>
+							<StarIcon class="fill-current size-3" />
+						</span>
+					{/if}
 				</button>
 			{:else if generation.state === 'queued' || generation.state === 'running'}
 				<div

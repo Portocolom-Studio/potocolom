@@ -301,74 +301,72 @@
 					{#if errorText !== ''}
 						<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
 					{/if}
-					<div class="border-border mt-auto flex flex-col gap-2 border-t pt-4">
-						<div class="grid grid-cols-2 gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								class="justify-start"
-								disabled={shownPrompt === ''}
-								onclick={insertPrompt}
-							>
-								<ClipboardPasteIcon />
-								{t('app.gen.insert_prompt')}
-							</Button>
-							<Button
-								type="button"
-								variant={shownStarred ? 'secondary' : 'outline'}
-								size="sm"
-								class="justify-start"
-								disabled={shown === null}
-								onclick={starShown}
-							>
-								<StarIcon class={shownStarred ? 'fill-current' : ''} />
-								{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-							</Button>
-							<Button
-								type="button"
-								variant={sourceAssetId !== null ? 'secondary' : 'outline'}
-								size="sm"
-								class="justify-start"
-								disabled={!canEdit}
-								onclick={editShown}
-							>
-								<PencilIcon />
-								{t('app.gen.edit')}
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								class="justify-start"
-								disabled
-								title={t('app.gen.coming_soon')}
-							>
-								<ScanLineIcon />
-								{t('app.gen.upscale')}
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								class="col-span-2 justify-start"
-								disabled
-								title={t('app.gen.coming_soon')}
-							>
-								<Trash2Icon />
-								{t('app.gen.delete')}
-							</Button>
-						</div>
-					</div>
 				</form>
 			{/if}
 		</Card.Content>
 	</Card.Root>
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
-	<div class="flex min-h-0 min-w-0 flex-col gap-4">
-		<Card.Root class="min-h-0 flex-1">
-			<Card.Content class="flex h-full min-h-0 min-w-0 flex-col gap-2 p-4">
+	<div class="flex min-h-0 min-w-0 flex-col gap-3">
+		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
+				<div class="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="justify-start"
+						disabled={shownPrompt === ''}
+						onclick={insertPrompt}
+					>
+						<ClipboardPasteIcon />
+						{t('app.gen.insert_prompt')}
+					</Button>
+					<Button
+						type="button"
+						variant={shownStarred ? 'secondary' : 'outline'}
+						size="sm"
+						class="justify-start"
+						disabled={shown === null}
+						onclick={starShown}
+					>
+						<StarIcon class={shownStarred ? 'fill-current' : ''} />
+						{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+					</Button>
+					<Button
+						type="button"
+						variant={sourceAssetId !== null ? 'secondary' : 'outline'}
+						size="sm"
+						class="justify-start"
+						disabled={!canEdit}
+						onclick={editShown}
+					>
+						<PencilIcon />
+						{t('app.gen.edit')}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="justify-start"
+						disabled
+						title={t('app.gen.coming_soon')}
+					>
+						<ScanLineIcon />
+						{t('app.gen.upscale')}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						class="col-span-2 justify-start sm:col-span-1"
+						disabled
+						title={t('app.gen.coming_soon')}
+					>
+						<Trash2Icon />
+						{t('app.gen.delete')}
+					</Button>
+				</div>
 				{#if shown !== null}
 					<a
 						href={shown.assets[0].url}
@@ -395,6 +393,8 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-		<HistoryStrip />
+		<div class="shrink-0">
+			<HistoryStrip />
+		</div>
 	</div>
 </div>
