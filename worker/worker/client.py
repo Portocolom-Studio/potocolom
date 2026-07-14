@@ -154,11 +154,19 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                                         headers=upload.get("headers") or {})
             response.raise_for_status()
             if thumb_upload:
-                thumb_data = make_thumbnail_webp(result.data)
-                response = await client.put(thumb_upload["url"], content=thumb_data,
-                                            headers=thumb_upload.get("headers") or {})
-                response.raise_for_status()
-                has_thumbnail = True
+                # Best effort: the full result is already stored, and the API
+                # only records a thumbnail when job_done reports one.
+                try:
+                    thumb_data = make_thumbnail_webp(result.data)
+                    response = await client.put(thumb_upload["url"], content=thumb_data,
+                                                headers=thumb_upload.get("headers") or {})
+                    response.raise_for_status()
+                    has_thumbnail = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("job %s thumbnail failed; delivering without one",
+                                     job_id)
         done_msg: dict = {"type": "job_done", "job_id": job_id,
                           "gpu_ms": result.gpu_ms,
                           "width": result.width, "height": result.height}

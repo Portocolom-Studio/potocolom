@@ -120,6 +120,7 @@ class FakeUpload:
     gets: list[str] = []
     get_body = b"input-webp"
     fail = False
+    fail_thumb = False
 
     def __init__(self, timeout=None):
         pass
@@ -151,6 +152,8 @@ class FakeUpload:
             def raise_for_status():
                 if FakeUpload.fail:
                     raise RuntimeError("upload refused")
+                if FakeUpload.fail_thumb and url.endswith("-thumb.webp"):
+                    raise RuntimeError("thumb upload refused")
 
         return Response()
 
@@ -188,6 +191,25 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     done = next(r for r in reports if r["type"] == "job_done")
     assert done["width"] == 512 and done["height"] == 512
     assert done["gpu_ms"] >= 0
+    assert done["has_thumbnail"] is True
+
+
+def test_run_job_delivers_without_thumbnail_when_thumb_upload_fails(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    FakeUpload.fail_thumb = True
+    socket = FakeSocket()
+    try:
+        asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST,
+                            dispatch_control()))
+    finally:
+        FakeUpload.fail_thumb = False
+
+    reports = [json.loads(m) for m in socket.sent]
+    done = next(r for r in reports if r["type"] == "job_done")
+    assert "has_thumbnail" not in done
+    assert not any(r["type"] == "job_failed" for r in reports)
 
 
 def test_run_job_reports_failure(monkeypatch):
