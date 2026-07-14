@@ -109,8 +109,8 @@ export const MODEL_SPECS: ModelSpec[] = [
 		resolutions: '1024',
 		step_range: '4-8',
 		capabilities: ['text_to_image'],
-		license: 'RAIL++-M + ByteDance Hyper-SD',
-		commercial: 'Unrestricted (RAIL use policy)',
+		license: 'RAIL++-M base; LoRA: no declared license',
+		commercial: 'Unclear - LoRA license undeclared',
 		studio: false,
 		source: 'stabilityai/stable-diffusion-xl-base-1.0'
 	},
@@ -137,8 +137,8 @@ export const MODEL_SPECS: ModelSpec[] = [
 		resolutions: '1024',
 		step_range: '4-8',
 		capabilities: ['text_to_image'],
-		license: 'Apache 2.0 + ByteDance Lightning',
-		commercial: 'Unrestricted',
+		license: 'Apache 2.0 base + Open RAIL++-M LoRA',
+		commercial: 'RAIL use policy applies',
 		studio: false,
 		source: 'segmind/SSD-1B'
 	}

@@ -34,9 +34,13 @@ sd-turbo and sdxl-turbo.
 make benchmark BENCHMARK_QUICK=1 BENCHMARK_INCLUDE_CAPPED=1 \
   BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
 
-# Full candidate sweep including the experimental SSD-1B combo
+# Full candidate sweep
 make benchmark BENCHMARK_INCLUDE_CAPPED=1 \
-  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,ssd-1b-lightning,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+
+# The experimental combo runs alone: the harness aborts a run when a model
+# fails to load, and a failed load is a possible (and valid) outcome here.
+make benchmark BENCHMARK_MODELS=ssd-1b-lightning
 ```
 
 Measured numbers decide whether a follow-up PR promotes a winner to the product

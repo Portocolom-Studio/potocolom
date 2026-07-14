@@ -56,8 +56,8 @@
     },
     {
       "id": "sdxl-hypersd",
-      "license": "CreativeML Open RAIL++-M (base) + ByteDance Hyper-SD LoRA",
-      "commercial": "yes - no revenue cap; RAIL use restrictions on base weights",
+      "license": "CreativeML Open RAIL++-M (base); Hyper-SD LoRA has NO declared license",
+      "commercial": "unclear - the LoRA card declares no license (verified 2026-07-14)",
       "notes": "Hyper-SD 8-step LoRA on SDXL base; euler-trailing scheduler (issue #75).",
       "variants": [
         { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
@@ -82,8 +82,8 @@
     },
     {
       "id": "ssd-1b-lightning",
-      "license": "Apache 2.0 (base) + ByteDance Lightning LoRA",
-      "commercial": "yes - unrestricted; combo may fail load if LoRA does not map to pruned UNet",
+      "license": "Apache 2.0 (base) + Open RAIL++-M Lightning LoRA",
+      "commercial": "yes - RAIL use policy applies; combo may fail load if LoRA does not map to pruned UNet",
       "notes": "Experimental SSD-1B + SDXL Lightning LoRA; a failed load is a valid benchmark result (issue #75).",
       "variants": [
         { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
