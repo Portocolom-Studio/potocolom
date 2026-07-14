@@ -319,6 +319,12 @@ class DiffusersEngine:
 
             # The documented recipe for Lightning class distillation LoRAs.
             return EulerDiscreteScheduler.from_config(config, timestep_spacing="trailing")
+        if name == "lcm":
+            from diffusers import LCMScheduler
+
+            # LCM-distilled adapters (VegaRT class) sample with the
+            # consistency scheduler.
+            return LCMScheduler.from_config(config)
         raise ValueError(f"unknown scheduler override: {name}")
 
     def loaded_models(self) -> list[str]:

@@ -115,7 +115,7 @@ async def create_generation(
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
-    manifest = registry.public().get(request.model_id)
+    manifest = registry.for_jobs().get(request.model_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="unknown model")
     if error := validate_params(manifest, request.params):

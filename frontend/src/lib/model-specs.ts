@@ -99,6 +99,48 @@ export const MODEL_SPECS: ModelSpec[] = [
 		commercial: '≤ $1M revenue / year',
 		studio: false,
 		source: 'stabilityai/sdxl-turbo'
+	},
+	{
+		id: 'sdxl-hypersd',
+		name: 'SDXL Hyper-SD',
+		architecture: 'SDXL + Hyper-SD LoRA',
+		parameters: '~3.5B',
+		min_vram_gb: 10,
+		resolutions: '1024',
+		step_range: '4-8',
+		capabilities: ['text_to_image'],
+		license: 'RAIL++-M base; LoRA: no declared license',
+		commercial: 'Unclear - LoRA license undeclared',
+		studio: false,
+		source: 'stabilityai/stable-diffusion-xl-base-1.0'
+	},
+	{
+		id: 'vega-rt',
+		name: 'Segmind VegaRT',
+		architecture: 'Segmind-Vega + VegaRT LCM LoRA',
+		parameters: '~1.0B',
+		min_vram_gb: 8,
+		resolutions: '512, 1024',
+		step_range: '2-8',
+		capabilities: ['text_to_image'],
+		license: 'Apache 2.0',
+		commercial: 'Unrestricted',
+		studio: false,
+		source: 'segmind/Segmind-Vega'
+	},
+	{
+		id: 'ssd-1b-lightning',
+		name: 'SSD-1B + Lightning',
+		architecture: 'SSD-1B + Lightning LoRA (experimental)',
+		parameters: '~1.3B',
+		min_vram_gb: 8,
+		resolutions: '1024',
+		step_range: '4-8',
+		capabilities: ['text_to_image'],
+		license: 'Apache 2.0 base + Open RAIL++-M LoRA',
+		commercial: 'RAIL use policy applies',
+		studio: false,
+		source: 'segmind/SSD-1B'
 	}
 ];
 

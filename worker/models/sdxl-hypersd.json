@@ -1,0 +1,25 @@
+{
+  "id": "sdxl-hypersd",
+  "name": "SDXL Hyper-SD",
+  "capabilities": ["text_to_image"],
+  "min_vram_gb": 10,
+  "source": "stabilityai/stable-diffusion-xl-base-1.0",
+  "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "scheduler": "euler-trailing",
+  "lora": "ByteDance/Hyper-SD/Hyper-SDXL-8steps-lora.safetensors",
+  "license_id": "none-declared",
+  "license_url": "https://huggingface.co/ByteDance/Hyper-SD",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "steps": { "type": "integer", "minimum": 4, "maximum": 8, "default": 8 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [1024], "default": 1024 },
+      "height": { "type": "integer", "enum": [1024], "default": 1024 }
+    },
+    "required": ["prompt"]
+  }
+}

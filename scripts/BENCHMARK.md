@@ -1,8 +1,8 @@
 # Image generation benchmark (8 GB VRAM)
 
 Curated prompt suite + parameter matrix for comparing models on a consumer GPU
-(RX 7600 class, 8 GB). Run with `make benchmark` after `make api` and
-`make worker-rocm` are up.
+(RX 7600 class, 8 GB). Run with `make benchmark` after `make api` (with
+`BENCHMARK_API=1`) and `make worker-rocm` are up.
 
 Measured baselines and the optimization backlog live in [issue #60](https://github.com/portocolom-studio/potocolom/issues/60).
 
@@ -16,6 +16,59 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
 | **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
+
+## License-safe turbo candidates (benchmark reference only)
+
+Issue #75: evaluate Hyper-SD and VegaRT against the Stability turbo anchors before
+promoting either to the studio. Manifests set `benchmark_only: true` like
+sd-turbo and sdxl-turbo.
+
+| Model | License | VRAM | Resolution | Notes |
+| --- | --- | --- | --- | --- |
+| **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
+| **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
+| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Experimental combo; load may fail |
+
+```bash
+# Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
+make benchmark BENCHMARK_QUICK=1 BENCHMARK_INCLUDE_CAPPED=1 \
+  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+
+# Full candidate sweep
+make benchmark BENCHMARK_INCLUDE_CAPPED=1 \
+  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+
+# The experimental combo runs alone: the harness aborts a run when a model
+# fails to load, and a failed load is a possible (and valid) outcome here.
+make benchmark BENCHMARK_MODELS=ssd-1b-lightning
+```
+
+Measured numbers decide whether a follow-up PR promotes a winner to the product
+manifests (realtime capability, `min_vram_gb` from measurement).
+
+### Issue #75 decision (RX 7600 XT, 2026-07-14)
+
+Quick run: 3 prompts, 1 variant each (`BENCHMARK_QUICK=1`), models
+`sdxl-hypersd`, `vega-rt`, `sdxl-fast`, `ssd-1b`, `sd-turbo`, `sdxl-turbo`.
+Raw output: `data/benchmark/issue-75-run/` (gitignored).
+
+| Model | Median gpu_ms | Resolution / steps | Verdict |
+| --- | ---: | --- | --- |
+| sd-turbo | 274 | 512 / 2 | Benchmark anchor (Stability cap) |
+| sdxl-turbo | 2739 | 512 / 1 | Benchmark anchor (Stability cap) |
+| **vega-rt** | **347** | 512 / 2 | **License-clean turbo-class winner** - follow-up PR to promote |
+| sdxl-fast | 7153 | 1024 / 8 | Open baseline (Lightning) |
+| sdxl-hypersd | 6665 | 1024 / 8 | Benchmark only - LoRA has no declared license |
+| ssd-1b | 9716 | 1024 / 20 | Batch tier, not realtime |
+
+**Conclusion:** No product manifest in this PR. VegaRT (Apache 2.0) matches
+turbo-class latency at 512 px and is the candidate for a follow-up promotion PR
+with `realtime` capability and measured `min_vram_gb`. Hyper-SD stays
+benchmark-only (license gap on the LoRA weights; no speed win over Lightning at
+1024). Stability Community models remain the capped commercial anchors.
+
+**ssd-1b-lightning** was not run in this sweep; run it alone if the combo
+mapping question still needs a recorded fail/pass.
 
 ## Capped commercial models (benchmark reference only)
 
@@ -107,5 +160,6 @@ make benchmark BENCHMARK_MODELS=sdxl-fast,ssd-1b
 ## References
 
 - [Issue #60 - Inference speed baseline and backlog](https://github.com/portocolom-studio/potocolom/issues/60)
+- [Issue #75 - License-safe turbo candidates (Hyper-SD, VegaRT)](https://github.com/portocolom-studio/potocolom/issues/75)
 - Measured timings on RX 7600 XT in ROADMAP.md
 - VRAM guidance from Stability AI / Black Forest Labs docs, Hugging Face model cards, and community tables

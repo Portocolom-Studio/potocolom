@@ -13,6 +13,9 @@ select them. Reference timings may still appear on `/benchmark`.
 | Model | License | Product status |
 | --- | --- | --- |
 | sd-turbo, sdxl-turbo | Stability AI Community | Benchmark reference |
+| sdxl-hypersd | Open RAIL++-M base + Hyper-SD LoRA with NO declared license | Benchmark reference (issue #75); not promotable until ByteDance declares terms |
+| vega-rt | Apache 2.0 | Benchmark reference (issue #75) |
+| ssd-1b-lightning | Apache 2.0 base + Open RAIL++-M Lightning LoRA | Benchmark reference (issue #75; experimental) |
 
 If you later offer any of these in the product, the obligations below apply.
 
@@ -41,7 +44,7 @@ requires:
 | Model | License |
 | --- | --- |
 | sdxl-base, sdxl-fast (base weights) | CreativeML Open RAIL++-M |
-| sdxl-fast (Lightning LoRA) | ByteDance SDXL Lightning (see HF model card) |
+| sdxl-fast (Lightning LoRA) | CreativeML Open RAIL++-M (openrail++ tag on the card) |
 | ssd-1b | Apache 2.0 |
 | dreamshaper-lcm | CreativeML Open RAIL-M |
 

@@ -33,6 +33,15 @@ def public() -> dict[str, Manifest]:
             if not manifest.benchmark_only}
 
 
+def for_jobs() -> dict[str, Manifest]:
+    """Manifests eligible for POST /api/v1/generations."""
+    from app.settings import get_settings
+
+    if get_settings().benchmark_api:
+        return available()
+    return public()
+
+
 @router.get("/api/v1/models")
 async def list_models() -> list[dict]:
     models = []
