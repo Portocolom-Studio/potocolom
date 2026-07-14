@@ -1,0 +1,39 @@
+{
+  "_source": "RX 7600 XT benchmark (frontend/static/benchmark/results.json, 2026-07-12)",
+  "sdxl-base": {
+    "gpu_ms": 15274,
+    "width": 1024,
+    "height": 1024,
+    "steps": 20
+  },
+  "sdxl-fast": {
+    "gpu_ms": 3736,
+    "width": 1024,
+    "height": 1024,
+    "steps": 8
+  },
+  "ssd-1b": {
+    "gpu_ms": 9753,
+    "width": 1024,
+    "height": 1024,
+    "steps": 20
+  },
+  "dreamshaper-lcm": {
+    "gpu_ms": 578,
+    "width": 512,
+    "height": 512,
+    "steps": 4
+  },
+  "sd-turbo": {
+    "gpu_ms": 289,
+    "width": 512,
+    "height": 512,
+    "steps": 2
+  },
+  "sdxl-turbo": {
+    "gpu_ms": 285,
+    "width": 512,
+    "height": 512,
+    "steps": 1
+  }
+}
