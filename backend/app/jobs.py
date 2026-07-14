@@ -12,6 +12,7 @@ import asyncio
 import heapq
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db, realtime, registry
 from app.auth import current_user
 from app.manifests import validate_params
+from app.settings import get_settings
 from app.storage import get_storage
 from app.tables import Asset, Job, User
 
@@ -86,6 +88,8 @@ def storage_key_in_flight(key: str) -> bool:
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
 live_progress: dict[uuid.UUID, float] = {}
+# Monotonic timestamp of the last dispatch or job_progress for each inflight job.
+last_progress_at: dict[uuid.UUID, float] = {}
 
 # SSE subscribers per job; events are transient, the job row is the truth.
 subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}
@@ -151,6 +155,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "model_id": job.model_id,
             "params": job.params,
             "state": job.state,
+            "attempt": job.attempt,
             "progress": live_progress.get(job.id) if job.state == "running" else None,
             "gpu_ms": job.gpu_ms,
             "created_at": job.created_at.isoformat(),
@@ -276,11 +281,37 @@ async def dispatch_loop() -> None:
             logger.exception("dispatch step failed")
 
 
+async def sweep_stalled_jobs() -> None:
+    """Requeue or fail jobs whose worker stopped reporting progress (issue #61)."""
+    now = time.monotonic()
+    stall = get_settings().job_stall_seconds
+    for job_id in list(inflight):
+        entry = inflight.pop(job_id, None)
+        if entry is None:
+            continue
+        # Missing stamp means unsweepable; treat as stalled (issue #61).
+        last = last_progress_at.get(job_id, 0.0)
+        if now - last < stall:
+            inflight[job_id] = entry
+            continue
+        live_progress.pop(job_id, None)
+        last_progress_at.pop(job_id, None)
+        entry.worker.job_busy = False
+        try:
+            await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
+        except Exception:
+            # De-tracked above; hand the job to the lost_jobs conduit so the
+            # next dispatch step retries the requeue instead of stranding it.
+            lost_jobs.append(job_id)
+            raise
+
+
 async def dispatch_step() -> None:
     if db.session_factory is None:
         return
     while lost_jobs:
         await requeue_or_fail(lost_jobs.pop(0), "worker disconnected")
+    await sweep_stalled_jobs()
     while True:
         job_id = await queues.pop(JOB_QUEUE)
         if job_id is None:
@@ -331,6 +362,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         worker.job_busy = True
         inflight[job.id] = InFlight(worker=worker, storage_key=storage_key,
                                     thumb_storage_key=thumb_storage_key, user_id=job.user_id)
+        last_progress_at[job_id] = time.monotonic()
         job.state = "running"
         dispatch_msg: dict = {
             "type": "dispatch_job",
@@ -360,6 +392,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                 del realtime.workers[worker.id]  # what the reaper would conclude
             if inflight.pop(job.id, None) is None:
                 return True  # the disconnect handler beat us to it and requeued
+            last_progress_at.pop(job.id, None)
             worker.job_busy = False
             return False  # session rolls back, the job stays queued
         await session.commit()
@@ -370,16 +403,21 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = uuid.UUID(control["job_id"])
+    # Only the worker recorded for the attempt may speak for the job: after a
+    # stall requeue the old worker may still be connected and reporting.
+    current = inflight.get(job_id)
+    if current is None or current.worker is not worker:
+        return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        if job_id not in inflight:
-            return
         live_progress[job_id] = float(control.get("progress") or 0.0)
+        last_progress_at[job_id] = time.monotonic()
         publish(job_id, {"state": "running", "progress": control.get("progress")})
         return
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
+    last_progress_at.pop(job_id, None)
     if entry is None:
-        return  # stale report from a previous incarnation
+        return  # finished concurrently
     worker.job_busy = False
     if db.session_factory is None:
         logger.warning("job %s finished on the worker but the database is unavailable",
@@ -480,6 +518,7 @@ def on_worker_lost(worker: realtime.Worker) -> None:
         if entry.worker is worker:
             del inflight[job_id]
             live_progress.pop(job_id, None)
+            last_progress_at.pop(job_id, None)
             lost_jobs.append(job_id)
 
 
