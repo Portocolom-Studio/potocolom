@@ -50,22 +50,25 @@ manifests (realtime capability, `min_vram_gb` from measurement).
 
 Quick run: 3 prompts, 1 variant each (`BENCHMARK_QUICK=1`), models
 `sdxl-hypersd`, `vega-rt`, `sdxl-fast`, `ssd-1b`, `sd-turbo`, `sdxl-turbo`.
-Raw output: `data/benchmark/issue-75-run/` (gitignored).
+Authoritative raw output: `data/benchmark/issue-75-rerun/` (gitignored). An earlier
+`issue-75-run/` pass had inflated cold-start times while `ai-assistant-ollama`
+held ~14 GB VRAM; stop competing GPU workloads before benchmarking.
 
 | Model | Median gpu_ms | Resolution / steps | Verdict |
 | --- | ---: | --- | --- |
-| sd-turbo | 274 | 512 / 2 | Benchmark anchor (Stability cap) |
-| sdxl-turbo | 2739 | 512 / 1 | Benchmark anchor (Stability cap) |
-| **vega-rt** | **347** | 512 / 2 | **License-clean turbo-class winner** - follow-up PR to promote |
-| sdxl-fast | 7153 | 1024 / 8 | Open baseline (Lightning) |
-| sdxl-hypersd | 6665 | 1024 / 8 | Benchmark only - LoRA has no declared license |
-| ssd-1b | 9716 | 1024 / 20 | Batch tier, not realtime |
+| sd-turbo | 345 | 512 / 2 | Benchmark anchor (Stability cap) |
+| sdxl-turbo | 296 | 512 / 1 | Benchmark anchor (Stability cap) |
+| **vega-rt** | **381** | 512 / 2 | **License-clean turbo-class winner** - follow-up PR to promote |
+| sdxl-fast | 4005 | 1024 / 8 | Open baseline (Lightning) |
+| sdxl-hypersd | 3987 | 1024 / 8 | Benchmark only - LoRA has no declared license |
+| ssd-1b | 10034 | 1024 / 20 | Batch tier, not realtime |
 
-**Conclusion:** No product manifest in this PR. VegaRT (Apache 2.0) matches
-turbo-class latency at 512 px and is the candidate for a follow-up promotion PR
-with `realtime` capability and measured `min_vram_gb`. Hyper-SD stays
-benchmark-only (license gap on the LoRA weights; no speed win over Lightning at
-1024). Stability Community models remain the capped commercial anchors.
+**Conclusion:** No product manifest in #75. VegaRT (Apache 2.0) matches
+turbo-class latency at 512 px (~381 ms median vs ~345 ms sd-turbo) and is the
+candidate for a follow-up promotion PR with `realtime` capability and measured
+`min_vram_gb`. Hyper-SD stays benchmark-only (license gap on the LoRA weights;
+~4 s @ 1024 is on par with Lightning, not a license-clean turbo win). Stability
+Community models remain the capped commercial anchors.
 
 **ssd-1b-lightning** was not run in this sweep; run it alone if the combo
 mapping question still needs a recorded fail/pass.
