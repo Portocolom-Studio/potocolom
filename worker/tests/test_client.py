@@ -116,6 +116,7 @@ class FakeUpload:
 
     puts: list[tuple[str, bytes]] = []
     fail = False
+    fail_thumb = False
 
     def __init__(self, timeout=None):
         pass
@@ -134,6 +135,8 @@ class FakeUpload:
             def raise_for_status():
                 if FakeUpload.fail:
                     raise RuntimeError("upload refused")
+                if FakeUpload.fail_thumb and url.endswith("-thumb.webp"):
+                    raise RuntimeError("thumb upload refused")
 
         return Response()
 
@@ -145,6 +148,7 @@ def dispatch_control():
         "model_id": "sd-sim",
         "params": {"prompt": "a test"},
         "upload": {"url": "http://api/api/v1/files/u/j-1.webp", "headers": {}},
+        "thumb_upload": {"url": "http://api/api/v1/files/u/j-1-thumb.webp", "headers": {}},
     }
 
 
@@ -156,9 +160,13 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
 
     asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, dispatch_control()))
 
+    assert len(FakeUpload.puts) == 2
     url, content = FakeUpload.puts[0]
     assert url.endswith("j-1.webp")
     assert content[:4] == b"RIFF"  # WebP container
+    thumb_url, thumb_content = FakeUpload.puts[1]
+    assert thumb_url.endswith("j-1-thumb.webp")
+    assert thumb_content[:4] == b"RIFF"
     reports = [json.loads(m) for m in socket.sent]
     types = [r["type"] for r in reports]
     assert "job_progress" in types
@@ -166,6 +174,25 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     done = next(r for r in reports if r["type"] == "job_done")
     assert done["width"] == 512 and done["height"] == 512
     assert done["gpu_ms"] >= 0
+    assert done["has_thumbnail"] is True
+
+
+def test_run_job_delivers_without_thumbnail_when_thumb_upload_fails(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    FakeUpload.fail_thumb = True
+    socket = FakeSocket()
+    try:
+        asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST,
+                            dispatch_control()))
+    finally:
+        FakeUpload.fail_thumb = False
+
+    reports = [json.loads(m) for m in socket.sent]
+    done = next(r for r in reports if r["type"] == "job_done")
+    assert "has_thumbnail" not in done
+    assert not any(r["type"] == "job_failed" for r in reports)
 
 
 def test_run_job_reports_failure(monkeypatch):

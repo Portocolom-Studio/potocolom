@@ -13,9 +13,12 @@ class Settings(BaseSettings):
     billing_enabled: bool = False
     log_format: Literal["plain", "json"] = "plain"
 
-    # PUBLIC_URL is where browsers and workers reach this API; upload targets
-    # and local asset URLs are built from it (docs/blueprint.md).
+    # PUBLIC_URL is where browsers reach this API; asset URLs in responses use it.
     public_url: str = "http://localhost:8000"
+
+    # INTERNAL_URL is where workers reach the API inside a container network.
+    # Defaults to PUBLIC_URL for native dev (docs/blueprint.md).
+    internal_url: str = ""
 
     # Defaults match deploy/compose/dev.yml for the native dev loop.
     database_url: str = "postgresql://potocolom:potocolom@localhost:5432/potocolom"
@@ -32,6 +35,10 @@ class Settings(BaseSettings):
 
     # Requeue or fail running jobs with no dispatch/progress for this long (issue #61).
     job_stall_seconds: float = 600.0
+
+    @property
+    def worker_url(self) -> str:
+        return (self.internal_url or self.public_url).rstrip("/")
 
     @property
     def auth_methods(self) -> list[str]:

@@ -16,7 +16,7 @@ from contextlib import suppress
 import httpx
 import websockets
 
-from worker.engine import Engine, SimulatedEngine
+from worker.engine import Engine, SimulatedEngine, make_thumbnail_webp
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
 from worker.settings import Settings, get_settings
 
@@ -39,6 +39,24 @@ class RegistrationRejected(Exception):
 BACKOFF_INITIAL = 1.0
 BACKOFF_CAP = 30.0
 BACKOFF_JITTER = 0.25
+
+
+class LockedWebSocket:
+    """Serialize ws.send calls; cheap insurance against concurrent writers."""
+
+    def __init__(self, ws) -> None:
+        self._ws = ws
+        self._lock = asyncio.Lock()
+
+    async def send(self, data) -> None:
+        async with self._lock:
+            await self._ws.send(data)
+
+    def __aiter__(self):
+        return self._ws.__aiter__()
+
+    def __getattr__(self, name):
+        return getattr(self._ws, name)
 
 
 def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
@@ -127,13 +145,32 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
         params = manifest.with_defaults(control.get("params") or {})
         result = await engine.generate(manifest, params, progress)
         upload = control["upload"]
+        thumb_upload = control.get("thumb_upload")
+        has_thumbnail = False
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
                                         headers=upload.get("headers") or {})
             response.raise_for_status()
-        await ws.send(json.dumps({"type": "job_done", "job_id": job_id,
-                                  "gpu_ms": result.gpu_ms,
-                                  "width": result.width, "height": result.height}))
+            if thumb_upload:
+                # Best effort: the full result is already stored, and the API
+                # only records a thumbnail when job_done reports one.
+                try:
+                    thumb_data = make_thumbnail_webp(result.data)
+                    response = await client.put(thumb_upload["url"], content=thumb_data,
+                                                headers=thumb_upload.get("headers") or {})
+                    response.raise_for_status()
+                    has_thumbnail = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("job %s thumbnail failed; delivering without one",
+                                     job_id)
+        done_msg: dict = {"type": "job_done", "job_id": job_id,
+                          "gpu_ms": result.gpu_ms,
+                          "width": result.width, "height": result.height}
+        if has_thumbnail:
+            done_msg["has_thumbnail"] = True
+        await ws.send(json.dumps(done_msg))
         logger.info("job %s done in %d gpu_ms", job_id, result.gpu_ms)
     except asyncio.CancelledError:
         raise
@@ -220,6 +257,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         raise RegistrationRejected(f"unexpected registration reply: {response}")
     logger.info("registered as %s", settings.worker_id)
 
+    ws = LockedWebSocket(ws)
     by_id = {manifest.id: manifest for manifest in manifests}
     runners: dict[uuid.UUID, SessionRunner] = {}
     jobs: set[asyncio.Task] = set()

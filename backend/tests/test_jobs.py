@@ -65,16 +65,21 @@ def test_generation_end_to_end():
 
             upload_path = urlsplit(dispatch["upload"]["url"]).path
             assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            thumb_path = urlsplit(dispatch["thumb_upload"]["url"]).path
+            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
 
             worker.send_json({"type": "job_progress", "job_id": job_id, "progress": 0.5})
             worker.send_json({"type": "job_done", "job_id": job_id,
-                              "gpu_ms": 1234, "width": 512, "height": 512})
+                              "gpu_ms": 1234, "width": 512, "height": 512,
+                              "has_thumbnail": True})
 
             job = poll_until(client, job_id, "succeeded")
             assert job["gpu_ms"] == 1234
             asset = job["assets"][0]
             assert asset["width"] == 512
+            assert asset["thumbnail_url"] is not None
             assert client.get(urlsplit(asset["url"]).path).content == b"webp-bytes"
+            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == b"thumb-bytes"
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
@@ -202,8 +207,11 @@ def test_recover_requeues_running_and_dispatches_queued():
 
             upload_path = urlsplit(first["upload"]["url"]).path
             assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            thumb_path = urlsplit(first["thumb_upload"]["url"]).path
+            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
             worker.send_json({"type": "job_done", "job_id": first_id,
-                              "gpu_ms": 1, "width": 512, "height": 512})
+                              "gpu_ms": 1, "width": 512, "height": 512,
+                              "has_thumbnail": True})
             poll_until(client, first_id, "succeeded")
 
             second = worker.receive_json()

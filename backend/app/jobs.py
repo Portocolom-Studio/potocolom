@@ -41,6 +41,7 @@ TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
 
 TERMINAL_STATES = ("succeeded", "failed")
+THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
 
 
 class Queues(Protocol):
@@ -73,6 +74,7 @@ queues: Queues = InProcessQueues()
 class InFlight:
     worker: realtime.Worker
     storage_key: str
+    thumb_storage_key: str
     user_id: uuid.UUID
 
 
@@ -81,7 +83,7 @@ lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
 
 def storage_key_in_flight(key: str) -> bool:
-    return any(entry.storage_key == key for entry in inflight.values())
+    return any(key in (entry.storage_key, entry.thumb_storage_key) for entry in inflight.values())
 
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
@@ -104,6 +106,7 @@ class GenerationRequest(BaseModel):
 
     model_id: str
     params: dict = Field(default_factory=dict)
+    source_asset_id: uuid.UUID | None = None
 
 
 @router.post("/api/v1/generations", status_code=202)
@@ -117,10 +120,16 @@ async def create_generation(
         raise HTTPException(status_code=404, detail="unknown model")
     if error := validate_params(manifest, request.params):
         raise HTTPException(status_code=422, detail=f"params: {error}")
+    source_asset_id = request.source_asset_id
+    if source_asset_id is not None:
+        source = await session.get(Asset, source_asset_id)
+        if source is None or source.user_id != user.id:
+            raise HTTPException(status_code=404, detail="unknown source asset")
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
     await registry.persist_manifests([manifest])
-    job = Job(user_id=user.id, model_id=request.model_id, params=request.params)
+    job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
+              source_asset_id=source_asset_id)
     session.add(job)
     await session.commit()
     await queues.push(JOB_QUEUE, str(job.id), TIER_DEFAULT)
@@ -129,11 +138,14 @@ async def create_generation(
 
 async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
     assets: dict[uuid.UUID, list[Asset]] = {}
+    thumbs_by_parent: dict[uuid.UUID, Asset] = {}
     if jobs:
         rows = await session.execute(select(Asset).where(Asset.job_id.in_([j.id for j in jobs])))
         for asset in rows.scalars():
             if asset.job_id is not None:
                 assets.setdefault(asset.job_id, []).append(asset)
+            if asset.parent_asset_id is not None and asset.storage_key.endswith("-thumb.webp"):
+                thumbs_by_parent[asset.parent_asset_id] = asset
     storage = get_storage()
     return [
         {
@@ -149,11 +161,14 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 {
                     "id": str(asset.id),
                     "url": await storage.url(asset.storage_key),
+                    "thumbnail_url": await storage.url(thumb.storage_key)
+                    if (thumb := thumbs_by_parent.get(asset.id)) is not None else None,
                     "mime": asset.mime,
                     "width": asset.width,
                     "height": asset.height,
                 }
                 for asset in assets.get(job.id, [])
+                if not asset.storage_key.endswith("-thumb.webp")
             ],
         }
         for job in jobs
@@ -337,11 +352,14 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         if worker is None:
             return False
         storage_key = f"{job.user_id}/{job.id}.webp"
+        thumb_storage_key = f"{job.user_id}/{job.id}-thumb.webp"
         target = await get_storage().upload_target(storage_key)
+        thumb_target = await get_storage().upload_target(thumb_storage_key)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.job_busy = True
-        inflight[job.id] = InFlight(worker=worker, storage_key=storage_key, user_id=job.user_id)
+        inflight[job.id] = InFlight(worker=worker, storage_key=storage_key,
+                                    thumb_storage_key=thumb_storage_key, user_id=job.user_id)
         last_progress_at[job_id] = time.monotonic()
         job.state = "running"
         try:
@@ -351,6 +369,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                 "model_id": job.model_id,
                 "params": job.params,
                 "upload": {"url": target.url, "headers": target.headers},
+                "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
             })
         except Exception:  # the socket is dead however the transport spells it
             if realtime.workers.get(worker.id) is worker:
@@ -395,15 +414,44 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 return
             job.state = "succeeded"
             job.gpu_ms = int(control.get("gpu_ms", 0))
-            session.add(Asset(
+            width = int(control.get("width", 0))
+            height = int(control.get("height", 0))
+            full = Asset(
                 user_id=entry.user_id,
                 job_id=job_id,
+                parent_asset_id=job.source_asset_id,
                 storage_key=entry.storage_key,
                 mime="image/webp",
-                width=int(control.get("width", 0)),
-                height=int(control.get("height", 0)),
-            ))
+                width=width,
+                height=height,
+            )
+            session.add(full)
+            await session.flush()
+            if control.get("has_thumbnail") is True:
+                edge = THUMBNAIL_MAX_EDGE
+                thumb_width = min(width, edge) if width else 0
+                thumb_height = min(height, edge) if height else 0
+                if width and height and max(width, height) > edge:
+                    scale = edge / max(width, height)
+                    thumb_width = int(width * scale)
+                    thumb_height = int(height * scale)
+                session.add(Asset(
+                    user_id=entry.user_id,
+                    job_id=job_id,
+                    parent_asset_id=full.id,
+                    storage_key=entry.thumb_storage_key,
+                    mime="image/webp",
+                    width=thumb_width,
+                    height=thumb_height,
+                ))
             await session.commit()
+        if control.get("has_thumbnail") is not True:
+            # A previous attempt may have uploaded a thumbnail this attempt
+            # did not report; drop the orphan blob rather than leak it.
+            try:
+                await get_storage().delete(entry.thumb_storage_key)
+            except Exception:
+                logger.debug("no orphaned thumbnail to remove for job %s", job_id)
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
