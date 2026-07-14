@@ -170,8 +170,12 @@ def test_stalled_job_requeues_once(monkeypatch):
                                  json={"model_id": "sd-test",
                                        "params": {"prompt": "stall"}}).json()["job_id"]
             assert worker.receive_json()["job_id"] == job_id
-            # Worker stays connected but sends no progress; stall requeues once.
+            # Worker stays connected but sends no progress; stall requeues once
+            # and the retry is dispatched back to the same connected worker.
             poll_until_attempt(client, job_id, 2, timeout=3.0)
+            redispatch = worker.receive_json()
+            assert redispatch["type"] == "dispatch_job"
+            assert redispatch["job_id"] == job_id
 
 
 @pytest.mark.db

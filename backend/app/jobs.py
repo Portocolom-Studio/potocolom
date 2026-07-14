@@ -280,7 +280,13 @@ async def sweep_stalled_jobs() -> None:
         live_progress.pop(job_id, None)
         last_progress_at.pop(job_id, None)
         entry.worker.job_busy = False
-        await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
+        try:
+            await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
+        except Exception:
+            # De-tracked above; hand the job to the lost_jobs conduit so the
+            # next dispatch step retries the requeue instead of stranding it.
+            lost_jobs.append(job_id)
+            raise
 
 
 async def dispatch_step() -> None:
