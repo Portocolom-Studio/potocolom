@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("potocolom.estimates")
 
 TIMINGS_PATH = Path(__file__).with_name("model_timings.json")
 
@@ -15,6 +18,8 @@ def _load_timings() -> dict[str, dict[str, int]]:
     try:
         raw = json.loads(TIMINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # Cached, so this logs once per process.
+        logger.warning("model_timings.json missing or invalid; estimates disabled")
         return {}
     if not isinstance(raw, dict):
         return {}
