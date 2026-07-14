@@ -29,6 +29,8 @@ FRAME_HEADER_BYTES = 17
 CLOSE_PROTOCOL_VIOLATION = 4000
 
 UPLOAD_TIMEOUT = 60.0
+# Heartbeat interval while a job runs without denoising progress (model load).
+PROGRESS_KEEPALIVE_SECONDS = 60.0
 
 
 class RegistrationRejected(Exception):
@@ -98,8 +100,11 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     Failures are reported, never raised: the connection outlives the job."""
     job_id = control["job_id"]
     progress_tasks: list[asyncio.Task[None]] = []
+    last_fraction = 0.0
 
     def progress(fraction: float) -> None:
+        nonlocal last_fraction
+        last_fraction = fraction
         progress_tasks.append(asyncio.create_task(send_progress(fraction)))
 
     async def send_progress(fraction: float) -> None:
@@ -107,6 +112,17 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
             await ws.send(json.dumps({"type": "job_progress", "job_id": job_id,
                                       "progress": round(fraction, 4)}))
 
+    async def progress_keepalive() -> None:
+        while True:
+            try:
+                await asyncio.sleep(PROGRESS_KEEPALIVE_SECONDS)
+                await send_progress(last_fraction)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("job %s progress keepalive failed", job_id)
+
+    keepalive_task = asyncio.create_task(progress_keepalive())
     try:
         params = manifest.with_defaults(control.get("params") or {})
         result = await engine.generate(manifest, params, progress)
@@ -129,6 +145,9 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
             await ws.send(json.dumps({"type": "job_failed", "job_id": job_id,
                                       "reason": str(error)}))
     finally:
+        keepalive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive_task
         if progress_tasks:
             await asyncio.gather(*progress_tasks, return_exceptions=True)
 
