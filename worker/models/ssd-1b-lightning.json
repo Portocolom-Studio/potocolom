@@ -1,25 +1,57 @@
 {
   "id": "ssd-1b-lightning",
   "name": "SSD-1B + Lightning",
-  "capabilities": ["text_to_image"],
+  "capabilities": [
+    "text_to_image"
+  ],
   "min_vram_gb": 8,
   "source": "segmind/SSD-1B",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "euler-trailing",
   "lora": "ByteDance/SDXL-Lightning/sdxl_lightning_8step_lora.safetensors",
   "benchmark_only": true,
-  "license_id": "apache-2.0",
-  "license_url": "https://huggingface.co/segmind/SSD-1B/blob/main/LICENSE",
+  "license_id": "openrail++",
+  "license_url": "https://huggingface.co/ByteDance/SDXL-Lightning",
   "parameters": {
     "type": "object",
     "properties": {
-      "prompt": { "type": "string" },
-      "steps": { "type": "integer", "minimum": 4, "maximum": 8, "default": 8 },
-      "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
-      "seed": { "type": "integer" },
-      "width": { "type": "integer", "enum": [768, 1024], "default": 1024 },
-      "height": { "type": "integer", "enum": [768, 1024], "default": 1024 }
+      "prompt": {
+        "type": "string"
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 4,
+        "maximum": 8,
+        "default": 8
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2,
+        "default": 0
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          768,
+          1024
+        ],
+        "default": 1024
+      }
     },
-    "required": ["prompt"]
+    "required": [
+      "prompt"
+    ]
   }
 }

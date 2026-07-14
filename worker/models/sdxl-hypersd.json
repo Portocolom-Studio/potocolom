@@ -7,6 +7,8 @@
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "euler-trailing",
   "lora": "ByteDance/Hyper-SD/Hyper-SDXL-8steps-lora.safetensors",
+  "license_id": "none-declared",
+  "license_url": "https://huggingface.co/ByteDance/Hyper-SD",
   "benchmark_only": true,
   "parameters": {
     "type": "object",

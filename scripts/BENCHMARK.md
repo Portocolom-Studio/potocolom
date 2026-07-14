@@ -25,9 +25,9 @@ sd-turbo and sdxl-turbo.
 
 | Model | License | VRAM | Resolution | Notes |
 | --- | --- | --- | --- | --- |
-| **sdxl-hypersd** | Open RAIL++-M + ByteDance Hyper-SD | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing |
+| **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
 | **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
-| **ssd-1b-lightning** | Apache 2.0 + Lightning | ~8 GB | 1024 | Experimental combo; load may fail |
+| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Experimental combo; load may fail |
 
 ```bash
 # Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
