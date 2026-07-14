@@ -80,6 +80,7 @@ export const studio = $state({
 	selectedId: null as string | null, // generation pinned in the viewer
 	history: [] as Generation[],
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
+	historyRecentFull: false, // true when the latest API page hit the limit (before failed filter)
 	historyHasMore: false,
 	historyExtended: false,
 	starredIds: loadStarredIds() as string[],
@@ -115,14 +116,14 @@ export async function loadHistory(): Promise<void> {
 		await loadStarredGenerations();
 		return;
 	}
-	const recent = preserveAssetUrls(
-		withoutFailed((await response.json()) as Generation[]),
-		studio.history
-	);
+	const page = (await response.json()) as Generation[];
+	const recentFull = page.length === HISTORY_LIMIT;
+	const recent = preserveAssetUrls(withoutFailed(page), studio.history);
 	studio.historyRecent = recent;
-	studio.historyHasMore = recent.length === HISTORY_LIMIT;
+	studio.historyRecentFull = recentFull;
 	if (!studio.historyExtended) {
 		studio.history = recent;
+		studio.historyHasMore = recentFull;
 		await loadStarredGenerations();
 		return;
 	}
@@ -144,13 +145,14 @@ export async function loadOlderHistory(): Promise<boolean> {
 	const fetchPage = async (query: string) => {
 		const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}&${query}`);
 		if (!response.ok) return null;
-		return withoutFailed((await response.json()) as Generation[]);
+		const raw = (await response.json()) as Generation[];
+		return { raw, items: withoutFailed(raw) };
 	};
 
-	let page = await fetchPage(`cursor=${oldest.id}`);
-	if (page === null) return false;
+	const result = await fetchPage(`cursor=${oldest.id}`);
+	if (result === null) return false;
 
-	let unique = page.filter((generation) => !existing.has(generation.id));
+	const unique = result.items.filter((generation) => !existing.has(generation.id));
 
 	if (unique.length === 0) {
 		studio.historyHasMore = false;
@@ -158,7 +160,7 @@ export async function loadOlderHistory(): Promise<boolean> {
 	}
 
 	studio.history = [...studio.history, ...unique];
-	studio.historyHasMore = page.length === HISTORY_LIMIT;
+	studio.historyHasMore = result.raw.length === HISTORY_LIMIT;
 	studio.historyExtended = studio.history.length > studio.historyRecent.length;
 	await loadStarredGenerations();
 	return true;
@@ -226,7 +228,7 @@ export async function loadStarredGenerations(): Promise<void> {
 export async function resetHistoryToRecent(): Promise<void> {
 	studio.history = studio.historyRecent;
 	studio.historyExtended = false;
-	studio.historyHasMore = studio.historyRecent.length === HISTORY_LIMIT;
+	studio.historyHasMore = studio.historyRecentFull;
 	await loadStarredGenerations();
 }
 
