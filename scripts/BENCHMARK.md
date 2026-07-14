@@ -16,17 +16,17 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
 | **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
+| **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Realtime drawing (issue #84) |
 
 ## License-safe turbo candidates (benchmark reference only)
 
-Issue #75: evaluate Hyper-SD and VegaRT against the Stability turbo anchors before
-promoting either to the studio. Manifests set `benchmark_only: true` like
-sd-turbo and sdxl-turbo.
+Issue #75: evaluate Hyper-SD against the Stability turbo anchors. VegaRT was
+promoted to the product in issue #84; the remaining rows stay
+`benchmark_only: true` like sd-turbo and sdxl-turbo.
 
 | Model | License | VRAM | Resolution | Notes |
 | --- | --- | --- | --- | --- |
 | **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
-| **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
 | **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Experimental combo; load may fail |
 
 ```bash
@@ -58,23 +58,37 @@ held ~14 GB VRAM; stop competing GPU workloads before benchmarking.
 | --- | ---: | --- | --- |
 | sd-turbo | 345 | 512 / 2 | Benchmark anchor (Stability cap) |
 | sdxl-turbo | 296 | 512 / 1 | Benchmark anchor (Stability cap) |
-| **vega-rt** | **381** | 512 / 2 | **License-clean turbo-class winner** - follow-up PR to promote |
+| **vega-rt** | **381** | 512 / 2 (t2i) | Promoted in #84 (license-clean realtime) |
 | sdxl-fast | 4005 | 1024 / 8 | Open baseline (Lightning) |
 | sdxl-hypersd | 3987 | 1024 / 8 | Benchmark only - LoRA has no declared license |
 | ssd-1b | 10034 | 1024 / 20 | Batch tier, not realtime |
 
-**Conclusion:** No product manifest in #75. VegaRT (Apache 2.0) matches
-turbo-class latency at 512 px (~381 ms median vs ~345 ms sd-turbo) and is the
-candidate for a follow-up promotion PR with `realtime` capability and measured
-`min_vram_gb`. Hyper-SD stays benchmark-only (license gap on the LoRA weights;
-~4 s @ 1024 is on par with Lightning, not a license-clean turbo win). Stability
-Community models remain the capped commercial anchors.
+**Conclusion:** VegaRT (Apache 2.0) matches turbo-class t2i latency at 512 px
+(~381 ms median vs ~345 ms sd-turbo) and was promoted in #84. Hyper-SD stays
+benchmark-only (license gap on the LoRA weights; ~4 s @ 1024 is on par with
+Lightning, not a license-clean turbo win). Stability Community models remain the
+capped commercial anchors.
 
 **ssd-1b-lightning** solo run (`data/benchmark/ssd-1b-lightning-run/`, clean GPU,
 2026-07-14): **load succeeded** - SDXL Lightning LoRA fuses onto the pruned
 SSD-1B UNet. 3/3 @ 1024/8step, median **2777 ms** gpu_ms (vs ~10 s for plain
 ssd-1b @ 1024/20). Faster than Lightning-on-SDXL-base at 1024 but still batch
 tier, not turbo-class; stays `benchmark_only` unless promoted separately.
+
+### Issue #84 realtime frame gate (RX 7600 XT, 2026-07-14)
+
+Clean GPU (~13.4 GB free VRAM). `engine.frame` img2i path @ 512 px, strength
+0.7, after model load:
+
+| Metric | Value |
+| --- | ---: |
+| Frame 1 (warmup) | 669 ms |
+| Frames 2-5 | 454, 452, 444, 442 ms |
+| **Warm median** | **452 ms (~2.2 fps)** |
+
+Within the M3 realtime bar (2-4 fps). `model_timings.json` keeps the t2i
+baseline (381 ms @ 512/2) for job estimates; realtime frames are img2i and run
+slightly slower.
 
 ## Capped commercial models (benchmark reference only)
 
