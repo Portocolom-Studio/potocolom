@@ -15,7 +15,7 @@ No annual revenue cap. Safe to publish on `/benchmark` without qualification.
 | **sdxl-base** | Open RAIL++-M | ~8 GB tight | 768 / 1024 | Highest quality |
 | **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
 | **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
-| **ssd-1b-lightning** | Apache 2.0 + Lightning LoRA | ~8 GB | 1024 | Fast batch @ 1024 (~2.8 s, issue #85) |
+| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Fast batch @ 1024 (~2.8 s, issue #85) |
 | **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
 
 ## License-safe turbo candidates (benchmark reference only)
@@ -28,7 +28,6 @@ sd-turbo and sdxl-turbo.
 | --- | --- | --- | --- | --- |
 | **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
 | **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Segmind-Vega + VegaRT LCM LoRA |
-| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Experimental combo; promoted in #85 |
 
 ```bash
 # Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
