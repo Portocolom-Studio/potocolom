@@ -22,6 +22,8 @@
 		stepsSpec,
 		valueToNorm
 	} from '$lib/model-params';
+	import { formatMs } from '$lib/benchmark';
+	import { estimateGpuMs } from '$lib/gpu-estimate';
 	import {
 		generationById,
 		isStarred,
@@ -48,6 +50,7 @@
 	let count = $state('1');
 	let normsReady = $state(false);
 	let seed = $state('');
+	let sourceAssetId = $state<string | null>(null);
 	let errorText = $state('');
 
 	// The viewer shows the clicked generation, or the newest finished one.
@@ -78,6 +81,11 @@
 	// The manifest schema decides which resolutions a model supports
 	// (docs/architecture.md, model manifests); no enum means unconstrained.
 	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
+	const canEdit = $derived(
+		shown !== null &&
+			shown.assets.length > 0 &&
+			(selectedModel?.capabilities.includes('image_to_image') ?? false)
+	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
 	const sizeOptions = $derived(modelSizeOptions(selectedModel));
@@ -85,6 +93,20 @@
 	const guidanceValue = $derived(normToValue(guidanceNorm, guidanceRange));
 	const sizeValue = $derived(sizeOptions[sizeIndex] ?? sizeOptions[0]);
 	const sizeKey = $derived(String(sizeValue));
+	const gpuEstimateMs = $derived(
+		estimateGpuMs(selectedModel, {
+			steps: stepsValue,
+			width: sizeValue,
+			height: sizeValue
+		})
+	);
+	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
+
+	$effect(() => {
+		if (!selectedModel?.capabilities.includes('image_to_image')) {
+			sourceAssetId = null;
+		}
+	});
 
 	$effect(() => {
 		if (!selectedModel) return;
@@ -139,7 +161,13 @@
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ model_id: studio.modelId, params })
+				body: JSON.stringify({
+					model_id: studio.modelId,
+					params,
+					...(sourceAssetId && selectedModel?.capabilities.includes('image_to_image')
+						? { source_asset_id: sourceAssetId }
+						: {})
+				})
 			});
 			if (!response.ok) {
 				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -157,6 +185,17 @@
 
 	function starShown(): void {
 		if (shown !== null) toggleStarred(shown.id);
+	}
+
+	function editShown(): void {
+		if (shown === null || shown.assets.length === 0) return;
+		const assetId = shown.assets[0].id;
+		if (sourceAssetId === assetId) {
+			sourceAssetId = null;
+			return;
+		}
+		sourceAssetId = assetId;
+		if (shownPrompt !== '') studio.prompt = shownPrompt;
 	}
 
 	function onSizeChange(value: string): void {
@@ -180,7 +219,11 @@
 						<Label for="gen-model">{t('app.gen.model')}</Label>
 						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
 							{#each studio.models as model (model.id)}
-								<option value={model.id}>{model.name}</option>
+								<option value={model.id}>
+									{model.name}{model.estimated_gpu_ms_default != null
+										? ` (~${formatMs(model.estimated_gpu_ms_default)})`
+										: ''}
+								</option>
 							{/each}
 						</select>
 					</div>
@@ -245,7 +288,7 @@
 						</div>
 					{/if}
 					<Button type="submit" disabled={studio.prompt.trim() === ''}>
-						{t('app.gen.generate')}
+						{t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
 					</Button>
 					{#if working > 0}
 						<p class="text-muted-foreground text-sm">
@@ -284,11 +327,11 @@
 							</Button>
 							<Button
 								type="button"
-								variant="outline"
+								variant={sourceAssetId !== null ? 'secondary' : 'outline'}
 								size="sm"
 								class="justify-start"
-								disabled
-								title={t('app.gen.coming_soon')}
+								disabled={!canEdit}
+								onclick={editShown}
 							>
 								<PencilIcon />
 								{t('app.gen.edit')}

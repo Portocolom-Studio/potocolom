@@ -24,7 +24,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		min_vram_gb: 10,
 		resolutions: '768, 1024',
 		step_range: '10-50',
-		capabilities: ['text_to_image'],
+		capabilities: ['text_to_image', 'image_to_image'],
 		license: 'CreativeML Open RAIL++-M',
 		commercial: 'Unrestricted (RAIL use policy)',
 		studio: true,

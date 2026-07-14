@@ -12,6 +12,7 @@ import asyncio
 import heapq
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db, realtime, registry
 from app.auth import current_user
 from app.manifests import validate_params
+from app.settings import get_settings
 from app.storage import get_storage
 from app.tables import Asset, Job, User
 
@@ -39,6 +41,7 @@ TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
 
 TERMINAL_STATES = ("succeeded", "failed")
+THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
 
 
 class Queues(Protocol):
@@ -71,6 +74,7 @@ queues: Queues = InProcessQueues()
 class InFlight:
     worker: realtime.Worker
     storage_key: str
+    thumb_storage_key: str
     user_id: uuid.UUID
 
 
@@ -79,11 +83,13 @@ lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
 
 def storage_key_in_flight(key: str) -> bool:
-    return any(entry.storage_key == key for entry in inflight.values())
+    return any(key in (entry.storage_key, entry.thumb_storage_key) for entry in inflight.values())
 
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
 live_progress: dict[uuid.UUID, float] = {}
+# Monotonic timestamp of the last dispatch or job_progress for each inflight job.
+last_progress_at: dict[uuid.UUID, float] = {}
 
 # SSE subscribers per job; events are transient, the job row is the truth.
 subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}
@@ -100,6 +106,7 @@ class GenerationRequest(BaseModel):
 
     model_id: str
     params: dict = Field(default_factory=dict)
+    source_asset_id: uuid.UUID | None = None
 
 
 @router.post("/api/v1/generations", status_code=202)
@@ -113,10 +120,18 @@ async def create_generation(
         raise HTTPException(status_code=404, detail="unknown model")
     if error := validate_params(manifest, request.params):
         raise HTTPException(status_code=422, detail=f"params: {error}")
+    source_asset_id = request.source_asset_id
+    if source_asset_id is not None:
+        source = await session.get(Asset, source_asset_id)
+        if source is None or source.user_id != user.id:
+            raise HTTPException(status_code=404, detail="unknown source asset")
+        if "image_to_image" not in manifest.capabilities:
+            raise HTTPException(status_code=422, detail="model does not support image_to_image")
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
     await registry.persist_manifests([manifest])
-    job = Job(user_id=user.id, model_id=request.model_id, params=request.params)
+    job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
+              source_asset_id=source_asset_id)
     session.add(job)
     await session.commit()
     await queues.push(JOB_QUEUE, str(job.id), TIER_DEFAULT)
@@ -125,11 +140,14 @@ async def create_generation(
 
 async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
     assets: dict[uuid.UUID, list[Asset]] = {}
+    thumbs_by_parent: dict[uuid.UUID, Asset] = {}
     if jobs:
         rows = await session.execute(select(Asset).where(Asset.job_id.in_([j.id for j in jobs])))
         for asset in rows.scalars():
             if asset.job_id is not None:
                 assets.setdefault(asset.job_id, []).append(asset)
+            if asset.parent_asset_id is not None and asset.storage_key.endswith("-thumb.webp"):
+                thumbs_by_parent[asset.parent_asset_id] = asset
     storage = get_storage()
     return [
         {
@@ -137,6 +155,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "model_id": job.model_id,
             "params": job.params,
             "state": job.state,
+            "attempt": job.attempt,
             "progress": live_progress.get(job.id) if job.state == "running" else None,
             "gpu_ms": job.gpu_ms,
             "created_at": job.created_at.isoformat(),
@@ -144,11 +163,14 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 {
                     "id": str(asset.id),
                     "url": await storage.url(asset.storage_key),
+                    "thumbnail_url": await storage.url(thumb.storage_key)
+                    if (thumb := thumbs_by_parent.get(asset.id)) is not None else None,
                     "mime": asset.mime,
                     "width": asset.width,
                     "height": asset.height,
                 }
                 for asset in assets.get(job.id, [])
+                if not asset.storage_key.endswith("-thumb.webp")
             ],
         }
         for job in jobs
@@ -259,11 +281,37 @@ async def dispatch_loop() -> None:
             logger.exception("dispatch step failed")
 
 
+async def sweep_stalled_jobs() -> None:
+    """Requeue or fail jobs whose worker stopped reporting progress (issue #61)."""
+    now = time.monotonic()
+    stall = get_settings().job_stall_seconds
+    for job_id in list(inflight):
+        entry = inflight.pop(job_id, None)
+        if entry is None:
+            continue
+        # Missing stamp means unsweepable; treat as stalled (issue #61).
+        last = last_progress_at.get(job_id, 0.0)
+        if now - last < stall:
+            inflight[job_id] = entry
+            continue
+        live_progress.pop(job_id, None)
+        last_progress_at.pop(job_id, None)
+        entry.worker.job_busy = False
+        try:
+            await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
+        except Exception:
+            # De-tracked above; hand the job to the lost_jobs conduit so the
+            # next dispatch step retries the requeue instead of stranding it.
+            lost_jobs.append(job_id)
+            raise
+
+
 async def dispatch_step() -> None:
     if db.session_factory is None:
         return
     while lost_jobs:
         await requeue_or_fail(lost_jobs.pop(0), "worker disconnected")
+    await sweep_stalled_jobs()
     while True:
         job_id = await queues.pop(JOB_QUEUE)
         if job_id is None:
@@ -306,25 +354,45 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         if worker is None:
             return False
         storage_key = f"{job.user_id}/{job.id}.webp"
+        thumb_storage_key = f"{job.user_id}/{job.id}-thumb.webp"
         target = await get_storage().upload_target(storage_key)
+        thumb_target = await get_storage().upload_target(thumb_storage_key)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.job_busy = True
-        inflight[job.id] = InFlight(worker=worker, storage_key=storage_key, user_id=job.user_id)
+        inflight[job.id] = InFlight(worker=worker, storage_key=storage_key,
+                                    thumb_storage_key=thumb_storage_key, user_id=job.user_id)
+        last_progress_at[job_id] = time.monotonic()
         job.state = "running"
+        dispatch_msg: dict = {
+            "type": "dispatch_job",
+            "job_id": str(job.id),
+            "model_id": job.model_id,
+            "params": job.params,
+            "upload": {"url": target.url, "headers": target.headers},
+            "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
+        }
+        if job.source_asset_id is not None:
+            source = await session.get(Asset, job.source_asset_id)
+            if source is None:
+                inflight.pop(job.id, None)
+                worker.job_busy = False
+                job.state = "failed"
+                await session.commit()
+                publish(job_id, {"state": "failed", "reason": "source asset not found"})
+                logger.warning("job %s failed: source asset not found", job_id)
+                return True
+            dispatch_msg["input"] = {
+                "url": await get_storage().worker_fetch_url(source.storage_key),
+            }
         try:
-            await worker.ws.send_json({
-                "type": "dispatch_job",
-                "job_id": str(job.id),
-                "model_id": job.model_id,
-                "params": job.params,
-                "upload": {"url": target.url, "headers": target.headers},
-            })
+            await worker.ws.send_json(dispatch_msg)
         except Exception:  # the socket is dead however the transport spells it
             if realtime.workers.get(worker.id) is worker:
                 del realtime.workers[worker.id]  # what the reaper would conclude
             if inflight.pop(job.id, None) is None:
                 return True  # the disconnect handler beat us to it and requeued
+            last_progress_at.pop(job.id, None)
             worker.job_busy = False
             return False  # session rolls back, the job stays queued
         await session.commit()
@@ -335,16 +403,21 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = uuid.UUID(control["job_id"])
+    # Only the worker recorded for the attempt may speak for the job: after a
+    # stall requeue the old worker may still be connected and reporting.
+    current = inflight.get(job_id)
+    if current is None or current.worker is not worker:
+        return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        if job_id not in inflight:
-            return
         live_progress[job_id] = float(control.get("progress") or 0.0)
+        last_progress_at[job_id] = time.monotonic()
         publish(job_id, {"state": "running", "progress": control.get("progress")})
         return
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
+    last_progress_at.pop(job_id, None)
     if entry is None:
-        return  # stale report from a previous incarnation
+        return  # finished concurrently
     worker.job_busy = False
     if db.session_factory is None:
         logger.warning("job %s finished on the worker but the database is unavailable",
@@ -357,15 +430,44 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 return
             job.state = "succeeded"
             job.gpu_ms = int(control.get("gpu_ms", 0))
-            session.add(Asset(
+            width = int(control.get("width", 0))
+            height = int(control.get("height", 0))
+            full = Asset(
                 user_id=entry.user_id,
                 job_id=job_id,
+                parent_asset_id=job.source_asset_id,
                 storage_key=entry.storage_key,
                 mime="image/webp",
-                width=int(control.get("width", 0)),
-                height=int(control.get("height", 0)),
-            ))
+                width=width,
+                height=height,
+            )
+            session.add(full)
+            await session.flush()
+            if control.get("has_thumbnail") is True:
+                edge = THUMBNAIL_MAX_EDGE
+                thumb_width = min(width, edge) if width else 0
+                thumb_height = min(height, edge) if height else 0
+                if width and height and max(width, height) > edge:
+                    scale = edge / max(width, height)
+                    thumb_width = int(width * scale)
+                    thumb_height = int(height * scale)
+                session.add(Asset(
+                    user_id=entry.user_id,
+                    job_id=job_id,
+                    parent_asset_id=full.id,
+                    storage_key=entry.thumb_storage_key,
+                    mime="image/webp",
+                    width=thumb_width,
+                    height=thumb_height,
+                ))
             await session.commit()
+        if control.get("has_thumbnail") is not True:
+            # A previous attempt may have uploaded a thumbnail this attempt
+            # did not report; drop the orphan blob rather than leak it.
+            try:
+                await get_storage().delete(entry.thumb_storage_key)
+            except Exception:
+                logger.debug("no orphaned thumbnail to remove for job %s", job_id)
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
@@ -416,6 +518,7 @@ def on_worker_lost(worker: realtime.Worker) -> None:
         if entry.worker is worker:
             del inflight[job_id]
             live_progress.pop(job_id, None)
+            last_progress_at.pop(job_id, None)
             lost_jobs.append(job_id)
 
 

@@ -17,7 +17,7 @@ from app.tables import Job, Model
 MANIFEST = {
     "id": "sd-test",
     "name": "SD Test",
-    "capabilities": ["text_to_image"],
+    "capabilities": ["text_to_image", "image_to_image"],
     "parameters": {
         "type": "object",
         "properties": {"prompt": {"type": "string"}},
@@ -26,10 +26,16 @@ MANIFEST = {
     "min_vram_gb": 0,
 }
 
+MANIFEST_T2I_ONLY = {
+    **MANIFEST,
+    "id": "sd-t2i",
+    "capabilities": ["text_to_image"],
+}
 
-def fleet_hello(ws, worker_id):
+
+def fleet_hello(ws, worker_id, manifest=MANIFEST):
     ws.send_json({"type": "hello", "protocol_version": PROTOCOL_VERSION,
-                  "worker_id": worker_id, "models": [MANIFEST], "realtime_slots": 1})
+                  "worker_id": worker_id, "models": [manifest], "realtime_slots": 1})
     assert ws.receive_json()["type"] == "registered"
 
 
@@ -65,16 +71,21 @@ def test_generation_end_to_end():
 
             upload_path = urlsplit(dispatch["upload"]["url"]).path
             assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            thumb_path = urlsplit(dispatch["thumb_upload"]["url"]).path
+            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
 
             worker.send_json({"type": "job_progress", "job_id": job_id, "progress": 0.5})
             worker.send_json({"type": "job_done", "job_id": job_id,
-                              "gpu_ms": 1234, "width": 512, "height": 512})
+                              "gpu_ms": 1234, "width": 512, "height": 512,
+                              "has_thumbnail": True})
 
             job = poll_until(client, job_id, "succeeded")
             assert job["gpu_ms"] == 1234
             asset = job["assets"][0]
             assert asset["width"] == 512
+            assert asset["thumbnail_url"] is not None
             assert client.get(urlsplit(asset["url"]).path).content == b"webp-bytes"
+            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == b"thumb-bytes"
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
@@ -148,6 +159,36 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     return queued_id, running_id
 
 
+def poll_until_attempt(client, job_id, attempt: int, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/v1/generations/{job_id}").json()
+        if job.get("attempt") == attempt:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} never reached attempt {attempt}")
+
+
+@pytest.mark.db
+def test_stalled_job_requeues_once(monkeypatch):
+    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-stall")
+            job_id = client.post("/api/v1/generations",
+                                 json={"model_id": "sd-test",
+                                       "params": {"prompt": "stall"}}).json()["job_id"]
+            assert worker.receive_json()["job_id"] == job_id
+            # Worker stays connected but sends no progress; stall requeues once
+            # and the retry is dispatched back to the same connected worker.
+            poll_until_attempt(client, job_id, 2, timeout=3.0)
+            redispatch = worker.receive_json()
+            assert redispatch["type"] == "dispatch_job"
+            assert redispatch["job_id"] == job_id
+
+
 @pytest.mark.db
 def test_recover_requeues_running_and_dispatches_queued():
     async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
@@ -172,11 +213,82 @@ def test_recover_requeues_running_and_dispatches_queued():
 
             upload_path = urlsplit(first["upload"]["url"]).path
             assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            thumb_path = urlsplit(first["thumb_upload"]["url"]).path
+            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
             worker.send_json({"type": "job_done", "job_id": first_id,
-                              "gpu_ms": 1, "width": 512, "height": 512})
+                              "gpu_ms": 1, "width": 512, "height": 512,
+                              "has_thumbnail": True})
             poll_until(client, first_id, "succeeded")
 
             second = worker.receive_json()
             assert second["type"] == "dispatch_job"
             second_id = second["job_id"]
             assert {first_id, second_id} == {str(queued_id), str(running_id)}
+
+
+@pytest.mark.db
+def test_img2img_dispatch_includes_input_url():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-i2i")
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-test",
+                                        "params": {"prompt": "a lighthouse"}})
+            assert created.status_code == 202
+            source_job_id = created.json()["job_id"]
+
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            assert client.put(upload_path, content=b"source-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": source_job_id,
+                              "gpu_ms": 100, "width": 512, "height": 512})
+            source_job = poll_until(client, source_job_id, "succeeded")
+            source_asset_id = source_job["assets"][0]["id"]
+
+            edit = client.post("/api/v1/generations",
+                               json={"model_id": "sd-test",
+                                     "params": {"prompt": "a red lighthouse"},
+                                     "source_asset_id": source_asset_id})
+            assert edit.status_code == 202
+            edit_job_id = edit.json()["job_id"]
+
+            i2i_dispatch = worker.receive_json()
+            assert i2i_dispatch["type"] == "dispatch_job"
+            assert i2i_dispatch["job_id"] == edit_job_id
+            assert "input" in i2i_dispatch
+            input_path = urlsplit(i2i_dispatch["input"]["url"]).path
+            assert client.get(input_path).content == b"source-webp"
+
+            assert client.put(urlsplit(i2i_dispatch["upload"]["url"]).path,
+                              content=b"edited-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": edit_job_id,
+                              "gpu_ms": 200, "width": 512, "height": 512})
+            edit_job = poll_until(client, edit_job_id, "succeeded")
+            assert edit_job["assets"][0]["url"].endswith(".webp")
+
+
+@pytest.mark.db
+def test_img2img_rejects_model_without_capability():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-i2i-cap", MANIFEST_T2I_ONLY)
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-t2i",
+                                        "params": {"prompt": "seed"}})
+            job_id = created.json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            assert client.put(upload_path, content=b"source").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            source_job = poll_until(client, job_id, "succeeded")
+            source_asset_id = source_job["assets"][0]["id"]
+
+            rejected = client.post("/api/v1/generations",
+                                   json={"model_id": "sd-t2i",
+                                         "params": {"prompt": "edit"},
+                                         "source_asset_id": source_asset_id})
+            assert rejected.status_code == 422
+            assert "image_to_image" in rejected.json()["detail"]
