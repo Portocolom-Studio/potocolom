@@ -39,6 +39,7 @@ TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
 
 TERMINAL_STATES = ("succeeded", "failed")
+THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
 
 
 class Queues(Protocol):
@@ -405,10 +406,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             session.add(full)
             await session.flush()
             if control.get("has_thumbnail") is True:
-                thumb_width = min(width, 320) if width else 0
-                thumb_height = min(height, 320) if height else 0
-                if width and height and max(width, height) > 320:
-                    scale = 320 / max(width, height)
+                edge = THUMBNAIL_MAX_EDGE
+                thumb_width = min(width, edge) if width else 0
+                thumb_height = min(height, edge) if height else 0
+                if width and height and max(width, height) > edge:
+                    scale = edge / max(width, height)
                     thumb_width = int(width * scale)
                     thumb_height = int(height * scale)
                 session.add(Asset(
@@ -421,6 +423,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                     height=thumb_height,
                 ))
             await session.commit()
+        if control.get("has_thumbnail") is not True:
+            # A previous attempt may have uploaded a thumbnail this attempt
+            # did not report; drop the orphan blob rather than leak it.
+            try:
+                await get_storage().delete(entry.thumb_storage_key)
+            except Exception:
+                logger.debug("no orphaned thumbnail to remove for job %s", job_id)
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
