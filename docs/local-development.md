@@ -8,7 +8,7 @@ The reference development desktop, measured:
 
 | Resource | Value | Implication |
 |---|---|---|
-| GPU | AMD Radeon RX 7600 class, 8 GB VRAM | ROCm target, not CUDA; fits SD-Turbo class models at min_vram_gb 8 |
+| GPU | AMD Radeon RX 7600 class, 16 GB VRAM | ROCm target, not CUDA; reference benchmarks and local studio dev |
 | CPU | 32 threads | comfortably runs the full cloud simulation plus native dev servers |
 | RAM | 61 GiB | no constraint |
 | Disk | 674 GB free | model weights (5 to 10 GB each) and images are fine |
