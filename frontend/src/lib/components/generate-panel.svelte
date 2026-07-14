@@ -389,7 +389,7 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-		<div class="shrink-0">
+		<div class="min-w-0 shrink-0">
 			<HistoryStrip />
 		</div>
 	</div>
