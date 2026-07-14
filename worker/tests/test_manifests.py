@@ -54,6 +54,9 @@ def test_shipped_manifests_load():
     assert "realtime" in vega.capabilities
     assert "image_to_image" in vega.capabilities
     assert "strength" in vega.parameters["properties"]
+    lightning = next(m for m in manifests if m.id == "ssd-1b-lightning")
+    assert not lightning.benchmark_only
+    assert lightning.scheduler == "euler-trailing"
 
 
 def test_unknown_manifest_field_is_loud(tmp_path):
