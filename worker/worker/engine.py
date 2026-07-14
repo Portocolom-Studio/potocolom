@@ -201,6 +201,12 @@ class DiffusersEngine:
         self._last_used[model_id] = time.monotonic()
 
     def _ensure_vram(self, manifest: Manifest) -> None:
+        if self.memory_mode == "auto" and manifest.id not in self._rungs:
+            # Prefer evicting cold residents over degrading the new model to
+            # an offload rung: make room for full residency before picking.
+            wanted = rung_vram_bytes(manifest.min_vram_gb, "full")
+            if self._free_vram_bytes() < wanted:
+                self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
         rung = self._pick_rung(manifest)
         required = rung_vram_bytes(manifest.min_vram_gb, rung)
         if self._free_vram_bytes() < required:
@@ -247,7 +253,10 @@ class DiffusersEngine:
             offload_dir = str(Path(self.models_dir) / ".offload" / manifest.id)
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
         pipeline.enable_group_offload(
-            onload_device=self.device,
+            onload_device=self.torch.device(self.device),
+            # leaf_level streams layer by layer and needs no block sizing;
+            # block_level raises when num_blocks_per_group is unset.
+            offload_type="leaf_level",
             use_stream=True,
             offload_to_disk_path=offload_dir,
         )
@@ -331,6 +340,8 @@ class DiffusersEngine:
 
     def _evict_all(self) -> None:
         self._pipelines.clear()
+        self._rungs.clear()
+        self._last_used.clear()
         self._free_gpu_cache()
 
     async def load_model(self, manifest: Manifest) -> int:
