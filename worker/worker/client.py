@@ -254,7 +254,8 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         "protocol_version": PROTOCOL_VERSION,
         "worker_id": settings.worker_id,
         "models": wire_manifests,
-        "realtime_slots": engine.effective_realtime_slots(manifests, settings.realtime_slots),
+        "realtime_slots": engine.effective_realtime_slots(wire_manifests,
+                                                           settings.realtime_slots),
     }))
     try:
         response = json.loads(await ws.recv())

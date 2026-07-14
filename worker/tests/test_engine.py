@@ -70,7 +70,8 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
         min_vram_gb=10,
     )
     with patch.object(DiffusersEngine, "_free_vram_bytes", return_value=3 * 1024**3):
-        assert engine.effective_realtime_slots([manifest], 2) == 0
+        wire = engine.measured_manifests([manifest])
+        assert engine.effective_realtime_slots(wire, 2) == 0
 
 
 def test_evict_cold_removes_oldest_first():

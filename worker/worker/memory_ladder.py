@@ -40,7 +40,8 @@ def select_rung(
     *,
     on_cpu: bool,
 ) -> MemoryRung:
-    """Pick the highest rung that fits, or the pinned rung when not auto."""
+    """Pick the highest rung that fits (group offload is the floor even when
+    free memory is below its working set), or the pinned rung when not auto."""
     if on_cpu:
         return "full"
     if memory_mode == "full":

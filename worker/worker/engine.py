@@ -55,7 +55,7 @@ class Engine(Protocol):
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]: ...
 
-    def effective_realtime_slots(self, manifests: list[Manifest], configured: int) -> int: ...
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
 
     async def load_model(self, manifest: Manifest) -> int: ...
 
@@ -100,10 +100,10 @@ class SimulatedEngine:
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
         return measured_wire_manifests(manifests, 1 << 60, "full", on_cpu=True)
 
-    def effective_realtime_slots(self, manifests: list[Manifest], configured: int) -> int:
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
         from worker.memory_ladder import effective_realtime_slots
 
-        return effective_realtime_slots(self.measured_manifests(manifests), configured)
+        return effective_realtime_slots(wire_manifests, configured)
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -189,10 +189,10 @@ class DiffusersEngine:
             on_cpu=self.device != "cuda",
         )
 
-    def effective_realtime_slots(self, manifests: list[Manifest], configured: int) -> int:
+    def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
         from worker.memory_ladder import effective_realtime_slots
 
-        return effective_realtime_slots(self.measured_manifests(manifests), configured)
+        return effective_realtime_slots(wire_manifests, configured)
 
     def model_rung(self, model_id: str) -> MemoryRung | None:
         return self._rungs.get(model_id)
@@ -250,7 +250,8 @@ class DiffusersEngine:
             return pipeline
         offload_dir = None
         if self.models_dir:
-            offload_dir = str(Path(self.models_dir) / ".offload" / manifest.id)
+            safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
+            offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
         pipeline.enable_group_offload(
             onload_device=self.torch.device(self.device),
@@ -493,6 +494,8 @@ class DiffusersEngine:
             return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
 
     def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+        if "realtime" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support realtime frames")
         if self._pick_rung(manifest) != "full":
             raise ValueError(f"model {manifest.id} is not fully resident for realtime")
         canvas = Image.open(io.BytesIO(payload)).convert("RGB")
