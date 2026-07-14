@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
 
+    # Requeue or fail running jobs with no dispatch/progress for this long (issue #61).
+    job_stall_seconds: float = 600.0
+
     @property
     def worker_url(self) -> str:
         return (self.internal_url or self.public_url).rstrip("/")
