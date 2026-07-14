@@ -25,6 +25,7 @@ from worker.manifests import Manifest
 from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
+    measured_wire_manifest,
     measured_wire_manifests,
     rung_vram_bytes,
     select_rung,
@@ -184,10 +185,20 @@ class DiffusersEngine:
         return int(free)
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
-        return measured_wire_manifests(
-            manifests, self._free_vram_bytes(), self.memory_mode,
-            on_cpu=self.device != "cuda",
-        )
+        # Loaded models keep their pinned rung: an offloaded pipeline leaves
+        # VRAM looking free, and a reconnect must not re-advertise realtime
+        # for a model that _frame would refuse.
+        free = self._free_vram_bytes()
+        on_cpu = self.device != "cuda"
+        return [
+            measured_wire_manifest(
+                manifest,
+                self._rungs.get(manifest.id)
+                or select_rung(manifest.min_vram_gb, free, self.memory_mode,
+                               on_cpu=on_cpu),
+            )
+            for manifest in manifests
+        ]
 
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
         from worker.memory_ladder import effective_realtime_slots

@@ -47,6 +47,7 @@ def test_diffusers_measured_manifests_use_free_vram():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
     engine.memory_mode = "auto"
+    engine._rungs = {}
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -59,10 +60,29 @@ def test_diffusers_measured_manifests_use_free_vram():
     assert "realtime" not in wires[0]["capabilities"]
 
 
+def test_measured_manifests_respect_pinned_rungs():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine._rungs = {"xl": "model_offload"}
+    manifest = Manifest(
+        id="xl",
+        name="XL",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=10,
+    )
+    # Plenty of free VRAM, but the loaded pipeline is pinned to an offload
+    # rung: the hello must not re-advertise realtime for it.
+    with patch.object(DiffusersEngine, "_free_vram_bytes", return_value=64 * 1024**3):
+        wire = engine.measured_manifests([manifest])
+    assert "realtime" not in wire[0]["capabilities"]
+
+
 def test_diffusers_effective_realtime_slots_zero_without_realtime():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
     engine.memory_mode = "auto"
+    engine._rungs = {}
     manifest = Manifest(
         id="xl",
         name="XL",
