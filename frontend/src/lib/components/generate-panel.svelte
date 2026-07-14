@@ -379,6 +379,11 @@
 					</a>
 					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
 						{shown.params.prompt}
+						{#if shown.gpu_ms != null}
+							<span class="text-foreground/70">
+								· {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span
+							>
+						{/if}
 					</p>
 				{:else}
 					<div

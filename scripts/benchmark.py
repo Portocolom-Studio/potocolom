@@ -404,10 +404,13 @@ def main() -> None:
                         job_no += 1
                         label = variant["label"]
                         cell = variant_key(model["id"], label)
-                        filename = f"{cell}.webp"
+                        params = dict(variant["params"])
+                        w = params.get("width", "")
+                        h = params.get("height", "")
+                        steps = params.get("steps", "")
+                        filename = f"{cell}__{w}x{h}-s{steps}.webp"
                         rel_file = f"images/{prompt_dir.name}/{filename}"
                         out_path = prompt_dir / filename
-                        params = dict(variant["params"])
 
                         print(f"[{job_no}/{total_jobs}] {model['id']} / {label}")
                         started = time.perf_counter()
