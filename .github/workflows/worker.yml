@@ -17,14 +17,15 @@ permissions:
 
 jobs:
   worker:
-    # Self-hosted: docs/self-hosted-runner.md (system python3.11, not setup-python).
+    # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
     runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:
       run:
         working-directory: worker
     steps:
       - uses: actions/checkout@v7
-      - run: python3.11 -m pip install -e ".[dev]"
-      - run: python3.11 -m ruff check .
-      - run: python3.11 -m mypy
-      - run: python3.11 -m pytest
+      - run: python3.11 -m venv .venv
+      - run: .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/mypy
+      - run: .venv/bin/pytest

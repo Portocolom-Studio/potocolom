@@ -46,7 +46,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v7
-      - run: python3.11 -m pip install -e ".[dev]"
-      - run: python3.11 -m ruff check . ../scripts
-      - run: python3.11 -m mypy
-      - run: python3.11 -m pytest
+      - run: python3.11 -m venv .venv
+      - run: .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/ruff check . ../scripts
+      - run: .venv/bin/mypy
+      - run: .venv/bin/pytest

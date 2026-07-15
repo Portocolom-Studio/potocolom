@@ -25,7 +25,8 @@ On the machine that will run jobs (this desktop):
 # Docker for the backend postgres service container
 docker --version
 
-# System interpreters (setup-python/setup-node do not install on self-hosted Debian)
+# System interpreters (setup-python/setup-node do not install on self-hosted Debian).
+# Python jobs create a per-run venv (PEP 668 blocks system pip on Debian).
 python3.11 --version
 node --version   # 24.x
 ```
