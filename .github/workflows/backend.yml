@@ -20,7 +20,9 @@ permissions:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
+    # Switch back to ubuntu-latest when hosted quota is available (docs/self-hosted-runner.md).
+    runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:
       run:
         working-directory: backend

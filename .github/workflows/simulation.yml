@@ -23,7 +23,8 @@ permissions:
 
 jobs:
   simulation:
-    runs-on: ubuntu-latest
+    # Self-hosted: docs/self-hosted-runner.md
+    runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
       - uses: actions/checkout@v7
       # No pip cache: this job's combined key would never be shared with the

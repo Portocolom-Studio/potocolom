@@ -17,7 +17,8 @@ permissions:
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    # Self-hosted: docs/self-hosted-runner.md
+    runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:
       run:
         working-directory: frontend

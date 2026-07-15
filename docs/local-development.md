@@ -156,7 +156,9 @@ Kept honest and short, this is the list staging exists for: Terraform itself, IA
 
 ## Continuous integration
 
-GitHub-hosted runners, no GPU, per issue #13:
+GitHub Actions runs lint and tests on every pull request (issue #13). By default workflows target a **self-hosted runner** on the reference desktop so CI keeps working when hosted minutes are exhausted; see [self-hosted-runner.md](self-hosted-runner.md). Switch workflows back to `ubuntu-latest` when hosted quota is available.
+
+Per component, no GPU:
 
 1. Lint and unit tests per component (frontend, backend, worker), on every pull request.
 2. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
