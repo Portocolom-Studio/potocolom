@@ -17,19 +17,14 @@ permissions:
 
 jobs:
   worker:
-    # Self-hosted: docs/self-hosted-runner.md
+    # Self-hosted: docs/self-hosted-runner.md (system python3.11, not setup-python).
     runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:
       run:
         working-directory: worker
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: worker/pyproject.toml
-      - run: python -m pip install -e ".[dev]"
-      - run: ruff check .
-      - run: mypy
-      - run: pytest
+      - run: python3.11 -m pip install -e ".[dev]"
+      - run: python3.11 -m ruff check .
+      - run: python3.11 -m mypy
+      - run: python3.11 -m pytest

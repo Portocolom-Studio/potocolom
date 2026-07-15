@@ -25,12 +25,12 @@ On the machine that will run jobs (this desktop):
 # Docker for the backend postgres service container
 docker --version
 
-# Optional but faster: pre-install what setup-* actions would fetch
-python3.11 -m venv /dev/null 2>/dev/null || sudo apt install python3.11 python3.11-venv
-node --version  # setup-node installs 24 if missing
+# System interpreters (setup-python/setup-node do not install on self-hosted Debian)
+python3.11 --version
+node --version   # 24.x
 ```
 
-Keep Docker running (`systemctl enable --now docker`).
+Keep Docker running (`systemctl enable --now docker`). The backend workflow uses postgres on host port **15432** so it does not clash with `make deps` on :5432.
 
 ### 2. Register and start the runner
 
