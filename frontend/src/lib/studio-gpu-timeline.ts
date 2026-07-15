@@ -1,5 +1,7 @@
 import type { Generation } from '$lib/studio.svelte';
 import type { GpuSample } from '$lib/studio-gpu-sampler';
+import { GPU_METRIC_COLORS } from '$lib/studio-gpu-chart';
+import { METRICS_RANGE_MS, type MetricsRange } from '$lib/studio-metrics-range';
 
 export type TimelineBlock = {
 	id: string;
@@ -25,13 +27,11 @@ export type GpuTimeline = {
 	hardwareAvailable: boolean;
 };
 
-const WINDOW_MS = 5 * 60 * 1000;
 const MODEL_COLORS = [
-	'oklch(0.62 0.14 250)',
-	'oklch(0.68 0.12 165)',
-	'oklch(0.72 0.13 55)',
-	'oklch(0.66 0.11 320)',
-	'oklch(0.7 0.1 25)'
+	GPU_METRIC_COLORS.temperature,
+	GPU_METRIC_COLORS.power,
+	'var(--chart-5)',
+	'var(--chart-4)'
 ];
 
 function parseTime(iso: string): number {
@@ -104,10 +104,12 @@ function forwardFillPoints(
 export function buildGpuTimeline(
 	history: Generation[],
 	liveSamples: GpuSample[],
-	hardwareVramPct: number | null = null
+	hardwareVramPct: number | null = null,
+	range: MetricsRange = '5m'
 ): GpuTimeline {
 	const now = Date.now();
-	const windowStartMs = now - WINDOW_MS;
+	const windowMs = METRICS_RANGE_MS[range];
+	const windowStartMs = now - windowMs;
 	const windowEndMs = now;
 	const blocks = jobBlocks(history, windowStartMs, windowEndMs);
 	const modelIds = topModelIds(blocks, 4);
@@ -128,14 +130,14 @@ export function buildGpuTimeline(
 			id: 'compute',
 			label: 'GPU %',
 			kind: 'metric',
-			color: 'oklch(0.62 0.16 250)',
+			color: GPU_METRIC_COLORS.compute,
 			points: windowedPoints(liveSamples, windowStartMs, (sample) => sample.computePct)
 		},
 		{
 			id: 'vram',
 			label: 'VRAM %',
 			kind: 'metric',
-			color: 'oklch(0.68 0.14 145)',
+			color: GPU_METRIC_COLORS.vram,
 			points: vramPoints
 		}
 	];

@@ -18,11 +18,13 @@ type JobLabelKey =
 	| 'app.metrics.job_queued'
 	| 'app.metrics.job_failed';
 
+const SLICE_ORDER: JobStatusSlice['id'][] = ['succeeded', 'running', 'queued', 'failed'];
+
 const SLICE_META: Record<JobStatusSlice['id'], { labelKey: JobLabelKey; color: string }> = {
-	succeeded: { labelKey: 'app.metrics.job_succeeded', color: 'var(--chart-2)' },
-	running: { labelKey: 'app.metrics.job_running', color: 'var(--chart-1)' },
-	queued: { labelKey: 'app.metrics.job_queued', color: 'var(--chart-4)' },
-	failed: { labelKey: 'app.metrics.job_failed', color: 'var(--chart-5)' }
+	succeeded: { labelKey: 'app.metrics.job_succeeded', color: 'var(--status-success)' },
+	running: { labelKey: 'app.metrics.job_running', color: 'var(--status-running)' },
+	queued: { labelKey: 'app.metrics.job_queued', color: 'var(--status-neutral)' },
+	failed: { labelKey: 'app.metrics.job_failed', color: 'var(--status-error)' }
 };
 
 export function computeJobStatusBreakdown(
@@ -35,14 +37,12 @@ export function computeJobStatusBreakdown(
 			counts[job.state as keyof typeof counts] += 1;
 		}
 	}
-	const slices = (Object.keys(counts) as JobStatusSlice['id'][])
-		.map((id) => ({
-			id,
-			label: label(SLICE_META[id].labelKey),
-			count: counts[id],
-			color: SLICE_META[id].color
-		}))
-		.filter((slice) => slice.count > 0);
-	const total = slices.reduce((sum, slice) => sum + slice.count, 0);
+	const slices = SLICE_ORDER.map((id) => ({
+		id,
+		label: label(SLICE_META[id].labelKey),
+		count: counts[id],
+		color: SLICE_META[id].color
+	}));
+	const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
 	return { slices, total };
 }

@@ -2,17 +2,29 @@
 	import { t } from '$lib/i18n.svelte';
 	import {
 		CHART_MARGINS,
+		formatRangeCaption,
 		formatTimeTick,
 		timeTicks,
 		xScale,
 		type ChartPoint
 	} from '$lib/studio-gpu-chart';
 	import type { GpuTimeline } from '$lib/studio-gpu-timeline';
+	import type { MetricsRange } from '$lib/studio-metrics-range';
 	import StudioGpuMetricLineChart from '$lib/components/studio-gpu-metric-line-chart.svelte';
+	import StudioMetricsRangePicker from '$lib/components/studio-metrics-range-picker.svelte';
 	import * as Card from '$lib/components/ui/card';
 
-	let { timeline, vramAvailable = false }: { timeline: GpuTimeline; vramAvailable?: boolean } =
-		$props();
+	let {
+		timeline,
+		vramAvailable = false,
+		range = $bindable<MetricsRange>('5m'),
+		live = false
+	}: {
+		timeline: GpuTimeline;
+		vramAvailable?: boolean;
+		range?: MetricsRange;
+		live?: boolean;
+	} = $props();
 
 	const metricLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'metric'));
 	const modelLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'model'));
@@ -28,6 +40,9 @@
 		modelLanes.length > 0 ? swimPlotTop + modelLanes.length * rowH + swimMargin.bottom + 8 : 0
 	);
 	const xTicks = $derived(timeTicks(timeline.windowStartMs, timeline.windowEndMs, 6));
+	const rangeCaption = $derived(
+		formatRangeCaption(timeline.windowStartMs, timeline.windowEndMs, range)
+	);
 
 	function laneY(index: number): number {
 		return swimPlotTop + index * rowH;
@@ -40,33 +55,44 @@
 				xScale(startMs, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)
 		);
 	}
+
+	function rollingWindowForLane(laneId: string): number {
+		return laneId === 'vram' ? 4 : 8;
+	}
 </script>
 
 <div class="flex flex-col gap-4">
 	<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
 		<Card.Header class="border-border border-b px-5 py-4">
-			<div class="flex flex-wrap items-center justify-between gap-2">
+			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
 					<Card.Title class="text-base">{t('app.metrics.gpu_timeline')}</Card.Title>
 					<Card.Description class="text-sm">
 						{t('app.metrics.gpu_timeline_window')}
 					</Card.Description>
 				</div>
-				{#if timeline.hardwareAvailable}
-					<span class="bg-chart-2/15 text-chart-2 rounded-full px-2.5 py-1 text-xs font-medium">
-						{t('app.metrics.live_hardware')}
-					</span>
-				{/if}
+				<div class="flex flex-wrap items-center gap-2">
+					<StudioMetricsRangePicker bind:value={range} />
+					{#if timeline.hardwareAvailable}
+						<span class="bg-chart-2/15 text-chart-2 rounded-full px-2.5 py-1 text-xs font-medium">
+							{t('app.metrics.live_hardware')}
+						</span>
+					{/if}
+				</div>
 			</div>
 		</Card.Header>
 		<Card.Content class="grid gap-5 p-5 lg:grid-cols-2">
 			{#each metricLanes as lane (lane.id)}
 				<StudioGpuMetricLineChart
 					title={lane.label}
-					color={lane.color}
+					seriesColor={lane.color}
 					points={(lane.points ?? []) as ChartPoint[]}
 					windowStartMs={timeline.windowStartMs}
 					windowEndMs={timeline.windowEndMs}
+					{range}
+					{live}
+					rollingWindow={rollingWindowForLane(lane.id)}
+					yUnitLabel="%"
 					emptyHint={lane.id === 'vram' && !vramAvailable
 						? t('app.metrics.vram_unavailable')
 						: undefined}
@@ -88,26 +114,6 @@
 					role="img"
 					aria-label={t('app.metrics.model_activity')}
 				>
-					{#each xTicks as tick, index (index)}
-						{@const x = xScale(
-							tick,
-							timeline.windowStartMs,
-							timeline.windowEndMs,
-							plotLeft,
-							plotWidth
-						)}
-						<line
-							x1={x}
-							y1={swimPlotTop - 4}
-							x2={x}
-							y2={swimPlotTop + modelLanes.length * rowH}
-							class="stroke-border/40"
-							stroke-width="1"
-							stroke-dasharray="3 4"
-							vector-effect="non-scaling-stroke"
-						/>
-					{/each}
-
 					{#each modelLanes as lane, index (lane.id)}
 						{@const y = laneY(index)}
 						<rect
@@ -157,10 +163,12 @@
 							text-anchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'}
 							class="fill-muted-foreground font-mono text-[10px] tabular-nums"
 						>
-							{formatTimeTick(tick)}
+							{formatTimeTick(tick, range)}
 						</text>
 					{/each}
 				</svg>
+
+				<p class="text-muted-foreground mt-2 px-1 text-[10px] tabular-nums">{rangeCaption}</p>
 
 				<div class="mt-3 flex flex-wrap gap-3">
 					{#each modelLanes as lane (lane.id)}

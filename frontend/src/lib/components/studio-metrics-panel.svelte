@@ -6,6 +6,7 @@
 	import { formatMs, leaderboardRows } from '$lib/benchmark';
 	import { loadBenchmarkSessions, type BenchmarkSession } from '$lib/studio-benchmark-sessions';
 	import { buildGpuTimeline } from '$lib/studio-gpu-timeline';
+	import type { MetricsRange } from '$lib/studio-metrics-range';
 	import {
 		gpuSamples,
 		lastGpuHardware,
@@ -29,6 +30,7 @@
 	let sessionsLoading = $state(false);
 	let sessionsError = $state(false);
 	let selectedSessionId = $state<string | null>(null);
+	let metricsRange = $state<MetricsRange>('5m');
 
 	const session = $derived(computeSessionMetrics(studio.history));
 	const jobStatus = $derived(computeJobStatusBreakdown(studio.history, t));
@@ -48,8 +50,9 @@
 	});
 	const timeline = $derived.by(() => {
 		void liveTick;
-		return buildGpuTimeline(studio.history, gpuSamples(), hardwareVramPct);
+		return buildGpuTimeline(studio.history, gpuSamples(), hardwareVramPct, metricsRange);
 	});
+	const gpuSamplerLive = $derived(studio.metricsTab === 'usage');
 	const maxModelGpu = $derived(Math.max(...session.byModel.map((row) => row.avgGpuMs), 1));
 	const selectedSession = $derived(
 		sessions.find((entry) => entry.id === selectedSessionId) ?? sessions[0] ?? null
@@ -98,7 +101,12 @@
 
 <div class="flex flex-col gap-6">
 	{#if studio.metricsTab === 'usage'}
-		<StudioGpuTimelineChart {timeline} vramAvailable={hardwareVramPct != null} />
+		<StudioGpuTimelineChart
+			{timeline}
+			vramAvailable={hardwareVramPct != null}
+			bind:range={metricsRange}
+			live={gpuSamplerLive}
+		/>
 
 		{#if latestSample?.hardwareAvailable}
 			<div class="flex flex-wrap gap-2">
