@@ -18,6 +18,7 @@ import websockets
 
 from worker.engine import Engine, SimulatedEngine, make_thumbnail_webp
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
+from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
 
 logger = logging.getLogger("potocolom.worker")
@@ -281,7 +282,11 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
-            await ws.send(json.dumps({"type": "heartbeat", "slots_in_use": len(runners)}))
+            await ws.send(json.dumps({
+                "type": "heartbeat",
+                "slots_in_use": len(runners),
+                "gpu": sample_gpu(settings.device),
+            }))
 
     heartbeat_task = asyncio.create_task(heartbeats())
     try:
@@ -320,6 +325,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             "type": "gpu_status",
                             "request_id": control["request_id"],
                             "loaded_models": engine.loaded_models(),
+                            "gpu": sample_gpu(settings.device),
                         }))
                     elif control["type"] == "load_model":
                         await _gpu_load(ws, engine, by_id, control)

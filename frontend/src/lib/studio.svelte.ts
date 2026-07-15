@@ -84,8 +84,19 @@ export const studio = $state({
 	historyHasMore: false,
 	historyExtended: false,
 	starredIds: loadStarredIds() as string[],
-	starredExtras: [] as Generation[] // starred jobs fetched outside the history pages
+	starredExtras: [] as Generation[], // starred jobs fetched outside the history pages
+	shellView: 'playground' as 'playground' | 'metrics',
+	metricsTab: 'usage' as 'usage' | 'benchmarks'
 });
+
+export function openPlayground(): void {
+	studio.shellView = 'playground';
+}
+
+export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
+	studio.shellView = 'metrics';
+	studio.metricsTab = tab;
+}
 
 let polling = false;
 

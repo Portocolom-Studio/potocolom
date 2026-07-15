@@ -4,11 +4,13 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
+	import StudioMetricsDashboard from '$lib/components/studio-metrics-dashboard.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import {
 		loadHistory,
 		loadModels,
 		pollWhileWorking,
+		studio,
 		syncStarredIdsFromStorage
 	} from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -42,6 +44,8 @@
 				<div class="relative flex h-full min-h-0 flex-col p-4">
 					{#if landing}
 						<StudioPreview />
+					{:else if studio.shellView === 'metrics'}
+						<StudioMetricsDashboard />
 					{:else}
 						<GeneratePanel />
 					{/if}

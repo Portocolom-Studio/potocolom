@@ -1,6 +1,5 @@
 <script lang="ts">
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
-	import StudioMetricsSheet from '$lib/components/studio-metrics-sheet.svelte';
 	import SidebarIcon from '@lucide/svelte/icons/sidebar';
 	import SearchForm from './search-form.svelte';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
@@ -8,6 +7,7 @@
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 
 	const sidebar = Sidebar.useSidebar();
 </script>
@@ -25,13 +25,14 @@
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator />
 				<Breadcrumb.Item>
-					<Breadcrumb.Page>{t('app.tab_draw')}</Breadcrumb.Page>
+					<Breadcrumb.Page>
+						{studio.shellView === 'metrics' ? t('app.metrics.title') : t('app.tab_draw')}
+					</Breadcrumb.Page>
 				</Breadcrumb.Item>
 			</Breadcrumb.List>
 		</Breadcrumb.Root>
 		<div class="flex w-full items-center gap-3 sm:ms-auto sm:w-auto">
 			<SearchForm class="hidden w-full sm:block sm:w-auto" />
-			<StudioMetricsSheet />
 			<LanguageToggle />
 		</div>
 	</div>

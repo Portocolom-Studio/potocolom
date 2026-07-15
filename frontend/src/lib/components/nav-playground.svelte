@@ -10,7 +10,8 @@
 	import { cn } from '$lib/utils.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-	import { studio, starredGenerations } from '$lib/studio.svelte';
+	import NavMetrics from '$lib/components/nav-metrics.svelte';
+	import { studio, starredGenerations, openPlayground } from '$lib/studio.svelte';
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -62,7 +63,11 @@
 		<Collapsible.Root open class="group/collapsible">
 			{#snippet child({ props })}
 				<Sidebar.MenuItem {...props}>
-					<Sidebar.MenuButton tooltipContent={t('app.shell.playground')}>
+					<Sidebar.MenuButton
+						tooltipContent={t('app.shell.playground')}
+						isActive={studio.shellView === 'playground'}
+						onclick={openPlayground}
+					>
 						<SquareTerminalIcon />
 						<span>{t('app.shell.playground')}</span>
 					</Sidebar.MenuButton>
@@ -107,13 +112,19 @@
 											<Sidebar.MenuSub>
 												{#each studio.models as model (model.id)}
 													<Sidebar.MenuSubItem>
-														<Sidebar.MenuSubButton isActive={studio.modelId === model.id}>
+														<Sidebar.MenuSubButton
+															isActive={studio.shellView === 'playground' &&
+																studio.modelId === model.id}
+														>
 															{#snippet child({ props })}
 																<button
 																	type="button"
 																	{...props}
 																	title={model.name}
-																	onclick={() => (studio.modelId = model.id)}
+																	onclick={() => {
+																		openPlayground();
+																		studio.modelId = model.id;
+																	}}
 																>
 																	<span class="truncate">{model.name}</span>
 																</button>
@@ -166,7 +177,10 @@
 																		props.class as string | undefined
 																	)}
 																	title={prompt}
-																	onclick={() => (studio.prompt = prompt)}
+																	onclick={() => {
+																		openPlayground();
+																		studio.prompt = prompt;
+																	}}
 																>
 																	<span class="block min-w-0 truncate">{prompt}</span>
 																</button>
@@ -211,7 +225,10 @@
 													<button
 														type="button"
 														title={generation.params.prompt}
-														onclick={() => (studio.selectedId = generation.id)}
+														onclick={() => {
+															openPlayground();
+															studio.selectedId = generation.id;
+														}}
 													>
 														<img
 															src={generation.assets[0].url}
@@ -233,6 +250,7 @@
 				</Sidebar.MenuItem>
 			{/snippet}
 		</Collapsible.Root>
+		<NavMetrics />
 		{#each placeholders as section (section.title)}
 			<Collapsible.Root class="group/collapsible">
 				{#snippet child({ props })}
