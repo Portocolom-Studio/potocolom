@@ -202,19 +202,23 @@ def test_stalled_job_requeues_once(monkeypatch):
     monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
     from app.settings import get_settings
     get_settings.cache_clear()
-    with TestClient(app) as client:
-        with client.websocket_connect("/api/v1/fleet") as worker:
-            fleet_hello(worker, "w-stall")
-            job_id = client.post("/api/v1/generations",
-                                 json={"model_id": "sd-test",
-                                       "params": {"prompt": "stall"}}).json()["job_id"]
-            assert worker.receive_json()["job_id"] == job_id
-            # Worker stays connected but sends no progress; stall requeues once
-            # and the retry is dispatched back to the same connected worker.
-            poll_until_attempt(client, job_id, 2, timeout=3.0)
-            redispatch = worker.receive_json()
-            assert redispatch["type"] == "dispatch_job"
-            assert redispatch["job_id"] == job_id
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-stall")
+                job_id = client.post("/api/v1/generations",
+                                     json={"model_id": "sd-test",
+                                           "params": {"prompt": "stall"}}).json()["job_id"]
+                assert worker.receive_json()["job_id"] == job_id
+                # Worker stays connected but sends no progress; stall requeues once
+                # and the retry is dispatched back to the same connected worker.
+                poll_until_attempt(client, job_id, 2, timeout=3.0)
+                redispatch = worker.receive_json()
+                assert redispatch["type"] == "dispatch_job"
+                assert redispatch["job_id"] == job_id
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
 
 
 @pytest.mark.db
@@ -376,53 +380,77 @@ def _post_generation(client, prompt: str) -> str:
     return created.json()["job_id"]
 
 
-def _wait_for_dispatch(worker, timeout=5.0) -> dict:
+def _stall_safe(monkeypatch) -> None:
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+
+
+def _wait_for_dispatch(worker, expected: set[str], timeout=5.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         msg = worker.receive_json()
-        if msg["type"] == "dispatch_job":
+        if msg["type"] == "dispatch_job" and msg["job_id"] in expected:
             return msg
         time.sleep(0.01)
-    raise AssertionError("timed out waiting for dispatch_job")
+    raise AssertionError(f"timed out waiting for dispatch_job in {expected}")
+
+
+def _finish_job(client, worker, dispatch: dict) -> None:
+    upload_path = urlsplit(dispatch["upload"]["url"]).path
+    assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+    worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
+                      "gpu_ms": 1, "width": 512, "height": 512})
+    poll_until(client, dispatch["job_id"], "succeeded")
 
 
 @pytest.mark.db
-def test_dispatch_depth_two_before_job_done():
+def test_dispatch_depth_two_before_job_done(monkeypatch):
     """Depth 2: API dispatches a second job while the first is still uploading."""
+    _stall_safe(monkeypatch)
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-depth2")
 
             first_id = _post_generation(client, "one")
             second_id = _post_generation(client, "two")
+            expected = {first_id, second_id}
             time.sleep(0.35)
 
-            first = _wait_for_dispatch(worker)
-            second = _wait_for_dispatch(worker)
-            assert {first["job_id"], second["job_id"]} == {first_id, second_id}
+            first = _wait_for_dispatch(worker, expected)
+            second = _wait_for_dispatch(worker, expected - {first["job_id"]})
+            assert {first["job_id"], second["job_id"]} == expected
+
+            # Leave no running jobs for the next test.
+            _finish_job(client, worker, first)
+            _finish_job(client, worker, second)
 
 
 @pytest.mark.db
-def test_dispatch_depth_blocks_third_until_slot_frees():
+def test_dispatch_depth_blocks_third_until_slot_frees(monkeypatch):
+    _stall_safe(monkeypatch)
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-depth-cap")
 
-            _post_generation(client, "a")
-            _post_generation(client, "b")
+            id_a = _post_generation(client, "a")
+            id_b = _post_generation(client, "b")
+            expected = {id_a, id_b}
             time.sleep(0.35)
-            d1 = _wait_for_dispatch(worker)
-            _wait_for_dispatch(worker)
+            d1 = _wait_for_dispatch(worker, expected)
+            d2 = _wait_for_dispatch(worker, expected - {d1["job_id"]})
+            worker.send_json({"type": "job_progress", "job_id": d1["job_id"], "progress": 0.5})
+            worker.send_json({"type": "job_progress", "job_id": d2["job_id"], "progress": 0.5})
 
             third_id = _post_generation(client, "c")
             time.sleep(0.35)
+            assert client.get(f"/api/v1/generations/{third_id}").json()["state"] == "queued"
 
-            upload_path = urlsplit(d1["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
-            worker.send_json({"type": "job_done", "job_id": d1["job_id"],
-                              "gpu_ms": 1, "width": 512, "height": 512})
-            poll_until(client, d1["job_id"], "succeeded")
+            _finish_job(client, worker, d1)
 
             time.sleep(0.35)
-            d3 = _wait_for_dispatch(worker)
+            d3 = _wait_for_dispatch(worker, {third_id})
             assert d3["job_id"] == third_id
+
+            _finish_job(client, worker, d2)
+            _finish_job(client, worker, d3)
