@@ -23,6 +23,7 @@
 	import { computeJobStatusBreakdown } from '$lib/studio-session-job-stats';
 	import { computePipelineMetrics } from '$lib/studio-session-pipeline-metrics';
 	import { computeSessionMetrics } from '$lib/studio-session-metrics';
+	import { demoGpuHistory, demoGpuSamples, demoHistory } from '$lib/studio-demo-metrics';
 	import { studio } from '$lib/studio.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import StudioJobStatusChart from '$lib/components/studio-job-status-chart.svelte';
@@ -39,9 +40,16 @@
 	let metricsRange = $state<MetricsRange>('5m');
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
 
-	const session = $derived(computeSessionMetrics(studio.history));
-	const pipeline = $derived(computePipelineMetrics(studio.history));
-	const jobStatus = $derived(computeJobStatusBreakdown(studio.history, t));
+	const demoMode = $derived.by(() => {
+		void liveTick;
+		return (
+			studio.history.length === 0 && lastGpuHardware() == null && persistedHistory.length === 0
+		);
+	});
+	const effectiveHistory = $derived(demoMode ? demoHistory() : studio.history);
+	const session = $derived(computeSessionMetrics(effectiveHistory));
+	const pipeline = $derived(computePipelineMetrics(effectiveHistory));
+	const jobStatus = $derived(computeJobStatusBreakdown(effectiveHistory, t));
 	const hardwareVramPct = $derived.by(() => {
 		void liveTick;
 		const hw: GpuHardware | null = lastGpuHardware();
@@ -58,6 +66,15 @@
 	});
 	const timeline = $derived.by(() => {
 		void liveTick;
+		if (demoMode) {
+			return buildGpuTimeline(
+				effectiveHistory,
+				demoGpuSamples(),
+				null,
+				metricsRange,
+				demoGpuHistory(metricsRange)
+			);
+		}
 		return buildGpuTimeline(
 			studio.history,
 			gpuSamples(),
@@ -82,7 +99,6 @@
 			cancelled = true;
 		};
 	});
-	const maxModelGpu = $derived(Math.max(...session.byModel.map((row) => row.avgGpuMs), 1));
 	const selectedSession = $derived(
 		sessions.find((entry) => entry.id === selectedSessionId) ?? sessions[0] ?? null
 	);
@@ -91,7 +107,7 @@
 	);
 	const latestSample = $derived.by(() => {
 		void liveTick;
-		const samples = gpuSamples();
+		const samples = demoMode ? demoGpuSamples() : gpuSamples();
 		return samples.length > 0 ? samples[samples.length - 1] : null;
 	});
 
@@ -130,11 +146,14 @@
 
 <div class="flex flex-col gap-6">
 	{#if studio.metricsTab === 'usage'}
+		{#if demoMode}
+			<Badge variant="outline" class="w-fit">{t('app.metrics.demo_data')}</Badge>
+		{/if}
 		<StudioGpuTimelineChart
 			{timeline}
-			vramAvailable={hardwareVramPct != null}
+			vramAvailable={demoMode || hardwareVramPct != null}
 			bind:range={metricsRange}
-			live={gpuSamplerLive}
+			live={gpuSamplerLive && !demoMode}
 		/>
 
 		{#if latestSample?.hardwareAvailable}
@@ -218,17 +237,16 @@
 					</Card.Title>
 				</Card.Header>
 			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.median_gpu')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">{formatMs(session.medianGpuMs)}</Card.Title>
+				</Card.Header>
+			</Card.Root>
 		</div>
 
-		<Card.Root class="gap-1 py-3">
-			<Card.Header class="px-4 pb-0">
-				<Card.Description>{t('app.metrics.median_gpu')}</Card.Description>
-				<Card.Title class="text-2xl tabular-nums">{formatMs(session.medianGpuMs)}</Card.Title>
-			</Card.Header>
-		</Card.Root>
-
 		{#if session.byModel.length > 0}
-			<StudioSessionModelChart rows={session.byModel} maxGpuMs={maxModelGpu} />
+			<StudioSessionModelChart rows={session.byModel} />
 		{/if}
 
 		<section class="flex flex-col gap-2">
