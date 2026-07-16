@@ -62,12 +62,12 @@
 	{#if hasData && report}
 		<div class="mt-6 flex flex-wrap gap-2.5">
 			{#if runDate}
-				<Badge variant="surface">{t('bench.run')}: {runDate}</Badge>
+				<Badge variant="outline">{t('bench.run')}: {runDate}</Badge>
 			{/if}
 			{#if report.target_vram_gb}
-				<Badge variant="surface">{report.target_vram_gb} GB VRAM</Badge>
+				<Badge variant="outline">{report.target_vram_gb} GB VRAM</Badge>
 			{/if}
-			<Badge variant="surface">
+			<Badge variant="outline">
 				{report.succeeded}/{report.total_jobs}
 				{t('bench.images')}
 			</Badge>

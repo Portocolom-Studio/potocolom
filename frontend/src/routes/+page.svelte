@@ -66,13 +66,13 @@
 			</h1>
 			<p class="text-muted-foreground mx-auto mt-6 max-w-xl text-lg">{t('hero.sub')}</p>
 			<div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-				<Button size="lg" variant="gradient" href={resolve('/app')}>{t('hero.cta_launch')}</Button>
+				<Button size="lg" variant="default" href={resolve('/app')}>{t('hero.cta_launch')}</Button>
 				<Button size="lg" variant="outline" href={repoUrl}>{t('hero.cta_selfhost')}</Button>
 			</div>
 			<div class="mt-10 flex flex-wrap justify-center gap-2.5">
-				<Badge variant="surface">{t('hero.badge_license')}</Badge>
-				<Badge variant="surface">{t('hero.badge_fps')}</Badge>
-				<Badge variant="surface">{t('hero.badge_gpu')}</Badge>
+				<Badge variant="outline">{t('hero.badge_license')}</Badge>
+				<Badge variant="outline">{t('hero.badge_fps')}</Badge>
+				<Badge variant="outline">{t('hero.badge_gpu')}</Badge>
 			</div>
 		</div>
 	</section>
@@ -200,7 +200,7 @@
 					</ul>
 				</Card.Content>
 				<Card.Footer>
-					<Button variant="gradient" href={resolve('/app')}>{t('nav.launch')}</Button>
+					<Button variant="default" href={resolve('/app')}>{t('nav.launch')}</Button>
 				</Card.Footer>
 			</Card.Root>
 		</div>
@@ -223,7 +223,7 @@
 					{/each}
 				</ul>
 				<div class="mt-8 flex flex-wrap items-center gap-3">
-					<Button variant="light" href={forkUrl}>
+					<Button variant="secondary" href={forkUrl}>
 						<GitForkIcon class="size-4" />
 						{t('fork.cta_fork')}
 					</Button>
