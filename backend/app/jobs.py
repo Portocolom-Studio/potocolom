@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import count
 from typing import Protocol
 
@@ -364,6 +365,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                                     thumb_storage_key=thumb_storage_key, user_id=job.user_id)
         last_progress_at[job_id] = time.monotonic()
         job.state = "running"
+        job.dispatched_at = datetime.now(timezone.utc)
         dispatch_msg: dict = {
             "type": "dispatch_job",
             "job_id": str(job.id),
@@ -430,6 +432,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 return
             job.state = "succeeded"
             job.gpu_ms = int(control.get("gpu_ms", 0))
+            job.finished_at = datetime.now(timezone.utc)
             width = int(control.get("width", 0))
             height = int(control.get("height", 0))
             full = Asset(
@@ -483,6 +486,7 @@ async def mark_failed(job_id: uuid.UUID, reason: str) -> None:
         if job is None or job.state in TERMINAL_STATES:
             return
         job.state = "failed"
+        job.finished_at = datetime.now(timezone.utc)
         await session.commit()
     publish(job_id, {"state": "failed", "reason": reason})
     logger.warning("job %s failed: %s", job_id, reason)

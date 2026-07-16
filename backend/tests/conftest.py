@@ -44,7 +44,7 @@ def _prepare_database() -> bool:
                                      user=url.username, password=url.password,
                                      database=database, timeout=3)
         try:
-            await conn.execute("TRUNCATE assets, jobs")
+            await conn.execute("TRUNCATE gpu_samples, gpu_sample_rollups, assets, jobs")
         except asyncpg.UndefinedTableError:
             pass  # first run; migrations have not created the tables yet
         finally:

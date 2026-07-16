@@ -87,6 +87,7 @@
 					title={lane.label}
 					seriesColor={lane.color}
 					points={(lane.points ?? []) as ChartPoint[]}
+					bands={lane.bands ?? []}
 					windowStartMs={timeline.windowStartMs}
 					windowEndMs={timeline.windowEndMs}
 					{range}

@@ -1,5 +1,6 @@
 import type { Generation } from '$lib/studio.svelte';
 import type { GpuSample } from '$lib/studio-gpu-sampler';
+import type { GpuHistoryPoint } from '$lib/studio-gpu-history';
 import { GPU_METRIC_COLORS } from '$lib/studio-gpu-chart';
 import { METRICS_RANGE_MS, type MetricsRange } from '$lib/studio-metrics-range';
 
@@ -17,6 +18,7 @@ export type TimelineLane = {
 	kind: 'metric' | 'model';
 	color: string;
 	points?: { ts: number; value: number }[];
+	bands?: { ts: number; min: number; max: number; mean: number }[];
 	blocks?: TimelineBlock[];
 };
 
@@ -101,11 +103,35 @@ function forwardFillPoints(
 	return filled;
 }
 
+function historyMetricPoints(
+	history: GpuHistoryPoint[],
+	pickValue: (point: GpuHistoryPoint) => number | null,
+	pickMin: (point: GpuHistoryPoint) => number | null | undefined,
+	pickMax: (point: GpuHistoryPoint) => number | null | undefined,
+	windowStartMs: number
+) {
+	const points: { ts: number; value: number }[] = [];
+	const bands: { ts: number; min: number; max: number; mean: number }[] = [];
+	for (const sample of history) {
+		if (sample.ts < windowStartMs) continue;
+		const value = pickValue(sample);
+		if (value == null) continue;
+		points.push({ ts: sample.ts, value });
+		const min = pickMin(sample);
+		const max = pickMax(sample);
+		if (min != null && max != null) {
+			bands.push({ ts: sample.ts, min, max, mean: value });
+		}
+	}
+	return { points, bands };
+}
+
 export function buildGpuTimeline(
 	history: Generation[],
 	liveSamples: GpuSample[],
 	hardwareVramPct: number | null = null,
-	range: MetricsRange = '5m'
+	range: MetricsRange = '5m',
+	persistedHistory: GpuHistoryPoint[] = []
 ): GpuTimeline {
 	const now = Date.now();
 	const windowMs = METRICS_RANGE_MS[range];
@@ -113,11 +139,39 @@ export function buildGpuTimeline(
 	const windowEndMs = now;
 	const blocks = jobBlocks(history, windowStartMs, windowEndMs);
 	const modelIds = topModelIds(blocks, 4);
-	const hardwareAvailable = liveSamples.some((sample) => sample.hardwareAvailable);
+	const hardwareAvailable =
+		liveSamples.some((sample) => sample.hardwareAvailable) ||
+		persistedHistory.some((sample) => sample.util_pct != null || sample.vram_used_pct != null);
 
+	let computePoints = windowedPoints(liveSamples, windowStartMs, (sample) => sample.computePct);
+	let computeBands: { ts: number; min: number; max: number; mean: number }[] = [];
 	let vramPoints = forwardFillPoints(
 		windowedPoints(liveSamples, windowStartMs, (sample) => sample.vramUsedPct)
 	);
+	let vramBands: { ts: number; min: number; max: number; mean: number }[] = [];
+
+	if (range !== '5m' && persistedHistory.length > 0) {
+		const compute = historyMetricPoints(
+			persistedHistory,
+			(point) => point.util_pct,
+			(point) => point.util_min,
+			(point) => point.util_max,
+			windowStartMs
+		);
+		computePoints = compute.points;
+		computeBands = compute.bands;
+
+		const vram = historyMetricPoints(
+			persistedHistory,
+			(point) => point.vram_used_pct,
+			(point) => point.vram_min,
+			(point) => point.vram_max,
+			windowStartMs
+		);
+		vramPoints = forwardFillPoints(vram.points);
+		vramBands = vram.bands;
+	}
+
 	if (vramPoints.length === 0 && hardwareVramPct != null) {
 		vramPoints = [
 			{ ts: windowStartMs, value: hardwareVramPct },
@@ -131,14 +185,16 @@ export function buildGpuTimeline(
 			label: 'GPU %',
 			kind: 'metric',
 			color: GPU_METRIC_COLORS.compute,
-			points: windowedPoints(liveSamples, windowStartMs, (sample) => sample.computePct)
+			points: computePoints,
+			bands: computeBands.length > 0 ? computeBands : undefined
 		},
 		{
 			id: 'vram',
 			label: 'VRAM %',
 			kind: 'metric',
 			color: GPU_METRIC_COLORS.vram,
-			points: vramPoints
+			points: vramPoints,
+			bands: vramBands.length > 0 ? vramBands : undefined
 		}
 	];
 

@@ -5,8 +5,13 @@
 	import { t } from '$lib/i18n.svelte';
 	import { formatMs, leaderboardRows } from '$lib/benchmark';
 	import { loadBenchmarkSessions, type BenchmarkSession } from '$lib/studio-benchmark-sessions';
+	import {
+		fetchGpuHistory,
+		historyRollupForRange,
+		type GpuHistoryPoint
+	} from '$lib/studio-gpu-history';
 	import { buildGpuTimeline } from '$lib/studio-gpu-timeline';
-	import type { MetricsRange } from '$lib/studio-metrics-range';
+	import { METRICS_RANGE_MS, type MetricsRange } from '$lib/studio-metrics-range';
 	import {
 		gpuSamples,
 		lastGpuHardware,
@@ -31,6 +36,7 @@
 	let sessionsError = $state(false);
 	let selectedSessionId = $state<string | null>(null);
 	let metricsRange = $state<MetricsRange>('5m');
+	let persistedHistory = $state<GpuHistoryPoint[]>([]);
 
 	const session = $derived(computeSessionMetrics(studio.history));
 	const jobStatus = $derived(computeJobStatusBreakdown(studio.history, t));
@@ -50,9 +56,30 @@
 	});
 	const timeline = $derived.by(() => {
 		void liveTick;
-		return buildGpuTimeline(studio.history, gpuSamples(), hardwareVramPct, metricsRange);
+		return buildGpuTimeline(
+			studio.history,
+			gpuSamples(),
+			hardwareVramPct,
+			metricsRange,
+			persistedHistory
+		);
 	});
 	const gpuSamplerLive = $derived(studio.metricsTab === 'usage');
+
+	$effect(() => {
+		if (studio.metricsTab !== 'usage') return;
+		const range = metricsRange;
+		void liveTick;
+		const now = Date.now();
+		const from = now - METRICS_RANGE_MS[range];
+		let cancelled = false;
+		void fetchGpuHistory(from, now, historyRollupForRange(range)).then((points) => {
+			if (!cancelled) persistedHistory = points;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 	const maxModelGpu = $derived(Math.max(...session.byModel.map((row) => row.avgGpuMs), 1));
 	const selectedSession = $derived(
 		sessions.find((entry) => entry.id === selectedSessionId) ?? sessions[0] ?? null
