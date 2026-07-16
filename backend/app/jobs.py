@@ -159,7 +159,13 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "attempt": job.attempt,
             "progress": live_progress.get(job.id) if job.state == "running" else None,
             "gpu_ms": job.gpu_ms,
+            "input_fetch_ms": job.input_fetch_ms,
+            "load_ms": job.load_ms,
+            "postprocess_ms": job.postprocess_ms,
+            "failure_reason": job.failure_reason,
             "created_at": job.created_at.isoformat(),
+            "dispatched_at": job.dispatched_at.isoformat() if job.dispatched_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
             "assets": [
                 {
                     "id": str(asset.id),
@@ -432,6 +438,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 return
             job.state = "succeeded"
             job.gpu_ms = int(control.get("gpu_ms", 0))
+            for field in ("input_fetch_ms", "load_ms", "postprocess_ms"):
+                if control.get(field) is not None:
+                    setattr(job, field, int(control[field]))
             job.finished_at = datetime.now(timezone.utc)
             width = int(control.get("width", 0))
             height = int(control.get("height", 0))
@@ -486,6 +495,7 @@ async def mark_failed(job_id: uuid.UUID, reason: str) -> None:
         if job is None or job.state in TERMINAL_STATES:
             return
         job.state = "failed"
+        job.failure_reason = reason
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
     publish(job_id, {"state": "failed", "reason": reason})

@@ -33,7 +33,7 @@ Fleet connection, worker to API:
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames` | worker side accounting |
 | `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
-| `job_done` | `job_id`, `gpu_ms`, `width`, `height` | sent after the result uploaded to the dispatch target |
+| `job_done` | `job_id`, `gpu_ms`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
 | `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
 
 Fleet connection, API to worker:

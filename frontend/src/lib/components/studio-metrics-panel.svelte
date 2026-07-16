@@ -21,6 +21,7 @@
 		type GpuHardware
 	} from '$lib/studio-gpu-sampler';
 	import { computeJobStatusBreakdown } from '$lib/studio-session-job-stats';
+	import { computePipelineMetrics } from '$lib/studio-session-pipeline-metrics';
 	import { computeSessionMetrics } from '$lib/studio-session-metrics';
 	import { studio } from '$lib/studio.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
@@ -39,6 +40,7 @@
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
 
 	const session = $derived(computeSessionMetrics(studio.history));
+	const pipeline = $derived(computePipelineMetrics(studio.history));
 	const jobStatus = $derived(computeJobStatusBreakdown(studio.history, t));
 	const hardwareVramPct = $derived.by(() => {
 		void liveTick;
@@ -165,6 +167,55 @@
 				<Card.Header class="px-4 pb-0">
 					<Card.Description>{t('app.metrics.avg_gpu')}</Card.Description>
 					<Card.Title class="text-2xl tabular-nums">{formatMs(session.avgGpuMs)}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+		</div>
+
+		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.queue_wait_p50')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">{formatMs(pipeline.queueWaitP50)}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.queue_wait_p95')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">{formatMs(pipeline.queueWaitP95)}</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.postprocess_share')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">
+						{pipeline.postprocessSharePct != null
+							? `${pipeline.postprocessSharePct.toFixed(0)}%`
+							: '-'}
+					</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.in_job_gpu_share')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">
+						{pipeline.inJobGpuSharePct != null ? `${pipeline.inJobGpuSharePct.toFixed(0)}%` : '-'}
+					</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.session_util')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">
+						{pipeline.sessionUtilPct != null ? `${pipeline.sessionUtilPct.toFixed(0)}%` : '-'}
+					</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.failure_rate')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">
+						{pipeline.failureRatePct != null ? `${pipeline.failureRatePct.toFixed(0)}%` : '-'}
+					</Card.Title>
 				</Card.Header>
 			</Card.Root>
 		</div>

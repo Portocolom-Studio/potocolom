@@ -30,7 +30,13 @@ export type Generation = {
 	state: string;
 	progress: number | null; // denoising fraction while running, else null
 	gpu_ms: number | null;
+	input_fetch_ms: number | null;
+	load_ms: number | null;
+	postprocess_ms: number | null;
+	failure_reason: string | null;
 	created_at: string;
+	dispatched_at: string | null;
+	finished_at: string | null;
 	assets: Asset[];
 };
 
@@ -52,11 +58,6 @@ function saveStarredIds(ids: string[]): void {
 	localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(ids));
 }
 
-function withoutFailed(generations: Generation[]): Generation[] {
-	return generations.filter((generation) => generation.state !== 'failed');
-}
-
-/** Keep stable asset URLs when a refresh only re-mints presigned links (S3). */
 function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Generation[] {
 	const byId = new Map(existing.map((generation) => [generation.id, generation]));
 	return incoming.map((generation) => {
@@ -80,7 +81,7 @@ export const studio = $state({
 	selectedId: null as string | null, // generation pinned in the viewer
 	history: [] as Generation[],
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
-	historyRecentFull: false, // true when the latest API page hit the limit (before failed filter)
+	historyRecentFull: false, // true when the latest API page hit the limit
 	historyHasMore: false,
 	historyExtended: false,
 	starredIds: loadStarredIds() as string[],
@@ -129,7 +130,7 @@ export async function loadHistory(): Promise<void> {
 	}
 	const page = (await response.json()) as Generation[];
 	const recentFull = page.length === HISTORY_LIMIT;
-	const recent = preserveAssetUrls(withoutFailed(page), studio.history);
+	const recent = preserveAssetUrls(page, studio.history);
 	studio.historyRecent = recent;
 	studio.historyRecentFull = recentFull;
 	if (!studio.historyExtended) {
@@ -140,9 +141,7 @@ export async function loadHistory(): Promise<void> {
 	}
 	// Keep older pages at the tail while refreshing the newest slice in place.
 	const recentIds = new Set(recent.map((generation) => generation.id));
-	const olderTail = studio.history.filter(
-		(generation) => !recentIds.has(generation.id) && generation.state !== 'failed'
-	);
+	const olderTail = studio.history.filter((generation) => !recentIds.has(generation.id));
 	studio.history = [...recent, ...olderTail];
 	await loadStarredGenerations();
 }
@@ -157,7 +156,7 @@ export async function loadOlderHistory(): Promise<boolean> {
 		const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}&${query}`);
 		if (!response.ok) return null;
 		const raw = (await response.json()) as Generation[];
-		return { raw, items: withoutFailed(raw) };
+		return { raw, items: raw };
 	};
 
 	const result = await fetchPage(`cursor=${oldest.id}`);

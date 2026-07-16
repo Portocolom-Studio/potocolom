@@ -40,6 +40,8 @@ def test_simulated_generate_with_input_image():
     assert progress_values[-1] == 1.0
     assert result.width == 256
     assert result.height == 128
+    assert result.load_ms >= 0
+    assert engine.loaded_models() == ["sd-sim"]
     assert result.data[:4] == b"RIFF"
 
 
