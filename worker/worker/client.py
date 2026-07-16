@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import uuid
 from contextlib import suppress
 
@@ -146,6 +147,9 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                 logger.exception("job %s progress keepalive failed", job_id)
 
     keepalive_task = asyncio.create_task(progress_keepalive())
+    input_fetch_ms = 0
+    load_ms = 0
+    postprocess_ms = 0
     try:
         params = manifest.with_defaults(control.get("params") or {})
         upload = control["upload"]
@@ -156,12 +160,18 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
         if input_spec and input_spec.get("url"):
             # Short-lived client: inference can run for minutes and must not
             # hold a connection pool open.
+            fetch_start = time.monotonic()
             async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
                 response = await client.get(input_spec["url"])
                 response.raise_for_status()
                 input_image = response.content
+            input_fetch_ms = int((time.monotonic() - fetch_start) * 1000)
+        if isinstance(engine, SimulatedEngine) and manifest.id not in engine.loaded_models():
+            load_ms = await engine.load_model(manifest)
         result = await engine.generate(manifest, params, progress,
                                         input_image=input_image)
+        load_ms += result.load_ms
+        post_start = time.monotonic()
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
                                         headers=upload.get("headers") or {})
@@ -180,8 +190,12 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                 except Exception:
                     logger.exception("job %s thumbnail failed; delivering without one",
                                      job_id)
+        postprocess_ms = int((time.monotonic() - post_start) * 1000)
         done_msg: dict = {"type": "job_done", "job_id": job_id,
                           "gpu_ms": result.gpu_ms,
+                          "input_fetch_ms": input_fetch_ms,
+                          "load_ms": load_ms,
+                          "postprocess_ms": postprocess_ms,
                           "width": result.width, "height": result.height}
         if has_thumbnail:
             done_msg["has_thumbnail"] = True

@@ -42,6 +42,7 @@ class GeneratedImage:
     width: int
     height: int
     gpu_ms: int
+    load_ms: int = 0
 
 
 class Engine(Protocol):
@@ -437,7 +438,11 @@ class DiffusersEngine:
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop,
                   input_image: bytes | None = None) -> GeneratedImage:
+        start = time.monotonic()
+        key = (manifest.id, "t2i")
+        cold = key not in self._pipelines
         pipeline = self._pipeline(manifest, "t2i")
+        load_ms = int((time.monotonic() - start) * 1000) if cold else 0
         steps = max(1, int(params.get("steps", 2)))
         generator = None
         if params.get("seed") is not None:
@@ -462,14 +467,18 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms)
+        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
                       loop: asyncio.AbstractEventLoop,
                       input_image: bytes | None) -> GeneratedImage:
         if input_image is None:
             raise ValueError("image_to_image job requires input_image")
+        load_start = time.monotonic()
+        key = (manifest.id, "i2i")
+        cold = key not in self._pipelines
         pipeline = self._pipeline(manifest, "i2i")
+        load_ms = int((time.monotonic() - load_start) * 1000) if cold else 0
         source = decode_input_image(input_image)
         width = params.get("width")
         height = params.get("height")
@@ -499,7 +508,7 @@ class DiffusersEngine:
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms)
+        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         async with self._gpu:

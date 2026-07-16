@@ -46,6 +46,10 @@ class Job(Base):
     state: Mapped[str] = mapped_column(Text, default="queued")  # running, succeeded, failed
     attempt: Mapped[int] = mapped_column(default=1)  # retry once, then fail (docs/decisions.md)
     gpu_ms: Mapped[int | None]
+    input_fetch_ms: Mapped[int | None]
+    load_ms: Mapped[int | None]
+    postprocess_ms: Mapped[int | None]
+    failure_reason: Mapped[str | None] = mapped_column(Text)
     source_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("assets.id", ondelete="SET NULL"))
     dispatched_at: Mapped[datetime | None]

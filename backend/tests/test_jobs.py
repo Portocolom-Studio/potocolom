@@ -320,3 +320,50 @@ def test_img2img_rejects_model_without_capability():
                                          "source_asset_id": source_asset_id})
             assert rejected.status_code == 422
             assert "image_to_image" in rejected.json()["detail"]
+
+
+@pytest.mark.db
+def test_job_phase_timings_persisted():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-phases")
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-test",
+                                        "params": {"prompt": "timing"}})
+            job_id = created.json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "gpu_ms": 900, "input_fetch_ms": 50,
+                              "load_ms": 1200, "postprocess_ms": 80,
+                              "width": 512, "height": 512})
+
+            job = poll_until(client, job_id, "succeeded")
+            assert job["gpu_ms"] == 900
+            assert job["input_fetch_ms"] == 50
+            assert job["load_ms"] == 1200
+            assert job["postprocess_ms"] == 80
+            assert job["dispatched_at"] is not None
+            assert job["finished_at"] is not None
+
+
+@pytest.mark.db
+def test_job_failure_reason_persisted():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-fail-reason")
+
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-test",
+                                        "params": {"prompt": "fail"}})
+            job_id = created.json()["job_id"]
+            worker.receive_json()
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "CUDA OOM"})
+
+            job = poll_until(client, job_id, "failed")
+            assert job["failure_reason"] == "CUDA OOM"
+            assert job["finished_at"] is not None

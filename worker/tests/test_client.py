@@ -191,6 +191,9 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     done = next(r for r in reports if r["type"] == "job_done")
     assert done["width"] == 512 and done["height"] == 512
     assert done["gpu_ms"] >= 0
+    assert done["input_fetch_ms"] >= 0
+    assert done["load_ms"] >= 0
+    assert done["postprocess_ms"] >= 0
     assert done["has_thumbnail"] is True
 
 

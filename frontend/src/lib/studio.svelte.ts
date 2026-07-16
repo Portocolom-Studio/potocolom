@@ -30,7 +30,13 @@ export type Generation = {
 	state: string;
 	progress: number | null; // denoising fraction while running, else null
 	gpu_ms: number | null;
+	input_fetch_ms: number | null;
+	load_ms: number | null;
+	postprocess_ms: number | null;
+	failure_reason: string | null;
 	created_at: string;
+	dispatched_at: string | null;
+	finished_at: string | null;
 	assets: Asset[];
 };
 
