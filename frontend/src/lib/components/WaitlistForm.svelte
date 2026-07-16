@@ -61,7 +61,7 @@
 						type="email"
 						name="email"
 						required
-						class="h-11 rounded-full px-5"
+						class="h-11 px-4"
 						placeholder={t('wl.placeholder')}
 						bind:value={email}
 						disabled={status === 'sending'}
@@ -76,11 +76,9 @@
 					aria-hidden="true"
 					bind:value={honeypot}
 				/>
-				<div class="wl-aura wl-aura-dual text-primary shrink-0">
-					<Button type="submit" disabled={status === 'sending'}>
-						{status === 'sending' ? t('wl.sending') : t('wl.cta')}
-					</Button>
-				</div>
+				<Button type="submit" class="shrink-0" disabled={status === 'sending'}>
+					{status === 'sending' ? t('wl.sending') : t('wl.cta')}
+				</Button>
 			</form>
 			{#if status === 'error'}
 				<Alert.Root variant="destructive" class="mx-auto mt-4 max-w-md text-left">
@@ -100,68 +98,3 @@
 		</p>
 	</section>
 {/if}
-
-<style>
-	@property --wl-aura-angle {
-		syntax: '<angle>';
-		inherits: false;
-		initial-value: 0deg;
-	}
-
-	.wl-aura {
-		--aura-angle: var(--wl-aura-angle);
-		--aura-padding: 0.125rem;
-		--aura-radius: 9999px;
-		position: relative;
-		display: inline-block;
-		padding: var(--aura-padding);
-		border-radius: calc(var(--aura-padding) + var(--aura-radius));
-		animation: wl-aura 6s linear infinite;
-		background-image: conic-gradient(from var(--aura-angle), transparent 225deg, currentColor);
-	}
-
-	.wl-aura > :global(*) {
-		position: relative;
-		z-index: 1;
-	}
-
-	.wl-aura::before,
-	.wl-aura::after {
-		content: '';
-		position: absolute;
-		top: 50%;
-		left: 50%;
-		z-index: 0;
-		display: block;
-		width: 100%;
-		height: 100%;
-		border-radius: inherit;
-		background-color: inherit;
-		background-image: inherit;
-		translate: -50% -50%;
-		opacity: 0.7;
-		filter: blur(0.25rem);
-		animation: inherit;
-	}
-
-	.wl-aura::after {
-		opacity: 0.3;
-		filter: blur(1rem);
-	}
-
-	.wl-aura-dual {
-		background-image: repeating-conic-gradient(
-			from var(--aura-angle),
-			transparent 0%,
-			transparent 40%,
-			currentColor 50%
-		);
-	}
-
-	@keyframes wl-aura {
-		to {
-			--wl-aura-angle: 360deg;
-			transform: translateZ(1px);
-		}
-	}
-</style>
