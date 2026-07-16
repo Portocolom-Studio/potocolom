@@ -4,7 +4,8 @@ export type PipelineMetrics = {
 	queueWaitP50: number | null;
 	queueWaitP95: number | null;
 	postprocessSharePct: number | null;
-	effectiveUtilPct: number | null;
+	inJobGpuSharePct: number | null;
+	sessionUtilPct: number | null;
 	failureRatePct: number | null;
 };
 
@@ -53,12 +54,24 @@ export function computePipelineMetrics(history: Generation[]): PipelineMetrics {
 		totalPost += generation.postprocess_ms ?? 0;
 	}
 
+	const withSpan = succeeded.filter(
+		(generation) => generation.dispatched_at && generation.finished_at
+	);
+	let sessionUtilPct: number | null = null;
+	if (withSpan.length > 0) {
+		const spanMs =
+			Math.max(...withSpan.map((generation) => new Date(generation.finished_at!).getTime())) -
+			Math.min(...withSpan.map((generation) => new Date(generation.dispatched_at!).getTime()));
+		if (spanMs > 0) sessionUtilPct = (totalGpu / spanMs) * 100;
+	}
+
 	const sortedWait = [...queueWaits].sort((a, b) => a - b);
 	return {
 		queueWaitP50: percentile(sortedWait, 50),
 		queueWaitP95: percentile(sortedWait, 95),
 		postprocessSharePct: totalWall > 0 ? (totalPost / totalWall) * 100 : null,
-		effectiveUtilPct: totalWall > 0 ? (totalGpu / totalWall) * 100 : null,
+		inJobGpuSharePct: totalWall > 0 ? (totalGpu / totalWall) * 100 : null,
+		sessionUtilPct,
 		failureRatePct
 	};
 }

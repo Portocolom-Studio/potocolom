@@ -171,7 +171,7 @@
 			</Card.Root>
 		</div>
 
-		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			<Card.Root class="gap-1 py-3">
 				<Card.Header class="px-4 pb-0">
 					<Card.Description>{t('app.metrics.queue_wait_p50')}</Card.Description>
@@ -196,9 +196,17 @@
 			</Card.Root>
 			<Card.Root class="gap-1 py-3">
 				<Card.Header class="px-4 pb-0">
-					<Card.Description>{t('app.metrics.effective_util')}</Card.Description>
+					<Card.Description>{t('app.metrics.in_job_gpu_share')}</Card.Description>
 					<Card.Title class="text-2xl tabular-nums">
-						{pipeline.effectiveUtilPct != null ? `${pipeline.effectiveUtilPct.toFixed(0)}%` : '-'}
+						{pipeline.inJobGpuSharePct != null ? `${pipeline.inJobGpuSharePct.toFixed(0)}%` : '-'}
+					</Card.Title>
+				</Card.Header>
+			</Card.Root>
+			<Card.Root class="gap-1 py-3">
+				<Card.Header class="px-4 pb-0">
+					<Card.Description>{t('app.metrics.session_util')}</Card.Description>
+					<Card.Title class="text-2xl tabular-nums">
+						{pipeline.sessionUtilPct != null ? `${pipeline.sessionUtilPct.toFixed(0)}%` : '-'}
 					</Card.Title>
 				</Card.Header>
 			</Card.Root>

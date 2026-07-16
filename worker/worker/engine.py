@@ -125,6 +125,12 @@ class SimulatedEngine:
     ) -> GeneratedImage:
         if input_image is not None and "image_to_image" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
+        load_ms = 0
+        if manifest.id not in self._loaded:
+            load_start = time.monotonic()
+            await asyncio.sleep(self.inference_seconds / 4)
+            self._loaded = {manifest.id}
+            load_ms = int((time.monotonic() - load_start) * 1000)
         steps = 4
         start = time.monotonic()
         for step in range(steps):
@@ -148,7 +154,7 @@ class SimulatedEngine:
             rgb = (color[0], color[1], color[2])
             image = Image.new("RGB", (width, height), rgb)
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), width, height, gpu_ms)
+        return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
         await asyncio.sleep(self.inference_seconds)
@@ -438,11 +444,11 @@ class DiffusersEngine:
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop,
                   input_image: bytes | None = None) -> GeneratedImage:
-        start = time.monotonic()
+        load_start = time.monotonic()
         key = (manifest.id, "t2i")
         cold = key not in self._pipelines
         pipeline = self._pipeline(manifest, "t2i")
-        load_ms = int((time.monotonic() - start) * 1000) if cold else 0
+        load_ms = int((time.monotonic() - load_start) * 1000) if cold else 0
         steps = max(1, int(params.get("steps", 2)))
         generator = None
         if params.get("seed") is not None:

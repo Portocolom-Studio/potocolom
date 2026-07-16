@@ -148,7 +148,6 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
 
     keepalive_task = asyncio.create_task(progress_keepalive())
     input_fetch_ms = 0
-    load_ms = 0
     postprocess_ms = 0
     try:
         params = manifest.with_defaults(control.get("params") or {})
@@ -166,11 +165,8 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                 response.raise_for_status()
                 input_image = response.content
             input_fetch_ms = int((time.monotonic() - fetch_start) * 1000)
-        if isinstance(engine, SimulatedEngine) and manifest.id not in engine.loaded_models():
-            load_ms = await engine.load_model(manifest)
         result = await engine.generate(manifest, params, progress,
                                         input_image=input_image)
-        load_ms += result.load_ms
         post_start = time.monotonic()
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
@@ -194,7 +190,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
         done_msg: dict = {"type": "job_done", "job_id": job_id,
                           "gpu_ms": result.gpu_ms,
                           "input_fetch_ms": input_fetch_ms,
-                          "load_ms": load_ms,
+                          "load_ms": result.load_ms,
                           "postprocess_ms": postprocess_ms,
                           "width": result.width, "height": result.height}
         if has_thumbnail:
