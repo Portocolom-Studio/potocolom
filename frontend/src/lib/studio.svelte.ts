@@ -241,6 +241,8 @@ export function toggleStarred(id: string): void {
 		? studio.starredIds.filter((starredId) => starredId !== id)
 		: [...studio.starredIds, id];
 	saveStarredIds(studio.starredIds);
+	// Best-effort refresh: a failed fetch leaves the previous starred set
+	// in place and the next history load retries it.
 	void loadStarredGenerations().catch(() => {});
 }
 

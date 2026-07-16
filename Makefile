@@ -61,11 +61,11 @@ api: ## API server on :8000; assets under ./data (make deps first)
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
-		API_URL=ws://127.0.0.1:8000/api/v1/fleet \
+		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 		.venv/bin/python -m worker
 
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
-	cd worker && API_URL=ws://127.0.0.1:8000/api/v1/fleet .venv/bin/python -m worker
+	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet .venv/bin/python -m worker
 
 web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev

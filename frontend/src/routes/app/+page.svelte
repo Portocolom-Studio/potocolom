@@ -25,7 +25,10 @@
 		void loadModels();
 		void loadHistory()
 			.then(pollWhileWorking)
-			.catch(() => {});
+			.catch(() => {
+				// Best-effort preload: the panel shows its empty states and the
+				// poll loop recovers once the API answers.
+			});
 	});
 </script>
 
