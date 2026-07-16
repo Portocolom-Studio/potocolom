@@ -80,6 +80,7 @@ export const studio = $state({
 	selectedId: null as string | null, // generation pinned in the viewer
 	history: [] as Generation[],
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
+	historyRecentFull: false, // true when the latest API page hit the limit (before failed filter)
 	historyHasMore: false,
 	historyExtended: false,
 	starredIds: loadStarredIds() as string[],
@@ -105,17 +106,24 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
+export function syncStarredIdsFromStorage(): void {
+	studio.starredIds = loadStarredIds();
+}
+
 export async function loadHistory(): Promise<void> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
-	if (!response.ok) return;
-	const recent = preserveAssetUrls(
-		withoutFailed((await response.json()) as Generation[]),
-		studio.history
-	);
+	if (!response.ok) {
+		await loadStarredGenerations();
+		return;
+	}
+	const page = (await response.json()) as Generation[];
+	const recentFull = page.length === HISTORY_LIMIT;
+	const recent = preserveAssetUrls(withoutFailed(page), studio.history);
 	studio.historyRecent = recent;
-	studio.historyHasMore = recent.length === HISTORY_LIMIT;
+	studio.historyRecentFull = recentFull;
 	if (!studio.historyExtended) {
 		studio.history = recent;
+		studio.historyHasMore = recentFull;
 		await loadStarredGenerations();
 		return;
 	}
@@ -137,13 +145,14 @@ export async function loadOlderHistory(): Promise<boolean> {
 	const fetchPage = async (query: string) => {
 		const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}&${query}`);
 		if (!response.ok) return null;
-		return withoutFailed((await response.json()) as Generation[]);
+		const raw = (await response.json()) as Generation[];
+		return { raw, items: withoutFailed(raw) };
 	};
 
-	let page = await fetchPage(`cursor=${oldest.id}`);
-	if (page === null) return false;
+	const result = await fetchPage(`cursor=${oldest.id}`);
+	if (result === null) return false;
 
-	let unique = page.filter((generation) => !existing.has(generation.id));
+	const unique = result.items.filter((generation) => !existing.has(generation.id));
 
 	if (unique.length === 0) {
 		studio.historyHasMore = false;
@@ -151,7 +160,7 @@ export async function loadOlderHistory(): Promise<boolean> {
 	}
 
 	studio.history = [...studio.history, ...unique];
-	studio.historyHasMore = page.length === HISTORY_LIMIT;
+	studio.historyHasMore = result.raw.length === HISTORY_LIMIT;
 	studio.historyExtended = studio.history.length > studio.historyRecent.length;
 	await loadStarredGenerations();
 	return true;
@@ -172,40 +181,55 @@ export function starredGenerations(): Generation[] {
 }
 
 export async function loadStarredGenerations(): Promise<void> {
-	const inHistory = new Set(studio.history.map((generation) => generation.id));
-	const existingById = new Map(
-		studio.starredExtras.map((generation) => [generation.id, generation])
-	);
-	const outsideHistory = studio.starredIds.filter((id) => !inHistory.has(id));
-	const alreadyLoaded = outsideHistory.flatMap((id) => {
-		const generation = existingById.get(id);
-		return generation !== undefined ? [generation] : [];
-	});
-	const needFetch = outsideHistory.filter((id) => !existingById.has(id));
+	const historyIds = new Set(studio.history.map((generation) => generation.id));
+	const extrasById = new Map(studio.starredExtras.map((generation) => [generation.id, generation]));
 
-	if (needFetch.length === 0) {
-		studio.starredExtras = alreadyLoaded;
-		return;
+	const resolved = new Map<string, Generation>();
+	for (const id of studio.starredIds) {
+		const fromHistory = studio.history.find((generation) => generation.id === id);
+		if (fromHistory !== undefined && fromHistory.assets.length > 0) {
+			resolved.set(id, fromHistory);
+			continue;
+		}
+		const cached = extrasById.get(id);
+		if (cached !== undefined && cached.assets.length > 0) {
+			resolved.set(id, cached);
+		}
 	}
 
-	const fetched = await Promise.all(
-		needFetch.map(async (id) => {
-			const response = await fetch(`/api/v1/generations/${id}`);
-			if (!response.ok) return null;
-			const generation = (await response.json()) as Generation;
-			return generation.state !== 'failed' && generation.assets.length > 0 ? generation : null;
-		})
-	);
-	studio.starredExtras = [
-		...alreadyLoaded,
-		...fetched.filter((generation): generation is Generation => generation !== null)
-	];
+	const missing = studio.starredIds.filter((id) => !resolved.has(id));
+	const fetched =
+		missing.length === 0
+			? []
+			: (
+					await Promise.all(
+						missing.map(async (id) => {
+							const response = await fetch(`/api/v1/generations/${id}`);
+							if (!response.ok) return null;
+							const generation = (await response.json()) as Generation;
+							return generation.state !== 'failed' && generation.assets.length > 0
+								? generation
+								: null;
+						})
+					)
+				).filter((generation): generation is Generation => generation !== null);
+
+	for (const generation of fetched) {
+		resolved.set(generation.id, generation);
+	}
+
+	studio.starredExtras = studio.starredIds.flatMap((id) => {
+		if (historyIds.has(id)) return [];
+		const generation = resolved.get(id);
+		return generation !== undefined ? [generation] : [];
+	});
 }
 
-export function resetHistoryToRecent(): void {
+export async function resetHistoryToRecent(): Promise<void> {
 	studio.history = studio.historyRecent;
 	studio.historyExtended = false;
-	studio.historyHasMore = studio.historyRecent.length === HISTORY_LIMIT;
+	studio.historyHasMore = studio.historyRecentFull;
+	await loadStarredGenerations();
 }
 
 export function isStarred(id: string): boolean {
@@ -217,6 +241,9 @@ export function toggleStarred(id: string): void {
 		? studio.starredIds.filter((starredId) => starredId !== id)
 		: [...studio.starredIds, id];
 	saveStarredIds(studio.starredIds);
+	// Best-effort refresh: a failed fetch leaves the previous starred set
+	// in place and the next history load retries it.
+	void loadStarredGenerations().catch(() => {});
 }
 
 export async function pollWhileWorking(): Promise<void> {

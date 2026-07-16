@@ -78,7 +78,7 @@
 	"nav.whitepaper": "Whitepaper",
 	"nav.benchmark": "Benchmarks",
 	"bench.kicker": "GPU benchmarks",
-	"bench.title": "Model runtime on 8 GB VRAM",
+	"bench.title": "Model runtime on {vram} GB VRAM",
 	"bench.sub": "Curated prompts, fixed parameter variants, one model loaded at a time. GPU milliseconds are measured on the worker; wall time includes queue and I/O.",
 	"bench.toc": "On this page",
 	"bench.toc_specs": "Specifications",

@@ -1,7 +1,7 @@
-# Image generation benchmark (8 GB VRAM)
+# Image generation benchmark (16 GB VRAM)
 
 Curated prompt suite + parameter matrix for comparing models on a consumer GPU
-(RX 7600 class, 8 GB). Run with `make benchmark` after `make api` (with
+(16 GB). Run with `make benchmark` after `make api` (with
 `BENCHMARK_API=1`) and `make worker-rocm` are up.
 
 Measured baselines and the optimization backlog live in [issue #60](https://github.com/portocolom-studio/potocolom/issues/60).

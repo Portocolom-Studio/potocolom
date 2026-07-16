@@ -1,9 +1,16 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
+	import {
+		loadHistory,
+		loadModels,
+		pollWhileWorking,
+		syncStarredIdsFromStorage
+	} from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 
@@ -11,6 +18,18 @@
 	// behind it: PUBLIC_SITE_MODE=landing shows the canvas preview instead
 	// of the studio. Product builds leave the variable empty.
 	const landing = PUBLIC_SITE_MODE === 'landing';
+
+	onMount(() => {
+		if (landing) return;
+		syncStarredIdsFromStorage();
+		void loadModels();
+		void loadHistory()
+			.then(pollWhileWorking)
+			.catch(() => {
+				// Best-effort preload: the panel shows its empty states and the
+				// poll loop recovers once the API answers.
+			});
+	});
 </script>
 
 <svelte:head>

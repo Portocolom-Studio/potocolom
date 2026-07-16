@@ -78,7 +78,7 @@
 	"nav.whitepaper": "Whitepaper",
 	"nav.benchmark": "Benchmarks",
 	"bench.kicker": "Benchmarks de GPU",
-	"bench.title": "Tiempo por modelo en 8 GB de VRAM",
+	"bench.title": "Tiempo por modelo en {vram} GB de VRAM",
 	"bench.sub": "Prompts curados, variantes de parámetros fijas, un modelo cargado cada vez. Los milisegundos de GPU se miden en el worker; el tiempo de pared incluye cola y E/S.",
 	"bench.toc": "En esta página",
 	"bench.toc_specs": "Especificaciones",

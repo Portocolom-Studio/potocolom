@@ -28,6 +28,9 @@
 				})
 			: null
 	);
+	const benchmarkTitle = $derived(
+		t('bench.title').replace('{vram}', String(report?.target_vram_gb ?? 16))
+	);
 	const benchmarkedModels = $derived(new Set(report?.models ?? []));
 
 	const tocSections = $derived.by(() => {
@@ -46,14 +49,14 @@
 </script>
 
 <svelte:head>
-	<title>potocolom - {t('bench.title')}</title>
+	<title>potocolom - {benchmarkTitle}</title>
 	<meta name="description" content={t('bench.sub')} />
 </svelte:head>
 
 <SiteLandingHeader current="benchmark" />
 
 <div class="mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-28">
-	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('bench.title')}</h1>
+	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{benchmarkTitle}</h1>
 	<p class="text-muted-foreground mt-4 max-w-2xl text-lg leading-relaxed">{t('bench.sub')}</p>
 
 	{#if hasData && report}

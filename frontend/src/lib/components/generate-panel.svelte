@@ -28,7 +28,6 @@
 		generationById,
 		isStarred,
 		loadHistory,
-		loadModels,
 		pollWhileWorking,
 		studio,
 		toggleStarred
@@ -137,11 +136,6 @@
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
 		guidanceNorm = valueToNorm(guidanceRange.default, guidanceRange);
 		normsReady = true;
-	});
-
-	$effect(() => {
-		void loadModels();
-		void loadHistory().then(pollWhileWorking);
 	});
 
 	async function generate(event: SubmitEvent): Promise<void> {
@@ -290,18 +284,7 @@
 					<Button type="submit" disabled={studio.prompt.trim() === ''}>
 						{t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
 					</Button>
-					{#if working > 0}
-						<p class="text-muted-foreground text-sm">
-							{working}
-							{t('app.gen.working_suffix')}{runningProgress !== null
-								? ` (${Math.round(runningProgress * 100)}%)`
-								: ''}
-						</p>
-					{/if}
-					{#if errorText !== ''}
-						<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
-					{/if}
-					<div class="border-border mt-auto flex flex-col gap-2 border-t pt-4">
+					<div class="border-border flex flex-col gap-2 border-t pt-4">
 						<div class="grid grid-cols-2 gap-2">
 							<Button
 								type="button"
@@ -360,15 +343,26 @@
 							</Button>
 						</div>
 					</div>
+					{#if working > 0}
+						<p class="text-muted-foreground text-sm">
+							{working}
+							{t('app.gen.working_suffix')}{runningProgress !== null
+								? ` (${Math.round(runningProgress * 100)}%)`
+								: ''}
+						</p>
+					{/if}
+					{#if errorText !== ''}
+						<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
+					{/if}
 				</form>
 			{/if}
 		</Card.Content>
 	</Card.Root>
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
-	<div class="flex min-h-0 min-w-0 flex-col gap-4">
-		<Card.Root class="min-h-0 flex-1">
-			<Card.Content class="flex h-full min-h-0 min-w-0 flex-col gap-2 p-4">
+	<div class="flex min-h-0 min-w-0 flex-col gap-3">
+		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
 				{#if shown !== null}
 					<a
 						href={shown.assets[0].url}
@@ -395,6 +389,8 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-		<HistoryStrip />
+		<div class="min-w-0 shrink-0">
+			<HistoryStrip />
+		</div>
 	</div>
 </div>

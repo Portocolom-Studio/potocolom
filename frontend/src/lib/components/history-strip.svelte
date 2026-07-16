@@ -4,9 +4,12 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import {
+		isStarred,
 		loadOlderHistory,
 		resetHistoryToRecent,
+		starredGenerations,
 		studio,
 		type Generation
 	} from '$lib/studio.svelte';
@@ -19,20 +22,31 @@
 		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
 	);
 
+	// Starred jobs outside the loaded history pages still appear at the front.
+	const stripGenerations = $derived.by(() => {
+		const seen = new Set<string>();
+		const items: Generation[] = [];
+		for (const generation of starredGenerations()) {
+			if (seen.has(generation.id)) continue;
+			seen.add(generation.id);
+			items.push(generation);
+		}
+		for (const generation of studio.history) {
+			if (generation.state === 'failed' || seen.has(generation.id)) continue;
+			seen.add(generation.id);
+			items.push(generation);
+		}
+		return items;
+	});
+
 	async function loadOlder(): Promise<void> {
 		if (!stripEl || loadingOlder) return;
 		loadingOlder = true;
 		loadError = '';
-		const atEnd = stripEl.scrollLeft + stripEl.clientWidth >= stripEl.scrollWidth - 8;
-		const prevWidth = stripEl.scrollWidth;
 		const loaded = await loadOlderHistory();
 		await tick();
 		if (loaded && stripEl) {
-			if (atEnd) {
-				stripEl.scrollLeft = stripEl.scrollWidth - stripEl.clientWidth;
-			} else {
-				stripEl.scrollLeft += stripEl.scrollWidth - prevWidth;
-			}
+			stripEl.scrollLeft = stripEl.scrollWidth - stripEl.clientWidth;
 		} else if (!loaded) {
 			loadError = t('app.gen.load_older_empty');
 		}
@@ -40,7 +54,7 @@
 	}
 
 	async function backToRecent(): Promise<void> {
-		resetHistoryToRecent();
+		await resetHistoryToRecent();
 		await tick();
 		stripEl?.scrollTo({ left: 0, behavior: 'smooth' });
 	}
@@ -50,8 +64,8 @@
 	}
 </script>
 
-{#if studio.history.length > 0}
-	<div class="flex shrink-0 gap-2 overflow-x-auto pb-1" bind:this={stripEl}>
+{#if stripGenerations.length > 0}
+	<div class="flex min-w-0 w-full items-stretch gap-2">
 		{#if studio.historyExtended}
 			<button
 				type="button"
@@ -64,39 +78,49 @@
 			</button>
 		{/if}
 
-		{#each studio.history.filter((g) => g.state !== 'failed') as generation (generation.id)}
-			{#if generation.assets.length > 0}
-				<button
-					type="button"
-					class="shrink-0"
-					title={generation.params.prompt}
-					onclick={() => select(generation)}
-				>
-					<img
-						src={generation.assets[0].url}
-						alt={generation.params.prompt ?? generation.id}
-						class={'h-24 w-24 rounded-lg border object-cover ' +
-							(shownId === generation.id ? 'border-primary' : 'border-border')}
-					/>
-				</button>
-			{:else if generation.state === 'queued' || generation.state === 'running'}
-				<div
-					class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
-				>
-					<Badge variant="outline">
-						{t('app.gen.badge_working')}
-					</Badge>
-					{#if generation.state === 'running' && generation.progress !== null}
-						<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
-							<div
-								class="bg-primary h-1 rounded-full transition-[width]"
-								style={`width: ${Math.round(generation.progress * 100)}%`}
-							></div>
-						</div>
-					{/if}
-				</div>
-			{/if}
-		{/each}
+		<div class="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1" bind:this={stripEl}>
+			{#each stripGenerations as generation (generation.id)}
+				{#if generation.assets.length > 0}
+					<button
+						type="button"
+						class="relative shrink-0"
+						title={generation.params.prompt}
+						onclick={() => select(generation)}
+					>
+						<img
+							src={generation.assets[0].url}
+							alt={generation.params.prompt ?? generation.id}
+							class={'h-24 w-24 rounded-lg border object-cover ' +
+								(shownId === generation.id ? 'border-primary' : 'border-border')}
+						/>
+						{#if isStarred(generation.id)}
+							<span
+								class="bg-background/80 pointer-events-none absolute end-1 top-1 rounded-full p-0.5"
+								aria-hidden="true"
+							>
+								<StarIcon class="fill-current size-3" />
+							</span>
+						{/if}
+					</button>
+				{:else if generation.state === 'queued' || generation.state === 'running'}
+					<div
+						class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
+					>
+						<Badge variant="outline">
+							{t('app.gen.badge_working')}
+						</Badge>
+						{#if generation.state === 'running' && generation.progress !== null}
+							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
+								<div
+									class="bg-primary h-1 rounded-full transition-[width]"
+									style={`width: ${Math.round(generation.progress * 100)}%`}
+								></div>
+							</div>
+						{/if}
+					</div>
+				{/if}
+			{/each}
+		</div>
 
 		{#if studio.historyHasMore}
 			<button

@@ -23,14 +23,11 @@ permissions:
 
 jobs:
   simulation:
-    runs-on: ubuntu-latest
+    # Self-hosted: docs/self-hosted-runner.md
+    runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
       - uses: actions/checkout@v7
-      # No pip cache: this job's combined key would never be shared with the
-      # per-component workflows, so it would only store duplicate wheels.
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: python -m pip install -e ./backend -e ./worker
-      - run: python scripts/simulate.py
+      - run: python3.11 -m venv .ci-venv
+      - run: .ci-venv/bin/pip install -e ./backend -e ./worker
+      - run: .ci-venv/bin/python scripts/simulate.py
         timeout-minutes: 3
