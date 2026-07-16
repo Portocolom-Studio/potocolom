@@ -31,6 +31,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import * as Select from '$lib/components/ui/select';
 
 	let liveTick = $state(0);
 	let sessions = $state<BenchmarkSession[]>([]);
@@ -287,14 +288,24 @@
 			<span class="text-muted-foreground text-xs font-medium tracking-wide uppercase">
 				{t('app.metrics.benchmark_session')}
 			</span>
-			<select
-				class="border-input bg-background h-9 w-full rounded-lg border px-2.5 text-sm"
-				bind:value={selectedSessionId}
+			<Select.Root
+				type="single"
+				value={selectedSessionId ?? undefined}
+				onValueChange={(next) => {
+					if (next) selectedSessionId = next;
+				}}
 			>
-				{#each sessions as entry (entry.id)}
-					<option value={entry.id}>{entry.label}</option>
-				{/each}
-			</select>
+				<Select.Trigger class="w-full">
+					{selectedSession?.label ?? t('app.metrics.benchmark_session')}
+				</Select.Trigger>
+				<Select.Content>
+					<Select.Group>
+						{#each sessions as entry (entry.id)}
+							<Select.Item value={entry.id} label={entry.label} />
+						{/each}
+					</Select.Group>
+				</Select.Content>
+			</Select.Root>
 		</div>
 
 		{#if selectedSession}
