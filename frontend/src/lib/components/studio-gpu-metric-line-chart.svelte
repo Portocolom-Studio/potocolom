@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		areaPath,
+		bandAreaPath,
 		CHART_MARGINS,
 		formatMetricValue,
 		formatRangeCaption,
@@ -13,6 +14,7 @@
 		tsFromPlotX,
 		xScale,
 		yScale,
+		type ChartBandPoint,
 		type ChartPoint
 	} from '$lib/studio-gpu-chart';
 	import type { MetricsRange } from '$lib/studio-metrics-range';
@@ -30,11 +32,13 @@
 		yUnitLabel,
 		rollingWindow = 8,
 		live = false,
+		bands = [],
 		emptyHint
 	}: {
 		title: string;
 		seriesColor: string;
 		points?: ChartPoint[];
+		bands?: ChartBandPoint[];
 		windowStartMs: number;
 		windowEndMs: number;
 		range?: MetricsRange;
@@ -55,8 +59,10 @@
 	const yTicks = [0, 25, 50, 75, 100];
 	const xTicks = $derived(timeTicks(windowStartMs, windowEndMs, 6));
 	const meanPoints = $derived(rollingMean(points, rollingWindow));
-	const latest = $derived(latestPoint(meanPoints));
+	const seriesPoints = $derived(bands.length > 0 ? points : meanPoints);
+	const latest = $derived(latestPoint(seriesPoints));
 	const gradientId = $derived(`gpu-metric-${title.replace(/\W+/g, '-').toLowerCase()}`);
+	const bandGradientId = $derived(`${gradientId}-band`);
 	const rangeCaption = $derived(formatRangeCaption(windowStartMs, windowEndMs, range));
 	const axisUnit = $derived(yUnitLabel ?? unit);
 
@@ -66,7 +72,7 @@
 	let tooltipFlip = $state(false);
 	let plotHost: HTMLDivElement | undefined = $state();
 
-	const hoverPoint = $derived(hoverIndex == null ? null : (meanPoints[hoverIndex] ?? null));
+	const hoverPoint = $derived(hoverIndex == null ? null : (seriesPoints[hoverIndex] ?? null));
 	const hoverRaw = $derived(hoverIndex == null ? null : (points[hoverIndex] ?? hoverPoint));
 
 	function clampTooltip(clientX: number, clientY: number) {
@@ -82,7 +88,7 @@
 	}
 
 	function onPointerMove(event: PointerEvent) {
-		if (!plotHost || meanPoints.length === 0) {
+		if (!plotHost || seriesPoints.length === 0) {
 			hoverIndex = null;
 			return;
 		}
@@ -91,7 +97,7 @@
 		const rect = svg.getBoundingClientRect();
 		const x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * width;
 		const ts = tsFromPlotX(x, windowStartMs, windowEndMs, plotLeft, plotWidth);
-		hoverIndex = nearestPointIndex(meanPoints, ts);
+		hoverIndex = nearestPointIndex(seriesPoints, ts);
 		clampTooltip(event.clientX, event.clientY);
 	}
 
@@ -176,45 +182,86 @@
 			{/each}
 
 			{#if points.length > 0}
-				<path
-					d={linePath(points, windowStartMs, windowEndMs, plotLeft, plotWidth, plotTop, plotHeight)}
-					fill="none"
-					stroke={seriesColor}
-					stroke-width="1.5"
-					stroke-opacity="0.3"
-					stroke-linejoin="round"
-					stroke-linecap="round"
-					vector-effect="non-scaling-stroke"
-				/>
-				<path
-					d={areaPath(
-						meanPoints,
-						windowStartMs,
-						windowEndMs,
-						plotLeft,
-						plotWidth,
-						plotTop,
-						plotHeight
-					)}
-					fill={`url(#${gradientId})`}
-				/>
-				<path
-					d={linePath(
-						meanPoints,
-						windowStartMs,
-						windowEndMs,
-						plotLeft,
-						plotWidth,
-						plotTop,
-						plotHeight
-					)}
-					fill="none"
-					stroke={seriesColor}
-					stroke-width="2"
-					stroke-linejoin="round"
-					stroke-linecap="round"
-					vector-effect="non-scaling-stroke"
-				/>
+				{#if bands.length > 0}
+					<path
+						d={bandAreaPath(
+							bands,
+							windowStartMs,
+							windowEndMs,
+							plotLeft,
+							plotWidth,
+							plotTop,
+							plotHeight
+						)}
+						fill={seriesColor}
+						fill-opacity="0.12"
+					/>
+					<path
+						d={linePath(
+							seriesPoints,
+							windowStartMs,
+							windowEndMs,
+							plotLeft,
+							plotWidth,
+							plotTop,
+							plotHeight
+						)}
+						fill="none"
+						stroke={seriesColor}
+						stroke-width="2"
+						stroke-linejoin="round"
+						stroke-linecap="round"
+						vector-effect="non-scaling-stroke"
+					/>
+				{:else}
+					<path
+						d={linePath(
+							points,
+							windowStartMs,
+							windowEndMs,
+							plotLeft,
+							plotWidth,
+							plotTop,
+							plotHeight
+						)}
+						fill="none"
+						stroke={seriesColor}
+						stroke-width="1.5"
+						stroke-opacity="0.3"
+						stroke-linejoin="round"
+						stroke-linecap="round"
+						vector-effect="non-scaling-stroke"
+					/>
+					<path
+						d={areaPath(
+							meanPoints,
+							windowStartMs,
+							windowEndMs,
+							plotLeft,
+							plotWidth,
+							plotTop,
+							plotHeight
+						)}
+						fill={`url(#${gradientId})`}
+					/>
+					<path
+						d={linePath(
+							meanPoints,
+							windowStartMs,
+							windowEndMs,
+							plotLeft,
+							plotWidth,
+							plotTop,
+							plotHeight
+						)}
+						fill="none"
+						stroke={seriesColor}
+						stroke-width="2"
+						stroke-linejoin="round"
+						stroke-linecap="round"
+						vector-effect="non-scaling-stroke"
+					/>
+				{/if}
 
 				{#if latest}
 					<circle

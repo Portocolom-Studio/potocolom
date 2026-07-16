@@ -268,7 +268,7 @@ async def fleet(ws: WebSocket) -> None:
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
     await ws.send_json({"type": "registered"})
-    from app import registry  # late import; registry reads this module's state
+    from app import gpu_samples, registry  # late import; registry reads this module's state
     await registry.persist_manifests(worker.manifests)
     try:
         while True:
@@ -294,6 +294,8 @@ async def fleet(ws: WebSocket) -> None:
                     elif control["type"] in ("gpu_status", "model_loaded",
                                              "model_unloaded", "gpu_error"):
                         resolve_gpu_request(control)
+                    elif control["type"] == "heartbeat":
+                        gpu_samples.schedule_heartbeat_sample(worker.id, control)
                     # Heartbeats refresh last_seen only; slot accounting has
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.

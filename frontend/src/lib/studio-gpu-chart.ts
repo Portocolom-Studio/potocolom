@@ -2,6 +2,8 @@ import type { MetricsRange } from '$lib/studio-metrics-range';
 
 export type ChartPoint = { ts: number; value: number };
 
+export type ChartBandPoint = { ts: number; min: number; max: number; mean: number };
+
 export type ChartMargins = {
 	top: number;
 	right: number;
@@ -86,6 +88,35 @@ export function areaPath(
 		plotWidth
 	);
 	return `${line} L${lastX.toFixed(2)},${baseY.toFixed(2)} L${firstX.toFixed(2)},${baseY.toFixed(2)} Z`;
+}
+
+export function bandAreaPath(
+	bands: ChartBandPoint[],
+	windowStartMs: number,
+	windowEndMs: number,
+	plotLeft: number,
+	plotWidth: number,
+	plotTop: number,
+	plotHeight: number,
+	maxY = 100
+): string {
+	if (bands.length === 0) return '';
+	const top = bands
+		.map((band, index) => {
+			const x = xScale(band.ts, windowStartMs, windowEndMs, plotLeft, plotWidth);
+			const y = yScale(band.max, plotTop, plotHeight, maxY);
+			return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+		})
+		.join(' ');
+	const bottom = [...bands]
+		.reverse()
+		.map((band) => {
+			const x = xScale(band.ts, windowStartMs, windowEndMs, plotLeft, plotWidth);
+			const y = yScale(band.min, plotTop, plotHeight, maxY);
+			return `L${x.toFixed(2)},${y.toFixed(2)}`;
+		})
+		.join(' ');
+	return `${top} ${bottom} Z`;
 }
 
 export function rollingMean(points: ChartPoint[], window: number): ChartPoint[] {

@@ -285,6 +285,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
             await ws.send(json.dumps({
                 "type": "heartbeat",
                 "slots_in_use": len(runners),
+                "loaded_models": engine.loaded_models(),
                 "gpu": sample_gpu(settings.device),
             }))
 
