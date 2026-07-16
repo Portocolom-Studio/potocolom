@@ -367,3 +367,62 @@ def test_job_failure_reason_persisted():
             job = poll_until(client, job_id, "failed")
             assert job["failure_reason"] == "CUDA OOM"
             assert job["finished_at"] is not None
+
+
+def _post_generation(client, prompt: str) -> str:
+    created = client.post("/api/v1/generations",
+                          json={"model_id": "sd-test", "params": {"prompt": prompt}})
+    assert created.status_code == 202
+    return created.json()["job_id"]
+
+
+def _wait_for_dispatch(worker, timeout=5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        msg = worker.receive_json()
+        if msg["type"] == "dispatch_job":
+            return msg
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for dispatch_job")
+
+
+@pytest.mark.db
+def test_dispatch_depth_two_before_job_done():
+    """Depth 2: API dispatches a second job while the first is still uploading."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-depth2")
+
+            first_id = _post_generation(client, "one")
+            second_id = _post_generation(client, "two")
+            time.sleep(0.35)
+
+            first = _wait_for_dispatch(worker)
+            second = _wait_for_dispatch(worker)
+            assert {first["job_id"], second["job_id"]} == {first_id, second_id}
+
+
+@pytest.mark.db
+def test_dispatch_depth_blocks_third_until_slot_frees():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-depth-cap")
+
+            _post_generation(client, "a")
+            _post_generation(client, "b")
+            time.sleep(0.35)
+            d1 = _wait_for_dispatch(worker)
+            _wait_for_dispatch(worker)
+
+            third_id = _post_generation(client, "c")
+            time.sleep(0.35)
+
+            upload_path = urlsplit(d1["upload"]["url"]).path
+            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": d1["job_id"],
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            poll_until(client, d1["job_id"], "succeeded")
+
+            time.sleep(0.35)
+            d3 = _wait_for_dispatch(worker)
+            assert d3["job_id"] == third_id

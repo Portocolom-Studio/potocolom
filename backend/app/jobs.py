@@ -40,6 +40,7 @@ router = APIRouter()
 JOB_QUEUE = "queue:jobs"
 TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
+JOB_DISPATCH_DEPTH = 2  # queued jobs per worker; overlap encode/upload with denoise
 
 TERMINAL_STATES = ("succeeded", "failed")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
@@ -274,9 +275,13 @@ async def generation_events(
 
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     for worker in realtime.workers.values():
-        if model_id in worker.models and not worker.job_busy:
+        if model_id in worker.models and worker.jobs_in_flight < JOB_DISPATCH_DEPTH:
             return worker
     return None
+
+
+def release_job_slot(worker: realtime.Worker) -> None:
+    worker.jobs_in_flight = max(0, worker.jobs_in_flight - 1)
 
 
 async def dispatch_loop() -> None:
@@ -303,7 +308,7 @@ async def sweep_stalled_jobs() -> None:
             continue
         live_progress.pop(job_id, None)
         last_progress_at.pop(job_id, None)
-        entry.worker.job_busy = False
+        release_job_slot(entry.worker)
         try:
             await requeue_or_fail(job_id, f"no progress for {stall:.0f}s")
         except Exception:
@@ -366,7 +371,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         thumb_target = await get_storage().upload_target(thumb_storage_key)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
-        worker.job_busy = True
+        worker.jobs_in_flight += 1
         inflight[job.id] = InFlight(worker=worker, storage_key=storage_key,
                                     thumb_storage_key=thumb_storage_key, user_id=job.user_id)
         last_progress_at[job_id] = time.monotonic()
@@ -384,7 +389,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             source = await session.get(Asset, job.source_asset_id)
             if source is None:
                 inflight.pop(job.id, None)
-                worker.job_busy = False
+                release_job_slot(worker)
                 job.state = "failed"
                 await session.commit()
                 publish(job_id, {"state": "failed", "reason": "source asset not found"})
@@ -401,7 +406,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             if inflight.pop(job.id, None) is None:
                 return True  # the disconnect handler beat us to it and requeued
             last_progress_at.pop(job.id, None)
-            worker.job_busy = False
+            release_job_slot(worker)
             return False  # session rolls back, the job stays queued
         await session.commit()
     publish(job_id, {"state": "running"})
@@ -426,7 +431,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     last_progress_at.pop(job_id, None)
     if entry is None:
         return  # finished concurrently
-    worker.job_busy = False
+    release_job_slot(worker)
     if db.session_factory is None:
         logger.warning("job %s finished on the worker but the database is unavailable",
                        job_id)

@@ -94,7 +94,7 @@ class Worker:
     manifests: list[Manifest]
     realtime_slots: int
     slots_in_use: int = 0
-    job_busy: bool = False  # queued jobs fill idle capacity, one at a time
+    jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
 
     @property
