@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import { studio } from '$lib/studio.svelte';
+	import { openPlayground, studio } from '$lib/studio.svelte';
 
 	const finished = $derived(studio.history.filter((g) => g.assets.length > 0));
 </script>
@@ -15,7 +15,10 @@
 					<button
 						type="button"
 						title={generation.params.prompt}
-						onclick={() => (studio.selectedId = generation.id)}
+						onclick={() => {
+							openPlayground();
+							studio.selectedId = generation.id;
+						}}
 					>
 						<img
 							src={generation.assets[0].url}

@@ -16,6 +16,7 @@ from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.registry import router as registry_router
 from app.settings import get_settings
+from app.studio import router as studio_router
 
 
 @asynccontextmanager
@@ -42,6 +43,7 @@ if get_settings().benchmark_api:
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)
+app.include_router(studio_router)
 
 
 @app.get("/api/v1/health")

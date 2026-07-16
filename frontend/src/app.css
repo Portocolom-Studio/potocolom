@@ -34,11 +34,16 @@
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.62 0.19 260);
-	--chart-1: oklch(0.62 0.19 260);
-	--chart-2: oklch(0.78 0.13 215);
-	--chart-3: oklch(0.65 0.18 290);
-	--chart-4: oklch(0.75 0.15 165);
-	--chart-5: oklch(0.8 0.14 85);
+	/* Categorical chart palette (dark, validated via .local/validate_palette.js) */
+	--chart-1: #5588e8;
+	--chart-2: #30a878;
+	--chart-3: #c08028;
+	--chart-4: #9070c8;
+	--chart-5: #c85878;
+	--status-success: #30a878;
+	--status-error: oklch(0.65 0.2 25);
+	--status-running: #5588e8;
+	--status-neutral: oklch(0.55 0.02 260);
 	--sidebar: var(--background);
 	--sidebar-foreground: oklch(0.94 0.01 265);
 	--sidebar-primary: oklch(0.62 0.19 260);

@@ -7,6 +7,7 @@
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 
 	const sidebar = Sidebar.useSidebar();
 </script>
@@ -24,7 +25,9 @@
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator />
 				<Breadcrumb.Item>
-					<Breadcrumb.Page>{t('app.tab_draw')}</Breadcrumb.Page>
+					<Breadcrumb.Page>
+						{studio.shellView === 'metrics' ? t('app.metrics.title') : t('app.tab_draw')}
+					</Breadcrumb.Page>
 				</Breadcrumb.Item>
 			</Breadcrumb.List>
 		</Breadcrumb.Root>
