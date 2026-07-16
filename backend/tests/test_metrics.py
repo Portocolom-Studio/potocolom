@@ -7,12 +7,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import GpuSample, Job
+from app.tables import GpuSample, GpuSampleRollup, Job
 
 MANIFEST = {
     "id": "sd-metrics",
@@ -32,6 +32,14 @@ def fleet_hello(ws, worker_id="w-metrics"):
         "realtime_slots": 1,
     })
     assert ws.receive_json()["type"] == "registered"
+
+
+async def _clear_gpu_metrics() -> None:
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        await session.execute(delete(GpuSampleRollup))
+        await session.execute(delete(GpuSample))
+        await session.commit()
 
 
 async def _wait_for_samples(count: int = 1, timeout: float = 3.0) -> list[GpuSample]:
@@ -89,6 +97,7 @@ def test_gpu_history_round_trip():
 
     with TestClient(app) as client:
         assert db.session_factory is not None
+        asyncio.run(_clear_gpu_metrics())
 
         async def insert():
             async with db.session_factory() as session:
@@ -103,6 +112,7 @@ def test_gpu_history_round_trip():
                 "from": int((now - timedelta(hours=1)).timestamp() * 1000),
                 "to": int(now.timestamp() * 1000),
                 "rollup": "raw",
+                "worker_id": "w-history",
             },
         )
         assert response.status_code == 200
