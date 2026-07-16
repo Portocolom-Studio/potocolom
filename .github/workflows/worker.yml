@@ -17,18 +17,15 @@ permissions:
 
 jobs:
   worker:
-    runs-on: ubuntu-latest
+    # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
+    runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:
       run:
         working-directory: worker
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: worker/pyproject.toml
-      - run: python -m pip install -e ".[dev]"
-      - run: ruff check .
-      - run: mypy
-      - run: pytest
+      - run: python3.11 -m venv .venv
+      - run: .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/mypy
+      - run: .venv/bin/pytest
