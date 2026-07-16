@@ -517,7 +517,8 @@ def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
             fleet_hello(worker, "w-session-jobs", manifest=MANIFEST_WITH_RT)
 
             with client.websocket_connect("/api/v1/realtime") as browser:
-                browser.send_json({"type": "open", "model_id": "sd-test"})
+                browser.send_json({"type": "open", "model_id": "sd-test",
+                                   "params": {"prompt": "live drawing"}})
                 opened = worker.receive_json()
                 assert opened["type"] == "open_session"
                 worker.send_json({"type": "session_ready", "session_id": opened["session_id"]})
