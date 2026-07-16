@@ -75,7 +75,6 @@ def test_heartbeat_persists_gpu_sample():
 
 @pytest.mark.db
 def test_gpu_history_round_trip():
-    assert db.session_factory is not None
     now = datetime.now(timezone.utc)
     sample = GpuSample(
         worker_id="w-history",
@@ -88,14 +87,16 @@ def test_gpu_history_round_trip():
         loaded_models=["sd-metrics"],
     )
 
-    async def insert():
-        async with db.session_factory() as session:
-            session.add(sample)
-            await session.commit()
-
-    asyncio.run(insert())
-
     with TestClient(app) as client:
+        assert db.session_factory is not None
+
+        async def insert():
+            async with db.session_factory() as session:
+                session.add(sample)
+                await session.commit()
+
+        asyncio.run(insert())
+
         response = client.get(
             "/api/v1/metrics/gpu/history",
             params={
