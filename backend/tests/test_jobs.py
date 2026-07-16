@@ -32,6 +32,11 @@ MANIFEST_T2I_ONLY = {
     "capabilities": ["text_to_image"],
 }
 
+MANIFEST_WITH_RT = {
+    **MANIFEST,
+    "capabilities": ["text_to_image", "image_to_image", "realtime"],
+}
+
 
 def fleet_hello(ws, worker_id, manifest=MANIFEST):
     ws.send_json({"type": "hello", "protocol_version": PROTOCOL_VERSION,
@@ -202,19 +207,23 @@ def test_stalled_job_requeues_once(monkeypatch):
     monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
     from app.settings import get_settings
     get_settings.cache_clear()
-    with TestClient(app) as client:
-        with client.websocket_connect("/api/v1/fleet") as worker:
-            fleet_hello(worker, "w-stall")
-            job_id = client.post("/api/v1/generations",
-                                 json={"model_id": "sd-test",
-                                       "params": {"prompt": "stall"}}).json()["job_id"]
-            assert worker.receive_json()["job_id"] == job_id
-            # Worker stays connected but sends no progress; stall requeues once
-            # and the retry is dispatched back to the same connected worker.
-            poll_until_attempt(client, job_id, 2, timeout=3.0)
-            redispatch = worker.receive_json()
-            assert redispatch["type"] == "dispatch_job"
-            assert redispatch["job_id"] == job_id
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-stall")
+                job_id = client.post("/api/v1/generations",
+                                     json={"model_id": "sd-test",
+                                           "params": {"prompt": "stall"}}).json()["job_id"]
+                assert worker.receive_json()["job_id"] == job_id
+                # Worker stays connected but sends no progress; stall requeues once
+                # and the retry is dispatched back to the same connected worker.
+                poll_until_attempt(client, job_id, 2, timeout=3.0)
+                redispatch = worker.receive_json()
+                assert redispatch["type"] == "dispatch_job"
+                assert redispatch["job_id"] == job_id
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
 
 
 @pytest.mark.db
@@ -367,3 +376,157 @@ def test_job_failure_reason_persisted():
             job = poll_until(client, job_id, "failed")
             assert job["failure_reason"] == "CUDA OOM"
             assert job["finished_at"] is not None
+
+
+def _post_generation(client, prompt: str) -> str:
+    created = client.post("/api/v1/generations",
+                          json={"model_id": "sd-test", "params": {"prompt": prompt}})
+    assert created.status_code == 202
+    return created.json()["job_id"]
+
+
+def _stall_safe(monkeypatch) -> None:
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+
+
+def _wait_for_dispatch(worker, expected: set[str], timeout=5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        msg = worker.receive_json()
+        if msg["type"] == "dispatch_job" and msg["job_id"] in expected:
+            return msg
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for dispatch_job in {expected}")
+
+
+def _finish_job(client, worker, dispatch: dict) -> None:
+    upload_path = urlsplit(dispatch["upload"]["url"]).path
+    assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+    worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
+                      "gpu_ms": 1, "width": 512, "height": 512})
+    poll_until(client, dispatch["job_id"], "succeeded")
+
+
+@pytest.mark.db
+def test_dispatch_depth_two_before_job_done(monkeypatch):
+    """Depth 2: API dispatches a second job while the first is still uploading."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-depth2")
+
+            first_id = _post_generation(client, "one")
+            second_id = _post_generation(client, "two")
+            expected = {first_id, second_id}
+            time.sleep(0.35)
+
+            first = _wait_for_dispatch(worker, expected)
+            second = _wait_for_dispatch(worker, expected - {first["job_id"]})
+            assert {first["job_id"], second["job_id"]} == expected
+
+            # Leave no running jobs for the next test.
+            _finish_job(client, worker, first)
+            _finish_job(client, worker, second)
+
+
+@pytest.mark.db
+def test_dispatch_depth_blocks_third_until_slot_frees(monkeypatch):
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-depth-cap")
+
+            id_a = _post_generation(client, "a")
+            id_b = _post_generation(client, "b")
+            expected = {id_a, id_b}
+            time.sleep(0.35)
+            d1 = _wait_for_dispatch(worker, expected)
+            d2 = _wait_for_dispatch(worker, expected - {d1["job_id"]})
+            worker.send_json({"type": "job_progress", "job_id": d1["job_id"], "progress": 0.5})
+            worker.send_json({"type": "job_progress", "job_id": d2["job_id"], "progress": 0.5})
+
+            third_id = _post_generation(client, "c")
+            time.sleep(0.35)
+            assert client.get(f"/api/v1/generations/{third_id}").json()["state"] == "queued"
+
+            _finish_job(client, worker, d1)
+
+            time.sleep(0.35)
+            d3 = _wait_for_dispatch(worker, {third_id})
+            assert d3["job_id"] == third_id
+
+            _finish_job(client, worker, d2)
+            _finish_job(client, worker, d3)
+
+
+def test_pick_job_worker_prefers_least_loaded():
+    from unittest.mock import MagicMock
+
+    from app import jobs, realtime
+    from app.manifests import Manifest
+
+    manifest = Manifest(id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters={})
+    busy = realtime.Worker(id="w-busy", ws=MagicMock(), manifests=[manifest],
+                           realtime_slots=1, jobs_in_flight=1)
+    idle = realtime.Worker(id="w-idle", ws=MagicMock(), manifests=[manifest],
+                           realtime_slots=1, jobs_in_flight=0)
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-busy"] = busy
+        realtime.workers["w-idle"] = idle
+        assert jobs.pick_job_worker("sd-test") is idle
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_job_dispatch_depth_one_while_realtime_live():
+    from unittest.mock import MagicMock
+
+    from app import jobs, realtime
+    from app.manifests import Manifest
+
+    manifest = Manifest(id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters={})
+    drawing = realtime.Worker(id="w-drawing", ws=MagicMock(), manifests=[manifest],
+                              realtime_slots=1, slots_in_use=1, jobs_in_flight=1)
+    idle = realtime.Worker(id="w-idle", ws=MagicMock(), manifests=[manifest],
+                           realtime_slots=1, jobs_in_flight=0)
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-drawing"] = drawing
+        realtime.workers["w-idle"] = idle
+        assert jobs.job_dispatch_depth(drawing) == 1
+        assert jobs.pick_job_worker("sd-test") is idle
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+@pytest.mark.db
+def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
+    """Sessions-first: depth drops to 1 while a drawing slot is live."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-session-jobs", manifest=MANIFEST_WITH_RT)
+
+            with client.websocket_connect("/api/v1/realtime") as browser:
+                browser.send_json({"type": "open", "model_id": "sd-test",
+                                   "params": {"prompt": "live drawing"}})
+                opened = worker.receive_json()
+                assert opened["type"] == "open_session"
+                worker.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+                assert browser.receive_json()["type"] == "ready"
+
+                first_id = _post_generation(client, "during-session-1")
+                second_id = _post_generation(client, "during-session-2")
+                time.sleep(0.35)
+                first = _wait_for_dispatch(worker, {first_id})
+                assert client.get(f"/api/v1/generations/{second_id}").json()["state"] == "queued"
+                _finish_job(client, worker, first)
