@@ -273,11 +273,21 @@ async def generation_events(
     )
 
 
+def job_dispatch_depth(worker: realtime.Worker) -> int:
+    # Sessions-first: while a realtime slot is live, do not stack a second
+    # queued job behind the one already waiting on the GPU lock.
+    if worker.slots_in_use > 0:
+        return 1
+    return JOB_DISPATCH_DEPTH
+
+
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
-    for worker in realtime.workers.values():
-        if model_id in worker.models and worker.jobs_in_flight < JOB_DISPATCH_DEPTH:
-            return worker
-    return None
+    candidates = [
+        worker for worker in realtime.workers.values()
+        if model_id in worker.models
+        and worker.jobs_in_flight < job_dispatch_depth(worker)
+    ]
+    return min(candidates, key=lambda worker: worker.jobs_in_flight, default=None)
 
 
 def release_job_slot(worker: realtime.Worker) -> None:
