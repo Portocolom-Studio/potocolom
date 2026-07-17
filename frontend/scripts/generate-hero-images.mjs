@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
- * Build the hero image field set: a mix of the gallery catalog and the
- * sdxl-base high-guidance renders from the 20260715-064718 benchmark run.
+ * Build the hero image field set: gallery catalog + sdxl-base high-guidance
+ * renders (benchmark run 20260715-064718 and optional hero-batch).
  * Sources: frontend/static/images/gallery/<slug>-320.webp (already generated)
  *          data/benchmark/20260715-064718/images/<prompt>/sdxl-base__1024-high-guidance__1024x1024-s20.webp
+ *          data/hero-batch/<prompt>/sdxl-base__1024-high-guidance__1024x1024-s20.webp
  * Output:  frontend/static/images/hero/<slug>-320.webp
  *          frontend/src/lib/hero-images.json (manifest the component imports)
  *
- * data/ is gitignored: the benchmark sources only exist on machines that ran
- * that benchmark. The generated thumbs and manifest are committed, so this
- * script only needs re-running when the image set changes.
+ * data/ is gitignored: the sources only exist on machines that ran the
+ * benchmark / hero batch. The generated thumbs and manifest are committed, so
+ * this script only needs re-running when the image set changes.
+ *
+ * Hero batch: backend/.venv/bin/python scripts/generate-hero-batch.py
  */
 import { copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -21,7 +24,11 @@ const frontendRoot = join(__dirname, '..');
 const galleryDir = join(frontendRoot, 'static', 'images', 'gallery');
 const heroDir = join(frontendRoot, 'static', 'images', 'hero');
 const manifestPath = join(frontendRoot, 'src', 'lib', 'hero-images.json');
-const benchmarkDir = join(frontendRoot, '..', 'data', 'benchmark', '20260715-064718', 'images');
+const repoRoot = join(frontendRoot, '..');
+const sdxlSources = [
+	join(repoRoot, 'data', 'benchmark', '20260715-064718', 'images'),
+	join(repoRoot, 'data', 'hero-batch')
+];
 const benchmarkVariant = 'sdxl-base__1024-high-guidance__1024x1024-s20.webp';
 
 const width = 320;
@@ -66,27 +73,42 @@ async function main() {
 		console.log(`Copied ${file}`);
 	}
 
-	const promptDirs = (await readdir(benchmarkDir)).sort();
-	for (const promptDir of promptDirs) {
-		const inputPath = join(benchmarkDir, promptDir, benchmarkVariant);
+	for (const sourceDir of sdxlSources) {
+		let promptDirs;
 		try {
-			await stat(inputPath);
+			promptDirs = (await readdir(sourceDir)).sort();
 		} catch {
-			console.warn(`Skip missing benchmark render: ${promptDir}`);
+			console.warn(`Skip missing source dir: ${sourceDir}`);
 			continue;
 		}
+		for (const promptDir of promptDirs) {
+			const dirPath = join(sourceDir, promptDir);
+			try {
+				const info = await stat(dirPath);
+				if (!info.isDirectory()) continue;
+			} catch {
+				continue;
+			}
+			const inputPath = join(dirPath, benchmarkVariant);
+			try {
+				await stat(inputPath);
+			} catch {
+				console.warn(`Skip missing render: ${promptDir}`);
+				continue;
+			}
 
-		const slug = promptDir.replace(/^\d+-/, '');
-		const file = `${slug}-${width}.webp`;
-		if (manifest.includes(file)) throw new Error(`Slug collision: ${file}`);
+			const slug = promptDir.replace(/^\d+-/, '');
+			const file = `${slug}-${width}.webp`;
+			if (manifest.includes(file)) throw new Error(`Slug collision: ${file}`);
 
-		const buffer = await sharp(inputPath)
-			.resize({ width, withoutEnlargement: true })
-			.webp({ quality, effort: 4 })
-			.toBuffer();
-		await sharp(buffer).toFile(join(heroDir, file));
-		manifest.push(file);
-		console.log(`Wrote ${file} (${buffer.length} bytes)`);
+			const buffer = await sharp(inputPath)
+				.resize({ width, withoutEnlargement: true })
+				.webp({ quality, effort: 4 })
+				.toBuffer();
+			await sharp(buffer).toFile(join(heroDir, file));
+			manifest.push(file);
+			console.log(`Wrote ${file} (${buffer.length} bytes)`);
+		}
 	}
 
 	await writeFile(manifestPath, `${JSON.stringify(manifest, null, '\t')}\n`);
