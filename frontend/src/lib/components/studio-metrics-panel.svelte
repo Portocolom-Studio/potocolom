@@ -25,6 +25,7 @@
 	import { computeSessionMetrics } from '$lib/studio-session-metrics';
 	import { demoGpuHistory, demoGpuSamples, demoHistory } from '$lib/studio-demo-metrics';
 	import { studio } from '$lib/studio.svelte';
+	import StudioBenchmarkChart from '$lib/components/studio-benchmark-chart.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import StudioJobStatusChart from '$lib/components/studio-job-status-chart.svelte';
 	import StudioSessionModelChart from '$lib/components/studio-session-model-chart.svelte';
@@ -171,24 +172,36 @@
 			</div>
 		{/if}
 
-		<div class="grid gap-4 xl:grid-cols-4">
-			<div class="xl:col-span-2">
-				<StudioJobStatusChart breakdown={jobStatus} />
+		<div class="grid gap-4 xl:grid-cols-2">
+			<StudioJobStatusChart breakdown={jobStatus} />
+			<div class="grid grid-cols-2 gap-4">
+				<Card.Root class="justify-center gap-1 py-3">
+					<Card.Header class="px-4">
+						<Card.Description>{t('app.metrics.total_gpu')}</Card.Description>
+						<Card.Title class="text-xl tabular-nums">
+							{formatMs(session.totalGpuMs || null)}
+						</Card.Title>
+					</Card.Header>
+				</Card.Root>
+				<Card.Root class="justify-center gap-1 py-3">
+					<Card.Header class="px-4">
+						<Card.Description>{t('app.metrics.avg_gpu')}</Card.Description>
+						<Card.Title class="text-xl tabular-nums">{formatMs(session.avgGpuMs)}</Card.Title>
+					</Card.Header>
+				</Card.Root>
+				<Card.Root class="justify-center gap-1 py-3">
+					<Card.Header class="px-4">
+						<Card.Description>{t('app.metrics.median_gpu')}</Card.Description>
+						<Card.Title class="text-xl tabular-nums">{formatMs(session.medianGpuMs)}</Card.Title>
+					</Card.Header>
+				</Card.Root>
+				<Card.Root class="justify-center gap-1 py-3">
+					<Card.Header class="px-4">
+						<Card.Description>{t('app.metrics.images_count')}</Card.Description>
+						<Card.Title class="text-xl tabular-nums">{session.count}</Card.Title>
+					</Card.Header>
+				</Card.Root>
 			</div>
-			<Card.Root class="gap-1 py-3">
-				<Card.Header class="px-4 pb-0">
-					<Card.Description>{t('app.metrics.total_gpu')}</Card.Description>
-					<Card.Title class="text-2xl tabular-nums">
-						{formatMs(session.totalGpuMs || null)}
-					</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root class="gap-1 py-3">
-				<Card.Header class="px-4 pb-0">
-					<Card.Description>{t('app.metrics.avg_gpu')}</Card.Description>
-					<Card.Title class="text-2xl tabular-nums">{formatMs(session.avgGpuMs)}</Card.Title>
-				</Card.Header>
-			</Card.Root>
 		</div>
 
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -236,12 +249,6 @@
 					<Card.Title class="text-2xl tabular-nums">
 						{pipeline.failureRatePct != null ? `${pipeline.failureRatePct.toFixed(0)}%` : '-'}
 					</Card.Title>
-				</Card.Header>
-			</Card.Root>
-			<Card.Root class="gap-1 py-3">
-				<Card.Header class="px-4 pb-0">
-					<Card.Description>{t('app.metrics.median_gpu')}</Card.Description>
-					<Card.Title class="text-2xl tabular-nums">{formatMs(session.medianGpuMs)}</Card.Title>
 				</Card.Header>
 			</Card.Root>
 		</div>
@@ -322,6 +329,8 @@
 					{t('app.metrics.open_benchmark_page')}
 				</Button>
 			</div>
+
+			<StudioBenchmarkChart stats={selectedSession.report.model_stats} />
 
 			<div class="border-border overflow-x-auto rounded-lg border">
 				<table class="w-full min-w-[32rem] text-sm">

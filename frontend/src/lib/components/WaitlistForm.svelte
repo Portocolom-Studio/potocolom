@@ -76,7 +76,7 @@
 					aria-hidden="true"
 					bind:value={honeypot}
 				/>
-				<Button type="submit" class="shrink-0" disabled={status === 'sending'}>
+				<Button type="submit" class="h-11 shrink-0 px-5" disabled={status === 'sending'}>
 					{status === 'sending' ? t('wl.sending') : t('wl.cta')}
 				</Button>
 			</form>

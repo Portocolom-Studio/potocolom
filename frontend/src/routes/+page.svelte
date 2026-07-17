@@ -69,10 +69,10 @@
 				<Button size="lg" variant="default" href={resolve('/app')}>{t('hero.cta_launch')}</Button>
 				<Button size="lg" variant="outline" href={repoUrl}>{t('hero.cta_selfhost')}</Button>
 			</div>
-			<div class="mt-10 flex flex-wrap justify-center gap-2.5">
-				<Badge variant="outline">{t('hero.badge_license')}</Badge>
-				<Badge variant="outline">{t('hero.badge_fps')}</Badge>
-				<Badge variant="outline">{t('hero.badge_gpu')}</Badge>
+			<div class="mt-10 flex flex-wrap justify-center gap-3">
+				<Badge variant="outline" class="px-3.5 py-1.5 text-sm">{t('hero.badge_license')}</Badge>
+				<Badge variant="outline" class="px-3.5 py-1.5 text-sm">{t('hero.badge_fps')}</Badge>
+				<Badge variant="outline" class="px-3.5 py-1.5 text-sm">{t('hero.badge_gpu')}</Badge>
 			</div>
 		</div>
 	</section>
@@ -128,8 +128,12 @@
 		<p class="text-muted-foreground mt-3 max-w-2xl text-base leading-relaxed">{t('pricing.sub')}</p>
 		<div class="mt-10 grid grid-cols-1 gap-6 md:grid-cols-3">
 			{#each tiers as tier (tier.key)}
-				<div class="h-full">
-					<Card.Root class="h-full {tier.featured ? 'border-primary' : ''}">
+				<div
+					class:h-full={true}
+					class:pricing-aura={tier.featured}
+					class:pricing-aura-rainbow={tier.featured}
+				>
+					<Card.Root class="h-full">
 						<Card.Header>
 							<div class="flex items-center justify-between gap-3">
 								<Card.Description>{t(`pricing.${tier.key}_name`)}</Card.Description>
@@ -272,5 +276,69 @@
 		background:
 			radial-gradient(ellipse 75% 70% at 50% 45%, transparent 45%, var(--background) 98%),
 			linear-gradient(transparent 72%, var(--background));
+	}
+
+	/* DaisyUI-style aura rainbow on the featured pricing tier */
+	@property --aura-angle {
+		syntax: '<angle>';
+		inherits: false;
+		initial-value: 0deg;
+	}
+
+	.pricing-aura {
+		--aura-padding: 0.125rem;
+		--aura-radius: var(--radius-xl);
+		position: relative;
+		display: block;
+		padding: var(--aura-padding);
+		border-radius: calc(var(--aura-padding) + var(--aura-radius));
+		animation: pricing-aura 6s linear infinite;
+		background-image: conic-gradient(from var(--aura-angle), transparent 225deg, currentColor);
+	}
+
+	.pricing-aura > :global(*) {
+		position: relative;
+		z-index: 1;
+	}
+
+	.pricing-aura::before,
+	.pricing-aura::after {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		z-index: 0;
+		display: block;
+		width: 100%;
+		height: 100%;
+		border-radius: inherit;
+		background-color: inherit;
+		background-image: inherit;
+		translate: -50% -50%;
+		opacity: 0.7;
+		filter: blur(0.25rem);
+		animation: inherit;
+	}
+
+	.pricing-aura::after {
+		opacity: 0.3;
+		filter: blur(1rem);
+	}
+
+	.pricing-aura-rainbow {
+		background: conic-gradient(
+			from var(--aura-angle) in oklch longer hue,
+			transparent 10%,
+			oklch(80% 0.15 0deg),
+			oklch(80% 0.15 360deg),
+			transparent 90%
+		);
+	}
+
+	@keyframes pricing-aura {
+		to {
+			--aura-angle: 360deg;
+			transform: translateZ(1px);
+		}
 	}
 </style>

@@ -30,9 +30,10 @@ export function demoHistory(now: number = Date.now()): Generation[] {
 	const count = 48;
 	for (let index = 0; index < count; index += 1) {
 		const model = DEMO_MODELS[Math.floor(rand() * DEMO_MODELS.length)];
-		// running/queued jobs stay recent; finished jobs cluster toward now
-		// so every range from 5m to 24h has visible activity
-		const ageMs = index < 4 ? rand() * 90 * 1000 : rand() ** 2 * 24 * 60 * 60 * 1000;
+		// running/queued jobs stay recent; finished jobs form a dense burst in
+		// the last few minutes so lanes are visible and session utilization is
+		// a plausible ratio instead of rounding to zero over a day-long span
+		const ageMs = index < 4 ? rand() * 90 * 1000 : 5000 + rand() ** 2 * 170 * 1000;
 		const createdMs = now - ageMs;
 		const queueMs = 40 + rand() * (rand() > 0.85 ? 2200 : 320);
 		const gpuMs = model.gpuMs * (0.75 + rand() * 0.5);
