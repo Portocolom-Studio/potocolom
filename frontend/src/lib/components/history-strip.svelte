@@ -19,11 +19,13 @@
 	let loadError = $state('');
 
 	// Click-drag horizontal scroll (scrollbar is hidden via no-scrollbar).
-	let dragPointerId = $state<number | null>(null);
+	// Capture only after the move threshold so plain clicks still select.
+	let dragPointerId: number | null = null;
 	let dragStartX = 0;
 	let dragStartScroll = 0;
 	let dragMoved = false;
-	const DRAG_THRESHOLD_PX = 6;
+	let suppressClick = false;
+	const DRAG_THRESHOLD_PX = 12;
 
 	const shownId = $derived(
 		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
@@ -76,14 +78,18 @@
 		dragStartX = event.clientX;
 		dragStartScroll = stripEl.scrollLeft;
 		dragMoved = false;
-		stripEl.setPointerCapture(event.pointerId);
+		suppressClick = false;
 	}
 
 	function onStripPointerMove(event: PointerEvent): void {
 		if (dragPointerId === null || event.pointerId !== dragPointerId || !stripEl) return;
 		const delta = event.clientX - dragStartX;
-		if (!dragMoved && Math.abs(delta) < DRAG_THRESHOLD_PX) return;
-		dragMoved = true;
+		if (!dragMoved) {
+			if (Math.abs(delta) < DRAG_THRESHOLD_PX) return;
+			dragMoved = true;
+			suppressClick = true;
+			stripEl.setPointerCapture(event.pointerId);
+		}
 		stripEl.scrollLeft = dragStartScroll - delta;
 	}
 
@@ -93,14 +99,15 @@
 			stripEl.releasePointerCapture(event.pointerId);
 		}
 		dragPointerId = null;
+		dragMoved = false;
 	}
 
 	function onThumbClick(event: MouseEvent, generation: Generation): void {
 		// A drag that moved past the threshold is scrolling, not a selection.
-		if (dragMoved) {
+		if (suppressClick) {
 			event.preventDefault();
 			event.stopPropagation();
-			dragMoved = false;
+			suppressClick = false;
 			return;
 		}
 		select(generation);
