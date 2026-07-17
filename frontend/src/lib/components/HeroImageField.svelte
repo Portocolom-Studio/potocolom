@@ -18,7 +18,7 @@
 	/** Cursor influence radius in px; tiles inside it scale and brighten. */
 	const RADIUS = 340;
 	/** Horizontal flow speed in px/s; eases to 0 while the pointer is over the hero. */
-	const BASE_SPEED = 22;
+	const BASE_SPEED = 48;
 
 	let field: HTMLElement | null = null;
 	let rows = $state.raw<Row[]>([]);
@@ -134,8 +134,7 @@
 		const rect = field.getBoundingClientRect();
 		const x = pendingX - rect.left;
 		const y = pendingY - rect.top;
-		const inside =
-			x > -RADIUS && y > -RADIUS && x < rect.width + RADIUS && y < rect.height + RADIUS;
+		const inside = x >= 0 && y >= 0 && x <= rect.width && y <= rect.height;
 		pointer = inside ? { x, y } : null;
 	}
 
@@ -143,6 +142,16 @@
 		pendingX = event.clientX;
 		pendingY = event.clientY;
 		if (!pointerFrame) pointerFrame = requestAnimationFrame(commitPointer);
+	}
+
+	// Leaving the page (URL bar, browser chrome) fires no further pointermove,
+	// so release the hold explicitly or the field stays frozen and magnified.
+	function onPointerLeave() {
+		if (pointerFrame) {
+			cancelAnimationFrame(pointerFrame);
+			pointerFrame = 0;
+		}
+		pointer = null;
 	}
 
 	/** 0..1 proximity boost with quadratic falloff. */
@@ -164,6 +173,7 @@
 </script>
 
 <svelte:window onpointermove={onPointerMove} />
+<svelte:document onpointerleave={onPointerLeave} />
 
 <!-- isolate keeps boosted tiles' z-index below the fade mask and hero copy -->
 <div
