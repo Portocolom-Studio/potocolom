@@ -178,3 +178,60 @@ def test_arrangements_work_at_ladder_resolution() -> None:
         for image in derived:
             assert image.shape == (1, 3, resolution, resolution), name
             assert image.min() >= 0 and image.max() <= 1, name
+
+
+def test_begin_dream_phase_keeps_sds_schedule_when_disabled() -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    adapter.dream_model_id = None
+    adapter.img2img = object()
+    adapter.pipe = object()
+    adapter.dream_inference_steps = 25
+    adapter.dream_guidance = 7.5
+    adapter.begin_dream_phase()
+    assert adapter.dream_inference_steps == 25
+    assert adapter.dream_guidance == 7.5
+    assert adapter.pipe is not None
+
+
+def test_begin_dream_phase_switches_to_lcm_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    adapter.dream_model_id = DiffusionAdapter.DEFAULT_DREAM_MODEL
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    adapter.embeddings = {"keep": torch.zeros(1)}
+    adapter.pipe = object()
+    adapter.img2img = object()
+    adapter.scheduler = object()
+
+    class FakeImg2Img:
+        unet = SimpleNamespace(requires_grad_=lambda _flag: None)
+        vae = SimpleNamespace(requires_grad_=lambda _flag: None)
+        text_encoder = SimpleNamespace(requires_grad_=lambda _flag: None)
+
+        def to(self, _device: str) -> "FakeImg2Img":
+            return self
+
+    loaded: list[str] = []
+
+    class FakeAutoPipeline:
+        @staticmethod
+        def from_pretrained(model_id: str, **_kwargs: object) -> FakeImg2Img:
+            loaded.append(model_id)
+            return FakeImg2Img()
+
+    # Inject before begin_dream_phase's `from diffusers import ...` so the
+    # test runs without the inference extra.
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "diffusers",
+        SimpleNamespace(AutoPipelineForImage2Image=FakeAutoPipeline),
+    )
+
+    adapter.begin_dream_phase()
+    assert loaded == [DiffusionAdapter.DEFAULT_DREAM_MODEL]
+    assert adapter.pipe is None
+    assert adapter.dream_inference_steps == 4
+    assert adapter.dream_guidance == 1.5
+    assert adapter.embeddings == {}

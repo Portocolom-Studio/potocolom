@@ -163,13 +163,22 @@ class DiffusionAdapter:
     """Thin wrapper around a frozen latent diffusion pipeline exposing the
     two operations the optimizer needs: an SDS gradient and SDEdit."""
 
-    def __init__(self, model_id: str, device: str) -> None:
+    DEFAULT_DREAM_MODEL = "lykon/dreamshaper-8-lcm"
+
+    def __init__(
+        self,
+        model_id: str,
+        device: str,
+        dream_model_id: str | None = DEFAULT_DREAM_MODEL,
+    ) -> None:
         from diffusers import (  # imported here: heavy, inference extra only
             AutoPipelineForImage2Image,
             AutoPipelineForText2Image,
         )
 
         dtype = torch.float16 if device != "cpu" else torch.float32
+        self.model_id = model_id
+        self.dream_model_id = dream_model_id
         self.pipe = AutoPipelineForText2Image.from_pretrained(
             model_id, torch_dtype=dtype, safety_checker=None
         ).to(device)
@@ -181,6 +190,41 @@ class DiffusionAdapter:
         self.dtype = dtype
         self.scheduler = self.pipe.scheduler
         self.embeddings: dict[str, Tensor] = {}
+        # Dream Target defaults: keep SDS img2img until begin_dream_phase()
+        self.dream_inference_steps = 25
+        self.dream_guidance = 7.5
+
+    def begin_dream_phase(self) -> None:
+        """Free the SDS backbone and load the Dream Target img2img pipeline.
+
+        When `dream_model_id` is set (default LCM), unload SD 1.5 first so
+        both models are not resident in VRAM. When unset, keep the SDS
+        img2img path with the classic 25-step / CFG 7.5 schedule.
+        """
+        from diffusers import AutoPipelineForImage2Image
+
+        if self.dream_model_id is None or self.dream_model_id == self.model_id:
+            self.dream_inference_steps = 25
+            self.dream_guidance = 7.5
+            return
+
+        del self.pipe
+        del self.img2img
+        self.pipe = None
+        self.scheduler = None
+        self.embeddings.clear()
+        if self.device != "cpu" and hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        self.img2img = AutoPipelineForImage2Image.from_pretrained(
+            self.dream_model_id, torch_dtype=self.dtype, safety_checker=None
+        ).to(self.device)
+        self.img2img.unet.requires_grad_(False)
+        self.img2img.vae.requires_grad_(False)
+        if hasattr(self.img2img, "text_encoder") and self.img2img.text_encoder is not None:
+            self.img2img.text_encoder.requires_grad_(False)
+        self.dream_inference_steps = 4
+        self.dream_guidance = 1.5
 
     def embed(self, prompt: str) -> Tensor:
         """Cached [uncond, cond] embeddings for classifier-free guidance."""
@@ -265,8 +309,8 @@ class DiffusionAdapter:
                 prompt=prompt,
                 image=image.to(self.dtype),
                 strength=max(strength, 0.05),
-                num_inference_steps=25,
-                guidance_scale=7.5,
+                num_inference_steps=self.dream_inference_steps,
+                guidance_scale=self.dream_guidance,
                 generator=generator,
                 output_type="pt",
             ).images
@@ -282,6 +326,7 @@ class IllusionConfig:
     prompts: list[str]  # one per derived image; a Tensor target may replace
     target_image: Tensor | None = None  # optional fixed target, last slot
     model_id: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    dream_model_id: str | None = DiffusionAdapter.DEFAULT_DREAM_MODEL
     sds_steps: int = 500
     sds_guidance: float = 100.0
     sds_low_res: int = 256
@@ -333,7 +378,7 @@ def optimize_illusion(
     networks = [FourierFeatureNetwork().to(config.device) for _ in range(spec.n_primes)]
     parameters = [p for network in networks for p in network.parameters()]
     optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
-    adapter = DiffusionAdapter(config.model_id, config.device)
+    adapter = DiffusionAdapter(config.model_id, config.device, config.dream_model_id)
 
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         return spec.arrange([network.image(resolution) for network in networks])
@@ -379,6 +424,8 @@ def optimize_illusion(
         optimizer.step()
         done += 1
         progress(done / total)
+
+    adapter.begin_dream_phase()
 
     # Phase 2: Dream Target Loss at a decreasing SDEdit strength schedule
     for strength in config.strength_schedule():
@@ -444,6 +491,14 @@ def main() -> None:
         help="fixed image target for the final derived slot (e.g. a QR code)",
     )
     parser.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
+    parser.add_argument(
+        "--dream-model",
+        default=DiffusionAdapter.DEFAULT_DREAM_MODEL,
+        help=(
+            "img2img checkpoint for Dream Targets (default: LCM, 4 steps). "
+            "Pass 'none' to reuse --model with the classic 25-step schedule."
+        ),
+    )
     parser.add_argument("--sds-steps", type=int, default=500)
     parser.add_argument("--sds-guidance", type=float, default=100.0)
     parser.add_argument(
@@ -465,11 +520,13 @@ def main() -> None:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
+    dream_model = None if args.dream_model.lower() == "none" else args.dream_model
     config = IllusionConfig(
         illusion=args.type,
         prompts=args.prompt,
         target_image=(load_image(args.target_image) if args.target_image else None),
         model_id=args.model,
+        dream_model_id=dream_model,
         sds_steps=args.sds_steps,
         sds_guidance=args.sds_guidance,
         sds_low_res=args.sds_low_res,

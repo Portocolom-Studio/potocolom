@@ -38,9 +38,10 @@ One module, four parts, in dependency order:
    are fixed, differentiable, and physically realizable - the three
    properties the paper requires of an arrangement.
 3. `DiffusionAdapter` - the only place that touches diffusers. Loads one
-   text2img pipeline (SD 1.5 by default, fp16 on GPU), derives the img2img
-   pipeline from it, caches prompt embeddings, and exposes exactly two
-   operations:
+   text2img pipeline (SD 1.5 by default, fp16 on GPU) for SDS, then after
+   phase 1 swaps to a Dream Target img2img pipeline (DreamShaper LCM by
+   default) so both models are not resident in VRAM. Caches prompt
+   embeddings during SDS and exposes exactly two operations:
    - `sds_loss` / `sds_loss_batch`: Score Distillation. Encode derived
      image(s) to latents, noise at one shared random timestep in
      [0.02, 0.98] of the schedule, run the frozen UNet once with
@@ -51,7 +52,10 @@ One module, four parts, in dependency order:
      no gradient path to the image; the residual-as-gradient form is what
      their actual codebase (Peekaboo) and every SDS implementation use.
    - `sdedit`: img2img at a given strength - noise the current derived
-     image, denoise toward the prompt - producing a Dream Target.
+     image, denoise toward the prompt - producing a Dream Target. Default
+     Dream Target backbone is `lykon/dreamshaper-8-lcm` at 4 steps /
+     guidance 1.5 (`--dream-model none` keeps the SDS checkpoint at
+     25 / 7.5).
 4. `optimize_illusion` - the two-phase loop:
    - Phase 1, Score Distillation (default 500 steps): weighted SDS for all
      prompt-target derived images in one batched UNet forward per step;
@@ -102,6 +106,7 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 | `--sds-steps` | 500 | More helps monotonically (paper Fig. 12) but with diminishing returns after ~1000. |
 | `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0.6 | Early SDS at low resolution, then finish at 512. UNet cost scales ~quadratically with resolution; set fraction to 0 to disable. |
 | `--dream-rounds` / `--dream-steps` | 8 x 300 | More rounds with a finer strength schedule = cleaner final subjects. The paper's full schedule walks 0.90 to 0.01. |
+| `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (4 steps). Pass `none` to reuse `--model` with 25 steps / CFG 7.5. |
 | learning rate | 1e-3 (Adam) | In `IllusionConfig`; raise to 3e-3 for faster early structure at some stability cost. |
 | seed | 0 | Different seeds give genuinely different compositions; cherry-picking across 3-4 seeds is normal for showpieces. |
 
@@ -129,29 +134,31 @@ observed limits of the current code or explicit paper follow-ups:
    cut in UNet calls - the dominant cost.
 2. ~~Resolution ladder~~ - done: first `--sds-low-res-fraction` of SDS at
    `--sds-low-res` (default 256), remainder and Dream Targets at 512.
-3. Composite sheet output: one PNG grid of primes + derived + simulated
+3. ~~Cheaper Dream Targets~~ - done: default `--dream-model` is
+   DreamShaper LCM at 4 steps; SDS still uses frozen SD 1.5.
+4. Composite sheet output: one PNG grid of primes + derived + simulated
    arrangement for quick visual triage of runs.
-4. Negative prompts in `embed()` (trivial in diffusers) - the paper's
+5. Negative prompts in `embed()` (trivial in diffusers) - the paper's
    baseline comparisons suggest it reduces subject bleed between derived
    images.
-5. Timestep annealing for SDS (sample high timesteps early, low late) -
+6. Timestep annealing for SDS (sample high timesteps early, low late) -
    standard DreamFusion-family improvement, cheap to add where the
    timestep is drawn.
-6. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
+7. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
    care (the worker's manifest machinery solved this for generation - see
    `vae` handling in the engine) and likely gradient accumulation on
    16 GB with 5 derived images.
-7. Latent-space Dream Targets: regress latents instead of pixels for the
+8. Latent-space Dream Targets: regress latents instead of pixels for the
    SSIM/MSE inner loop; faster per step but changes the loss balance -
    benchmark before adopting.
-8. Rotation-overlay generalization to arbitrary angles (the paper models
+9. Rotation-overlay generalization to arbitrary angles (the paper models
    90-degree steps; `torch.rot90` would become a grid_sample rotation,
    still differentiable) - unlocks continuous-spin animations for the
    studio designer (#117).
-9. Print color calibration: the paper's Figs. 15-16 show hue shifts after
+10. Print color calibration: the paper's Figs. 15-16 show hue shifts after
    printing; a fixed printer color profile applied inside the arrangement
    (a 3x3 color matrix) would let the optimizer compensate.
-10. Job integration (#116) and the studio designer (#117) - the module's
+11. Job integration (#116) and the studio designer (#117) - the module's
    `optimize_illusion(config, progress)` signature was shaped so the
    worker job wrapper only adds cancellation checks and asset encoding.
 
