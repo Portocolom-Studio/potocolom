@@ -14,7 +14,7 @@ TIMINGS_PATH = Path(__file__).with_name("model_timings.json")
 
 
 @lru_cache(maxsize=1)
-def _load_timings() -> dict[str, dict[str, int]]:
+def _load_timings() -> dict[str, dict[str, Any]]:
     try:
         raw = json.loads(TIMINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -23,7 +23,7 @@ def _load_timings() -> dict[str, dict[str, int]]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    timings: dict[str, dict[str, int]] = {}
+    timings: dict[str, dict[str, Any]] = {}
     for model_id, entry in raw.items():
         if model_id.startswith("_") or not isinstance(entry, dict):
             continue
@@ -42,7 +42,11 @@ def _load_timings() -> dict[str, dict[str, int]]:
                 continue
             if factor <= 0:
                 continue
-            timings[model_id] = {"gpu_ms": gpu_ms, "factor": factor}
+            timings[model_id] = {
+                "gpu_ms": gpu_ms,
+                "factor": factor,
+                "flat": bool(entry.get("flat", False)),
+            }
             continue
         try:
             candidate = {
@@ -78,8 +82,10 @@ def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
         return None
 
     if "factor" in baseline:
+        if baseline.get("flat"):
+            return max(1, int(baseline["gpu_ms"]))
         if "factor" not in params:
-            return max(1, baseline["gpu_ms"])
+            return max(1, int(baseline["gpu_ms"]))
         try:
             factor = int(params["factor"])
         except (TypeError, ValueError):
