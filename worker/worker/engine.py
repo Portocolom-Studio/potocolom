@@ -270,12 +270,19 @@ class DiffusersEngine:
     def _pick_rung(self, manifest: Manifest) -> MemoryRung:
         if manifest.id in self._rungs:
             return self._rungs[manifest.id]
-        rung = select_rung(
+        rung = self._select_rung(manifest)
+        self._rungs[manifest.id] = rung
+        return rung
+
+    def _select_rung(self, manifest: Manifest) -> MemoryRung:
+        # Upscalers are plain nn.Modules run tiled; the offload rungs are
+        # diffusers pipeline mechanics, so they always load fully resident.
+        if "upscale" in manifest.capabilities:
+            return "full"
+        return select_rung(
             manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
             on_cpu=self.device != "cuda",
         )
-        self._rungs[manifest.id] = rung
-        return rung
 
     def _apply_rung(self, pipeline: Any, manifest: Manifest, rung: MemoryRung) -> Any:
         if rung == "full":
@@ -340,7 +347,6 @@ class DiffusersEngine:
             "https://github.com/xinntao/Real-ESRGAN/releases/download"
         )
         path = ensure_weights(source, self.models_dir, manifest.id, factor)
-        self._pick_rung(manifest)
         return load_upscale_model(path, self.device, self.dtype)
 
     def _scheduler(self, name: str, config: Any) -> Any:
@@ -407,14 +413,11 @@ class DiffusersEngine:
 
     def _load_model(self, manifest: Manifest) -> int:
         self._evict_all()
-        rung = select_rung(
-            manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
-            on_cpu=self.device != "cuda",
-        )
-        self._rungs[manifest.id] = rung
+        self._rungs[manifest.id] = self._select_rung(manifest)
         start = time.monotonic()
         if "upscale" in manifest.capabilities:
-            mode = "upscale-2"
+            factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
+            mode = f"upscale-{int(factor_spec.get('default', 2))}"
             try:
                 self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
             except self.torch.OutOfMemoryError:
