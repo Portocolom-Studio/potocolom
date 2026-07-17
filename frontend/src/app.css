@@ -1,69 +1,70 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
+@import 'shadcn-svelte/tailwind.css';
+@import '@fontsource-variable/geist';
 
 @custom-variant dark (&:is(.dark *));
 
-@font-face {
-	font-family: 'Space Grotesk';
-	src: url('/fonts/space-grotesk-latin-wght.woff2') format('woff2-variations');
-	font-weight: 300 700;
-	font-style: normal;
-	font-display: swap;
-}
-
 /* Dark is the designed theme (decided): dark values live on :root directly.
    Light-ready: a future light pass moves these under .dark and puts light
-   values here - the token structure does not change. */
+   values here - the token structure does not change.
+   Palette: preset b5d4GulZA (style maia, radius 0, Geist) with its warm
+   taupe neutrals re-tinted to the black + blue brand hue (~265). */
 :root {
-	--radius: 1rem;
-	--background: oklch(0.13 0.02 265);
-	--foreground: oklch(0.94 0.01 265);
-	--card: oklch(0.17 0.025 265);
-	--card-foreground: oklch(0.94 0.01 265);
-	--popover: oklch(0.19 0.025 265);
-	--popover-foreground: oklch(0.94 0.01 265);
-	--primary: oklch(0.62 0.19 260);
-	--primary-foreground: oklch(0.98 0.005 265);
-	--secondary: oklch(0.22 0.03 265);
-	--secondary-foreground: oklch(0.94 0.01 265);
-	--muted: oklch(0.22 0.03 265);
-	--muted-foreground: oklch(0.72 0.02 260);
-	--accent: oklch(0.26 0.05 262);
-	--accent-foreground: oklch(0.94 0.01 265);
-	--destructive: oklch(0.65 0.2 25);
+	--radius: 0rem;
+	--background: oklch(0.145 0.012 265);
+	--foreground: oklch(0.985 0.002 265);
+	--card: oklch(0.205 0.012 265);
+	--card-foreground: oklch(0.985 0.002 265);
+	--popover: oklch(0.205 0.012 265);
+	--popover-foreground: oklch(0.985 0.002 265);
+	--primary: oklch(0.424 0.199 265.6);
+	--primary-foreground: oklch(0.97 0.014 254.6);
+	--secondary: oklch(0.27 0.012 265);
+	--secondary-foreground: oklch(0.985 0.002 265);
+	--muted: oklch(0.26 0.012 265);
+	--muted-foreground: oklch(0.71 0.02 262);
+	--accent: oklch(0.26 0.02 262);
+	--accent-foreground: oklch(0.985 0.002 265);
+	--destructive: oklch(0.704 0.191 22.2);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.62 0.19 260);
-	/* Categorical chart palette (dark, validated via .local/validate_palette.js) */
+	--ring: oklch(0.55 0.06 262);
+	/* Categorical chart palette (dark, validated via .local/validate_palette.js;
+	   adjacent-pair CVD checks pass for all six slots) */
 	--chart-1: #5588e8;
 	--chart-2: #30a878;
 	--chart-3: #c08028;
 	--chart-4: #9070c8;
 	--chart-5: #c85878;
+	--chart-6: #a3742d;
 	/* Status semantics (never reuse chart-1..5 hex values) */
 	--status-success: #27a35a;
 	--status-error: #d95f58;
 	--status-running: #45b8d4;
 	--status-neutral: #7a7f8c;
-	--sidebar: var(--background);
-	--sidebar-foreground: oklch(0.94 0.01 265);
-	--sidebar-primary: oklch(0.62 0.19 260);
-	--sidebar-primary-foreground: oklch(0.98 0.005 265);
-	--sidebar-accent: var(--background);
-	--sidebar-accent-foreground: oklch(0.94 0.01 265);
+	--sidebar: oklch(0.17 0.012 265);
+	--sidebar-foreground: oklch(0.985 0.002 265);
+	--sidebar-primary: oklch(0.623 0.214 259.8);
+	--sidebar-primary-foreground: oklch(0.97 0.014 254.6);
+	--sidebar-accent: oklch(0.26 0.012 265);
+	--sidebar-accent-foreground: oklch(0.985 0.002 265);
 	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.62 0.19 260);
+	--sidebar-ring: oklch(0.55 0.06 262);
 	/* the one flourish that survives the redesign: the hero headline gradient */
 	--gradient-accent: linear-gradient(120deg, #7c6fff, #22d3ee);
 	color-scheme: dark;
 }
 
 @theme inline {
-	--font-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+	--font-sans: 'Geist Variable', sans-serif;
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
+	--radius-2xl: calc(var(--radius) * 1.8);
+	--radius-3xl: calc(var(--radius) * 2.2);
+	--radius-4xl: calc(var(--radius) * 2.6);
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
 	--color-card: var(--card);
@@ -87,6 +88,7 @@
 	--color-chart-3: var(--chart-3);
 	--color-chart-4: var(--chart-4);
 	--color-chart-5: var(--chart-5);
+	--color-chart-6: var(--chart-6);
 	--color-sidebar: var(--sidebar);
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
@@ -97,20 +99,13 @@
 	--color-sidebar-ring: var(--sidebar-ring);
 }
 
-@layer utilities {
-	.no-scrollbar {
-		-ms-overflow-style: none;
-		scrollbar-width: none;
-	}
-
-	.no-scrollbar::-webkit-scrollbar {
-		display: none;
-	}
-}
-
 @layer base {
 	* {
 		@apply border-border outline-ring/50;
+	}
+
+	html {
+		@apply font-sans;
 	}
 
 	body {

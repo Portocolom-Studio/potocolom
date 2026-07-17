@@ -9,6 +9,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import * as Select from '$lib/components/ui/select';
 	import * as ToggleGroup from '$lib/components/ui/toggle-group';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
@@ -30,7 +31,8 @@
 		loadHistory,
 		pollWhileWorking,
 		studio,
-		toggleStarred
+		toggleStarred,
+		type Model
 	} from '$lib/studio.svelte';
 	import HistoryStrip from '$lib/components/history-strip.svelte';
 
@@ -196,6 +198,13 @@
 		const index = sizeOptions.indexOf(Number(value));
 		if (index >= 0) sizeIndex = index;
 	}
+
+	function modelOptionLabel(model: Model | undefined): string {
+		if (!model) return t('app.gen.model');
+		return model.estimated_gpu_ms_default != null
+			? `${model.name} (~${formatMs(model.estimated_gpu_ms_default)})`
+			: model.name;
+	}
 </script>
 
 <div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
@@ -211,15 +220,20 @@
 				<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>
 					<div class="flex flex-col gap-2">
 						<Label for="gen-model">{t('app.gen.model')}</Label>
-						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
-							{#each studio.models as model (model.id)}
-								<option value={model.id}>
-									{model.name}{model.estimated_gpu_ms_default != null
-										? ` (~${formatMs(model.estimated_gpu_ms_default)})`
-										: ''}
-								</option>
-							{/each}
-						</select>
+						<Select.Root type="single" bind:value={studio.modelId}>
+							<Select.Trigger id="gen-model" class="w-full" size="sm">
+								{modelOptionLabel(
+									studio.models.find((model) => model.id === studio.modelId) ?? studio.models[0]
+								)}
+							</Select.Trigger>
+							<Select.Content>
+								<Select.Group>
+									{#each studio.models as model (model.id)}
+										<Select.Item value={model.id} label={modelOptionLabel(model)} />
+									{/each}
+								</Select.Group>
+							</Select.Content>
+						</Select.Root>
 					</div>
 					<div class="flex flex-col gap-2">
 						<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
