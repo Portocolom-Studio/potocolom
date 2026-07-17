@@ -69,6 +69,23 @@ benchmark-only (license gap on the LoRA weights; ~4 s @ 1024 is on par with
 Lightning, not a license-clean turbo win). Stability Community models remain the
 capped commercial anchors.
 
+### Full-suite rerun (RX 7600 XT, 2026-07-16, published)
+
+The authoritative published dataset: 24 prompts x 5 variants across all nine
+models (1080 images, 0 failures), run with depth-2 dispatch on main and
+recorded in the persistent metrics store. Highlights: vega-rt 512/2 median
+263 ms (fastest in the suite), sd-turbo 292, sdxl-turbo 405, ssd-1b-lightning
+2168 median @ 1024/8 vs sdxl-fast 3757. Raw output:
+`data/benchmark/full-rerun-20260716` plus the vega-rt rerun merged into
+`full-rerun-20260716-combined` (gitignored).
+
+Lesson recorded: the original vega-rt pass failed 117/120 with an fp16/fp32
+dtype mismatch - Segmind-Vega inherits SDXL's stock VAE, which force-upcasts
+at decode, and the manifest was missing the `madebyollin/sdxl-vae-fp16-fix`
+override every other SDXL-family manifest carries. 512-only smoke runs never
+trip the upcast: benchmark new SDXL-family models at 1024 at least once
+before promoting. The fp16 VAE also cut the 512/2 median from 381 to 263 ms.
+
 **ssd-1b-lightning** solo run (`data/benchmark/ssd-1b-lightning-run/`, clean GPU,
 2026-07-14): **load succeeded** - SDXL Lightning LoRA fuses onto the pruned
 SSD-1B UNet. 3/3 @ 1024/8step, median **2777 ms** gpu_ms (vs ~10 s for plain

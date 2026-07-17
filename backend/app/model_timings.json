@@ -37,7 +37,7 @@
     "steps": 1
   },
   "vega-rt": {
-    "gpu_ms": 381,
+    "gpu_ms": 263,
     "width": 512,
     "height": 512,
     "steps": 2
