@@ -45,6 +45,50 @@ def test_simulated_generate_with_input_image():
     assert result.data[:4] == b"RIFF"
 
 
+def test_simulated_upscale_resizes_by_factor():
+    engine = SimulatedEngine(0.01)
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buffer, "WEBP")
+    input_image = buffer.getvalue()
+    manifest = Manifest(
+        id="realesrgan",
+        name="Real-ESRGAN",
+        capabilities=["upscale"],
+        parameters={
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4], "default": 2}},
+            "required": ["factor"],
+        },
+    )
+    progress_values: list[float] = []
+
+    async def scenario():
+        return await engine.generate(
+            manifest, {"factor": 4}, progress_values.append, input_image=input_image,
+        )
+
+    result = asyncio.run(scenario())
+    assert result.width == 256
+    assert result.height == 192
+    assert progress_values[-1] == 1.0
+    assert result.data[:4] == b"RIFF"
+
+
+def test_simulated_upscale_requires_input():
+    engine = SimulatedEngine(0.01)
+    manifest = Manifest(id="realesrgan", name="Real-ESRGAN", capabilities=["upscale"])
+
+    async def scenario():
+        await engine.generate(manifest, {"factor": 2}, lambda _: None)
+
+    try:
+        asyncio.run(scenario())
+    except ValueError as error:
+        assert "requires input_image" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_diffusers_measured_manifests_use_free_vram():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"

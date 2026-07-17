@@ -44,6 +44,7 @@ def test_shipped_manifests_load():
     assert "sdxl-hypersd" in ids
     assert "vega-rt" in ids
     assert "ssd-1b-lightning" in ids
+    assert "realesrgan" in ids
     hypersd = next(m for m in manifests if m.id == "sdxl-hypersd")
     assert hypersd.benchmark_only
     assert hypersd.scheduler == "euler-trailing"
@@ -57,6 +58,22 @@ def test_shipped_manifests_load():
     lightning = next(m for m in manifests if m.id == "ssd-1b-lightning")
     assert not lightning.benchmark_only
     assert lightning.scheduler == "euler-trailing"
+    realesrgan = next(m for m in manifests if m.id == "realesrgan")
+    assert realesrgan.capabilities == ["upscale"]
+    assert realesrgan.parameters["required"] == ["factor"]
+    assert realesrgan.parameters["properties"]["factor"]["enum"] == [2, 4]
+    assert realesrgan.license_id == "bsd-3-clause"
+
+
+def test_upscale_cannot_mix_with_diffusion(tmp_path):
+    bad = {
+        **SD_TURBO,
+        "id": "bad-upscale",
+        "capabilities": ["upscale", "text_to_image"],
+    }
+    (tmp_path / "bad.json").write_text(json.dumps(bad))
+    with pytest.raises(ValueError, match="upscale cannot combine"):
+        load_manifests(str(tmp_path))
 
 
 def test_unknown_manifest_field_is_loud(tmp_path):
