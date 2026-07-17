@@ -26,6 +26,7 @@
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
 	import {
+		filterDiffusionModels,
 		generationById,
 		isStarred,
 		loadHistory,
@@ -82,9 +83,7 @@
 
 	// Diffusion models drive the generate form; upscalers are pinned by the
 	// Upscale action (capability-driven routing, issue #91).
-	const diffusionModels = $derived(
-		studio.models.filter((model) => !model.capabilities.includes('upscale'))
-	);
+	const diffusionModels = $derived(filterDiffusionModels(studio.models));
 	const upscaleModel = $derived(
 		studio.models.find((model) => model.capabilities.includes('upscale'))
 	);
@@ -191,15 +190,20 @@
 
 	async function upscaleShown(): Promise<void> {
 		if (!canUpscale || shown === null || upscaleModel == null) return;
+		// Capture before clearing the selection: `shown` is derived from
+		// selectedId, so reading it afterwards would target the newest
+		// generation instead of the one on screen.
+		const sourceId = shown.assets[0].id;
+		const modelId = upscaleModel.id;
 		errorText = '';
 		studio.selectedId = null;
 		const response = await fetch('/api/v1/generations', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
-				model_id: upscaleModel.id,
+				model_id: modelId,
 				params: { factor: upscaleFactor },
-				source_asset_id: shown.assets[0].id
+				source_asset_id: sourceId
 			})
 		});
 		if (!response.ok) {
@@ -255,7 +259,7 @@
 			<Card.Description>{t('app.gen.sub')}</Card.Description>
 		</Card.Header>
 		<Card.Content class="flex min-h-0 flex-1 flex-col">
-			{#if studio.models.length === 0}
+			{#if diffusionModels.length === 0}
 				<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
 			{:else}
 				<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>

@@ -11,7 +11,12 @@
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
 	import NavMetrics from '$lib/components/nav-metrics.svelte';
-	import { studio, starredGenerations, openPlayground } from '$lib/studio.svelte';
+	import {
+		studio,
+		starredGenerations,
+		openPlayground,
+		filterDiffusionModels
+	} from '$lib/studio.svelte';
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -110,7 +115,7 @@
 										</div>
 										<Collapsible.Content>
 											<Sidebar.MenuSub>
-												{#each studio.models as model (model.id)}
+												{#each filterDiffusionModels(studio.models) as model (model.id)}
 													<Sidebar.MenuSubItem>
 														<Sidebar.MenuSubButton
 															isActive={studio.shellView === 'playground' &&
