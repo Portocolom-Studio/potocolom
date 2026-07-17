@@ -1,5 +1,5 @@
 {
-  "_source": "RX 7600 XT benchmark; vega-rt t2i baseline from issue #75 clean rerun (2026-07-14)",
+  "_source": "RX 7600 XT benchmark; vega-rt t2i from #102 fp16 VAE rerun; realesrgan factor-2 provisional until measured",
   "sdxl-base": {
     "gpu_ms": 15274,
     "width": 1024,
@@ -47,5 +47,9 @@
     "width": 1024,
     "height": 1024,
     "steps": 8
+  },
+  "realesrgan": {
+    "gpu_ms": 800,
+    "factor": 2
   }
 }

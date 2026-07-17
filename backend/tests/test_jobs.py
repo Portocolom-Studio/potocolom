@@ -328,7 +328,113 @@ def test_img2img_rejects_model_without_capability():
                                          "params": {"prompt": "edit"},
                                          "source_asset_id": source_asset_id})
             assert rejected.status_code == 422
-            assert "image_to_image" in rejected.json()["detail"]
+            detail = rejected.json()["detail"]
+            assert "image_to_image" in detail or "upscale" in detail
+
+
+@pytest.mark.db
+def test_upscale_dispatch_includes_input_url():
+    upscale_manifest = {
+        "id": "realesrgan",
+        "name": "Real-ESRGAN",
+        "capabilities": ["upscale"],
+        "parameters": {
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4], "default": 2}},
+            "required": ["factor"],
+        },
+        "min_vram_gb": 4,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-upscale-seed")
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-test",
+                                        "params": {"prompt": "seed"}})
+            source_job_id = created.json()["job_id"]
+            dispatch = worker.receive_json()
+            assert client.put(urlsplit(dispatch["upload"]["url"]).path,
+                              content=b"source-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": source_job_id,
+                              "gpu_ms": 50, "width": 512, "height": 512})
+            source_asset_id = poll_until(client, source_job_id, "succeeded")["assets"][0]["id"]
+
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json({
+                "type": "hello",
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "w-upscale",
+                "models": [MANIFEST, upscale_manifest],
+                "realtime_slots": 1,
+            })
+            assert worker.receive_json()["type"] == "registered"
+
+            upscale = client.post("/api/v1/generations",
+                                  json={"model_id": "realesrgan",
+                                        "params": {"factor": 2},
+                                        "source_asset_id": source_asset_id})
+            assert upscale.status_code == 202
+            upscale_job_id = upscale.json()["job_id"]
+
+            up_dispatch = worker.receive_json()
+            assert up_dispatch["type"] == "dispatch_job"
+            assert up_dispatch["job_id"] == upscale_job_id
+            assert up_dispatch["params"] == {"factor": 2}
+            assert "input" in up_dispatch
+            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == b"source-webp"
+
+            assert client.put(urlsplit(up_dispatch["upload"]["url"]).path,
+                              content=b"upscaled-webp").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": upscale_job_id,
+                              "gpu_ms": 400, "width": 1024, "height": 1024})
+            done = poll_until(client, upscale_job_id, "succeeded")
+            assert done["gpu_ms"] == 400
+            assert done["assets"][0]["width"] == 1024
+
+
+@pytest.mark.db
+def test_upscale_rejects_without_source_asset():
+    upscale_manifest = {
+        "id": "realesrgan",
+        "name": "Real-ESRGAN",
+        "capabilities": ["upscale"],
+        "parameters": {
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4], "default": 2}},
+            "required": ["factor"],
+        },
+        "min_vram_gb": 4,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-upscale-nosrc", upscale_manifest)
+            rejected = client.post("/api/v1/generations",
+                                   json={"model_id": "realesrgan",
+                                         "params": {"factor": 2}})
+            assert rejected.status_code == 422
+            assert "source_asset_id" in rejected.json()["detail"]
+
+
+@pytest.mark.db
+def test_upscale_mixed_capabilities_rejected_at_hello():
+    bad = {
+        "id": "bad-upscale",
+        "name": "Bad",
+        "capabilities": ["upscale", "text_to_image"],
+        "parameters": {},
+        "min_vram_gb": 0,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json({
+                "type": "hello",
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "w-bad-upscale",
+                "models": [bad],
+                "realtime_slots": 0,
+            })
+            with pytest.raises(Exception):
+                worker.receive_json()
 
 
 @pytest.mark.db

@@ -28,8 +28,25 @@ def _load_timings() -> dict[str, dict[str, int]]:
         if model_id.startswith("_") or not isinstance(entry, dict):
             continue
         try:
+            gpu_ms = int(entry["gpu_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if gpu_ms <= 0:
+            continue
+        # Diffusion baselines need steps/width/height for pixel scaling.
+        # Upscale baselines are factor-keyed (flat or scale by factor^2).
+        if "factor" in entry:
+            try:
+                factor = int(entry["factor"])
+            except (TypeError, ValueError):
+                continue
+            if factor <= 0:
+                continue
+            timings[model_id] = {"gpu_ms": gpu_ms, "factor": factor}
+            continue
+        try:
             candidate = {
-                "gpu_ms": int(entry["gpu_ms"]),
+                "gpu_ms": gpu_ms,
                 "width": int(entry["width"]),
                 "height": int(entry["height"]),
                 "steps": int(entry["steps"]),
@@ -59,6 +76,18 @@ def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
     baseline = _load_timings().get(model_id)
     if baseline is None:
         return None
+
+    if "factor" in baseline:
+        if "factor" not in params:
+            return max(1, baseline["gpu_ms"])
+        try:
+            factor = int(params["factor"])
+        except (TypeError, ValueError):
+            return None
+        if factor <= 0:
+            return None
+        scale = (factor / baseline["factor"]) ** 2
+        return max(1, round(baseline["gpu_ms"] * scale))
 
     if not all(key in params for key in ("steps", "width", "height")):
         return None
