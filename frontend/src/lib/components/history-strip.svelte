@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
@@ -20,16 +20,74 @@
 
 	// Click-drag horizontal scroll (scrollbar is hidden via no-scrollbar).
 	// Capture only after the move threshold so plain clicks still select.
+	// On release, leftover velocity coasts with friction and may reach an end.
 	let dragPointerId: number | null = null;
 	let dragStartX = 0;
 	let dragStartScroll = 0;
 	let dragMoved = false;
 	let suppressClick = false;
+	let lastSampleX = 0;
+	let lastSampleT = 0;
+	let velocityPxPerMs = 0; // positive = toward higher scrollLeft
+	let inertiaRaf = 0;
 	const DRAG_THRESHOLD_PX = 12;
+	const INERTIA_MIN_PX_PER_MS = 0.04;
+	// Lower = longer coast. Tuned so a hard flick can cross many thumbs
+	// without always slamming into the end.
+	const INERTIA_FRICTION_PER_MS = 0.0028;
+	const INERTIA_VELOCITY_BOOST = 1.15;
+	const VELOCITY_EMA_ALPHA = 0.35;
 
 	const shownId = $derived(
 		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
 	);
+
+	function maxScrollLeft(el: HTMLDivElement): number {
+		return Math.max(0, el.scrollWidth - el.clientWidth);
+	}
+
+	function stopInertia(): void {
+		if (inertiaRaf !== 0) {
+			cancelAnimationFrame(inertiaRaf);
+			inertiaRaf = 0;
+		}
+	}
+
+	function startFling(velocity: number): void {
+		if (!stripEl) return;
+		const max = maxScrollLeft(stripEl);
+		if (max <= 0) return;
+
+		let vel = velocity * INERTIA_VELOCITY_BOOST;
+		if (Math.abs(vel) < INERTIA_MIN_PX_PER_MS) return;
+
+		let prev = performance.now();
+		const step = (now: number) => {
+			if (!stripEl) {
+				inertiaRaf = 0;
+				return;
+			}
+			const dt = Math.min(32, now - prev);
+			prev = now;
+			// Exponential decay: force falls off over time/distance.
+			vel *= Math.exp(-INERTIA_FRICTION_PER_MS * dt);
+			if (Math.abs(vel) < INERTIA_MIN_PX_PER_MS) {
+				inertiaRaf = 0;
+				return;
+			}
+			const next = stripEl.scrollLeft + vel * dt;
+			const end = maxScrollLeft(stripEl);
+			stripEl.scrollLeft = Math.max(0, Math.min(end, next));
+			if (stripEl.scrollLeft <= 0 || stripEl.scrollLeft >= end) {
+				inertiaRaf = 0;
+				return;
+			}
+			inertiaRaf = requestAnimationFrame(step);
+		};
+		inertiaRaf = requestAnimationFrame(step);
+	}
+
+	onDestroy(stopInertia);
 
 	// Starred jobs outside the loaded history pages still appear at the front.
 	const stripGenerations = $derived.by(() => {
@@ -74,11 +132,15 @@
 
 	function onStripPointerDown(event: PointerEvent): void {
 		if (event.button !== 0 || !stripEl) return;
+		stopInertia();
 		dragPointerId = event.pointerId;
 		dragStartX = event.clientX;
 		dragStartScroll = stripEl.scrollLeft;
 		dragMoved = false;
 		suppressClick = false;
+		lastSampleX = event.clientX;
+		lastSampleT = event.timeStamp;
+		velocityPxPerMs = 0;
 	}
 
 	function onStripPointerMove(event: PointerEvent): void {
@@ -90,6 +152,17 @@
 			suppressClick = true;
 			stripEl.setPointerCapture(event.pointerId);
 		}
+		const sampleDt = event.timeStamp - lastSampleT;
+		if (sampleDt > 0) {
+			// Finger left => scrollLeft increases. EMA smooths noisy samples.
+			const sample = (lastSampleX - event.clientX) / sampleDt;
+			velocityPxPerMs =
+				velocityPxPerMs === 0
+					? sample
+					: VELOCITY_EMA_ALPHA * sample + (1 - VELOCITY_EMA_ALPHA) * velocityPxPerMs;
+		}
+		lastSampleX = event.clientX;
+		lastSampleT = event.timeStamp;
 		stripEl.scrollLeft = dragStartScroll - delta;
 	}
 
@@ -98,8 +171,13 @@
 		if (stripEl.hasPointerCapture(event.pointerId)) {
 			stripEl.releasePointerCapture(event.pointerId);
 		}
+		const fling = dragMoved;
+		// Ignore velocity if the pointer sat still before release.
+		const releaseVelocity = event.timeStamp - lastSampleT > 80 ? 0 : velocityPxPerMs;
 		dragPointerId = null;
 		dragMoved = false;
+		velocityPxPerMs = 0;
+		if (fling) startFling(releaseVelocity);
 	}
 
 	function onThumbClick(event: MouseEvent, generation: Generation): void {
