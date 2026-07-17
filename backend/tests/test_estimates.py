@@ -57,9 +57,9 @@ def test_estimate_gpu_ms_requires_explicit_params():
 
 
 def test_estimate_gpu_ms_factor_baseline_scales_with_factor():
-    assert estimate_gpu_ms("realesrgan", {"factor": 2}) == 800
-    assert estimate_gpu_ms("realesrgan", {"factor": 4}) == 3200
-    assert estimate_gpu_ms("realesrgan", {}) == 800
+    assert estimate_gpu_ms("realesrgan", {"factor": 2}) == 17931
+    assert estimate_gpu_ms("realesrgan", {"factor": 4}) == 71724
+    assert estimate_gpu_ms("realesrgan", {}) == 17931
 
 
 def test_load_timings_survives_bad_json(tmp_path, monkeypatch):
