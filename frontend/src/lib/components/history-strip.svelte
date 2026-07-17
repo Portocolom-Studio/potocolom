@@ -55,6 +55,7 @@
 
 	function startFling(velocity: number): void {
 		if (!stripEl) return;
+		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 		const max = maxScrollLeft(stripEl);
 		if (max <= 0) return;
 
