@@ -23,7 +23,7 @@
 		valueToNorm
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
-	import { estimateGpuMs } from '$lib/gpu-estimate';
+	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
 	import {
 		generationById,
 		isStarred,
@@ -50,6 +50,7 @@
 	let normsReady = $state(false);
 	let seed = $state('');
 	let sourceAssetId = $state<string | null>(null);
+	let upscaleFactor = $state(2);
 	let errorText = $state('');
 
 	// The viewer shows the clicked generation, or the newest finished one.
@@ -77,13 +78,22 @@
 	const shownPrompt = $derived((shown?.params.prompt ?? '').trim());
 	const shownStarred = $derived(shown !== null && isStarred(shown.id));
 
-	// The manifest schema decides which resolutions a model supports
-	// (docs/architecture.md, model manifests); no enum means unconstrained.
+	// Diffusion models drive the generate form; upscalers are pinned by the
+	// Upscale action (capability-driven routing, issue #91).
+	const diffusionModels = $derived(
+		studio.models.filter((model) => !model.capabilities.includes('upscale'))
+	);
+	const upscaleModel = $derived(
+		studio.models.find((model) => model.capabilities.includes('upscale'))
+	);
 	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
 	const canEdit = $derived(
 		shown !== null &&
 			shown.assets.length > 0 &&
 			(selectedModel?.capabilities.includes('image_to_image') ?? false)
+	);
+	const canUpscale = $derived(
+		shown !== null && shown.assets.length > 0 && shown.state === 'succeeded' && upscaleModel != null
 	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
@@ -100,6 +110,10 @@
 		})
 	);
 	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
+	const upscaleEstimateMs = $derived(estimateUpscaleGpuMs(upscaleModel, upscaleFactor));
+	const upscaleEstimateLabel = $derived(
+		upscaleEstimateMs != null ? `~${formatMs(upscaleEstimateMs)}` : null
+	);
 
 	$effect(() => {
 		if (!selectedModel?.capabilities.includes('image_to_image')) {
@@ -173,6 +187,28 @@
 		void pollWhileWorking();
 	}
 
+	async function upscaleShown(): Promise<void> {
+		if (!canUpscale || shown === null || upscaleModel == null) return;
+		errorText = '';
+		studio.selectedId = null;
+		const response = await fetch('/api/v1/generations', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({
+				model_id: upscaleModel.id,
+				params: { factor: upscaleFactor },
+				source_asset_id: shown.assets[0].id
+			})
+		});
+		if (!response.ok) {
+			const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+			errorText = body?.detail ?? response.statusText;
+			return;
+		}
+		await loadHistory();
+		void pollWhileWorking();
+	}
+
 	function insertPrompt(): void {
 		if (shownPrompt !== '') studio.prompt = shownPrompt;
 	}
@@ -196,6 +232,11 @@
 		const index = sizeOptions.indexOf(Number(value));
 		if (index >= 0) sizeIndex = index;
 	}
+
+	function onUpscaleFactorChange(value: string): void {
+		const factor = Number(value);
+		if (factor === 2 || factor === 4) upscaleFactor = factor;
+	}
 </script>
 
 <div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
@@ -212,7 +253,7 @@
 					<div class="flex flex-col gap-2">
 						<Label for="gen-model">{t('app.gen.model')}</Label>
 						<select id="gen-model" class={fieldClass + ' h-8'} bind:value={studio.modelId}>
-							{#each studio.models as model (model.id)}
+							{#each diffusionModels as model (model.id)}
 								<option value={model.id}>
 									{model.name}{model.estimated_gpu_ms_default != null
 										? ` (~${formatMs(model.estimated_gpu_ms_default)})`
@@ -319,17 +360,38 @@
 								<PencilIcon />
 								{t('app.gen.edit')}
 							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								class="justify-start"
-								disabled
-								title={t('app.gen.coming_soon')}
-							>
-								<ScanLineIcon />
-								{t('app.gen.upscale')}
-							</Button>
+							<div class="flex min-w-0 flex-col gap-1">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									class="justify-start"
+									disabled={!canUpscale}
+									onclick={upscaleShown}
+								>
+									<ScanLineIcon />
+									{t('app.gen.upscale')}{upscaleEstimateLabel != null
+										? ` ${upscaleEstimateLabel}`
+										: ''}
+								</Button>
+								{#if upscaleModel != null}
+									<ToggleGroup.Root
+										type="single"
+										variant="outline"
+										spacing={0}
+										class="flex w-full"
+										value={String(upscaleFactor)}
+										onValueChange={(value) => value && onUpscaleFactorChange(value)}
+									>
+										<ToggleGroup.Item value="2" class="min-w-0 flex-1 text-xs">
+											{t('app.gen.upscale_x2')}
+										</ToggleGroup.Item>
+										<ToggleGroup.Item value="4" class="min-w-0 flex-1 text-xs">
+											{t('app.gen.upscale_x4')}
+										</ToggleGroup.Item>
+									</ToggleGroup.Root>
+								{/if}
+							</div>
 							<Button
 								type="button"
 								variant="outline"

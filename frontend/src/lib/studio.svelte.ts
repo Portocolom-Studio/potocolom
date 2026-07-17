@@ -103,8 +103,12 @@ let polling = false;
 
 function applyModels(models: Model[]): void {
 	studio.models = models;
-	if (!studio.modelId && models.length > 0) {
-		studio.modelId = (models.find((m) => m.default) ?? models[0]).id;
+	const diffusion = models.filter((model) => !model.capabilities.includes('upscale'));
+	const selectable = diffusion.length > 0 ? diffusion : models;
+	if (!studio.modelId || !selectable.some((model) => model.id === studio.modelId)) {
+		if (selectable.length > 0) {
+			studio.modelId = (selectable.find((model) => model.default) ?? selectable[0]).id;
+		}
 	}
 }
 

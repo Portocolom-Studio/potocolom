@@ -222,6 +222,8 @@
 	"app.gen.unstar": "Quitar destacado",
 	"app.gen.edit": "Editar",
 	"app.gen.upscale": "Ampliar",
+	"app.gen.upscale_x2": "x2",
+	"app.gen.upscale_x4": "x4",
 	"app.gen.delete": "Eliminar",
 	"app.gen.coming_soon": "Próximamente",
 	"app.gen.gpu_time": "Tiempo GPU",
