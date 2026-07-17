@@ -41,10 +41,11 @@ One module, four parts, in dependency order:
    text2img pipeline (SD 1.5 by default, fp16 on GPU), derives the img2img
    pipeline from it, caches prompt embeddings, and exposes exactly two
    operations:
-   - `sds_loss`: Score Distillation. Encode the derived image to a latent,
-     noise it at a random timestep in [0.02, 0.98] of the schedule, run
-     the frozen UNet with classifier-free guidance, and apply the guided
-     noise residual as the latent's gradient via the
+   - `sds_loss` / `sds_loss_batch`: Score Distillation. Encode derived
+     image(s) to latents, noise at one shared random timestep in
+     [0.02, 0.98] of the schedule, run the frozen UNet once with
+     classifier-free guidance over the whole batch, and apply the guided
+     noise residual as each latent's gradient via the
      `(latent * residual.detach()).sum()` trick. IMPORTANT: the paper's
      pseudocode (`abs(noise - pred_noise)` computed under `no_grad`) has
      no gradient path to the image; the residual-as-gradient form is what
@@ -52,8 +53,9 @@ One module, four parts, in dependency order:
    - `sdedit`: img2img at a given strength - noise the current derived
      image, denoise toward the prompt - producing a Dream Target.
 4. `optimize_illusion` - the two-phase loop:
-   - Phase 1, Score Distillation (default 500 steps): weighted SDS per
-     derived image; image targets (e.g. a QR code) use SSIM+MSE instead.
+   - Phase 1, Score Distillation (default 500 steps): weighted SDS for all
+     prompt-target derived images in one batched UNet forward per step;
+     image targets (e.g. a QR code) use SSIM+MSE instead.
    - Phase 2, Dream Target (default 8 rounds x 300 steps): per round,
      freeze a target for each derived image via SDEdit at a strength that
      decays from 0.90 toward 0.05, then regress derived images to their
@@ -119,9 +121,9 @@ between sheets reduces the needed backlight strength.
 Ordered by value-for-effort; none are speculative seams, all come from
 observed limits of the current code or explicit paper follow-ups:
 
-1. Batch the derived images through the UNet in one forward pass per SDS
-   step (currently one call per derived image). On the hidden illusion
-   that is a ~5x cut in UNet calls - the dominant cost.
+1. ~~Batch the derived images through the UNet in one forward pass per SDS
+   step~~ - done (`sds_loss_batch`). On the hidden illusion that was a ~5x
+   cut in UNet calls - the dominant cost.
 2. Composite sheet output: one PNG grid of primes + derived + simulated
    arrangement for quick visual triage of runs.
 3. Negative prompts in `embed()` (trivial in diffusers) - the paper's
@@ -154,7 +156,7 @@ observed limits of the current code or explicit paper follow-ups:
 |---|---|
 | Sec. 3.1 prime images, Sec. 4.3 FFN | `FourierFeatureNetwork` |
 | Sec. 3.2 + Table 1 arrangements | `ILLUSIONS`, `overlay`, `rot90` |
-| Sec. 3.3.1 Score Distillation (Eq. 2-3) | `DiffusionAdapter.sds_loss` |
+| Sec. 3.3.1 Score Distillation (Eq. 2-3) | `DiffusionAdapter.sds_loss_batch` |
 | Sec. 3.3.2 Dream Target (Eq. 4-6), Fig. 6 | `DiffusionAdapter.sdedit` + phase 2 of `optimize_illusion` |
 | Sec. 3.3.3 visual prompts | `IllusionConfig.target_image` |
 | Appendix A.1 brightness constant | `overlay(brightness=...)` (k=2 rotate, k=3 hidden) |

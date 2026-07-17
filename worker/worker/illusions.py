@@ -200,9 +200,26 @@ class DiffusionAdapter:
         return posterior.sample() * self.pipe.vae.config.scaling_factor
 
     def sds_loss(self, derived: Tensor, prompt: str, guidance_scale: float, generator) -> Tensor:
-        """Score Distillation Loss (paper 3.3.1): the gradient on the
-        latent is the guided noise residual; no backprop through the UNet."""
+        """Score Distillation Loss for one derived image (paper 3.3.1)."""
+        return self.sds_loss_batch(derived, [prompt], [1.0], guidance_scale, generator)
+
+    def sds_loss_batch(
+        self,
+        derived: Tensor,
+        prompts: list[str],
+        weights: list[float],
+        guidance_scale: float,
+        generator,
+    ) -> Tensor:
+        """Batched SDS: one shared timestep and one CFG-doubled UNet call
+        for all prompt-target derived images. `derived` is (B, 3, H, W)."""
+        if len(prompts) != derived.shape[0] or len(weights) != derived.shape[0]:
+            raise ValueError("prompts, weights, and derived batch size must match")
+        if derived.shape[0] == 0:
+            return torch.zeros((), device=self.device)
+
         latent = self.encode_latent(derived)
+        batch = latent.shape[0]
         train_steps = self.scheduler.config.num_train_timesteps
         timestep = int(
             torch.randint(
@@ -213,7 +230,7 @@ class DiffusionAdapter:
                 device=self.device,
             ).item()
         )
-        timesteps = torch.tensor([timestep], device=self.device)
+        timesteps = torch.full((batch,), timestep, device=self.device, dtype=torch.long)
         noise = torch.randn(
             latent.shape,
             generator=generator,
@@ -222,16 +239,23 @@ class DiffusionAdapter:
         )
         with torch.no_grad():
             noised = self.scheduler.add_noise(latent.detach(), noise, timesteps)
-            model_in = torch.cat([noised, noised])
+            # CFG layout: [uncond_0..B-1, cond_0..B-1] matching chunk(2) on dim 0
+            model_in = torch.cat([noised, noised], dim=0)
+            timesteps_cfg = torch.cat([timesteps, timesteps], dim=0)
+            unconds = [self.embed(prompt)[:1] for prompt in prompts]
+            conds = [self.embed(prompt)[1:] for prompt in prompts]
+            encoder_hidden_states = torch.cat(unconds + conds, dim=0)
             predicted = self.pipe.unet(
                 model_in,
-                timesteps,
-                encoder_hidden_states=self.embed(prompt),
+                timesteps_cfg,
+                encoder_hidden_states=encoder_hidden_states,
             ).sample
             uncond, cond = predicted.chunk(2)
             guided = uncond + guidance_scale * (cond - uncond)
             gradient = (guided - noise).float()
-        return (latent.float() * gradient).sum()
+        per_item = (latent.float() * gradient).reshape(batch, -1).sum(dim=1)
+        weight_t = torch.tensor(weights, device=per_item.device, dtype=per_item.dtype)
+        return (per_item * weight_t).sum()
 
     def sdedit(self, image: Tensor, prompt: str, strength: float, generator) -> Tensor:
         """SDEdit img2img: noise the derived image and denoise it toward
@@ -315,17 +339,28 @@ def optimize_illusion(
     total = config.sds_steps + config.dream_rounds * config.dream_steps
     done = 0
 
-    # Phase 1: Score Distillation Loss on prompt targets
+    # Phase 1: Score Distillation Loss on prompt targets (one UNet call per step)
     for _ in range(config.sds_steps):
         optimizer.zero_grad()
         loss = torch.zeros((), device=config.device)
+        prompt_images: list[Tensor] = []
+        prompt_texts: list[str] = []
+        prompt_weights: list[float] = []
         for derived, target, weight in zip(render_derived(), targets, spec.weights, strict=True):
             if isinstance(target, str):
-                loss = loss + weight * adapter.sds_loss(
-                    derived, target, config.sds_guidance, generator
-                )
+                prompt_images.append(derived)
+                prompt_texts.append(target)
+                prompt_weights.append(weight)
             else:
                 loss = loss + weight * image_similarity_loss(derived, target.to(config.device))
+        if prompt_images:
+            loss = loss + adapter.sds_loss_batch(
+                torch.cat(prompt_images, dim=0),
+                prompt_texts,
+                prompt_weights,
+                config.sds_guidance,
+                generator,
+            )
         loss.backward()
         optimizer.step()
         done += 1

@@ -2,12 +2,15 @@
 (issue #115). CPU-only; skipped entirely when torch is not installed
 (CI runs the worker without the inference extra)."""
 
+from types import SimpleNamespace
+
 import pytest
 
 torch = pytest.importorskip("torch")
 
 from worker.illusions import (  # noqa: E402  (import needs torch)
     ILLUSIONS,
+    DiffusionAdapter,
     FourierFeatureNetwork,
     IllusionConfig,
     image_similarity_loss,
@@ -114,3 +117,49 @@ def test_image_target_fills_final_slot() -> None:
     targets = targets_for(config, ILLUSIONS["hidden"])
     assert len(targets) == 5
     assert targets[4] is target
+
+
+def test_sds_loss_batch_single_unet_call_with_cfg_doubled_batch() -> None:
+    """Stubbed UNet must see batch 2B and embeddings 2B for B prompt images."""
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    seq, dim = 4, 8
+    adapter.embeddings = {
+        "dog": torch.zeros(2, seq, dim),
+        "sloth": torch.zeros(2, seq, dim),
+    }
+
+    unet_calls: list[tuple[torch.Size, torch.Size]] = []
+
+    class FakeUNet:
+        def __call__(self, model_in, timesteps, encoder_hidden_states):
+            unet_calls.append((model_in.shape, encoder_hidden_states.shape))
+            return SimpleNamespace(sample=torch.zeros_like(model_in))
+
+    class FakeScheduler:
+        config = SimpleNamespace(num_train_timesteps=1000)
+
+        def add_noise(self, latents, noise, timesteps):
+            assert latents.shape[0] == timesteps.shape[0]
+            return latents
+
+    adapter.pipe = SimpleNamespace(unet=FakeUNet())
+    adapter.scheduler = FakeScheduler()
+    adapter.encode_latent = lambda image: torch.zeros(
+        image.shape[0], 4, image.shape[2] // 8, image.shape[3] // 8
+    )
+    adapter.embed = lambda prompt: adapter.embeddings[prompt]
+
+    batch = 2
+    derived = torch.rand(batch, 3, 16, 16)
+    generator = torch.Generator().manual_seed(0)
+    loss = adapter.sds_loss_batch(
+        derived, ["dog", "sloth"], [1.0, 2.0], guidance_scale=100.0, generator=generator
+    )
+
+    assert loss.ndim == 0
+    assert len(unet_calls) == 1
+    model_shape, embed_shape = unet_calls[0]
+    assert model_shape[0] == 2 * batch
+    assert embed_shape[0] == 2 * batch
