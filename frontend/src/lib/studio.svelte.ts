@@ -108,6 +108,22 @@ export function filterDiffusionModels(models: Model[]): Model[] {
 	return models.filter((model) => !model.capabilities.includes('upscale'));
 }
 
+export const UPSCALE_FAST_ID = 'realesrgan-fast';
+export const UPSCALE_QUALITY_ID = 'realesrgan';
+
+export function filterUpscaleModels(models: Model[]): Model[] {
+	return models.filter((model) => model.capabilities.includes('upscale'));
+}
+
+/** Prefer fast when registered; else quality; else first sorted id. */
+export function defaultUpscaleModelId(models: Model[]): string {
+	const upscalers = filterUpscaleModels(models);
+	if (upscalers.length === 0) return '';
+	if (upscalers.some((model) => model.id === UPSCALE_FAST_ID)) return UPSCALE_FAST_ID;
+	if (upscalers.some((model) => model.id === UPSCALE_QUALITY_ID)) return UPSCALE_QUALITY_ID;
+	return [...upscalers].sort((a, b) => a.id.localeCompare(b.id))[0].id;
+}
+
 function applyModels(models: Model[]): void {
 	studio.models = models;
 	const selectable = filterDiffusionModels(models);

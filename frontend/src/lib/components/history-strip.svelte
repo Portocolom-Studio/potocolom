@@ -18,6 +18,13 @@
 	let loadingOlder = $state(false);
 	let loadError = $state('');
 
+	// Click-drag horizontal scroll (scrollbar is hidden via no-scrollbar).
+	let dragPointerId = $state<number | null>(null);
+	let dragStartX = 0;
+	let dragStartScroll = 0;
+	let dragMoved = false;
+	const DRAG_THRESHOLD_PX = 6;
+
 	const shownId = $derived(
 		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
 	);
@@ -62,6 +69,42 @@
 	function select(generation: Generation): void {
 		studio.selectedId = generation.id;
 	}
+
+	function onStripPointerDown(event: PointerEvent): void {
+		if (event.button !== 0 || !stripEl) return;
+		dragPointerId = event.pointerId;
+		dragStartX = event.clientX;
+		dragStartScroll = stripEl.scrollLeft;
+		dragMoved = false;
+		stripEl.setPointerCapture(event.pointerId);
+	}
+
+	function onStripPointerMove(event: PointerEvent): void {
+		if (dragPointerId === null || event.pointerId !== dragPointerId || !stripEl) return;
+		const delta = event.clientX - dragStartX;
+		if (!dragMoved && Math.abs(delta) < DRAG_THRESHOLD_PX) return;
+		dragMoved = true;
+		stripEl.scrollLeft = dragStartScroll - delta;
+	}
+
+	function endStripDrag(event: PointerEvent): void {
+		if (dragPointerId === null || event.pointerId !== dragPointerId || !stripEl) return;
+		if (stripEl.hasPointerCapture(event.pointerId)) {
+			stripEl.releasePointerCapture(event.pointerId);
+		}
+		dragPointerId = null;
+	}
+
+	function onThumbClick(event: MouseEvent, generation: Generation): void {
+		// A drag that moved past the threshold is scrolling, not a selection.
+		if (dragMoved) {
+			event.preventDefault();
+			event.stopPropagation();
+			dragMoved = false;
+			return;
+		}
+		select(generation);
+	}
 </script>
 
 {#if stripGenerations.length > 0}
@@ -78,20 +121,29 @@
 			</button>
 		{/if}
 
-		<div class="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1" bind:this={stripEl}>
+		<div
+			class="no-scrollbar flex min-w-0 flex-1 cursor-grab gap-2 overflow-x-auto pb-1 active:cursor-grabbing"
+			bind:this={stripEl}
+			onpointerdown={onStripPointerDown}
+			onpointermove={onStripPointerMove}
+			onpointerup={endStripDrag}
+			onpointercancel={endStripDrag}
+			role="list"
+		>
 			{#each stripGenerations as generation (generation.id)}
 				{#if generation.assets.length > 0}
 					<button
 						type="button"
 						class="relative shrink-0"
 						title={generation.params.prompt}
-						onclick={() => select(generation)}
+						onclick={(event) => onThumbClick(event, generation)}
 					>
 						<img
 							src={generation.assets[0].url}
 							alt={generation.params.prompt ?? generation.id}
-							class={'h-24 w-24 rounded-lg border object-cover ' +
+							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
 								(shownId === generation.id ? 'border-primary' : 'border-border')}
+							draggable="false"
 						/>
 						{#if isStarred(generation.id)}
 							<span
