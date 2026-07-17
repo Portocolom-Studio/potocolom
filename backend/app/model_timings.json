@@ -1,5 +1,5 @@
 {
-  "_source": "RX 7600 XT benchmark; vega-rt t2i from #102 fp16 VAE rerun; realesrgan x2 measured on a 1024px source (2026-07-17); x4 measured 37853 (quadratic scaling overestimates it ~2x)",
+  "_source": "RX 7600 XT; vega-rt #102; realesrgan x2/x4 measured 2026-07-17; realesrgan-fast x4 1024->4096 = 550 ms flat (native-scale cost, issue #108)",
   "sdxl-base": {
     "gpu_ms": 15274,
     "width": 1024,
@@ -51,5 +51,10 @@
   "realesrgan": {
     "gpu_ms": 17931,
     "factor": 2
+  },
+  "realesrgan-fast": {
+    "gpu_ms": 550,
+    "factor": 4,
+    "flat": true
   }
 }

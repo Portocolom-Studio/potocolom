@@ -62,6 +62,13 @@ def test_estimate_gpu_ms_factor_baseline_scales_with_factor():
     assert estimate_gpu_ms("realesrgan", {}) == 17931
 
 
+def test_estimate_gpu_ms_flat_factor_baseline_ignores_request_factor():
+    # Compact nets always run at native scale then outscale; cost is flat.
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 2}) == 550
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 4}) == 550
+    assert estimate_gpu_ms("realesrgan-fast", {}) == 550
+
+
 def test_load_timings_survives_bad_json(tmp_path, monkeypatch):
     from app import estimates
 

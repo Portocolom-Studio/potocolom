@@ -347,6 +347,7 @@ class DiffusersEngine:
             "https://github.com/xinntao/Real-ESRGAN/releases/download"
         )
         path = ensure_weights(source, self.models_dir, manifest.id, factor)
+        self._pick_rung(manifest)
         return load_upscale_model(path, self.device, self.dtype)
 
     def _scheduler(self, name: str, config: Any) -> Any:
@@ -571,13 +572,15 @@ class DiffusersEngine:
         factor = int(params.get("factor", 0))
         if factor not in (2, 4):
             raise ValueError(f"unsupported upscale factor: {factor}")
-        from worker.upscale import upscale_tiled
+        from worker.upscale import UpscaleRuntime, upscale_tiled
 
         load_start = time.monotonic()
         mode = f"upscale-{factor}"
         key = (manifest.id, mode)
         cold = key not in self._pipelines
-        model = self._pipeline(manifest, mode)
+        runtime = self._pipeline(manifest, mode)
+        if not isinstance(runtime, UpscaleRuntime):
+            raise TypeError(f"upscale pipeline for {manifest.id} is not an UpscaleRuntime")
         load_ms = int((time.monotonic() - load_start) * 1000) if cold else 0
         source = decode_input_image(input_image)
 
@@ -586,8 +589,9 @@ class DiffusersEngine:
 
         start = time.monotonic()
         image = upscale_tiled(
-            model, source, factor,
-            device=self.device, dtype=self.dtype, progress=on_tile,
+            runtime.model, source, factor,
+            device=self.device, dtype=self.dtype,
+            native_scale=runtime.native_scale, progress=on_tile,
         )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)

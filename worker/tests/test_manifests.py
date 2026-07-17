@@ -45,6 +45,7 @@ def test_shipped_manifests_load():
     assert "vega-rt" in ids
     assert "ssd-1b-lightning" in ids
     assert "realesrgan" in ids
+    assert "realesrgan-fast" in ids
     hypersd = next(m for m in manifests if m.id == "sdxl-hypersd")
     assert hypersd.benchmark_only
     assert hypersd.scheduler == "euler-trailing"
@@ -63,6 +64,11 @@ def test_shipped_manifests_load():
     assert realesrgan.parameters["required"] == ["factor"]
     assert realesrgan.parameters["properties"]["factor"]["enum"] == [2, 4]
     assert realesrgan.license_id == "bsd-3-clause"
+    fast = next(m for m in manifests if m.id == "realesrgan-fast")
+    assert fast.capabilities == ["upscale"]
+    assert fast.source.endswith("realesr-general-x4v3.pth")
+    assert fast.min_vram_gb == 1
+    assert fast.parameters["properties"]["factor"]["enum"] == [2, 4]
 
 
 def test_upscale_cannot_mix_with_diffusion(tmp_path):

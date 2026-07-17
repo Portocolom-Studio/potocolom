@@ -1,4 +1,4 @@
-"""Pixel upscale via Real-ESRGAN class weights (issue #89).
+"""Pixel upscale via Real-ESRGAN class weights (issue #89, #108).
 
 Loads architecture through spandrel (not the unmaintained realesrgan/basicsr
 packages). Inference is always tiled so VRAM stays bounded at 1024 x4 -> 4096.
@@ -9,8 +9,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,23 +36,42 @@ WEIGHT_RELEASE_PATHS = {
 }
 
 
+@dataclass(frozen=True)
+class UpscaleRuntime:
+    model: Any
+    native_scale: int
+
+
+def is_direct_weight_source(source: str) -> bool:
+    """True when `source` is a single weight URL (one file for every factor)."""
+    path = urllib.parse.urlparse(source).path
+    return path.endswith((".pth", ".pt", ".safetensors"))
+
+
 def weight_url(source: str, factor: int) -> str:
     """Resolve a download URL for the factor's weight file."""
+    if is_direct_weight_source(source):
+        return source
     if factor not in WEIGHT_RELEASE_PATHS:
         raise ValueError(f"unsupported upscale factor: {factor}")
     return f"{source.rstrip('/')}/{WEIGHT_RELEASE_PATHS[factor]}"
 
 
-def weight_cache_path(models_dir: str, model_id: str, factor: int) -> Path:
+def weight_cache_path(models_dir: str, model_id: str, factor: int, source: str = "") -> Path:
+    safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in model_id)
+    cache_dir = Path(models_dir or ".") / ".cache" / "upscale" / safe_id
+    if source and is_direct_weight_source(source):
+        filename = Path(urllib.parse.urlparse(source).path).name
+        if not filename:
+            raise ValueError(f"direct upscale source has no filename: {source}")
+        return cache_dir / filename
     if factor not in WEIGHT_FILES:
         raise ValueError(f"unsupported upscale factor: {factor}")
-    filename = WEIGHT_FILES[factor]
-    safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in model_id)
-    return Path(models_dir or ".") / ".cache" / "upscale" / safe_id / filename
+    return cache_dir / WEIGHT_FILES[factor]
 
 
 def ensure_weights(source: str, models_dir: str, model_id: str, factor: int) -> Path:
-    path = weight_cache_path(models_dir, model_id, factor)
+    path = weight_cache_path(models_dir, model_id, factor, source)
     if path.is_file() and path.stat().st_size > 0:
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,13 +90,17 @@ def ensure_weights(source: str, models_dir: str, model_id: str, factor: int) -> 
     return path
 
 
-def load_upscale_model(path: Path, device: str, dtype: Any) -> Any:
+def load_upscale_model(path: Path, device: str, dtype: Any) -> UpscaleRuntime:
     from spandrel import ImageModelDescriptor, ModelLoader
 
     descriptor = ModelLoader().load_from_file(str(path))
     if not isinstance(descriptor, ImageModelDescriptor):
         raise ValueError(f"upscale weights are not an image model: {path}")
-    return descriptor.model.to(device=device, dtype=dtype).eval()
+    scale = int(descriptor.scale)
+    if scale < 1:
+        raise ValueError(f"upscale weights report invalid scale {scale}: {path}")
+    model = descriptor.model.to(device=device, dtype=dtype).eval()
+    return UpscaleRuntime(model=model, native_scale=scale)
 
 
 def _tile_starts(length: int, tile: int, overlap: int) -> list[int]:
@@ -153,17 +178,31 @@ def upscale_tiled(
     *,
     device: str,
     dtype: Any,
+    native_scale: int | None = None,
     progress: Callable[[float], None] | None = None,
     tile: int = UPSCALE_TILE,
     overlap: int = UPSCALE_OVERLAP,
 ) -> Image.Image:
-    """Run `model` over `image` in tiles; returns an RGB PIL image."""
+    """Run `model` over `image` in tiles; returns an RGB PIL image.
+
+    `native_scale` is the network's fixed output scale (from spandrel). When the
+    requested `factor` is below that, the network runs at native scale and the
+    result is Lanczos-downsampled (RealESRGANer outscale behavior, issue #108).
+    """
     import torch
     import torch.nn.functional as F
 
+    model_scale = int(native_scale or factor)
+    if model_scale < 1:
+        raise ValueError(f"invalid native upscale scale: {model_scale}")
+    if factor > model_scale:
+        raise ValueError(
+            f"requested factor {factor} exceeds network native scale {model_scale}"
+        )
+
     rgb = image.convert("RGB")
     width, height = rgb.size
-    out_w, out_h = width * factor, height * factor
+    out_w, out_h = width * model_scale, height * model_scale
     tiles = iter_tiles(width, height, tile=tile, overlap=overlap)
     if not tiles:
         raise ValueError("empty tile grid")
@@ -181,16 +220,20 @@ def upscale_tiled(
             if pad_h or pad_w:
                 patch = F.pad(patch, (0, pad_w, 0, pad_h), mode="reflect")
             out = model(patch).float()
-            use_h, use_w = (y1 - y0) * factor, (x1 - x0) * factor
+            use_h, use_w = (y1 - y0) * model_scale, (x1 - x0) * model_scale
             out = out[:, :, :use_h, :use_w]
             mask = _blend_weights(
-                use_h, use_w, overlap * factor, torch, device, torch.float32,
+                use_h, use_w, overlap * model_scale, torch, device, torch.float32,
             ).view(1, 1, use_h, use_w)
-            oy, ox = y0 * factor, x0 * factor
+            oy, ox = y0 * model_scale, x0 * model_scale
             accumulator[:, :, oy:oy + use_h, ox:ox + use_w] += out * mask
             weight_map[:, :, oy:oy + use_h, ox:ox + use_w] += mask
             if progress is not None:
                 progress((index + 1) / len(tiles))
 
     merged = accumulator / weight_map.clamp_min(1e-8)
-    return _tensor_to_pil(merged, torch)
+    result = _tensor_to_pil(merged, torch)
+    if factor < model_scale:
+        target = (width * factor, height * factor)
+        result = result.resize(target, Image.Resampling.LANCZOS)
+    return result
