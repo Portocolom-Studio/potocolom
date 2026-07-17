@@ -19,6 +19,10 @@ cat > .git/hooks/prepare-commit-msg <<'HOOK'
 #!/bin/sh
 NAME=$(git config user.name)
 EMAIL=$(git config user.email)
+if [ -z "$NAME" ] || [ -z "$EMAIL" ]; then
+	echo "prepare-commit-msg: set git config user.name and user.email for the DCO sign-off" >&2
+	exit 1
+fi
 grep -qs "^Signed-off-by: " "$1" || printf "\nSigned-off-by: %s <%s>\n" "$NAME" "$EMAIL" >> "$1"
 HOOK
 chmod +x .git/hooks/prepare-commit-msg
