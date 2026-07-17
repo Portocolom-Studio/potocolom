@@ -28,7 +28,7 @@
 <div class="mt-12 overflow-x-clip">
 	<p class="text-muted-foreground px-4 text-center text-sm sm:px-6">{t('gallery.prompts_hint')}</p>
 	<div
-		class="mt-5 flex w-full flex-col gap-4 overflow-x-clip"
+		class="relative mt-5 flex w-full flex-col gap-4 overflow-x-clip"
 		aria-label={t('gallery.prompts_aria')}
 	>
 		{#if showCopied}

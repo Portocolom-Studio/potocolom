@@ -4,20 +4,20 @@ How the open source project and the commercial cloud relate: which code lives wh
 
 ## The shape in one sentence
 
-There is no closed source cloud version of the application: the cloud runs the same GPL images, byte for byte, that self-hosters run. What is closed is everything that is not the application. Open product, closed business.
+There is no closed source cloud version of the application: the cloud runs the same AGPL images, byte for byte, that self-hosters run. What is closed is everything that is not the application. Open product, closed business.
 
 ## Licensing
 
-The public repository is GPL-3.0 and stays GPL-3.0.
+The public repository is AGPL-3.0, with commercial exceptions sold by the project ([COMMERCIAL.md](../COMMERCIAL.md)). This supersedes the original GPL-3.0 choice; the decision record in [decisions.md](decisions.md) keeps both entries.
 
-- GPL-3.0 permits commercial SaaS use with no obligations the project does not already meet. GPL has no network clause, so even a modified cloud deployment would owe nothing; ours is unmodified by construction (the one-build rule in [deployment-profiles.md](deployment-profiles.md)).
-- AGPL was considered as a defense against competitors hosting potocolom and rejected. A competitor hosting unmodified AGPL code has no obligation beyond pointing at source that is already public; AGPL only forces disclosure of their modifications. It would buy little here while costing adoption, since many organizations ban AGPL dependencies outright, and the self-hosted community is who the license serves. The actual moat is the closed business layer and the operations behind it, not the license.
-- The arms-length rule that keeps the private side legally clean: a program that imports GPL code becomes a derivative work and must be GPL; a separate process speaking HTTP to it does not. Therefore the private repository never imports a single module from this one. It codes against the documented HTTP contract, period.
-- Relicensing is trivial only while the project has one copyright holder. If that ever changes, a DCO (commit sign-off) is the cheap insurance to introduce when external contributions open up.
+- What AGPL changes: anyone who modifies the platform and offers it over a network must publish their modified source (section 13), or buy a commercial license from us. Self-hosting, private use, internal use and contribution remain permitted exactly as under GPL-3.0, subject to the license's ordinary source obligations when copies are conveyed. The license is a funnel for commercial derivatives, not a wall.
+- What AGPL does not do, stated plainly because the original decision got this right: a competitor hosting unmodified code owes nothing beyond pointing at source that is already public, and some organizations ban AGPL dependencies outright. The moat remains the closed business layer and the operations behind it; our own cloud is unaffected because it runs unmodified images by construction (the one-build rule in [deployment-profiles.md](deployment-profiles.md)) and the project owns the copyright anyway.
+- The arms-length rule that keeps the private side legally clean: a program that imports AGPL code becomes a derivative work and must be AGPL; a separate process speaking HTTP to it does not. Therefore the private repository never imports a single module from this one. It codes against the documented HTTP contract, period.
+- Dual licensing works only while the project can relicense, which means retaining full copyright. Contributions therefore require a DCO sign-off ([CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 ## The two repositories
 
-| | potocolom (public, GPL-3.0) | potocolom-cloud (private) |
+| | potocolom (public, AGPL-3.0) | potocolom-cloud (private) |
 |---|---|---|
 | Contents | frontend, backend, worker, compose, docs, the fake QuotaService | billing service (Stripe, credit ledger), fleet autoscaler (RunPod), Terraform environments, alert runbooks |
 | Talks to the other via | nothing; it defines the contracts | `QUOTA_SERVICE_URL` HTTP, metering events, fleet token minting |
@@ -27,7 +27,7 @@ The public repository is GPL-3.0 and stays GPL-3.0.
 
 What lives where, at the edges:
 
-- The Terraform environments (state, sizes, account wiring) are commercial operational data and live in the private repository. The [aws-setup.md](aws-setup.md) guide stays public: it documents how anyone could stand up their own cloud, which is good GPL citizenship and costs nothing, because the moat is operations, not configuration.
+- The Terraform environments (state, sizes, account wiring) are commercial operational data and live in the private repository. The [aws-setup.md](aws-setup.md) guide stays public: it documents how anyone could stand up their own cloud, which is good open source citizenship and costs nothing, because the moat is operations, not configuration.
 - The fake QuotaService ships in the public repository as part of cloud-sim ([local-development.md](local-development.md)). It is not just a development convenience; it is the executable contract.
 
 ## Boundary rules

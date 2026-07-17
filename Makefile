@@ -22,9 +22,9 @@ setup: ## create virtualenvs and install all dependencies
 	cd worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
 
-setup-rocm: ## worker inference deps for AMD: ROCm torch wheel, then the extra
+setup-rocm: ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
-	cd worker && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/rocm6.3
+	cd worker && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
 deps: ## start development dependencies (PostgreSQL, Redis, MinIO, Mailpit)

@@ -55,10 +55,6 @@
 				xScale(startMs, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)
 		);
 	}
-
-	function rollingWindowForLane(laneId: string): number {
-		return laneId === 'vram' ? 4 : 8;
-	}
 </script>
 
 <div class="flex flex-col gap-4">
@@ -67,13 +63,13 @@
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
 					<Card.Title class="text-base">{t('app.metrics.gpu_timeline')}</Card.Title>
-					<Card.Description class="text-sm">
-						{t('app.metrics.gpu_timeline_window')}
+					<Card.Description class="text-sm tabular-nums">
+						{rangeCaption}
 					</Card.Description>
 				</div>
 				<div class="flex flex-wrap items-center gap-2">
 					<StudioMetricsRangePicker bind:value={range} />
-					{#if timeline.hardwareAvailable}
+					{#if timeline.hardwareAvailable && live}
 						<span class="bg-chart-2/15 text-chart-2 rounded-full px-2.5 py-1 text-xs font-medium">
 							{t('app.metrics.live_hardware')}
 						</span>
@@ -92,8 +88,6 @@
 					windowEndMs={timeline.windowEndMs}
 					{range}
 					{live}
-					rollingWindow={rollingWindowForLane(lane.id)}
-					yUnitLabel="%"
 					emptyHint={lane.id === 'vram' && !vramAvailable
 						? t('app.metrics.vram_unavailable')
 						: undefined}
