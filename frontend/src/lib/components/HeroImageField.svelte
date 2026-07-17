@@ -34,6 +34,11 @@
 	let dirty = false;
 	let reducedMotion = false;
 
+	/** A prompt's -alt second take shares its base name with the original. */
+	function promptBase(file: string): string {
+		return file.replace(/(-alt)?-320\.webp$/, '');
+	}
+
 	// Seeded shuffle so the field looks the same on every load.
 	const pool = (() => {
 		const rng = createRng(42);
@@ -42,24 +47,36 @@
 			const j = Math.floor(rng() * (i + 1));
 			[list[i], list[j]] = [list[j], list[i]];
 		}
+		// Two takes of the same prompt look alike; keep them off each other.
+		for (let i = 1; i < list.length; i++) {
+			if (promptBase(list[i]) === promptBase(list[i - 1])) {
+				const j = (i + Math.floor(list.length / 2)) % list.length;
+				[list[i], list[j]] = [list[j], list[i]];
+			}
+		}
 		return list;
 	})();
 
-	const stripWidth = $derived(pool.length * cell);
+	let stripWidth = $state(0);
 
 	function buildRows(width: number, height: number): Row[] {
 		const rng = createRng(97);
 		const rowCount = Math.ceil(height / cell) + 1;
-		// Each row cycles the full pool, rotated by a per-row stride, so an
-		// image never repeats within a row and duplicates in neighboring rows
-		// stay several columns apart. Same speed everywhere keeps it that way.
-		// ponytail: every row carries the whole pool twice (copies for the
-		// wrap); trim rows to a viewport-sized window if DOM count ever hurts.
+		// Rows carry a viewport-sized window of the pool cycle, not the whole
+		// pool, so DOM size stays flat as the pool grows. The window is wide
+		// enough that an image never repeats on screen, and the per-row stride
+		// walks the whole pool so every image lands in some row. Same speed
+		// everywhere keeps neighboring-row duplicates several columns apart.
 		const stride = Math.max(1, Math.floor(pool.length / rowCount));
+		const rowLength = Math.min(
+			pool.length,
+			Math.max(stride, 16, Math.ceil((width + 2 * cell) / cell))
+		);
+		stripWidth = rowLength * cell;
 		const result: Row[] = [];
 		for (let r = 0; r < rowCount; r++) {
 			const tiles: Tile[] = [];
-			for (let i = 0; i < pool.length; i++) {
+			for (let i = 0; i < rowLength; i++) {
 				tiles.push({
 					id: `${r}-${i}`,
 					left: i * cell + (rng() - 0.5) * cell * 0.2,
@@ -170,6 +187,12 @@
 		const distance = Math.abs(pointer.y - (row.top + cell / 2));
 		return Math.max(0, 6 - Math.round(distance / cell) * 2);
 	}
+
+	/** Manifest stores `-320.webp`; pair with `-160.webp` for 1x screens. */
+	function heroSrcset(file: string): string {
+		const base = file.replace(/-320\.webp$/, '');
+		return `/images/hero/${base}-160.webp 160w, /images/hero/${file} 320w`;
+	}
 </script>
 
 <svelte:window onpointermove={onPointerMove} />
@@ -200,9 +223,12 @@
 						>
 							<img
 								src="/images/hero/{tile.file}"
+								srcset={heroSrcset(tile.file)}
+								sizes="{size}px"
 								alt=""
 								class="size-full object-cover"
 								loading="eager"
+								fetchpriority="low"
 								decoding="async"
 								draggable="false"
 							/>
