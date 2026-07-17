@@ -49,7 +49,12 @@
 			studio.history.length === 0 && lastGpuHardware() == null && persistedHistory.length === 0
 		);
 	});
-	const effectiveHistory = $derived(demoMode ? demoHistory() : studio.history);
+	const effectiveHistory = $derived.by(() => {
+		// liveTick keeps the seeded demo timestamps anchored to the moving
+		// window; without it they freeze at first render and drift out of range
+		void liveTick;
+		return demoMode ? demoHistory() : studio.history;
+	});
 	const session = $derived(computeSessionMetrics(effectiveHistory));
 	const pipeline = $derived(computePipelineMetrics(effectiveHistory));
 	const jobStatus = $derived(computeJobStatusBreakdown(effectiveHistory, t));
