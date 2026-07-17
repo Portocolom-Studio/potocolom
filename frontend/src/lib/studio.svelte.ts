@@ -7,6 +7,7 @@ export type Model = {
 	capabilities: string[];
 	default: boolean;
 	estimated_gpu_ms_default: number | null;
+	estimated_gpu_ms_by_factor?: Record<string, number>;
 	parameters: {
 		properties?: Record<
 			string,

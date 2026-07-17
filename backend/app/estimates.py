@@ -27,26 +27,26 @@ def _load_timings() -> dict[str, dict[str, Any]]:
     for model_id, entry in raw.items():
         if model_id.startswith("_") or not isinstance(entry, dict):
             continue
+        # Upscale baselines are a measured per-factor map; diffusion baselines
+        # need gpu_ms plus steps/width/height for pixel scaling.
+        factors_raw = entry.get("factors")
+        if isinstance(factors_raw, dict):
+            factors: dict[int, int] = {}
+            for key, value in factors_raw.items():
+                try:
+                    factor, ms = int(key), int(value)
+                except (TypeError, ValueError):
+                    continue
+                if factor > 0 and ms > 0:
+                    factors[factor] = ms
+            if factors:
+                timings[model_id] = {"factors": factors}
+            continue
         try:
             gpu_ms = int(entry["gpu_ms"])
         except (KeyError, TypeError, ValueError):
             continue
         if gpu_ms <= 0:
-            continue
-        # Diffusion baselines need steps/width/height for pixel scaling.
-        # Upscale baselines are factor-keyed (flat or scale by factor^2).
-        if "factor" in entry:
-            try:
-                factor = int(entry["factor"])
-            except (TypeError, ValueError):
-                continue
-            if factor <= 0:
-                continue
-            timings[model_id] = {
-                "gpu_ms": gpu_ms,
-                "factor": factor,
-                "flat": bool(entry.get("flat", False)),
-            }
             continue
         try:
             candidate = {
@@ -81,19 +81,16 @@ def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
     if baseline is None:
         return None
 
-    if "factor" in baseline:
-        if baseline.get("flat"):
-            return max(1, int(baseline["gpu_ms"]))
+    factors = baseline.get("factors")
+    if factors is not None:
         if "factor" not in params:
-            return max(1, int(baseline["gpu_ms"]))
+            return max(1, factors[min(factors)])
         try:
             factor = int(params["factor"])
         except (TypeError, ValueError):
             return None
-        if factor <= 0:
-            return None
-        scale = (factor / baseline["factor"]) ** 2
-        return max(1, round(baseline["gpu_ms"] * scale))
+        known = factors.get(factor)
+        return max(1, known) if known is not None else None
 
     if not all(key in params for key in ("steps", "width", "height")):
         return None
