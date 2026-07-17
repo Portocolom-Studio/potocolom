@@ -1,5 +1,5 @@
 <script lang="ts">
-	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
+	import HeroImageField from '$lib/components/HeroImageField.svelte';
 	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
@@ -53,7 +53,7 @@
 
 <main class="overflow-x-clip">
 	<section class="relative grid min-h-[92vh] place-items-center overflow-hidden">
-		<div class="hero-canvas absolute inset-0"><LatentCanvas /></div>
+		<div class="hero-canvas absolute inset-0"><HeroImageField /></div>
 		<div class="relative max-w-3xl px-6 pt-28 pb-16 text-center">
 			<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase sm:text-sm">
 				{t('hero.kicker')}
@@ -274,7 +274,7 @@
 </footer>
 
 <style>
-	/* the kept flourish: fade the particle field into the page background */
+	/* the kept flourish: fade the image field into the page background */
 	.hero-canvas::after {
 		content: '';
 		position: absolute;
