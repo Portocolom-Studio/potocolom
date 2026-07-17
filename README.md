@@ -2,7 +2,7 @@
 
 Draw it. Watch it render.
 
-potocolom is an open source, real time generative image platform: you sketch on a canvas and a diffusion model paints over your strokes live, at 2 to 4 frames per second, then one click hands the result to a heavier model for the final image. One GPL codebase runs it both ways - self-hosted on your own GPU for free, or as a managed cloud with subscriptions.
+potocolom is an open source, real time generative image platform: you sketch on a canvas and a diffusion model paints over your strokes live, at 2 to 4 frames per second, then one click hands the result to a heavier model for the final image. One AGPL codebase runs it both ways - self-hosted on your own GPU for free, or as a managed cloud with subscriptions.
 
 ![Draw it. Watch it render.](frontend/static/og.png)
 
@@ -71,4 +71,6 @@ See [Local development and testing](docs/local-development.md) for running each 
 
 ## License
 
-GPL-3.0. The full product in this repository is self-hostable forever; the commercial cloud's billing and fleet orchestration live in a separate private repository behind documented HTTP contracts, and the cloud runs the same unmodified images published here. The reasoning is in [the repository boundary document](docs/repository-boundary.md).
+AGPL-3.0. The full product in this repository is self-hostable forever: self-hosting, private use, internal use and contribution are all permitted at no cost under the license's ordinary terms. Anyone who modifies the platform and distributes it, or operates it as a network service, must make their modified source available under the AGPL - or obtain a commercial license, see [COMMERCIAL.md](COMMERCIAL.md). The commercial cloud's billing and fleet orchestration live in a separate private repository behind documented HTTP contracts, and the cloud runs the same unmodified images published here. The reasoning is in [the repository boundary document](docs/repository-boundary.md).
+
+Contributions require a `Signed-off-by` line ([DCO](https://developercertificate.org/)) - see [CONTRIBUTING.md](CONTRIBUTING.md).
