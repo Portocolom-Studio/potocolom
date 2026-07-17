@@ -49,6 +49,17 @@ async def list_models() -> list[dict]:
         payload = manifest.model_dump()
         defaults = schema_defaults(manifest.parameters)
         payload["estimated_gpu_ms_default"] = estimate_gpu_ms(manifest.id, defaults)
+        if "upscale" in manifest.capabilities:
+            # Measured per-factor numbers for the studio's factor picker; the
+            # default-params estimate cannot express factors with unequal cost.
+            factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
+            by_factor = {
+                str(factor): estimate_gpu_ms(manifest.id, {"factor": factor})
+                for factor in factor_spec.get("enum", [])
+            }
+            payload["estimated_gpu_ms_by_factor"] = {
+                factor: ms for factor, ms in by_factor.items() if ms is not None
+            }
         models.append(payload)
     return models
 

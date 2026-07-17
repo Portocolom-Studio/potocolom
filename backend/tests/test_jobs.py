@@ -393,6 +393,38 @@ def test_upscale_dispatch_includes_input_url():
 
 
 @pytest.mark.db
+def test_models_expose_measured_upscale_estimates():
+    fast_manifest = {
+        "id": "realesrgan-fast",
+        "name": "Real-ESRGAN Fast",
+        "capabilities": ["upscale"],
+        "parameters": {
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4], "default": 2}},
+            "required": ["factor"],
+        },
+        "min_vram_gb": 1,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json({
+                "type": "hello",
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "w-upscale-estimates",
+                "models": [MANIFEST, fast_manifest],
+                "realtime_slots": 1,
+            })
+            assert worker.receive_json()["type"] == "registered"
+
+            models = client.get("/api/v1/models").json()
+            fast = next(m for m in models if m["id"] == "realesrgan-fast")
+            assert fast["estimated_gpu_ms_by_factor"] == {"2": 759, "4": 555}
+            assert fast["estimated_gpu_ms_default"] == 759
+            diffusion = next(m for m in models if m["id"] == "sd-test")
+            assert "estimated_gpu_ms_by_factor" not in diffusion
+
+
+@pytest.mark.db
 def test_upscale_rejects_without_source_asset():
     upscale_manifest = {
         "id": "realesrgan",
