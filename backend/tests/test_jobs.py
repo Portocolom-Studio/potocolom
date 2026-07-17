@@ -417,6 +417,8 @@ def test_upscale_rejects_without_source_asset():
 
 @pytest.mark.db
 def test_upscale_mixed_capabilities_rejected_at_hello():
+    from starlette.websockets import WebSocketDisconnect
+
     bad = {
         "id": "bad-upscale",
         "name": "Bad",
@@ -433,8 +435,9 @@ def test_upscale_mixed_capabilities_rejected_at_hello():
                 "models": [bad],
                 "realtime_slots": 0,
             })
-            with pytest.raises(Exception):
+            with pytest.raises(WebSocketDisconnect) as closed:
                 worker.receive_json()
+            assert closed.value.code == 4000
 
 
 @pytest.mark.db
@@ -587,7 +590,14 @@ def test_pick_job_worker_prefers_least_loaded():
         assert jobs.pick_job_worker("sd-test") is idle
     finally:
         realtime.workers.clear()
-        realtime.workers.update(saved)
+        # Skip disconnected TestClient sockets; restoring them leaves zombies
+        # that make studio/gpu fail with ClosedResourceError instead of 503.
+        from starlette.websockets import WebSocketState
+
+        for worker_id, worker in saved.items():
+            state = getattr(worker.ws, "client_state", None)
+            if state is None or state == WebSocketState.CONNECTED:
+                realtime.workers[worker_id] = worker
 
 
 def test_job_dispatch_depth_one_while_realtime_live():
@@ -611,7 +621,12 @@ def test_job_dispatch_depth_one_while_realtime_live():
         assert jobs.pick_job_worker("sd-test") is idle
     finally:
         realtime.workers.clear()
-        realtime.workers.update(saved)
+        from starlette.websockets import WebSocketState
+
+        for worker_id, worker in saved.items():
+            state = getattr(worker.ws, "client_state", None)
+            if state is None or state == WebSocketState.CONNECTED:
+                realtime.workers[worker_id] = worker
 
 
 @pytest.mark.db
