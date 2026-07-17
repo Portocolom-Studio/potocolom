@@ -1,10 +1,19 @@
-from worker.upscale import iter_tiles, weight_url
+import pytest
+
+from worker.upscale import iter_tiles, weight_cache_path, weight_url
 
 
 def test_weight_url_maps_factor_to_release_asset():
     base = "https://github.com/xinntao/Real-ESRGAN/releases/download"
     assert weight_url(base, 2).endswith("v0.2.1/RealESRGAN_x2plus.pth")
     assert weight_url(base, 4).endswith("v0.1.0/RealESRGAN_x4plus.pth")
+
+
+def test_weight_helpers_reject_unknown_factor():
+    with pytest.raises(ValueError, match="unsupported upscale factor"):
+        weight_url("https://example.com", 3)
+    with pytest.raises(ValueError, match="unsupported upscale factor"):
+        weight_cache_path("/models", "realesrgan", 3)
 
 
 def test_iter_tiles_covers_small_image_as_single_tile():
