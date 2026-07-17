@@ -156,14 +156,17 @@ def test_evict_cold_removes_oldest_first():
 
 
 def _poison_engine(model_id: str = "m") -> DiffusersEngine:
-    import torch
-
     from worker.engine import GeneratedImage
 
+    # CI worker venv has no torch; only OutOfMemoryError must be a real type
+    # so `except self.torch.OutOfMemoryError` stays valid.
+    torch_stub = MagicMock()
+    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.torch = torch
+    engine.torch = torch_stub
     engine.device = "cpu"
-    engine.dtype = torch.float32
+    engine.dtype = object()
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {(model_id, "t2i"): object()}
