@@ -67,7 +67,7 @@ Both columns run identical container images and expose identical endpoints; ever
 
 ```mermaid
 flowchart TB
-    subgraph SH["Self-hosted: GPL, your hardware, free"]
+    subgraph SH["Self-hosted: AGPL, your hardware, free"]
         B1["Browser"] -->|"SPA, REST and WS served by the API itself"| A1["API server, one container"]
         A1 --> AU1["Auth: none (auto login) or local email+password"]
         A1 --> Q1["Quota: UnlimitedQuota, no payments"]
@@ -114,7 +114,7 @@ Every path below is possible because the schema, storage keys and API are identi
 The same schema and storage layout make an install portable in both directions:
 
 - In: `pg_dump` the database, restore into RDS (same migration history, so versions must match or be upgraded first); `aws s3 sync` the assets into the images bucket; users log in again (sessions are deliberately not migrated). Billing state starts fresh because credit ledgers live in the private service and never existed self-hosted.
-- Out (the no-lock-in direction, and the point of the GPL): the same steps in reverse, or per user via the GDPR export (issue #10), which yields their data without operator involvement. A customer can leave the cloud for their own GPU and keep their library.
+- Out (the no-lock-in direction, and the point of the license): the same steps in reverse, or per user via the GDPR export (issue #10), which yields their data without operator involvement. A customer can leave the cloud for their own GPU and keep their library.
 
 Cross-install migration is mechanics the architecture guarantees, not a polished launch feature; the first packaged tooling for it can come whenever demand appears, and will be thin because the hard part is already free.
 
@@ -124,4 +124,4 @@ Already decided and specified elsewhere, listed here for completeness: one proje
 
 ## What can never migrate
 
-The private repository services (billing, fleet autoscaler) and the AWS infrastructure are the commercial layer; they integrate over HTTP boundaries (`QUOTA_SERVICE_URL`, metering events, worker fleet tokens) and are not part of any self-hosted profile. The open source repository stays complete without them: the default implementations allow everything, which is both the self-hosted behavior and the reason the GPL boundary holds.
+The private repository services (billing, fleet autoscaler) and the AWS infrastructure are the commercial layer; they integrate over HTTP boundaries (`QUOTA_SERVICE_URL`, metering events, worker fleet tokens) and are not part of any self-hosted profile. The open source repository stays complete without them: the default implementations allow everything, which is both the self-hosted behavior and the reason the license boundary holds.

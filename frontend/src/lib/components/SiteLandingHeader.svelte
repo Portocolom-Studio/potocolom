@@ -41,7 +41,7 @@
 		</nav>
 		<div class="ml-auto flex items-center gap-3">
 			<LanguageToggle />
-			<Button size="sm" variant="gradient" href={resolve('/app')}>{t('nav.launch')}</Button>
+			<Button size="lg" variant="default" href={resolve('/app')}>{t('nav.launch')}</Button>
 		</div>
 	</div>
 </header>

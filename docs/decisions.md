@@ -508,6 +508,12 @@ Rejected alternative: keep `ssd-1b-lightning` benchmark-only after the successfu
 
 Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75); sd-turbo and sdxl-turbo as product models - Stability Community License caps commercial use at USD $1M annual revenue (see "Stability Community License models in the product" above).
 
+## License: AGPL-3.0 with commercial dual licensing
+
+Supersedes "License: GPL-3.0 stays, AGPL rejected". The public repository moves to AGPL-3.0 and the project sells commercial exceptions (COMMERCIAL.md). The earlier entry rejected AGPL as a competitive moat, and that reasoning still holds: AGPL does not stop a competitor hosting unmodified code, and the moat remains the closed business layer. The license changes anyway because the goal changed: companies that modify and operate the platform as a service must now either publish their changes or engage us commercially, turning the license into a funnel rather than a wall. Self-hosting, private use, internal use and contribution are unaffected, and the project's own cloud is unaffected because it runs unmodified images and the project holds the copyright. Dual licensing depends on retaining relicensing rights, so contributions require DCO sign-off from this point on (CONTRIBUTING.md).
+
+Rejected alternatives: staying GPL-3.0 (leaves the modified-network-service path entirely open, and relicensing only gets harder as outside contributions accumulate); BUSL-1.1 with a revenue-threshold use grant or PolyForm Noncommercial (closest to a Stability-style community license, but both are source-available rather than open source, and the project's positioning spends that credibility everywhere from the hero badge to the whitepaper).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

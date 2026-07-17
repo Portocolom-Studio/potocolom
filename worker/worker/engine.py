@@ -159,10 +159,10 @@ class SimulatedEngine:
         color = sha256(str(params.get("prompt", "")).encode()).digest()
         if input_image is not None:
             source = decode_input_image(input_image)
-            width = params.get("width")
-            height = params.get("height")
-            if width and height:
-                width, height = int(width), int(height)
+            width_param = params.get("width")
+            height_param = params.get("height")
+            if width_param and height_param:
+                width, height = int(width_param), int(height_param)
                 source = source.resize((width, height), Image.Resampling.LANCZOS)
             else:
                 width, height = source.size

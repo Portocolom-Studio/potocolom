@@ -1,5 +1,5 @@
 {
-  "_source": "RX 7600 XT benchmark; vega-rt t2i from #102 fp16 VAE rerun; realesrgan factor-2 provisional until measured",
+  "_source": "RX 7600 XT benchmark; vega-rt t2i from #102 fp16 VAE rerun; realesrgan x2 measured on a 1024px source (2026-07-17); x4 measured 37853 (quadratic scaling overestimates it ~2x)",
   "sdxl-base": {
     "gpu_ms": 15274,
     "width": 1024,
@@ -49,7 +49,7 @@
     "steps": 8
   },
   "realesrgan": {
-    "gpu_ms": 800,
+    "gpu_ms": 17931,
     "factor": 2
   }
 }

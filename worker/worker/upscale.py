@@ -124,7 +124,10 @@ def _blend_weights(
     fade = max(min(overlap, tile_h // 2, tile_w // 2), 1)
     wy = torch.ones(tile_h, device=device, dtype=dtype)
     wx = torch.ones(tile_w, device=device, dtype=dtype)
-    ramp = torch.linspace(0, 1, fade, device=device, dtype=dtype)
+    # Never exactly zero: normalization reconstructs single-coverage pixels
+    # for any positive weight, but a zero-weight border pixel divides to
+    # black at the image edges where no neighboring tile compensates.
+    ramp = torch.linspace(0, 1, fade + 1, device=device, dtype=dtype)[1:]
     wy[:fade] = ramp
     wy[-fade:] = ramp.flip(0)
     wx[:fade] = ramp

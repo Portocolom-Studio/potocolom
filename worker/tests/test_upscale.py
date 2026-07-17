@@ -23,3 +23,23 @@ def test_iter_tiles_covers_large_image_without_gaps():
                 covered[y][x] = True
     assert all(all(row) for row in covered)
     assert len(tiles) >= 4
+
+
+def test_upscale_tiled_reconstructs_borders_without_dark_frame():
+    torch = __import__("pytest").importorskip("torch")
+    from PIL import Image
+
+    from worker.upscale import upscale_tiled
+
+    class Nearest2x(torch.nn.Module):
+        def forward(self, x):
+            return torch.nn.functional.interpolate(x, scale_factor=2, mode="nearest")
+
+    white = Image.new("RGB", (700, 520), (255, 255, 255))
+    result = upscale_tiled(
+        Nearest2x(), white, 2, device="cpu", dtype=torch.float32,
+        tile=512, overlap=32,
+    )
+    assert result.size == (1400, 1040)
+    extrema = result.convert("L").getextrema()
+    assert extrema == (255, 255), f"border pixels darkened: {extrema}"

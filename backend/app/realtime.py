@@ -18,7 +18,7 @@ from collections.abc import Coroutine
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, HTTPException, WebSocket
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.manifests import Manifest, parse_manifests, validate_params
 
@@ -127,7 +127,20 @@ gpu_requests: dict[str, asyncio.Future] = {}
 
 
 def pick_any_worker() -> Worker | None:
-    return next(iter(workers.values()), None)
+    """Return a connected worker, pruning sockets already closed under us.
+
+    Fleet cleanup removes workers in its `finally`, but a socket can die in
+    the window before that runs; picking it would crash the studio GPU
+    endpoint on send instead of returning 503.
+    """
+    for worker_id, worker in list(workers.items()):
+        state = getattr(worker.ws, "client_state", None)
+        if state is not None and state != WebSocketState.CONNECTED:
+            if workers.get(worker_id) is worker:
+                del workers[worker_id]
+            continue
+        return worker
+    return None
 
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
