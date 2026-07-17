@@ -153,3 +153,89 @@ def test_evict_cold_removes_oldest_first():
     assert ("a", "t2i") in engine._pipelines
     assert ("b", "t2i") not in engine._pipelines
     assert "b" not in engine._rungs
+
+
+def _poison_engine(model_id: str = "m") -> DiffusersEngine:
+    import torch
+
+    from worker.engine import GeneratedImage
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.device = "cpu"
+    engine.dtype = torch.float32
+    engine.memory_mode = "full"
+    engine.models_dir = ""
+    engine._pipelines = {(model_id, "t2i"): object()}
+    engine._rungs = {model_id: "full"}
+    engine._last_used = {model_id: 1.0}
+    engine._poison_evicted_at = {}
+    engine._poison_evict_count = {}
+    engine._gpu = asyncio.Lock()
+    engine._free_gpu_cache = MagicMock()
+    engine._ok = GeneratedImage(b"webp", 64, 64, 1, 0)
+    return engine
+
+
+def test_evict_poisoned_drops_resident_and_counts():
+    engine = _poison_engine()
+    assert engine._evict_poisoned("m") is True
+    assert engine._pipelines == {}
+    assert engine._poison_evict_count["m"] == 1
+
+
+def test_evict_poisoned_respects_cooldown():
+    engine = _poison_engine()
+    assert engine._evict_poisoned("m") is True
+    engine._pipelines[("m", "t2i")] = object()  # simulate a reload that failed again
+    assert engine._evict_poisoned("m") is False
+    assert ("m", "t2i") in engine._pipelines
+    assert engine._poison_evict_count["m"] == 1
+
+
+def test_generate_fails_once_then_succeeds_after_poison_evict():
+    """Non-OOM error drops the resident; the next job can complete (issue #103)."""
+    engine = _poison_engine()
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("Input type c10::Half and bias type float")
+
+    async def scenario():
+        with patch("asyncio.to_thread", side_effect=boom):
+            try:
+                await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
+            except RuntimeError as error:
+                assert "c10::Half" in str(error)
+            else:
+                raise AssertionError("expected RuntimeError")
+        assert engine._pipelines == {}
+        assert engine._poison_evict_count["m"] == 1
+        # Reload would re-populate; simulate that and a clean second pass.
+        engine._pipelines[("m", "t2i")] = object()
+        with patch("asyncio.to_thread", return_value=engine._ok):
+            result = await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
+        assert result is engine._ok
+
+    asyncio.run(scenario())
+
+
+def test_generate_value_error_does_not_evict():
+    engine = _poison_engine()
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    def bad_request(*_args, **_kwargs):
+        raise ValueError("bad params")
+
+    async def scenario():
+        with patch("asyncio.to_thread", side_effect=bad_request):
+            try:
+                await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("expected ValueError")
+
+    asyncio.run(scenario())
+    assert ("m", "t2i") in engine._pipelines
+    assert engine._poison_evict_count == {}
