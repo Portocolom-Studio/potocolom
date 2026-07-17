@@ -284,6 +284,8 @@ class IllusionConfig:
     model_id: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     sds_steps: int = 500
     sds_guidance: float = 100.0
+    sds_low_res: int = 256
+    sds_low_res_fraction: float = 0.6
     dream_rounds: int = 8
     dream_steps: int = 300
     learning_rate: float = 1e-3
@@ -333,26 +335,38 @@ def optimize_illusion(
     optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
     adapter = DiffusionAdapter(config.model_id, config.device)
 
-    def render_derived() -> list[Tensor]:
-        return spec.arrange([network.image() for network in networks])
+    def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
+        return spec.arrange([network.image(resolution) for network in networks])
 
     total = config.sds_steps + config.dream_rounds * config.dream_steps
     done = 0
+    low_res_steps = int(config.sds_steps * config.sds_low_res_fraction)
 
     # Phase 1: Score Distillation Loss on prompt targets (one UNet call per step)
-    for _ in range(config.sds_steps):
+    for step in range(config.sds_steps):
+        resolution = config.sds_low_res if step < low_res_steps else RESOLUTION
         optimizer.zero_grad()
         loss = torch.zeros((), device=config.device)
         prompt_images: list[Tensor] = []
         prompt_texts: list[str] = []
         prompt_weights: list[float] = []
-        for derived, target, weight in zip(render_derived(), targets, spec.weights, strict=True):
+        for derived, target, weight in zip(
+            render_derived(resolution), targets, spec.weights, strict=True
+        ):
             if isinstance(target, str):
                 prompt_images.append(derived)
                 prompt_texts.append(target)
                 prompt_weights.append(weight)
             else:
-                loss = loss + weight * image_similarity_loss(derived, target.to(config.device))
+                target_image = target.to(config.device)
+                if target_image.shape[-1] != resolution:
+                    target_image = tf.interpolate(
+                        target_image,
+                        size=(resolution, resolution),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                loss = loss + weight * image_similarity_loss(derived, target_image)
         if prompt_images:
             loss = loss + adapter.sds_loss_batch(
                 torch.cat(prompt_images, dim=0),
@@ -370,7 +384,7 @@ def optimize_illusion(
     for strength in config.strength_schedule():
         dream_targets: list[Tensor] = []
         with torch.no_grad():
-            current = render_derived()
+            current = render_derived(RESOLUTION)
         for derived, target in zip(current, targets, strict=True):
             if isinstance(target, str):
                 dream_targets.append(adapter.sdedit(derived, target, strength, generator))
@@ -380,7 +394,7 @@ def optimize_illusion(
             optimizer.zero_grad()
             loss = torch.zeros((), device=config.device)
             for derived, dream, weight in zip(
-                render_derived(), dream_targets, spec.weights, strict=True
+                render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
             ):
                 loss = loss + weight * image_similarity_loss(derived, dream)
             loss.backward()
@@ -432,6 +446,18 @@ def main() -> None:
     parser.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     parser.add_argument("--sds-steps", type=int, default=500)
     parser.add_argument("--sds-guidance", type=float, default=100.0)
+    parser.add_argument(
+        "--sds-low-res",
+        type=int,
+        default=256,
+        help="render resolution for the early SDS ladder stage",
+    )
+    parser.add_argument(
+        "--sds-low-res-fraction",
+        type=float,
+        default=0.6,
+        help="fraction of SDS steps run at --sds-low-res before finishing at 512",
+    )
     parser.add_argument("--dream-rounds", type=int, default=8)
     parser.add_argument("--dream-steps", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
@@ -446,6 +472,8 @@ def main() -> None:
         model_id=args.model,
         sds_steps=args.sds_steps,
         sds_guidance=args.sds_guidance,
+        sds_low_res=args.sds_low_res,
+        sds_low_res_fraction=args.sds_low_res_fraction,
         dream_rounds=args.dream_rounds,
         dream_steps=args.dream_steps,
         seed=args.seed,

@@ -163,3 +163,18 @@ def test_sds_loss_batch_single_unet_call_with_cfg_doubled_batch() -> None:
     model_shape, embed_shape = unet_calls[0]
     assert model_shape[0] == 2 * batch
     assert embed_shape[0] == 2 * batch
+
+
+def test_arrangements_work_at_ladder_resolution() -> None:
+    """FFN primes at 256px still produce valid derived shapes for each type."""
+    resolution = 256
+    for name, spec in ILLUSIONS.items():
+        primes = [
+            torch.rand((1, 3, resolution, resolution), generator=torch.Generator().manual_seed(i))
+            for i in range(spec.n_primes)
+        ]
+        derived = spec.arrange(primes)
+        assert len(derived) == len(spec.weights), name
+        for image in derived:
+            assert image.shape == (1, 3, resolution, resolution), name
+            assert image.min() >= 0 and image.max() <= 1, name

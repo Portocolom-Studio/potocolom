@@ -55,7 +55,9 @@ One module, four parts, in dependency order:
 4. `optimize_illusion` - the two-phase loop:
    - Phase 1, Score Distillation (default 500 steps): weighted SDS for all
      prompt-target derived images in one batched UNet forward per step;
-     image targets (e.g. a QR code) use SSIM+MSE instead.
+     image targets (e.g. a QR code) use SSIM+MSE instead. The first 60% of
+     SDS steps render at 256px (`--sds-low-res`), then finish at 512 - FFNs
+     are resolution-free, and UNet cost scales roughly with latent area.
    - Phase 2, Dream Target (default 8 rounds x 300 steps): per round,
      freeze a target for each derived image via SDEdit at a strength that
      decays from 0.90 toward 0.05, then regress derived images to their
@@ -98,6 +100,7 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 | prompts | - | Biggest lever by far (paper Sec. 4.2). Style-rich prompts ("an oil painting of...") work much better than bare nouns; keep all prompts in one consistent style. |
 | `--sds-guidance` | 100 | DreamFusion-style high CFG. Lower (30-50) gives softer, less saturated primes; too low never converges on a subject. |
 | `--sds-steps` | 500 | More helps monotonically (paper Fig. 12) but with diminishing returns after ~1000. |
+| `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0.6 | Early SDS at low resolution, then finish at 512. UNet cost scales ~quadratically with resolution; set fraction to 0 to disable. |
 | `--dream-rounds` / `--dream-steps` | 8 x 300 | More rounds with a finer strength schedule = cleaner final subjects. The paper's full schedule walks 0.90 to 0.01. |
 | learning rate | 1e-3 (Adam) | In `IllusionConfig`; raise to 3e-3 for faster early structure at some stability cost. |
 | seed | 0 | Different seeds give genuinely different compositions; cherry-picking across 3-4 seeds is normal for showpieces. |
@@ -124,29 +127,31 @@ observed limits of the current code or explicit paper follow-ups:
 1. ~~Batch the derived images through the UNet in one forward pass per SDS
    step~~ - done (`sds_loss_batch`). On the hidden illusion that was a ~5x
    cut in UNet calls - the dominant cost.
-2. Composite sheet output: one PNG grid of primes + derived + simulated
+2. ~~Resolution ladder~~ - done: first `--sds-low-res-fraction` of SDS at
+   `--sds-low-res` (default 256), remainder and Dream Targets at 512.
+3. Composite sheet output: one PNG grid of primes + derived + simulated
    arrangement for quick visual triage of runs.
-3. Negative prompts in `embed()` (trivial in diffusers) - the paper's
+4. Negative prompts in `embed()` (trivial in diffusers) - the paper's
    baseline comparisons suggest it reduces subject bleed between derived
    images.
-4. Timestep annealing for SDS (sample high timesteps early, low late) -
+5. Timestep annealing for SDS (sample high timesteps early, low late) -
    standard DreamFusion-family improvement, cheap to add where the
    timestep is drawn.
-5. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
+6. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
    care (the worker's manifest machinery solved this for generation - see
    `vae` handling in the engine) and likely gradient accumulation on
    16 GB with 5 derived images.
-6. Latent-space Dream Targets: regress latents instead of pixels for the
+7. Latent-space Dream Targets: regress latents instead of pixels for the
    SSIM/MSE inner loop; faster per step but changes the loss balance -
    benchmark before adopting.
-7. Rotation-overlay generalization to arbitrary angles (the paper models
+8. Rotation-overlay generalization to arbitrary angles (the paper models
    90-degree steps; `torch.rot90` would become a grid_sample rotation,
    still differentiable) - unlocks continuous-spin animations for the
    studio designer (#117).
-8. Print color calibration: the paper's Figs. 15-16 show hue shifts after
+9. Print color calibration: the paper's Figs. 15-16 show hue shifts after
    printing; a fixed printer color profile applied inside the arrangement
    (a 3x3 color matrix) would let the optimizer compensate.
-9. Job integration (#116) and the studio designer (#117) - the module's
+10. Job integration (#116) and the studio designer (#117) - the module's
    `optimize_illusion(config, progress)` signature was shaped so the
    worker job wrapper only adds cancellation checks and asset encoding.
 
