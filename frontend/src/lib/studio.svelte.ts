@@ -101,10 +101,19 @@ export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
 
 let polling = false;
 
+// Diffusion models drive the generate form and the sidebar picker; upscalers
+// are reached only through the Upscale action (issue #91). Every model list
+// the user can select from must go through this filter.
+export function filterDiffusionModels(models: Model[]): Model[] {
+	return models.filter((model) => !model.capabilities.includes('upscale'));
+}
+
 function applyModels(models: Model[]): void {
 	studio.models = models;
-	if (!studio.modelId && models.length > 0) {
-		studio.modelId = (models.find((m) => m.default) ?? models[0]).id;
+	const selectable = filterDiffusionModels(models);
+	if (!studio.modelId || !selectable.some((model) => model.id === studio.modelId)) {
+		studio.modelId =
+			selectable.length > 0 ? (selectable.find((model) => model.default) ?? selectable[0]).id : '';
 	}
 }
 

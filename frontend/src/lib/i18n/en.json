@@ -222,6 +222,8 @@
 	"app.gen.unstar": "Unstar",
 	"app.gen.edit": "Edit",
 	"app.gen.upscale": "Upscale",
+	"app.gen.upscale_x2": "x2",
+	"app.gen.upscale_x4": "x4",
 	"app.gen.delete": "Delete",
 	"app.gen.coming_soon": "Coming soon",
 	"app.gen.gpu_time": "GPU time",

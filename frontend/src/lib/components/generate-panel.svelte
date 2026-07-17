@@ -24,8 +24,9 @@
 		valueToNorm
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
-	import { estimateGpuMs } from '$lib/gpu-estimate';
+	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
 	import {
+		filterDiffusionModels,
 		generationById,
 		isStarred,
 		loadHistory,
@@ -52,6 +53,7 @@
 	let normsReady = $state(false);
 	let seed = $state('');
 	let sourceAssetId = $state<string | null>(null);
+	let upscaleFactor = $state(2);
 	let errorText = $state('');
 
 	// The viewer shows the clicked generation, or the newest finished one.
@@ -79,13 +81,20 @@
 	const shownPrompt = $derived((shown?.params.prompt ?? '').trim());
 	const shownStarred = $derived(shown !== null && isStarred(shown.id));
 
-	// The manifest schema decides which resolutions a model supports
-	// (docs/architecture.md, model manifests); no enum means unconstrained.
+	// Diffusion models drive the generate form; upscalers are pinned by the
+	// Upscale action (capability-driven routing, issue #91).
+	const diffusionModels = $derived(filterDiffusionModels(studio.models));
+	const upscaleModel = $derived(
+		studio.models.find((model) => model.capabilities.includes('upscale'))
+	);
 	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
 	const canEdit = $derived(
 		shown !== null &&
 			shown.assets.length > 0 &&
 			(selectedModel?.capabilities.includes('image_to_image') ?? false)
+	);
+	const canUpscale = $derived(
+		shown !== null && shown.assets.length > 0 && shown.state === 'succeeded' && upscaleModel != null
 	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
@@ -102,6 +111,10 @@
 		})
 	);
 	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
+	const upscaleEstimateMs = $derived(estimateUpscaleGpuMs(upscaleModel, upscaleFactor));
+	const upscaleEstimateLabel = $derived(
+		upscaleEstimateMs != null ? `~${formatMs(upscaleEstimateMs)}` : null
+	);
 
 	$effect(() => {
 		if (!selectedModel?.capabilities.includes('image_to_image')) {
@@ -175,6 +188,33 @@
 		void pollWhileWorking();
 	}
 
+	async function upscaleShown(): Promise<void> {
+		if (!canUpscale || shown === null || upscaleModel == null) return;
+		// Capture before clearing the selection: `shown` is derived from
+		// selectedId, so reading it afterwards would target the newest
+		// generation instead of the one on screen.
+		const sourceId = shown.assets[0].id;
+		const modelId = upscaleModel.id;
+		errorText = '';
+		studio.selectedId = null;
+		const response = await fetch('/api/v1/generations', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({
+				model_id: modelId,
+				params: { factor: upscaleFactor },
+				source_asset_id: sourceId
+			})
+		});
+		if (!response.ok) {
+			const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+			errorText = body?.detail ?? response.statusText;
+			return;
+		}
+		await loadHistory();
+		void pollWhileWorking();
+	}
+
 	function insertPrompt(): void {
 		if (shownPrompt !== '') studio.prompt = shownPrompt;
 	}
@@ -199,6 +239,11 @@
 		if (index >= 0) sizeIndex = index;
 	}
 
+	function onUpscaleFactorChange(value: string): void {
+		const factor = Number(value);
+		if (factor === 2 || factor === 4) upscaleFactor = factor;
+	}
+
 	function modelOptionLabel(model: Model | undefined): string {
 		if (!model) return t('app.gen.model');
 		return model.estimated_gpu_ms_default != null
@@ -214,7 +259,7 @@
 			<Card.Description>{t('app.gen.sub')}</Card.Description>
 		</Card.Header>
 		<Card.Content class="flex min-h-0 flex-1 flex-col">
-			{#if studio.models.length === 0}
+			{#if diffusionModels.length === 0}
 				<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
 			{:else}
 				<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>
@@ -223,12 +268,12 @@
 						<Select.Root type="single" bind:value={studio.modelId}>
 							<Select.Trigger id="gen-model" class="w-full" size="sm">
 								{modelOptionLabel(
-									studio.models.find((model) => model.id === studio.modelId) ?? studio.models[0]
+									diffusionModels.find((model) => model.id === studio.modelId) ?? diffusionModels[0]
 								)}
 							</Select.Trigger>
 							<Select.Content>
 								<Select.Group>
-									{#each studio.models as model (model.id)}
+									{#each diffusionModels as model (model.id)}
 										<Select.Item value={model.id} label={modelOptionLabel(model)} />
 									{/each}
 								</Select.Group>
@@ -333,17 +378,38 @@
 								<PencilIcon />
 								{t('app.gen.edit')}
 							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								class="justify-start"
-								disabled
-								title={t('app.gen.coming_soon')}
-							>
-								<ScanLineIcon />
-								{t('app.gen.upscale')}
-							</Button>
+							<div class="flex min-w-0 flex-col gap-1">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									class="justify-start"
+									disabled={!canUpscale}
+									onclick={upscaleShown}
+								>
+									<ScanLineIcon />
+									{t('app.gen.upscale')}{upscaleEstimateLabel != null
+										? ` ${upscaleEstimateLabel}`
+										: ''}
+								</Button>
+								{#if upscaleModel != null}
+									<ToggleGroup.Root
+										type="single"
+										variant="outline"
+										spacing={0}
+										class="flex w-full"
+										value={String(upscaleFactor)}
+										onValueChange={(value) => value && onUpscaleFactorChange(value)}
+									>
+										<ToggleGroup.Item value="2" class="min-w-0 flex-1 text-xs">
+											{t('app.gen.upscale_x2')}
+										</ToggleGroup.Item>
+										<ToggleGroup.Item value="4" class="min-w-0 flex-1 text-xs">
+											{t('app.gen.upscale_x4')}
+										</ToggleGroup.Item>
+									</ToggleGroup.Root>
+								{/if}
+							</div>
 							<Button
 								type="button"
 								variant="outline"
