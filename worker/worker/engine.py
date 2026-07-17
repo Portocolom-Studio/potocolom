@@ -347,7 +347,6 @@ class DiffusersEngine:
             "https://github.com/xinntao/Real-ESRGAN/releases/download"
         )
         path = ensure_weights(source, self.models_dir, manifest.id, factor)
-        self._pick_rung(manifest)
         return load_upscale_model(path, self.device, self.dtype)
 
     def _scheduler(self, name: str, config: Any) -> Any:
