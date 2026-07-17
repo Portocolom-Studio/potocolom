@@ -269,6 +269,8 @@
 	"app.metrics.col_load": "Carga",
 	"app.metrics.benchmark_chart": "GPU frente a wall por modelo",
 	"app.metrics.benchmark_chart_desc": "Tiempo medio de denoise en GPU comparado con el tiempo total por imagen en la sesión seleccionada.",
+	"app.metrics.benchmark_timeline": "Cronología de la ejecución",
+	"app.metrics.benchmark_timeline_desc": "Tiempo de GPU por imagen a lo largo de la ejecución. Los huecos entre modelos son tiempo de carga; el informe no incluye muestras de GPU o VRAM del hardware.",
 	"app.metrics.benchmark_images": "imágenes",
 	"app.metrics.open_benchmark_page": "Abrir página de benchmark",
 	"app.metrics.benchmark_empty": "Aún no hay resultados publicados. Ejecuta make benchmark y luego make benchmark-publish.",

@@ -269,6 +269,8 @@
 	"app.metrics.col_load": "Load",
 	"app.metrics.benchmark_chart": "GPU vs wall per model",
 	"app.metrics.benchmark_chart_desc": "Average GPU denoise time compared with end-to-end wall time for the selected run.",
+	"app.metrics.benchmark_timeline": "Run timeline",
+	"app.metrics.benchmark_timeline_desc": "GPU time per image over the run. Gaps between models are load time; the report has no hardware GPU or VRAM samples.",
 	"app.metrics.benchmark_images": "images",
 	"app.metrics.open_benchmark_page": "Open benchmark page",
 	"app.metrics.benchmark_empty": "No published benchmark results yet. Run make benchmark, then make benchmark-publish.",

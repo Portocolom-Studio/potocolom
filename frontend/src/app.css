@@ -30,12 +30,14 @@
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.55 0.06 262);
-	/* Categorical chart palette (dark, validated via .local/validate_palette.js) */
+	/* Categorical chart palette (dark, validated via .local/validate_palette.js;
+	   adjacent-pair CVD checks pass for all six slots) */
 	--chart-1: #5588e8;
 	--chart-2: #30a878;
 	--chart-3: #c08028;
 	--chart-4: #9070c8;
 	--chart-5: #c85878;
+	--chart-6: #a3742d;
 	/* Status semantics (never reuse chart-1..5 hex values) */
 	--status-success: #27a35a;
 	--status-error: #d95f58;
@@ -86,6 +88,7 @@
 	--color-chart-3: var(--chart-3);
 	--color-chart-4: var(--chart-4);
 	--color-chart-5: var(--chart-5);
+	--color-chart-6: var(--chart-6);
 	--color-sidebar: var(--sidebar);
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);

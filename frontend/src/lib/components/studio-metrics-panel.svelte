@@ -26,6 +26,7 @@
 	import { demoGpuHistory, demoGpuSamples, demoHistory } from '$lib/studio-demo-metrics';
 	import { studio } from '$lib/studio.svelte';
 	import StudioBenchmarkChart from '$lib/components/studio-benchmark-chart.svelte';
+	import StudioBenchmarkRunTimeline from '$lib/components/studio-benchmark-run-timeline.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import StudioJobStatusChart from '$lib/components/studio-job-status-chart.svelte';
 	import StudioSessionModelChart from '$lib/components/studio-session-model-chart.svelte';
@@ -331,6 +332,8 @@
 			</div>
 
 			<StudioBenchmarkChart stats={selectedSession.report.model_stats} />
+
+			<StudioBenchmarkRunTimeline report={selectedSession.report} />
 
 			<div class="border-border overflow-x-auto rounded-lg border">
 				<table class="w-full min-w-[32rem] text-sm">
