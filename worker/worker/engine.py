@@ -13,6 +13,7 @@ import io
 import math
 import os
 import time
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
@@ -31,9 +32,14 @@ from worker.memory_ladder import (
     select_rung,
 )
 
+logger = logging.getLogger("potocolom.worker")
+
 ProgressFn = Callable[[float], None]
 
 REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
+# After a non-OOM generation error, drop the resident model at most this often
+# so a permanently broken weight set cannot thrash load/unload (issue #103).
+POISON_EVICT_COOLDOWN_S = 30.0
 
 
 @dataclass
@@ -203,6 +209,8 @@ class DiffusersEngine:
         self._pipelines: dict[tuple[str, str], Any] = {}
         self._rungs: dict[str, MemoryRung] = {}
         self._last_used: dict[str, float] = {}
+        self._poison_evicted_at: dict[str, float] = {}
+        self._poison_evict_count: dict[str, int] = {}
         self._gpu = asyncio.Lock()
 
     def _free_vram_bytes(self) -> int:
@@ -401,6 +409,29 @@ class DiffusersEngine:
         self._last_used.pop(model_id, None)
         self._free_gpu_cache()
 
+    def _evict_poisoned(self, model_id: str) -> bool:
+        """Drop a model left corrupt by a non-OOM generation error (issue #103).
+
+        Returns True when an eviction ran. Cooldown prevents load/unload thrash
+        when every subsequent job keeps failing the same way.
+        """
+        if not any(key[0] == model_id for key in self._pipelines):
+            return False
+        now = time.monotonic()
+        last = self._poison_evicted_at.get(model_id, 0.0)
+        if now - last < POISON_EVICT_COOLDOWN_S:
+            logger.warning(
+                "poisoned pipeline for %s; cooldown %.0fs active (evictions=%d), not reloading",
+                model_id, POISON_EVICT_COOLDOWN_S, self._poison_evict_count.get(model_id, 0),
+            )
+            return False
+        self._evict_model(model_id)
+        self._poison_evicted_at[model_id] = now
+        count = self._poison_evict_count.get(model_id, 0) + 1
+        self._poison_evict_count[model_id] = count
+        logger.warning("evicted poisoned pipeline for %s (count=%d)", model_id, count)
+        return True
+
     def _evict_all(self) -> None:
         self._pipelines.clear()
         self._rungs.clear()
@@ -482,6 +513,13 @@ class DiffusersEngine:
                                                progress, loop, input_image)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
+            except (ValueError, TypeError):
+                raise  # request/validation errors, not a corrupt resident
+            except Exception:
+                # Dtype mismatches and similar leave mixed-precision state in
+                # the resident pipeline; drop it so the next job reloads clean.
+                self._evict_poisoned(manifest.id)
+                raise
             # Two resident models plus activations can exceed a 16 GB card
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
@@ -602,6 +640,11 @@ class DiffusersEngine:
                 return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
+            except (ValueError, TypeError):
+                raise
+            except Exception:
+                self._evict_poisoned(manifest.id)
+                raise
             self._evict_except(manifest.id)
             return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
 
