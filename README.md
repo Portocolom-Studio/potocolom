@@ -71,6 +71,6 @@ See [Local development and testing](docs/local-development.md) for running each 
 
 ## License
 
-AGPL-3.0. The full product in this repository is self-hostable forever: self-hosting, private use, internal use and contribution are unrestricted. Anyone who modifies the platform and operates it as a network service must publish their modified source under the AGPL, or obtain a commercial license - see [COMMERCIAL.md](COMMERCIAL.md). The commercial cloud's billing and fleet orchestration live in a separate private repository behind documented HTTP contracts, and the cloud runs the same unmodified images published here. The reasoning is in [the repository boundary document](docs/repository-boundary.md).
+AGPL-3.0. The full product in this repository is self-hostable forever: self-hosting, private use, internal use and contribution are all permitted at no cost under the license's ordinary terms. Anyone who modifies the platform and distributes it, or operates it as a network service, must make their modified source available under the AGPL - or obtain a commercial license, see [COMMERCIAL.md](COMMERCIAL.md). The commercial cloud's billing and fleet orchestration live in a separate private repository behind documented HTTP contracts, and the cloud runs the same unmodified images published here. The reasoning is in [the repository boundary document](docs/repository-boundary.md).
 
 Contributions require a `Signed-off-by` line ([DCO](https://developercertificate.org/)) - see [CONTRIBUTING.md](CONTRIBUTING.md).
