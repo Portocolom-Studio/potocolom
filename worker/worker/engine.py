@@ -123,6 +123,26 @@ class SimulatedEngine:
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
     ) -> GeneratedImage:
+        if "upscale" in manifest.capabilities:
+            if input_image is None:
+                raise ValueError("upscale job requires input_image")
+            factor = int(params.get("factor", 0))
+            if factor not in (2, 4):
+                raise ValueError(f"unsupported upscale factor: {factor}")
+            load_ms = 0
+            if manifest.id not in self._loaded:
+                load_start = time.monotonic()
+                await asyncio.sleep(self.inference_seconds / 4)
+                self._loaded = {manifest.id}
+                load_ms = int((time.monotonic() - load_start) * 1000)
+            source = decode_input_image(input_image)
+            width, height = source.size[0] * factor, source.size[1] * factor
+            start = time.monotonic()
+            progress(0.5)
+            image = source.resize((width, height), Image.Resampling.LANCZOS)
+            progress(1.0)
+            gpu_ms = int((time.monotonic() - start) * 1000)
+            return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
         if input_image is not None and "image_to_image" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
         load_ms = 0
@@ -139,10 +159,10 @@ class SimulatedEngine:
         color = sha256(str(params.get("prompt", "")).encode()).digest()
         if input_image is not None:
             source = decode_input_image(input_image)
-            width = params.get("width")
-            height = params.get("height")
-            if width and height:
-                width, height = int(width), int(height)
+            width_param = params.get("width")
+            height_param = params.get("height")
+            if width_param and height_param:
+                width, height = int(width_param), int(height_param)
                 source = source.resize((width, height), Image.Resampling.LANCZOS)
             else:
                 width, height = source.size
@@ -250,12 +270,19 @@ class DiffusersEngine:
     def _pick_rung(self, manifest: Manifest) -> MemoryRung:
         if manifest.id in self._rungs:
             return self._rungs[manifest.id]
-        rung = select_rung(
+        rung = self._select_rung(manifest)
+        self._rungs[manifest.id] = rung
+        return rung
+
+    def _select_rung(self, manifest: Manifest) -> MemoryRung:
+        # Upscalers are plain nn.Modules run tiled; the offload rungs are
+        # diffusers pipeline mechanics, so they always load fully resident.
+        if "upscale" in manifest.capabilities:
+            return "full"
+        return select_rung(
             manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
             on_cpu=self.device != "cuda",
         )
-        self._rungs[manifest.id] = rung
-        return rung
 
     def _apply_rung(self, pipeline: Any, manifest: Manifest, rung: MemoryRung) -> Any:
         if rung == "full":
@@ -282,6 +309,8 @@ class DiffusersEngine:
         return pipeline
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
+        if mode.startswith("upscale-"):
+            return self._load_upscale(manifest, int(mode.split("-", 1)[1]))
         from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 
         cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
@@ -310,6 +339,15 @@ class DiffusersEngine:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
+
+    def _load_upscale(self, manifest: Manifest, factor: int) -> Any:
+        from worker.upscale import ensure_weights, load_upscale_model
+
+        source = manifest.source or (
+            "https://github.com/xinntao/Real-ESRGAN/releases/download"
+        )
+        path = ensure_weights(source, self.models_dir, manifest.id, factor)
+        return load_upscale_model(path, self.device, self.dtype)
 
     def _scheduler(self, name: str, config: Any) -> Any:
         if name == "dpmsolver":
@@ -375,17 +413,22 @@ class DiffusersEngine:
 
     def _load_model(self, manifest: Manifest) -> int:
         self._evict_all()
-        rung = select_rung(
-            manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
-            on_cpu=self.device != "cuda",
-        )
-        self._rungs[manifest.id] = rung
+        self._rungs[manifest.id] = self._select_rung(manifest)
         start = time.monotonic()
-        try:
-            self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-        except self.torch.OutOfMemoryError:
-            self._evict_all()
-            self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
+        if "upscale" in manifest.capabilities:
+            factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
+            mode = f"upscale-{int(factor_spec.get('default', 2))}"
+            try:
+                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError:
+                self._evict_all()
+                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
+        else:
+            try:
+                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
+            except self.torch.OutOfMemoryError:
+                self._evict_all()
+                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
         self._touch(manifest.id)
         return int((time.monotonic() - start) * 1000)
 
@@ -420,7 +463,11 @@ class DiffusersEngine:
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
     ) -> GeneratedImage:
-        if input_image is not None:
+        if "upscale" in manifest.capabilities:
+            if input_image is None:
+                raise ValueError("upscale job requires input_image")
+            runner = self._generate_upscale
+        elif input_image is not None:
             if "image_to_image" not in manifest.capabilities:
                 raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
             runner = self._generate_i2i
@@ -512,6 +559,36 @@ class DiffusersEngine:
             generator=generator,
             callback_on_step_end=on_step,
         ).images[0]
+        gpu_ms = int((time.monotonic() - start) * 1000)
+        loop.call_soon_threadsafe(progress, 1.0)
+        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+
+    def _generate_upscale(self, manifest: Manifest, params: dict, progress: ProgressFn,
+                          loop: asyncio.AbstractEventLoop,
+                          input_image: bytes | None) -> GeneratedImage:
+        if input_image is None:
+            raise ValueError("upscale job requires input_image")
+        factor = int(params.get("factor", 0))
+        if factor not in (2, 4):
+            raise ValueError(f"unsupported upscale factor: {factor}")
+        from worker.upscale import upscale_tiled
+
+        load_start = time.monotonic()
+        mode = f"upscale-{factor}"
+        key = (manifest.id, mode)
+        cold = key not in self._pipelines
+        model = self._pipeline(manifest, mode)
+        load_ms = int((time.monotonic() - load_start) * 1000) if cold else 0
+        source = decode_input_image(input_image)
+
+        def on_tile(fraction: float) -> None:
+            loop.call_soon_threadsafe(progress, fraction)
+
+        start = time.monotonic()
+        image = upscale_tiled(
+            model, source, factor,
+            device=self.device, dtype=self.dtype, progress=on_tile,
+        )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)

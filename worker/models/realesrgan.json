@@ -1,0 +1,16 @@
+{
+  "id": "realesrgan",
+  "name": "Real-ESRGAN",
+  "capabilities": ["upscale"],
+  "min_vram_gb": 4,
+  "source": "https://github.com/xinntao/Real-ESRGAN/releases/download",
+  "license_id": "bsd-3-clause",
+  "license_url": "https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "factor": { "type": "integer", "enum": [2, 4], "default": 2 }
+    },
+    "required": ["factor"]
+  }
+}
