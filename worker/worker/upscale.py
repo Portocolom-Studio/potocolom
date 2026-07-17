@@ -7,6 +7,8 @@ packages). Inference is always tiled so VRAM stays bounded at 1024 x4 -> 4096.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -40,6 +42,8 @@ def weight_url(source: str, factor: int) -> str:
 
 
 def weight_cache_path(models_dir: str, model_id: str, factor: int) -> Path:
+    if factor not in WEIGHT_FILES:
+        raise ValueError(f"unsupported upscale factor: {factor}")
     filename = WEIGHT_FILES[factor]
     safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in model_id)
     return Path(models_dir or ".") / ".cache" / "upscale" / safe_id / filename
@@ -51,10 +55,17 @@ def ensure_weights(source: str, models_dir: str, model_id: str, factor: int) -> 
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     url = weight_url(source, factor)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Per-process temp name: workers sharing one models_dir (one process per
+    # GPU on the same host) must not clobber each other's partial download.
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
     logger.info("downloading upscale weights factor=%s from %s", factor, url)
-    urllib.request.urlretrieve(url, tmp)  # noqa: S310 - operator-configured URL
-    tmp.replace(path)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
+            with tmp.open("wb") as out:
+                shutil.copyfileobj(response, out)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path
 
 
