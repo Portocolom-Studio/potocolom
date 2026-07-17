@@ -14,6 +14,7 @@
 		"format": "prettier --write .",
 		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
 		"generate:gallery-images": "node scripts/generate-gallery-images.mjs",
+		"generate:hero-images": "node scripts/generate-hero-images.mjs",
 		"compare:collages": "node scripts/compare-collages.mjs"
 	},
 	"devDependencies": {
