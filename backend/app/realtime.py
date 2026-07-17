@@ -18,7 +18,7 @@ from collections.abc import Coroutine
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, HTTPException, WebSocket
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.manifests import Manifest, parse_manifests, validate_params
 
@@ -129,13 +129,10 @@ gpu_requests: dict[str, asyncio.Future] = {}
 def pick_any_worker() -> Worker | None:
     """Return a connected worker, pruning sockets already closed under us.
 
-    Fleet cleanup removes workers in its `finally`, but MagicMock unit tests
-    that snapshot-and-restore `workers` can put a disconnected TestClient
-    socket back after that finally skipped (identity mismatch). Studio GPU
-    then sees a non-empty fleet and crashes on send instead of 503.
+    Fleet cleanup removes workers in its `finally`, but a socket can die in
+    the window before that runs; picking it would crash the studio GPU
+    endpoint on send instead of returning 503.
     """
-    from starlette.websockets import WebSocketState
-
     for worker_id, worker in list(workers.items()):
         state = getattr(worker.ws, "client_state", None)
         if state is not None and state != WebSocketState.CONNECTED:
