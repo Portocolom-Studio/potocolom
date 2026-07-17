@@ -579,7 +579,7 @@ Account view (issue #10):
 
 ## Open source and commercial boundary
 
-This repository is licensed under GPL 3.0 and contains everything needed to self-host the full product. The commercial cloud service adds two private services, kept in a separate repository:
+This repository is licensed under AGPL 3.0 (commercial licenses available, see COMMERCIAL.md at the repository root) and contains everything needed to self-host the full product. The commercial cloud service adds two private services, kept in a separate repository:
 
 - Billing service: Stripe integration, subscriptions and the credit ledger.
 - Fleet orchestrator: rents and scales the GPU machines that run the worker pool.

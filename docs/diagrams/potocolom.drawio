@@ -320,7 +320,7 @@
         <mxCell id="pc0" value="One codebase, two profiles. Both columns run identical container images and expose identical endpoints; every row below differs by one environment variable or one seam implementation, never a code branch (deployment-profiles.md)." style="text;html=1;align=left;" vertex="1" parent="1">
           <mxGeometry x="60" y="20" width="1360" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pcH1" value="Self-hosted: GPL, your hardware, free" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="pcH1" value="Self-hosted: AGPL, your hardware, free" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="320" y="80" width="520" height="40" as="geometry" />
         </mxCell>
         <mxCell id="pcH2" value="Cloud: same images, paid subscriptions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
@@ -380,7 +380,7 @@
         <mxCell id="pcC6" value="usage_events in RDS, read by the analytics&#10;warehouse (private repo); the cloud is the telemetry destination" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="880" y="590" width="540" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pc9" value="Orange marks a hop into the private repository, always over HTTP, never an import (repository-boundary.md). Everything else in both columns is the same GPL code." style="text;html=1;align=left;" vertex="1" parent="1">
+        <mxCell id="pc9" value="Orange marks a hop into the private repository, always over HTTP, never an import (repository-boundary.md). Everything else in both columns is the same AGPL code." style="text;html=1;align=left;" vertex="1" parent="1">
           <mxGeometry x="60" y="690" width="1360" height="40" as="geometry" />
         </mxCell>
       </root>
@@ -391,7 +391,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="fp0" value="Adding a feature is choosing where its single implementation lives; one codebase is never built twice (repository-boundary.md). Green and amber are the public GPL repo, orange is the private repo reached over HTTP. Product functionality is public even when it is cloud-only; only business logic goes private." style="text;html=1;align=left;" vertex="1" parent="1">
+        <mxCell id="fp0" value="Adding a feature is choosing where its single implementation lives; one codebase is never built twice (repository-boundary.md). Green and amber are the public AGPL repo, orange is the private repo reached over HTTP. Product functionality is public even when it is cloud-only; only business logic goes private." style="text;html=1;align=left;" vertex="1" parent="1">
           <mxGeometry x="40" y="20" width="1440" height="50" as="geometry" />
         </mxCell>
         <mxCell id="fpF" value="A feature&#10;to add" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
@@ -732,7 +732,7 @@
         <mxCell id="adTitle" value="Accounts and delivery - from a pull request to production" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="16" width="1160" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="adPub" value="Public repository (GPL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="adPub" value="Public repository (AGPL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="40" y="60" width="540" height="130" as="geometry" />
         </mxCell>
         <mxCell id="adPub1" value="PR + CI ladder&#10;lint, unit, tiny-model,&#10;simulation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
