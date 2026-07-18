@@ -12,7 +12,9 @@ What the platform measures about its own use, where those measurements live, and
 
 The first four come from usage events; the last one from telemetry. They are separate streams with separate privacy rules.
 
-The planes at a glance - what flows where, and what never leaves the deployment:
+## The planes at a glance
+
+What flows where, and what never leaves the deployment:
 
 ```mermaid
 flowchart TB
