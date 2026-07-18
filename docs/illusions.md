@@ -106,9 +106,12 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 - `--type flip|rotate|hidden`; give exactly one `--prompt` per derived
   image in arrangement order (flip 2, rotate 4, hidden 5 - or 4 prompts
   plus `--target-image qr.png` for the hidden slot).
-- Full budget (defaults): 500 SDS + 8x300 DT, roughly 30-60 min on the
-  RX 7600 XT. Smoke: `--sds-steps 20 --dream-rounds 1 --dream-steps 20`
-  runs in about a minute once the model is cached.
+- Full budget (defaults): 500 SDS + 8x300 DT, measured 15-16 min on the
+  RX 7600 XT for flip. Smoke: `--sds-steps 20 --dream-rounds 1
+  --dream-steps 20` runs in about a minute once the model is cached.
+  Hidden-type at 512 currently exceeds 16 GB VRAM (five derived views
+  backpropagate through the VAE encoder); see the gradient-accumulation
+  roadmap entry.
 - The ROCm env var enables fused SDPA on RDNA3 (same as the worker sets).
 - Outputs: `prime_N.png` (what you print) and `derived_N.png` (what each
   arrangement should look like, including the simulated overlay).
