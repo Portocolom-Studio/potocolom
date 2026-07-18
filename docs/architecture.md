@@ -495,6 +495,31 @@ Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp`
 
 **Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
 
+How the pieces reference each other - bytes live once in object storage, every relationship (thumbnail, lineage, favorite per issue #124, category per issue #95) is a column or foreign key on the PostgreSQL rows, and the browser only ever reaches bytes through URLs the API minted from those rows:
+
+```mermaid
+flowchart LR
+    W["Worker<br>finished generation"]
+    subgraph STORE["Object storage, one adapter"]
+        LD[("Self-hosted: local disk<br>STORAGE_LOCAL_PATH")]
+        S3[("Cloud: private S3 bucket<br>users/ and trial/ prefixes")]
+    end
+    subgraph PG["PostgreSQL, source of truth"]
+        J[("jobs<br>params incl. prompt, timings,<br>category, starred_at")]
+        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
+    end
+    B["Browser<br>history, gallery, favorites,<br>share links"]
+    CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
+    W -->|"presigned PUT<br>master and thumbnail"| STORE
+    W -->|"job_done"| J
+    J --- AS
+    B -->|"GET /api/v1/generations<br>filters: starred, category"| PG
+    PG -->|"signed URLs for owned rows<br>never ListBucket"| B
+    B -->|"fetch bytes"| STORE
+    CLEAN -.-> AS
+    CLEAN -.-> STORE
+```
+
 **Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.webp` key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
 **Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
