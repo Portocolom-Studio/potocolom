@@ -13,6 +13,7 @@
 		top: number;
 		phase: number;
 		tiles: Tile[];
+		el?: HTMLElement | null;
 	};
 
 	/** Cursor influence radius in px; tiles inside it scale and brighten. */
@@ -28,7 +29,6 @@
 	let cell = $state(128);
 	const size = $derived(cell - 12);
 
-	let rowEls = $state.raw<HTMLElement[]>([]);
 	let travel = 0;
 	let speed = 0;
 	let dirty = false;
@@ -96,7 +96,11 @@
 
 	function observe(node: HTMLElement) {
 		field = node;
-		reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+		reducedMotion = media.matches;
+		const onMediaChange = (event: MediaQueryListEvent) => (reducedMotion = event.matches);
+		media.addEventListener('change', onMediaChange);
+
 		let lastWidth = 0;
 		let lastHeight = 0;
 		const observer = new ResizeObserver(([entry]) => {
@@ -108,7 +112,6 @@
 			lastHeight = height;
 			cell = width < 640 ? 104 : 128;
 			baseOpacity = width < 640 ? 0.22 : 0.32;
-			rowEls = [];
 			rows = buildRows(width, height);
 			dirty = true;
 		});
@@ -123,10 +126,9 @@
 			if (speed > 0.05 || dirty) {
 				dirty = false;
 				travel += speed * dt;
-				for (let r = 0; r < rows.length; r++) {
-					const el = rowEls[r];
-					if (el) {
-						el.style.transform = `translateX(${-((rows[r].phase + travel) % stripWidth)}px)`;
+				for (const row of rows) {
+					if (row.el) {
+						row.el.style.transform = `translateX(${-((row.phase + travel) % stripWidth)}px)`;
 					}
 				}
 			}
@@ -135,6 +137,7 @@
 
 		return () => {
 			observer.disconnect();
+			media.removeEventListener('change', onMediaChange);
 			cancelAnimationFrame(loopFrame);
 			if (pointerFrame) cancelAnimationFrame(pointerFrame);
 			field = null;
@@ -159,6 +162,12 @@
 		pendingX = event.clientX;
 		pendingY = event.clientY;
 		if (!pointerFrame) pointerFrame = requestAnimationFrame(commitPointer);
+	}
+
+	// Scrolling moves the hero under a stationary cursor; recheck the hold
+	// against the fresh rect so the field is not left frozen off-screen.
+	function onScroll() {
+		if (pointer && !pointerFrame) pointerFrame = requestAnimationFrame(commitPointer);
 	}
 
 	// Leaving the page (URL bar, browser chrome) fires no further pointermove,
@@ -195,7 +204,7 @@
 	}
 </script>
 
-<svelte:window onpointermove={onPointerMove} />
+<svelte:window onpointermove={onPointerMove} onscroll={onScroll} />
 <svelte:document onpointerleave={onPointerLeave} />
 
 <!-- isolate keeps boosted tiles' z-index below the fade mask and hero copy -->
@@ -204,9 +213,16 @@
 	aria-hidden="true"
 	{@attach observe}
 >
-	{#each rows as row, r (row.top)}
+	{#each rows as row (row.top)}
 		<div class="absolute left-0 w-full" style:top="{row.top}px" style:z-index={rowZ(row)}>
-			<div bind:this={rowEls[r]}>
+			<div
+				{@attach (el) => {
+					row.el = el;
+					return () => {
+						row.el = null;
+					};
+				}}
+			>
 				{#each [0, 1] as copy (copy)}
 					{#each row.tiles as tile (tile.id)}
 						{@const lift = boost(row, tile, copy)}
