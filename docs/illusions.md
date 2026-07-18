@@ -73,19 +73,15 @@ One module, four parts, in dependency order:
      freeze a target for each derived image via SDEdit at a strength that
      decays from 0.90 toward 0.05, then regress derived images to their
      targets with `(1 - SSIM) + MSE`. Decaying strength means early rounds
-     reimagine freely and late rounds only polish - the paper's mechanism
-     for pulling the compromise images SDS produces into clean subjects
-     (but see the known limitation below).
-   The Adam optimizer (lr 1e-3) updates only FFN weights. Nothing ever
+     reimagine freely and late rounds only polish - this is what pulls the
+     compromise images SDS produces into clean subjects.
+   The Adam optimizer (lr 1e-3) updates only FFN weights and is
+   re-created at the phase boundary: SDS gradients run about four orders
+   of magnitude larger than Dream Target gradients, so second-moment
+   state carried across phases suppresses phase-2 updates to near zero
+   (measured on flip at 250 SDS + 4x150 DT: under 2% loss movement per
+   round without the reset, 44-60% with it - issue #122). Nothing ever
    backpropagates through the UNet or VAE decoder.
-
-   Known limitation: one Adam instance spans both phases, and SDS
-   gradients are about four orders of magnitude larger than Dream Target
-   gradients, so the second-moment state carried into phase 2 shrinks its
-   effective updates to near zero - measured on flip at 250 SDS + 4x150
-   DT, each Dream round moves its loss by under 2%. Final quality is
-   currently driven almost entirely by phase 1; see the optimizer-reset
-   roadmap entry.
 
 Module conventions: `illusions.py` is the only file in the worker package
 that imports torch at module level - nothing else imports it, so the
@@ -158,12 +154,11 @@ observed limits of the current code or explicit paper follow-ups:
    DreamShaper LCM (LCM scheduler, guidance 2, step count grown at low
    strengths so the truncated denoise count never reaches zero); SDS
    still uses frozen SD 1.5.
-4. Reset optimizer state between phases: fresh Adam for the Dream Target
-   phase (or normalize SDS gradient scale) so phase 2 actually moves -
-   today its updates are suppressed by second-moment state inherited from
-   SDS (see Known limitation above). Likely the single biggest quality
-   lever; needs a full-budget before/after eyeball because it changes
-   output character.
+4. ~~Reset optimizer state between phases~~ - done (issue #122): fresh
+   Adam at the phase boundary. Dream rounds went from under 2% loss
+   movement to 44-60% per round, and full-budget flip output jumped from
+   textured ghosts on flat fields to coherent illustrated scenes at
+   identical runtime.
 5. Composite sheet output: one PNG grid of primes + derived + simulated
    arrangement for quick visual triage of runs.
 6. Negative prompts in `embed()` (trivial in diffusers) - the paper's

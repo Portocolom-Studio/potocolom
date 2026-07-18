@@ -445,6 +445,10 @@ def optimize_illusion(
         progress(done / total)
 
     adapter.begin_dream_phase()
+    # Fresh optimizer state for phase 2: SDS gradients run ~1e4 while Dream
+    # Target gradients run ~0.5, so Adam's inherited second moment would
+    # suppress phase-2 updates by ~4 orders of magnitude (issue #122).
+    optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
 
     # Phase 2: Dream Target Loss at a decreasing SDEdit strength schedule
     for strength in config.strength_schedule():
