@@ -24,7 +24,11 @@
 		},
 		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
 		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
-		{ id: 's6', title: 'wp.s6_title', paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3'] },
+		{
+			id: 's6',
+			title: 'wp.s6_title',
+			paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3', 'wp.s6_p4']
+		},
 		{
 			id: 's7',
 			title: 'wp.s7_title',
