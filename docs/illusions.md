@@ -53,23 +53,39 @@ One module, four parts, in dependency order:
      their actual codebase (Peekaboo) and every SDS implementation use.
    - `sdedit`: img2img at a given strength - noise the current derived
      image, denoise toward the prompt - producing a Dream Target. Default
-     Dream Target backbone is `lykon/dreamshaper-8-lcm` at 4 steps /
-     guidance 1.5 (`--dream-model none` keeps the SDS checkpoint at
-     25 / 7.5).
+     Dream Target backbone is `lykon/dreamshaper-8-lcm` at guidance 2
+     with an `LCMScheduler` swapped in (the checkpoint ships a PNDM
+     scheduler config, which mushes few-step sampling) and an inference
+     step count grown at low strengths so img2img's `int(steps *
+     strength)` truncation never rounds the late polish rounds down to
+     zero denoise steps (`sdedit_steps`). `--dream-model none` keeps the
+     SDS checkpoint at 25 / 7.5.
 4. `optimize_illusion` - the two-phase loop:
    - Phase 1, Score Distillation (default 500 steps): weighted SDS for all
      prompt-target derived images in one batched UNet forward per step;
-     image targets (e.g. a QR code) use SSIM+MSE instead. The first 60% of
-     SDS steps render at 256px (`--sds-low-res`), then finish at 512 - FFNs
-     are resolution-free, and UNet cost scales roughly with latent area.
+     image targets (e.g. a QR code) use SSIM+MSE instead. An optional
+     resolution ladder (`--sds-low-res-fraction`) runs early SDS at
+     `--sds-low-res` before finishing at 512. It is off by default: 256px
+     means 32x32 latents, off-distribution for the SD 1.5 UNet, and a
+     ladder run measurably stalls subject formation that the Dream Target
+     phase cannot recover.
    - Phase 2, Dream Target (default 8 rounds x 300 steps): per round,
      freeze a target for each derived image via SDEdit at a strength that
      decays from 0.90 toward 0.05, then regress derived images to their
      targets with `(1 - SSIM) + MSE`. Decaying strength means early rounds
-     reimagine freely and late rounds only polish - this is what pulls the
-     compromise images SDS produces into clean subjects.
+     reimagine freely and late rounds only polish - the paper's mechanism
+     for pulling the compromise images SDS produces into clean subjects
+     (but see the known limitation below).
    The Adam optimizer (lr 1e-3) updates only FFN weights. Nothing ever
    backpropagates through the UNet or VAE decoder.
+
+   Known limitation: one Adam instance spans both phases, and SDS
+   gradients are about four orders of magnitude larger than Dream Target
+   gradients, so the second-moment state carried into phase 2 shrinks its
+   effective updates to near zero - measured on flip at 250 SDS + 4x150
+   DT, each Dream round moves its loss by under 2%. Final quality is
+   currently driven almost entirely by phase 1; see the optimizer-reset
+   roadmap entry.
 
 Module conventions: `illusions.py` is the only file in the worker package
 that imports torch at module level - nothing else imports it, so the
@@ -104,9 +120,9 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 | prompts | - | Biggest lever by far (paper Sec. 4.2). Style-rich prompts ("an oil painting of...") work much better than bare nouns; keep all prompts in one consistent style. |
 | `--sds-guidance` | 100 | DreamFusion-style high CFG. Lower (30-50) gives softer, less saturated primes; too low never converges on a subject. |
 | `--sds-steps` | 500 | More helps monotonically (paper Fig. 12) but with diminishing returns after ~1000. |
-| `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0.6 | Early SDS at low resolution, then finish at 512. UNet cost scales ~quadratically with resolution; set fraction to 0 to disable. |
+| `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0 (off) | Early SDS at low resolution, then finish at 512. Cheaper per step, but 256px SDS stalls subject formation on SD 1.5 - use only for quick throwaway runs. |
 | `--dream-rounds` / `--dream-steps` | 8 x 300 | More rounds with a finer strength schedule = cleaner final subjects. The paper's full schedule walks 0.90 to 0.01. |
-| `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (4 steps). Pass `none` to reuse `--model` with 25 steps / CFG 7.5. |
+| `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (LCM scheduler, at most a handful of denoise steps). Pass `none` to reuse `--model` with 25 steps / CFG 7.5. |
 | learning rate | 1e-3 (Adam) | In `IllusionConfig`; raise to 3e-3 for faster early structure at some stability cost. |
 | seed | 0 | Different seeds give genuinely different compositions; cherry-picking across 3-4 seeds is normal for showpieces. |
 
@@ -132,33 +148,42 @@ observed limits of the current code or explicit paper follow-ups:
 1. ~~Batch the derived images through the UNet in one forward pass per SDS
    step~~ - done (`sds_loss_batch`). On the hidden illusion that was a ~5x
    cut in UNet calls - the dominant cost.
-2. ~~Resolution ladder~~ - done: first `--sds-low-res-fraction` of SDS at
-   `--sds-low-res` (default 256), remainder and Dream Targets at 512.
+2. ~~Resolution ladder~~ - implemented behind `--sds-low-res-fraction`
+   but off by default: 256px SDS (32x32 latents) stalls subject
+   formation on SD 1.5, so the saving is not worth it at quality budgets.
 3. ~~Cheaper Dream Targets~~ - done: default `--dream-model` is
-   DreamShaper LCM at 4 steps; SDS still uses frozen SD 1.5.
-4. Composite sheet output: one PNG grid of primes + derived + simulated
+   DreamShaper LCM (LCM scheduler, guidance 2, step count grown at low
+   strengths so the truncated denoise count never reaches zero); SDS
+   still uses frozen SD 1.5.
+4. Reset optimizer state between phases: fresh Adam for the Dream Target
+   phase (or normalize SDS gradient scale) so phase 2 actually moves -
+   today its updates are suppressed by second-moment state inherited from
+   SDS (see Known limitation above). Likely the single biggest quality
+   lever; needs a full-budget before/after eyeball because it changes
+   output character.
+5. Composite sheet output: one PNG grid of primes + derived + simulated
    arrangement for quick visual triage of runs.
-5. Negative prompts in `embed()` (trivial in diffusers) - the paper's
+6. Negative prompts in `embed()` (trivial in diffusers) - the paper's
    baseline comparisons suggest it reduces subject bleed between derived
    images.
-6. Timestep annealing for SDS (sample high timesteps early, low late) -
+7. Timestep annealing for SDS (sample high timesteps early, low late) -
    standard DreamFusion-family improvement, cheap to add where the
    timestep is drawn.
-7. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
+8. SDXL backbone: already reachable via `--model`, but needs fp16 VAE
    care (the worker's manifest machinery solved this for generation - see
    `vae` handling in the engine) and likely gradient accumulation on
    16 GB with 5 derived images.
-8. Latent-space Dream Targets: regress latents instead of pixels for the
+9. Latent-space Dream Targets: regress latents instead of pixels for the
    SSIM/MSE inner loop; faster per step but changes the loss balance -
    benchmark before adopting.
-9. Rotation-overlay generalization to arbitrary angles (the paper models
+10. Rotation-overlay generalization to arbitrary angles (the paper models
    90-degree steps; `torch.rot90` would become a grid_sample rotation,
    still differentiable) - unlocks continuous-spin animations for the
    studio designer (#117).
-10. Print color calibration: the paper's Figs. 15-16 show hue shifts after
+11. Print color calibration: the paper's Figs. 15-16 show hue shifts after
    printing; a fixed printer color profile applied inside the arrangement
    (a 3x3 color matrix) would let the optimizer compensate.
-11. Job integration (#116) and the studio designer (#117) - the module's
+12. Job integration (#116) and the studio designer (#117) - the module's
    `optimize_illusion(config, progress)` signature was shaped so the
    worker job wrapper only adds cancellation checks and asset encoding.
 

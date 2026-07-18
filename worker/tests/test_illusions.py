@@ -16,6 +16,7 @@ from worker.illusions import (  # noqa: E402  (import needs torch)
     image_similarity_loss,
     overlay,
     rot90,
+    sdedit_steps,
     ssim,
     targets_for,
 )
@@ -210,6 +211,9 @@ def test_begin_dream_phase_switches_to_lcm_schedule(monkeypatch: pytest.MonkeyPa
         vae = SimpleNamespace(requires_grad_=lambda _flag: None)
         text_encoder = SimpleNamespace(requires_grad_=lambda _flag: None)
 
+        def __init__(self) -> None:
+            self.scheduler = SimpleNamespace(config={"beta_end": 0.012})
+
         def to(self, _device: str) -> "FakeImg2Img":
             return self
 
@@ -221,17 +225,46 @@ def test_begin_dream_phase_switches_to_lcm_schedule(monkeypatch: pytest.MonkeyPa
             loaded.append(model_id)
             return FakeImg2Img()
 
+    class FakeLCMScheduler:
+        def __init__(self, config: object) -> None:
+            self.config = config
+
+        @classmethod
+        def from_config(cls, config: object) -> "FakeLCMScheduler":
+            return cls(config)
+
     # Inject before begin_dream_phase's `from diffusers import ...` so the
     # test runs without the inference extra.
     monkeypatch.setitem(
         __import__("sys").modules,
         "diffusers",
-        SimpleNamespace(AutoPipelineForImage2Image=FakeAutoPipeline),
+        SimpleNamespace(
+            AutoPipelineForImage2Image=FakeAutoPipeline,
+            LCMScheduler=FakeLCMScheduler,
+        ),
     )
 
     adapter.begin_dream_phase()
     assert loaded == [DiffusionAdapter.DEFAULT_DREAM_MODEL]
     assert adapter.pipe is None
+    # the repo scheduler config is PNDM; the LCM swap must happen and keep
+    # the underlying beta schedule
+    assert isinstance(adapter.img2img.scheduler, FakeLCMScheduler)
+    assert adapter.img2img.scheduler.config == {"beta_end": 0.012}
     assert adapter.dream_inference_steps == 4
-    assert adapter.dream_guidance == 1.5
+    assert adapter.dream_guidance == 2.0
     assert adapter.embeddings == {}
+
+
+def test_sdedit_steps_never_round_to_zero_denoise_steps() -> None:
+    """int(steps * strength) is the denoise step count img2img actually
+    runs; the schedule must keep it at two or more at every strength the
+    default Dream Target schedule produces."""
+    schedule = IllusionConfig(illusion="flip", prompts=["a", "b"]).strength_schedule()
+    for strength in schedule:
+        strength = max(strength, 0.05)
+        steps = sdedit_steps(4, strength)
+        assert int(steps * strength) >= 2, strength
+    assert sdedit_steps(4, 0.95) == 4
+    assert sdedit_steps(4, 0.05) == 40
+    assert sdedit_steps(25, 0.5) == 25

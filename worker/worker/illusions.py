@@ -156,6 +156,17 @@ def image_similarity_loss(derived: Tensor, target: Tensor) -> Tensor:
     return (1.0 - ssim(derived, target)) + tf.mse_loss(derived, target)
 
 
+def sdedit_steps(base_steps: int, strength: float) -> int:
+    """Inference steps for an SDEdit call at `strength`.
+
+    img2img truncates the schedule to int(steps * strength) denoise steps,
+    so a fixed few-step schedule rounds the late, low-strength polish
+    rounds down to zero steps and returns garbage. Grow the schedule so at
+    least two denoise steps always run.
+    """
+    return max(base_steps, math.ceil(2 / strength))
+
+
 # ------------------------------------------------------- diffusion adapter
 
 
@@ -201,7 +212,7 @@ class DiffusionAdapter:
         both models are not resident in VRAM. When unset, keep the SDS
         img2img path with the classic 25-step / CFG 7.5 schedule.
         """
-        from diffusers import AutoPipelineForImage2Image
+        from diffusers import AutoPipelineForImage2Image, LCMScheduler
 
         if self.dream_model_id is None or self.dream_model_id == self.model_id:
             self.dream_inference_steps = 25
@@ -219,12 +230,16 @@ class DiffusionAdapter:
         self.img2img = AutoPipelineForImage2Image.from_pretrained(
             self.dream_model_id, torch_dtype=self.dtype, safety_checker=None
         ).to(self.device)
+        # The LCM checkpoints ship a PNDM scheduler config; sampling an
+        # LCM-distilled UNet with it gives mush from weakly structured
+        # inputs. Swap in the scheduler the model was distilled for.
+        self.img2img.scheduler = LCMScheduler.from_config(self.img2img.scheduler.config)
         self.img2img.unet.requires_grad_(False)
         self.img2img.vae.requires_grad_(False)
         if hasattr(self.img2img, "text_encoder") and self.img2img.text_encoder is not None:
             self.img2img.text_encoder.requires_grad_(False)
         self.dream_inference_steps = 4
-        self.dream_guidance = 1.5
+        self.dream_guidance = 2.0
 
     def embed(self, prompt: str) -> Tensor:
         """Cached [uncond, cond] embeddings for classifier-free guidance."""
@@ -304,12 +319,13 @@ class DiffusionAdapter:
     def sdedit(self, image: Tensor, prompt: str, strength: float, generator) -> Tensor:
         """SDEdit img2img: noise the derived image and denoise it toward
         the prompt, producing a Dream Target (paper 3.3.2)."""
+        strength = max(strength, 0.05)
         with torch.no_grad():
             result = self.img2img(
                 prompt=prompt,
                 image=image.to(self.dtype),
-                strength=max(strength, 0.05),
-                num_inference_steps=self.dream_inference_steps,
+                strength=strength,
+                num_inference_steps=sdedit_steps(self.dream_inference_steps, strength),
                 guidance_scale=self.dream_guidance,
                 generator=generator,
                 output_type="pt",
@@ -330,7 +346,10 @@ class IllusionConfig:
     sds_steps: int = 500
     sds_guidance: float = 100.0
     sds_low_res: int = 256
-    sds_low_res_fraction: float = 0.6
+    # 0 = ladder off. SDS at 256px runs on 32x32 latents, off-distribution
+    # for the SD 1.5 UNet: it stalls subject formation and the Dream Target
+    # phase cannot recover the loss. Opt in only for quick throwaway runs.
+    sds_low_res_fraction: float = 0.0
     dream_rounds: int = 8
     dream_steps: int = 300
     learning_rate: float = 1e-3
@@ -510,8 +529,12 @@ def main() -> None:
     parser.add_argument(
         "--sds-low-res-fraction",
         type=float,
-        default=0.6,
-        help="fraction of SDS steps run at --sds-low-res before finishing at 512",
+        default=0.0,
+        help=(
+            "fraction of SDS steps run at --sds-low-res before finishing at "
+            "512; 0 (default) disables the ladder - 256px SDS stalls subject "
+            "formation on SD 1.5"
+        ),
     )
     parser.add_argument("--dream-rounds", type=int, default=8)
     parser.add_argument("--dream-steps", type=int, default=300)
