@@ -82,6 +82,8 @@ The worker samples its card once per heartbeat - GPU utilization, VRAM used and 
 
 A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
 
+The studio's own usage panel has a fourth consumer: each heartbeat's GPU sample is also written to the deployment's PostgreSQL (`gpu_samples`, raw rows kept 48 hours) and rolled into five-minute buckets (`gpu_sample_rollups`, kept 30 days) by a maintenance loop in the API. `GET /api/v1/metrics/gpu/history` serves both: raw rows for windows up to an hour, rollups beyond. This is per-install history for the user's own hardware; the CloudWatch plane above stays aggregate-only.
+
 ## Frame loop metrics
 
 Two recorded decisions depend on observing the realtime loop, so its numbers are first class: per-model p95 frame time, measured at the worker (inference) and at the relay (end to end), and the frame drop rate from latest-input-wins. Worker-side p95 feeds the slot calibration benchmark's ongoing sanity check; relay-side p95 is the explicit trigger for the gateway extraction ([decisions.md](decisions.md), "Realtime relay"); a rising drop rate says sessions are degrading before users say it.
