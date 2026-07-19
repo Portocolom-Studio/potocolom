@@ -131,6 +131,25 @@ too many SDS steps without a Dream Target phase; a hidden image bleeding
 into its primes means the weight-3 prioritization needs the full Dream
 Target schedule to resolve.
 
+## Gallery
+
+`docs/images/illusions/` holds the original seed-2 dog/sloth example
+(`flip-seed2-*`) and, under `gallery/`, fourteen curated flip pairs
+from a 30-pair batch (seed 2, prompts wrapped as "an oil painting of
+..." per the tuning table, generated with the phase-boundary optimizer
+reset). Each pair ships `flip-<pair>-prime_1.png` (print this),
+`-derived_1.png`, and `-derived_2.png` (the two viewing orientations).
+The curation bar: both subjects readable at first glance, anatomically
+plausible. Pairs where the subjects can inhabit one coherent scene
+(elephant/swan on a lake, moose/butterfly against foliage) came out
+strongest; bulky-mammal-versus-small-object pairs tend to collapse to
+the small subject.
+
+Pairs: lion/penguin, fox/rabbit, cat/owl, elephant/swan,
+camel/octopus, moose/butterfly, otter/rooster, bison/jellyfish,
+lynx/peacock, kangaroo/woodpecker, hippo/dragonfly, badger/goldfish,
+polar-bear/honeybee, squirrel/pelican.
+
 ## Fabrication
 
 Flip: print `prime_1.png` on paper. Rotate/hidden: print primes on
