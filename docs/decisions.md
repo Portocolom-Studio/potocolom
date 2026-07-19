@@ -514,6 +514,12 @@ Supersedes "License: GPL-3.0 stays, AGPL rejected". The public repository moves 
 
 Rejected alternatives: staying GPL-3.0 (leaves the modified-network-service path entirely open, and relicensing only gets harder as outside contributions accumulate); BUSL-1.1 with a revenue-threshold use grant or PolyForm Noncommercial (closest to a Stability-style community license, but both are source-available rather than open source, and the project's positioning spends that credibility everywhere from the hero badge to the whitepaper).
 
+## Gallery: the derivation forest is the gallery
+
+The gallery's primary view is an infinite pannable canvas that lays generation history out as lineage trees: every generation with a `source_asset_id` hangs off its parent, siblings are alternative takes on the same base, and zoom level selects detail - a time-clustered constellation far out, tidy trees with action-labeled edges in the middle, cards with prompt and parameter deltas against the parent up close. Any node can be branched: opening it as the source of a new generation grows the tree in place, which makes history the working surface rather than an archive. Histories without derivation chains degrade to a time-ordered grid, so prompt-only users never see a broken graph. The in-flow history strip stays; the canvas replaces only the flat gallery grid. Trees contain persisted assets only (realtime frames never join), and a deleted or expired parent leaves a ghost placeholder that preserves the structure of its descendants. The provenance columns have recorded the forest since v0.1 ("Generation lineage", issue #57) precisely so this view could ship later; the phased issues are #129 through #132.
+
+Rejected alternatives: a flat grid with a per-image lineage popover (hides the differentiator - the same base re-prompted five ways never becomes visible structure); a force-directed graph (unstable positions destroy the spatial memory a canvas exists to build; tidy trees are deterministic); a canvas or graph rendering library as a new dependency (the interaction set - transform-based pan and zoom, level-of-detail tiles, hover falloff - is already proven in-house by the landing hero field, and d3-hierarchy for layout ships with layerchart).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
