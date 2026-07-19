@@ -188,12 +188,15 @@ def test_begin_dream_phase_keeps_sds_schedule_when_disabled() -> None:
     adapter.dream_model_id = None
     adapter.img2img = object()
     adapter.pipe = object()
+    adapter.embeddings = {"stale": torch.zeros(1)}
     adapter.dream_inference_steps = 25
     adapter.dream_guidance = 7.5
     adapter.begin_dream_phase()
     assert adapter.dream_inference_steps == 25
     assert adapter.dream_guidance == 7.5
     assert adapter.pipe is not None
+    # the SDS embedding cache is dead weight after phase 1 either way
+    assert adapter.embeddings == {}
 
 
 def test_begin_dream_phase_switches_to_lcm_schedule(monkeypatch: pytest.MonkeyPatch) -> None:

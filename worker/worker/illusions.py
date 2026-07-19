@@ -141,8 +141,8 @@ def ssim(a: Tensor, b: Tensor, window: int = 11) -> Tensor:
         return tf.conv2d(x, k_col, padding=(half, 0), groups=channels)
 
     mu_a, mu_b = blur(a), blur(b)
-    var_a = blur(a * a) - mu_a**2
-    var_b = blur(b * b) - mu_b**2
+    var_a = (blur(a * a) - mu_a**2).clamp(min=0)
+    var_b = (blur(b * b) - mu_b**2).clamp(min=0)
     cov = blur(a * b) - mu_a * mu_b
     c1, c2 = 0.01**2, 0.03**2
     score = ((2 * mu_a * mu_b + c1) * (2 * cov + c2)) / (
@@ -226,6 +226,7 @@ class DiffusionAdapter:
         if self.dream_model_id is None or self.dream_model_id == self.model_id:
             self.dream_inference_steps = 25
             self.dream_guidance = 7.5
+            self.embeddings.clear()  # cached SDS embeddings are not used after phase 1
             return
 
         del self.pipe
@@ -265,6 +266,8 @@ class DiffusionAdapter:
     def encode_latent(self, image: Tensor) -> Tensor:
         scaled = (image * 2 - 1).to(self.dtype)
         posterior = self.pipe.vae.encode(scaled).latent_dist
+        # sample() draws from the global RNG, which optimize_illusion seeds -
+        # runs are reproducible without threading the generator through here
         return posterior.sample() * self.pipe.vae.config.scaling_factor
 
     def sds_loss(self, derived: Tensor, prompt: str, guidance_scale: float, generator) -> Tensor:
@@ -397,12 +400,12 @@ class DiffusionAdapter:
 
         with torch.no_grad():
             latents = []
-            for view in views:
+            for view, scheduler in zip(views, schedulers, strict=True):
                 latent = encode(view)
                 noise = torch.randn(
                     latent.shape, generator=generator, device=self.device, dtype=latent.dtype
                 )
-                latents.append(schedulers[0].add_noise(latent, noise, timesteps[:1]))
+                latents.append(scheduler.add_noise(latent, noise, timesteps[:1]))
             for timestep in timesteps:
                 alpha = schedulers[0].alphas_cumprod[timestep]
                 sqrt_alpha = alpha.sqrt()
@@ -449,14 +452,15 @@ class IllusionConfig:
     dream_steps: int = 300
     learning_rate: float = 1e-3
     seed: int = 0
-    device: str = "cuda"
+    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
     strengths: list[float] = field(default_factory=list)
 
     def strength_schedule(self) -> list[float]:
         if self.strengths:
             return self.strengths
-        # 0.90 down toward 0 (paper 3.3.2); rounds are configurable so the
-        # smoke config can run in minutes
+        # 0.95 down to 0.05 (the paper's 3.3.2 schedule walks 0.90 to 0.01;
+        # ours is shifted by the SDEdit floor); rounds are configurable so
+        # the smoke config can run in minutes
         return [
             0.9 * (1 - index / max(self.dream_rounds - 1, 1)) + 0.05
             for index in range(self.dream_rounds)
@@ -497,7 +501,7 @@ def optimize_illusion(
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         return spec.arrange([network.image(resolution) for network in networks])
 
-    total = config.sds_steps + config.dream_rounds * config.dream_steps
+    total = config.sds_steps + len(config.strength_schedule()) * config.dream_steps
     done = 0
     low_res_steps = int(config.sds_steps * config.sds_low_res_fraction)
 
@@ -676,7 +680,10 @@ def main() -> None:
         seed=args.seed,
         device=args.device,
     )
-    result = optimize_illusion(config, progress=lambda f: print(f"\rprogress {f:6.1%}", end=""))
+    try:
+        result = optimize_illusion(config, progress=lambda f: print(f"\rprogress {f:6.1%}", end=""))
+    except ValueError as error:  # e.g. wrong number of --prompt for --type
+        raise SystemExit(f"error: {error}") from error
     print()
 
     args.out.mkdir(parents=True, exist_ok=True)

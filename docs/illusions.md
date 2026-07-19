@@ -82,7 +82,7 @@ One module, four parts, in dependency order:
      phase cannot recover.
    - Phase 2, Dream Target (default 8 rounds x 300 steps): per round,
      freeze a target for each derived image via SDEdit at a strength that
-     decays from 0.90 toward 0.05, then regress derived images to their
+     decays from 0.95 toward 0.05, then regress derived images to their
      targets with `(1 - SSIM) + MSE`. Decaying strength means early rounds
      reimagine freely and late rounds only polish - this is what pulls the
      compromise images SDS produces into clean subjects.
