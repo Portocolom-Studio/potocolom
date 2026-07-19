@@ -15,6 +15,7 @@ from worker.illusions import (  # noqa: E402  (import needs torch)
     IllusionConfig,
     image_similarity_loss,
     overlay,
+    reconcile_flip,
     rot90,
     sdedit_steps,
     ssim,
@@ -268,3 +269,20 @@ def test_sdedit_steps_never_round_to_zero_denoise_steps() -> None:
     assert sdedit_steps(4, 0.95) == 4
     assert sdedit_steps(4, 0.05) == 40
     assert sdedit_steps(25, 0.5) == 25
+
+
+def test_reconcile_flip_returns_exact_rotation_pair() -> None:
+    """The consensus views must be exact 180-degree rotations of one
+    image, and averaging must happen in the canonical frame."""
+    a, b = prime(0), prime(1)
+    consensus = reconcile_flip([a, b])
+    assert torch.equal(consensus[1], rot90(consensus[0], 2))
+    assert torch.allclose(consensus[0], (a + rot90(b, 2)) / 2)
+
+
+def test_reconcile_flip_preserves_consistent_views() -> None:
+    """Views that already agree (v2 = rot180(v1)) pass through unchanged."""
+    a = prime(2)
+    consensus = reconcile_flip([a, rot90(a, 2)])
+    assert torch.allclose(consensus[0], a)
+    assert torch.allclose(consensus[1], rot90(a, 2))

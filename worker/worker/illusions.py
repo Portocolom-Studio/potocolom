@@ -156,6 +156,14 @@ def image_similarity_loss(derived: Tensor, target: Tensor) -> Tensor:
     return (1.0 - ssim(derived, target)) + tf.mse_loss(derived, target)
 
 
+def reconcile_flip(predictions: list[Tensor]) -> list[Tensor]:
+    """Average the two flip views' predicted images in the canonical
+    (view 1) frame and hand back per-view orientations of the consensus,
+    so both views are exact 180-degree rotations of ONE image."""
+    canonical = (predictions[0] + rot90(predictions[1], 2)) / 2
+    return [canonical, rot90(canonical, 2)]
+
+
 def sdedit_steps(base_steps: int, strength: float) -> int:
     """Inference steps for an SDEdit call at `strength`.
 
@@ -201,6 +209,7 @@ class DiffusionAdapter:
         self.dtype = dtype
         self.scheduler = self.pipe.scheduler
         self.embeddings: dict[str, Tensor] = {}
+        self.dream_embeddings: dict[str, Tensor] = {}
         # Dream Target defaults: keep SDS img2img until begin_dream_phase()
         self.dream_inference_steps = 25
         self.dream_guidance = 7.5
@@ -332,6 +341,89 @@ class DiffusionAdapter:
             ).images
         return result.float().clamp(0, 1)
 
+    def _dream_embed(self, prompt: str) -> Tensor:
+        """Cached [uncond, cond] embeddings from the Dream Target pipeline
+        (the SDS pipeline and its cache are gone after begin_dream_phase)."""
+        if prompt not in self.dream_embeddings:
+            cond, uncond = self.img2img.encode_prompt(
+                prompt,
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True,
+            )[:2]
+            self.dream_embeddings[prompt] = torch.cat([uncond, cond])
+        return self.dream_embeddings[prompt]
+
+    def sdedit_joint(
+        self, views: list[Tensor], prompts: list[str], strength: float, generator
+    ) -> list[Tensor]:
+        """Joint SDEdit for the flip illusion (issue #134): denoise both
+        views together, reconciling their predicted images at every step so
+        the returned targets are two orientations of ONE image satisfying
+        both prompts - unlike independent per-view SDEdit, whose targets
+        disagree about the shared pixels by construction.
+
+        The reconciliation runs in pixel space on the predicted x0: the SD
+        1.5 VAE does not commute with rot180 in latent space (measured
+        0.78-0.97 relative latent error on gallery images), so rotating
+        latents directly would corrupt the views.
+        """
+        strength = max(strength, 0.05)
+        steps = sdedit_steps(self.dream_inference_steps, strength)
+        vae = self.img2img.vae
+        unet = self.img2img.unet
+        scaling = vae.config.scaling_factor
+
+        def encode(image: Tensor) -> Tensor:
+            posterior = vae.encode((image * 2 - 1).to(self.dtype)).latent_dist
+            return posterior.mean * scaling
+
+        def decode(latent: Tensor) -> Tensor:
+            image = vae.decode(latent / scaling).sample
+            return ((image.float() + 1) / 2).clamp(0, 1)
+
+        # one scheduler per view: PNDM keeps multistep history, so the two
+        # trajectories must not share internal state
+        schedulers = []
+        for _ in views:
+            scheduler = type(self.img2img.scheduler).from_config(self.img2img.scheduler.config)
+            scheduler.set_timesteps(steps, device=self.device)
+            schedulers.append(scheduler)
+        order = getattr(schedulers[0], "order", 1)
+        t_start = max(steps - int(steps * strength), 0)
+        timesteps = schedulers[0].timesteps[t_start * order :]
+        if len(timesteps) == 0:
+            return [view.float().clamp(0, 1) for view in views]
+
+        with torch.no_grad():
+            latents = []
+            for view in views:
+                latent = encode(view)
+                noise = torch.randn(
+                    latent.shape, generator=generator, device=self.device, dtype=latent.dtype
+                )
+                latents.append(schedulers[0].add_noise(latent, noise, timesteps[:1]))
+            for timestep in timesteps:
+                alpha = schedulers[0].alphas_cumprod[timestep]
+                sqrt_alpha = alpha.sqrt()
+                sqrt_one_minus = (1 - alpha).sqrt()
+                predictions = []
+                for latent, prompt, scheduler in zip(latents, prompts, schedulers, strict=True):
+                    model_in = scheduler.scale_model_input(torch.cat([latent, latent]), timestep)
+                    predicted = unet(
+                        model_in, timestep, encoder_hidden_states=self._dream_embed(prompt)
+                    ).sample
+                    uncond, cond = predicted.chunk(2)
+                    epsilon = uncond + self.dream_guidance * (cond - uncond)
+                    predictions.append(decode((latent - sqrt_one_minus * epsilon) / sqrt_alpha))
+                consensus = reconcile_flip(predictions)
+                for index, (latent, scheduler) in enumerate(zip(latents, schedulers, strict=True)):
+                    z0 = encode(consensus[index])
+                    epsilon = (latent - sqrt_alpha * z0) / sqrt_one_minus
+                    latents[index] = scheduler.step(epsilon, timestep, latent).prev_sample
+            target = decode(latents[0]).clamp(0, 1)
+        return [target, rot90(target, 2)]
+
 
 # ------------------------------------------------------------- optimizer
 
@@ -351,6 +443,9 @@ class IllusionConfig:
     # phase cannot recover the loss. Opt in only for quick throwaway runs.
     sds_low_res_fraction: float = 0.0
     dream_rounds: int = 8
+    # joint targets (issue #134): flip only - rotate/hidden views are
+    # overlays of several primes, not orthogonal transforms of one image
+    dream_joint: bool = False
     dream_steps: int = 300
     learning_rate: float = 1e-3
     seed: int = 0
@@ -451,15 +546,24 @@ def optimize_illusion(
     optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
 
     # Phase 2: Dream Target Loss at a decreasing SDEdit strength schedule
+    joint = (
+        config.dream_joint
+        and config.illusion == "flip"
+        and all(isinstance(target, str) for target in targets)
+    )
     for strength in config.strength_schedule():
         dream_targets: list[Tensor] = []
         with torch.no_grad():
             current = render_derived(RESOLUTION)
-        for derived, target in zip(current, targets, strict=True):
-            if isinstance(target, str):
-                dream_targets.append(adapter.sdedit(derived, target, strength, generator))
-            else:
-                dream_targets.append(target.to(config.device))
+        if joint:
+            prompts = [target for target in targets if isinstance(target, str)]
+            dream_targets = adapter.sdedit_joint(current, prompts, strength, generator)
+        else:
+            for derived, target in zip(current, targets, strict=True):
+                if isinstance(target, str):
+                    dream_targets.append(adapter.sdedit(derived, target, strength, generator))
+                else:
+                    dream_targets.append(target.to(config.device))
         for _ in range(config.dream_steps):
             optimizer.zero_grad()
             loss = torch.zeros((), device=config.device)
@@ -541,6 +645,14 @@ def main() -> None:
         ),
     )
     parser.add_argument("--dream-rounds", type=int, default=8)
+    parser.add_argument(
+        "--dream-joint",
+        action="store_true",
+        help=(
+            "flip only: build each round's Dream Targets jointly, reconciling "
+            "both views into one image per step (issue #134)"
+        ),
+    )
     parser.add_argument("--dream-steps", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True)
@@ -559,6 +671,7 @@ def main() -> None:
         sds_low_res=args.sds_low_res,
         sds_low_res_fraction=args.sds_low_res_fraction,
         dream_rounds=args.dream_rounds,
+        dream_joint=args.dream_joint,
         dream_steps=args.dream_steps,
         seed=args.seed,
         device=args.device,

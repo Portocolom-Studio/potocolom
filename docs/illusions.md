@@ -60,6 +60,17 @@ One module, four parts, in dependency order:
      strength)` truncation never rounds the late polish rounds down to
      zero denoise steps (`sdedit_steps`). `--dream-model none` keeps the
      SDS checkpoint at 25 / 7.5.
+   - `sdedit_joint` (flip only, `--dream-joint`, issue #134): denoise
+     both views together, and at every step decode each view's
+     predicted image, average them in the canonical frame
+     (`reconcile_flip`), re-encode, and step from the consensus. The
+     returned targets are two orientations of ONE image satisfying
+     both prompts, instead of two independent targets that disagree
+     about the shared pixels. Pixel-space reconciliation is required:
+     the SD 1.5 VAE does not commute with rot180 in latent space
+     (measured 0.78-0.97 relative latent error). Rotate and hidden
+     keep per-view targets - their views are overlays of several
+     primes, not orthogonal transforms of one image.
 4. `optimize_illusion` - the two-phase loop:
    - Phase 1, Score Distillation (default 500 steps): weighted SDS for all
      prompt-target derived images in one batched UNet forward per step;
@@ -122,6 +133,7 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 | `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0 (off) | Early SDS at low resolution, then finish at 512. Cheaper per step, but 256px SDS stalls subject formation on SD 1.5 - use only for quick throwaway runs. |
 | `--dream-rounds` / `--dream-steps` | 8 x 300 | More rounds with a finer strength schedule = cleaner final subjects. The paper's full schedule walks 0.90 to 0.01. |
 | `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (LCM scheduler, at most a handful of denoise steps). Pass `none` to reuse `--model` with 25 steps / CFG 7.5. |
+| `--dream-joint` | off | Flip only: each round's Dream Targets are built jointly, so both views regress toward one consensus image instead of two fighting targets (issue #134). |
 | learning rate | 1e-3 (Adam) | In `IllusionConfig`; raise to 3e-3 for faster early structure at some stability cost. |
 | seed | 0 | Different seeds give genuinely different compositions; cherry-picking across 3-4 seeds is normal for showpieces. |
 
