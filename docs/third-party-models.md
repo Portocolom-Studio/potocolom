@@ -47,6 +47,8 @@ requires:
 | vega-rt (base + VegaRT LCM LoRA) | Apache 2.0 |
 | ssd-1b-lightning (SSD-1B + SDXL Lightning LoRA) | Apache 2.0 base + CreativeML Open RAIL++-M LoRA |
 | dreamshaper-lcm | CreativeML Open RAIL-M |
+| realesrgan (RealESRGAN_x2plus / x4plus weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
+| realesrgan-fast (realesr-general-x4v3 weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
 
 Open RAIL licenses impose use restrictions (no illegal or harmful outputs) but
 no annual revenue cap.

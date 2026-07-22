@@ -16,7 +16,7 @@ class Manifest(BaseModel):
 
     id: str
     name: str
-    capabilities: list[str]  # text_to_image, image_to_image, realtime
+    capabilities: list[str]  # text_to_image, image_to_image, realtime, upscale
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
@@ -54,6 +54,23 @@ SIMULATED_MANIFEST = Manifest(
 )
 
 
+DIFFUSION_CAPABILITIES = frozenset({"text_to_image", "image_to_image"})
+
+
+def validate_capability_exclusivity(manifest: Manifest) -> None:
+    """Upscale models must not also declare diffusion capabilities (issue #90).
+
+    Routing is capability-driven: source + upscale = pixel upscale, source +
+    image_to_image = edit. Mixing them on one manifest makes that ambiguous.
+    """
+    caps = set(manifest.capabilities)
+    if "upscale" in caps and caps & DIFFUSION_CAPABILITIES:
+        raise ValueError(
+            f"manifest {manifest.id}: upscale cannot combine with "
+            f"{sorted(caps & DIFFUSION_CAPABILITIES)}"
+        )
+
+
 def load_manifests(models_dir: str) -> list[Manifest]:
     """Operator errors here should be loud, not degrade into an empty fleet."""
     files = sorted(Path(models_dir).glob("*.json"))
@@ -64,6 +81,7 @@ def load_manifests(models_dir: str) -> list[Manifest]:
     for manifest in manifests:
         if manifest.id in seen:
             raise ValueError(f"duplicate manifest id: {manifest.id}")
+        validate_capability_exclusivity(manifest)
         seen.add(manifest.id)
     logger.info("loaded %d manifests from %s: %s",
                 len(manifests), models_dir, [m.id for m in manifests])

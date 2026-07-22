@@ -123,12 +123,18 @@ async def create_generation(
     if error := validate_params(manifest, request.params):
         raise HTTPException(status_code=422, detail=f"params: {error}")
     source_asset_id = request.source_asset_id
+    caps = set(manifest.capabilities)
+    if "upscale" in caps and source_asset_id is None:
+        raise HTTPException(status_code=422, detail="upscale requires source_asset_id")
     if source_asset_id is not None:
         source = await session.get(Asset, source_asset_id)
         if source is None or source.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown source asset")
-        if "image_to_image" not in manifest.capabilities:
-            raise HTTPException(status_code=422, detail="model does not support image_to_image")
+        if "image_to_image" not in caps and "upscale" not in caps:
+            raise HTTPException(
+                status_code=422,
+                detail="model does not support image_to_image or upscale",
+            )
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
     await registry.persist_manifests([manifest])

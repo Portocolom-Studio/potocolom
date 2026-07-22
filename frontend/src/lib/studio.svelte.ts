@@ -7,6 +7,7 @@ export type Model = {
 	capabilities: string[];
 	default: boolean;
 	estimated_gpu_ms_default: number | null;
+	estimated_gpu_ms_by_factor?: Record<string, number>;
 	parameters: {
 		properties?: Record<
 			string,
@@ -101,10 +102,35 @@ export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
 
 let polling = false;
 
+// Diffusion models drive the generate form and the sidebar picker; upscalers
+// are reached only through the Upscale action (issue #91). Every model list
+// the user can select from must go through this filter.
+export function filterDiffusionModels(models: Model[]): Model[] {
+	return models.filter((model) => !model.capabilities.includes('upscale'));
+}
+
+export const UPSCALE_FAST_ID = 'realesrgan-fast';
+export const UPSCALE_QUALITY_ID = 'realesrgan';
+
+export function filterUpscaleModels(models: Model[]): Model[] {
+	return models.filter((model) => model.capabilities.includes('upscale'));
+}
+
+/** Prefer fast when registered; else quality; else first sorted id. */
+export function defaultUpscaleModelId(models: Model[]): string {
+	const upscalers = filterUpscaleModels(models);
+	if (upscalers.length === 0) return '';
+	if (upscalers.some((model) => model.id === UPSCALE_FAST_ID)) return UPSCALE_FAST_ID;
+	if (upscalers.some((model) => model.id === UPSCALE_QUALITY_ID)) return UPSCALE_QUALITY_ID;
+	return [...upscalers].sort((a, b) => a.id.localeCompare(b.id))[0].id;
+}
+
 function applyModels(models: Model[]): void {
 	studio.models = models;
-	if (!studio.modelId && models.length > 0) {
-		studio.modelId = (models.find((m) => m.default) ?? models[0]).id;
+	const selectable = filterDiffusionModels(models);
+	if (!studio.modelId || !selectable.some((model) => model.id === studio.modelId)) {
+		studio.modelId =
+			selectable.length > 0 ? (selectable.find((model) => model.default) ?? selectable[0]).id : '';
 	}
 }
 

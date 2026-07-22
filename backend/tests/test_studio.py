@@ -1,13 +1,41 @@
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
+from starlette.websockets import WebSocketState
 
+from app import realtime
 from app.main import app
+from app.manifests import Manifest
 
 client = TestClient(app)
 
 
 def test_studio_gpu_requires_worker():
+    realtime.workers.clear()
     response = client.get("/api/v1/studio/gpu")
     assert response.status_code == 503
+
+
+def test_pick_any_worker_prunes_disconnected_sockets():
+    from unittest.mock import MagicMock
+
+    disconnected = MagicMock()
+    disconnected.client_state = WebSocketState.DISCONNECTED
+    live = MagicMock()
+    live.client_state = WebSocketState.CONNECTED
+    manifest = Manifest(id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters={})
+    dead = realtime.Worker(id="w-dead", ws=disconnected, manifests=[manifest],
+                           realtime_slots=1)
+    ok = realtime.Worker(id="w-live", ws=live, manifests=[manifest], realtime_slots=1)
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-dead"] = dead
+        realtime.workers["w-live"] = ok
+        assert realtime.pick_any_worker() is ok
+        assert "w-dead" not in realtime.workers
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
 
 
 def test_studio_gpu_returns_worker_snapshot(monkeypatch):

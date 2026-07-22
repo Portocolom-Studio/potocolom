@@ -56,6 +56,18 @@ def test_estimate_gpu_ms_requires_explicit_params():
     assert estimate_gpu_ms("sdxl-fast", {"steps": 8}) is None
 
 
+def test_estimate_gpu_ms_upscale_uses_measured_factor_map():
+    # Measured per factor: quadratic scaling overestimated x4 by ~2x, and the
+    # compact net's cost is nearly flat (native x4 run plus Lanczos down).
+    assert estimate_gpu_ms("realesrgan", {"factor": 2}) == 17931
+    assert estimate_gpu_ms("realesrgan", {"factor": 4}) == 37853
+    assert estimate_gpu_ms("realesrgan", {}) == 17931
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 2}) == 759
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 4}) == 555
+    assert estimate_gpu_ms("realesrgan-fast", {}) == 759
+    assert estimate_gpu_ms("realesrgan", {"factor": 3}) is None
+
+
 def test_load_timings_survives_bad_json(tmp_path, monkeypatch):
     from app import estimates
 

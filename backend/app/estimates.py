@@ -14,7 +14,7 @@ TIMINGS_PATH = Path(__file__).with_name("model_timings.json")
 
 
 @lru_cache(maxsize=1)
-def _load_timings() -> dict[str, dict[str, int]]:
+def _load_timings() -> dict[str, dict[str, Any]]:
     try:
         raw = json.loads(TIMINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -23,13 +23,34 @@ def _load_timings() -> dict[str, dict[str, int]]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    timings: dict[str, dict[str, int]] = {}
+    timings: dict[str, dict[str, Any]] = {}
     for model_id, entry in raw.items():
         if model_id.startswith("_") or not isinstance(entry, dict):
             continue
+        # Upscale baselines are a measured per-factor map; diffusion baselines
+        # need gpu_ms plus steps/width/height for pixel scaling.
+        factors_raw = entry.get("factors")
+        if isinstance(factors_raw, dict):
+            factors: dict[int, int] = {}
+            for key, value in factors_raw.items():
+                try:
+                    factor, ms = int(key), int(value)
+                except (TypeError, ValueError):
+                    continue
+                if factor > 0 and ms > 0:
+                    factors[factor] = ms
+            if factors:
+                timings[model_id] = {"factors": factors}
+            continue
+        try:
+            gpu_ms = int(entry["gpu_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if gpu_ms <= 0:
+            continue
         try:
             candidate = {
-                "gpu_ms": int(entry["gpu_ms"]),
+                "gpu_ms": gpu_ms,
                 "width": int(entry["width"]),
                 "height": int(entry["height"]),
                 "steps": int(entry["steps"]),
@@ -59,6 +80,17 @@ def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
     baseline = _load_timings().get(model_id)
     if baseline is None:
         return None
+
+    factors = baseline.get("factors")
+    if factors is not None:
+        if "factor" not in params:
+            return max(1, factors[min(factors)])
+        try:
+            factor = int(params["factor"])
+        except (TypeError, ValueError):
+            return None
+        known = factors.get(factor)
+        return max(1, known) if known is not None else None
 
     if not all(key in params for key in ("steps", "width", "height")):
         return None

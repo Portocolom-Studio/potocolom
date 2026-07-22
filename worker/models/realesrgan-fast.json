@@ -1,0 +1,16 @@
+{
+  "id": "realesrgan-fast",
+  "name": "Real-ESRGAN Fast",
+  "capabilities": ["upscale"],
+  "min_vram_gb": 1,
+  "source": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
+  "license_id": "bsd-3-clause",
+  "license_url": "https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "factor": { "type": "integer", "enum": [2, 4], "default": 2 }
+    },
+    "required": ["factor"]
+  }
+}
