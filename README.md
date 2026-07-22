@@ -2,7 +2,7 @@
 
 Draw it. Watch it render.
 
-potocolom is an open source, real time generative image platform: you sketch on a canvas and a diffusion model paints over your strokes live, at 2 to 4 frames per second, then one click hands the result to a heavier model for the final image. One AGPL codebase runs it both ways - self-hosted on your own GPU for free, or as a managed cloud with subscriptions.
+potocolom is an open source realtime generative image platform: sketch on a canvas and a diffusion model paints over your strokes live, then refine, generate, or upscale when you want a finished still. One AGPL codebase runs self-hosted on your own GPU for free, or as a managed cloud when you do not want to operate hardware.
 
 ![Draw it. Watch it render.](frontend/static/og.png)
 
