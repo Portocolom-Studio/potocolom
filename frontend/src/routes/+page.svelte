@@ -69,17 +69,6 @@
 				<Button size="lg" variant="default" href={resolve('/app')}>{t('hero.cta_launch')}</Button>
 				<Button size="lg" variant="outline" href={repoUrl}>{t('hero.cta_selfhost')}</Button>
 			</div>
-			<div class="mt-10 flex flex-wrap justify-center gap-3">
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_license')}
-				</Badge>
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_fps')}
-				</Badge>
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_gpu')}
-				</Badge>
-			</div>
 		</div>
 	</section>
 
