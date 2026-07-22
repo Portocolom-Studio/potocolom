@@ -418,8 +418,8 @@ def test_models_expose_measured_upscale_estimates():
 
             models = client.get("/api/v1/models").json()
             fast = next(m for m in models if m["id"] == "realesrgan-fast")
-            assert fast["estimated_gpu_ms_by_factor"] == {"2": 759, "4": 555}
-            assert fast["estimated_gpu_ms_default"] == 759
+            assert fast["estimated_gpu_ms_by_factor"] == {"2": 711, "4": 532}
+            assert fast["estimated_gpu_ms_default"] == 711
             diffusion = next(m for m in models if m["id"] == "sd-test")
             assert "estimated_gpu_ms_by_factor" not in diffusion
 

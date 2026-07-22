@@ -1,0 +1,434 @@
+[
+  {
+    "id": 1,
+    "title": "Glass greenhouse at dusk",
+    "category": "photorealistic",
+    "prompt": "Glass greenhouse filled with tropical plants at dusk, condensation on panes, warm interior lamps glowing against a cool blue twilight sky, wet cobblestones outside, photorealistic architecture photography, shallow depth of field on a fern in the foreground, cinematic color grade."
+  },
+  {
+    "id": 2,
+    "title": "Porcelain teacup still life",
+    "category": "photorealistic",
+    "prompt": "Still life of a cracked porcelain teacup and spilled black tea on a marble table, soft north window light, linen napkin with subtle weave, single lemon wedge, commercial product photography, razor-sharp rim highlights, muted pastel palette."
+  },
+  {
+    "id": 3,
+    "title": "Subway musician silhouette",
+    "category": "photorealistic",
+    "prompt": "Silhouette of a violinist playing in an empty subway station, harsh fluorescent strips, motion-blurred train streaking past, wet concrete reflections, documentary street photography, grainy 35mm film, lonely and resonant mood."
+  },
+  {
+    "id": 4,
+    "title": "Desert dune footprints",
+    "category": "photorealistic",
+    "prompt": "Aerial view of a single line of footprints crossing orange Sahara dunes at golden hour, long soft shadows, wind-rippled sand texture, no people visible, National Geographic landscape photography, ultra-detailed sand grains in the near field."
+  },
+  {
+    "id": 5,
+    "title": "Owl in snowfall",
+    "category": "photorealistic",
+    "prompt": "Snowy owl perched on a bare birch branch during heavy snowfall, soft diffuse overcast light, flakes frozen mid-air, sharp focus on golden eyes and feather barbules, creamy bokeh of white forest, wildlife photography, serene winter atmosphere."
+  },
+  {
+    "id": 6,
+    "title": "Vintage camera workshop",
+    "category": "photorealistic",
+    "prompt": "Workbench covered with disassembled vintage film cameras, brass gears and lens elements scattered under a green banker's lamp, wood grain and oil stains, cozy workshop clutter, documentary still life, warm tungsten glow, tactile metal textures."
+  },
+  {
+    "id": 7,
+    "title": "Tide pool macro",
+    "category": "photorealistic",
+    "prompt": "Macro photograph of a tide pool with anemones, tiny crabs, and reflected sky, water surface tension visible, cool teal and coral palette, sharp rock texture, natural history photography, intimate scale, soft sidelight."
+  },
+  {
+    "id": 8,
+    "title": "Rainy cafe window",
+    "category": "photorealistic",
+    "prompt": "View through a rain-streaked cafe window at night, blurred neon signs outside, warm interior bokeh of string lights, condensation and drip trails on glass, cozy solitude, cinematic shallow depth of field, muted reds and ambers."
+  },
+  {
+    "id": 9,
+    "title": "Ink wash crane",
+    "category": "illustration",
+    "prompt": "Japanese sumi-e ink wash of a crane taking flight over misty reeds, bold black brush strokes, generous empty paper space, gray wash gradients for fog, classical East Asian composition, elegant negative space, no color except faint vermillion seal mark."
+  },
+  {
+    "id": 10,
+    "title": "Botanical fern plate",
+    "category": "illustration",
+    "prompt": "Scientific botanical illustration of a fern frond unfurling, labeled in elegant copperplate script, cream parchment background, precise linework with soft watercolor washes of sage and olive, Victorian natural history plate aesthetic, museum print quality."
+  },
+  {
+    "id": 11,
+    "title": "Stained glass forest",
+    "category": "illustration",
+    "prompt": "Stained glass window depicting a dense forest canopy, leaded black outlines, jewel-tone greens blues and golds catching imagined sunlight, cathedral interior mood, intricate leaf patterns, luminous translucent color fields."
+  },
+  {
+    "id": 12,
+    "title": "Risograph city map",
+    "category": "illustration",
+    "prompt": "Risograph print of a fictional coastal city map, misregistered neon pink and teal layers, hand-lettered neighborhood names, dotted ferry routes, paper tooth and ink mottling, playful indie zine aesthetic, flat graphic charm."
+  },
+  {
+    "id": 13,
+    "title": "Paper-cut mountain range",
+    "category": "illustration",
+    "prompt": "Layered paper-cut silhouette of mountain ranges at sunrise, soft pink and lavender stacked planes, cast shadows between layers, craft photography of physical papercraft, clean studio backdrop, delicate edge fibers visible."
+  },
+  {
+    "id": 14,
+    "title": "Linocut whale",
+    "category": "illustration",
+    "prompt": "Linocut print of a whale diving through stylized waves, heavy carved black ink on warm cream paper, bold simplified shapes, visible gouge texture, folk maritime poster energy, high contrast graphic storytelling."
+  },
+  {
+    "id": 15,
+    "title": "Gouache market stall",
+    "category": "illustration",
+    "prompt": "Gouache painting of a fruit market stall overflowing with citrus and figs, chunky opaque color, naive perspective, Mediterranean midday light, cheerful imperfect brushwork, travel sketchbook energy, saturated yellows and greens."
+  },
+  {
+    "id": 16,
+    "title": "Celestial moth poster",
+    "category": "illustration",
+    "prompt": "Art nouveau poster of a giant moth with constellation patterns on its wings, ornate gold filigree borders, deep indigo background, Alphonse Mucha inspired linework with original composition, decorative and mystical, print-ready clarity."
+  },
+  {
+    "id": 17,
+    "title": "Floating library islands",
+    "category": "surreal",
+    "prompt": "Surreal floating islands made entirely of stacked books drifting above a calm ocean, ladders connecting them, soft sunset light, Magritte-like stillness, hyperreal paper textures, dreamlike and quiet, no people, vast sky."
+  },
+  {
+    "id": 18,
+    "title": "Giant pocket watch canyon",
+    "category": "surreal",
+    "prompt": "Enormous rusty pocket watch embedded in a desert canyon wall, gears exposed like fossils, tiny hikers for scale on the rim, golden hour light, surreal landscape photography feel, weathered metal and sandstone textures."
+  },
+  {
+    "id": 19,
+    "title": "Underwater living room",
+    "category": "surreal",
+    "prompt": "Fully furnished Victorian living room underwater, shafts of sunlight through turquoise water, floating teacups and books, coral growing on an armchair, calm and uncanny, cinematic volumetric light, photoreal materials in impossible setting."
+  },
+  {
+    "id": 20,
+    "title": "Mirror maze forest",
+    "category": "surreal",
+    "prompt": "Forest of freestanding antique mirrors reflecting infinite trees and a single red balloon, soft fog, twilight blue hour, surreal installation art mood, sharp reflections with soft atmosphere, quiet unease."
+  },
+  {
+    "id": 21,
+    "title": "Cloud staircase",
+    "category": "surreal",
+    "prompt": "Marble staircase ascending into dense cumulus clouds with no visible destination, soft god-rays, pale gold and white palette, classical architecture meeting sky, serene metaphysical atmosphere, wide cinematic frame."
+  },
+  {
+    "id": 22,
+    "title": "Inverted city rain",
+    "category": "surreal",
+    "prompt": "City skyline hanging upside down from a stormy ceiling of asphalt, rain falling upward toward glowing windows, neon reflections, surreal noir mood, deep blues and wet orange lights, impossible gravity made believable."
+  },
+  {
+    "id": 23,
+    "title": "Origami dragons flock",
+    "category": "surreal",
+    "prompt": "Flock of origami paper dragons soaring over a quiet rice terrace at dawn, folded crisp paper catching peach light, soft mist in valleys, magical realism, delicate paper crease detail, peaceful scale contrast."
+  },
+  {
+    "id": 24,
+    "title": "Hourglass desert ship",
+    "category": "surreal",
+    "prompt": "Wooden sailing ship trapped inside a giant hourglass, sand pouring over the deck, desert dunes visible outside the glass, warm amber tones, surreal allegory of time, sharp glass refraction, dramatic side light."
+  },
+  {
+    "id": 25,
+    "title": "Mecha barista",
+    "category": "anime",
+    "prompt": "Cute anime mecha barista pouring latte art in a cozy cafe, soft cel shading, pastel interior, steam wisps, oversized mechanical hands doing delicate work, cheerful expression, clean linework, sticker-ready clarity."
+  },
+  {
+    "id": 26,
+    "title": "Sky pirate airship",
+    "category": "anime",
+    "prompt": "Anime sky pirate airship sailing through cotton-candy clouds at sunset, wooden hull with brass fittings, crew of chibi characters on deck, vivid orange and violet sky, Studio Ghibli inspired warmth without copying characters, adventurous mood."
+  },
+  {
+    "id": 27,
+    "title": "Cyber shrine fox",
+    "category": "anime",
+    "prompt": "Anime kitsune spirit standing before a neon-lit Shinto shrine in a rainy megacity, glowing foxfire orbs, wet asphalt reflections, mix of traditional torii and holographic lanterns, dramatic rim light, detailed character design."
+  },
+  {
+    "id": 28,
+    "title": "Space gardener",
+    "category": "anime",
+    "prompt": "Anime astronaut tending floating vegetable gardens in zero gravity inside a glass orbital greenhouse, Earth crescent visible outside, soft pastel spacesuit, whimsical science fiction, clean cel shading, hopeful mood."
+  },
+  {
+    "id": 29,
+    "title": "Train station cat",
+    "category": "anime",
+    "prompt": "Anime-style calico cat sitting on a wooden bench in a rural Japanese train station at dusk, soft rain, warm platform lights, empty tracks, cozy slice-of-life mood, gentle watercolor-like backgrounds, quiet nostalgia."
+  },
+  {
+    "id": 30,
+    "title": "Crystal mage apprentice",
+    "category": "anime",
+    "prompt": "Young anime mage apprentice levitating crystal shards in a moonlit library, soft purple and silver magical glow, stacked ancient tomes, determined expression, detailed costume embroidery, painterly fantasy illustration."
+  },
+  {
+    "id": 31,
+    "title": "Racing drone chase",
+    "category": "anime",
+    "prompt": "Dynamic anime action shot of a pilot on a glowing hoverbike chased by drones through a neon canyon city, speed lines, motion blur, high contrast cyan and magenta, intense camera angle from below, kinetic energy."
+  },
+  {
+    "id": 32,
+    "title": "Tea spirit portrait",
+    "category": "anime",
+    "prompt": "Portrait of an anthropomorphic tea-spirit girl with steam hair and porcelain skin, soft studio lighting, pastel kimono patterns, gentle smile, anime character sheet quality, delicate linework, calming aesthetic."
+  },
+  {
+    "id": 33,
+    "title": "Iridescent oil swirl",
+    "category": "abstract",
+    "prompt": "Abstract macro of iridescent oil swirling on dark water, thin-film interference rainbows, fluid dynamics patterns, high detail, no objects, luxurious and hypnotic, deep black negative space framing the swirl."
+  },
+  {
+    "id": 34,
+    "title": "Copper circuit bloom",
+    "category": "abstract",
+    "prompt": "Abstract composition of copper circuit traces blooming into organic floral shapes, teal solder highlights, matte black PCB background, generative design aesthetic, precise geometric curves meeting natural forms."
+  },
+  {
+    "id": 35,
+    "title": "Smoke ribbon sculpture",
+    "category": "abstract",
+    "prompt": "Abstract ribbons of colored smoke forming a floating sculpture against pure black, cyan magenta and gold intertwining, soft volumetric lighting, elegant slow-motion freeze frame, gallery installation photography feel."
+  },
+  {
+    "id": 36,
+    "title": "Pixel glacier melt",
+    "category": "abstract",
+    "prompt": "Abstract glacial landscape dissolving into large colorful pixels at the edges, cool ice blues meeting hot coral squares, digital decay motif, sharp geometric vs soft ice textures, contemporary digital art print."
+  },
+  {
+    "id": 37,
+    "title": "Magnetic sand waves",
+    "category": "abstract",
+    "prompt": "Abstract ferrofluid patterns forming wave-like ridges on a white surface, glossy black liquid metal, scientific beauty, high contrast studio photo, precise spikes and soft curves, minimalist composition."
+  },
+  {
+    "id": 38,
+    "title": "Woven light threads",
+    "category": "abstract",
+    "prompt": "Abstract woven tapestry of glowing fiber-optic threads in emerald and amber, dark indigo warp, soft bloom on bright intersections, textile and tech hybrid, rich tactile depth, no figurative content."
+  },
+  {
+    "id": 39,
+    "title": "Fractured porcelain sky",
+    "category": "abstract",
+    "prompt": "Abstract sky of cracked porcelain with gold kintsugi seams holding blue glaze fragments, soft studio light, Japanese repair aesthetic as pure abstraction, calm and precious, subtle shadow in cracks."
+  },
+  {
+    "id": 40,
+    "title": "Noise field aurora",
+    "category": "abstract",
+    "prompt": "Abstract Perlin noise field rendered as an aurora of soft green and violet bands over deep navy, grainy film overlay, generative art print, gentle gradients, meditative and spacious."
+  },
+  {
+    "id": 41,
+    "title": "Bauhaus dance poster",
+    "category": "graphic",
+    "prompt": "Bauhaus dance poster with geometric dancers made of circles triangles and bars, primary colors plus black, strong diagonal composition, letterpress texture, 1920s modernist graphic design, bold and playful."
+  },
+  {
+    "id": 42,
+    "title": "Synthwave album cover",
+    "category": "graphic",
+    "prompt": "Synthwave album cover, chrome grid horizon, purple sunset gradient, lone sports car silhouette, retro sun with scanlines, bold condensed title space at top, 1980s VHS aesthetic, high contrast thumbnail punch."
+  },
+  {
+    "id": 43,
+    "title": "Eco protest poster",
+    "category": "graphic",
+    "prompt": "Bold screenprint protest poster of a single green seedling splitting concrete, limited palette of black green and cream, rough ink edges, activist graphic design, powerful simple metaphor, large empty type area."
+  },
+  {
+    "id": 44,
+    "title": "Jazz club matchbox",
+    "category": "graphic",
+    "prompt": "Vintage matchbox art for a fictional jazz club, gold foil saxophone silhouette on deep burgundy, elegant 1940s lettering style, small format graphic charm, slight paper wear, collectible ephemera aesthetic."
+  },
+  {
+    "id": 45,
+    "title": "Transit wayfinding icon",
+    "category": "graphic",
+    "prompt": "Modern transit wayfinding poster with abstract metro lines as colorful ribbons over a muted city grid, Helvetica-like clarity, Swiss design discipline, flat vector shapes, high readability, calm civic optimism."
+  },
+  {
+    "id": 46,
+    "title": "Type specimen explosion",
+    "category": "graphic",
+    "prompt": "Explosive type specimen sheet with oversized serif letters tumbling through space, black ink on cream, wood-type printing texture, letterpress shadows, dynamic composition, typography as pure visual music."
+  },
+  {
+    "id": 47,
+    "title": "Ski resort brochure",
+    "category": "graphic",
+    "prompt": "Mid-century modern ski resort brochure illustration, simplified snowy peaks, flat color blocks of teal coral and cream, cheerful skier silhouettes, 1960s travel poster style, clean and inviting."
+  },
+  {
+    "id": 48,
+    "title": "Cryptid field guide",
+    "category": "graphic",
+    "prompt": "Field guide page layout for a fictional forest cryptid, anatomical callouts, muted earth palette, scientific illustration mixed with folklore, serif captions, aged paper texture, curious and scholarly."
+  },
+  {
+    "id": 49,
+    "title": "Charcoal storm study",
+    "category": "traditional",
+    "prompt": "Charcoal study of a thunderstorm over open plains, dramatic cloud masses, vigorous gestural marks, raw paper tooth, high contrast lightning suggestion without literal bolts, academic landscape energy, monochrome power."
+  },
+  {
+    "id": 50,
+    "title": "Oil harbor nocturne",
+    "category": "traditional",
+    "prompt": "Oil painting of a quiet harbor at night, warm lamp reflections on dark water, loose impressionist brushwork, deep ultramarine and amber, Whistler nocturne mood with original composition, tactile impasto highlights."
+  },
+  {
+    "id": 51,
+    "title": "Pastel dune nude study",
+    "category": "traditional",
+    "prompt": "Soft pastel study of wind-carved sand dunes resembling reclining figures, warm peach and cool violet shadows, visible pastel strokes on toned paper, figurative landscape without explicit anatomy, sensual abstract form."
+  },
+  {
+    "id": 52,
+    "title": "Tempera icon orchard",
+    "category": "traditional",
+    "prompt": "Egg tempera painting of a golden orchard under a stylized sky, Byzantine icon flatness with soft gold leaf accents, solemn trees as saints, rich but restrained palette, sacred stillness, fine crackle varnish suggestion."
+  },
+  {
+    "id": 53,
+    "title": "Watercolor rain alley",
+    "category": "traditional",
+    "prompt": "Loose watercolor of a rainy European alley, bleeding pigment edges, wet-on-wet reflections, umbrellas as color accents, soft paper white reserved as highlights, spontaneous travel sketch energy, cool blue-gray washes."
+  },
+  {
+    "id": 54,
+    "title": "Woodblock night market",
+    "category": "traditional",
+    "prompt": "Japanese woodblock print of a crowded night market, lanterns casting orange glow, carved line detail on stalls and faces, limited flat color layers, traditional printmaking texture, lively but orderly composition."
+  },
+  {
+    "id": 55,
+    "title": "Bronze sculpture garden",
+    "category": "traditional",
+    "prompt": "Classical bronze sculpture of intertwined dancers in a mossy garden, verdigris patina, soft overcast daylight, shallow depth of field, museum photography, tactile metal surface, contemplative quiet."
+  },
+  {
+    "id": 56,
+    "title": "Fresco ruin fragment",
+    "category": "traditional",
+    "prompt": "Fragment of an ancient fresco showing hands offering fruit, plaster cracks and faded pigments, Pompeii-like palette of ochre and terracotta, archaeological artifact photography, intimate crop, time-worn beauty."
+  },
+  {
+    "id": 57,
+    "title": "Cliffside monastery fog",
+    "category": "environment",
+    "prompt": "Cliffside monastery emerging from thick morning fog, stone bridges and prayer flags, vast drop into cloud sea, cool blue-gray atmosphere, epic landscape photography, tiny human scale, spiritual solitude."
+  },
+  {
+    "id": 58,
+    "title": "Bioluminescent mangrove",
+    "category": "environment",
+    "prompt": "Night kayak view through a bioluminescent mangrove tunnel, glowing blue water trails, tangled roots, stars reflected between canopy gaps, magical natural history scene, long exposure feel, quiet wonder."
+  },
+  {
+    "id": 59,
+    "title": "Alpine train viaduct",
+    "category": "environment",
+    "prompt": "Steam train crossing a stone viaduct in the Swiss Alps at autumn, golden larches, plume of white steam against blue sky, classic travel photography, crisp mountain air clarity, romantic engineering."
+  },
+  {
+    "id": 60,
+    "title": "Abandoned observatory",
+    "category": "environment",
+    "prompt": "Abandoned hilltop observatory under the Milky Way, open dome revealing a dusty telescope, star trails suggestion, cool moonlight on rusted metal, atmospheric urban exploration mood, vast cosmic backdrop."
+  },
+  {
+    "id": 61,
+    "title": "Rice terrace monsoon",
+    "category": "environment",
+    "prompt": "Terraced rice fields during monsoon, mirror-like flooded steps reflecting storm clouds, distant farmer with umbrella, lush greens, Southeast Asian landscape photography, dramatic sky, humid atmosphere."
+  },
+  {
+    "id": 62,
+    "title": "Ice hotel corridor",
+    "category": "environment",
+    "prompt": "Interior corridor of an ice hotel carved with soft blue light, translucent walls, frosted crystal textures, lone figure in silhouette at the far end, architectural photography, cold elegance, quiet echo."
+  },
+  {
+    "id": 63,
+    "title": "Canyon slot light",
+    "category": "environment",
+    "prompt": "Narrow sandstone slot canyon with a shaft of midday light hitting orange walls, swirling dust motes, smooth eroded curves, intimate landscape photography, warm glowing stone, sense of discovery."
+  },
+  {
+    "id": 64,
+    "title": "Harbor fog horns",
+    "category": "environment",
+    "prompt": "Foggy industrial harbor at dawn, massive freighter silhouette, yellow crane lights, wet docks, muted desaturated palette with one red buoy accent, documentary maritime mood, heavy quiet."
+  },
+  {
+    "id": 65,
+    "title": "Robot and bonsai",
+    "category": "mixed",
+    "prompt": "Gentle service robot carefully pruning a bonsai on a tatami mat, soft morning light through shoji screens, mix of high-tech and tradition, photoreal materials with quiet narrative, hopeful near-future mood."
+  },
+  {
+    "id": 66,
+    "title": "Collage city portrait",
+    "category": "mixed",
+    "prompt": "Mixed-media collage portrait of a city built from ticket stubs maps and magazine scraps, torn paper edges, ink sketch overlays, vibrant urban energy, contemporary gallery collage aesthetic, layered storytelling."
+  },
+  {
+    "id": 67,
+    "title": "VR headset dreamscape",
+    "category": "mixed",
+    "prompt": "Person removing a VR headset as the virtual landscape spills into the real room as glowing particles, soft bedroom light mixed with neon dream colors, conceptual tech illustration, liminal and poetic."
+  },
+  {
+    "id": 68,
+    "title": "Library of lost keys",
+    "category": "mixed",
+    "prompt": "Endless library shelves filled with antique keys instead of books, warm lamp light, dust motes, magical realism interior, photoreal wood and brass, quiet mystery, deep perspective corridor."
+  },
+  {
+    "id": 69,
+    "title": "Solar punk balcony",
+    "category": "mixed",
+    "prompt": "Solar-punk apartment balcony overflowing with vertical gardens and small wind turbines, cheerful midday sun, neighbors chatting, optimistic near-future city, lush greens against warm concrete, inviting lifestyle scene."
+  },
+  {
+    "id": 70,
+    "title": "Glitch stained glass",
+    "category": "mixed",
+    "prompt": "Stained glass window partially dissolving into digital glitch blocks, sacred geometry meeting pixelation, jewel colors with RGB channel shifts, contemporary sacred-tech hybrid art, striking contrast of craft and code."
+  },
+  {
+    "id": 71,
+    "title": "Kitchen alchemy",
+    "category": "mixed",
+    "prompt": "Cozy kitchen where cooking becomes alchemy, floating spice clouds and glowing recipe runes above a cast-iron pot, warm practical light, whimsical magical realism, rich food textures, inviting domestic fantasy."
+  },
+  {
+    "id": 72,
+    "title": "Orbiting studio desk",
+    "category": "mixed",
+    "prompt": "Artist desk floating in low Earth orbit, pencils and sketches drifting in zero gravity, Earth curve through a round porthole, soft cabin light, contemplative creative solitude, photoreal sci-fi still life."
+  }
+]

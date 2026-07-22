@@ -1,0 +1,4 @@
+# Long-cache static image assets. Filenames are stable slugs; regenerate under a
+# new slug (or purge) when replacing an image in place.
+/images/*
+  Cache-Control: public, max-age=31536000, immutable
