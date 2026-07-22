@@ -12,6 +12,42 @@ What the platform measures about its own use, where those measurements live, and
 
 The first four come from usage events; the last one from telemetry. They are separate streams with separate privacy rules.
 
+## The planes at a glance
+
+What flows where, and what never leaves the deployment:
+
+```mermaid
+flowchart TB
+    W["Worker<br>GPU sample rides every 30 s heartbeat<br>CLIP category attached at job_done"]
+    A["API"]
+    subgraph FLEET["Fleet plane: per heartbeat, hardware detail"]
+        RH[("Redis worker hash<br>live fleet view, autoscaler")]
+        CW["CloudWatch fleet aggregates<br>cloud profile only"]
+        LOG["One JSON log line<br>Logs Insights history"]
+        GS[("PostgreSQL gpu_samples<br>raw 48 h, 5 min rollups 30 d<br>studio usage panel")]
+    end
+    subgraph USAGE["Product plane: one row per completed event"]
+        UE[("PostgreSQL usage_events<br>action, model, tier, category, gpu_ms<br>never prompts, images, IPs")]
+        ADMIN["Admin usage view"]
+        OWN["Studio own-metrics view"]
+    end
+    subgraph TELE["Telemetry plane: self-hosted installs, daily"]
+        AGG["Aggregate-only payload<br>previewable, TELEMETRY=false disables"]
+        ING["Private ingest service"]
+    end
+    W -->|"heartbeat over the one WSS"| A
+    W -->|"job_done, session_closed"| A
+    A --> RH
+    A --> CW
+    A --> LOG
+    A --> GS
+    A --> UE
+    UE --> ADMIN
+    UE --> OWN
+    UE -->|"counts by action, category, tier<br>joinable to no person"| AGG
+    AGG -->|"one POST per day"| ING
+```
+
 ## Usage events: per-event rows in the deployment's own database
 
 Every completed job and every closed realtime session writes one row to a `usage_events` table in the deployment's own PostgreSQL. The same code runs in both modes: a self-hosted admin gets the same view of their instance that the cloud has of its fleet. Nothing about this stream crosses the network.
@@ -81,6 +117,8 @@ The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, det
 The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - via NVML on CUDA and amd-smi on ROCm, behind the same device layer as inference. The API fans each heartbeat out three ways: the `worker:{id}` Redis hash (the admin fleet view and the autoscaler read this), fleet-level CloudWatch aggregates (workers connected, slots in use and free, average and max GPU utilization, minimum VRAM free), and one JSON log line for history.
 
 A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
+
+The studio's own usage panel has a fourth consumer: each heartbeat's GPU sample is also written to the deployment's PostgreSQL (`gpu_samples`, raw rows kept 48 hours) and rolled into five-minute buckets (`gpu_sample_rollups`, kept 30 days) by a maintenance loop in the API. `GET /api/v1/metrics/gpu/history` serves both: raw rows for windows up to an hour, rollups beyond. This is per-install history for the user's own hardware; the CloudWatch plane above stays aggregate-only.
 
 ## Frame loop metrics
 
