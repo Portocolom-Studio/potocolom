@@ -1,5 +1,5 @@
 <script lang="ts">
-	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
+	import HeroImageField from '$lib/components/HeroImageField.svelte';
 	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
@@ -53,7 +53,7 @@
 
 <main class="overflow-x-clip">
 	<section class="relative grid min-h-[92vh] place-items-center overflow-hidden">
-		<div class="hero-canvas absolute inset-0"><LatentCanvas /></div>
+		<div class="hero-canvas absolute inset-0"><HeroImageField /></div>
 		<div class="relative max-w-3xl px-6 pt-28 pb-16 text-center">
 			<p class="text-primary text-xs font-semibold tracking-[0.22em] uppercase sm:text-sm">
 				{t('hero.kicker')}
@@ -68,17 +68,6 @@
 			<div class="mt-8 flex flex-wrap items-center justify-center gap-3">
 				<Button size="lg" variant="default" href={resolve('/app')}>{t('hero.cta_launch')}</Button>
 				<Button size="lg" variant="outline" href={repoUrl}>{t('hero.cta_selfhost')}</Button>
-			</div>
-			<div class="mt-10 flex flex-wrap justify-center gap-3">
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_license')}
-				</Badge>
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_fps')}
-				</Badge>
-				<Badge variant="outline" class="px-5 py-2 text-sm font-normal">
-					{t('hero.badge_gpu')}
-				</Badge>
 			</div>
 		</div>
 	</section>
@@ -274,7 +263,7 @@
 </footer>
 
 <style>
-	/* the kept flourish: fade the particle field into the page background */
+	/* the kept flourish: fade the image field into the page background */
 	.hero-canvas::after {
 		content: '';
 		position: absolute;

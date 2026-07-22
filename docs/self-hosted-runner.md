@@ -44,6 +44,16 @@ make ci-runner-status            # should show active (running)
 
 Day to day: `make ci-runner-start` before opening PRs, `make ci-runner-stop` when done (optional).
 
+### Pre-PR checklist
+
+Before `git push` or `gh pr create`:
+
+1. `make verify`
+2. `make ci-runner-start` and confirm runner **Idle** in GitHub Settings → Actions → Runners
+3. After push: `gh pr checks <n> --watch`
+
+Also recorded in `.cursor/rules/git-pr-workflow.mdc` (always applied).
+
 Manual install (same as the Makefile targets):
 
 **Recommended** - script fetches a fresh token via `gh` (repo admin):

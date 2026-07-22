@@ -146,7 +146,16 @@ def test_job_dispatch_and_finish_timestamps():
                 async with db.session_factory() as session:
                     return await session.get(Job, job_id)
 
-            job = asyncio.run(read_job())
+            # Dispatch sends the websocket message before committing
+            # dispatched_at (jobs.dispatch); wait for the row to catch up.
+            job = None
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                job = asyncio.run(read_job())
+                assert job is not None
+                if job.dispatched_at is not None and job.state == "running":
+                    break
+                time.sleep(0.05)
             assert job is not None
             assert job.dispatched_at is not None
             assert job.state == "running"

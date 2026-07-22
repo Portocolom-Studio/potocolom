@@ -61,8 +61,8 @@ def parse_csv(raw: str | None) -> list[str] | None:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def load_prompts(ids: list[int]) -> list[dict]:
-    by_id = {entry["id"]: entry for entry in json.loads(PROMPTS_PATH.read_text())}
+def load_prompts(ids: list[int], prompts_path: Path = PROMPTS_PATH) -> list[dict]:
+    by_id = {entry["id"]: entry for entry in json.loads(prompts_path.read_text())}
     return [by_id[i] for i in ids]
 
 
@@ -338,6 +338,8 @@ def main() -> None:
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="default: data/benchmark/<utc timestamp>")
+    parser.add_argument("--prompts", type=Path, default=PROMPTS_PATH,
+                        help="prompt catalog JSON (default: benchmark-prompts.json)")
     parser.add_argument("--ids", default=None,
                         help="comma-separated prompt ids and/or ranges, e.g. 1,5,10-12")
     parser.add_argument("--models", default=None,
@@ -352,10 +354,11 @@ def main() -> None:
                         help="include capped_commercial models (Stability)")
     args = parser.parse_args()
 
-    all_prompts = json.loads(PROMPTS_PATH.read_text())
+    prompts_path = args.prompts
+    all_prompts = json.loads(prompts_path.read_text())
     available_ids = {entry["id"] for entry in all_prompts}
     ids = parse_ids(args.ids, available_ids)
-    prompts = load_prompts(ids)
+    prompts = load_prompts(ids, prompts_path)
 
     model_filter = parse_csv(args.models)
     matrix = load_matrix(model_filter, args.quick, args.include_capped)

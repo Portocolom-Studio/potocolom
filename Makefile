@@ -178,10 +178,12 @@ BENCHMARK_QUICK ?=
 BENCHMARK_CONTINUE ?=
 BENCHMARK_FORCE ?=
 BENCHMARK_INCLUDE_CAPPED ?=
+BENCHMARK_PROMPTS ?=
 
 benchmark: ## multi-model suite: run API with BENCHMARK_API=1 first [BENCHMARK_IDS=1-3]
 	backend/.venv/bin/python scripts/benchmark.py \
 		--out-dir "$(BENCHMARK_OUT)" \
+		$(if $(BENCHMARK_PROMPTS),--prompts $(BENCHMARK_PROMPTS),) \
 		$(if $(BENCHMARK_IDS),--ids $(BENCHMARK_IDS),) \
 		$(if $(BENCHMARK_MODELS),--models $(BENCHMARK_MODELS),) \
 		$(if $(BENCHMARK_QUICK),--quick,) \

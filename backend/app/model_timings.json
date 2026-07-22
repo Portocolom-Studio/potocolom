@@ -1,5 +1,5 @@
 {
-  "_source": "RX 7600 XT; vega-rt #102; upscalers measured per factor on a 1024px source 2026-07-17 (fast x2 includes the native-x4 run plus Lanczos down, issue #108)",
+  "_source": "RX 7600 XT; vega-rt #102; upscalers warm per factor on a 1024px source 2026-07-22 (fast x2 is native-x4 plus Lanczos down, issue #108)",
   "sdxl-base": {
     "gpu_ms": 15274,
     "width": 1024,
@@ -49,9 +49,9 @@
     "steps": 8
   },
   "realesrgan": {
-    "factors": { "2": 17931, "4": 37853 }
+    "factors": { "2": 1477, "4": 6134 }
   },
   "realesrgan-fast": {
-    "factors": { "2": 759, "4": 555 }
+    "factors": { "2": 711, "4": 532 }
   }
 }
