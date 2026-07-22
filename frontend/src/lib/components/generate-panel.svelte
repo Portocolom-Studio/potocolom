@@ -48,6 +48,10 @@
 		'placeholder:text-muted-foreground w-full min-w-0 rounded-lg border bg-transparent ' +
 		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
+	// Default toggle `data-[state=on]:bg-muted` is nearly invisible on the card;
+	// match LanguageToggle so Fast/Quality/factor picks read clearly.
+	const toggleOnClass =
+		'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:hover:bg-primary/90';
 
 	let panelMode = $state<'generate' | 'upscale'>('generate');
 	let stepsNorm = $state(0);
@@ -126,9 +130,34 @@
 		})
 	);
 	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
-	const upscaleEstimateMs = $derived(estimateUpscaleGpuMs(upscaleModel, upscaleFactor));
+	const upscaleSource = $derived(
+		shown !== null && shown.assets.length > 0
+			? { width: shown.assets[0].width, height: shown.assets[0].height }
+			: undefined
+	);
+	const upscaleEstimateMs = $derived(
+		estimateUpscaleGpuMs(upscaleModel, upscaleFactor, upscaleSource)
+	);
 	const upscaleEstimateLabel = $derived(
 		upscaleEstimateMs != null ? `~${formatMs(upscaleEstimateMs)}` : null
+	);
+	const upscaleOutLabel = $derived(
+		upscaleSource != null
+			? `${upscaleSource.width * upscaleFactor}x${upscaleSource.height * upscaleFactor}`
+			: null
+	);
+	const upscaleChoiceLabel = $derived(
+		upscaleModel != null
+			? `${upscaleModel.name} · x${upscaleFactor}` +
+					(upscaleSource != null
+						? ` · ${upscaleSource.width}x${upscaleSource.height}` +
+							(upscaleOutLabel != null ? ` -> ${upscaleOutLabel}` : '')
+						: '') +
+					(upscaleEstimateLabel != null ? ` · ${upscaleEstimateLabel}` : '')
+			: null
+	);
+	const shownFactor = $derived(
+		typeof shown?.params.factor === 'number' ? shown.params.factor : null
 	);
 	const panelTitle = $derived(
 		panelMode === 'generate' ? t('app.gen.title') : t('app.upscale.title')
@@ -292,10 +321,10 @@
 				value={panelMode}
 				onValueChange={(value) => value && onPanelModeChange(value)}
 			>
-				<ToggleGroup.Item value="generate" class="min-w-0 flex-1 text-xs">
+				<ToggleGroup.Item value="generate" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 					{t('app.gen.mode_generate')}
 				</ToggleGroup.Item>
-				<ToggleGroup.Item value="upscale" class="min-w-0 flex-1 text-xs">
+				<ToggleGroup.Item value="upscale" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 					{t('app.gen.mode_upscale')}
 				</ToggleGroup.Item>
 			</ToggleGroup.Root>
@@ -362,7 +391,10 @@
 								onValueChange={(value) => value && onSizeChange(value)}
 							>
 								{#each sizeOptions as option (option)}
-									<ToggleGroup.Item value={String(option)} class="min-w-0 flex-1 text-xs">
+									<ToggleGroup.Item
+										value={String(option)}
+										class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
+									>
 										{option} x {option}
 									</ToggleGroup.Item>
 								{/each}
@@ -491,14 +523,14 @@
 							>
 								<ToggleGroup.Item
 									value={UPSCALE_FAST_ID}
-									class="min-w-0 flex-1 text-xs"
+									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
 									disabled={!hasUpscaleFast}
 								>
 									{t('app.gen.upscale_fast')}
 								</ToggleGroup.Item>
 								<ToggleGroup.Item
 									value={UPSCALE_QUALITY_ID}
-									class="min-w-0 flex-1 text-xs"
+									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
 									disabled={!hasUpscaleQuality}
 								>
 									{t('app.gen.upscale_quality')}
@@ -506,6 +538,9 @@
 							</ToggleGroup.Root>
 						{:else}
 							<p class="text-sm">{upscaleModel?.name ?? upscaleModelId}</p>
+						{/if}
+						{#if upscaleChoiceLabel != null}
+							<p class="text-muted-foreground text-xs leading-relaxed">{upscaleChoiceLabel}</p>
 						{/if}
 					</div>
 					<div class="flex flex-col gap-2">
@@ -518,10 +553,10 @@
 							value={String(upscaleFactor)}
 							onValueChange={(value) => value && onUpscaleFactorChange(value)}
 						>
-							<ToggleGroup.Item value="2" class="min-w-0 flex-1 text-xs">
+							<ToggleGroup.Item value="2" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 								{t('app.gen.upscale_x2')}
 							</ToggleGroup.Item>
-							<ToggleGroup.Item value="4" class="min-w-0 flex-1 text-xs">
+							<ToggleGroup.Item value="4" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 								{t('app.gen.upscale_x4')}
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
@@ -578,7 +613,12 @@
 						/>
 					</a>
 					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
-						{shown.params.prompt}
+						{#if shown.params.prompt}
+							{shown.params.prompt}
+						{:else}
+							{shown.model_id}{shownFactor != null ? ` · x${shownFactor}` : ''}
+							· {shown.assets[0].width}x{shown.assets[0].height}
+						{/if}
 						{#if shown.gpu_ms != null}
 							<span class="text-foreground/70">
 								· {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span

@@ -27,15 +27,36 @@ export function estimateGpuMs(
 	return Number.isFinite(estimate) ? Math.max(1, estimate) : null;
 }
 
-export function estimateUpscaleGpuMs(model: Model | undefined, factor: number): number | null {
+// model_timings.json upscale baselines are measured on a 1024x1024 source.
+const UPSCALE_TIMING_SOURCE_PIXELS = 1024 * 1024;
+
+export function estimateUpscaleGpuMs(
+	model: Model | undefined,
+	factor: number,
+	source?: { width: number; height: number }
+): number | null {
 	if (!Number.isFinite(factor) || factor <= 0) return null;
 	// Measured per-factor numbers from the registry win; factor^2 scaling is
 	// the fallback and is wrong for native-scale models (x4 net serving x2).
 	const measured = model?.estimated_gpu_ms_by_factor?.[String(factor)];
-	if (measured != null && measured > 0) return Math.round(measured);
-	const baseMs = model?.estimated_gpu_ms_default;
-	if (baseMs == null || baseMs <= 0) return null;
-	const defaultFactor = Number(modelProperty(model, 'factor')?.default ?? 2);
-	if (!Number.isFinite(defaultFactor) || defaultFactor <= 0) return Math.max(1, Math.round(baseMs));
-	return Math.max(1, Math.round(baseMs * (factor / defaultFactor) ** 2));
+	let ms: number | null = null;
+	if (measured != null && measured > 0) {
+		ms = measured;
+	} else {
+		const baseMs = model?.estimated_gpu_ms_default;
+		if (baseMs == null || baseMs <= 0) return null;
+		const defaultFactor = Number(modelProperty(model, 'factor')?.default ?? 2);
+		if (!Number.isFinite(defaultFactor) || defaultFactor <= 0) {
+			ms = baseMs;
+		} else {
+			ms = baseMs * (factor / defaultFactor) ** 2;
+		}
+	}
+	if (source != null) {
+		const pixels = source.width * source.height;
+		if (Number.isFinite(pixels) && pixels > 0) {
+			ms = ms * (pixels / UPSCALE_TIMING_SOURCE_PIXELS);
+		}
+	}
+	return Math.max(1, Math.round(ms));
 }
