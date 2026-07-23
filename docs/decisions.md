@@ -42,7 +42,7 @@ Rejected alternative: flat subscriptions without metering. Simplest experience, 
 
 ## Open source boundary: commercial parts in a private repository
 
-This repository stays fully self-hostable under GPL 3.0. Billing, the credit ledger and the GPU fleet orchestrator live in a private repository and integrate over HTTP service boundaries (QuotaService, metering events). The process boundary avoids GPL derivative work questions and keeps the public project complete on its own.
+This repository stays fully self-hostable under AGPL-3.0 (originally GPL-3.0; relicensed by issue #109 / PR #110, see "License: AGPL-3.0 with commercial dual licensing" below). Billing, the credit ledger and the GPU fleet orchestrator live in a private repository and integrate over HTTP service boundaries (QuotaService, metering events). The process boundary avoids copyleft derivative work questions and keeps the public project complete on its own. <!-- corrected 2026-07-23: was "under GPL 3.0" -->
 
 Rejected alternative: everything public. Maximum transparency, but anyone could clone the entire commercial service.
 
@@ -308,11 +308,15 @@ Models registered by workers persist in PostgreSQL, and `GET /api/v1/models` ret
 
 Rejected alternatives: listing only live models (simpler response, but a worker restart makes models vanish from the UI and orphans old history); returning the stored registry with no signal (the user discovers unavailability by a failed generation).
 
-## Stored outputs: PNG
+## Stored outputs: WebP today, PNG masters planned
 
-Generated images are stored as PNG: lossless, universal, no quality knobs to decide, written by Pillow with no extra dependency. Cloud storage cost is bounded by the retention decision rather than the format. The realtime wire keeps WebP; transport and storage are different concerns with different constraints.
+<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code ships WebP -->
 
-Rejected alternatives: WebP lossless storage (a quarter to a third smaller, worth revisiting when egress bills exist, not before); format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
+Shipped reality: generated images and their thumbnails are written as **lossy WebP quality 80** by the worker (a single code path, small files, no extra dependency). The realtime wire is WebP too.
+
+The original decision (kept for the record) was to store PNG masters: lossless, universal, no quality knobs, written by Pillow with no extra dependency, with cloud storage cost bounded by the retention decision rather than the format. That PNG-master intent is now tracked as open issue **#125** ("Store generation masters as PNG per the stored-outputs decision"); until it lands, masters are the same lossy WebP as everything else, so this entry and the code disagree by design-not-yet-shipped.
+
+Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
 
 ## Model manifests: JSON
 
@@ -350,11 +354,15 @@ Rejected alternatives: adopting airLLM itself (it targets transformer LLMs throu
 
 When a generation request does not pin a `model_id`, the API resolves the cheapest registered model whose tier, capabilities and parameters satisfy the request; manifests carry a `tier` field (`draft`, `standard`, `premium`). Our workloads announce their own difficulty through the interface: a drawing stroke is realtime and lands on a turbo-class model, a refine click is a queued job and routes to a heavier one. The router is a small selection policy inside the existing dispatch path.
 
+> Shipped status (2026-07-23): **not yet implemented.** The wire `Manifest` has no `tier` field, and `POST /api/v1/generations` requires an explicit `model_id`; there is no routing path. This entry describes a designed policy, not current behavior.
+
 Rejected alternatives: an ML difficulty classifier in front of the models (burns GPU time to guess what the UI action already states, and misclassification is user-visible); a separate routing proxy service (a deployment and a failure mode for what is one function in the API).
 
 ## Worker performance: compile and channels_last at warmup
 
 Hot-set models are warmed with `torch.compile` and `channels_last` memory format when loaded, worth roughly a fifth to a third off denoising time on diffusion pipelines for zero new dependencies. The extra compile minute hides inside the existing model loading state. The attention backend is configuration through diffusers' `set_attention_backend`.
+
+> Shipped status (2026-07-23): `channels_last` is applied at load, but `torch.compile` is **not** enabled - PR #141 benchmarked it at only 0.8-7.4% on ROCm against a large cold-load cost and recommends against turning it on by default (tracking issue #60). The worker also relies on the default SDPA path plus the ROCm AOTriton env flag rather than `set_attention_backend`.
 
 Rejected alternatives: skipping compilation (leaves the single largest free speedup on the table, and GPU seconds are the priced resource); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
@@ -371,6 +379,8 @@ When several workers can take a queued job, the scheduler prefers workers servin
 Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
 
 ## License: GPL-3.0 stays, AGPL rejected
+
+> **Superseded** by "License: AGPL-3.0 with commercial dual licensing" below (issue #109, PR #110, 2026-07-17). Kept for the record; the present-tense claims in this entry are no longer in force.
 
 The public repository remains GPL-3.0. The cloud runs the same unmodified GPL images, so GPL's lack of a network clause costs the project nothing; the closed layer (billing, autoscaler, infrastructure) is protected by being separate processes in a private repository behind HTTP boundaries, not by the license. Full analysis in [repository-boundary.md](repository-boundary.md).
 
