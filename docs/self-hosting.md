@@ -66,6 +66,29 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   rebuild the image) and restart the worker; see
   [third-party-models.md](third-party-models.md) for licensing notes.
 
+## TLS and HSTS
+
+The API emits `Strict-Transport-Security: max-age=31536000` on every HTTP
+response (aligned with Cloudflare Pages via `frontend/static/_headers`). HSTS
+is honored by browsers **only over HTTPS**; it does not itself provide TLS or
+upgrade an initial plain-HTTP connection.
+
+- The shipped localhost/LAN compose profile remains plain HTTP for development
+  (`http://localhost:8080`). That is intentional.
+- Any public deployment must terminate TLS in front of the API (reverse proxy,
+  load balancer, or similar) and redirect HTTP to HTTPS before exposing the
+  service. Without that, clients never see a secure context and HSTS has no
+  effect.
+- HSTS is emitted without `includeSubDomains` or `preload` so self-hosted
+  operators can serve unrelated subdomains from the same host without pinning
+  them to HTTPS via this header.
+- The SPA CSP allows `img-src http:` (and `https:`, kept explicitly for
+  readability) so S3-compatible stores such as MinIO
+  (`http://localhost:9100` in the cloud-sim profile) can serve presigned
+  images cross-origin. CSP permits the source; browser mixed-content
+  processing still applies, so secure pages may upgrade or block insecure
+  image requests.
+
 ## What persists where
 
 | Volume | Contents | Losing it means |

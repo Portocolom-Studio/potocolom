@@ -29,9 +29,15 @@ def test_s3_storage_presigns_offline():
                                  storage_s3_access_key="key",
                                  storage_s3_secret_key="secret"))
     target = asyncio.run(storage.upload_target("u/j.webp"))
+    assert target.url.startswith("http://localhost:9100/")
     assert "u/j.webp" in target.url
     assert "X-Amz-Signature" in target.url
     assert target.headers == {"Content-Type": "image/webp"}
+    # Browser-facing image URL (SPA <img src>), not the worker upload target.
+    view = asyncio.run(storage.url("u/j.webp"))
+    assert view.startswith("http://localhost:9100/")
+    assert "u/j.webp" in view
+    assert "X-Amz-Signature" in view
 
 
 def test_files_get_after_direct_write():
