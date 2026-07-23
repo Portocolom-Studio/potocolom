@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# RX 7600 smoke checks for the illusion reliability path.
+# RX 7600 smoke checks for the corrected illusion reliability path.
 # Usage: scripts/illusion-rx7600-smoke.sh [--force]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-PY="${ROOT}/worker/.venv/bin/python"
-if [[ ! -x "$PY" ]]; then
-	PY="/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/worker/.venv/bin/python"
-fi
+PY="$("$ROOT/scripts/worker-python.sh")"
 FORCE_ARGS=()
 if [[ "${1:-}" == "--force" ]]; then
 	FORCE_ARGS=(--force)
 	shift
 fi
 
-OUT="${ROOT}/out/illusion-smoke-$$"
+OUT_ROOT="${ROOT}/out/illusion-experiments-v2"
+OUT="${OUT_ROOT}/smoke-$$"
 mkdir -p "$OUT"
 
-# Prefer cached snapshots when Hub access is blocked by a sandbox proxy.
 SD15_SNAP="${HOME}/.cache/huggingface/hub/models--stable-diffusion-v1-5--stable-diffusion-v1-5/snapshots"
 LCM_SNAP="${HOME}/.cache/huggingface/hub/models--lykon--dreamshaper-8-lcm/snapshots"
 MODEL_ARGS=()
@@ -38,13 +35,16 @@ run_smoke() {
 		"$PY" -m worker.illusions "${MODEL_ARGS[@]}" "$@"
 }
 
+# Legacy tiny budget
 run_smoke legacy_flip \
 	--type flip \
-	--prompt "a dog" --prompt "a sloth" \
+	--prompt "an oil painting of a dog sitting in a misty forest" \
+	--prompt "an oil painting of a sloth hanging from a branch" \
 	--sds-objective legacy \
 	--sds-steps 4 --dream-rounds 1 --dream-steps 4 \
 	--seed 2 --out "$OUT/legacy_flip"
 
+# Hidden with explicit microbatching
 run_smoke hidden_microbatch \
 	--type hidden \
 	--prompt "a" --prompt "b" --prompt "c" --prompt "d" --prompt "e" \
@@ -62,5 +62,5 @@ try:
 except Exception:
     peak = None
 (out / "smoke_summary.json").write_text(json.dumps({"peak_vram_mb_after": peak}, indent=2) + "\n")
-print("smoke ok; outputs in", out)
+print("smoke ok; outputs in", out, "peak_vram_mb_after=", peak)
 PY

@@ -37,7 +37,8 @@ import torch.nn.functional as tf
 from torch import Tensor, nn
 
 ProgressFn = Callable[[float], None]
-CheckpointFn = Callable[[int, list[Tensor], list[Tensor], dict[str, Any]], None]
+# Phase-qualified checkpoint names: sds_0060, sds_0125, sds_0250, sds_0500, final
+CheckpointFn = Callable[[str, list[Tensor], list[Tensor], dict[str, Any]], None]
 
 RESOLUTION = 512
 
@@ -285,17 +286,13 @@ def nfsd_delta_d(
     return uncond - neg
 
 
-def flatten_grads(parameters: Sequence[Tensor]) -> Tensor:
-    """Concatenate parameter gradients into one vector (zeros if missing)."""
-    chunks: list[Tensor] = []
+def param_grad_norm(parameters: Sequence[nn.Parameter]) -> float:
+    """L2 norm of all parameter gradients without concatenating tensors."""
+    total = 0.0
     for param in parameters:
-        if param.grad is None:
-            chunks.append(torch.zeros_like(param).reshape(-1))
-        else:
-            chunks.append(param.grad.detach().reshape(-1))
-    if not chunks:
-        return torch.zeros(0)
-    return torch.cat(chunks)
+        if param.grad is not None:
+            total += float(param.grad.detach().float().norm().item() ** 2)
+    return total**0.5
 
 
 def gradient_conflict_stats(view_grads: list[Tensor]) -> dict[str, float]:
@@ -309,6 +306,39 @@ def gradient_conflict_stats(view_grads: list[Tensor]) -> dict[str, float]:
     cosine = float((g0 @ g1).item() / denom)
     ratio = max(n0, n1) / max(min(n0, n1), 1e-12)
     return {"cosine": cosine, "norm_ratio": ratio, "norm_0": n0, "norm_1": n1}
+
+
+def preserve_rng_state(fn: Callable[[], Any]) -> Any:
+    """Run fn while restoring global CPU/CUDA RNG state afterward."""
+    cpu_state = torch.get_rng_state()
+    cuda_states = None
+    if torch.cuda.is_available():
+        cuda_states = torch.cuda.get_rng_state_all()
+    try:
+        return fn()
+    finally:
+        torch.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
+def resolve_learning_rates(config: IllusionConfig) -> tuple[float, float]:
+    """Resolve sds_lr/dream_lr from learning_rate; explicit phase values win."""
+    base = config.learning_rate
+    sds = base if config.sds_lr is None else config.sds_lr
+    dream = base if config.dream_lr is None else config.dream_lr
+    return sds, dream
+
+
+def checkpoint_name(sds_step: int) -> str:
+    """Phase-qualified SDS checkpoint name (never reused for final)."""
+    return f"sds_{sds_step:04d}"
+
+
+def latent_shape_for(image: Tensor) -> tuple[int, int, int, int]:
+    """SD-class VAE latent shape for an (B,3,H,W) image."""
+    batch, _, height, width = image.shape
+    return batch, 4, height // 8, width // 8
 
 
 # ------------------------------------------------------- diffusion adapter
@@ -326,8 +356,8 @@ class DiffusionAdapter:
         device: str,
         dream_model_id: str | None = DEFAULT_DREAM_MODEL,
         *,
-        enable_vae_slicing: bool = True,
-        channels_last: bool = True,
+        enable_vae_slicing: bool = False,
+        channels_last: bool = False,
         view_batch_size: int | None = None,
         sds_objective: str = "legacy",
     ) -> None:
@@ -357,6 +387,10 @@ class DiffusionAdapter:
         self.dream_guidance = 7.5
         self._enable_vae_slicing = enable_vae_slicing
         self._channels_last = channels_last
+        # Test hook: each encode_latent appends the input batch size.
+        self.encode_batch_sizes: list[int] = []
+        self.backward_before_next_encode: list[bool] = []
+        self._encodes_since_backward = 0
 
     def _configure_modules(self, pipe: Any, enable_vae_slicing: bool, channels_last: bool) -> None:
         pipe.unet.requires_grad_(False)
@@ -406,7 +440,9 @@ class DiffusionAdapter:
         self.img2img.vae.requires_grad_(False)
         if hasattr(self.img2img, "text_encoder") and self.img2img.text_encoder is not None:
             self.img2img.text_encoder.requires_grad_(False)
-        if getattr(self, "_enable_vae_slicing", True) and hasattr(self.img2img.vae, "enable_slicing"):
+        if getattr(self, "_enable_vae_slicing", False) and hasattr(
+            self.img2img.vae, "enable_slicing"
+        ):
             self.img2img.vae.enable_slicing()
         if getattr(self, "_channels_last", False) and self.device != "cpu":
             self.img2img.unet.to(memory_format=torch.channels_last)
@@ -427,12 +463,41 @@ class DiffusionAdapter:
             self.embeddings[prompt] = torch.cat([uncond, cond])
         return self.embeddings[prompt]
 
-    def encode_latent(self, image: Tensor) -> Tensor:
+    def encode_latent(
+        self,
+        image: Tensor,
+        *,
+        generator=None,
+        use_mean: bool = False,
+        posterior_eps: Tensor | None = None,
+    ) -> Tensor:
+        """VAE-encode an image to latents.
+
+        use_mean: deterministic posterior mean (diagnostics).
+        posterior_eps: explicit N(0,1) sample so full-batch and microbatch
+        paths can share identical encoder noise for gradient comparisons.
+        """
+        self.encode_batch_sizes.append(int(image.shape[0]))
+        if self._encodes_since_backward > 0:
+            self.backward_before_next_encode.append(False)
+        self._encodes_since_backward += 1
         scaled = (image * 2 - 1).to(self.dtype)
         posterior = self.pipe.vae.encode(scaled).latent_dist
-        # sample() draws from the global RNG, which optimize_illusion seeds -
-        # runs are reproducible without threading the generator through here
-        return posterior.sample() * self.pipe.vae.config.scaling_factor
+        if use_mean:
+            latent = posterior.mean
+        elif posterior_eps is not None:
+            latent = posterior.mean + posterior.std * posterior_eps.to(
+                device=posterior.mean.device, dtype=posterior.mean.dtype
+            )
+        else:
+            latent = posterior.sample(generator=generator)
+        return latent * self.pipe.vae.config.scaling_factor
+
+    def note_backward(self) -> None:
+        """Record that a backward completed before the next encode (tests)."""
+        if self._encodes_since_backward > 0:
+            self.backward_before_next_encode.append(True)
+        self._encodes_since_backward = 0
 
     def sds_loss(self, derived: Tensor, prompt: str, guidance_scale: float, generator) -> Tensor:
         """Score Distillation Loss for one derived image (paper 3.3.1)."""
@@ -524,82 +589,132 @@ class DiffusionAdapter:
         progress: float | None = None,
         use_hifa_schedule: bool = False,
         view_batch_size: int | None = None,
+        use_mean: bool = False,
+        posterior_eps: Tensor | None = None,
+        shared_timestep: int | None = None,
+        shared_noise: Tensor | None = None,
     ) -> Tensor:
-        """Batched SDS: one shared timestep; optional microbatching.
+        """Full-batch SDS loss (single VAE encode of the whole derived batch).
 
-        Timestep and noise are sampled once for the full batch before
-        chunking so microbatched gradients match the full-batch objective.
+        For memory-saving microbatching that releases VAE graphs between
+        views, use sds_microbatch_backward instead.
         """
-        objective = objective or getattr(self, "sds_objective", "legacy")
+        objective_name = str(objective or getattr(self, "sds_objective", "legacy"))
         if len(prompts) != derived.shape[0] or len(weights) != derived.shape[0]:
             raise ValueError("prompts, weights, and derived batch size must match")
         if derived.shape[0] == 0:
             return torch.zeros((), device=self.device)
 
-        latent = self.encode_latent(derived)
-        batch = latent.shape[0]
-        chunk = view_batch_size if view_batch_size is not None else getattr(self, "view_batch_size", None)
-        if chunk is None or chunk <= 0 or chunk >= batch:
-            return self._sds_loss_chunk(
-                latent,
-                prompts,
-                weights,
-                guidance_scale,
-                generator,
-                objective=objective,
-                progress=progress,
-                use_hifa_schedule=use_hifa_schedule,
-                shared=None,
-            )
-
-        # Sample t/noise for the full batch once, then sum chunk losses.
-        timestep, noise, alphas = self._sample_sds_noise_and_t(
-            latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
+        latent = self.encode_latent(
+            derived, generator=generator, use_mean=use_mean, posterior_eps=posterior_eps
         )
-        shared = (timestep, noise, alphas)
-        total = torch.zeros((), device=self.device, dtype=torch.float32)
-        for start in range(0, batch, chunk):
-            end = min(start + chunk, batch)
-            total = total + self._sds_loss_chunk(
-                latent[start:end],
-                prompts[start:end],
-                weights[start:end],
-                guidance_scale,
-                generator,
-                objective=objective,
-                progress=progress,
-                use_hifa_schedule=use_hifa_schedule,
-                shared=(
-                    timestep,
-                    noise[start:end],
-                    alphas,
-                ),
+        if shared_timestep is not None and shared_noise is not None:
+            timestep, noise, alphas = (
+                shared_timestep,
+                shared_noise,
+                self.scheduler.alphas_cumprod,
             )
-        return total
+        else:
+            timestep, noise, alphas = self._sample_sds_noise_and_t(
+                latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
+            )
+        return self._sds_loss_from_latent(
+            latent,
+            prompts,
+            weights,
+            guidance_scale,
+            objective=objective_name,
+            timestep=timestep,
+            noise=noise,
+            alphas=alphas,
+        )
 
-    def _sds_loss_chunk(
+    def sds_microbatch_backward(
         self,
-        latent: Tensor,
+        derived: Tensor,
         prompts: list[str],
         weights: list[float],
         guidance_scale: float,
         generator,
         *,
+        objective: str | None = None,
+        progress: float | None = None,
+        use_hifa_schedule: bool = False,
+        view_batch_size: int = 1,
+        posterior_eps: Tensor | None = None,
+    ) -> float:
+        """Chunk before VAE encode; backward each chunk before the next encode.
+
+        Pre-samples shared timestep and per-view diffusion noise (and optional
+        posterior_eps) for the full batch so the summed objective matches a
+        full-batch reference. Returns the detached scalar loss for logging.
+        """
+        objective_name = str(objective or getattr(self, "sds_objective", "legacy"))
+        if len(prompts) != derived.shape[0] or len(weights) != derived.shape[0]:
+            raise ValueError("prompts, weights, and derived batch size must match")
+        batch = derived.shape[0]
+        if batch == 0:
+            return 0.0
+        chunk = max(1, int(view_batch_size))
+        # Shape-only noise sample (no encode yet).
+        _, channels, lat_h, lat_w = latent_shape_for(derived)
+        fake_latent = torch.empty(
+            batch, channels, lat_h, lat_w, device=self.device, dtype=self.dtype
+        )
+        timestep, noise, alphas = self._sample_sds_noise_and_t(
+            fake_latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
+        )
+        if posterior_eps is None:
+            posterior_eps = torch.randn(
+                batch,
+                channels,
+                lat_h,
+                lat_w,
+                generator=generator,
+                device=self.device,
+                dtype=self.dtype,
+            )
+        total = 0.0
+        for start in range(0, batch, chunk):
+            end = min(start + chunk, batch)
+            is_last = end >= batch
+            chunk_eps = posterior_eps[start:end]
+            latent = self.encode_latent(
+                derived[start:end],
+                generator=generator,
+                posterior_eps=chunk_eps,
+            )
+            loss = self._sds_loss_from_latent(
+                latent,
+                prompts[start:end],
+                weights[start:end],
+                guidance_scale,
+                objective=objective_name,
+                timestep=timestep,
+                noise=noise[start:end],
+                alphas=alphas,
+            )
+            loss.backward(retain_graph=not is_last)
+            self.note_backward()
+            total += float(loss.detach().item())
+            del latent, loss
+        return total
+
+    def _sds_loss_from_latent(
+        self,
+        latent: Tensor,
+        prompts: list[str],
+        weights: list[float],
+        guidance_scale: float,
+        *,
         objective: str,
-        progress: float | None,
-        use_hifa_schedule: bool,
-        shared: tuple[int, Tensor, Tensor] | None,
+        timestep: int,
+        noise: Tensor,
+        alphas: Tensor,
     ) -> Tensor:
         batch = latent.shape[0]
-        if shared is None:
-            timestep, noise, alphas = self._sample_sds_noise_and_t(
-                latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
-            )
-        else:
-            timestep, noise, alphas = shared
         timesteps = torch.full((batch,), timestep, device=self.device, dtype=torch.long)
         weight_t = sds_timestep_weight(alphas.to(self.device), timestep)
-
         with torch.no_grad():
             noised = self.scheduler.add_noise(latent.detach(), noise, timesteps)
             need_neg = objective == "nfsd" and timestep >= 200
@@ -610,7 +725,6 @@ class DiffusionAdapter:
             delta_d = None
             if objective == "nfsd":
                 delta_d = nfsd_delta_d(timestep=timestep, uncond=uncond, neg=neg)
-            # NFSD uses nominal CFG (caller should pass ~7.5); legacy keeps 100.
             gradient = compute_sds_gradient(
                 objective=objective,
                 noise=noise,
@@ -704,7 +818,9 @@ class DiffusionAdapter:
                 )
                 latents.append(scheduler.add_noise(latent, noise, timesteps[:1]))
             for timestep in timesteps:
-                alpha = schedulers[0].alphas_cumprod[timestep].to(device=self.device, dtype=self.dtype)
+                alpha = (
+                    schedulers[0].alphas_cumprod[timestep].to(device=self.device, dtype=self.dtype)
+                )
                 sqrt_alpha = alpha.sqrt()
                 sqrt_one_minus = (1 - alpha).sqrt()
                 predictions = []
@@ -754,21 +870,24 @@ class IllusionConfig:
     use_hifa_schedule: bool = False
     round_robin: bool = False
     view_batch_size: int | None = None
-    enable_vae_slicing: bool = True
-    channels_last: bool = True
+    # Capacity opts stay off until measured; experiment harness opts in.
+    enable_vae_slicing: bool = False
+    channels_last: bool = False
     dream_rounds: int = 8
     # joint targets (issue #134): flip only - rotate/hidden views are
     # overlays of several primes, not orthogonal transforms of one image
     dream_joint: bool = False
     dream_steps: int = 300
-    # Split LRs; learning_rate kept as legacy alias setter via CLI.
-    sds_lr: float = 1e-3
-    dream_lr: float = 1e-3
-    learning_rate: float = 1e-3  # mirrored for older call sites
+    # None means "use learning_rate"; explicit values override per phase.
+    sds_lr: float | None = None
+    dream_lr: float | None = None
+    learning_rate: float = 1e-3
     seed: int = 0
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
     strengths: list[float] = field(default_factory=list)
-    checkpoint_steps: tuple[int, ...] = (60, 125, 250, 500)
+    # Empty by default so legacy runs are behaviorally equivalent to PR #118.
+    checkpoint_steps: tuple[int, ...] = ()
+    collect_diagnostics: bool = False
     style: str | None = None
 
     def strength_schedule(self) -> list[float]:
@@ -793,7 +912,9 @@ class IllusionResult:
 def targets_for(config: IllusionConfig, spec: IllusionSpec) -> list[str | Tensor]:
     """Per-derived-image targets: prompts, with the optional image target
     taking the final (hidden) slot."""
-    prompts = [apply_style_template(p, config.style) if isinstance(p, str) else p for p in config.prompts]
+    prompts = [
+        apply_style_template(p, config.style) if isinstance(p, str) else p for p in config.prompts
+    ]
     targets: list[str | Tensor] = list(prompts)
     if config.target_image is not None:
         targets.append(config.target_image)
@@ -825,10 +946,9 @@ def optimize_illusion(
     """Run both optimization phases and return primes and derived images."""
     if config.sds_objective not in SDS_OBJECTIVES:
         raise ValueError(f"unknown sds_objective {config.sds_objective!r}")
-    # Hidden illusions need view_batch_size=1 on 16 GB cards.
+    # Hidden: prefer view_batch_size=1 when the caller opts into microbatching.
+    # Do not force it by default (keeps legacy path unchanged).
     view_batch = config.view_batch_size
-    if config.illusion == "hidden" and view_batch is None:
-        view_batch = 1
 
     spec = ILLUSIONS[config.illusion]
     targets = targets_for(config, spec)
@@ -837,8 +957,7 @@ def optimize_illusion(
 
     networks = [FourierFeatureNetwork().to(config.device) for _ in range(spec.n_primes)]
     parameters = [p for network in networks for p in network.parameters()]
-    sds_lr = config.sds_lr
-    dream_lr = config.dream_lr
+    sds_lr, dream_lr = resolve_learning_rates(config)
 
     optimizer = torch.optim.Adam(parameters, lr=sds_lr)
     adapter = DiffusionAdapter(
@@ -854,8 +973,6 @@ def optimize_illusion(
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         return spec.arrange([network.image(resolution) for network in networks])
 
-    # Round-robin: equal exposure via alternating single-view updates.
-    # Batched path uses sds_steps updates; alternating uses 2 * sds_steps for flip.
     sds_iterations = config.sds_steps
     if config.round_robin and config.illusion == "flip":
         sds_iterations = config.sds_steps * 2
@@ -873,6 +990,66 @@ def optimize_illusion(
         "dream_lr": dream_lr,
     }
     checkpoint_set = set(config.checkpoint_steps)
+    instrument = bool(config.collect_diagnostics or checkpoint_set or on_checkpoint)
+
+    def maybe_record_conflict(
+        rendered: list[Tensor],
+        prompt_images: list[Tensor],
+        logical_step: int,
+        progress_frac: float,
+    ) -> None:
+        if not config.collect_diagnostics:
+            return
+        if config.illusion != "flip" or config.round_robin:
+            return
+        if (logical_step + 1) not in checkpoint_set:
+            return
+        if len(prompt_images) < 2 or not all(isinstance(targets[i], str) for i in (0, 1)):
+            return
+
+        def _compute() -> dict[str, float]:
+            # Shared diagnostic t/noise; VAE posterior mean (no RNG draw).
+            view0 = rendered[0]
+            _, c, lh, lw = latent_shape_for(view0)
+            diag_noise = torch.randn(1, c, lh, lw, device=config.device, dtype=adapter.dtype)
+            train_steps = adapter.scheduler.config.num_train_timesteps
+            if config.use_hifa_schedule:
+                frac = hifa_timestep_fraction(progress_frac)
+                diag_t = max(0, min(train_steps - 1, int(frac * (train_steps - 1))))
+            else:
+                diag_t = int(0.5 * train_steps)
+            view_grads: list[Tensor] = []
+            for view_i in range(2):
+                v_loss = adapter.sds_loss_batch(
+                    rendered[view_i],
+                    [str(targets[view_i])],
+                    [spec.weights[view_i]],
+                    config.sds_guidance,
+                    generator,
+                    objective=config.sds_objective,
+                    progress=progress_frac,
+                    use_hifa_schedule=config.use_hifa_schedule,
+                    use_mean=True,
+                    shared_timestep=diag_t,
+                    shared_noise=diag_noise,
+                )
+                grads = torch.autograd.grad(
+                    v_loss, parameters, retain_graph=False, allow_unused=True
+                )
+                pieces = [
+                    (
+                        g.detach().reshape(-1)
+                        if g is not None
+                        else torch.zeros(p.numel(), device=p.device)
+                    )
+                    for g, p in zip(grads, parameters, strict=True)
+                ]
+                view_grads.append(torch.cat(pieces) if pieces else torch.zeros(0))
+            stats = gradient_conflict_stats(view_grads)
+            stats["step"] = logical_step + 1
+            return stats
+
+        diagnostics["conflict"].append(preserve_rng_state(_compute))
 
     # Phase 1: Score Distillation Loss on prompt targets
     for step in range(sds_iterations):
@@ -884,9 +1061,7 @@ def optimize_illusion(
         prompt_images: list[Tensor] = []
         prompt_texts: list[str] = []
         prompt_weights: list[float] = []
-        for index, (derived, target, weight) in enumerate(
-            zip(rendered, targets, spec.weights, strict=True)
-        ):
+        for derived, target, weight in zip(rendered, targets, spec.weights, strict=True):
             if isinstance(target, str):
                 prompt_images.append(derived)
                 prompt_texts.append(target)
@@ -910,8 +1085,16 @@ def optimize_illusion(
             prompt_weights = [prompt_weights[active]]
 
         progress_frac = logical_step / max(config.sds_steps - 1, 1)
-        if prompt_images:
-            loss = loss + adapter.sds_loss_batch(
+        use_micro = view_batch is not None and view_batch > 0 and len(prompt_images) > view_batch
+        # Diagnostics before the training backward so the FFN graph is intact,
+        # and under preserve_rng_state so they cannot perturb the step RNG.
+        maybe_record_conflict(rendered, prompt_images, logical_step, progress_frac)
+
+        if prompt_images and use_micro:
+            assert view_batch is not None
+            if float(loss.detach().item()) != 0.0 or loss.requires_grad:
+                loss.backward(retain_graph=True)
+            adapter.sds_microbatch_backward(
                 torch.cat(prompt_images, dim=0),
                 prompt_texts,
                 prompt_weights,
@@ -922,61 +1105,44 @@ def optimize_illusion(
                 use_hifa_schedule=config.use_hifa_schedule,
                 view_batch_size=view_batch,
             )
-        # Optional per-view conflict diagnostics (flip, batched path only).
-        record_conflict = (
-            config.illusion == "flip"
-            and not config.round_robin
-            and (logical_step + 1) in checkpoint_set
-            and len(prompt_images) >= 2
-            and all(isinstance(targets[i], str) for i in (0, 1))
-        )
-        if record_conflict:
-            view_grads = []
-            diag_gen = torch.Generator(device=config.device).manual_seed(
-                config.seed + 10_000 + logical_step
-            )
-            for view_i in range(2):
-                v_loss = adapter.sds_loss_batch(
-                    rendered[view_i],
-                    [str(targets[view_i])],
-                    [spec.weights[view_i]],
+            loss_value = float(loss.detach().item())
+        else:
+            if prompt_images:
+                loss = loss + adapter.sds_loss_batch(
+                    torch.cat(prompt_images, dim=0),
+                    prompt_texts,
+                    prompt_weights,
                     config.sds_guidance,
-                    diag_gen,
+                    generator,
                     objective=config.sds_objective,
                     progress=progress_frac,
                     use_hifa_schedule=config.use_hifa_schedule,
                 )
-                grads = torch.autograd.grad(
-                    v_loss, parameters, retain_graph=True, allow_unused=True
-                )
-                flat = torch.cat(
-                    [
-                        (g.detach().reshape(-1) if g is not None else torch.zeros_like(p).reshape(-1))
-                        for g, p in zip(grads, parameters, strict=True)
-                    ]
-                )
-                view_grads.append(flat)
-            stats = gradient_conflict_stats(view_grads)
-            stats["step"] = logical_step + 1
-            diagnostics["conflict"].append(stats)
+            loss.backward()
+            adapter.note_backward()
+            loss_value = float(loss.detach().item())
 
-        loss.backward()
-        grad_norm = float(flatten_grads(parameters).norm().item())
-        diagnostics["grad_norms"].append({"step": logical_step + 1, "norm": grad_norm})
-        diagnostics["losses"].append(
-            {"step": logical_step + 1, "phase": "sds", "loss": float(loss.detach().item())}
-        )
+        if instrument and (logical_step + 1) in checkpoint_set:
+            diagnostics["grad_norms"].append(
+                {"step": logical_step + 1, "norm": param_grad_norm(parameters)}
+            )
+            diagnostics["losses"].append(
+                {"step": logical_step + 1, "phase": "sds", "loss": loss_value}
+            )
+
         optimizer.step()
         done += 1
         progress(done / total)
 
-        if on_checkpoint and (logical_step + 1) in checkpoint_set and (
-            not config.round_robin or step % 2 == 1
+        if (
+            on_checkpoint
+            and (logical_step + 1) in checkpoint_set
+            and (not config.round_robin or step % 2 == 1)
         ):
             with torch.no_grad():
                 primes_ck = [network.image().clamp(0, 1) for network in networks]
                 derived_ck = [image.clamp(0, 1) for image in spec.arrange(primes_ck)]
-            on_checkpoint(logical_step + 1, primes_ck, derived_ck, diagnostics)
+            on_checkpoint(checkpoint_name(logical_step + 1), primes_ck, derived_ck, diagnostics)
 
     adapter.begin_dream_phase()
     # Fresh optimizer state for phase 2: SDS gradients run ~1e4 while Dream
@@ -984,7 +1150,6 @@ def optimize_illusion(
     # suppress phase-2 updates by ~4 orders of magnitude (issue #122).
     optimizer = torch.optim.Adam(parameters, lr=dream_lr)
 
-    # Phase 2: Dream Target Loss at a decreasing SDEdit strength schedule
     joint = (
         config.dream_joint
         and config.illusion == "flip"
@@ -1019,7 +1184,7 @@ def optimize_illusion(
         primes = [network.image().clamp(0, 1) for network in networks]
         final = [image.clamp(0, 1) for image in spec.arrange(primes)]
     if on_checkpoint:
-        on_checkpoint(config.sds_steps, primes, final, diagnostics)
+        on_checkpoint("final", primes, final, diagnostics)
     return IllusionResult(primes=primes, derived=final, diagnostics=diagnostics)
 
 
@@ -1134,22 +1299,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--no-vae-slicing", action="store_true")
-    parser.add_argument("--no-channels-last", action="store_true")
+    parser.add_argument("--vae-slicing", action="store_true", help="opt-in VAE slicing")
+    parser.add_argument("--channels-last", action="store_true", help="opt-in channels_last layout")
     return parser
 
 
 def config_from_args(args: argparse.Namespace) -> IllusionConfig:
     dream_model = None if args.dream_model.lower() == "none" else args.dream_model
-    legacy_lr = args.learning_rate
+    legacy_lr = 1e-3 if args.learning_rate is None else args.learning_rate
+    # Explicit phase flags override; otherwise leave None so resolve_learning_rates
+    # uses learning_rate. If --learning-rate alone is passed, set both via alias.
     sds_lr = args.sds_lr
     dream_lr = args.dream_lr
-    if legacy_lr is not None and sds_lr is None and dream_lr is None:
-        sds_lr = dream_lr = legacy_lr
-    if sds_lr is None:
-        sds_lr = 1e-3
-    if dream_lr is None:
-        dream_lr = 1e-3
+    if args.learning_rate is not None and sds_lr is None and dream_lr is None:
+        sds_lr = dream_lr = args.learning_rate
     style = None if args.style == "none" else args.style
     return IllusionConfig(
         illusion=args.type,
@@ -1165,14 +1328,14 @@ def config_from_args(args: argparse.Namespace) -> IllusionConfig:
         use_hifa_schedule=args.hifa_schedule,
         round_robin=args.round_robin,
         view_batch_size=args.view_batch_size,
-        enable_vae_slicing=not args.no_vae_slicing,
-        channels_last=not args.no_channels_last,
+        enable_vae_slicing=args.vae_slicing,
+        channels_last=args.channels_last,
         dream_rounds=args.dream_rounds,
         dream_joint=args.dream_joint,
         dream_steps=args.dream_steps,
         sds_lr=sds_lr,
         dream_lr=dream_lr,
-        learning_rate=legacy_lr if legacy_lr is not None else 1e-3,
+        learning_rate=legacy_lr,
         seed=args.seed,
         device=args.device,
         style=style,
