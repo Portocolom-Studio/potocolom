@@ -1,16 +1,16 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
-#   make worker-rocm           # terminal 2 (or worker-sim without a GPU)
+#   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
-#     WORKER=sim|off to use the simulated worker or skip it
+#     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
-	api worker-rocm worker-sim web web-landing dev-start dev-stop dev-restart \
+.PHONY: setup setup-rocm setup-cuda deps deps-down lint test build verify simulate \
+	api worker-rocm worker-cuda worker-sim web web-landing dev-start dev-stop dev-restart \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
@@ -25,6 +25,11 @@ setup: ## create virtualenvs and install all dependencies
 setup-rocm: ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
+	cd worker && .venv/bin/pip install -e ".[inference]"
+
+setup-cuda: ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
+	cd worker && .venv/bin/pip install --upgrade pip
+	cd worker && .venv/bin/pip install torch torchvision
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
 deps: ## start development dependencies (PostgreSQL, Redis, MinIO, Mailpit)
@@ -68,6 +73,11 @@ worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 		.venv/bin/python -m worker
 
+worker-cuda: ## inference worker on an NVIDIA GPU (make setup-cuda once)
+	cd worker && MODELS_DIR=models DEVICE=cuda \
+		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		.venv/bin/python -m worker
+
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
 	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet .venv/bin/python -m worker
 
@@ -95,8 +105,8 @@ dev-stop: ## stop background API (:8000), frontend (:5173), and worker
 	@rm -f "$(DEV_DIR)/api.pid" "$(DEV_DIR)/web.pid" "$(DEV_DIR)/worker.pid"
 
 dev-start: ## start API, frontend, and worker in the background (make deps first)
-	@if [ "$(WORKER)" != "rocm" ] && [ "$(WORKER)" != "sim" ] && [ "$(WORKER)" != "off" ]; then \
-		echo "Unknown WORKER=$(WORKER); use rocm, sim, or off" >&2; exit 1; \
+	@if [ "$(WORKER)" != "rocm" ] && [ "$(WORKER)" != "cuda" ] && [ "$(WORKER)" != "sim" ] && [ "$(WORKER)" != "off" ]; then \
+		echo "Unknown WORKER=$(WORKER); use rocm, cuda, sim, or off" >&2; exit 1; \
 	fi
 	@mkdir -p "$(DEV_DIR)"
 	@$(MAKE) dev-stop
@@ -108,9 +118,9 @@ dev-start: ## start API, frontend, and worker in the background (make deps first
 	@bash -c 'cd "$(CURDIR)/frontend" && \
 		nohup npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) \
 		> "$(DEV_DIR)/web.log" 2>&1 & echo $$! > "$(DEV_DIR)/web.pid"'
-	@if [ "$(WORKER)" = "rocm" ]; then \
-		echo "Starting worker (rocm, MODELS_DIR=models)..."; \
-		bash -c 'cd "$(CURDIR)/worker" && MODELS_DIR=models DEVICE=rocm \
+	@if [ "$(WORKER)" = "rocm" ] || [ "$(WORKER)" = "cuda" ]; then \
+		echo "Starting worker ($(WORKER), MODELS_DIR=models)..."; \
+		bash -c 'cd "$(CURDIR)/worker" && MODELS_DIR=models DEVICE=$(WORKER) \
 			API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 			nohup .venv/bin/python -m worker \
 			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
