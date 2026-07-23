@@ -77,7 +77,9 @@ preflight() {
 		fi
 	fi
 
-	if pgrep -af 'Runner.Worker' >/dev/null 2>&1; then
+	# Exact process name only: pgrep -af falsely matches shells whose argv
+	# text merely mentions Runner.Worker (Cursor sandboxes, prior agents).
+	if pgrep -x 'Runner.Worker' >/dev/null 2>&1; then
 		busy=1
 		reason="${reason:+$reason; }self-hosted Runner.Worker active"
 	fi
