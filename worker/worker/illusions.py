@@ -1034,7 +1034,7 @@ def optimize_illusion(
                     shared_noise=diag_noise,
                 )
                 grads = torch.autograd.grad(
-                    v_loss, parameters, retain_graph=False, allow_unused=True
+                    v_loss, parameters, retain_graph=True, allow_unused=True
                 )
                 pieces = [
                     (
