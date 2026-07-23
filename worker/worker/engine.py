@@ -26,10 +26,12 @@ from worker.manifests import Manifest
 from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
+    REALTIME_BAR_MS,
     measured_wire_manifest,
     measured_wire_manifests,
     rung_vram_bytes,
     select_rung,
+    slots_from_frame_ms,
 )
 
 logger = logging.getLogger("potocolom.worker")
@@ -40,6 +42,8 @@ REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
 # After a non-OOM generation error, drop the resident model at most this often
 # so a permanently broken weight set cannot thrash load/unload (issue #103).
 POISON_EVICT_COOLDOWN_S = 30.0
+# Timing samples after the compile warmup forward (p95 of these).
+CALIBRATION_SAMPLES = 5
 
 
 @dataclass
@@ -65,6 +69,8 @@ class Engine(Protocol):
 
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
 
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int: ...
+
     async def load_model(self, manifest: Manifest) -> int: ...
 
     async def unload_model(self, model_id: str) -> None: ...
@@ -85,6 +91,14 @@ def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
     return buffer.getvalue()
+
+
+def _percentile_nearest(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, math.ceil(pct / 100.0 * len(ordered)))
+    return ordered[min(len(ordered), rank) - 1]
 
 
 def make_thumbnail_webp(data: bytes, max_edge: int = 384) -> bytes:
@@ -112,6 +126,12 @@ class SimulatedEngine:
         from worker.memory_ladder import effective_realtime_slots
 
         return effective_realtime_slots(wire_manifests, configured)
+
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        # Simulated engine has no GPU timings; keep the configured upper bound.
+        return self.effective_realtime_slots(
+            self.measured_manifests([manifest]), configured,
+        )
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -191,7 +211,8 @@ class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
-                 models_dir: str = ""):
+                 models_dir: str = "", torch_compile: bool = True,
+                 attention_backend: str = "_native_efficient"):
         if device == "rocm":
             # RDNA3 consumer cards gate their fused attention kernels behind
             # this flag; the fallback is math attention, several times slower.
@@ -206,11 +227,14 @@ class DiffusersEngine:
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.memory_mode = memory_mode
         self.models_dir = models_dir
+        self.torch_compile = torch_compile
+        self.attention_backend = attention_backend
         self._pipelines: dict[tuple[str, str], Any] = {}
         self._rungs: dict[str, MemoryRung] = {}
         self._last_used: dict[str, float] = {}
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
+        self._calibrated_slots: int | None = None
         self._gpu = asyncio.Lock()
 
     def _free_vram_bytes(self) -> int:
@@ -238,7 +262,12 @@ class DiffusersEngine:
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
         from worker.memory_ladder import effective_realtime_slots
 
-        return effective_realtime_slots(wire_manifests, configured)
+        base = effective_realtime_slots(wire_manifests, configured)
+        if base == 0:
+            return 0
+        if self._calibrated_slots is not None:
+            return self._calibrated_slots
+        return base
 
     def model_rung(self, model_id: str) -> MemoryRung | None:
         return self._rungs.get(model_id)
@@ -316,6 +345,86 @@ class DiffusersEngine:
         )
         return pipeline
 
+    def _denoise_modules(self, pipeline: Any) -> list[tuple[str, Any]]:
+        modules: list[tuple[str, Any]] = []
+        for name in ("unet", "transformer"):
+            module = getattr(pipeline, name, None)
+            if module is not None:
+                modules.append((name, module))
+        return modules
+
+    def _set_attention_backend(self, pipeline: Any) -> None:
+        backend = self.attention_backend.strip()
+        if not backend:
+            return
+        for name, module in self._denoise_modules(pipeline):
+            setter = getattr(module, "set_attention_backend", None)
+            if setter is None:
+                continue
+            try:
+                setter(backend)
+                logger.info("attention backend %s on %s", backend, name)
+            except Exception as error:
+                logger.warning(
+                    "set_attention_backend(%s) failed on %s: %s", backend, name, error,
+                )
+
+    def _compile_module(self, pipeline: Any, name: str, module: Any) -> None:
+        try:
+            if getattr(module, "_repeated_blocks", None):
+                module.compile_repeated_blocks(
+                    mode="reduce-overhead", fullgraph=False, dynamic=True,
+                )
+            else:
+                setattr(
+                    pipeline, name,
+                    self.torch.compile(
+                        module, mode="reduce-overhead", fullgraph=False, dynamic=True,
+                    ),
+                )
+            logger.info("torch.compile applied to %s", name)
+        except Exception as error:
+            logger.warning("torch.compile failed for %s: %s", name, error)
+
+    def _optimize_resident(self, pipeline: Any, mode: str) -> None:
+        """Attention backend + torch.compile for full-resident GPU pipelines.
+
+        Offload rungs skip compile: accelerate hooks fight Inductor. Failures
+        keep the uncompiled module so load still succeeds (ROCm Inductor is
+        not guaranteed for every UNet shape).
+        """
+        if self.device != "cuda":
+            return
+        self._set_attention_backend(pipeline)
+        if not self.torch_compile:
+            return
+        for name, module in self._denoise_modules(pipeline):
+            self._compile_module(pipeline, name, module)
+        self._warmup_pipeline(pipeline, mode)
+
+    def _warmup_pipeline(self, pipeline: Any, mode: str) -> None:
+        """One cheap forward so the first user job does not pay compile cost."""
+        try:
+            if mode == "t2i":
+                pipeline(
+                    prompt="",
+                    num_inference_steps=1,
+                    guidance_scale=0.0,
+                    width=REALTIME_SIZE,
+                    height=REALTIME_SIZE,
+                )
+            elif mode == "i2i":
+                canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+                pipeline(
+                    prompt="",
+                    image=canvas,
+                    num_inference_steps=2,
+                    strength=0.5,
+                    guidance_scale=0.0,
+                )
+        except Exception as error:
+            logger.warning("compile warmup failed: %s", error)
+
     def _load(self, manifest: Manifest, mode: str) -> Any:
         if mode.startswith("upscale-"):
             return self._load_upscale(manifest, int(mode.split("-", 1)[1]))
@@ -343,10 +452,51 @@ class DiffusersEngine:
                         module.to(memory_format=self.torch.channels_last)
             rung = self._pick_rung(manifest)
             pipeline = self._apply_rung(pipeline, manifest, rung)
+            if rung == "full":
+                self._optimize_resident(pipeline, mode)
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
+
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        async with self._gpu:
+            return await asyncio.to_thread(self._calibrate_realtime, manifest, configured)
+
+    def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        """Measure single-frame p95 and advertise slots that still meet the bar.
+
+        Multi-image batch calibration waits on deferred cross-session batching;
+        until then N sessions share the GPU lock, so capacity is bar_ms / p95.
+        """
+        if configured <= 0 or "realtime" not in manifest.capabilities:
+            self._calibrated_slots = 0
+            return 0
+        if self._select_rung(manifest) != "full":
+            self._calibrated_slots = 0
+            logger.info(
+                "realtime calibration skipped for %s (not full-resident)", manifest.id,
+            )
+            return 0
+        canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+        payload = encode_webp(canvas)
+        params = {"prompt": "calibration", "strength": 0.7}
+        samples: list[float] = []
+        # One discarded pass absorbs remaining compile/warmup cost.
+        for index in range(CALIBRATION_SAMPLES + 1):
+            start = time.monotonic()
+            self._frame(manifest, params, payload)
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            if index > 0:
+                samples.append(elapsed_ms)
+        p95 = _percentile_nearest(samples, 95.0)
+        slots = slots_from_frame_ms(p95, configured, bar_ms=REALTIME_BAR_MS)
+        self._calibrated_slots = slots
+        logger.info(
+            "realtime calibration model=%s p95_ms=%.1f slots=%d (cap=%d)",
+            manifest.id, p95, slots, configured,
+        )
+        return slots
 
     def _load_upscale(self, manifest: Manifest, factor: int) -> Any:
         from worker.upscale import ensure_weights, load_upscale_model

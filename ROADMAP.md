@@ -92,9 +92,7 @@ live in [docs/decisions.md](docs/decisions.md).
 - Memory ladder (MEMORY_MODE auto/full/model_offload/group_offload), which
   unlocks FLUX.1-schnell on 16 GB cards - the quality ceiling on the
   license shortlist; until then SDXL base is the flagged default.
-- Measured realtime slots at warmup (benchmark ms/frame, advertise what
-  holds the 2-4 fps bar) and the model routing tier field.
-- torch.compile + warmup pass (recorded decision; needs calibration time).
+- Model routing tier field.
 
 ### M3 and later, per their issues
 

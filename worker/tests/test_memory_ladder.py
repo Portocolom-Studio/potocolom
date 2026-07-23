@@ -9,6 +9,7 @@ from worker.memory_ladder import (
     measured_wire_manifests,
     model_offload_bytes,
     select_rung,
+    slots_from_frame_ms,
 )
 
 
@@ -75,3 +76,12 @@ def test_effective_realtime_slots():
     assert effective_realtime_slots([offload], 2) == 0
     assert effective_realtime_slots([full, offload], 2) == 2
     assert effective_realtime_slots([full], 0) == 0
+
+
+def test_slots_from_frame_ms():
+    assert slots_from_frame_ms(200.0, 4) == 2
+    assert slots_from_frame_ms(100.0, 2) == 2
+    assert slots_from_frame_ms(100.0, 8) == 5
+    assert slots_from_frame_ms(501.0, 4) == 0
+    assert slots_from_frame_ms(250.0, 0) == 0
+    assert slots_from_frame_ms(0.0, 4) == 0

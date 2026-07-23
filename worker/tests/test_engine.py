@@ -129,6 +129,7 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine._rungs = {}
+    engine._calibrated_slots = None
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -138,6 +139,101 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
     with patch.object(DiffusersEngine, "_free_vram_bytes", return_value=3 * 1024**3):
         wire = engine.measured_manifests([manifest])
         assert engine.effective_realtime_slots(wire, 2) == 0
+
+
+def test_diffusers_effective_realtime_slots_uses_calibration():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine._rungs = {"rt": "full"}
+    engine._calibrated_slots = 1
+    manifest = Manifest(
+        id="rt",
+        name="RT",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=4,
+    )
+    with patch.object(DiffusersEngine, "_free_vram_bytes", return_value=64 * 1024**3):
+        wire = engine.measured_manifests([manifest])
+        assert engine.effective_realtime_slots(wire, 2) == 1
+
+
+def test_optimize_resident_skips_offload_and_survives_compile_failure():
+    torch_stub = MagicMock()
+    torch_stub.compile.side_effect = RuntimeError("inductor blew up")
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.torch_compile = True
+    engine.attention_backend = "_native_efficient"
+
+    unet = MagicMock()
+    unet._repeated_blocks = None
+    unet.set_attention_backend = MagicMock(side_effect=ValueError("no backend"))
+    pipeline = MagicMock()
+    pipeline.unet = unet
+    pipeline.transformer = None
+
+    engine._warmup_pipeline = MagicMock()
+    engine._optimize_resident(pipeline, "t2i")
+
+    unet.set_attention_backend.assert_called_once_with("_native_efficient")
+    torch_stub.compile.assert_called_once()
+    # Failure kept the original module; setattr was still attempted via compile path.
+    engine._warmup_pipeline.assert_called_once_with(pipeline, "t2i")
+
+
+def test_optimize_resident_skipped_when_compile_disabled():
+    torch_stub = MagicMock()
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.torch_compile = False
+    engine.attention_backend = ""
+    pipeline = MagicMock()
+    pipeline.unet = MagicMock()
+    pipeline.transformer = None
+    engine._warmup_pipeline = MagicMock()
+
+    engine._optimize_resident(pipeline, "t2i")
+
+    torch_stub.compile.assert_not_called()
+    engine._warmup_pipeline.assert_not_called()
+
+
+def test_calibrate_realtime_sets_slots_from_p95():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "full"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._calibrated_slots = None
+    engine._gpu = asyncio.Lock()
+    engine._select_rung = MagicMock(return_value="full")
+    engine._frame = MagicMock(return_value=b"webp")
+
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    # First call discarded; five samples at 200 ms -> 2 slots under a 500 ms bar.
+    times = iter([0.0, 0.2] * 6)
+
+    def fake_monotonic():
+        return next(times)
+
+    with patch("worker.engine.time.monotonic", side_effect=fake_monotonic):
+        slots = engine._calibrate_realtime(manifest, configured=4)
+
+    assert slots == 2
+    assert engine._calibrated_slots == 2
+    assert engine._frame.call_count == 6
 
 
 def test_evict_cold_removes_oldest_first():
