@@ -16,10 +16,15 @@ class Settings(BaseSettings):
     api_url: str = "ws://localhost:8000/api/v1/fleet"
     log_format: Literal["plain", "json"] = "plain"
     worker_id: str = Field(default_factory=lambda: f"worker-{uuid.uuid4().hex[:8]}")
-    realtime_slots: int = 2
+    realtime_slots: int = 2  # upper bound; DiffusersEngine calibrates down at warmup
     heartbeat_seconds: float = 30.0
     models_dir: str = ""  # manifests directory; empty runs the simulated engine
     inference_seconds: float = 0.15  # simulated engine only
+    # Opt-in: ROCm A/B on the reference card showed ~0-7% warm denoise gain
+    # against multi-minute cold loads (PR #141). CUDA fleet bake-off may flip.
+    torch_compile: bool = False
+    # Diffusers set_attention_backend name; empty string skips the call.
+    attention_backend: str = ""
 
 
 @lru_cache
