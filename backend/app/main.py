@@ -40,7 +40,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await db.dispose()
 
 
-app = FastAPI(title="potocolom", lifespan=lifespan)
+app = FastAPI(
+    title="potocolom",
+    lifespan=lifespan,
+    # Swagger UI / ReDoc load JS and CSS from cdn.jsdelivr.net; that violates
+    # script-src/style-src 'self'. Interactive docs are not a supported
+    # production endpoint - keep /openapi.json for tooling.
+    docs_url=None,
+    redoc_url=None,
+)
 # User middleware covers API, static, SPA fallbacks, and handled HTTP errors.
 # Unhandled 500s are emitted by ServerErrorMiddleware outside that stack, so
 # they get headers from the Exception handler below instead.

@@ -35,6 +35,16 @@ def test_security_headers_on_health():
     _assert_security_headers(response)
 
 
+def test_interactive_api_docs_disabled():
+    """CDN-backed /docs and /redoc are off; OpenAPI JSON stays available."""
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    openapi = client.get("/openapi.json")
+    assert openapi.status_code == 200
+    assert "openapi" in openapi.json()
+    _assert_security_headers(openapi)
+
+
 def test_security_headers_on_api_404():
     response = client.get("/api/v1/no-such-endpoint")
     assert response.status_code == 404

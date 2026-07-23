@@ -6,13 +6,36 @@
 		masonryCollageVariants,
 		type CollagePreviewVariantId
 	} from '$lib/collage-variants';
+	import { SvelteSet } from 'svelte/reactivity';
 
 	const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+
+	// Mount each preview only when its pane nears the viewport so the hub does
+	// not instantiate every masonry/graph DOM tree up front.
+	const mountedIds = new SvelteSet<string>();
 
 	function masonryConfig(id: CollagePreviewVariantId) {
 		return id in masonryCollageVariants
 			? masonryCollageVariants[id as keyof typeof masonryCollageVariants]
 			: null;
+	}
+
+	function nearViewport(node: HTMLElement, id: string) {
+		if (typeof IntersectionObserver === 'undefined') {
+			mountedIds.add(id);
+			return {};
+		}
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) {
+					mountedIds.add(id);
+					io.disconnect();
+				}
+			},
+			{ rootMargin: '200px 0px' }
+		);
+		io.observe(node);
+		return { destroy: () => io.disconnect() };
 	}
 </script>
 
@@ -30,8 +53,9 @@
 			Seven masonry layouts that keep each image at its natural aspect ratio, plus a tighter graph
 			layout. Previews render inline (no iframes) so the global
 			<code class="text-foreground/80">frame-ancestors 'none'</code> / X-Frame-Options DENY policy
-			stays intact. Run <code class="text-foreground/80">npm run compare:collages</code> to open dedicated
-			dev servers for side-by-side review.
+			stays intact; each tile mounts when it nears the viewport. Run
+			<code class="text-foreground/80">npm run compare:collages</code> to open dedicated dev servers for
+			side-by-side review.
 		</p>
 	</header>
 
@@ -55,16 +79,18 @@
 						Open full
 					</a>
 				</div>
-				<div class="bg-background h-[28rem] overflow-auto p-3">
-					{#if config}
-						<CollageMasonry
-							columnsClass={config.columnsClass}
-							columnGap={config.columnGap}
-							tileMargin={config.tileMargin}
-							radius={config.radius}
-						/>
-					{:else}
-						<CollageGraph />
+				<div class="bg-background h-[28rem] overflow-auto p-3" use:nearViewport={variant.id}>
+					{#if mountedIds.has(variant.id)}
+						{#if config}
+							<CollageMasonry
+								columnsClass={config.columnsClass}
+								columnGap={config.columnGap}
+								tileMargin={config.tileMargin}
+								radius={config.radius}
+							/>
+						{:else}
+							<CollageGraph />
+						{/if}
 					{/if}
 				</div>
 			</section>
