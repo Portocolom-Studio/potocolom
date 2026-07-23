@@ -25,7 +25,31 @@ export default defineConfig({
 
 			// Static SPA build: one artifact for every deployment, served by the API
 			// when self-hosted and by a CDN in the cloud (docs/architecture.md).
-			adapter: adapter({ fallback: 'index.html' })
+			adapter: adapter({ fallback: 'index.html' }),
+
+			// Hash-mode CSP for prerendered pages: SvelteKit injects a SHA-256
+			// script-src hash for its inline bootstrap. HTTP responses still
+			// emit a looser script-src (with 'unsafe-inline') as a compatibility
+			// envelope; the meta policy is the effective script restriction.
+			// style-src keeps 'unsafe-inline' for inline style attributes and
+			// runtime chart styles. Aligned with backend/app/security.py except
+			// script-src (docs/internals/08-security-production.md).
+			csp: {
+				mode: 'hash',
+				directives: {
+					'default-src': ['self'],
+					'base-uri': ['self'],
+					'object-src': ['none'],
+					'frame-ancestors': ['none'],
+					'form-action': ['self'],
+					'frame-src': ['self'],
+					'connect-src': ['self'],
+					'font-src': ['self'],
+					'img-src': ['self', 'https:'],
+					'script-src': ['self'],
+					'style-src': ['self', 'unsafe-inline']
+				}
+			}
 		})
 	]
 });

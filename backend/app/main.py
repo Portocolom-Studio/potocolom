@@ -17,6 +17,7 @@ from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.registry import router as registry_router
+from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.studio import router as studio_router
 
@@ -40,6 +41,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="potocolom", lifespan=lifespan)
+# User middleware covers API, static, SPA fallbacks, and handled HTTP errors.
+# Unhandled 500s are emitted by ServerErrorMiddleware outside that stack, so
+# they get headers from the Exception handler below instead.
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
 if get_settings().benchmark_api:
     app.include_router(benchmark_router)

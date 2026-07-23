@@ -1,3 +1,13 @@
+# Security headers for every path. Values must stay byte-for-byte aligned with
+# backend/app/security.py SECURITY_HEADERS (asserted by backend tests).
+/*
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; frame-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+
 # Long-cache static image assets. Filenames are stable slugs; regenerate under a
 # new slug (or purge) when replacing an image in place.
 /images/*
