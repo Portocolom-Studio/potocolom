@@ -1,4 +1,4 @@
-"""Diffusion Illusions optimizer (issue #115).
+"""Diffusion Illusions optimizer (issue #115 / PR #118 reliability).
 
 Implements Burgert et al., "Diffusion Illusions: Hiding Images in Plain
 Sight" (https://diffusionillusions.com): prime images parameterized by
@@ -13,7 +13,7 @@ never flow through the diffusion network.
 
 CLI (run inside the worker venv, needs the inference extra):
 
-    python -m worker.illusions --type flip --prompt "a dog" \
+    python -m worker.illusions --type flip --prompt "a dog" \\
         --prompt "a sloth" --out out/flip
 
 torch is imported at module level on purpose: this module is only useful
@@ -25,17 +25,36 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections.abc import Callable
+import os
+import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as tf
 from torch import Tensor, nn
 
 ProgressFn = Callable[[float], None]
+CheckpointFn = Callable[[int, list[Tensor], list[Tensor], dict[str, Any]], None]
 
 RESOLUTION = 512
+
+SDS_OBJECTIVES = ("legacy", "weighted_sds", "csd", "nfsd")
+
+# NFSD published negative prompt (Katzir et al.)
+NFSD_NEGATIVE_PROMPT = (
+    "unrealistic, blurry, low quality, out of focus, ugly, low contrast, "
+    "dull, dark, low-resolution, gloomy"
+)
+
+# Style templates: {} is replaced by the semantic subject text.
+STYLE_TEMPLATES: dict[str, str] = {
+    "oil": "a coherent oil painting of {}",
+    "pencil": "a detailed HB pencil sketch of {}",
+    "editorial": "a centered editorial illustration of {} with a clear silhouette",
+}
 
 
 # ---------------------------------------------------------------- primes
@@ -47,6 +66,7 @@ class FourierFeatureNetwork(nn.Module):
     survive printing, per the paper's Sec. 4.3."""
 
     frequencies: Tensor
+    _coord_cache: dict[tuple[int, torch.device], Tensor]
 
     def __init__(self, features: int = 256, hidden: int = 256, scale: float = 10.0) -> None:
         super().__init__()
@@ -60,6 +80,7 @@ class FourierFeatureNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, 3),
         )
+        self._coord_cache = {}
 
     def forward(self, coords: Tensor) -> Tensor:
         projected = 2 * math.pi * coords @ self.frequencies
@@ -69,8 +90,12 @@ class FourierFeatureNetwork(nn.Module):
     def image(self, resolution: int = RESOLUTION) -> Tensor:
         """Render to a (1, 3, H, W) image in [0, 1]."""
         device = self.frequencies.device
-        axis = torch.linspace(-1.0, 1.0, resolution, device=device)
-        grid = torch.stack(torch.meshgrid(axis, axis, indexing="ij"), dim=-1)
+        key = (resolution, device)
+        grid = self._coord_cache.get(key)
+        if grid is None:
+            axis = torch.linspace(-1.0, 1.0, resolution, device=device)
+            grid = torch.stack(torch.meshgrid(axis, axis, indexing="ij"), dim=-1)
+            self._coord_cache[key] = grid
         rgb = self(grid.reshape(-1, 2)).reshape(resolution, resolution, 3)
         return rgb.permute(2, 0, 1).unsqueeze(0)
 
@@ -125,18 +150,34 @@ ILLUSIONS: dict[str, IllusionSpec] = {
 # ----------------------------------------------------------------- ssim
 
 
-def ssim(a: Tensor, b: Tensor, window: int = 11) -> Tensor:
-    """Mean SSIM over an image batch, differentiable, inputs in [0, 1]."""
+_SSIM_KERNEL_CACHE: dict[tuple[int, str, torch.dtype, int], tuple[Tensor, Tensor]] = {}
+
+
+def _ssim_kernels(
+    channels: int, window: int, device: torch.device, dtype: torch.dtype
+) -> tuple[Tensor, Tensor]:
+    key = (window, str(device), dtype, channels)
+    cached = _SSIM_KERNEL_CACHE.get(key)
+    if cached is not None:
+        return cached
     sigma = 1.5
     half = window // 2
-    coords = torch.arange(window, device=a.device, dtype=a.dtype) - half
+    coords = torch.arange(window, device=device, dtype=dtype) - half
     gauss = torch.exp(-(coords**2) / (2 * sigma**2))
     kernel_1d = (gauss / gauss.sum()).reshape(1, 1, 1, window)
+    k_row = kernel_1d.expand(channels, 1, 1, window).contiguous()
+    k_col = kernel_1d.reshape(1, 1, window, 1).expand(channels, 1, window, 1).contiguous()
+    _SSIM_KERNEL_CACHE[key] = (k_row, k_col)
+    return k_row, k_col
+
+
+def ssim(a: Tensor, b: Tensor, window: int = 11) -> Tensor:
+    """Mean SSIM over an image batch, differentiable, inputs in [0, 1]."""
+    half = window // 2
     channels = a.shape[1]
+    k_row, k_col = _ssim_kernels(channels, window, a.device, a.dtype)
 
     def blur(x: Tensor) -> Tensor:
-        k_row = kernel_1d.expand(channels, 1, 1, window)
-        k_col = kernel_1d.reshape(1, 1, window, 1).expand(channels, 1, window, 1)
         x = tf.conv2d(x, k_row, padding=(0, half), groups=channels)
         return tf.conv2d(x, k_col, padding=(half, 0), groups=channels)
 
@@ -175,6 +216,101 @@ def sdedit_steps(base_steps: int, strength: float) -> int:
     return max(base_steps, math.ceil(2 / strength))
 
 
+def apply_style_template(subject: str, style: str | None) -> str:
+    """Wrap a semantic subject in a style template. Subject text is preserved."""
+    if style is None or style == "none":
+        return subject
+    if style not in STYLE_TEMPLATES:
+        raise ValueError(f"unknown style {style!r}; choose from {sorted(STYLE_TEMPLATES)}")
+    return STYLE_TEMPLATES[style].format(subject)
+
+
+def hifa_timestep_fraction(progress: float) -> float:
+    """HiFA-style fraction of the train schedule: 98% noise -> 2% as
+    t(p)=0.02+0.96*(1-sqrt(p)). progress in [0, 1]."""
+    p = min(max(progress, 0.0), 1.0)
+    return 0.02 + 0.96 * (1.0 - math.sqrt(p))
+
+
+def sds_timestep_weight(alphas_cumprod: Tensor, timestep: int) -> Tensor:
+    """Reference SDS weighting w(t) = 1 - alpha_cumprod[t]."""
+    return 1.0 - alphas_cumprod[timestep].float()
+
+
+def compute_sds_gradient(
+    *,
+    objective: str,
+    noise: Tensor,
+    uncond: Tensor,
+    cond: Tensor,
+    guidance_scale: float,
+    weight_t: Tensor,
+    delta_d: Tensor | None = None,
+) -> Tensor:
+    """Build the detached SDS/CSD/NFSD residual used as the latent gradient.
+
+    Formulas (then applied via (latent * gradient).sum()):
+      legacy:       (eps_cfg - noise)
+      weighted_sds: w(t) * (eps_cfg - noise)
+      csd:          w(t) * guidance * (eps_cond - eps_uncond)
+      nfsd:         w(t) * (delta_D + guidance * delta_C)
+    """
+    if objective not in SDS_OBJECTIVES:
+        raise ValueError(f"unknown sds_objective {objective!r}")
+    delta_c = cond - uncond
+    if objective == "csd":
+        return (weight_t * guidance_scale * delta_c).float()
+    if objective == "nfsd":
+        if delta_d is None:
+            raise ValueError("nfsd requires delta_d")
+        return (weight_t * (delta_d + guidance_scale * delta_c)).float()
+    guided = uncond + guidance_scale * delta_c
+    residual = (guided - noise).float()
+    if objective == "weighted_sds":
+        return (weight_t * residual).float()
+    return residual
+
+
+def nfsd_delta_d(
+    *,
+    timestep: int,
+    uncond: Tensor,
+    neg: Tensor | None,
+) -> Tensor:
+    """NFSD domain branch: t < 200 uses uncond; else uncond - neg."""
+    if timestep < 200:
+        return uncond
+    if neg is None:
+        raise ValueError("nfsd requires neg prediction for t >= 200")
+    return uncond - neg
+
+
+def flatten_grads(parameters: Sequence[Tensor]) -> Tensor:
+    """Concatenate parameter gradients into one vector (zeros if missing)."""
+    chunks: list[Tensor] = []
+    for param in parameters:
+        if param.grad is None:
+            chunks.append(torch.zeros_like(param).reshape(-1))
+        else:
+            chunks.append(param.grad.detach().reshape(-1))
+    if not chunks:
+        return torch.zeros(0)
+    return torch.cat(chunks)
+
+
+def gradient_conflict_stats(view_grads: list[Tensor]) -> dict[str, float]:
+    """Per-view FFN gradient cosine similarity and norm ratio diagnostics."""
+    if len(view_grads) < 2:
+        return {"cosine": 1.0, "norm_ratio": 1.0, "norm_0": 0.0, "norm_1": 0.0}
+    g0, g1 = view_grads[0].float(), view_grads[1].float()
+    n0 = g0.norm().item()
+    n1 = g1.norm().item()
+    denom = max(n0 * n1, 1e-12)
+    cosine = float((g0 @ g1).item() / denom)
+    ratio = max(n0, n1) / max(min(n0, n1), 1e-12)
+    return {"cosine": cosine, "norm_ratio": ratio, "norm_0": n0, "norm_1": n1}
+
+
 # ------------------------------------------------------- diffusion adapter
 
 
@@ -189,6 +325,11 @@ class DiffusionAdapter:
         model_id: str,
         device: str,
         dream_model_id: str | None = DEFAULT_DREAM_MODEL,
+        *,
+        enable_vae_slicing: bool = True,
+        channels_last: bool = True,
+        view_batch_size: int | None = None,
+        sds_objective: str = "legacy",
     ) -> None:
         from diffusers import (  # imported here: heavy, inference extra only
             AutoPipelineForImage2Image,
@@ -198,12 +339,13 @@ class DiffusionAdapter:
         dtype = torch.float16 if device != "cpu" else torch.float32
         self.model_id = model_id
         self.dream_model_id = dream_model_id
+        self.sds_objective = sds_objective
+        self.view_batch_size = view_batch_size
+        local_only = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
         self.pipe = AutoPipelineForText2Image.from_pretrained(
-            model_id, torch_dtype=dtype, safety_checker=None
+            model_id, torch_dtype=dtype, safety_checker=None, local_files_only=local_only
         ).to(device)
-        self.pipe.unet.requires_grad_(False)
-        self.pipe.vae.requires_grad_(False)
-        self.pipe.text_encoder.requires_grad_(False)
+        self._configure_modules(self.pipe, enable_vae_slicing, channels_last)
         self.img2img = AutoPipelineForImage2Image.from_pipe(self.pipe)
         self.device = device
         self.dtype = dtype
@@ -213,6 +355,19 @@ class DiffusionAdapter:
         # Dream Target defaults: keep SDS img2img until begin_dream_phase()
         self.dream_inference_steps = 25
         self.dream_guidance = 7.5
+        self._enable_vae_slicing = enable_vae_slicing
+        self._channels_last = channels_last
+
+    def _configure_modules(self, pipe: Any, enable_vae_slicing: bool, channels_last: bool) -> None:
+        pipe.unet.requires_grad_(False)
+        pipe.vae.requires_grad_(False)
+        if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
+            pipe.text_encoder.requires_grad_(False)
+        if enable_vae_slicing and hasattr(pipe.vae, "enable_slicing"):
+            pipe.vae.enable_slicing()
+        if channels_last and self_device_is_cuda(pipe):
+            pipe.unet.to(memory_format=torch.channels_last)
+            pipe.vae.to(memory_format=torch.channels_last)
 
     def begin_dream_phase(self) -> None:
         """Free the SDS backbone and load the Dream Target img2img pipeline.
@@ -238,7 +393,10 @@ class DiffusionAdapter:
             torch.cuda.empty_cache()
 
         self.img2img = AutoPipelineForImage2Image.from_pretrained(
-            self.dream_model_id, torch_dtype=self.dtype, safety_checker=None
+            self.dream_model_id,
+            torch_dtype=self.dtype,
+            safety_checker=None,
+            local_files_only=os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"),
         ).to(self.device)
         # The LCM checkpoints ship a PNDM scheduler config; sampling an
         # LCM-distilled UNet with it gives mush from weakly structured
@@ -248,18 +406,24 @@ class DiffusionAdapter:
         self.img2img.vae.requires_grad_(False)
         if hasattr(self.img2img, "text_encoder") and self.img2img.text_encoder is not None:
             self.img2img.text_encoder.requires_grad_(False)
+        if getattr(self, "_enable_vae_slicing", True) and hasattr(self.img2img.vae, "enable_slicing"):
+            self.img2img.vae.enable_slicing()
+        if getattr(self, "_channels_last", False) and self.device != "cpu":
+            self.img2img.unet.to(memory_format=torch.channels_last)
+            self.img2img.vae.to(memory_format=torch.channels_last)
         self.dream_inference_steps = 4
         self.dream_guidance = 2.0
 
     def embed(self, prompt: str) -> Tensor:
         """Cached [uncond, cond] embeddings for classifier-free guidance."""
         if prompt not in self.embeddings:
-            cond, uncond = self.pipe.encode_prompt(
-                prompt,
-                device=self.device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=True,
-            )[:2]
+            with torch.no_grad():
+                cond, uncond = self.pipe.encode_prompt(
+                    prompt,
+                    device=self.device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=True,
+                )[:2]
             self.embeddings[prompt] = torch.cat([uncond, cond])
         return self.embeddings[prompt]
 
@@ -272,7 +436,81 @@ class DiffusionAdapter:
 
     def sds_loss(self, derived: Tensor, prompt: str, guidance_scale: float, generator) -> Tensor:
         """Score Distillation Loss for one derived image (paper 3.3.1)."""
-        return self.sds_loss_batch(derived, [prompt], [1.0], guidance_scale, generator)
+        return self.sds_loss_batch(
+            derived,
+            [prompt],
+            [1.0],
+            guidance_scale,
+            generator,
+            objective=self.sds_objective,
+        )
+
+    def _sample_sds_noise_and_t(
+        self,
+        latent: Tensor,
+        generator,
+        *,
+        progress: float | None,
+        use_hifa_schedule: bool,
+    ) -> tuple[int, Tensor, Tensor]:
+        train_steps = self.scheduler.config.num_train_timesteps
+        if use_hifa_schedule and progress is not None:
+            frac = hifa_timestep_fraction(progress)
+            timestep = int(frac * (train_steps - 1))
+            timestep = max(0, min(train_steps - 1, timestep))
+        else:
+            timestep = int(
+                torch.randint(
+                    int(0.02 * train_steps),
+                    int(0.98 * train_steps),
+                    (1,),
+                    generator=generator,
+                    device=self.device,
+                ).item()
+            )
+        noise = torch.randn(
+            latent.shape,
+            generator=generator,
+            device=self.device,
+            dtype=latent.dtype,
+        )
+        return timestep, noise, self.scheduler.alphas_cumprod
+
+    def _unet_cfg(
+        self,
+        noised: Tensor,
+        timesteps: Tensor,
+        prompts: list[str],
+        *,
+        negative_prompts: list[str] | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
+        """Run UNet with CFG layout; optionally a third neg chunk for NFSD."""
+        batch = noised.shape[0]
+        unconds = [self.embed(prompt)[:1] for prompt in prompts]
+        conds = [self.embed(prompt)[1:] for prompt in prompts]
+        if negative_prompts is None:
+            model_in = torch.cat([noised, noised], dim=0)
+            timesteps_cfg = torch.cat([timesteps, timesteps], dim=0)
+            encoder_hidden_states = torch.cat(unconds + conds, dim=0)
+            predicted = self.pipe.unet(
+                model_in,
+                timesteps_cfg,
+                encoder_hidden_states=encoder_hidden_states,
+            ).sample
+            uncond, cond = predicted.chunk(2)
+            return uncond, cond, None
+
+        negs = [self.embed(prompt)[1:] for prompt in negative_prompts]
+        model_in = torch.cat([noised, noised, noised], dim=0)
+        timesteps_cfg = torch.cat([timesteps, timesteps, timesteps], dim=0)
+        encoder_hidden_states = torch.cat(unconds + conds + negs, dim=0)
+        predicted = self.pipe.unet(
+            model_in,
+            timesteps_cfg,
+            encoder_hidden_states=encoder_hidden_states,
+        ).sample
+        uncond, cond, neg = predicted.split(batch, dim=0)
+        return uncond, cond, neg
 
     def sds_loss_batch(
         self,
@@ -281,9 +519,18 @@ class DiffusionAdapter:
         weights: list[float],
         guidance_scale: float,
         generator,
+        *,
+        objective: str | None = None,
+        progress: float | None = None,
+        use_hifa_schedule: bool = False,
+        view_batch_size: int | None = None,
     ) -> Tensor:
-        """Batched SDS: one shared timestep and one CFG-doubled UNet call
-        for all prompt-target derived images. `derived` is (B, 3, H, W)."""
+        """Batched SDS: one shared timestep; optional microbatching.
+
+        Timestep and noise are sampled once for the full batch before
+        chunking so microbatched gradients match the full-batch objective.
+        """
+        objective = objective or getattr(self, "sds_objective", "legacy")
         if len(prompts) != derived.shape[0] or len(weights) != derived.shape[0]:
             raise ValueError("prompts, weights, and derived batch size must match")
         if derived.shape[0] == 0:
@@ -291,42 +538,91 @@ class DiffusionAdapter:
 
         latent = self.encode_latent(derived)
         batch = latent.shape[0]
-        train_steps = self.scheduler.config.num_train_timesteps
-        timestep = int(
-            torch.randint(
-                int(0.02 * train_steps),
-                int(0.98 * train_steps),
-                (1,),
-                generator=generator,
-                device=self.device,
-            ).item()
+        chunk = view_batch_size if view_batch_size is not None else getattr(self, "view_batch_size", None)
+        if chunk is None or chunk <= 0 or chunk >= batch:
+            return self._sds_loss_chunk(
+                latent,
+                prompts,
+                weights,
+                guidance_scale,
+                generator,
+                objective=objective,
+                progress=progress,
+                use_hifa_schedule=use_hifa_schedule,
+                shared=None,
+            )
+
+        # Sample t/noise for the full batch once, then sum chunk losses.
+        timestep, noise, alphas = self._sample_sds_noise_and_t(
+            latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
         )
+        shared = (timestep, noise, alphas)
+        total = torch.zeros((), device=self.device, dtype=torch.float32)
+        for start in range(0, batch, chunk):
+            end = min(start + chunk, batch)
+            total = total + self._sds_loss_chunk(
+                latent[start:end],
+                prompts[start:end],
+                weights[start:end],
+                guidance_scale,
+                generator,
+                objective=objective,
+                progress=progress,
+                use_hifa_schedule=use_hifa_schedule,
+                shared=(
+                    timestep,
+                    noise[start:end],
+                    alphas,
+                ),
+            )
+        return total
+
+    def _sds_loss_chunk(
+        self,
+        latent: Tensor,
+        prompts: list[str],
+        weights: list[float],
+        guidance_scale: float,
+        generator,
+        *,
+        objective: str,
+        progress: float | None,
+        use_hifa_schedule: bool,
+        shared: tuple[int, Tensor, Tensor] | None,
+    ) -> Tensor:
+        batch = latent.shape[0]
+        if shared is None:
+            timestep, noise, alphas = self._sample_sds_noise_and_t(
+                latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
+            )
+        else:
+            timestep, noise, alphas = shared
         timesteps = torch.full((batch,), timestep, device=self.device, dtype=torch.long)
-        noise = torch.randn(
-            latent.shape,
-            generator=generator,
-            device=self.device,
-            dtype=latent.dtype,
-        )
+        weight_t = sds_timestep_weight(alphas.to(self.device), timestep)
+
         with torch.no_grad():
             noised = self.scheduler.add_noise(latent.detach(), noise, timesteps)
-            # CFG layout: [uncond_0..B-1, cond_0..B-1] matching chunk(2) on dim 0
-            model_in = torch.cat([noised, noised], dim=0)
-            timesteps_cfg = torch.cat([timesteps, timesteps], dim=0)
-            unconds = [self.embed(prompt)[:1] for prompt in prompts]
-            conds = [self.embed(prompt)[1:] for prompt in prompts]
-            encoder_hidden_states = torch.cat(unconds + conds, dim=0)
-            predicted = self.pipe.unet(
-                model_in,
-                timesteps_cfg,
-                encoder_hidden_states=encoder_hidden_states,
-            ).sample
-            uncond, cond = predicted.chunk(2)
-            guided = uncond + guidance_scale * (cond - uncond)
-            gradient = (guided - noise).float()
+            need_neg = objective == "nfsd" and timestep >= 200
+            neg_prompts = [NFSD_NEGATIVE_PROMPT] * batch if need_neg else None
+            uncond, cond, neg = self._unet_cfg(
+                noised, timesteps, prompts, negative_prompts=neg_prompts
+            )
+            delta_d = None
+            if objective == "nfsd":
+                delta_d = nfsd_delta_d(timestep=timestep, uncond=uncond, neg=neg)
+            # NFSD uses nominal CFG (caller should pass ~7.5); legacy keeps 100.
+            gradient = compute_sds_gradient(
+                objective=objective,
+                noise=noise,
+                uncond=uncond,
+                cond=cond,
+                guidance_scale=guidance_scale,
+                weight_t=weight_t,
+                delta_d=delta_d,
+            )
         per_item = (latent.float() * gradient).reshape(batch, -1).sum(dim=1)
-        weight_t = torch.tensor(weights, device=per_item.device, dtype=per_item.dtype)
-        return (per_item * weight_t).sum()
+        weight_arr = torch.tensor(weights, device=per_item.device, dtype=per_item.dtype)
+        return (per_item * weight_arr).sum()
 
     def sdedit(self, image: Tensor, prompt: str, strength: float, generator) -> Tensor:
         """SDEdit img2img: noise the derived image and denoise it toward
@@ -348,12 +644,13 @@ class DiffusionAdapter:
         """Cached [uncond, cond] embeddings from the Dream Target pipeline
         (the SDS pipeline and its cache are gone after begin_dream_phase)."""
         if prompt not in self.dream_embeddings:
-            cond, uncond = self.img2img.encode_prompt(
-                prompt,
-                device=self.device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=True,
-            )[:2]
+            with torch.no_grad():
+                cond, uncond = self.img2img.encode_prompt(
+                    prompt,
+                    device=self.device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=True,
+                )[:2]
             self.dream_embeddings[prompt] = torch.cat([uncond, cond])
         return self.dream_embeddings[prompt]
 
@@ -407,7 +704,7 @@ class DiffusionAdapter:
                 )
                 latents.append(scheduler.add_noise(latent, noise, timesteps[:1]))
             for timestep in timesteps:
-                alpha = schedulers[0].alphas_cumprod[timestep]
+                alpha = schedulers[0].alphas_cumprod[timestep].to(device=self.device, dtype=self.dtype)
                 sqrt_alpha = alpha.sqrt()
                 sqrt_one_minus = (1 - alpha).sqrt()
                 predictions = []
@@ -428,6 +725,14 @@ class DiffusionAdapter:
         return [target, rot90(target, 2)]
 
 
+def self_device_is_cuda(pipe: Any) -> bool:
+    try:
+        device = next(pipe.unet.parameters()).device
+        return device.type == "cuda"
+    except StopIteration:
+        return False
+
+
 # ------------------------------------------------------------- optimizer
 
 
@@ -440,20 +745,31 @@ class IllusionConfig:
     dream_model_id: str | None = DiffusionAdapter.DEFAULT_DREAM_MODEL
     sds_steps: int = 500
     sds_guidance: float = 100.0
+    sds_objective: str = "legacy"
     sds_low_res: int = 256
     # 0 = ladder off. SDS at 256px runs on 32x32 latents, off-distribution
     # for the SD 1.5 UNet: it stalls subject formation and the Dream Target
     # phase cannot recover the loss. Opt in only for quick throwaway runs.
     sds_low_res_fraction: float = 0.0
+    use_hifa_schedule: bool = False
+    round_robin: bool = False
+    view_batch_size: int | None = None
+    enable_vae_slicing: bool = True
+    channels_last: bool = True
     dream_rounds: int = 8
     # joint targets (issue #134): flip only - rotate/hidden views are
     # overlays of several primes, not orthogonal transforms of one image
     dream_joint: bool = False
     dream_steps: int = 300
-    learning_rate: float = 1e-3
+    # Split LRs; learning_rate kept as legacy alias setter via CLI.
+    sds_lr: float = 1e-3
+    dream_lr: float = 1e-3
+    learning_rate: float = 1e-3  # mirrored for older call sites
     seed: int = 0
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
     strengths: list[float] = field(default_factory=list)
+    checkpoint_steps: tuple[int, ...] = (60, 125, 250, 500)
+    style: str | None = None
 
     def strength_schedule(self) -> list[float]:
         if self.strengths:
@@ -471,12 +787,14 @@ class IllusionConfig:
 class IllusionResult:
     primes: list[Tensor]
     derived: list[Tensor]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def targets_for(config: IllusionConfig, spec: IllusionSpec) -> list[str | Tensor]:
     """Per-derived-image targets: prompts, with the optional image target
     taking the final (hidden) slot."""
-    targets: list[str | Tensor] = list(config.prompts)
+    prompts = [apply_style_template(p, config.style) if isinstance(p, str) else p for p in config.prompts]
+    targets: list[str | Tensor] = list(prompts)
     if config.target_image is not None:
         targets.append(config.target_image)
     if len(targets) != len(spec.weights):
@@ -484,10 +802,34 @@ def targets_for(config: IllusionConfig, spec: IllusionSpec) -> list[str | Tensor
     return targets
 
 
+def warn_low_clip_margins(margins: Sequence[float]) -> None:
+    """Non-blocking warning when either view's CLIP margin is non-positive.
+
+    Does not claim anatomy or aesthetic defect detection.
+    """
+    if any(m <= 0 for m in margins):
+        warnings.warn(
+            "low-confidence CLIP margins (non-positive for at least one view); "
+            "diagnostic only - not an anatomy or aesthetic verdict",
+            UserWarning,
+            stacklevel=2,
+        )
+
+
 def optimize_illusion(
-    config: IllusionConfig, progress: ProgressFn = lambda fraction: None
+    config: IllusionConfig,
+    progress: ProgressFn = lambda fraction: None,
+    *,
+    on_checkpoint: CheckpointFn | None = None,
 ) -> IllusionResult:
     """Run both optimization phases and return primes and derived images."""
+    if config.sds_objective not in SDS_OBJECTIVES:
+        raise ValueError(f"unknown sds_objective {config.sds_objective!r}")
+    # Hidden illusions need view_batch_size=1 on 16 GB cards.
+    view_batch = config.view_batch_size
+    if config.illusion == "hidden" and view_batch is None:
+        view_batch = 1
+
     spec = ILLUSIONS[config.illusion]
     targets = targets_for(config, spec)
     torch.manual_seed(config.seed)
@@ -495,26 +837,55 @@ def optimize_illusion(
 
     networks = [FourierFeatureNetwork().to(config.device) for _ in range(spec.n_primes)]
     parameters = [p for network in networks for p in network.parameters()]
-    optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
-    adapter = DiffusionAdapter(config.model_id, config.device, config.dream_model_id)
+    sds_lr = config.sds_lr
+    dream_lr = config.dream_lr
+
+    optimizer = torch.optim.Adam(parameters, lr=sds_lr)
+    adapter = DiffusionAdapter(
+        config.model_id,
+        config.device,
+        config.dream_model_id,
+        enable_vae_slicing=config.enable_vae_slicing,
+        channels_last=config.channels_last,
+        view_batch_size=view_batch,
+        sds_objective=config.sds_objective,
+    )
 
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         return spec.arrange([network.image(resolution) for network in networks])
 
-    total = config.sds_steps + len(config.strength_schedule()) * config.dream_steps
+    # Round-robin: equal exposure via alternating single-view updates.
+    # Batched path uses sds_steps updates; alternating uses 2 * sds_steps for flip.
+    sds_iterations = config.sds_steps
+    if config.round_robin and config.illusion == "flip":
+        sds_iterations = config.sds_steps * 2
+
+    total = sds_iterations + len(config.strength_schedule()) * config.dream_steps
     done = 0
     low_res_steps = int(config.sds_steps * config.sds_low_res_fraction)
+    diagnostics: dict[str, Any] = {
+        "losses": [],
+        "grad_norms": [],
+        "conflict": [],
+        "round_robin_exposures": [0, 0],
+        "sds_objective": config.sds_objective,
+        "sds_lr": sds_lr,
+        "dream_lr": dream_lr,
+    }
+    checkpoint_set = set(config.checkpoint_steps)
 
-    # Phase 1: Score Distillation Loss on prompt targets (one UNet call per step)
-    for step in range(config.sds_steps):
-        resolution = config.sds_low_res if step < low_res_steps else RESOLUTION
+    # Phase 1: Score Distillation Loss on prompt targets
+    for step in range(sds_iterations):
+        logical_step = step // 2 if config.round_robin and config.illusion == "flip" else step
+        resolution = config.sds_low_res if logical_step < low_res_steps else RESOLUTION
         optimizer.zero_grad()
         loss = torch.zeros((), device=config.device)
+        rendered = render_derived(resolution)
         prompt_images: list[Tensor] = []
         prompt_texts: list[str] = []
         prompt_weights: list[float] = []
-        for derived, target, weight in zip(
-            render_derived(resolution), targets, spec.weights, strict=True
+        for index, (derived, target, weight) in enumerate(
+            zip(rendered, targets, spec.weights, strict=True)
         ):
             if isinstance(target, str):
                 prompt_images.append(derived)
@@ -522,7 +893,7 @@ def optimize_illusion(
                 prompt_weights.append(weight)
             else:
                 target_image = target.to(config.device)
-                if target_image.shape[-1] != resolution:
+                if target_image.shape[-1] != resolution or target_image.shape[-2] != resolution:
                     target_image = tf.interpolate(
                         target_image,
                         size=(resolution, resolution),
@@ -530,6 +901,15 @@ def optimize_illusion(
                         align_corners=False,
                     )
                 loss = loss + weight * image_similarity_loss(derived, target_image)
+
+        if config.round_robin and config.illusion == "flip" and prompt_images:
+            active = step % 2
+            diagnostics["round_robin_exposures"][active] += 1
+            prompt_images = [prompt_images[active]]
+            prompt_texts = [prompt_texts[active]]
+            prompt_weights = [prompt_weights[active]]
+
+        progress_frac = logical_step / max(config.sds_steps - 1, 1)
         if prompt_images:
             loss = loss + adapter.sds_loss_batch(
                 torch.cat(prompt_images, dim=0),
@@ -537,17 +917,72 @@ def optimize_illusion(
                 prompt_weights,
                 config.sds_guidance,
                 generator,
+                objective=config.sds_objective,
+                progress=progress_frac,
+                use_hifa_schedule=config.use_hifa_schedule,
+                view_batch_size=view_batch,
             )
+        # Optional per-view conflict diagnostics (flip, batched path only).
+        record_conflict = (
+            config.illusion == "flip"
+            and not config.round_robin
+            and (logical_step + 1) in checkpoint_set
+            and len(prompt_images) >= 2
+            and all(isinstance(targets[i], str) for i in (0, 1))
+        )
+        if record_conflict:
+            view_grads = []
+            diag_gen = torch.Generator(device=config.device).manual_seed(
+                config.seed + 10_000 + logical_step
+            )
+            for view_i in range(2):
+                v_loss = adapter.sds_loss_batch(
+                    rendered[view_i],
+                    [str(targets[view_i])],
+                    [spec.weights[view_i]],
+                    config.sds_guidance,
+                    diag_gen,
+                    objective=config.sds_objective,
+                    progress=progress_frac,
+                    use_hifa_schedule=config.use_hifa_schedule,
+                )
+                grads = torch.autograd.grad(
+                    v_loss, parameters, retain_graph=True, allow_unused=True
+                )
+                flat = torch.cat(
+                    [
+                        (g.detach().reshape(-1) if g is not None else torch.zeros_like(p).reshape(-1))
+                        for g, p in zip(grads, parameters, strict=True)
+                    ]
+                )
+                view_grads.append(flat)
+            stats = gradient_conflict_stats(view_grads)
+            stats["step"] = logical_step + 1
+            diagnostics["conflict"].append(stats)
+
         loss.backward()
+        grad_norm = float(flatten_grads(parameters).norm().item())
+        diagnostics["grad_norms"].append({"step": logical_step + 1, "norm": grad_norm})
+        diagnostics["losses"].append(
+            {"step": logical_step + 1, "phase": "sds", "loss": float(loss.detach().item())}
+        )
         optimizer.step()
         done += 1
         progress(done / total)
+
+        if on_checkpoint and (logical_step + 1) in checkpoint_set and (
+            not config.round_robin or step % 2 == 1
+        ):
+            with torch.no_grad():
+                primes_ck = [network.image().clamp(0, 1) for network in networks]
+                derived_ck = [image.clamp(0, 1) for image in spec.arrange(primes_ck)]
+            on_checkpoint(logical_step + 1, primes_ck, derived_ck, diagnostics)
 
     adapter.begin_dream_phase()
     # Fresh optimizer state for phase 2: SDS gradients run ~1e4 while Dream
     # Target gradients run ~0.5, so Adam's inherited second moment would
     # suppress phase-2 updates by ~4 orders of magnitude (issue #122).
-    optimizer = torch.optim.Adam(parameters, lr=config.learning_rate)
+    optimizer = torch.optim.Adam(parameters, lr=dream_lr)
 
     # Phase 2: Dream Target Loss at a decreasing SDEdit strength schedule
     joint = (
@@ -583,7 +1018,9 @@ def optimize_illusion(
     with torch.no_grad():
         primes = [network.image().clamp(0, 1) for network in networks]
         final = [image.clamp(0, 1) for image in spec.arrange(primes)]
-    return IllusionResult(primes=primes, derived=final)
+    if on_checkpoint:
+        on_checkpoint(config.sds_steps, primes, final, diagnostics)
+    return IllusionResult(primes=primes, derived=final, diagnostics=diagnostics)
 
 
 # ------------------------------------------------------------------- cli
@@ -600,20 +1037,26 @@ def load_image(path: Path, resolution: int = RESOLUTION) -> Tensor:
     from PIL import Image
 
     with Image.open(path) as image:
-        rgb = image.convert("RGB").resize((resolution, resolution))
-    data = torch.frombuffer(bytearray(rgb.tobytes()), dtype=torch.uint8)
+        rgb = image.convert("RGB").resize((resolution, resolution), Image.Resampling.LANCZOS)
+    data = torch.frombuffer(bytearray(rgb.tobytes()), dtype=torch.uint8).clone()
     pixels = data.reshape(resolution, resolution, 3).float() / 255.0
     return pixels.permute(2, 0, 1).unsqueeze(0)
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--type", choices=sorted(ILLUSIONS), required=True)
     parser.add_argument(
         "--prompt",
         action="append",
         default=[],
-        help="one per derived image, in arrangement order",
+        help="one per derived image, in arrangement order (semantic subject)",
+    )
+    parser.add_argument(
+        "--style",
+        choices=[*STYLE_TEMPLATES, "none"],
+        default="none",
+        help="optional style template wrapping each --prompt subject",
     )
     parser.add_argument(
         "--target-image",
@@ -627,11 +1070,17 @@ def main() -> None:
         default=DiffusionAdapter.DEFAULT_DREAM_MODEL,
         help=(
             "img2img checkpoint for Dream Targets (default: LCM, 4 steps). "
-            "Pass 'none' to reuse --model with the classic 25-step schedule."
+            "Pass 'none' to reuse --model with the classic 25-step CFG-7.5 schedule."
         ),
     )
     parser.add_argument("--sds-steps", type=int, default=500)
     parser.add_argument("--sds-guidance", type=float, default=100.0)
+    parser.add_argument(
+        "--sds-objective",
+        choices=SDS_OBJECTIVES,
+        default="legacy",
+        help="SDS residual formula: legacy | weighted_sds | csd | nfsd",
+    )
     parser.add_argument(
         "--sds-low-res",
         type=int,
@@ -648,6 +1097,22 @@ def main() -> None:
             "formation on SD 1.5"
         ),
     )
+    parser.add_argument(
+        "--hifa-schedule",
+        action="store_true",
+        help="use HiFA square-root timestep schedule (off by default)",
+    )
+    parser.add_argument(
+        "--round-robin",
+        action="store_true",
+        help="flip: alternate single-view SDS updates (equal exposure)",
+    )
+    parser.add_argument(
+        "--view-batch-size",
+        type=int,
+        default=None,
+        help="SDS microbatch size (default: full batch; hidden forces 1)",
+    )
     parser.add_argument("--dream-rounds", type=int, default=8)
     parser.add_argument(
         "--dream-joint",
@@ -658,13 +1123,35 @@ def main() -> None:
         ),
     )
     parser.add_argument("--dream-steps", type=int, default=300)
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="legacy alias: sets both --sds-lr and --dream-lr when those are absent",
+    )
+    parser.add_argument("--sds-lr", type=float, default=None)
+    parser.add_argument("--dream-lr", type=float, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    args = parser.parse_args()
+    parser.add_argument("--no-vae-slicing", action="store_true")
+    parser.add_argument("--no-channels-last", action="store_true")
+    return parser
 
+
+def config_from_args(args: argparse.Namespace) -> IllusionConfig:
     dream_model = None if args.dream_model.lower() == "none" else args.dream_model
-    config = IllusionConfig(
+    legacy_lr = args.learning_rate
+    sds_lr = args.sds_lr
+    dream_lr = args.dream_lr
+    if legacy_lr is not None and sds_lr is None and dream_lr is None:
+        sds_lr = dream_lr = legacy_lr
+    if sds_lr is None:
+        sds_lr = 1e-3
+    if dream_lr is None:
+        dream_lr = 1e-3
+    style = None if args.style == "none" else args.style
+    return IllusionConfig(
         illusion=args.type,
         prompts=args.prompt,
         target_image=(load_image(args.target_image) if args.target_image else None),
@@ -672,14 +1159,30 @@ def main() -> None:
         dream_model_id=dream_model,
         sds_steps=args.sds_steps,
         sds_guidance=args.sds_guidance,
+        sds_objective=args.sds_objective,
         sds_low_res=args.sds_low_res,
         sds_low_res_fraction=args.sds_low_res_fraction,
+        use_hifa_schedule=args.hifa_schedule,
+        round_robin=args.round_robin,
+        view_batch_size=args.view_batch_size,
+        enable_vae_slicing=not args.no_vae_slicing,
+        channels_last=not args.no_channels_last,
         dream_rounds=args.dream_rounds,
         dream_joint=args.dream_joint,
         dream_steps=args.dream_steps,
+        sds_lr=sds_lr,
+        dream_lr=dream_lr,
+        learning_rate=legacy_lr if legacy_lr is not None else 1e-3,
         seed=args.seed,
         device=args.device,
+        style=style,
     )
+
+
+def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    config = config_from_args(args)
     try:
         result = optimize_illusion(config, progress=lambda f: print(f"\rprogress {f:6.1%}", end=""))
     except ValueError as error:  # e.g. wrong number of --prompt for --type
