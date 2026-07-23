@@ -70,8 +70,34 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
             settings.device,
             memory_mode=settings.memory_mode,
             models_dir=settings.models_dir,
+            torch_compile=settings.torch_compile,
+            attention_backend=settings.attention_backend,
         )
     return [SIMULATED_MANIFEST], SimulatedEngine(settings.inference_seconds)
+
+
+async def warmup_realtime(engine: Engine, manifests: list[Manifest],
+                          configured_slots: int) -> None:
+    """Load and time a full-resident realtime model before hello.
+
+    Reconnects reuse a warm engine, so calibration is a no-op once slots are set.
+    DiffusersEngine only: the simulated engine has nothing to time.
+    """
+    if configured_slots <= 0 or not hasattr(engine, "torch_compile"):
+        return
+    if getattr(engine, "_calibrated_slots", None) is not None:
+        return
+    wire = engine.measured_manifests(manifests)
+    live_ids = {
+        item["id"] for item in wire if "realtime" in item.get("capabilities", [])
+    }
+    candidates = [manifest for manifest in manifests if manifest.id in live_ids]
+    if not candidates:
+        return
+    # Prefer the dedicated realtime draft model when present.
+    pick = next((m for m in candidates if m.id == "vega-rt"), candidates[0])
+    slots = await engine.calibrate_realtime(pick, configured_slots)
+    logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 
 
 class SessionRunner:
@@ -259,6 +285,7 @@ async def _gpu_unload(ws, engine: Engine, control: dict) -> None:
 
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
+    await warmup_realtime(engine, manifests, settings.realtime_slots)
     wire_manifests = engine.measured_manifests(manifests)
     await ws.send(json.dumps({
         "type": "hello",

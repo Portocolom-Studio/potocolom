@@ -19,6 +19,8 @@ MemoryRung = Literal["full", "model_offload", "group_offload"]
 LARGEST_COMPONENT_FRACTION = 0.55
 # Group offload holds a few layer groups on the GPU.
 GROUP_OFFLOAD_GB = 2
+# Floor of the realtime bar (2 to 4 fps at 512 px): one frame every 500 ms.
+REALTIME_BAR_MS = 500.0
 
 
 def full_residency_bytes(min_vram_gb: int) -> int:
@@ -91,6 +93,26 @@ def effective_realtime_slots(wire_manifests: list[dict], configured: int) -> int
     if any("realtime" in manifest["capabilities"] for manifest in wire_manifests):
         return configured
     return 0
+
+
+def slots_from_frame_ms(
+    p95_ms: float,
+    configured: int,
+    *,
+    bar_ms: float = REALTIME_BAR_MS,
+) -> int:
+    """Map a measured single-frame p95 to concurrent realtime slots.
+
+    Cross-session frame batching is deferred (docs/decisions.md "GPU session
+    density"), so N sessions serialize on the GPU lock. Admit the largest N
+    whose serialized inter-frame time still meets the 2 fps floor, capped by
+    the configured upper bound.
+    """
+    if configured <= 0 or p95_ms <= 0:
+        return 0
+    if p95_ms > bar_ms:
+        return 0
+    return min(configured, max(1, int(bar_ms // p95_ms)))
 
 
 def rung_vram_bytes(min_vram_gb: int, rung: MemoryRung) -> int:

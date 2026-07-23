@@ -117,6 +117,9 @@ tracker-verified detail (open issues and in-flight PRs).
 - Tiny-model CPU integration test in CI (the testing ladder's rung 2).
 - v0.1 tag: three images plus the compose file, cut together.
 - #1 UI component and theme system, #4 multi-tool interface foundation.
+- Model routing tier field (designed; not shipped - see decisions.md).
+- Optional: flip `TORCH_COMPILE` default on after a CUDA fleet bake-off
+  (ROCm A/B in PR #141 was ~0-7% warm gain; left opt-in).
 
 ### M3 Real-time drawing
 
