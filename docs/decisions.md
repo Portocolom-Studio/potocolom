@@ -354,9 +354,9 @@ Rejected alternatives: an ML difficulty classifier in front of the models (burns
 
 ## Worker performance: compile and channels_last at warmup
 
-Hot-set models are warmed with `torch.compile` and `channels_last` memory format when loaded, worth roughly a fifth to a third off denoising time on diffusion pipelines for zero new dependencies. The extra compile minute hides inside the existing model loading state. The attention backend is configuration through diffusers' `set_attention_backend`.
+Hot-set models use `channels_last` memory format when loaded. `torch.compile` and diffusers' `set_attention_backend` are implemented behind worker settings (`TORCH_COMPILE`, `ATTENTION_BACKEND`) and stay off by default: on the reference ROCm card they measured only ~0-7% warm denoise gain against multi-minute cold loads (PR #141), so the earlier "fifth to a third" expectation is CUDA-oriented and not the self-host default. Operators may opt in; a CUDA fleet bake-off can flip the default if the priced GPU seconds justify the cold-start tax.
 
-Rejected alternatives: skipping compilation (leaves the single largest free speedup on the table, and GPU seconds are the priced resource); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
+Rejected alternatives: forcing compile on for all devices after the ROCm measurement (pays startup cost for noise-level realtime wins); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
 ## Image codecs off the event loop
 

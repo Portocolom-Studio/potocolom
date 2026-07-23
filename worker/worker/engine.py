@@ -211,8 +211,8 @@ class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
-                 models_dir: str = "", torch_compile: bool = True,
-                 attention_backend: str = "_native_efficient"):
+                 models_dir: str = "", torch_compile: bool = False,
+                 attention_backend: str = ""):
         if device == "rocm":
             # RDNA3 consumer cards gate their fused attention kernels behind
             # this flag; the fallback is math attention, several times slower.

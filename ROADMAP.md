@@ -93,6 +93,8 @@ live in [docs/decisions.md](docs/decisions.md).
   unlocks FLUX.1-schnell on 16 GB cards - the quality ceiling on the
   license shortlist; until then SDXL base is the flagged default.
 - Model routing tier field.
+- Optional: flip `TORCH_COMPILE` default on after a CUDA fleet bake-off
+  (ROCm A/B in PR #141 was ~0-7% warm gain; left opt-in).
 
 ### M3 and later, per their issues
 

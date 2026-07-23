@@ -20,10 +20,11 @@ class Settings(BaseSettings):
     heartbeat_seconds: float = 30.0
     models_dir: str = ""  # manifests directory; empty runs the simulated engine
     inference_seconds: float = 0.15  # simulated engine only
-    # Kill-switch for the recorded warmup compile (docs/decisions.md).
-    torch_compile: bool = True
+    # Opt-in: ROCm A/B on the reference card showed ~0-7% warm denoise gain
+    # against multi-minute cold loads (PR #141). CUDA fleet bake-off may flip.
+    torch_compile: bool = False
     # Diffusers set_attention_backend name; empty string skips the call.
-    attention_backend: str = "_native_efficient"
+    attention_backend: str = ""
 
 
 @lru_cache
