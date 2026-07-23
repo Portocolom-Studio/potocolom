@@ -22,6 +22,8 @@ The GPU is the one that matters: the worker supports three device targets (see [
 
 ROCm notes for this machine: the in-kernel amdgpu driver is enough for the containerized worker; the container brings the ROCm userspace. The container needs `/dev/kfd` and `/dev/dri` passed through and the `video` group added. The RX 7600 is gfx1102; torch 2.9+rocm6.3 wheels ship gfx1102 kernels natively, so do not set `HSA_OVERRIDE_GFX_VERSION` (on other RDNA3 cards it forces the wrong ISA).
 
+CUDA notes: on an NVIDIA Linux box the bare-metal loop is `make setup` then `make setup-cuda`, and `make worker-cuda` (or `make dev-start WORKER=cuda`) to run. The PyPI torch wheels bundle the CUDA runtime, so the host needs only the NVIDIA driver. The containerized worker uses the `deploy.resources.reservations.devices` block in the compose gpu profile and needs nvidia-container-toolkit on the host.
+
 ```yaml
 # worker service, AMD variant
 worker:
