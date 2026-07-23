@@ -32,8 +32,8 @@ export default defineConfig({
 			// emit a looser script-src (with 'unsafe-inline') as a compatibility
 			// envelope; the meta policy is the effective script restriction.
 			// style-src keeps 'unsafe-inline' for inline style attributes and
-			// runtime chart styles. Aligned with backend/app/security.py except
-			// script-src (docs/internals/08-security-production.md).
+			// runtime chart styles. Source lists match backend/app/security.py
+			// except script-src, which stays 'self' here so hashes can be added.
 			csp: {
 				mode: 'hash',
 				directives: {
