@@ -142,3 +142,14 @@ def test_cloudflare_headers_byte_for_byte_aligned():
             block[name] = value
 
     assert block == SECURITY_HEADERS
+
+
+def test_csp_img_src_allows_http_object_store():
+    """S3-compatible stores (MinIO on :9100) may be http on another origin."""
+    img_src = next(
+        part.strip()
+        for part in SECURITY_HEADERS["Content-Security-Policy"].split(";")
+        if part.strip().startswith("img-src ")
+    )
+    tokens = img_src.split()[1:]
+    assert tokens == ["'self'", "https:", "http:"]

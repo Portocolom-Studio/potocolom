@@ -25,7 +25,7 @@ const EXPECTED_DIRECTIVES = {
 	'frame-src': ["'self'"],
 	'connect-src': ["'self'"],
 	'font-src': ["'self'"],
-	'img-src': ["'self'", 'https:'],
+	'img-src': ["'self'", 'https:', 'http:'],
 	'style-src': ["'self'", "'unsafe-inline'"]
 };
 

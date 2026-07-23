@@ -82,6 +82,10 @@ upgrade an initial plain-HTTP connection.
 - HSTS is emitted without `includeSubDomains` or `preload` so self-hosted
   operators can serve unrelated subdomains from the same host without pinning
   them to HTTPS via this header.
+- The SPA CSP allows `img-src http:` so S3-compatible stores such as MinIO
+  (`http://localhost:9100` in the cloud-sim profile) can serve presigned
+  images cross-origin. On an HTTPS page, browsers still block HTTP images as
+  mixed content.
 
 ## What persists where
 

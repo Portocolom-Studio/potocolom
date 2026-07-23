@@ -13,6 +13,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 # that is not a prerendered SvelteKit document. The generated CSP meta tag in
 # each prerendered page supplies the per-build SHA-256 script hash and is the
 # effective script-execution restriction for the SPA.
+# img-src includes http: so MinIO / S3-compatible endpoints on another origin
+# (e.g. http://localhost:9100) remain loadable; HTTPS pages still block HTTP
+# images as mixed content.
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "base-uri 'self'; "
@@ -22,7 +25,7 @@ CONTENT_SECURITY_POLICY = (
     "frame-src 'self'; "
     "connect-src 'self'; "
     "font-src 'self'; "
-    "img-src 'self' https:; "
+    "img-src 'self' https: http:; "
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'"
 )

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.security import SECURITY_HEADERS
 from app.settings import Settings
 from app.storage import LocalStorage, S3Storage, get_storage
 
@@ -29,9 +30,18 @@ def test_s3_storage_presigns_offline():
                                  storage_s3_access_key="key",
                                  storage_s3_secret_key="secret"))
     target = asyncio.run(storage.upload_target("u/j.webp"))
+    assert target.url.startswith("http://localhost:9100/")
     assert "u/j.webp" in target.url
     assert "X-Amz-Signature" in target.url
     assert target.headers == {"Content-Type": "image/webp"}
+    # Cross-origin MinIO URLs are not same-origin with the SPA; CSP img-src
+    # must allow http: so one-build local/cloud-sim profiles keep working.
+    img_src = next(
+        part.strip()
+        for part in SECURITY_HEADERS["Content-Security-Policy"].split(";")
+        if part.strip().startswith("img-src ")
+    )
+    assert "http:" in img_src.split()
 
 
 def test_files_get_after_direct_write():
