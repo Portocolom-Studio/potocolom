@@ -15,60 +15,113 @@ import random
 import subprocess
 import sys
 import time
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
 CLIP_MODEL_ID = "openai/clip-vit-large-patch14"
 
-FINAL_PAIRS: list[tuple[str, str, str]] = [
-    (
+
+@dataclass(frozen=True)
+class PromptPair:
+    """A corpus pair carrying both the semantic subjects (no style) and the
+    exact legacy oil-painting prompts.
+
+    ``prompt_a`` / ``prompt_b`` are the exact strings used by every prior
+    run and must never be re-wrapped by a style template. ``subject_a`` /
+    ``subject_b`` are the style-free subjects fed to ``apply_style_template``
+    when a non-oil style is requested.
+    """
+
+    pair_id: str
+    subject_a: str
+    subject_b: str
+    prompt_a: str
+    prompt_b: str
+
+
+FINAL_PAIRS: list[PromptPair] = [
+    PromptPair(
         "dog_sloth",
+        "a dog sitting in a misty forest",
+        "a sloth hanging from a branch",
         "an oil painting of a dog sitting in a misty forest",
         "an oil painting of a sloth hanging from a branch",
     ),
-    (
+    PromptPair(
         "elephant_swan",
+        "an elephant",
+        "a swan on a lake",
         "an oil painting of an elephant",
         "an oil painting of a swan on a lake",
     ),
-    (
+    PromptPair(
         "moose_butterfly",
+        "a moose by a lake",
+        "a monarch butterfly",
         "an oil painting of a moose by a lake",
         "an oil painting of a monarch butterfly",
     ),
-    (
+    PromptPair(
         "fox_rabbit",
+        "a red fox portrait",
+        "a rabbit in a meadow",
         "an oil painting of a red fox portrait",
         "an oil painting of a rabbit in a meadow",
     ),
-    (
+    PromptPair(
         "squirrel_pelican",
+        "a red squirrel",
+        "a pelican in flight",
         "an oil painting of a red squirrel",
         "an oil painting of a pelican in flight",
     ),
-    (
+    PromptPair(
         "gorilla_starfish",
+        "a gorilla portrait",
+        "a starfish on sand",
         "an oil painting of a gorilla portrait",
         "an oil painting of a starfish on sand",
     ),
-    (
+    PromptPair(
         "walrus_ladybug",
+        "a walrus on ice",
+        "a ladybug on a leaf",
         "an oil painting of a walrus on ice",
         "an oil painting of a ladybug on a leaf",
     ),
-    (
+    PromptPair(
         "mountain_valley",
+        "a snowy mountain peak at dawn",
+        "a pine valley reflected in an alpine lake",
         "an oil painting of a snowy mountain peak at dawn",
         "an oil painting of a pine valley reflected in an alpine lake",
     ),
 ]
 
 _SCREEN_IDS = frozenset({"dog_sloth", "fox_rabbit", "walrus_ladybug", "mountain_valley"})
-SCREEN_PAIRS: list[tuple[str, str, str]] = [p for p in FINAL_PAIRS if p[0] in _SCREEN_IDS]
+SCREEN_PAIRS: list[PromptPair] = [p for p in FINAL_PAIRS if p.pair_id in _SCREEN_IDS]
 
-PAIR_BY_ID: dict[str, tuple[str, str, str]] = {p[0]: p for p in FINAL_PAIRS}
+PAIR_BY_ID: dict[str, PromptPair] = {p.pair_id: p for p in FINAL_PAIRS}
+
+_OIL_EQUIVALENT_STYLES = frozenset({None, "none", "oil"})
+
+
+def resolve_pair_prompts(pair: PromptPair, style: str | None) -> tuple[list[str], list[str]]:
+    """Return ``(subjects, effective_prompts)`` for a corpus pair.
+
+    style None/"none"/"oil" uses the exact legacy oil prompts verbatim (never
+    double-wrapped). Any other style wraps each subject with
+    ``apply_style_template`` exactly once.
+    """
+    subjects = [pair.subject_a, pair.subject_b]
+    if style in _OIL_EQUIVALENT_STYLES:
+        return subjects, [pair.prompt_a, pair.prompt_b]
+    from worker.illusions import apply_style_template
+
+    return subjects, [apply_style_template(subject, style) for subject in subjects]
+
 
 INSTRUMENTED_CHECKPOINT_STEPS = (60, 125, 250, 500)
 
@@ -78,6 +131,7 @@ GATE_MIN_KEEPERS = 16
 GATE_MIN_PAIRS_TWO_THIRDS = 6
 GATE_MIN_NET_CONVERSIONS = 4
 GATE_MAX_RUNTIME_S = 3600.0
+GATE_REQUIRED_CASES = 24
 
 _PY_CMD = "worker/.venv/bin/python -m worker.illusion_experiment"
 
@@ -246,10 +300,23 @@ def checkpoint_phase_name(
     return f"sds_{step:04d}"
 
 
+_CLIP_REVISION: str | None = None
+_CLIP_REVISION_RESOLVED = False
+
+
+def clip_model_revision() -> str | None:
+    """Resolve and cache the pinned CLIP checkpoint revision once."""
+    global _CLIP_REVISION, _CLIP_REVISION_RESOLVED
+    if not _CLIP_REVISION_RESOLVED:
+        _CLIP_REVISION = model_revision(CLIP_MODEL_ID)
+        _CLIP_REVISION_RESOLVED = True
+    return _CLIP_REVISION
+
+
 def load_clip(device: str = "cpu") -> tuple[Any, Any, str | None]:
     from transformers import CLIPModel, CLIPProcessor
 
-    revision = model_revision(CLIP_MODEL_ID)
+    revision = clip_model_revision()
     kwargs: dict[str, Any] = {}
     if revision:
         kwargs["revision"] = revision
@@ -257,6 +324,33 @@ def load_clip(device: str = "cpu") -> tuple[Any, Any, str | None]:
     model = model.to(device).eval()
     processor = CLIPProcessor.from_pretrained(CLIP_MODEL_ID, **kwargs)
     return model, processor, revision
+
+
+def _clip_text_embeds(
+    model: Any,
+    processor: Any,
+    prompts: list[str],
+    device: str,
+    cache: dict[str, Any] | None,
+):
+    """Normalized CLIP text embeddings, caching by exact prompt string."""
+    import torch
+
+    if cache is None:
+        cache = {}
+    missing = [prompt for prompt in prompts if prompt not in cache]
+    if missing:
+        inputs = processor(text=missing, return_tensors="pt", padding=True)
+        text_inputs = {
+            key: value.to(device)
+            for key, value in inputs.items()
+            if key in ("input_ids", "attention_mask")
+        }
+        feats = model.get_text_features(**text_inputs)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+        for prompt, feat in zip(missing, feats, strict=True):
+            cache[prompt] = feat
+    return torch.stack([cache[prompt] for prompt in prompts])
 
 
 @torch_no_grad_safe
@@ -267,8 +361,13 @@ def clip_similarity_matrix(
     model: Any = None,
     processor: Any = None,
     device: str = "cpu",
+    text_cache: dict[str, Any] | None = None,
 ) -> list[list[float]]:
-    """Return matrix[view_i][prompt_j] CLIP cosine similarities."""
+    """Return matrix[view_i][prompt_j] CLIP cosine similarities.
+
+    Text embeddings are cached via ``text_cache`` (keyed by prompt) and the
+    whole image set is embedded in a single batch.
+    """
     from PIL import Image
 
     if model is None or processor is None:
@@ -282,11 +381,11 @@ def clip_similarity_matrix(
         else:
             pil_images.append(image)
 
-    inputs = processor(text=prompts, images=pil_images, return_tensors="pt", padding=True)
-    inputs = {key: value.to(device) for key, value in inputs.items()}
-    outputs = model(**inputs)
-    image_embeds = outputs.image_embeds / outputs.image_embeds.norm(dim=-1, keepdim=True)
-    text_embeds = outputs.text_embeds / outputs.text_embeds.norm(dim=-1, keepdim=True)
+    text_embeds = _clip_text_embeds(model, processor, prompts, device, text_cache)
+    image_inputs = processor(images=pil_images, return_tensors="pt")
+    pixel_values = image_inputs["pixel_values"].to(device)
+    image_embeds = model.get_image_features(pixel_values=pixel_values)
+    image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     return (image_embeds @ text_embeds.T).detach().cpu().tolist()
 
 
@@ -349,7 +448,9 @@ def score_images_for_prompts(
     style: str | None,
     clip_model: Any = None,
     clip_processor: Any = None,
+    clip_revision: str | None = None,
     device: str = "cpu",
+    text_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from PIL import Image
 
@@ -361,77 +462,128 @@ def score_images_for_prompts(
         model=clip_model,
         processor=clip_processor,
         device=device,
+        text_cache=text_cache,
     )
     margins, score = pair_margins(sims)
     return {
         "clip_model_id": CLIP_MODEL_ID,
-        "clip_model_revision": model_revision(CLIP_MODEL_ID),
+        "clip_model_revision": clip_revision
+        if clip_revision is not None
+        else clip_model_revision(),
         "clip_matrix": sims,
         "clip_margins": margins,
         "clip_pair_score": score,
     }
 
 
+def _run_prompts_and_style(manifest: dict[str, Any]) -> tuple[list[str], str | None]:
+    """Prefer stored effective prompts (no re-styling); fall back to config."""
+    effective = manifest.get("effective_prompts")
+    if effective and len(effective) >= 2:
+        return list(effective), None
+    prompts = manifest.get("config", {}).get("prompts") or manifest.get("prompts")
+    if not prompts or len(prompts) < 2:
+        raise ValueError("manifest has no prompts")
+    return list(prompts), manifest.get("config", {}).get("style")
+
+
 def score_run_dir(
-    run_dir: Path, *, device: str = "cpu", update_manifest: bool = True
+    run_dir: Path,
+    *,
+    device: str = "cpu",
+    update_manifest: bool = True,
+    clip_model: Any = None,
+    clip_processor: Any = None,
+    clip_revision: str | None = None,
+    text_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"missing manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text())
-    prompts = manifest.get("config", {}).get("prompts") or manifest.get("prompts")
-    if not prompts or len(prompts) < 2:
-        raise ValueError(f"run {run_dir} has no prompts in manifest")
-    style = manifest.get("config", {}).get("style")
+    try:
+        prompts, style = _run_prompts_and_style(manifest)
+    except ValueError as exc:
+        raise ValueError(f"run {run_dir}: {exc}") from exc
 
-    clip_model, clip_processor, revision = load_clip(device)
-    scored: dict[str, Any] = {"clip_model_id": CLIP_MODEL_ID, "clip_model_revision": revision}
+    if clip_model is None or clip_processor is None:
+        clip_model, clip_processor, clip_revision = load_clip(device)
+    if clip_revision is None:
+        clip_revision = clip_model_revision()
+    if text_cache is None:
+        text_cache = {}
+
+    def _score(paths: list[Path]) -> dict[str, Any]:
+        return score_images_for_prompts(
+            paths,
+            list(prompts),
+            style=style,
+            clip_model=clip_model,
+            clip_processor=clip_processor,
+            clip_revision=clip_revision,
+            device=device,
+            text_cache=text_cache,
+        )
+
+    scored: dict[str, Any] = {"clip_model_id": CLIP_MODEL_ID, "clip_model_revision": clip_revision}
+    checkpoints: dict[str, Any] = dict(manifest.get("checkpoints") or {})
+
+    # Score the root derived images as the canonical final first, so a
+    # redundant ckpt_final directory is not scored twice.
+    final_scored = False
+    final_derived = [run_dir / "derived_1.png", run_dir / "derived_2.png"]
+    if all(path.is_file() for path in final_derived):
+        final_entry = _score(final_derived)
+        scored["final"] = final_entry
+        manifest["final"] = {**(manifest.get("final") or {}), **final_entry}
+        checkpoints["final"] = {**(checkpoints.get("final") or {}), **final_entry}
+        final_scored = True
 
     for ckpt_dir in sorted(run_dir.glob("ckpt_*")):
+        phase = ckpt_dir.name[len("ckpt_") :]
+        if phase == "final" and final_scored:
+            continue
         derived = [ckpt_dir / "derived_1.png", ckpt_dir / "derived_2.png"]
         if not all(path.is_file() for path in derived):
             continue
-        entry = score_images_for_prompts(
-            derived,
-            list(prompts),
-            style=style,
-            clip_model=clip_model,
-            clip_processor=clip_processor,
-            device=device,
-        )
-        (ckpt_dir / "scores.json").write_text(json.dumps(entry, indent=2) + "\n")
-        scored[ckpt_dir.name] = entry
-
-    final_derived = [run_dir / "derived_1.png", run_dir / "derived_2.png"]
-    if all(path.is_file() for path in final_derived):
-        final_entry = score_images_for_prompts(
-            final_derived,
-            list(prompts),
-            style=style,
-            clip_model=clip_model,
-            clip_processor=clip_processor,
-            device=device,
-        )
-        scored["final"] = final_entry
-        manifest["final"] = {**(manifest.get("final") or {}), **final_entry}
+        entry = _score(derived)
+        # Merge CLIP into the per-checkpoint scores.json without dropping
+        # diagnostics written during the run.
+        scores_path = ckpt_dir / "scores.json"
+        existing: dict[str, Any] = {}
+        if scores_path.is_file():
+            try:
+                existing = json.loads(scores_path.read_text())
+            except json.JSONDecodeError:
+                existing = {}
+        scores_path.write_text(json.dumps({**existing, **entry}, indent=2) + "\n")
+        checkpoints[phase] = {**(checkpoints.get(phase) or {}), **entry}
+        scored[phase] = entry
 
     manifest["clip_scored_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["checkpoints"] = {
-        **(manifest.get("checkpoints") or {}),
-        **{name: entry for name, entry in scored.items() if name.startswith("ckpt_")},
-    }
+    manifest["checkpoints"] = checkpoints
     if update_manifest:
         write_manifest_atomic(manifest_path, manifest)
     return scored
 
 
 def score_tree(root: Path, *, device: str = "cpu") -> list[Path]:
+    clip_model, clip_processor, clip_revision = load_clip(device)
+    text_cache: dict[str, Any] = {}
     scored_dirs: list[Path] = []
     for manifest_path in sorted(root.rglob("manifest.json")):
         run_dir = manifest_path.parent
         if not (run_dir / "derived_1.png").is_file():
             continue
-        score_run_dir(run_dir, device=device, update_manifest=True)
+        score_run_dir(
+            run_dir,
+            device=device,
+            update_manifest=True,
+            clip_model=clip_model,
+            clip_processor=clip_processor,
+            clip_revision=clip_revision,
+            text_cache=text_cache,
+        )
         scored_dirs.append(run_dir)
     return scored_dirs
 
@@ -493,7 +645,8 @@ def build_matched_blind(
     cells: list[tuple[Any, str]] = []
 
     case_number = 0
-    for pair_id, _prompt_a, _prompt_b in FINAL_PAIRS:
+    for pair in FINAL_PAIRS:
+        pair_id = pair.pair_id
         for seed_value in (0, 1, 2):
             legacy_dir = final_root / "legacy" / f"{pair_id}_seed{seed_value}"
             finalist_dir = final_root / "finalist" / f"{pair_id}_seed{seed_value}"
@@ -565,29 +718,66 @@ def _keeper_from_rating(keep_a: Any, keep_b: Any, column: str) -> bool | None:
     return bool(keep_b) if keep_b is not None else None
 
 
+def _manifest_field(manifest: dict[str, Any], field: str) -> Any:
+    if field == "seed":
+        config = manifest.get("config") or {}
+        if "seed" in config:
+            return config["seed"]
+    return manifest.get(field)
+
+
 def evaluate_ratings(
     ratings_path: Path,
     answer_key_path: Path,
     final_root: Path,
 ) -> dict[str, Any]:
-    ratings = {row["case_id"]: row for row in _load_jsonl(ratings_path)}
+    rating_rows = _load_jsonl(ratings_path)
+    ratings = {row["case_id"]: row for row in rating_rows if "case_id" in row}
     answer = json.loads(answer_key_path.read_text())
     cases = answer["cases"]
 
+    failures: list[str] = []
+
+    answer_id_set = {case["case_id"] for case in cases}
+    rating_ids = [row.get("case_id") for row in rating_rows]
+    unique_rating_ids = {cid for cid in rating_ids if cid is not None}
+
+    if len(cases) != GATE_REQUIRED_CASES:
+        failures.append(f"answer key has {len(cases)} cases, expected {GATE_REQUIRED_CASES}")
+    if len(unique_rating_ids) != GATE_REQUIRED_CASES:
+        failures.append(
+            f"ratings have {len(unique_rating_ids)} unique case_ids, expected {GATE_REQUIRED_CASES}"
+        )
+    if len(rating_ids) != len(unique_rating_ids):
+        failures.append("ratings contain duplicate case_ids")
+    missing_ratings = sorted(answer_id_set - unique_rating_ids)
+    if missing_ratings:
+        failures.append(f"ratings missing case_ids: {missing_ratings}")
+    unknown_ratings = sorted(unique_rating_ids - answer_id_set)
+    if unknown_ratings:
+        failures.append(f"ratings reference unknown case_ids: {unknown_ratings}")
+
     finalist_keepers = 0
-    pair_finalist_kept: dict[str, list[bool]] = {pair_id: [] for pair_id, _, _ in FINAL_PAIRS}
+    pair_finalist_kept: dict[str, list[bool]] = {pair.pair_id: [] for pair in FINAL_PAIRS}
     conversions = 0
     regressions = 0
     runtime_violations: list[str] = []
     oom_runs: list[str] = []
+    missing_runs: list[str] = []
 
     for case in cases:
         case_id = case["case_id"]
         rating = ratings.get(case_id)
+        keep_a = rating.get("keep_a") if rating else None
+        keep_b = rating.get("keep_b") if rating else None
         if rating is None:
-            continue
-        keep_a = rating.get("keep_a")
-        keep_b = rating.get("keep_b")
+            failures.append(f"{case_id}: missing rating")
+        else:
+            if not isinstance(keep_a, bool):
+                failures.append(f"{case_id}: keep_a must be a boolean (got {keep_a!r})")
+            if not isinstance(keep_b, bool):
+                failures.append(f"{case_id}: keep_b must be a boolean (got {keep_b!r})")
+
         finalist_col = "a" if case["column_a"] == "finalist" else "b"
         legacy_col = "b" if finalist_col == "a" else "a"
         finalist_keep = _keeper_from_rating(keep_a, keep_b, finalist_col)
@@ -605,32 +795,49 @@ def evaluate_ratings(
             run_dir = Path(rel)
             manifest_path = run_dir / "manifest.json"
             if not manifest_path.is_file():
+                missing_runs.append(f"{tag}:{case_id}")
+                failures.append(f"{tag}:{case_id}: missing manifest {manifest_path}")
                 continue
             manifest = json.loads(manifest_path.read_text())
-            total_s = (manifest.get("phase_timings") or {}).get("total_s")
-            if total_s is not None and float(total_s) > GATE_MAX_RUNTIME_S:
-                runtime_violations.append(f"{tag}:{case_id}:{total_s:.0f}s")
-            error = manifest.get("error") or ""
             status = manifest.get("status")
+            if status != "completed":
+                failures.append(f"{tag}:{case_id}: status={status!r} not completed")
+            for field in ("pair_id", "seed", "git_sha", "spec"):
+                if field not in case:
+                    continue
+                actual = _manifest_field(manifest, field)
+                if actual != case[field]:
+                    failures.append(
+                        f"{tag}:{case_id}: {field} mismatch "
+                        f"(answer={case[field]!r}, run={actual!r})"
+                    )
+            total_s = (manifest.get("phase_timings") or {}).get("total_s")
+            if total_s is None:
+                failures.append(f"{tag}:{case_id}: phase_timings.total_s missing")
+            elif float(total_s) > GATE_MAX_RUNTIME_S:
+                runtime_violations.append(f"{tag}:{case_id}:{float(total_s):.0f}s")
+            error = manifest.get("error") or ""
             if status == "failed" or "oom" in str(error).lower():
                 oom_runs.append(f"{tag}:{case_id}")
 
-    pairs_two_thirds = sum(
-        1 for pair_id, _, _ in FINAL_PAIRS if sum(pair_finalist_kept[pair_id]) >= 2
-    )
+    if runtime_violations:
+        failures.append(f"runtime over {GATE_MAX_RUNTIME_S:.0f}s: {runtime_violations}")
+    if oom_runs:
+        failures.append(f"failed/oom runs: {oom_runs}")
+
+    pairs_two_thirds = sum(1 for pair in FINAL_PAIRS if sum(pair_finalist_kept[pair.pair_id]) >= 2)
     control_results = {
         pair_id: sum(pair_finalist_kept[pair_id]) for pair_id in sorted(CONTROL_PAIR_IDS)
     }
     controls_pass = all(count >= 2 for count in control_results.values())
     net_conversion_ok = conversions - regressions >= GATE_MIN_NET_CONVERSIONS
-    runtime_ok = not runtime_violations and not oom_runs
-    gate_pass = (
+    metrics_pass = (
         finalist_keepers >= GATE_MIN_KEEPERS
         and pairs_two_thirds >= GATE_MIN_PAIRS_TWO_THIRDS
         and controls_pass
         and net_conversion_ok
-        and runtime_ok
     )
+    gate_pass = metrics_pass and not failures
 
     return {
         "finalist_keepers": finalist_keepers,
@@ -645,6 +852,8 @@ def evaluate_ratings(
         "net_conversions_required": GATE_MIN_NET_CONVERSIONS,
         "runtime_violations": runtime_violations,
         "oom_runs": oom_runs,
+        "missing_runs": missing_runs,
+        "failures": failures,
         "gate_pass": gate_pass,
         "final_root": str(final_root),
     }
@@ -687,6 +896,20 @@ def calibrate(corpus_path: Path) -> dict[str, Any]:
     else:
         result["roc_auc"] = None
 
+    # Hit-rate: fraction correct predicting keep when clip_pair_score > 0.
+    if y_true:
+        threshold = 0.0
+        hits = sum(
+            1
+            for score, label in zip(y_score, y_true, strict=True)
+            if (1 if score > threshold else 0) == label
+        )
+        result["hit_rate"] = hits / len(y_true)
+        result["hit_rate_threshold"] = threshold
+    else:
+        result["hit_rate"] = None
+        result["hit_rate_threshold"] = 0.0
+
     if len(checkpoint_scores) >= 2:
         result["checkpoint_final_spearman"] = _rank_correlation(checkpoint_scores, final_scores)
     else:
@@ -696,15 +919,29 @@ def calibrate(corpus_path: Path) -> dict[str, Any]:
 
 
 def _manual_roc_auc(y_true: list[int], y_score: list[float]) -> float:
-    pairs = sorted(zip(y_score, y_true, strict=True), reverse=True)
+    """AUC via the Mann-Whitney U statistic with average ranks for ties.
+
+    Scores are ranked in ascending order so that assigning higher scores to
+    positives yields AUC ~ 1.0 (and anti-correlated scores ~ 0.0). Ties share
+    the average rank, so all-equal scores give 0.5.
+    """
+    n = len(y_true)
     n_pos = sum(y_true)
-    n_neg = len(y_true) - n_pos
+    n_neg = n - n_pos
     if n_pos == 0 or n_neg == 0:
         return 0.5
-    rank_sum = 0.0
-    for rank, (_score, label) in enumerate(pairs, start=1):
-        if label == 1:
-            rank_sum += rank
+    order = sorted(range(n), key=lambda index: y_score[index])
+    ranks = [0.0] * n
+    index = 0
+    while index < n:
+        end = index
+        while end + 1 < n and y_score[order[end + 1]] == y_score[order[index]]:
+            end += 1
+        avg_rank = (index + end) / 2.0 + 1.0
+        for position in range(index, end + 1):
+            ranks[order[position]] = avg_rank
+        index = end + 1
+    rank_sum = sum(ranks[i] for i in range(n) if y_true[i] == 1)
     return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
@@ -743,13 +980,23 @@ def _illusion_config_field_names() -> set[str]:
 
 
 def _build_illusion_config(args: argparse.Namespace):
+    """Build the IllusionConfig plus its (subjects, effective prompts).
+
+    The style is applied here exactly once (oil/none keep the exact legacy
+    prompts) and the resulting effective prompts are handed to the optimizer
+    with ``style=None`` so ``targets_for`` never re-wraps them.
+    """
     from worker.illusions import IllusionConfig
 
-    prompts = list(args.prompt) if args.prompt else []
+    style_requested = None if args.style in (None, "none") else args.style
     if args.pair_id:
-        _pair_id, prompt_a, prompt_b = PAIR_BY_ID[args.pair_id]
-        prompts = [prompt_a, prompt_b]
-    if len(prompts) < 2:
+        subjects, effective_prompts = resolve_pair_prompts(PAIR_BY_ID[args.pair_id], args.style)
+    else:
+        subjects = list(args.prompt) if args.prompt else []
+        if len(subjects) < 2:
+            raise ValueError("need two prompts or --pair-id")
+        effective_prompts = styled_prompts(subjects, style_requested)
+    if len(effective_prompts) < 2:
         raise ValueError("need two prompts or --pair-id")
 
     checkpoint_steps: tuple[int, ...] = ()
@@ -758,7 +1005,7 @@ def _build_illusion_config(args: argparse.Namespace):
 
     kwargs: dict[str, Any] = {
         "illusion": args.type,
-        "prompts": prompts,
+        "prompts": effective_prompts,
         "model_id": args.model,
         "dream_model_id": None if args.dream_model.lower() == "none" else args.dream_model,
         "sds_steps": args.sds_steps,
@@ -775,7 +1022,8 @@ def _build_illusion_config(args: argparse.Namespace):
         "use_hifa_schedule": args.hifa_schedule,
         "round_robin": args.round_robin,
         "view_batch_size": args.view_batch_size,
-        "style": None if args.style == "none" else args.style,
+        # Style is already baked into effective_prompts; None avoids double-wrap.
+        "style": None,
         "checkpoint_steps": checkpoint_steps,
         "enable_vae_slicing": args.enable_vae_slicing,
         "channels_last": args.channels_last,
@@ -783,7 +1031,7 @@ def _build_illusion_config(args: argparse.Namespace):
     field_names = _illusion_config_field_names()
     if "collect_diagnostics" in field_names:
         kwargs["collect_diagnostics"] = args.collect_diagnostics
-    return IllusionConfig(**kwargs), prompts
+    return IllusionConfig(**kwargs), effective_prompts, subjects, style_requested
 
 
 def run_single_experiment(args: argparse.Namespace) -> int:
@@ -798,7 +1046,7 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         return 0
     out.mkdir(parents=True, exist_ok=True)
 
-    config, prompts = _build_illusion_config(args)
+    config, prompts, subjects, style_requested = _build_illusion_config(args)
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
@@ -828,6 +1076,9 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         "git_sha": git_sha(),
         "name": args.name,
         "pair_id": args.pair_id,
+        "subjects": subjects,
+        "effective_prompts": prompts,
+        "style_requested": style_requested,
         "hostname": platform.node(),
         "platform": platform.platform(),
         "env": {
@@ -848,76 +1099,98 @@ def run_single_experiment(args: argparse.Namespace) -> int:
 
     phase_timings: dict[str, float] = {}
     checkpoint_summaries: dict[str, Any] = {}
-    saved_sds_steps: set[int] = set()
+    phase_wall: dict[str, float | None] = {"sds_end": None, "dream_begin": None, "dream_end": None}
     t0 = time.perf_counter()
-    sds_wall_end = t0
 
-    def on_checkpoint(phase: str, primes, derived, diagnostics: dict) -> None:
-        # optimize_illusion already emits phase-qualified names (sds_0060..final).
-        step: int | None = None
-        if phase.startswith("sds_"):
-            try:
-                step = int(phase.split("_", 1)[1])
-                saved_sds_steps.add(step)
-            except ValueError:
-                step = None
+    def _clip_entry(derived) -> dict[str, Any] | None:
+        if clip_model is None or len(derived) < 2 or len(prompts) < 2:
+            return None
+        sims = clip_similarity_matrix(
+            derived[:2],
+            prompts[:2],
+            model=clip_model,
+            processor=clip_processor,
+            device="cpu",
+        )
+        margins, score = pair_margins(sims)
+        warn_low_clip_margins(margins)
+        return {
+            "clip_model_id": CLIP_MODEL_ID,
+            "clip_model_revision": clip_revision,
+            "clip_matrix": sims,
+            "clip_margins": margins,
+            "clip_pair_score": score,
+        }
+
+    def on_phase(event: Any) -> None:
+        phase = event.phase
+        # Phase boundaries: record wall clocks even when no images are saved.
+        if phase in phase_wall:
+            phase_wall[phase] = event.wall_s
+            return
+        # sds_begin carries no images and is not an image checkpoint.
+        if phase == "sds_begin" or event.derived is None:
+            return
+
+        step = event.step
         ck_dir = out / f"ckpt_{phase}"
         ck_dir.mkdir(parents=True, exist_ok=True)
-        for index, prime in enumerate(primes, start=1):
+        for index, prime in enumerate(event.primes or [], start=1):
             save_image(prime, ck_dir / f"prime_{index}.png")
-        for index, image in enumerate(derived, start=1):
+        for index, image in enumerate(event.derived, start=1):
             save_image(image, ck_dir / f"derived_{index}.png")
-        entry: dict[str, Any] = {
-            "phase": phase,
-            "step": step,
-            "wall_s": time.perf_counter() - t0,
-        }
-        if clip_model is not None and len(derived) >= 2 and len(prompts) >= 2:
-            sims = clip_similarity_matrix(
-                derived[:2],
-                styled_prompts(prompts[:2], config.style),
-                model=clip_model,
-                processor=clip_processor,
-                device="cpu",
-            )
-            margins, score = pair_margins(sims)
-            warn_low_clip_margins(margins)
-            entry.update(
-                {
-                    "clip_model_id": CLIP_MODEL_ID,
-                    "clip_model_revision": clip_revision,
-                    "clip_matrix": sims,
-                    "clip_margins": margins,
-                    "clip_pair_score": score,
-                }
-            )
-        if diagnostics.get("conflict") and step is not None:
-            entry["conflict"] = [
-                conflict for conflict in diagnostics["conflict"] if conflict.get("step") == step
-            ]
-        losses = diagnostics.get("losses") or []
+        for index, target in enumerate(event.targets or [], start=1):
+            save_image(target, ck_dir / f"target_{index}.png")
+
+        entry: dict[str, Any] = {"phase": phase, "step": step, "wall_s": event.wall_s}
+        if event.round is not None:
+            entry["round"] = event.round
+        if event.strength is not None:
+            entry["strength"] = event.strength
+        if event.loss is not None:
+            entry["loss"] = event.loss
+        if event.loss_start is not None:
+            entry["loss_start"] = event.loss_start
+        if event.loss_end is not None:
+            entry["loss_end"] = event.loss_end
+        if event.grad_norm is not None:
+            entry["grad_norm"] = event.grad_norm
+        clip_scores = _clip_entry(event.derived)
+        if clip_scores is not None:
+            entry.update(clip_scores)
+        diagnostics = event.diagnostics or {}
         if step is not None:
+            if diagnostics.get("conflict"):
+                entry["conflict"] = [
+                    conflict for conflict in diagnostics["conflict"] if conflict.get("step") == step
+                ]
+            losses = diagnostics.get("losses") or []
             entry["loss_tail"] = [row for row in losses if row.get("step") == step]
-            grad_norms = diagnostics.get("grad_norms") or []
-            entry["grad_norm"] = next(
-                (row.get("norm") for row in grad_norms if row.get("step") == step),
-                None,
-            )
+            if "grad_norm" not in entry:
+                grad_norms = diagnostics.get("grad_norms") or []
+                entry["grad_norm"] = next(
+                    (row.get("norm") for row in grad_norms if row.get("step") == step),
+                    None,
+                )
         checkpoint_summaries[phase] = entry
         write_manifest_atomic(ck_dir / "scores.json", entry)
-        nonlocal sds_wall_end
-        if phase.startswith("sds_"):
-            sds_wall_end = time.perf_counter()
 
     def progress(fraction: float) -> None:
         print(f"\rprogress {fraction:6.1%}", end="", flush=True)
 
     try:
-        result = optimize_illusion(config, progress=progress, on_checkpoint=on_checkpoint)
+        result = optimize_illusion(config, progress=progress, on_phase=on_phase)
         print()
         total_s = time.perf_counter() - t0
-        phase_timings["sds_s"] = sds_wall_end - t0
-        phase_timings["dream_s"] = total_s - phase_timings["sds_s"]
+        sds_end_wall = phase_wall["sds_end"]
+        dream_end_wall = phase_wall["dream_end"]
+        sds_s = float(sds_end_wall) if sds_end_wall is not None else total_s
+        if dream_end_wall is not None and sds_end_wall is not None:
+            dream_s = max(float(dream_end_wall) - float(sds_end_wall), 0.0)
+        else:
+            dream_s = max(total_s - sds_s, 0.0)
+        phase_timings["sds_s"] = sds_s
+        phase_timings["dream_s"] = dream_s
         phase_timings["total_s"] = total_s
 
         for index, prime in enumerate(result.primes, start=1):
@@ -929,7 +1202,7 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         if clip_model is not None and len(result.derived) >= 2 and len(prompts) >= 2:
             sims = clip_similarity_matrix(
                 result.derived[:2],
-                styled_prompts(prompts[:2], config.style),
+                prompts[:2],
                 model=clip_model,
                 processor=clip_processor,
                 device="cpu",
@@ -984,14 +1257,14 @@ def _plan_prefix() -> str:
 
 
 def print_variance_plan(out_root: Path) -> None:
-    pair_id, prompt_a, prompt_b = PAIR_BY_ID["dog_sloth"]
+    pair = PAIR_BY_ID["dog_sloth"]
     root = out_root / "variance_dog_sloth_seed2"
     for repeat in range(3):
         out = root / f"repeat_{repeat}"
         print(
             f"{_plan_prefix()} "
             f"--name variance_r{repeat} --type flip "
-            f'--prompt "{prompt_a}" --prompt "{prompt_b}" '
+            f'--prompt "{pair.prompt_a}" --prompt "{pair.prompt_b}" '
             f"--seed 2 --sds-objective legacy --skip-clip --collect-diagnostics --out {out}"
         )
 
@@ -1008,7 +1281,8 @@ def print_screen_plan(out_root: Path) -> None:
         ("07_csd_cfg20", "--sds-objective csd --sds-guidance 20"),
         ("08_nfsd_cfg7.5", "--sds-objective nfsd --sds-guidance 7.5"),
     ]
-    for pair_id, _prompt_a, _prompt_b in SCREEN_PAIRS:
+    for pair in SCREEN_PAIRS:
+        pair_id = pair.pair_id
         for name, flags in profiles:
             out = root / name / pair_id
             print(
@@ -1020,7 +1294,8 @@ def print_screen_plan(out_root: Path) -> None:
 
 def print_final_plan(out_root: Path, finalist_flags: str) -> None:
     root = out_root / "final"
-    for pair_id, _prompt_a, _prompt_b in FINAL_PAIRS:
+    for pair in FINAL_PAIRS:
+        pair_id = pair.pair_id
         for seed_value in (0, 1, 2):
             for tag, flags in (
                 ("legacy", "--sds-objective legacy"),
@@ -1037,7 +1312,8 @@ def print_final_plan(out_root: Path, finalist_flags: str) -> None:
 
 def print_stage2_plan(out_root: Path, profile_flags: str) -> None:
     root = out_root / "stage2"
-    pair_id, prompt_a, prompt_b = SCREEN_PAIRS[0]
+    pair = SCREEN_PAIRS[0]
+    pair_id = pair.pair_id
     experiments = [
         ("hifa", "--hifa-schedule"),
         ("round_robin", "--round-robin"),
@@ -1051,7 +1327,7 @@ def print_stage2_plan(out_root: Path, profile_flags: str) -> None:
         print(
             f"{_plan_prefix()} "
             f"--name stage2_{name}_{pair_id} --type flip "
-            f'--prompt "{prompt_a}" --prompt "{prompt_b}" '
+            f'--prompt "{pair.prompt_a}" --prompt "{pair.prompt_b}" '
             f"--pair-id {pair_id} --seed 2 --skip-clip --collect-diagnostics "
             f"{profile_flags} {extra} --out {out}"
         )
@@ -1089,11 +1365,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--skip-clip", action="store_true")
 
     score_run = sub.add_parser("score-run", help="post-hoc CLIP score one run directory")
-    score_run.add_argument("run_dir", type=Path)
+    score_run.add_argument("run_dir", type=Path, nargs="?")
+    score_run.add_argument("--run", type=Path, dest="run_flag", help="alias for the run directory")
     score_run.add_argument("--device", default="cpu")
 
     score_tree_cmd = sub.add_parser("score-tree", help="post-hoc CLIP score all runs under a tree")
-    score_tree_cmd.add_argument("root", type=Path)
+    score_tree_cmd.add_argument("root", type=Path, nargs="?")
+    score_tree_cmd.add_argument(
+        "--root", type=Path, dest="root_flag", help="alias for the tree root"
+    )
     score_tree_cmd.add_argument("--device", default="cpu")
 
     variance = sub.add_parser("variance-plan", help="print dog/sloth seed-2 x3 variance commands")
@@ -1125,7 +1405,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--final-root", type=Path, required=True)
 
     calibrate_cmd = sub.add_parser("calibrate", help="CLIP calibration report on a labelled corpus")
-    calibrate_cmd.add_argument("corpus", type=Path)
+    calibrate_cmd.add_argument("corpus", type=Path, nargs="?")
+    calibrate_cmd.add_argument(
+        "--corpus", type=Path, dest="corpus_flag", help="alias for the labelled corpus path"
+    )
 
     blind = sub.add_parser("blind-sheet", help="legacy simple blind sheet from a cases JSON")
     blind.add_argument("--cases", type=Path, required=True)
@@ -1145,13 +1428,19 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_single_experiment(args))
 
     if args.cmd == "score-run":
-        scored = score_run_dir(args.run_dir, device=args.device)
+        run_dir = args.run_flag or args.run_dir
+        if run_dir is None:
+            parser.error("score-run requires a run directory (positional or --run)")
+        scored = score_run_dir(run_dir, device=args.device)
         print(json.dumps(scored, indent=2))
         return
 
     if args.cmd == "score-tree":
-        dirs = score_tree(args.root, device=args.device)
-        print(f"scored {len(dirs)} runs under {args.root}")
+        root = args.root_flag or args.root
+        if root is None:
+            parser.error("score-tree requires a tree root (positional or --root)")
+        dirs = score_tree(root, device=args.device)
+        print(f"scored {len(dirs)} runs under {root}")
         return
 
     if args.cmd == "blind-sheet":
@@ -1176,7 +1465,10 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd == "calibrate":
-        report = calibrate(args.corpus)
+        corpus = args.corpus_flag or args.corpus
+        if corpus is None:
+            parser.error("calibrate requires a corpus path (positional or --corpus)")
+        report = calibrate(corpus)
         print(json.dumps(report, indent=2))
         return
 

@@ -37,7 +37,33 @@ import torch.nn.functional as tf
 from torch import Tensor, nn
 
 ProgressFn = Callable[[float], None]
-# Phase-qualified checkpoint names: sds_0060, sds_0125, sds_0250, sds_0500, final
+
+
+@dataclass
+class PhaseEvent:
+    """Typed optimization phase observer payload.
+
+    phase examples: sds_begin, sds_0060, sds_end, dream_begin, dream_round_01,
+    dream_end, final.
+    """
+
+    phase: str
+    step: int | None = None
+    round: int | None = None
+    strength: float | None = None
+    primes: list[Tensor] | None = None
+    derived: list[Tensor] | None = None
+    targets: list[Tensor] | None = None
+    loss: float | None = None
+    loss_start: float | None = None
+    loss_end: float | None = None
+    grad_norm: float | None = None
+    wall_s: float | None = None
+    diagnostics: dict[str, Any] | None = None
+
+
+PhaseFn = Callable[[PhaseEvent], None]
+# Backward-compatible alias used by older harness code.
 CheckpointFn = Callable[[str, list[Tensor], list[Tensor], dict[str, Any]], None]
 
 RESOLUTION = 512
@@ -473,10 +499,16 @@ class DiffusionAdapter:
     ) -> Tensor:
         """VAE-encode an image to latents.
 
-        use_mean: deterministic posterior mean (diagnostics).
-        posterior_eps: explicit N(0,1) sample so full-batch and microbatch
-        paths can share identical encoder noise for gradient comparisons.
+        Legacy default (PR #118 / 5f30fdd): ``posterior.sample()`` draws from
+        the globally seeded RNG (``torch.manual_seed`` in optimize_illusion).
+        Do not pass the SDS ``generator`` into ``sample()`` on that path.
+
+        use_mean: deterministic posterior mean (diagnostics only).
+        posterior_eps: explicit N(0,1) sample for opt-in microbatch comparison.
+        ``generator`` is accepted for API compatibility but ignored unless
+        posterior_eps is used to pre-sample noise elsewhere.
         """
+        del generator  # legacy path must not consume the SDS generator here
         self.encode_batch_sizes.append(int(image.shape[0]))
         if self._encodes_since_backward > 0:
             self.backward_before_next_encode.append(False)
@@ -490,7 +522,8 @@ class DiffusionAdapter:
                 device=posterior.mean.device, dtype=posterior.mean.dtype
             )
         else:
-            latent = posterior.sample(generator=generator)
+            # Exact legacy: global RNG, no SDS generator threading.
+            latent = posterior.sample()
         return latent * self.pipe.vae.config.scaling_factor
 
     def note_backward(self) -> None:
@@ -941,9 +974,12 @@ def optimize_illusion(
     config: IllusionConfig,
     progress: ProgressFn = lambda fraction: None,
     *,
+    on_phase: PhaseFn | None = None,
     on_checkpoint: CheckpointFn | None = None,
 ) -> IllusionResult:
     """Run both optimization phases and return primes and derived images."""
+    import time as _time
+
     if config.sds_objective not in SDS_OBJECTIVES:
         raise ValueError(f"unknown sds_objective {config.sds_objective!r}")
     # Hidden: prefer view_batch_size=1 when the caller opts into microbatching.
@@ -973,24 +1009,48 @@ def optimize_illusion(
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         return spec.arrange([network.image(resolution) for network in networks])
 
+    def emit(event: PhaseEvent) -> None:
+        if on_phase is not None:
+            on_phase(event)
+        if on_checkpoint is not None and event.primes is not None and event.derived is not None:
+            on_checkpoint(
+                event.phase,
+                event.primes,
+                event.derived,
+                event.diagnostics if event.diagnostics is not None else {},
+            )
+
+    def snapshot_images() -> tuple[list[Tensor], list[Tensor]]:
+        with torch.no_grad():
+            primes_ck = [network.image().clamp(0, 1) for network in networks]
+            derived_ck = [image.clamp(0, 1) for image in spec.arrange(primes_ck)]
+        return primes_ck, derived_ck
+
     sds_iterations = config.sds_steps
     if config.round_robin and config.illusion == "flip":
         sds_iterations = config.sds_steps * 2
 
-    total = sds_iterations + len(config.strength_schedule()) * config.dream_steps
+    dream_rounds = len(config.strength_schedule())
+    total = sds_iterations + dream_rounds * config.dream_steps
     done = 0
     low_res_steps = int(config.sds_steps * config.sds_low_res_fraction)
     diagnostics: dict[str, Any] = {
         "losses": [],
         "grad_norms": [],
         "conflict": [],
+        "dream_rounds": [],
         "round_robin_exposures": [0, 0],
         "sds_objective": config.sds_objective,
         "sds_lr": sds_lr,
         "dream_lr": dream_lr,
+        "effective_prompts": [t if isinstance(t, str) else "<image>" for t in targets],
     }
     checkpoint_set = set(config.checkpoint_steps)
-    instrument = bool(config.collect_diagnostics or checkpoint_set or on_checkpoint)
+    instrument = bool(
+        config.collect_diagnostics or checkpoint_set or on_phase is not None or on_checkpoint
+    )
+    t_wall0 = _time.perf_counter()
+    observe = on_phase is not None or on_checkpoint is not None
 
     def maybe_record_conflict(
         rendered: list[Tensor],
@@ -1008,7 +1068,6 @@ def optimize_illusion(
             return
 
         def _compute() -> dict[str, float]:
-            # Shared diagnostic t/noise; VAE posterior mean (no RNG draw).
             view0 = rendered[0]
             _, c, lh, lw = latent_shape_for(view0)
             diag_noise = torch.randn(1, c, lh, lw, device=config.device, dtype=adapter.dtype)
@@ -1051,7 +1110,8 @@ def optimize_illusion(
 
         diagnostics["conflict"].append(preserve_rng_state(_compute))
 
-    # Phase 1: Score Distillation Loss on prompt targets
+    emit(PhaseEvent(phase="sds_begin", step=0, wall_s=0.0, diagnostics=diagnostics))
+
     for step in range(sds_iterations):
         logical_step = step // 2 if config.round_robin and config.illusion == "flip" else step
         resolution = config.sds_low_res if logical_step < low_res_steps else RESOLUTION
@@ -1086,8 +1146,6 @@ def optimize_illusion(
 
         progress_frac = logical_step / max(config.sds_steps - 1, 1)
         use_micro = view_batch is not None and view_batch > 0 and len(prompt_images) > view_batch
-        # Diagnostics before the training backward so the FFN graph is intact,
-        # and under preserve_rng_state so they cannot perturb the step RNG.
         maybe_record_conflict(rendered, prompt_images, logical_step, progress_frac)
 
         if prompt_images and use_micro:
@@ -1135,27 +1193,50 @@ def optimize_illusion(
         progress(done / total)
 
         if (
-            on_checkpoint
+            observe
             and (logical_step + 1) in checkpoint_set
             and (not config.round_robin or step % 2 == 1)
         ):
-            with torch.no_grad():
-                primes_ck = [network.image().clamp(0, 1) for network in networks]
-                derived_ck = [image.clamp(0, 1) for image in spec.arrange(primes_ck)]
-            on_checkpoint(checkpoint_name(logical_step + 1), primes_ck, derived_ck, diagnostics)
+            primes_ck, derived_ck = snapshot_images()
+            emit(
+                PhaseEvent(
+                    phase=checkpoint_name(logical_step + 1),
+                    step=logical_step + 1,
+                    primes=primes_ck,
+                    derived=derived_ck,
+                    loss=loss_value,
+                    grad_norm=param_grad_norm(parameters) if instrument else None,
+                    wall_s=_time.perf_counter() - t_wall0,
+                    diagnostics=diagnostics,
+                )
+            )
+
+    emit(
+        PhaseEvent(
+            phase="sds_end",
+            step=config.sds_steps,
+            wall_s=_time.perf_counter() - t_wall0,
+            diagnostics=diagnostics,
+        )
+    )
 
     adapter.begin_dream_phase()
-    # Fresh optimizer state for phase 2: SDS gradients run ~1e4 while Dream
-    # Target gradients run ~0.5, so Adam's inherited second moment would
-    # suppress phase-2 updates by ~4 orders of magnitude (issue #122).
     optimizer = torch.optim.Adam(parameters, lr=dream_lr)
+    emit(
+        PhaseEvent(
+            phase="dream_begin",
+            wall_s=_time.perf_counter() - t_wall0,
+            diagnostics=diagnostics,
+        )
+    )
 
     joint = (
         config.dream_joint
         and config.illusion == "flip"
         and all(isinstance(target, str) for target in targets)
     )
-    for strength in config.strength_schedule():
+    dream_save_rounds = {1, 4, 8}
+    for round_index, strength in enumerate(config.strength_schedule(), start=1):
         dream_targets: list[Tensor] = []
         with torch.no_grad():
             current = render_derived(RESOLUTION)
@@ -1168,6 +1249,15 @@ def optimize_illusion(
                     dream_targets.append(adapter.sdedit(derived, target, strength, generator))
                 else:
                     dream_targets.append(target.to(config.device))
+
+        loss_start_t = torch.zeros((), device=config.device)
+        with torch.no_grad():
+            for derived, dream, weight in zip(
+                render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
+            ):
+                loss_start_t = loss_start_t + weight * image_similarity_loss(derived, dream)
+        loss_start = float(loss_start_t.item())
+        loss_end = loss_start
         for _ in range(config.dream_steps):
             optimizer.zero_grad()
             loss = torch.zeros((), device=config.device)
@@ -1177,14 +1267,56 @@ def optimize_illusion(
                 loss = loss + weight * image_similarity_loss(derived, dream)
             loss.backward()
             optimizer.step()
+            loss_end = float(loss.detach().item())
             done += 1
             progress(done / total)
+
+        diagnostics["dream_rounds"].append(
+            {
+                "round": round_index,
+                "strength": strength,
+                "loss_start": loss_start,
+                "loss_end": loss_end,
+            }
+        )
+        if observe and round_index in dream_save_rounds:
+            primes_ck, derived_ck = snapshot_images()
+            targets_det = [t.detach().clamp(0, 1) for t in dream_targets]
+            emit(
+                PhaseEvent(
+                    phase=f"dream_round_{round_index:02d}",
+                    round=round_index,
+                    strength=strength,
+                    primes=primes_ck,
+                    derived=derived_ck,
+                    targets=targets_det,
+                    loss_start=loss_start,
+                    loss_end=loss_end,
+                    wall_s=_time.perf_counter() - t_wall0,
+                    diagnostics=diagnostics,
+                )
+            )
+
+    emit(
+        PhaseEvent(
+            phase="dream_end",
+            wall_s=_time.perf_counter() - t_wall0,
+            diagnostics=diagnostics,
+        )
+    )
 
     with torch.no_grad():
         primes = [network.image().clamp(0, 1) for network in networks]
         final = [image.clamp(0, 1) for image in spec.arrange(primes)]
-    if on_checkpoint:
-        on_checkpoint("final", primes, final, diagnostics)
+    emit(
+        PhaseEvent(
+            phase="final",
+            primes=primes,
+            derived=final,
+            wall_s=_time.perf_counter() - t_wall0,
+            diagnostics=diagnostics,
+        )
+    )
     return IllusionResult(primes=primes, derived=final, diagnostics=diagnostics)
 
 

@@ -1,10 +1,33 @@
 #!/usr/bin/env bash
 # Cooperative GPU lock for illusion experiments on the reference RX 7600 XT.
 # Usage: scripts/gpu-lock.sh [--force] -- <command> [args...]
-# Abort (exit 2) if another GPU workload or the self-hosted CI runner is busy,
-# unless --force is passed after the operator has confirmed the card is free.
+# Acquire the flock FIRST, then preflight, so two campaigns cannot both pass
+# a preflight race. Abort (exit 2) if another GPU workload or the self-hosted
+# CI runner is busy, unless --force is passed after the operator confirms.
 
 set -euo pipefail
+
+# Parse rocm-smi --showuse lines like "GPU use (%): 7" (not "7 %").
+# Safe to source for fixture tests.
+parse_rocm_gpu_use_pct() {
+	local raw="${1:-}"
+	local max_use=0
+	local n
+	while IFS= read -r line; do
+		if [[ "$line" =~ GPU\ use\ \(%\):[[:space:]]*([0-9]+) ]]; then
+			n="${BASH_REMATCH[1]}"
+			if (( n > max_use )); then
+				max_use=$n
+			fi
+		fi
+	done <<<"$raw"
+	echo "$max_use"
+}
+
+# When sourced (unit tests), stop after helpers.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+	return 0
+fi
 
 LOCK_FILE="${POTOCOLOM_GPU_LOCK:-/tmp/potocolom-gpu.lock}"
 FORCE=0
@@ -36,19 +59,17 @@ preflight() {
 
 	if command -v rocm-smi >/dev/null 2>&1; then
 		local use
-		use="$(rocm-smi --showuse 2>/dev/null | rg -o '[0-9]+ %' | head -1 | tr -d ' %' || echo 0)"
+		use="$(parse_rocm_gpu_use_pct "$(rocm-smi --showuse 2>/dev/null || true)")"
 		if [[ "${use:-0}" -gt 15 ]]; then
 			busy=1
 			reason="rocm-smi GPU use ${use}%"
 		fi
 	fi
 
-	# KFD / ROCm compute processes holding the card
 	if ls /dev/kfd >/dev/null 2>&1; then
 		local kfd
 		kfd="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $1}' | sort -u | tr '\n' ' ' || true)"
 		if [[ -n "${kfd// /}" ]]; then
-			# Ignore our own shell and common idle holders; flag python/torch workers
 			if echo "$kfd" | rg -qi 'python|pt_main|hip'; then
 				busy=1
 				reason="${reason:+$reason; }KFD holders: $kfd"
@@ -56,30 +77,18 @@ preflight() {
 		fi
 	fi
 
-	# Self-hosted CI runner actively processing a job
-	if command -v systemctl >/dev/null 2>&1; then
-		if systemctl is-active --quiet actions.runner.*.service 2>/dev/null || \
-			systemctl is-active --quiet 'actions.runner.*' 2>/dev/null; then
-			:
-		fi
-		# Prefer make target when available from repo root
-		if [[ -f Makefile ]] && make -n ci-runner-status >/dev/null 2>&1; then
-			local runner_out
-			runner_out="$(make ci-runner-status 2>/dev/null || true)"
-			if echo "$runner_out" | rg -qi 'Active: active \(running\)'; then
-				# Runner service up is OK when Idle; check for Runner.Worker
-				if pgrep -af 'Runner.Worker' >/dev/null 2>&1; then
-					busy=1
-					reason="${reason:+$reason; }self-hosted Runner.Worker active"
-				fi
-			fi
-		elif pgrep -af 'Runner.Worker' >/dev/null 2>&1; then
-			busy=1
-			reason="${reason:+$reason; }self-hosted Runner.Worker active"
-		fi
-	elif pgrep -af 'Runner.Worker' >/dev/null 2>&1; then
+	if pgrep -af 'Runner.Worker' >/dev/null 2>&1; then
 		busy=1
 		reason="${reason:+$reason; }self-hosted Runner.Worker active"
+	fi
+
+	if [[ -n "${POTOCOLOM_CAMPAIGN_PIDFILE:-}" && -f "${POTOCOLOM_CAMPAIGN_PIDFILE}" ]]; then
+		local other
+		other="$(cat "${POTOCOLOM_CAMPAIGN_PIDFILE}" 2>/dev/null || true)"
+		if [[ -n "$other" && "$other" != "$$" ]] && kill -0 "$other" 2>/dev/null; then
+			busy=1
+			reason="${reason:+$reason; }campaign pid $other active"
+		fi
 	fi
 
 	if [[ "$busy" -eq 1 && "$FORCE" -eq 0 ]]; then
@@ -93,6 +102,11 @@ preflight() {
 	return 0
 }
 
+# Hold the lock for the whole critical section (preflight + command).
+exec 9>"$LOCK_FILE"
+if ! flock 9; then
+	echo "gpu-lock: failed to acquire $LOCK_FILE" >&2
+	exit 2
+fi
 preflight
-
-exec flock "$LOCK_FILE" "$@"
+exec "$@"
