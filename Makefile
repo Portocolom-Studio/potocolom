@@ -4,7 +4,7 @@
 #   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
-#     WORKER=sim|off|cuda to use the simulated worker, skip it, or run on NVIDIA
+#     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
