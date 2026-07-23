@@ -6,40 +6,42 @@ Full protocol: [illusion-reliability.md](illusion-reliability.md).
 
 - Worktree: `/tmp/potocolom-illusion-reliability`
 - Branch: `illusion-reliability-program`
+- HEAD: `2ac34f4` (GPU-lock false-positive fix; prior corrective `ee08f8a`)
 - Do **not** cherry-pick into PR #118 or change optimizer defaults yet.
-- Provisional (exclude from acceptance): `d2e6c52` tree `out/illusion-experiments/`
-  AND all `out/illusion-experiments-v2/` results (VAE sampling used the SDS
-  generator until the post-`1de46b4` corrective commits).
-- Durable evidence root: `.local/illusion-experiments-v3` (never `/tmp`).
+- Provisional (exclude from acceptance): `out/illusion-experiments/` (d2e6c52)
+  and `out/illusion-experiments-v2/` (pre-VAE-fix).
+- Durable evidence: `.local/illusion-experiments-v3/`
 
-## Corrective work after `1de46b4` (this round)
+## Verification complete (ready for Wave 1)
 
-- Restore 5f30fdd legacy VAE sampling: `posterior.sample()` on the global RNG;
-  `posterior_eps` only for opt-in microbatch comparison.
-- Typed `PhaseEvent` observer: `sds_begin/end`, SDS checkpoints 60/125/250/500,
-  dream rounds 1/4/8 (targets + views), `dream_begin/end`, `final`.
-- Corpus `PromptPair` subjects + exact oil prompts; styles applied once.
-- Scoring: `--root`/`positional`, CLIP loaded once per tree, merge-by-phase,
-  fixed ROC-AUC (perfect -> 1.0), strict 24-case ratings gate.
-- Campaign planner/runner (`worker.illusion_campaign`), GPU lock flock-before-
-  preflight + correct `rocm-smi` parse, screening script continues after
-  failures with 65m timeouts into `.local/illusion-experiments-v3`.
+| Check | Result |
+|-------|--------|
+| 3-way GPU digests (60 SDS, 0 Dream, seed 2) | **match=true** vs `5f30fdd` for corrected default and instrumented |
+| Hidden microbatch smoke | peak ~9417 MB / 16368 MB, no OOM |
+| CLIP ViT-L/14 offline | revision `32bd64288804d66eefd0ccbe215aa642df71cc41` |
+| Campaign dry-run | wave1=24, wave2=16, away=180 |
+| Resume/skip tests | `test_illusion_campaign_resume.py` passed |
+| Worker suite | 95+ tests green at last full run |
 
-## Verified so far (CPU)
+Equiv summary: `.local/illusion-experiments-v3/equiv3/equiv3_summary.json`
+Hidden report: `.local/illusion-experiments-v3/hidden_microbatch_smoke/vram_report.json`
+CLIP pin: `.local/illusion-experiments-v3/clip_cache.json`
 
-- Worker suite green after these fixes (95 tests at last run).
-- Campaign dry-run: wave1=24, wave2=16, away<=184, unique spec hashes.
+## Next: Wave 1 pilot (do not skip blind ratings)
 
-## Still required before pilot departure
+24 runs: 6 profiles x 4 screen pairs, seed 2, diagnostics on, `--skip-clip`,
+into `.local/illusion-experiments-v3/`. Then post-score with cached CLIP,
+build blinded sheets, human rate, choose base B.
 
-1. Three-way GPU equivalence at 60 SDS / 0 Dream rounds:
-   `5f30fdd` legacy vs corrected default vs corrected instrumented (step-60).
-   Digests must match. Until this passes, do not trust any GPU evidence.
-2. Hidden microbatch smoke under 16 GB on the corrected SHA.
-3. Offline-cache CLIP ViT-L/14 + diffusion snapshots.
-4. Dummy fail/timeout/interrupt resume simulation for the campaign runner.
-5. Then Wave 1 (24 runs) under `.local/illusion-experiments-v3` with blind
-   sheets; Wave 2; only later the 52-hour away campaign.
+```bash
+cd /tmp/potocolom-illusion-reliability
+PY=$(scripts/worker-python.sh)
+export PYTHONPATH=worker TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 HF_HUB_OFFLINE=1
+$PY -m worker.illusion_campaign plan --pilot-only \
+  --out .local/illusion-experiments-v3/pilot-plan.json \
+  --evidence-root .local/illusion-experiments-v3
+# Prefer campaign runner for wave1 only, or scripts/run-illusion-screening.sh
+```
 
 ## Authorship
 
