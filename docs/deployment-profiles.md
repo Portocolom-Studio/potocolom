@@ -77,9 +77,9 @@ flowchart TB
     end
     subgraph CL["Cloud: same images, paid subscriptions"]
         B2["Browser"] -->|"SPA via CloudFront, REST and WS via the ALB"| A2["API replicas on ECS"]
-        A2 --> AU2["Auth: email+password, Google, GitHub, Apple"]
+        A2 --> AU2["Auth: email+password, Google, GitHub"]
         A2 --> Q2["Quota: billing service over HTTP (private repo)<br>Stripe subscriptions and credits"]
-        A2 -->|"Redis queue + scheduler"| W2["Rented GPU fleet, autoscaled (private repo)<br>fully resident models, tier routing"]
+        A2 -->|"Redis queue + scheduler"| W2["Rented GPU fleet, autoscaled (private repo)<br>fully resident models"]
         A2 --> S2["Storage: S3 + signed CloudFront URLs"]
         A2 --> M2["Metrics: usage_events in RDS<br>-> analytics warehouse (private repo)"]
     end

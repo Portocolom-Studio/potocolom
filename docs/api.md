@@ -2,10 +2,12 @@
 
 Every call a customer's browser makes, from first page load to account deletion. Endpoints that exist today are marked implemented; everything else names the issue that ships it, so this document doubles as the API-level view of the roadmap. The wire-level details of the two WebSocket endpoints live in [connection-handling.md](connection-handling.md); this document covers what flows over them and over REST.
 
+<!-- Status markers corrected 2026-07-23: models + generations + history + progress + studio/metrics/benchmark/files endpoints are implemented (were marked planned). -->
+
 ## Conventions
 
 - Base path `/api/v1`. JSON request and response bodies.
-- Authentication is a session cookie (opaque token, httpOnly), set by the auth endpoints (issue #5). Until those ship, the prototype endpoints are unauthenticated.
+- Authentication is a session cookie (opaque token, httpOnly), set by the auth endpoints (issue #5). Until those ship, the prototype endpoints are unauthenticated and run as a single implicit local user (`AUTH_MODE=none`).
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
 - API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise.
@@ -18,6 +20,15 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented (prototype) | realtime drawing sessions |
 | WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers |
+| GET `/api/v1/models` | implemented (#11, #15) | registered models with parameter schemas and GPU-time estimates |
+| POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
+| GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
+| GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
+| GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
+| GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
+| GET `/api/v1/metrics/gpu/history` | implemented (#98) | GPU telemetry over a time range (raw, or 5-minute rollups) |
+| GET, POST `/api/v1/benchmark/*` | implemented (#83), `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking |
+| PUT, GET `/api/v1/files/{key}` | implemented (#18) | local-storage upload target and serve path (self-hosted, non-S3) |
 | POST `/api/v1/auth/register` | issue #5 | email and password signup |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |
 | POST `/api/v1/auth/login` | issue #5 | session cookie issuance |
@@ -28,10 +39,6 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/account/sessions/{id}` | issue #10 | revoke another session |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
 | DELETE `/api/v1/account` | issue #10 | deactivate now, hard delete within 30 days |
-| GET `/api/v1/models` | issues #11, #15 | registered models with parameter schemas |
-| POST `/api/v1/generations` | issues #11, #16 | queue a generation job |
-| GET `/api/v1/generations/{id}` | issue #16 | job state, result asset when done |
-| GET `/api/v1/assets` | issues #16, #17 | generation history with signed URLs |
 | POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |
 | DELETE `/api/v1/assets/{id}/share` | issue #17 | revoke the share token |
 | GET `/shared/{token}` | issue #17 | public share link target (CDN path in the cloud) |
@@ -61,6 +68,8 @@ The SPA's first call. One build artifact serves every deployment; this response 
 
 `auth_methods` is empty in `AUTH_MODE=none` (self-hosted default: auto login, account UI hidden), `["local"]` for email and password, and `["local", "google", "github"]` when OAuth is configured.
 
+<!-- Note: the shipped SPA does not yet consume /api/v1/config (built but unused). -->
+
 ### WS /api/v1/realtime
 
 The drawing tool's connection. Text messages are JSON control, binary messages are image frames (17 byte header, then payload); framing, timeouts and close codes are specified in [connection-handling.md](connection-handling.md).
@@ -68,6 +77,80 @@ The drawing tool's connection. Text messages are JSON control, binary messages a
 Browser to API: `{"type": "open", "model_id": "sd-sim"}` first, then binary canvas frames carrying the session id, then `{"type": "close"}`.
 
 API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). Terminal failures arrive as `error` messages before the close. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, prompt updates, `credits_tick`, and an out of credits close (an `error` message then the close) when a session's chunked reservation cannot be extended.
+
+### GET /api/v1/models
+
+Registered models, each with its JSON-Schema `parameters` and its measured GPU-time estimate.
+
+```json
+[
+  {
+    "id": "sdxl-base",
+    "name": "SDXL Base",
+    "capabilities": ["text_to_image", "image_to_image"],
+    "min_vram_gb": 10,
+    "default": true,
+    "benchmark_only": false,
+    "estimated_gpu_ms_default": 4200,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": {"type": "string"},
+        "strength": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.7}
+      },
+      "required": ["prompt"]
+    }
+  }
+]
+```
+
+`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness.
+
+<!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
+
+### Generations and history
+
+`POST` queues a job; the job endpoint and the SSE stream report progress; the list endpoint is the history.
+
+```
+POST /api/v1/generations     {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
+                             model_id is REQUIRED. For image_to_image or upscale, also pass
+                             "source_asset_id"; upscale requires a source and is mutually
+                             exclusive with the diffusion capabilities.
+                             202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
+                             402 when credits are insufficient, 422 when params fail the model's schema
+
+GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
+                              "asset": {...} when succeeded, "thumbnail_url": "...",
+                              "source_asset_id": "..." (img2img/upscale),
+                              phase timings "input_fetch_ms"/"load_ms"/"postprocess_ms",
+                              "dispatched_at"/"finished_at", "failure_reason" on failure}
+
+GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
+                             carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
+                             (This is the real history endpoint. There is no /api/v1/assets.)
+
+GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
+```
+
+Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
+
+<!-- Corrected 2026-07-23: model_id is required (was documented optional with tier routing, which is unshipped); history is GET /api/v1/generations (was mislabeled GET /api/v1/assets); added shipped response fields and the SSE events endpoint. -->
+
+### Studio, metrics, benchmark and local files
+
+```
+GET /api/v1/studio/gpu                 {"gpu": {device, util_pct, vram_used_pct, vram_used_bytes,
+                                        vram_total_bytes, temperature_c, power_w, available}}
+GET /api/v1/metrics/gpu/history        ?from&to&rollup - GPU samples over a range; the endpoint
+                                        auto-picks raw samples (48h retention) or 5-minute rollups
+                                        (30d retention) for the requested window. See metrics.md.
+GET  /api/v1/benchmark/models          list benchmarkable models (BENCHMARK_API-gated)
+POST /api/v1/benchmark/{load|unload|run}   drive a model for a benchmark run
+PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
+                                        authorized only for a storage key the API minted in-flight
+GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)
+```
 
 ## Planned endpoints, shapes fixed by the blueprint
 
@@ -84,48 +167,11 @@ POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "pe
 POST /api/v1/auth/logout     204, session row deleted, cache invalidated across replicas
 ```
 
-OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code, finds or creates the user, and ends in the same session cookie as local login.
-
-### Models (issues #11, #15)
-
-```json
-GET /api/v1/models
-[
-  {
-    "id": "sd-turbo",
-    "name": "SD Turbo",
-    "capabilities": ["image_to_image", "realtime"],
-    "tier": "draft",
-    "min_vram_gb": 8,
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "prompt": {"type": "string"},
-        "strength": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.7}
-      },
-      "required": ["prompt"]
-    }
-  }
-]
-```
-
-`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release.
-
-### Generations and history (issues #11, #16, #17)
-
-```
-POST /api/v1/generations     {"model_id": "sd-turbo", "params": {"prompt": "a castle at sunset"}}
-                             model_id is optional: omitted, the API routes to the cheapest
-                             tier that satisfies the request (see architecture.md, Model routing)
-                             202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
-                             402 when credits are insufficient, 422 when params fail the model's schema
-GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed", "asset": {...} when succeeded}
-GET /api/v1/assets           [{"id": "...", "url": "<signed, short lived>", "width": 512, "height": 512, ...}]
-```
-
-Progress streams as control messages over the realtime WebSocket once issue #19 lands; polling the job endpoint is the fallback. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
+OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code, finds or creates the user, and ends in the same session cookie as local login. (Google and GitHub at launch; Apple is deferred.)
 
 ### Sharing (issue #17)
+
+Share operates on an asset id (assets are returned nested in the generations history). The share collection itself is not yet built.
 
 ```
 POST   /api/v1/assets/{id}/share    201 {"url": "https://.../shared/<unguessable token>"}
@@ -159,9 +205,9 @@ sequenceDiagram
     A-->>B: verification email sent
     B->>A: GET /api/v1/auth/verify?token=... (issue 5)
     A-->>B: session cookie
-    B->>A: GET /api/v1/models (issue 11)
-    A-->>B: manifests with parameter schemas
-    B->>A: POST /api/v1/generations (issue 16)
+    B->>A: GET /api/v1/models
+    A-->>B: manifests with parameter schemas and estimates
+    B->>A: POST /api/v1/generations
     A->>A: rate limit, prompt screen, quota reserve
     A-->>B: 202 job id
     A->>W: dispatch

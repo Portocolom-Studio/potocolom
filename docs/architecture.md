@@ -131,6 +131,8 @@ A worker's VRAM holds roughly one or two models, so balancing users onto models 
 
 A request that pins a `model_id` gets that model. A request that does not is resolved by the API to the cheapest registered model whose `tier` (`draft`, `standard`, `premium`, from the manifest), capabilities and parameter schema satisfy it. Difficulty needs no classifier because the interface states it: drawing strokes are realtime work on a draft-tier turbo model, a refine action is a queued job routed to a heavier tier. This is a selection function inside dispatch, not a service; the draft-then-refine loop it enables is frontend composition of the two workflows below.
 
+> Shipped status (2026-07-23): **not yet implemented.** `model_id` is required on `POST /api/v1/generations`, and the manifest has no `tier` field, so there is no routing path today. This section describes a designed policy.
+
 ### Low VRAM operation: the memory ladder
 
 `min_vram_gb` in a manifest is the full residency requirement, but full residency is not the only way to run a model. Layer streaming tools like airLLM proved that models far larger than VRAM can run by holding only the executing layers on the GPU; diffusers ships the same techniques natively (model CPU offload, and group offloading with stream prefetch and optional disk backing), so the worker exposes them as a ladder rather than adding any dependency. At model load the worker measures free VRAM and takes the highest rung that fits:
@@ -198,7 +200,7 @@ sequenceDiagram
     participant W as Worker
     participant S as Storage
     B->>A: POST /api/v1/generations
-    A->>A: resolve model, tier routing when model_id absent
+    A->>A: resolve model by model_id (tier routing is designed, not shipped)
     A->>A: quota reserve, create job row
     A-->>B: job id
     A->>W: dispatch, direct self-hosted or Redis queue in cloud
@@ -382,7 +384,7 @@ Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are 
 
 ### Per-model time estimates
 
-`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. The shipped baselines are measured on the reference card (RX 7600 XT); per-install measurement so self-hosted installs surface their own hardware's numbers is the open half of issue #47. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time.
+`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). Upscale models additionally expose an `estimated_gpu_ms_by_factor` map (one estimate per scale factor). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. The shipped baselines are measured on the reference card (RX 7600 XT). Issue #47 is closed (PRs #80, #87); per-install measurement, so self-hosted installs surface their own hardware's numbers, is a possible follow-up that would need its own issue. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time. <!-- corrected 2026-07-23: #47 is closed (was "the open half of #47"); added estimated_gpu_ms_by_factor. -->
 
 ## Asset storage and access
 
