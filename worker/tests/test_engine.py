@@ -348,6 +348,34 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     assert engine._calibrated_slots == 0
 
 
+def test_calibrate_realtime_skips_cpu_without_frames():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cpu"
+    engine.memory_mode = "full"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._calibrated_slots = None
+    engine._gpu = asyncio.Lock()
+    engine._select_rung = MagicMock(return_value="full")
+    engine._frame = MagicMock(return_value=b"webp")
+
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    slots = engine._calibrate_realtime(manifest, configured=4)
+
+    assert slots == 0
+    assert engine._calibrated_slots == 0
+    engine._frame.assert_not_called()
+    engine._select_rung.assert_not_called()
+
+
 def test_evict_cold_removes_oldest_first():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("a", "t2i"): object(), ("b", "t2i"): object()}

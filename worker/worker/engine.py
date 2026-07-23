@@ -514,6 +514,10 @@ class DiffusersEngine:
         Multi-image batch calibration waits on deferred cross-session batching;
         until then N sessions share the GPU lock, so capacity is bar_ms / p95.
         """
+        if self.device != "cuda":
+            # CPU diffusion cannot hold the bar; skip the frames, advertise nothing.
+            self._calibrated_slots = 0
+            return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
             self._calibrated_slots = 0
             return 0
