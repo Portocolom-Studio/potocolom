@@ -42,8 +42,9 @@ REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
 # After a non-OOM generation error, drop the resident model at most this often
 # so a permanently broken weight set cannot thrash load/unload (issue #103).
 POISON_EVICT_COOLDOWN_S = 30.0
-# Timing samples after the compile warmup forward (p95 of these).
-CALIBRATION_SAMPLES = 5
+# Timing samples after the discarded warmup pass; nearest-rank p95 over
+# these tolerates one outlier (19th of 20) instead of becoming the max.
+CALIBRATION_SAMPLES = 20
 
 
 @dataclass
@@ -353,21 +354,38 @@ class DiffusersEngine:
                 modules.append((name, module))
         return modules
 
-    def _set_attention_backend(self, pipeline: Any) -> None:
+    def _set_attention_backend(self, pipeline: Any) -> list[Any]:
+        """Apply the configured attention backend; return modules that took it."""
         backend = self.attention_backend.strip()
         if not backend:
-            return
+            return []
+        applied: list[Any] = []
         for name, module in self._denoise_modules(pipeline):
             setter = getattr(module, "set_attention_backend", None)
             if setter is None:
                 continue
             try:
                 setter(backend)
+                applied.append(module)
                 logger.info("attention backend %s on %s", backend, name)
             except Exception as error:
                 logger.warning(
                     "set_attention_backend(%s) failed on %s: %s", backend, name, error,
                 )
+        return applied
+
+    def _reset_attention_backend(self, module: Any) -> None:
+        """Undo a set_attention_backend without raising out of the revert path."""
+        try:
+            reset = getattr(module, "reset_attention_backend", None)
+            if reset is not None:
+                reset()
+                return
+            setter = getattr(module, "set_attention_backend", None)
+            if setter is not None:
+                setter("native")
+        except Exception as error:
+            logger.warning("reset_attention_backend failed: %s", error)
 
     def _compile_module(self, pipeline: Any, name: str, module: Any) -> Any | None:
         """Compile one denoise module; return the original module on success.
@@ -394,28 +412,29 @@ class DiffusersEngine:
 
         Offload rungs skip compile: accelerate hooks fight Inductor. Failures
         keep the uncompiled module so load still succeeds (ROCm Inductor is
-        not guaranteed for every UNet shape).
+        not guaranteed for every UNet shape). Warmup runs when either compile
+        or an attention backend was applied, so a bad backend is not first
+        discovered by a user frame.
         """
         if self.device != "cuda":
             return
-        self._set_attention_backend(pipeline)
-        if not self.torch_compile:
-            return
+        applied = self._set_attention_backend(pipeline)
         originals: list[tuple[str, Any]] = []
-        for name, module in self._denoise_modules(pipeline):
-            original = self._compile_module(pipeline, name, module)
-            if original is not None:
-                originals.append((name, original))
-        if not originals:
+        if self.torch_compile:
+            for name, module in self._denoise_modules(pipeline):
+                original = self._compile_module(pipeline, name, module)
+                if original is not None:
+                    originals.append((name, original))
+        if not originals and not applied:
             return
         try:
             self._warmup_pipeline(pipeline, mode)
         except Exception:
-            # Warmup is already logged inside _warmup_pipeline; revert so a
-            # broken compiled graph cannot poison every subsequent job.
             for name, original in originals:
                 setattr(pipeline, name, original)
-            logger.warning("reverted torch.compile after warmup failure")
+            for module in applied:
+                self._reset_attention_backend(module)
+            logger.warning("reverted warmup optimizations after failure")
             return
 
     def _warmup_pipeline(self, pipeline: Any, mode: str) -> None:
@@ -479,7 +498,15 @@ class DiffusersEngine:
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         async with self._gpu:
-            return await asyncio.to_thread(self._calibrate_realtime, manifest, configured)
+            try:
+                return await asyncio.to_thread(self._calibrate_realtime,
+                                               manifest, configured)
+            except Exception:
+                # Could not measure; advertise nothing rather than a guess,
+                # and never let a boot-time inference error kill the worker.
+                logger.exception("realtime calibration failed for %s", manifest.id)
+                self._calibrated_slots = 0
+                return 0
 
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.
