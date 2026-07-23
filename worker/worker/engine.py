@@ -369,22 +369,25 @@ class DiffusersEngine:
                     "set_attention_backend(%s) failed on %s: %s", backend, name, error,
                 )
 
-    def _compile_module(self, pipeline: Any, name: str, module: Any) -> None:
+    def _compile_module(self, pipeline: Any, name: str, module: Any) -> Any | None:
+        """Compile one denoise module; return the original module on success.
+
+        Always wraps with torch.compile (not in-place regional compile) so a
+        failed warmup can restore the eager module.
+        """
         try:
-            if getattr(module, "_repeated_blocks", None):
-                module.compile_repeated_blocks(
-                    mode="reduce-overhead", fullgraph=False, dynamic=True,
-                )
-            else:
-                setattr(
-                    pipeline, name,
-                    self.torch.compile(
-                        module, mode="reduce-overhead", fullgraph=False, dynamic=True,
-                    ),
-                )
+            # reduce-overhead enables CUDAGraphs, which overwrite intermediate
+            # activations on this ROCm + Diffusers UNet path. default still
+            # fuses kernels without graph capture.
+            compiled = self.torch.compile(
+                module, mode="default", fullgraph=False, dynamic=True,
+            )
+            setattr(pipeline, name, compiled)
             logger.info("torch.compile applied to %s", name)
+            return module
         except Exception as error:
             logger.warning("torch.compile failed for %s: %s", name, error)
+            return None
 
     def _optimize_resident(self, pipeline: Any, mode: str) -> None:
         """Attention backend + torch.compile for full-resident GPU pipelines.
@@ -398,32 +401,47 @@ class DiffusersEngine:
         self._set_attention_backend(pipeline)
         if not self.torch_compile:
             return
+        originals: list[tuple[str, Any]] = []
         for name, module in self._denoise_modules(pipeline):
-            self._compile_module(pipeline, name, module)
-        self._warmup_pipeline(pipeline, mode)
+            original = self._compile_module(pipeline, name, module)
+            if original is not None:
+                originals.append((name, original))
+        if not originals:
+            return
+        try:
+            self._warmup_pipeline(pipeline, mode)
+        except Exception:
+            # Warmup is already logged inside _warmup_pipeline; revert so a
+            # broken compiled graph cannot poison every subsequent job.
+            for name, original in originals:
+                setattr(pipeline, name, original)
+            logger.warning("reverted torch.compile after warmup failure")
+            return
 
     def _warmup_pipeline(self, pipeline: Any, mode: str) -> None:
-        """One cheap forward so the first user job does not pay compile cost."""
-        try:
-            if mode == "t2i":
-                pipeline(
-                    prompt="",
-                    num_inference_steps=1,
-                    guidance_scale=0.0,
-                    width=REALTIME_SIZE,
-                    height=REALTIME_SIZE,
-                )
-            elif mode == "i2i":
-                canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
-                pipeline(
-                    prompt="",
-                    image=canvas,
-                    num_inference_steps=2,
-                    strength=0.5,
-                    guidance_scale=0.0,
-                )
-        except Exception as error:
-            logger.warning("compile warmup failed: %s", error)
+        """One cheap forward so the first user job does not pay compile cost.
+
+        Raises on failure so the caller can revert a broken compiled module.
+        """
+        if mode == "t2i":
+            pipeline(
+                prompt="",
+                num_inference_steps=1,
+                guidance_scale=0.0,
+                width=REALTIME_SIZE,
+                height=REALTIME_SIZE,
+            )
+            return
+        if mode == "i2i":
+            canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+            pipeline(
+                prompt="",
+                image=canvas,
+                num_inference_steps=2,
+                strength=0.5,
+                guidance_scale=0.0,
+            )
+            return
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
         if mode.startswith("upscale-"):

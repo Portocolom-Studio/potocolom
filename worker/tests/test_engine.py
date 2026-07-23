@@ -169,7 +169,6 @@ def test_optimize_resident_skips_offload_and_survives_compile_failure():
     engine.attention_backend = "_native_efficient"
 
     unet = MagicMock()
-    unet._repeated_blocks = None
     unet.set_attention_backend = MagicMock(side_effect=ValueError("no backend"))
     pipeline = MagicMock()
     pipeline.unet = unet
@@ -180,7 +179,29 @@ def test_optimize_resident_skips_offload_and_survives_compile_failure():
 
     unet.set_attention_backend.assert_called_once_with("_native_efficient")
     torch_stub.compile.assert_called_once()
-    # Failure kept the original module; setattr was still attempted via compile path.
+    engine._warmup_pipeline.assert_not_called()
+
+
+def test_optimize_resident_reverts_after_warmup_failure():
+    torch_stub = MagicMock()
+    compiled = MagicMock(name="compiled")
+    torch_stub.compile.return_value = compiled
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.torch_compile = True
+    engine.attention_backend = ""
+
+    unet = MagicMock(name="eager_unet")
+    pipeline = MagicMock()
+    pipeline.unet = unet
+    pipeline.transformer = None
+    engine._warmup_pipeline = MagicMock(side_effect=RuntimeError("cudagraph boom"))
+
+    engine._optimize_resident(pipeline, "t2i")
+
+    assert pipeline.unet is unet
     engine._warmup_pipeline.assert_called_once_with(pipeline, "t2i")
 
 
