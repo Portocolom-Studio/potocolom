@@ -265,6 +265,20 @@ def test_strict_ratings_missing_case_fails(tmp_path: Path) -> None:
     assert any("case-05" in failure for failure in report["failures"])
 
 
+def test_clip_feature_tensor_unwraps_pooling_output() -> None:
+    import torch
+    from worker.illusion_experiment import _clip_feature_tensor
+
+    class FakePooling:
+        def __init__(self, pooler_output):
+            self.pooler_output = pooler_output
+
+    pooled = torch.ones(2, 4)
+    assert _clip_feature_tensor(FakePooling(pooled)) is pooled
+    plain = torch.zeros(3, 5)
+    assert _clip_feature_tensor(plain) is plain
+
+
 def test_score_run_dir_writes_sidecar_not_manifest(tmp_path, monkeypatch) -> None:
     run = tmp_path / "run"
     run.mkdir()

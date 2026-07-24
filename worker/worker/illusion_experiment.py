@@ -327,6 +327,19 @@ def load_clip(device: str = "cpu") -> tuple[Any, Any, str | None]:
     return model, processor, revision
 
 
+def _clip_feature_tensor(feats: Any) -> Any:
+    """Normalize CLIP get_*_features output to a 2D embedding tensor.
+
+    transformers 5.x returns ``BaseModelOutputWithPooling`` (projected
+    features in ``pooler_output``). Older releases returned the tensor
+    directly.
+    """
+    pooler = getattr(feats, "pooler_output", None)
+    if pooler is not None:
+        return pooler
+    return feats
+
+
 def _clip_text_embeds(
     model: Any,
     processor: Any,
@@ -347,7 +360,7 @@ def _clip_text_embeds(
             for key, value in inputs.items()
             if key in ("input_ids", "attention_mask")
         }
-        feats = model.get_text_features(**text_inputs)
+        feats = _clip_feature_tensor(model.get_text_features(**text_inputs))
         feats = feats / feats.norm(dim=-1, keepdim=True)
         for prompt, feat in zip(missing, feats, strict=True):
             cache[prompt] = feat
@@ -385,7 +398,7 @@ def clip_similarity_matrix(
     text_embeds = _clip_text_embeds(model, processor, prompts, device, text_cache)
     image_inputs = processor(images=pil_images, return_tensors="pt")
     pixel_values = image_inputs["pixel_values"].to(device)
-    image_embeds = model.get_image_features(pixel_values=pixel_values)
+    image_embeds = _clip_feature_tensor(model.get_image_features(pixel_values=pixel_values))
     image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
     return (image_embeds @ text_embeds.T).detach().cpu().tolist()
 

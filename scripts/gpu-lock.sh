@@ -32,6 +32,9 @@ fi
 LOCK_FILE="${POTOCOLOM_GPU_LOCK:-/tmp/potocolom-gpu.lock}"
 FORCE=0
 WAIT_S="${POTOCOLOM_GPU_WAIT_S:-300}"
+# Desktop residual on the reference RX 7600 often sits ~16-23% with empty KFD.
+# Override with POTOCOLOM_GPU_IDLE_PCT (predeparture uses 25).
+IDLE_PCT="${POTOCOLOM_GPU_IDLE_PCT:-15}"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -61,9 +64,9 @@ preflight() {
 	if command -v rocm-smi >/dev/null 2>&1; then
 		local use
 		use="$(parse_rocm_gpu_use_pct "$(rocm-smi --showuse 2>/dev/null || true)")"
-		if [[ "${use:-0}" -gt 15 ]]; then
+		if [[ "${use:-0}" -gt "${IDLE_PCT}" ]]; then
 			busy=1
-			reason="rocm-smi GPU use ${use}%"
+			reason="rocm-smi GPU use ${use}% (idle threshold ${IDLE_PCT}%)"
 		fi
 	fi
 
