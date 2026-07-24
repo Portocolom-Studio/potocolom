@@ -43,37 +43,59 @@ that parity check passes. All new evidence goes under a fresh tree,
 `.local/illusion-experiments-v3`, and is never mixed with the provisional
 trees above.
 
+Control chronology (journal, events, audits) lives under
+`.local/illusion-reliability/`. Both directories are gitignored.
+
 ## Prompt corpus
 
 Each pair in `worker.illusion_experiment.FINAL_PAIRS` (a `PromptPair`) carries
 both style-free `subject_a` / `subject_b` and the exact legacy oil prompts
 `prompt_a` / `prompt_b`; `SCREEN_PAIRS` is the four-pair funnel. Style
-`none`/`oil` uses the exact oil prompts verbatim (never re-wrapped); any other
-style wraps each subject with `apply_style_template` exactly once. Each
-manifest records `subjects`, `effective_prompts`, and `style_requested`.
+`none`/`oil` uses the exact oil prompts verbatim (never re-wrapped);
+`coherent_oil` is a distinct template. Other styles wrap each subject with
+`apply_style_template` exactly once. Each manifest records `subjects`,
+`effective_prompts`, and `style_requested`.
 
 ```bash
 $PY -m worker.illusion_experiment run --pair-id dog_sloth --seed 2 \
   --out .local/illusion-experiments-v3/run
 ```
 
-## Instrumentation
+## Objectives and schedules
+
+- `legacy` (default): CFG residual; do not change until acceptance.
+- `weighted_sds`, `csd`, `nfsd`: ablation objectives. Canonical `csd` is
+  `w(t)*(cond-uncond)` and rejects `--sds-guidance`.
+- `--sqrt-timestep-anneal`: square-root SDS timestep schedule only (not full
+  HiFA). `--hifa-schedule` remains a deprecated alias.
+
+## Campaign
+
+```bash
+$PY -m worker.illusion_campaign plan --phase wave1 \
+  --out .local/illusion-reliability/campaigns/wave1/plan.json \
+  --evidence-root .local/illusion-experiments-v3
+scripts/run-illusion-campaign-tmux.sh \
+  .local/illusion-reliability/campaigns/wave1/plan.json
+```
+
+Phases: `wave1` | `wave2` | `away`. Resume validates plan SHA, HEAD, and
+image hashes. GPU lock waits for idle and returns exit 75 when temporarily
+busy. CLIP scoring writes `clip_scores.json` sidecars and does not mutate
+raw optimizer manifests by default.
 
 Default `IllusionConfig` is legacy-equivalent: empty `checkpoint_steps`,
 `collect_diagnostics=False`, VAE slicing and `channels_last` off.
 
 Instrumented runs (harness `--collect-diagnostics`) record phase-qualified
 checkpoints `sds_0060`, `sds_0125`, `sds_0250`, `sds_0500`, and `final`
-(never reuse 500 for final). Manifests are atomic with
-`status=running|completed|failed`. Resume skips only `status=completed`
-runs that already have final derived images; incomplete dirs are preserved
-and new attempts use `*_attempt_N`.
+(never reuse 500 for final). Campaign attempts use `attempt_001/` with
+sibling `driver/attempt_001/` status and logs. Resume skips only completed
+manifests that match plan/HEAD/spec and both image hashes.
 
 Post-hoc CLIP scoring (ViT-L/14, pinned revision) after `--skip-clip` GPU
-runs. `score-run` and `score-tree` accept the path either positionally or via
-a flag; `score-tree` loads CLIP once, caches text embeddings, merges scores
-into each checkpoint under its phase name (`sds_0060`, not `ckpt_sds_0060`)
-without dropping diagnostics, and prefers the root `derived_*.png` as final:
+runs writes `clip_scores.json` sidecars by default and does not rewrite raw
+optimizer manifests. `score-tree` loads CLIP once and caches text embeddings:
 
 ```bash
 $PY -m worker.illusion_experiment score-run .local/illusion-experiments-v3/run

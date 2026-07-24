@@ -4,45 +4,81 @@ Full protocol: [illusion-reliability.md](illusion-reliability.md).
 
 ## Branch
 
-- Worktree: `/tmp/potocolom-illusion-reliability`
-- Branch: `illusion-reliability-program`
-- HEAD: `2ac34f4` (GPU-lock false-positive fix; prior corrective `ee08f8a`)
+- Branch: `illusion-reliability-program` (worktree may be used for GPU work)
 - Do **not** cherry-pick into PR #118 or change optimizer defaults yet.
-- Provisional (exclude from acceptance): `out/illusion-experiments/` (d2e6c52)
-  and `out/illusion-experiments-v2/` (pre-VAE-fix).
-- Durable evidence: `.local/illusion-experiments-v3/`
+- Authorship: `leonfullxr` / DCO `-s` / no Co-authored-by.
 
-## Verification complete (ready for Wave 1)
+## Durable local layout (gitignored)
+
+All machine evidence lives under the primary checkout:
+
+```text
+.local/illusion-experiments-v3/     # Wave 1 evidence + retries (canonical)
+.local/illusion-reliability/        # control record
+  JOURNAL.md
+  events.jsonl
+  current.json
+  audits/
+    wave1-f03-audit.json
+    evidence-sha256.json
+  campaigns/<id>/
+```
+
+Never store campaign evidence under `/tmp`. Temporary worktree copies may exist
+for recovery but the primary `.local/` tree is canonical after hash verify.
+
+## Wave 1 record (frozen at f03bbf5 evidence)
+
+| Class | Count | Notes |
+|-------|------:|-------|
+| Completed raw | 21 | Retain all files |
+| Admit clean pilot (non-CSD) | 18 | Under `wave1/*/seed_2_attempt_1` |
+| f03 retries | 2 | `wave1_retries/legacy/dog_sloth`, `wave1_retries/dream_lr_3e3/fox_rabbit` |
+| Quarantine CSD | 3 | `csd_scaled_7_5_noncanonical` - rerun canonical CSD |
+| Failed preflight | 3 | Residual GPU use; no optimizer entry. CSD walrus not retried |
+
+Clean 24-run Wave 1 index target: 18 + 2 retries + 4 canonical CSD (after semantics).
+
+## Corrective commits after f03bbf5
+
+Inspect `git log f03bbf5..HEAD` on this branch for:
+
+1. Canonical CSD / sqrt anneal / coherent_oil / microbatch telemetry
+2. Provenance-safe campaign resume (attempt/driver layout)
+3. Detached tmux campaign launcher
+4. GPU idle wait + exit 75 temporary-busy; CLIP sidecars; answer-key identity
+
+## Verification already done
 
 | Check | Result |
 |-------|--------|
-| 3-way GPU digests (60 SDS, 0 Dream, seed 2) | **match=true** vs `5f30fdd` for corrected default and instrumented |
-| Hidden microbatch smoke | peak ~9417 MB / 16368 MB, no OOM |
-| CLIP ViT-L/14 offline | revision `32bd64288804d66eefd0ccbe215aa642df71cc41` |
-| Campaign dry-run | wave1=24, wave2=16, away=180 |
-| Resume/skip tests | `test_illusion_campaign_resume.py` passed |
-| Worker suite | 95+ tests green at last full run |
+| 3-way GPU digests (60 SDS, 0 Dream) | match vs `5f30fdd` (see `.local/.../equiv3/`) |
+| Hidden microbatch smoke | ~9417 MB / 16368 MB |
+| CLIP ViT-L/14 offline | rev `32bd64288804d66eefd0ccbe215aa642df71cc41` |
+| Worker suite | 106+ tests green after repair commits |
 
-Equiv summary: `.local/illusion-experiments-v3/equiv3/equiv3_summary.json`
-Hidden report: `.local/illusion-experiments-v3/hidden_microbatch_smoke/vram_report.json`
-CLIP pin: `.local/illusion-experiments-v3/clip_cache.json`
+Full 500-SDS + Dream three-way parity is still required before base-B selection.
 
-## Next: Wave 1 pilot (do not skip blind ratings)
+## Next
 
-24 runs: 6 profiles x 4 screen pairs, seed 2, diagnostics on, `--skip-clip`,
-into `.local/illusion-experiments-v3/`. Then post-score with cached CLIP,
-build blinded sheets, human rate, choose base B.
+1. Generate four canonical CSD Wave 1 cases; build clean 24-run index.
+2. Full 500+Dream parity vs `5f30fdd`.
+3. Score (CLIP sidecars), blind-rate Wave 1, freeze base B in journal.
+4. Wave 2 then freeze finalists + away plan before departure.
+5. Launch 60-hour campaign via `scripts/run-illusion-campaign-tmux.sh`.
 
 ```bash
-cd /tmp/potocolom-illusion-reliability
-PY=$(scripts/worker-python.sh)
+# From reliability branch checkout
 export PYTHONPATH=worker TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 HF_HUB_OFFLINE=1
-$PY -m worker.illusion_campaign plan --pilot-only \
-  --out .local/illusion-experiments-v3/pilot-plan.json \
+PY=$(scripts/worker-python.sh)
+$PY -m worker.illusion_campaign plan --phase wave1 \
+  --out .local/illusion-reliability/campaigns/wave1/plan.json \
   --evidence-root .local/illusion-experiments-v3
-# Prefer campaign runner for wave1 only, or scripts/run-illusion-screening.sh
+scripts/run-illusion-campaign-tmux.sh .local/illusion-reliability/campaigns/wave1/plan.json
 ```
 
-## Authorship
+## Exclusions
 
-`leonfullxr` / DCO `-s` / no Co-authored-by.
+- `out/illusion-experiments/` @ `d2e6c52`
+- `out/illusion-experiments-v2/`
+- Quarantined scaled-CSD Wave 1 runs (files retained, not admitted)
