@@ -22,6 +22,7 @@ from worker.illusions import (  # noqa: E402
     preserve_rng_state,
     resolve_learning_rates,
     sds_timestep_weight,
+    sqrt_anneal_timestep_fraction,
     warn_low_clip_margins,
 )
 
@@ -62,21 +63,52 @@ def test_compute_sds_gradient_weighted_applies_w_t() -> None:
     assert torch.allclose(got, torch.full_like(got, 0.5))
 
 
-def test_compute_sds_gradient_csd() -> None:
+def test_compute_sds_gradient_csd_canonical_ignores_guidance() -> None:
     noise = torch.randn(1, 1, 2, 2)
     uncond = torch.zeros(1, 1, 2, 2)
     cond = torch.ones(1, 1, 2, 2)
     weight = torch.tensor(0.25)
-    guidance = 8.0
     got = compute_sds_gradient(
         objective="csd",
         noise=noise,
         uncond=uncond,
         cond=cond,
-        guidance_scale=guidance,
+        guidance_scale=8.0,
         weight_t=weight,
     )
-    assert torch.allclose(got, torch.full_like(got, 2.0))
+    # Canonical Eq.7: w(t)*(cond-uncond) = 0.25 * 1, not 0.25*8
+    assert torch.allclose(got, torch.full_like(got, 0.25))
+    got2 = compute_sds_gradient(
+        objective="csd",
+        noise=noise,
+        uncond=uncond,
+        cond=cond,
+        guidance_scale=1.0,
+        weight_t=weight,
+    )
+    assert torch.allclose(got, got2)
+
+
+def test_csd_rejects_explicit_guidance_cli() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        [
+            "--type",
+            "flip",
+            "--prompt",
+            "a",
+            "--prompt",
+            "b",
+            "--out",
+            "/tmp/x",
+            "--sds-objective",
+            "csd",
+            "--sds-guidance",
+            "7.5",
+        ]
+    )
+    with pytest.raises(SystemExit, match="csd rejects"):
+        config_from_args(args)
 
 
 def test_compute_sds_gradient_nfsd() -> None:
@@ -113,9 +145,17 @@ def test_nfsd_negative_prompt_matches_paper() -> None:
     assert "gloomy" in NFSD_NEGATIVE_PROMPT
 
 
-def test_hifa_timestep_fraction_bounds() -> None:
-    assert hifa_timestep_fraction(0.0) == pytest.approx(0.98)
-    assert hifa_timestep_fraction(1.0) == pytest.approx(0.02)
+def test_sqrt_anneal_timestep_fraction_bounds() -> None:
+    assert sqrt_anneal_timestep_fraction(0.0) == pytest.approx(0.98)
+    assert sqrt_anneal_timestep_fraction(1.0) == pytest.approx(0.02)
+    assert hifa_timestep_fraction(0.25) == pytest.approx(sqrt_anneal_timestep_fraction(0.25))
+
+
+def test_oil_and_coherent_oil_templates_differ() -> None:
+    assert STYLE_TEMPLATES["oil"] == "an oil painting of {}"
+    assert STYLE_TEMPLATES["coherent_oil"] == "a coherent oil painting of {}"
+    assert apply_style_template("a dog", "oil") != apply_style_template("a dog", "coherent_oil")
+    assert apply_style_template("a dog", "oil") == "an oil painting of a dog"
 
 
 def test_sds_timestep_weight() -> None:

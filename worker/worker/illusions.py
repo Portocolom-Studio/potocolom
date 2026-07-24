@@ -77,11 +77,18 @@ NFSD_NEGATIVE_PROMPT = (
 )
 
 # Style templates: {} is replaced by the semantic subject text.
+# "oil" keeps the exact legacy wording. "coherent_oil" is a distinct control.
 STYLE_TEMPLATES: dict[str, str] = {
-    "oil": "a coherent oil painting of {}",
+    "oil": "an oil painting of {}",
+    "coherent_oil": "a coherent oil painting of {}",
     "pencil": "a detailed HB pencil sketch of {}",
     "editorial": "a centered editorial illustration of {} with a clear silhouette",
 }
+
+# Square-root SDS timestep anneal (NOT full HiFA): endpoints and exponent.
+SQRT_ANNEAL_T_HIGH = 0.98
+SQRT_ANNEAL_T_LOW = 0.02
+SQRT_ANNEAL_EXPONENT = 0.5
 
 
 # ---------------------------------------------------------------- primes
@@ -252,11 +259,17 @@ def apply_style_template(subject: str, style: str | None) -> str:
     return STYLE_TEMPLATES[style].format(subject)
 
 
-def hifa_timestep_fraction(progress: float) -> float:
-    """HiFA-style fraction of the train schedule: 98% noise -> 2% as
-    t(p)=0.02+0.96*(1-sqrt(p)). progress in [0, 1]."""
+def sqrt_anneal_timestep_fraction(progress: float) -> float:
+    """Square-root timestep anneal: high noise -> low as
+    t(p)=T_low+(T_high-T_low)*(1-p**exponent). Not the full HiFA method."""
     p = min(max(progress, 0.0), 1.0)
-    return 0.02 + 0.96 * (1.0 - math.sqrt(p))
+    span = SQRT_ANNEAL_T_HIGH - SQRT_ANNEAL_T_LOW
+    return SQRT_ANNEAL_T_LOW + span * (1.0 - (p**SQRT_ANNEAL_EXPONENT))
+
+
+def hifa_timestep_fraction(progress: float) -> float:
+    """Deprecated alias for sqrt_anneal_timestep_fraction."""
+    return sqrt_anneal_timestep_fraction(progress)
 
 
 def sds_timestep_weight(alphas_cumprod: Tensor, timestep: int) -> Tensor:
@@ -279,14 +292,14 @@ def compute_sds_gradient(
     Formulas (then applied via (latent * gradient).sum()):
       legacy:       (eps_cfg - noise)
       weighted_sds: w(t) * (eps_cfg - noise)
-      csd:          w(t) * guidance * (eps_cond - eps_uncond)
+      csd:          w(t) * (eps_cond - eps_uncond)   # canonical; ignores guidance
       nfsd:         w(t) * (delta_D + guidance * delta_C)
     """
     if objective not in SDS_OBJECTIVES:
         raise ValueError(f"unknown sds_objective {objective!r}")
     delta_c = cond - uncond
     if objective == "csd":
-        return (weight_t * guidance_scale * delta_c).float()
+        return (weight_t * delta_c).float()
     if objective == "nfsd":
         if delta_d is None:
             raise ValueError("nfsd requires delta_d")
@@ -691,22 +704,22 @@ class DiffusionAdapter:
         chunk = max(1, int(view_batch_size))
         # Shape-only noise sample (no encode yet).
         _, channels, lat_h, lat_w = latent_shape_for(derived)
-        fake_latent = torch.empty(
-            batch, channels, lat_h, lat_w, device=self.device, dtype=self.dtype
-        )
-        timestep, noise, alphas = self._sample_sds_noise_and_t(
-            fake_latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
-        )
+        # Legacy parity: VAE epsilon from global RNG BEFORE any SDS-generator draws.
         if posterior_eps is None:
             posterior_eps = torch.randn(
                 batch,
                 channels,
                 lat_h,
                 lat_w,
-                generator=generator,
                 device=self.device,
                 dtype=self.dtype,
             )
+        fake_latent = torch.empty(
+            batch, channels, lat_h, lat_w, device=self.device, dtype=self.dtype
+        )
+        timestep, noise, alphas = self._sample_sds_noise_and_t(
+            fake_latent, generator, progress=progress, use_hifa_schedule=use_hifa_schedule
+        )
         total = 0.0
         for start in range(0, batch, chunk):
             end = min(start + chunk, batch)
@@ -1152,7 +1165,7 @@ def optimize_illusion(
             assert view_batch is not None
             if float(loss.detach().item()) != 0.0 or loss.requires_grad:
                 loss.backward(retain_graph=True)
-            adapter.sds_microbatch_backward(
+            sds_loss_value = adapter.sds_microbatch_backward(
                 torch.cat(prompt_images, dim=0),
                 prompt_texts,
                 prompt_weights,
@@ -1163,7 +1176,7 @@ def optimize_illusion(
                 use_hifa_schedule=config.use_hifa_schedule,
                 view_batch_size=view_batch,
             )
-            loss_value = float(loss.detach().item())
+            loss_value = float(loss.detach().item()) + float(sds_loss_value)
         else:
             if prompt_images:
                 loss = loss + adapter.sds_loss_batch(
@@ -1277,6 +1290,7 @@ def optimize_illusion(
                 "strength": strength,
                 "loss_start": loss_start,
                 "loss_end": loss_end,
+                "loss_reduction": loss_start - loss_end,
             }
         )
         if observe and round_index in dream_save_rounds:
@@ -1371,7 +1385,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--sds-steps", type=int, default=500)
-    parser.add_argument("--sds-guidance", type=float, default=100.0)
+    parser.add_argument(
+        "--sds-guidance",
+        type=float,
+        default=None,
+        help="CFG scale for legacy/weighted_sds/nfsd (default 100). Rejected for csd.",
+    )
     parser.add_argument(
         "--sds-objective",
         choices=SDS_OBJECTIVES,
@@ -1395,9 +1414,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sqrt-timestep-anneal",
+        action="store_true",
+        help=(
+            "square-root SDS timestep anneal "
+            f"(t: {SQRT_ANNEAL_T_HIGH}->{SQRT_ANNEAL_T_LOW}, "
+            f"exponent={SQRT_ANNEAL_EXPONENT}); not full HiFA; off by default"
+        ),
+    )
+    parser.add_argument(
         "--hifa-schedule",
         action="store_true",
-        help="use HiFA square-root timestep schedule (off by default)",
+        help="deprecated alias for --sqrt-timestep-anneal",
     )
     parser.add_argument(
         "--round-robin",
@@ -1446,6 +1474,16 @@ def config_from_args(args: argparse.Namespace) -> IllusionConfig:
     if args.learning_rate is not None and sds_lr is None and dream_lr is None:
         sds_lr = dream_lr = args.learning_rate
     style = None if args.style == "none" else args.style
+    if args.sds_objective == "csd":
+        if args.sds_guidance is not None:
+            raise SystemExit(
+                "csd rejects --sds-guidance; canonical CSD is w(t)*(cond-uncond) "
+                "(see CSD paper Eq. 7)"
+            )
+        sds_guidance = 1.0  # unused by compute_sds_gradient for csd
+    else:
+        sds_guidance = 100.0 if args.sds_guidance is None else float(args.sds_guidance)
+    use_sqrt = bool(getattr(args, "sqrt_timestep_anneal", False) or args.hifa_schedule)
     return IllusionConfig(
         illusion=args.type,
         prompts=args.prompt,
@@ -1453,11 +1491,11 @@ def config_from_args(args: argparse.Namespace) -> IllusionConfig:
         model_id=args.model,
         dream_model_id=dream_model,
         sds_steps=args.sds_steps,
-        sds_guidance=args.sds_guidance,
+        sds_guidance=sds_guidance,
         sds_objective=args.sds_objective,
         sds_low_res=args.sds_low_res,
         sds_low_res_fraction=args.sds_low_res_fraction,
-        use_hifa_schedule=args.hifa_schedule,
+        use_hifa_schedule=use_sqrt,
         round_robin=args.round_robin,
         view_batch_size=args.view_batch_size,
         enable_vae_slicing=args.vae_slicing,
