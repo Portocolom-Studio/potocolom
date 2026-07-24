@@ -1009,7 +1009,11 @@ def _build_illusion_config(args: argparse.Namespace):
         "model_id": args.model,
         "dream_model_id": None if args.dream_model.lower() == "none" else args.dream_model,
         "sds_steps": args.sds_steps,
-        "sds_guidance": args.sds_guidance,
+        "sds_guidance": (
+            1.0
+            if args.sds_objective == "csd"
+            else (100.0 if args.sds_guidance is None else args.sds_guidance)
+        ),
         "sds_objective": args.sds_objective,
         "dream_rounds": args.dream_rounds,
         "dream_steps": args.dream_steps,
@@ -1019,7 +1023,7 @@ def _build_illusion_config(args: argparse.Namespace):
         "learning_rate": 1e-3,
         "seed": args.seed,
         "device": args.device,
-        "use_hifa_schedule": args.hifa_schedule,
+        "use_hifa_schedule": args.sqrt_timestep_anneal,
         "round_robin": args.round_robin,
         "view_batch_size": args.view_batch_size,
         # Style is already baked into effective_prompts; None avoids double-wrap.
@@ -1039,6 +1043,8 @@ def run_single_experiment(args: argparse.Namespace) -> int:
 
     from worker.illusions import optimize_illusion, save_image, warn_low_clip_margins
 
+    if args.sds_objective == "csd" and args.sds_guidance is not None:
+        raise ValueError("CSD does not accept --sds-guidance")
     requested = Path(args.out)
     out = resolve_run_out(requested)
     if out is None:
@@ -1074,6 +1080,10 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
         "git_sha": git_sha(),
+        "campaign_id": args.campaign_id,
+        "spec_hash": args.spec_hash,
+        "plan_sha": args.plan_sha,
+        "optimizer_fingerprint": args.optimizer_fingerprint,
         "name": args.name,
         "pair_id": args.pair_id,
         "subjects": subjects,
@@ -1277,9 +1287,8 @@ def print_screen_plan(out_root: Path) -> None:
         ("03_dream_lr_3e-3", "--sds-objective legacy --dream-lr 3e-3"),
         ("04_dream_lr_1e-2", "--sds-objective legacy --dream-lr 1e-2"),
         ("05_dream_sd15", "--sds-objective legacy --dream-model none"),
-        ("06_csd_cfg7.5", "--sds-objective csd --sds-guidance 7.5"),
-        ("07_csd_cfg20", "--sds-objective csd --sds-guidance 20"),
-        ("08_nfsd_cfg7.5", "--sds-objective nfsd --sds-guidance 7.5"),
+        ("06_csd", "--sds-objective csd"),
+        ("07_nfsd_cfg7.5", "--sds-objective nfsd --sds-guidance 7.5"),
     ]
     for pair in SCREEN_PAIRS:
         pair_id = pair.pair_id
@@ -1315,10 +1324,10 @@ def print_stage2_plan(out_root: Path, profile_flags: str) -> None:
     pair = SCREEN_PAIRS[0]
     pair_id = pair.pair_id
     experiments = [
-        ("hifa", "--hifa-schedule"),
+        ("sqrt_anneal", "--sqrt-timestep-anneal"),
         ("round_robin", "--round-robin"),
-        ("combined_csd_lcm", "--sds-objective csd --sds-guidance 7.5"),
-        ("style_oil", "--style oil"),
+        ("combined_csd_lcm", "--sds-objective csd"),
+        ("style_coherent_oil", "--style coherent_oil"),
         ("style_pencil", "--style pencil"),
         ("style_editorial", "--style editorial"),
     ]
@@ -1346,14 +1355,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     run.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
     run.add_argument("--sds-steps", type=int, default=500)
-    run.add_argument("--sds-guidance", type=float, default=100.0)
+    run.add_argument("--sds-guidance", type=float, default=None)
     run.add_argument("--sds-objective", default="legacy")
     run.add_argument("--sds-lr", type=float, default=1e-3)
     run.add_argument("--dream-lr", type=float, default=1e-3)
     run.add_argument("--dream-rounds", type=int, default=8)
     run.add_argument("--dream-steps", type=int, default=300)
     run.add_argument("--dream-joint", action="store_true")
-    run.add_argument("--hifa-schedule", action="store_true")
+    run.add_argument("--sqrt-timestep-anneal", action="store_true")
+    run.add_argument(
+        "--hifa-schedule",
+        action="store_true",
+        dest="sqrt_timestep_anneal",
+        help="deprecated alias for --sqrt-timestep-anneal",
+    )
     run.add_argument("--round-robin", action="store_true")
     run.add_argument("--view-batch-size", type=int, default=None)
     run.add_argument("--enable-vae-slicing", action="store_true")
@@ -1363,6 +1378,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--device", default="cuda")
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--skip-clip", action="store_true")
+    run.add_argument("--campaign-id")
+    run.add_argument("--spec-hash")
+    run.add_argument("--plan-sha")
+    run.add_argument("--optimizer-fingerprint")
 
     score_run = sub.add_parser("score-run", help="post-hoc CLIP score one run directory")
     score_run.add_argument("run_dir", type=Path, nargs="?")

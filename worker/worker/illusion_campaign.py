@@ -1,8 +1,4 @@
-"""Immutable illusion campaign plans and an unattended runner.
-
-Writes evidence under ``.local/illusion-experiments-v3`` by default.
-Not imported by the online worker path.
-"""
+"""Immutable illusion campaign plans and an unattended runner."""
 
 from __future__ import annotations
 
@@ -19,24 +15,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from worker.illusion_experiment import (
-    FINAL_PAIRS,
-    SCREEN_PAIRS,
-    git_sha,
-    repo_root,
-    write_manifest_atomic,
-)
+from worker.illusion_experiment import FINAL_PAIRS, SCREEN_PAIRS, PAIR_BY_ID, git_sha, repo_root, resolve_pair_prompts, write_manifest_atomic
 
-DEFAULT_EVIDENCE_ROOT = Path(".local/illusion-experiments-v3")
+PREFERRED_EVIDENCE_ROOT = Path("/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-experiments-v3")
+DEFAULT_EVIDENCE_ROOT = PREFERRED_EVIDENCE_ROOT if PREFERRED_EVIDENCE_ROOT.exists() else Path(".local/illusion-experiments-v3")
 GENERATION_DEADLINE_S = 52 * 3600
-SCORE_RESERVE_S = 2 * 3600
 RUN_TIMEOUT_S = 65 * 60
 TELEMETRY_INTERVAL_S = 10
+START_RESERVE_S = 5 * 60
+BUSY_EXIT_CODE = 75
+EVENTS_PATH = Path("/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-reliability/events.jsonl")
 
 WAVE1_PROFILES: list[tuple[str, list[str]]] = [
     ("legacy", ["--sds-objective", "legacy"]),
     ("weighted_sds", ["--sds-objective", "weighted_sds"]),
-    ("csd_7_5", ["--sds-objective", "csd", "--sds-guidance", "7.5"]),
+    ("csd", ["--sds-objective", "csd"]),
     ("nfsd_7_5", ["--sds-objective", "nfsd", "--sds-guidance", "7.5"]),
     ("dream_lr_3e3", ["--sds-objective", "legacy", "--dream-lr", "3e-3"]),
     ("dream_joint", ["--sds-objective", "legacy", "--dream-joint"]),
@@ -56,13 +49,23 @@ class CampaignEntry:
     estimate_s: float = 950.0
     style: str = "none"
 
-    def spec_hash(self) -> str:
+    def spec_hash(
+        self,
+        *,
+        model_id: str = "",
+        dream_model_id: str = "",
+        optimizer_fingerprint: str = "",
+    ) -> str:
+        _subjects, effective_prompts = resolve_pair_prompts(PAIR_BY_ID[self.pair_id], self.style)
         payload = {
-            "profile": self.profile,
-            "pair_id": self.pair_id,
+            "effective_prompts": effective_prompts,
             "seed": self.seed,
-            "flags": list(self.flags),
-            "style": self.style,
+            "optimizer_config": {"type": "flip", "flags": list(self.flags), "style": self.style},
+            "model_snapshot_paths_or_revisions": {
+                "model": model_id,
+                "dream_model": dream_model_id,
+            },
+            "optimizer_fingerprint": optimizer_fingerprint,
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -76,20 +79,38 @@ class CampaignPlan:
     evidence_root: str
     model_id: str
     dream_model_id: str
+    optimizer_fingerprint: str = ""
     entries: list[CampaignEntry] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        data = {
             "campaign_id": self.campaign_id,
             "git_sha": self.git_sha,
             "created_at": self.created_at,
             "evidence_root": self.evidence_root,
             "model_id": self.model_id,
             "dream_model_id": self.dream_model_id,
+            "optimizer_fingerprint": self.optimizer_fingerprint,
             "entries": [
-                {**asdict(entry), "spec_hash": entry.spec_hash()} for entry in self.entries
+                {
+                    **asdict(entry),
+                    "spec_hash": entry.spec_hash(
+                        model_id=self.model_id,
+                        dream_model_id=self.dream_model_id,
+                        optimizer_fingerprint=self.optimizer_fingerprint,
+                    ),
+                }
+                for entry in self.entries
             ],
         }
+        data["plan_sha"] = plan_sha(data)
+        return data
+
+
+def plan_sha(data: dict[str, Any]) -> str:
+    payload = {key: value for key, value in data.items() if key != "plan_sha"}
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _entry(
@@ -134,21 +155,20 @@ def build_pilot_wave1() -> list[CampaignEntry]:
     return entries
 
 
-def build_pilot_wave2(
-    base_flags: list[str], *, base_is_legacy_joint: bool = False
-) -> list[CampaignEntry]:
-    """Build exactly four Wave-2 profiles from B's stripped flags."""
+def build_pilot_wave2(base_flags: list[str]) -> list[CampaignEntry]:
+    """Build four selected Wave-2 profiles from the declared base selection."""
     candidates: list[tuple[str, list[str]]] = [
-        ("B_hifa", base_flags + ["--hifa-schedule"]),
+        ("B_sqrt_anneal", base_flags + ["--sqrt-timestep-anneal"]),
         ("B_round_robin", base_flags + ["--round-robin"]),
         ("B_dream_joint", base_flags + ["--dream-joint"]),
-        ("B_hifa_joint", base_flags + ["--hifa-schedule", "--dream-joint"]),
+        ("B_sqrt_anneal_joint", base_flags + ["--sqrt-timestep-anneal", "--dream-joint"]),
         ("B_rr_joint", base_flags + ["--round-robin", "--dream-joint"]),
     ]
-    # If Wave 1 already measured legacy+dream_joint, skip the pure joint candidate.
-    if base_is_legacy_joint or base_flags == ["--sds-objective", "legacy"]:
-        candidates = [c for c in candidates if c[0] != "B_dream_joint"]
-    selected_profiles = candidates[:4]
+    # Legacy plus dream_joint was already measured in Wave 1, so retain four
+    # novel ablations for the default campaign.
+    selected_profiles = [
+        candidate for candidate in candidates if candidate[0] != "B_dream_joint"
+    ][:4]
     out: list[CampaignEntry] = []
     for name, flags in selected_profiles:
         for pair in SCREEN_PAIRS:
@@ -203,9 +223,9 @@ def build_away_tiers(finalist_profiles: list[tuple[str, list[str]]]) -> list[Cam
                     priority=200,
                 )
             )
-    # Tier 3: CSD20, dream_lr 1e-2, classic SD15 dream
+    # Tier 3: legacy CFG 50, dream learning rate 1e-2, classic SD15 dream.
     for profile, flags in [
-        ("csd_20", ["--sds-objective", "csd", "--sds-guidance", "20"]),
+        ("legacy_cfg_50", ["--sds-objective", "legacy", "--sds-guidance", "50"]),
         ("dream_lr_1e2", ["--sds-objective", "legacy", "--dream-lr", "1e-2"]),
         ("dream_sd15", ["--sds-objective", "legacy", "--dream-model", "none"]),
     ]:
@@ -220,10 +240,9 @@ def build_away_tiers(finalist_profiles: list[tuple[str, list[str]]]) -> list[Cam
                     priority=300,
                 )
             )
-    # Tier 4: styles on subjects x 4 screen pairs x seeds 0,1 using B (first finalist)
+    # Tier 4: styles on subjects x 4 screen pairs x seeds 0,1 using B.
     b_flags = finalist_profiles[0][1] if finalist_profiles else ["--sds-objective", "legacy"]
-    for style in ("oil", "pencil", "editorial"):
-        # oil style is oil-equivalent (exact prompts); still listed for coherent-oil control
+    for style in ("coherent_oil", "pencil", "editorial"):
         profile = f"style_{style}"
         for pair in SCREEN_PAIRS:
             for seed in (0, 1):
@@ -259,7 +278,7 @@ def build_away_tiers(finalist_profiles: list[tuple[str, list[str]]]) -> list[Cam
             )
     # Tier 6 optional: tier3 profiles x 4 screen x seeds 0,1
     for profile, flags in [
-        ("csd_20", ["--sds-objective", "csd", "--sds-guidance", "20"]),
+        ("legacy_cfg_50", ["--sds-objective", "legacy", "--sds-guidance", "50"]),
         ("dream_lr_1e2", ["--sds-objective", "legacy", "--dream-lr", "1e-2"]),
         ("dream_sd15", ["--sds-objective", "legacy", "--dream-model", "none"]),
     ]:
@@ -289,7 +308,7 @@ def build_full_plan(
     finalists = finalist_profiles or [
         ("finalist_a", ["--sds-objective", "legacy"]),
         ("finalist_b", ["--sds-objective", "weighted_sds"]),
-        ("finalist_c", ["--sds-objective", "csd", "--sds-guidance", "7.5"]),
+        ("finalist_c", ["--sds-objective", "csd"]),
     ]
     entries = build_pilot_wave1()
     entries.extend(build_pilot_wave2(["--sds-objective", "legacy"]))
@@ -299,7 +318,9 @@ def build_full_plan(
     seen_hash: set[str] = set()
     unique: list[CampaignEntry] = []
     for entry in entries:
-        digest = entry.spec_hash()
+        digest = entry.spec_hash(
+            model_id=model_id, dream_model_id=dream_model_id, optimizer_fingerprint=""
+        )
         if digest in seen_hash:
             continue
         seen_hash.add(digest)
@@ -323,7 +344,9 @@ def plan_counts(plan: CampaignPlan) -> dict[str, int]:
     return counts
 
 
-def is_completed_matching(out_dir: Path, expected_sha: str, expected_spec: str) -> bool:
+def is_completed_matching(
+    out_dir: Path, expected_sha: str, expected_spec: str, expected_plan_sha: str | None = None
+) -> bool:
     manifest_path = out_dir / "manifest.json"
     if not manifest_path.is_file():
         return False
@@ -337,7 +360,33 @@ def is_completed_matching(out_dir: Path, expected_sha: str, expected_spec: str) 
         return False
     if manifest.get("spec_hash") != expected_spec:
         return False
+    if expected_plan_sha is not None and manifest.get("plan_sha") != expected_plan_sha:
+        return False
     return (out_dir / "derived_1.png").is_file() and (out_dir / "derived_2.png").is_file()
+
+
+def _entry_root(plan: CampaignPlan, entry: CampaignEntry) -> Path:
+    return Path(plan.evidence_root) / entry.out_rel
+
+
+def _attempts(entry_root: Path) -> list[Path]:
+    return sorted(
+        (path for path in entry_root.glob("attempt_*") if path.is_dir()),
+        key=lambda path: path.name,
+    )
+
+
+def _next_attempt(entry_root: Path) -> tuple[int, Path]:
+    number = 1
+    while (entry_root / f"attempt_{number:03d}").exists():
+        number += 1
+    return number, entry_root / f"attempt_{number:03d}"
+
+
+def _append_event(event: dict[str, Any]) -> None:
+    if EVENTS_PATH.parent.is_dir():
+        with EVENTS_PATH.open("a") as handle:
+            handle.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(), **event}) + "\n")
 
 
 def _sample_telemetry() -> dict[str, Any]:
@@ -362,25 +411,23 @@ def run_entry(
     py: str,
     force_gpu: bool = False,
     dry_run: bool = False,
+    plan_identity: str | None = None,
 ) -> dict[str, Any]:
-    root = Path(plan.evidence_root)
-    out = root / entry.out_rel
-    status_path = out / "driver_status.json"
-    log_path = out / "run.log"
-    out.mkdir(parents=True, exist_ok=True)
+    entry_root = _entry_root(plan, entry)
+    identity = plan_identity or plan.to_json()["plan_sha"]
+    spec = entry.spec_hash(
+        model_id=plan.model_id,
+        dream_model_id=plan.dream_model_id,
+        optimizer_fingerprint=plan.optimizer_fingerprint,
+    )
+    for previous in _attempts(entry_root):
+        if is_completed_matching(previous, plan.git_sha, spec, identity):
+            return {"entry_id": entry.entry_id, "status": "skipped_completed"}
 
-    if is_completed_matching(out, plan.git_sha, entry.spec_hash()):
-        return {"entry_id": entry.entry_id, "status": "skipped_completed"}
-
-    # Incomplete prior attempt -> new attempt directory
-    if (out / "manifest.json").is_file():
-        attempt = 1
-        while (root / f"{entry.out_rel}_attempt_{attempt}").exists():
-            attempt += 1
-        out = root / f"{entry.out_rel}_attempt_{attempt}"
-        out.mkdir(parents=True, exist_ok=True)
-        status_path = out / "driver_status.json"
-        log_path = out / "run.log"
+    attempt, out = _next_attempt(entry_root)
+    driver = entry_root / "driver" / f"attempt_{attempt:03d}"
+    status_path = driver / "status.json"
+    log_path = driver / "run.log"
 
     cmd = [
         str(repo_root() / "scripts" / "gpu-lock.sh"),
@@ -406,13 +453,24 @@ def run_entry(
         entry.style,
         "--out",
         str(out),
+        "--campaign-id",
+        plan.campaign_id,
+        "--spec-hash",
+        spec,
+        "--plan-sha",
+        identity,
+        "--optimizer-fingerprint",
+        plan.optimizer_fingerprint,
         *list(entry.flags),
     ]
     status: dict[str, Any] = {
         "entry_id": entry.entry_id,
         "status": "running",
         "pid": None,
-        "spec_hash": entry.spec_hash(),
+        "attempt": attempt,
+        "out": str(out),
+        "spec_hash": spec,
+        "plan_sha": identity,
         "git_sha": plan.git_sha,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "cmd": cmd,
@@ -448,7 +506,7 @@ def run_entry(
                 now = time.monotonic()
                 if now >= next_tel:
                     telemetry.append(_sample_telemetry())
-                    write_manifest_atomic(out / "telemetry.json", {"samples": telemetry[-360:]})
+                    write_manifest_atomic(driver / "telemetry.json", {"samples": telemetry[-360:]})
                     next_tel = now + TELEMETRY_INTERVAL_S
                 if rc is not None:
                     break
@@ -459,17 +517,11 @@ def run_entry(
                     write_manifest_atomic(status_path, status)
                     return status
                 time.sleep(1.0)
-            # Stamp spec hash into completed manifest if present
-            manifest_path = out / "manifest.json"
-            if manifest_path.is_file():
-                try:
-                    manifest = json.loads(manifest_path.read_text())
-                    manifest["spec_hash"] = entry.spec_hash()
-                    write_manifest_atomic(manifest_path, manifest)
-                except json.JSONDecodeError:
-                    pass
             if rc == 0:
                 status["status"] = "completed"
+            elif rc == BUSY_EXIT_CODE:
+                status["status"] = "busy"
+                status["exit_code"] = rc
             else:
                 status["status"] = "failed"
                 status["exit_code"] = rc
@@ -481,13 +533,145 @@ def run_entry(
             return status
 
     result = _attempt()
-    # Retry infrastructure/lock failures once; never auto-retry OOM.
-    if result.get("status") == "failed" and result.get("error") != "oom":
-        exit_code = result.get("exit_code")
-        if exit_code in (2, 64) or exit_code is None:
-            result = _attempt()
-            result["retried"] = True
+    _append_event({"campaign_id": plan.campaign_id, "entry_id": entry.entry_id, "status": result["status"]})
     return result
+
+
+def _optimizer_fingerprint() -> str:
+    optimizer = repo_root() / "worker" / "worker" / "illusions.py"
+    return hashlib.sha256(optimizer.read_bytes()).hexdigest()[:16]
+
+
+def _profile_map() -> dict[str, list[str]]:
+    return {name: flags for name, flags in WAVE1_PROFILES}
+
+
+def _select_wave2(base_flags: list[str], selected: str | None) -> list[CampaignEntry]:
+    entries = build_pilot_wave2(base_flags)
+    if selected is None:
+        return entries
+    wanted = selected.split(",")
+    if len(wanted) != 4 or len(set(wanted)) != 4:
+        raise ValueError("--wave2-profiles must name exactly four distinct profiles")
+    available = {entry.profile for entry in entries}
+    if not set(wanted) <= available:
+        raise ValueError(f"unknown Wave-2 profile: expected one of {sorted(available)}")
+    return [entry for entry in entries if entry.profile in wanted]
+
+
+def _finalists(value: str | None) -> list[tuple[str, list[str]]]:
+    profiles = _profile_map()
+    names = (value or "weighted_sds,nfsd_7_5,dream_joint").split(",")
+    if len(names) < 1:
+        raise ValueError("--finalists cannot be empty")
+    unknown = [name for name in names if name not in profiles]
+    if unknown:
+        raise ValueError(f"unknown finalist profiles: {unknown}")
+    return [(name, profiles[name]) for name in names]
+
+
+def _blocked_rotated(entries: list[CampaignEntry]) -> list[CampaignEntry]:
+    """Keep phase blocks while rotating profiles between consecutive pairs."""
+    by_profile: dict[str, list[CampaignEntry]] = {}
+    for entry in entries:
+        by_profile.setdefault(entry.profile, []).append(entry)
+    profiles = list(by_profile)
+    ordered: list[CampaignEntry] = []
+    round_index = 0
+    while any(by_profile.values()):
+        for offset in range(len(profiles)):
+            profile = profiles[(round_index + offset) % len(profiles)]
+            if by_profile[profile]:
+                ordered.append(by_profile[profile].pop(0))
+        round_index += 1
+    return ordered
+
+
+def build_phase_plan(
+    *,
+    phase: str,
+    evidence_root: Path,
+    model_id: str,
+    dream_model_id: str,
+    base_selection: str = "legacy",
+    wave2_profiles: str | None = None,
+    finalists: str | None = None,
+) -> CampaignPlan:
+    profiles = _profile_map()
+    if phase == "wave1":
+        entries = build_pilot_wave1()
+    elif phase == "wave2":
+        if base_selection not in profiles:
+            raise ValueError(f"unknown --base-selection: {base_selection}")
+        entries = _select_wave2(profiles[base_selection], wave2_profiles)
+    elif phase == "away":
+        entries = build_away_tiers(_finalists(finalists))
+    else:
+        raise ValueError(f"unknown phase: {phase}")
+    plan = CampaignPlan(
+        campaign_id=f"illusion-{phase}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        git_sha=git_sha(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        evidence_root=str(evidence_root),
+        model_id=model_id,
+        dream_model_id=dream_model_id,
+        optimizer_fingerprint=_optimizer_fingerprint(),
+        entries=_blocked_rotated(entries),
+    )
+    return plan
+
+
+def load_plan(path: Path) -> tuple[CampaignPlan, str]:
+    data = json.loads(path.read_text())
+    actual_sha = plan_sha(data)
+    if data.get("plan_sha") != actual_sha:
+        raise ValueError("plan_sha does not match plan contents")
+    entries = [
+        CampaignEntry(
+            entry_id=raw["entry_id"],
+            tier=raw["tier"],
+            profile=raw["profile"],
+            pair_id=raw["pair_id"],
+            seed=raw["seed"],
+            flags=tuple(raw["flags"]),
+            out_rel=raw["out_rel"],
+            priority=raw["priority"],
+            estimate_s=raw.get("estimate_s", 950.0),
+            style=raw.get("style", "none"),
+        )
+        for raw in data["entries"]
+    ]
+    return (
+        CampaignPlan(
+            campaign_id=data["campaign_id"],
+            git_sha=data["git_sha"],
+            created_at=data["created_at"],
+            evidence_root=data["evidence_root"],
+            model_id=data["model_id"],
+            dream_model_id=data["dream_model_id"],
+            optimizer_fingerprint=data.get("optimizer_fingerprint", ""),
+            entries=entries,
+        ),
+        actual_sha,
+    )
+
+
+def _command_status(plan: CampaignPlan, plan_identity: str) -> dict[str, int]:
+    counts = {"completed": 0, "incomplete": 0, "missing": 0}
+    for entry in plan.entries:
+        spec = entry.spec_hash(
+            model_id=plan.model_id,
+            dream_model_id=plan.dream_model_id,
+            optimizer_fingerprint=plan.optimizer_fingerprint,
+        )
+        attempts = _attempts(_entry_root(plan, entry))
+        if any(is_completed_matching(path, plan.git_sha, spec, plan_identity) for path in attempts):
+            counts["completed"] += 1
+        elif attempts:
+            counts["incomplete"] += 1
+        else:
+            counts["missing"] += 1
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -499,7 +683,10 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--evidence-root", type=Path, default=DEFAULT_EVIDENCE_ROOT)
     plan_cmd.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     plan_cmd.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
-    plan_cmd.add_argument("--pilot-only", action="store_true")
+    plan_cmd.add_argument("--phase", choices=("wave1", "wave2", "away"), required=True)
+    plan_cmd.add_argument("--base-selection", default="legacy")
+    plan_cmd.add_argument("--wave2-profiles")
+    plan_cmd.add_argument("--finalists")
 
     dry = sub.add_parser("dry-run", help="assert wave/away counts and unique spec hashes")
     dry.add_argument("--plan", type=Path, required=True)
@@ -509,14 +696,24 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--force-gpu", action="store_true")
     run.add_argument("--max-entries", type=int, default=None)
     run.add_argument("--deadline-s", type=float, default=GENERATION_DEADLINE_S)
+    run.add_argument("--cooldown-s", type=float, default=300.0)
+
+    for command in ("status", "audit", "report"):
+        command_parser = sub.add_parser(command, help=f"show campaign {command}")
+        command_parser.add_argument("--plan", type=Path, required=True)
 
     args = parser.parse_args(argv)
     if args.cmd == "plan":
-        plan = build_full_plan(
+        if args.evidence_root.is_absolute() and str(args.evidence_root).startswith("/tmp"):
+            parser.error("refusing /tmp evidence root for unattended campaign")
+        plan = build_phase_plan(
+            phase=args.phase,
             evidence_root=args.evidence_root,
             model_id=args.model,
             dream_model_id=args.dream_model,
-            include_away=not args.pilot_only,
+            base_selection=args.base_selection,
+            wave2_profiles=args.wave2_profiles,
+            finalists=args.finalists,
         )
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
@@ -524,35 +721,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.out}")
         return 0
 
-    plan_data = json.loads(Path(args.plan).read_text())
-    entries = []
-    for raw in plan_data["entries"]:
-        entries.append(
-            CampaignEntry(
-                entry_id=raw["entry_id"],
-                tier=raw["tier"],
-                profile=raw["profile"],
-                pair_id=raw["pair_id"],
-                seed=raw["seed"],
-                flags=tuple(raw["flags"]),
-                out_rel=raw["out_rel"],
-                priority=raw["priority"],
-                style=raw.get("style", "none"),
-            )
-        )
-    plan = CampaignPlan(
-        campaign_id=plan_data["campaign_id"],
-        git_sha=plan_data["git_sha"],
-        created_at=plan_data["created_at"],
-        evidence_root=plan_data["evidence_root"],
-        model_id=plan_data["model_id"],
-        dream_model_id=plan_data["dream_model_id"],
-        entries=entries,
-    )
+    plan, plan_identity = load_plan(args.plan)
+    if args.cmd in ("status", "audit", "report"):
+        print(json.dumps({"plan_sha": plan_identity, **_command_status(plan, plan_identity)}, indent=2))
+        return 0
 
     if args.cmd == "dry-run":
         counts = plan_counts(plan)
-        hashes = [e.spec_hash() for e in plan.entries]
+        hashes = [
+            e.spec_hash(
+                model_id=plan.model_id,
+                dream_model_id=plan.dream_model_id,
+                optimizer_fingerprint=plan.optimizer_fingerprint,
+            )
+            for e in plan.entries
+        ]
         assert len(hashes) == len(set(hashes)), "duplicate spec hashes"
         wave1 = counts.get("wave1", 0)
         wave2 = counts.get("wave2", 0)
@@ -560,10 +743,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps({"counts": counts, "wave1": wave1, "wave2": wave2, "away": away}, indent=2)
         )
-        if wave1 != 24:
+        if wave1 and wave1 != 24:
             print(f"FAIL: wave1 expected 24 got {wave1}", file=sys.stderr)
             return 1
-        if wave2 != 16:
+        if wave2 and wave2 != 16:
             print(f"FAIL: wave2 expected 16 got {wave2}", file=sys.stderr)
             return 1
         if away > 184:
@@ -573,21 +756,39 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "run":
+        if git_sha() != plan.git_sha:
+            print(
+                f"refusing run: HEAD {git_sha()} does not match plan.git_sha {plan.git_sha}",
+                file=sys.stderr,
+            )
+            return 1
+        if Path(plan.evidence_root).is_absolute() and str(plan.evidence_root).startswith("/tmp"):
+            print("refusing unattended run with /tmp evidence root", file=sys.stderr)
+            return 1
         py = os.environ.get("POTOCOLOM_WORKER_PYTHON") or str(
             repo_root() / "worker" / ".venv" / "bin" / "python"
         )
         started = time.monotonic()
         n = 0
-        for entry in sorted(plan.entries, key=lambda e: (e.priority, e.entry_id)):
+        pending = list(plan.entries)
+        while pending:
+            entry = pending.pop(0)
             if args.max_entries is not None and n >= args.max_entries:
                 break
-            if time.monotonic() - started > args.deadline_s:
-                print("generation deadline reached; stopping")
+            remaining = args.deadline_s - (time.monotonic() - started)
+            if remaining < entry.estimate_s * 1.5 + START_RESERVE_S:
+                print(f"deadline reserve skips {entry.entry_id}")
                 break
             print(f"RUN {entry.entry_id}")
-            result = run_entry(plan, entry, py=py, force_gpu=args.force_gpu)
+            result = run_entry(
+                plan, entry, py=py, force_gpu=args.force_gpu, plan_identity=plan_identity
+            )
             print(json.dumps({"entry_id": entry.entry_id, "status": result.get("status")}))
             n += 1
+            if result.get("status") == "busy":
+                print(f"GPU busy; retrying after {args.cooldown_s:.0f}s")
+                time.sleep(args.cooldown_s)
+                pending.insert(0, entry)
         return 0
 
     return 1
