@@ -65,6 +65,20 @@ def test_build_config_bakes_effective_prompts_with_style_none() -> None:
     assert subjects == [pair.subject_a, pair.subject_b]
 
 
+def test_sds_guidance_defaults_and_sqrt_alias() -> None:
+    parser = build_arg_parser()
+    legacy = parser.parse_args(["run", "--pair-id", "dog_sloth", "--out", "x"])
+    config, *_ = _build_illusion_config(legacy)
+    assert legacy.sds_guidance is None
+    assert config.sds_guidance == 100.0
+    sqrt = parser.parse_args(
+        ["run", "--pair-id", "dog_sloth", "--sqrt-timestep-anneal", "--out", "x"]
+    )
+    assert sqrt.sqrt_timestep_anneal is True
+    alias = parser.parse_args(["run", "--pair-id", "dog_sloth", "--hifa-schedule", "--out", "x"])
+    assert alias.sqrt_timestep_anneal is True
+
+
 def test_manual_roc_auc_perfect_anti_perfect_and_ties() -> None:
     assert _manual_roc_auc([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == pytest.approx(1.0)
     assert _manual_roc_auc([1, 1, 0, 0], [0.1, 0.2, 0.8, 0.9]) == pytest.approx(0.0)
@@ -249,3 +263,37 @@ def test_strict_ratings_missing_case_fails(tmp_path: Path) -> None:
     assert report["gate_pass"] is False
     assert any("missing rating" in failure for failure in report["failures"])
     assert any("case-05" in failure for failure in report["failures"])
+
+
+def test_score_run_dir_writes_sidecar_not_manifest(tmp_path, monkeypatch) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "effective_prompts": ["an oil painting of a dog", "an oil painting of a sloth"],
+                "config": {"prompts": ["an oil painting of a dog", "an oil painting of a sloth"]},
+            }
+        )
+        + "\n"
+    )
+    # Minimal PNGs via PIL
+    from PIL import Image
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(run / "derived_1.png")
+    Image.new("RGB", (8, 8), (40, 50, 60)).save(run / "derived_2.png")
+    before = (run / "manifest.json").read_text()
+
+    def fake_score_images_for_prompts(*args, **kwargs):
+        return {"clip_pair_score": 0.5, "clip_margins": [0.1, 0.2]}
+
+    monkeypatch.setattr(
+        "worker.illusion_experiment.score_images_for_prompts", fake_score_images_for_prompts
+    )
+    monkeypatch.setattr(
+        "worker.illusion_experiment.load_clip", lambda device="cpu": (None, None, "rev")
+    )
+    from worker.illusion_experiment import score_run_dir
+
+    score_run_dir(run, device="cpu")
+    assert (run / "clip_scores.json").is_file()
+    assert (run / "manifest.json").read_text() == before

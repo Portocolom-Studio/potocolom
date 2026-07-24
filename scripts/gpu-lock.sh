@@ -2,8 +2,8 @@
 # Cooperative GPU lock for illusion experiments on the reference RX 7600 XT.
 # Usage: scripts/gpu-lock.sh [--force] -- <command> [args...]
 # Acquire the flock FIRST, then preflight, so two campaigns cannot both pass
-# a preflight race. Abort (exit 2) if another GPU workload or the self-hosted
-# CI runner is busy, unless --force is passed after the operator confirms.
+# a preflight race. Wait briefly for a temporary workload to finish, then
+# return exit 75 when the GPU remains busy so a campaign can retry safely.
 
 set -euo pipefail
 
@@ -31,6 +31,7 @@ fi
 
 LOCK_FILE="${POTOCOLOM_GPU_LOCK:-/tmp/potocolom-gpu.lock}"
 FORCE=0
+WAIT_S="${POTOCOLOM_GPU_WAIT_S:-300}"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -70,10 +71,8 @@ preflight() {
 		local kfd
 		kfd="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $1}' | sort -u | tr '\n' ' ' || true)"
 		if [[ -n "${kfd// /}" ]]; then
-			if echo "$kfd" | rg -qi 'python|pt_main|hip'; then
-				busy=1
-				reason="${reason:+$reason; }KFD holders: $kfd"
-			fi
+			busy=1
+			reason="${reason:+$reason; }KFD holders: $kfd"
 		fi
 	fi
 
@@ -96,7 +95,7 @@ preflight() {
 	if [[ "$busy" -eq 1 && "$FORCE" -eq 0 ]]; then
 		echo "gpu-lock: abort - GPU not free ($reason)" >&2
 		echo "gpu-lock: re-run with --force only after confirming no overlap" >&2
-		return 2
+		return 75
 	fi
 	if [[ "$busy" -eq 1 && "$FORCE" -eq 1 ]]; then
 		echo "gpu-lock: WARNING forcing acquire despite: $reason" >&2
@@ -110,5 +109,12 @@ if ! flock 9; then
 	echo "gpu-lock: failed to acquire $LOCK_FILE" >&2
 	exit 2
 fi
-preflight
+waited=0
+until preflight; do
+	if (( FORCE == 1 || waited >= WAIT_S )); then
+		exit 75
+	fi
+	sleep 5
+	waited=$((waited + 5))
+done
 exec "$@"

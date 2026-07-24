@@ -8,6 +8,7 @@ worker path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -491,7 +492,7 @@ def score_run_dir(
     run_dir: Path,
     *,
     device: str = "cpu",
-    update_manifest: bool = True,
+    update_manifest: bool = False,
     clip_model: Any = None,
     clip_processor: Any = None,
     clip_revision: str | None = None,
@@ -525,8 +526,14 @@ def score_run_dir(
             text_cache=text_cache,
         )
 
-    scored: dict[str, Any] = {"clip_model_id": CLIP_MODEL_ID, "clip_model_revision": clip_revision}
-    checkpoints: dict[str, Any] = dict(manifest.get("checkpoints") or {})
+    scored: dict[str, Any] = {
+        "clip_model_id": CLIP_MODEL_ID,
+        "clip_model_revision": clip_revision,
+        "scored_at": datetime.now(timezone.utc).isoformat(),
+        "effective_prompts": list(prompts),
+        "style": style,
+        "checkpoints": {},
+    }
 
     # Score the root derived images as the canonical final first, so a
     # redundant ckpt_final directory is not scored twice.
@@ -535,8 +542,7 @@ def score_run_dir(
     if all(path.is_file() for path in final_derived):
         final_entry = _score(final_derived)
         scored["final"] = final_entry
-        manifest["final"] = {**(manifest.get("final") or {}), **final_entry}
-        checkpoints["final"] = {**(checkpoints.get("final") or {}), **final_entry}
+        scored["checkpoints"]["final"] = final_entry
         final_scored = True
 
     for ckpt_dir in sorted(run_dir.glob("ckpt_*")):
@@ -547,23 +553,22 @@ def score_run_dir(
         if not all(path.is_file() for path in derived):
             continue
         entry = _score(derived)
-        # Merge CLIP into the per-checkpoint scores.json without dropping
-        # diagnostics written during the run.
-        scores_path = ckpt_dir / "scores.json"
-        existing: dict[str, Any] = {}
-        if scores_path.is_file():
-            try:
-                existing = json.loads(scores_path.read_text())
-            except json.JSONDecodeError:
-                existing = {}
-        scores_path.write_text(json.dumps({**existing, **entry}, indent=2) + "\n")
-        checkpoints[phase] = {**(checkpoints.get(phase) or {}), **entry}
+        # Sidecar only - never mutate raw optimizer scores.json / manifest.
+        write_manifest_atomic(ckpt_dir / "clip_scores.json", entry)
+        scored["checkpoints"][phase] = entry
         scored[phase] = entry
 
-    manifest["clip_scored_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["checkpoints"] = checkpoints
+    write_manifest_atomic(run_dir / "clip_scores.json", scored)
     if update_manifest:
-        write_manifest_atomic(manifest_path, manifest)
+        # Explicit opt-in only; default path keeps raw manifests immutable.
+        merged = dict(manifest)
+        merged["clip_scored_at"] = scored["scored_at"]
+        merged["final"] = {**(manifest.get("final") or {}), **(scored.get("final") or {})}
+        ck = dict(manifest.get("checkpoints") or {})
+        for phase, entry in scored["checkpoints"].items():
+            ck[phase] = {**(ck.get(phase) or {}), **entry}
+        merged["checkpoints"] = ck
+        write_manifest_atomic(manifest_path, merged)
     return scored
 
 
@@ -578,7 +583,7 @@ def score_tree(root: Path, *, device: str = "cpu") -> list[Path]:
         score_run_dir(
             run_dir,
             device=device,
-            update_manifest=True,
+            update_manifest=False,
             clip_model=clip_model,
             clip_processor=clip_processor,
             clip_revision=clip_revision,
@@ -620,6 +625,43 @@ def build_blind_sheet(
     make_contact_sheet(cells, sheet_path)
     write_manifest_atomic(out_dir / "answer_key.json", {"seed": seed, "cases": key})
     return sheet_path
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _identity_from_run(run_dir: Path) -> dict[str, Any]:
+    manifest_path = run_dir / "manifest.json"
+    manifest: dict[str, Any] = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError:
+            manifest = {}
+    images = {}
+    for name in ("derived_1.png", "derived_2.png"):
+        path = run_dir / name
+        if path.is_file():
+            images[name] = file_sha256(path)
+    return {
+        "run_dir": str(run_dir),
+        "spec_hash": manifest.get("spec_hash"),
+        "optimizer_fingerprint": manifest.get("optimizer_fingerprint"),
+        "campaign_id": manifest.get("campaign_id"),
+        "plan_sha": manifest.get("plan_sha"),
+        "git_sha": manifest.get("git_sha") or manifest.get("code_sha"),
+        "model_id": (manifest.get("config") or {}).get("model_id") or manifest.get("model_id"),
+        "dream_model_id": (manifest.get("config") or {}).get("dream_model_id")
+        or manifest.get("dream_model_id"),
+        "pair_id": manifest.get("pair_id") or (manifest.get("config") or {}).get("pair_id"),
+        "seed": manifest.get("seed") or (manifest.get("config") or {}).get("seed"),
+        "image_sha256": images,
+    }
 
 
 def _run_image_paths(run_dir: Path) -> tuple[Path, Path] | None:
@@ -680,6 +722,8 @@ def build_matched_blind(
                     "column_b": assign_b,
                     "legacy_dir": str(legacy_dir),
                     "finalist_dir": str(finalist_dir),
+                    "legacy_identity": _identity_from_run(legacy_dir),
+                    "finalist_identity": _identity_from_run(finalist_dir),
                 }
             )
 
