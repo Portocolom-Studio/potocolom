@@ -1,37 +1,17 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { collageImages, collageLandingSources } from '$lib/collage-images';
+	import { collageImages, type CollageImage } from '$lib/collage-images';
+	import SalonGrid from './SalonGrid.svelte';
 	import { t } from '$lib/i18n.svelte';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const tiles = collageImages.slice(0, 24);
 
-	let active = $state<string | null>(null);
-	let pinned = $state<string | null>(null);
-
-	const shown = $derived(pinned ?? active);
-	const shownTile = $derived(tiles.find((tile) => tile.file === shown) ?? null);
+	let shownTile = $state<CollageImage | null>(null);
 </script>
 
-<div class="krea salon" class:focused={shown !== null}>
-	<div class="grid">
-		{#each tiles as tile (tile.file)}
-			{@const sources = collageLandingSources(tile)}
-			<button
-				type="button"
-				class="tile"
-				class:lit={shown === tile.file}
-				aria-pressed={pinned === tile.file}
-				onmouseenter={() => (active = tile.file)}
-				onmouseleave={() => (active = null)}
-				onfocus={() => (active = tile.file)}
-				onblur={() => (active = null)}
-				onclick={() => (pinned = pinned === tile.file ? null : tile.file)}
-			>
-				<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
-			</button>
-		{/each}
-	</div>
+<div class="krea salon">
+	<SalonGrid {tiles} columns={6} onactive={(tile) => (shownTile = tile)} />
 
 	<header>
 		<a class="mark" href={resolve('/')}>potocolom</a>
@@ -42,7 +22,7 @@
 		{#if shownTile}
 			<p class="label">{t('gallery.kicker')}</p>
 			<h2>{shownTile.alt}</h2>
-			<p class="hint">{pinned ? t('gallery.prompts_hint') : t('gallery.sub')}</p>
+			<p class="hint">{t('gallery.sub')}</p>
 		{:else}
 			<h1>{t('hero.title1')} {t('hero.title2')}</h1>
 			<p class="hint">{t('hero.sub')}</p>
@@ -60,45 +40,6 @@
 		position: relative;
 		height: 100svh;
 		overflow: clip;
-	}
-
-	.grid {
-		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-		grid-auto-rows: 25svh;
-		height: 100%;
-	}
-
-	.tile {
-		position: relative;
-		min-width: 0;
-		padding: 0;
-		border: 0;
-		background: none;
-		cursor: pointer;
-		overflow: clip;
-	}
-
-	.tile img {
-		display: block;
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-		transition:
-			opacity 320ms var(--k-ease),
-			transform 420ms var(--k-ease),
-			filter 320ms var(--k-ease);
-	}
-
-	.salon.focused .tile img {
-		opacity: 0.32;
-		filter: saturate(0.4);
-	}
-
-	.salon.focused .tile.lit img {
-		opacity: 1;
-		filter: none;
-		transform: scale(1.04);
 	}
 
 	header,
@@ -167,19 +108,7 @@
 		gap: 0.7rem;
 	}
 
-	@media (min-width: 64rem) {
-		.grid {
-			grid-template-columns: repeat(6, minmax(0, 1fr));
-			grid-auto-rows: 25svh;
-		}
-	}
-
 	@media (max-width: 40rem) {
-		.grid {
-			grid-template-columns: repeat(3, minmax(0, 1fr));
-			grid-auto-rows: 16svh;
-		}
-
 		.plate {
 			inset-inline: 0.75rem;
 			width: auto;

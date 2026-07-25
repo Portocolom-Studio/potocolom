@@ -2,11 +2,14 @@
 	import { resolve } from '$app/paths';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import HeroImageField from '$lib/components/HeroImageField.svelte';
-	import { collageImages, collageLandingSources } from '$lib/collage-images';
+	import { collageImages, type CollageImage } from '$lib/collage-images';
+	import SalonGrid from './SalonGrid.svelte';
 	import { t } from '$lib/i18n.svelte';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
-	const mosaic = collageImages.slice(0, 9);
+	const mosaic = collageImages.slice(0, 18);
+
+	let shownTile = $state<CollageImage | null>(null);
 	const acts = [
 		{ id: 'draw', label: 'caps.live_title' },
 		{ id: 'work', label: 'gallery.kicker' },
@@ -36,16 +39,23 @@
 	</section>
 
 	<section id="act-work" class="act">
-		<div class="media mosaic">
-			{#each mosaic as tile (tile.file)}
-				{@const sources = collageLandingSources(tile)}
-				<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
-			{/each}
+		<div class="media">
+			<SalonGrid
+				tiles={mosaic}
+				columns={6}
+				rows="33.34svh"
+				onactive={(tile) => (shownTile = tile)}
+			/>
 		</div>
-		<div class="veil" aria-hidden="true"></div>
+		<div class="veil" class:lifted={shownTile !== null} aria-hidden="true"></div>
 		<div class="copy bottom">
-			<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
-			<p>{t('gallery.sub')}</p>
+			{#if shownTile}
+				<p class="tag">{t('gallery.kicker')}</p>
+				<h2>{shownTile.alt}</h2>
+			{:else}
+				<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
+				<p>{t('gallery.sub')}</p>
+			{/if}
 		</div>
 	</section>
 
@@ -160,19 +170,8 @@
 		object-fit: cover;
 	}
 
-	.mosaic {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		grid-auto-rows: 1fr;
-	}
-
-	.mosaic img {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-	}
-
 	.veil {
+		transition: opacity 320ms var(--k-ease);
 		background: linear-gradient(
 			to bottom,
 			var(--k-veil) 0%,
@@ -180,6 +179,23 @@
 			transparent 45%,
 			var(--k-paper) 100%
 		);
+	}
+
+	/* The salon act owns its own pointer events; the veil must not swallow them. */
+	#act-work .veil {
+		pointer-events: none;
+	}
+
+	#act-work .veil.lifted {
+		opacity: 0.35;
+	}
+
+	.tag {
+		color: var(--k-accent);
+		font-family: var(--k-mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.09em;
+		text-transform: uppercase;
 	}
 
 	.copy {
@@ -191,6 +207,10 @@
 		gap: 1rem;
 		max-width: 46rem;
 		padding: clamp(1.5rem, 5vw, 4rem);
+	}
+
+	#act-work .copy {
+		pointer-events: none;
 	}
 
 	.copy.center {
