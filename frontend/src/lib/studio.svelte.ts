@@ -313,7 +313,10 @@ export async function pollWhileWorking(): Promise<void> {
 			}
 			// Re-check: a generate() during the idle gap sets pollRequested and may
 			// have already refreshed history with new queued/running jobs.
-		} while (pollRequested || studio.history.some((g) => g.state === 'queued' || g.state === 'running'));
+		} while (
+			pollRequested ||
+			studio.history.some((g) => g.state === 'queued' || g.state === 'running')
+		);
 	} finally {
 		polling = false;
 		if (pollRequested) void pollWhileWorking();
