@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import { collageImages, collageLandingSources, type CollageImage } from '$lib/collage-images';
+	import { favoriteImages, favoriteSources } from '$lib/favorite-images';
 	import { promptMarqueePrompts } from '$lib/prompt-marquee-prompts';
 	import { t } from '$lib/i18n.svelte';
 	import { onMount } from 'svelte';
@@ -14,11 +15,26 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
 	const wall = collageImages.slice(0, 18);
+	// Everything the studio has produced: the landing collage plus the starred
+	// generations exported from the app.
+	const everything = [
+		...favoriteImages.map((image) => ({
+			key: image.id,
+			alt: image.alt,
+			...favoriteSources(image)
+		})),
+		...collageImages.map((image) => ({
+			key: image.file,
+			alt: image.alt,
+			...collageLandingSources(image)
+		}))
+	];
 	// One orbit system: arcs stacked under each other, wider as they descend.
 	const arcs = [
-		{ radius: 80, gap: 4, tiles: collageImages.slice(0, 13) },
-		{ radius: 75, gap: 4.3, tiles: collageImages.slice(13, 24) },
-		{ radius: 70.5, gap: 4.6, tiles: collageImages.slice(0, 17).toReversed() }
+		{ radius: 80, gap: 4, tiles: everything.slice(0, 13) },
+		{ radius: 75, gap: 4.3, tiles: everything.slice(13, 26) },
+		{ radius: 70.5, gap: 4.6, tiles: everything.slice(26, 41) },
+		{ radius: 66.5, gap: 4.9, tiles: everything.slice(41, 58) }
 	];
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
@@ -34,7 +50,7 @@
 	let typed = $state('');
 	let promptIndex = $state(0);
 	let shownTile = $state<CollageImage | null>(null);
-	let orbitTile = $state<CollageImage | null>(null);
+	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
 
 	onMount(() => {
@@ -92,25 +108,24 @@
 					<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
 					<a class="pill pill-ghost" href={repoUrl}>{t('hero.cta_selfhost')}</a>
 				</div>
-				<p class="orbit-name" aria-live="polite">{orbitTile ? orbitTile.alt : ''}</p>
+				<p class="orbit-name" aria-live="polite">{orbitName ?? ''}</p>
 			</div>
 
 			<div class="arc" aria-label={t('gallery.kicker')}>
 				<div class="arc-spin">
 					{#each arcs as layer, depth (depth)}
-						{#each layer.tiles as tile, index (`${depth}-${tile.file}`)}
-							{@const sources = collageLandingSources(tile)}
+						{#each layer.tiles as tile, index (`${depth}-${tile.key}`)}
 							<button
 								type="button"
 								class="chip"
 								style="--i: {index}; --n: {layer.tiles
 									.length}; --r: {layer.radius}rem; --gap: {layer.gap}deg; --depth: {depth}"
-								onmouseenter={() => (orbitTile = tile)}
-								onmouseleave={() => (orbitTile = null)}
-								onfocus={() => (orbitTile = tile)}
-								onblur={() => (orbitTile = null)}
+								onmouseenter={() => (orbitName = tile.alt)}
+								onmouseleave={() => (orbitName = null)}
+								onfocus={() => (orbitName = tile.alt)}
+								onblur={() => (orbitName = null)}
 							>
-								<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
+								<img src={tile.src} srcset={tile.srcset} alt={tile.alt} loading="lazy" />
 							</button>
 						{/each}
 					{/each}
