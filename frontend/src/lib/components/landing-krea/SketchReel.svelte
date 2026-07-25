@@ -49,13 +49,15 @@
 		</div>
 		<div class="veil" class:lifted={shownTile !== null} aria-hidden="true"></div>
 		<div class="copy bottom">
-			{#if shownTile}
-				<p class="tag">{t('gallery.kicker')}</p>
-				<h2>{shownTile.alt}</h2>
-			{:else}
-				<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
-				<p>{t('gallery.sub')}</p>
-			{/if}
+			<div class="plate">
+				{#if shownTile}
+					<p class="tag">{t('gallery.kicker')}</p>
+					<h2>{shownTile.alt}</h2>
+				{:else}
+					<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
+					<p>{t('gallery.sub')}</p>
+				{/if}
+			</div>
 		</div>
 	</section>
 
@@ -213,6 +215,18 @@
 		pointer-events: none;
 	}
 
+	.plate {
+		display: grid;
+		gap: 0.6rem;
+		width: min(38rem, 100%);
+		padding: clamp(1.25rem, 3vw, 2rem);
+		border: 1px solid var(--k-line);
+		border-radius: 1.25rem;
+		background: var(--k-panel);
+		backdrop-filter: blur(24px);
+		pointer-events: auto;
+	}
+
 	.copy.center {
 		align-content: center;
 		justify-items: center;
@@ -273,6 +287,13 @@
 
 		.split {
 			grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+		}
+	}
+
+	@media (max-width: 40rem) {
+		/* Three columns at one act's height: anything past nine tiles would be cut. */
+		#act-work :global(.salon-grid button:nth-child(n + 10)) {
+			display: none;
 		}
 	}
 
