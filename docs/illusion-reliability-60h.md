@@ -38,6 +38,34 @@ The estimated duration is 88 minutes per cell, or 52.8 GPU-hours before small
 driver overhead. The unattended driver gets a 58-hour deadline and starts no
 cell unless its estimate plus reserve fits.
 
+## Calibration smoke result
+
+The required giraffe/penguin seed-11 smoke completed at implementation commit
+`7f8d342`:
+
+| Measurement | Result |
+|-------------|-------:|
+| Total runtime | 3416.60 s (56.9 min) |
+| SDS runtime | 3240.95 s |
+| Dream runtime | 173.45 s |
+| Peak allocated VRAM | 4331.11 MB |
+| Process result | Completed without error |
+
+All required SDS, Dream, and final checkpoints were written. Human review
+selected two stage-specific keepers:
+
+- SDS-10000 `prime_1.png` for the strongest raw dual-subject structure;
+- final `prime_1.png` for the cleanest presentation.
+
+This is a positive smoke result, not a default-promotion gate. The remaining
+35 cells stay paused until explicitly launched. Extrapolating the measured
+cell gives about 33.2 GPU-hours remaining; the original 51.3-hour remaining
+estimate remains the conservative unattended budget.
+
+The immutable plans and completed smoke are pinned to implementation commit
+`7f8d342`. Campaign execution must use a worktree at that exact commit; later
+documentation-only commits do not replace the plan's recorded Git SHA.
+
 ## Kill gate
 
 Run only the first cell before departure. Stop the primary axis if:

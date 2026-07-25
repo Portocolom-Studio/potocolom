@@ -55,9 +55,10 @@ Inspect `git log f03bbf5..HEAD` on this branch for:
 | 3-way GPU digests (60 SDS, 0 Dream) | match vs `5f30fdd` (see `.local/.../equiv3/`) |
 | Hidden microbatch smoke | ~9417 MB / 16368 MB |
 | CLIP ViT-L/14 offline | rev `32bd64288804d66eefd0ccbe215aa642df71cc41` |
-| Worker suite | 106+ tests green after repair commits |
+| Worker suite | 116 tests green at `7f8d342` |
 
-Full 500-SDS + Dream three-way parity is still required before base-B selection.
+Full 500-SDS + Dream parity later passed, but Wave 1/2 human review did not
+freeze a base B. The author-reference campaign below supersedes that axis.
 
 ## Current direction (2026-07-25)
 
@@ -69,6 +70,30 @@ experiment-only author-reference campaign in
 The new primary phase is `reference60h` (36 cells). Its fallback is
 `early-dream-backup` (48 short cells). Product defaults and PR #118 remain
 unchanged.
+
+### Author-reference smoke result
+
+The giraffe/penguin seed-11 smoke completed at `7f8d342` without error:
+
+- 10,000 SDS steps plus eight Dream rounds completed in 3416.60 seconds
+  (56.9 minutes);
+- SDS took 3240.95 seconds and Dream took 173.45 seconds;
+- peak allocated VRAM was 4331.11 MB;
+- SDS 500/2000/5000/10000, Dream d1/d4/d8, and final checkpoints are present;
+- the human selected the SDS-10000 prime and final prime as the two best
+  artifacts.
+
+The smoke is a positive stage-specific result: SDS-10000 has the strongest raw
+dual-subject structure, while final has the cleaner presentation. This does
+not promote a product default. The remaining 35 cells are paused and require
+an explicit launch instruction. At the measured smoke rate they would take
+about 33.2 GPU-hours; retain the original 51.3-hour remaining estimate as the
+conservative budget.
+
+The immutable primary and backup plans remain pinned to implementation commit
+`7f8d342`. Run them from a worktree at that exact commit. Later
+documentation-only commits must not be substituted for the plan's recorded
+Git SHA.
 
 ## Historical next (superseded)
 
