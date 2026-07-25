@@ -131,33 +131,6 @@
 			<img class="shot" src="/og.png" alt={t('app.title')} loading="lazy" />
 		</section>
 
-		<section id="run" class="panel run">
-			<h2>{t('fork.title')}</h2>
-			<div class="run-body">
-				<div class="run-card">
-					<ul>
-						{#each forkPoints as point (point)}
-							<li>
-								<CheckIcon aria-hidden="true" />
-								{t(`fork.${point}`)}
-							</li>
-						{/each}
-					</ul>
-					<div class="run-actions">
-						<a class="pill pill-solid" href={forkUrl}>
-							<GitForkIcon aria-hidden="true" />
-							{t('fork.cta_fork')}
-						</a>
-						<a class="pill pill-ghost" href={repoUrl}>
-							{t('fork.cta_source')}
-							<ArrowUpRightIcon aria-hidden="true" />
-						</a>
-					</div>
-				</div>
-				<ForkTerminal class="latent-terminal" />
-			</div>
-		</section>
-
 		<section id="pricing" class="panel pricing">
 			<div class="panel-head">
 				<h2>{t('pricing.title')}</h2>
@@ -197,6 +170,33 @@
 				{/each}
 			</div>
 			<p class="trial">{t('pricing.trial')}</p>
+		</section>
+
+		<section id="run" class="panel run">
+			<h2>{t('fork.title')}</h2>
+			<div class="run-body">
+				<div class="run-card">
+					<ul>
+						{#each forkPoints as point (point)}
+							<li>
+								<CheckIcon aria-hidden="true" />
+								{t(`fork.${point}`)}
+							</li>
+						{/each}
+					</ul>
+					<div class="run-actions">
+						<a class="pill pill-solid" href={forkUrl}>
+							<GitForkIcon aria-hidden="true" />
+							{t('fork.cta_fork')}
+						</a>
+						<a class="pill pill-ghost" href={repoUrl}>
+							{t('fork.cta_source')}
+							<ArrowUpRightIcon aria-hidden="true" />
+						</a>
+					</div>
+				</div>
+				<ForkTerminal class="latent-terminal" />
+			</div>
 		</section>
 
 		<section class="closing">
