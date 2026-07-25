@@ -256,8 +256,7 @@
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
 		gap: 1rem;
-		padding-block: 1.1rem;
-		padding-inline: max(clamp(1rem, 3vw, 2.5rem), calc((100% - 76rem) / 2));
+		padding: 1.1rem clamp(1rem, 3vw, 2.5rem);
 	}
 
 	.mark {
@@ -284,8 +283,7 @@
 		grid-template-columns: minmax(0, 1fr);
 		align-content: center;
 		min-height: calc(100svh - 5rem);
-		padding-block: clamp(2rem, 6vw, 4rem);
-		padding-inline: max(clamp(1rem, 5vw, 4rem), calc((100% - 72rem) / 2));
+		padding: clamp(2rem, 6vw, 4rem) clamp(1rem, 5vw, 4rem);
 	}
 
 	.stage {
@@ -386,8 +384,13 @@
 	.closing {
 		display: grid;
 		gap: clamp(1.75rem, 4vw, 3rem);
-		padding-block: clamp(3rem, 8vw, 6rem);
-		/* Full-bleed background, content centred inside a 72rem measure. */
+		padding: clamp(3rem, 8vw, 6rem) clamp(1rem, 4vw, 3rem);
+	}
+
+	/* These two read as cards in a row, so they hold to the main landing's
+	   72rem measure instead of stretching the full width. */
+	.pricing,
+	.run {
 		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 72rem) / 2));
 	}
 
@@ -645,8 +648,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem 2rem;
-		padding-block: 2rem;
-		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 72rem) / 2));
+		padding: 2rem clamp(1rem, 4vw, 3rem);
 		border-block-start: 1px solid var(--k-line);
 		background: oklch(0.08 0.012 265 / 72%);
 		color: var(--k-muted);
