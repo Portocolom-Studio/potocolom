@@ -31,14 +31,26 @@ kill_pidfile() {
 # Reap leftovers even when pid files are wrong or missing.
 kill_repo_procs() {
 	# Exact app.main uvicorn for this checkout (absolute or relative venv path).
-	pkill -f "$REPO/backend/.venv/bin/.*uvicorn app.main:app" 2>/dev/null || true
-	local api_py="$REPO/backend/.venv/bin/python"
+	# pkill -f treats the pattern as an ERE: escape dots so path segments and
+	# "app.main" cannot match unintended command lines.
+	local repo_ere api_py api_py_ere pid cwd
+	repo_ere="$(printf '%s' "$REPO" | sed 's/\./\\./g')"
+	pkill -f "${repo_ere}/backend/\\.venv/bin/.*uvicorn app\\.main:app" 2>/dev/null || true
+	api_py="$REPO/backend/.venv/bin/python"
 	if [[ -x "$api_py" ]]; then
-		pkill -f "${api_py} .venv/bin/uvicorn app.main:app" 2>/dev/null || true
+		api_py_ere="$(printf '%s' "$api_py" | sed 's/\./\\./g')"
+		pkill -f "${api_py_ere} \\.venv/bin/uvicorn app\\.main:app" 2>/dev/null || true
 	fi
+	# start_one launches `exec .venv/bin/uvicorn` from backend/ (relative argv0).
+	for pid in $(pgrep -f '\\.venv/bin/uvicorn app\\.main:app' 2>/dev/null || true); do
+		cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+		[[ "$cwd" == "$REPO/backend" ]] || continue
+		kill "$pid" 2>/dev/null || true
+		sleep 0.1
+		kill -9 "$pid" 2>/dev/null || true
+	done
 	# Workers have no listen port. Match by /proc/pid/cwd so we never kill a
 	# worker from another checkout or `python -m worker.illusion`.
-	local pid cwd
 	for pid in $(pgrep -f 'python -m worker' 2>/dev/null || true); do
 		cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
 		[[ "$cwd" == "$REPO/worker" ]] || continue

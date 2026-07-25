@@ -481,9 +481,10 @@ class DiffusersEngine:
                 pipeline.load_lora_weights(repo, weight_name=weight)
                 pipeline.fuse_lora()
             rung = self._pick_rung(manifest)
-            # NHWC helps full-resident CUDA/ROCm UNets, but channels_last makes
-            # tensors non-contiguous in the NCHW sense. Group-offload may write
-            # them through safetensors, which refuses non-contiguous params
+            # NHWC helps full-resident GPU UNets. self.device is "cuda" for both
+            # NVIDIA and ROCm (mapped in __init__); channels_last makes tensors
+            # non-contiguous in the NCHW sense. Group-offload may write them
+            # through safetensors, which refuses non-contiguous params
             # ("You are trying to save a non contiguous tensor").
             if self.device == "cuda" and rung == "full":
                 for name in ("unet", "vae"):
