@@ -46,6 +46,8 @@
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
 	let recentFailures = $state<Generation[]>([]);
 	let failuresLoading = $state(false);
+	let fetchedFailedCount = $state<number | null>(null);
+	let failuresInFlight = false;
 
 	const demoMode = $derived.by(() => {
 		void liveTick;
@@ -132,6 +134,9 @@
 		}
 		return recentFailures;
 	});
+	const failedHistoryCount = $derived(
+		studio.history.filter((generation) => generation.state === 'failed').length
+	);
 
 	function formatFailureWhen(iso: string | null): string {
 		if (!iso) return '-';
@@ -178,10 +183,18 @@
 	});
 
 	$effect(() => {
-		if (studio.metricsTab !== 'usage') return;
-		// Refetch when the history window gains/loses failed jobs (tab stays open).
-		void studio.history.filter((generation) => generation.state === 'failed').length;
-		void loadRecentFailures();
+		if (studio.metricsTab !== 'usage') {
+			fetchedFailedCount = null;
+			return;
+		}
+		if (demoMode) return;
+		const count = failedHistoryCount;
+		if (failuresInFlight || fetchedFailedCount === count) return;
+		fetchedFailedCount = count;
+		failuresInFlight = true;
+		void loadRecentFailures().finally(() => {
+			failuresInFlight = false;
+		});
 	});
 
 	$effect(() => {
@@ -345,7 +358,7 @@
 		<section class="flex flex-col gap-2">
 			<h3 class="text-sm font-medium">{t('app.metrics.failures')}</h3>
 			{#if failuresLoading && displayedFailures.length === 0}
-				<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
+				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_loading')}</p>
 			{:else if displayedFailures.length === 0}
 				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_empty')}</p>
 			{:else}

@@ -21,11 +21,11 @@ def acquire_exclusive_lock(path: str) -> TextIO:
     handle = lock_path.open("a+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+    except Exception:
         handle.close()
         raise
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{os.getpid()}\n")
-    handle.flush()
     return handle

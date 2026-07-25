@@ -70,9 +70,9 @@ cmd_stop() {
 	kill_repo_procs
 	fuser -k "${API_PORT}/tcp" 2>/dev/null || true
 	fuser -k "${WEB_PORT}/tcp" 2>/dev/null || true
-	# Drop the flock file after holders exit so a crash cannot leave a stale inode
-	# with no owner (flock itself is released on process death either way).
-	rm -f "$DEV_DIR/worker.lock"
+	# Keep worker.lock: flock is tied to the inode. Unlinking while a holder is
+	# still alive would let a new worker create a fresh inode and take a second
+	# lock. The flock itself drops when the process exits.
 	rm -f "$DEV_DIR/api.pid" "$DEV_DIR/web.pid" "$DEV_DIR/worker.pid"
 }
 

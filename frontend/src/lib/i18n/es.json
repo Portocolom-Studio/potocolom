@@ -269,6 +269,7 @@
 	"app.metrics.samples": "imágenes",
 	"app.metrics.recent": "Generaciones recientes",
 	"app.metrics.failures": "Fallos recientes",
+	"app.metrics.failures_loading": "Cargando fallos recientes...",
 	"app.metrics.failures_empty": "No hay generaciones fallidas en el historial reciente.",
 	"app.metrics.runtime_empty": "Genera una imagen para ver las métricas aquí.",
 	"app.metrics.col_model": "Modelo",
