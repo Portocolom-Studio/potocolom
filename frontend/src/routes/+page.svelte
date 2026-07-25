@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n.svelte';
-	import SketchDepot from '$lib/components/landing-krea/SketchDepot.svelte';
 	import SketchLatent from '$lib/components/landing-krea/SketchLatent.svelte';
 	import SketchOrbit from '$lib/components/landing-krea/SketchOrbit.svelte';
 	import SketchReel from '$lib/components/landing-krea/SketchReel.svelte';
@@ -10,7 +9,7 @@
 	} from '$lib/components/landing-krea/SketchSwitcher.svelte';
 	import '../krea-tokens.css';
 
-	const ids = ['latent', 'reel', 'orbit', 'depot'] as const;
+	const ids = ['latent', 'reel', 'orbit'] as const;
 
 	function normalise(value: string | null): SketchId {
 		return (ids as readonly string[]).includes(value ?? '') ? (value as SketchId) : 'latent';
@@ -28,8 +27,6 @@
 	<SketchReel />
 {:else if sketch === 'orbit'}
 	<SketchOrbit />
-{:else if sketch === 'depot'}
-	<SketchDepot />
 {:else}
 	<SketchLatent />
 {/if}

@@ -15,6 +15,12 @@
 	const forkUrl = `${repoUrl}/fork`;
 	const arcTiles = collageImages.slice(0, 14);
 	const wall = collageImages.slice(0, 18);
+	// Concentric rings under the arc: the whole gallery, orbiting.
+	const orbits = [
+		{ radius: 9, tiles: collageImages.slice(0, 7) },
+		{ radius: 15, tiles: collageImages.slice(7, 19) },
+		{ radius: 21, tiles: collageImages.slice(0, 18).toReversed() }
+	];
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
 	const bullets = ['b1', 'b2', 'b3'] as const;
@@ -29,6 +35,8 @@
 	let typed = $state('');
 	let promptIndex = $state(0);
 	let shownTile = $state<CollageImage | null>(null);
+	let orbitTile = $state<CollageImage | null>(null);
+	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
 
 	onMount(() => {
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -72,7 +80,7 @@
 
 	<main>
 		<section class="stage">
-			<div class="dots"><ParticleField /></div>
+			<div class="dots"><ParticleField density={0.0016} /></div>
 			<div class="stage-copy">
 				<h1>
 					<span class="line">{t('hero.title1')}</span>
@@ -96,6 +104,32 @@
 						</span>
 					{/each}
 				</div>
+			</div>
+		</section>
+
+		<section id="orbit" class="orbit-gallery" aria-label={t('gallery.kicker')}>
+			<div class="rings">
+				{#each orbits as ring, ringIndex (ringIndex)}
+					<div class="orbit-ring" style="--r: {ring.radius}rem; --spin: {26 + ringIndex * 14}s">
+						{#each ring.tiles as tile, index (`${ringIndex}-${tile.file}`)}
+							{@const sources = collageLandingSources(tile)}
+							<button
+								type="button"
+								class="orb"
+								style="--i: {index}; --n: {ring.tiles.length}"
+								onmouseenter={() => (orbitTile = tile)}
+								onmouseleave={() => (orbitTile = null)}
+								onfocus={() => (orbitTile = tile)}
+								onblur={() => (orbitTile = null)}
+							>
+								<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
+							</button>
+						{/each}
+					</div>
+				{/each}
+				<p class="orbit-name" aria-live="polite">
+					{orbitTile ? orbitTile.alt : t('gallery.kicker')}
+				</p>
 			</div>
 		</section>
 
@@ -197,8 +231,15 @@
 
 		<!-- The two-column close, with the pointer lighting the field behind it. -->
 		<section class="split">
-			<div class="dots"><ParticleField density={0.00028} /></div>
-			<div class="split-half">
+			<div
+				class="split-half"
+				onmouseenter={() => (hoveredHalf = 'oss')}
+				onmouseleave={() => (hoveredHalf = null)}
+				role="presentation"
+			>
+				<div class="dots">
+					<ParticleField density={0.003} glyph={'()'} active={hoveredHalf === 'oss'} />
+				</div>
 				<span class="tag">{t('split.oss_p1')}</span>
 				<h2>
 					<span class="quiet">{t('split.oss_title')}</span>
@@ -206,7 +247,15 @@
 				</h2>
 				<a class="pill pill-solid" href={repoUrl}>{t('fork.cta_source')}</a>
 			</div>
-			<div class="split-half">
+			<div
+				class="split-half"
+				onmouseenter={() => (hoveredHalf = 'cloud')}
+				onmouseleave={() => (hoveredHalf = null)}
+				role="presentation"
+			>
+				<div class="dots">
+					<ParticleField density={0.003} glyph={'{}'} active={hoveredHalf === 'cloud'} />
+				</div>
 				<span class="tag">{t('wl.kicker')}</span>
 				<h2>
 					<span class="quiet">{t('split.cloud_title')}</span>
@@ -394,6 +443,73 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+	}
+
+	/* Orbit gallery ---------------------------------------------------------- */
+	.orbit-gallery {
+		display: grid;
+		place-items: center;
+		padding: clamp(2rem, 6vw, 4rem) 1rem;
+		overflow: clip;
+	}
+
+	.rings {
+		position: relative;
+		display: grid;
+		place-items: center;
+		width: min(48rem, 100%);
+		aspect-ratio: 1;
+	}
+
+	.orbit-ring {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		animation: turn var(--spin) linear infinite;
+	}
+
+	.orbit-ring:nth-child(even) {
+		animation-direction: reverse;
+	}
+
+	@keyframes turn {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.orb {
+		position: absolute;
+		width: clamp(2.6rem, 5vw, 4rem);
+		aspect-ratio: 1;
+		padding: 0;
+		overflow: clip;
+		border: 1px solid var(--k-line);
+		border-radius: 999px;
+		background: var(--k-panel);
+		cursor: pointer;
+		transform: rotate(calc(var(--i) * (360deg / var(--n)))) translateY(calc(var(--r) * -1))
+			rotate(calc(var(--i) * (-360deg / var(--n))));
+		transition:
+			width 260ms var(--k-ease),
+			border-color 260ms var(--k-ease),
+			box-shadow 260ms var(--k-ease);
+	}
+
+	.orb img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+
+	.orbit-name {
+		position: relative;
+		z-index: 3;
+		max-width: 18ch;
+		color: var(--k-muted);
+		font-size: 0.9rem;
+		text-align: center;
 	}
 
 	/* Shared section furniture ---------------------------------------------- */
@@ -631,18 +747,26 @@
 
 	/* Split close ------------------------------------------------------------ */
 	.split {
-		position: relative;
 		display: grid;
-		gap: clamp(3rem, 8vw, 5rem);
+		gap: clamp(2rem, 5vw, 3rem);
 		padding: clamp(4rem, 11vw, 8rem) clamp(1rem, 4vw, 3rem);
 		border-block-start: 1px solid var(--k-line);
 	}
 
 	.split-half {
+		position: relative;
 		display: grid;
+		align-content: center;
 		justify-items: center;
 		gap: 1.25rem;
+		min-height: 20rem;
+		padding: clamp(1.5rem, 4vw, 3rem);
 		text-align: center;
+	}
+
+	.split-half > :not(.dots) {
+		position: relative;
+		z-index: 1;
 	}
 
 	.tag {
@@ -715,6 +839,18 @@
 	}
 
 	@media (hover: hover) and (pointer: fine) {
+		.rings:hover .orbit-ring {
+			animation-play-state: paused;
+		}
+
+		.orb:hover,
+		.orb:focus-visible {
+			z-index: 4;
+			width: clamp(6rem, 12vw, 10rem);
+			border-color: var(--k-accent);
+			box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 55%);
+		}
+
 		.chip:hover {
 			transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * 4deg)) translateY(-80.7rem)
 				scale(1.22);
@@ -754,7 +890,8 @@
 
 	@media (prefers-reduced-motion: reduce) {
 		.arc-spin,
-		.caret {
+		.caret,
+		.orbit-ring {
 			animation: none;
 		}
 	}
