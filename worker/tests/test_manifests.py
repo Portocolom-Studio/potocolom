@@ -49,6 +49,12 @@ def test_shipped_manifests_load():
     hypersd = next(m for m in manifests if m.id == "sdxl-hypersd")
     assert hypersd.benchmark_only
     assert hypersd.scheduler == "euler-trailing"
+    sd_turbo = next(m for m in manifests if m.id == "sd-turbo")
+    assert sd_turbo.benchmark_only
+    sdxl_turbo = next(m for m in manifests if m.id == "sdxl-turbo")
+    assert sdxl_turbo.benchmark_only
+    dreamshaper = next(m for m in manifests if m.id == "dreamshaper-lcm")
+    assert dreamshaper.benchmark_only
     vega = next(m for m in manifests if m.id == "vega-rt")
     assert not vega.benchmark_only
     assert vega.scheduler == "lcm"
