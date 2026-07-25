@@ -4,13 +4,12 @@
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import SunIcon from '@lucide/svelte/icons/sun';
 
-	export type SketchId = 'latent' | 'reel' | 'orbit';
+	export type SketchId = 'latent' | 'orbit';
 
 	let { current }: { current: SketchId } = $props();
 
 	const sketches = [
 		{ id: 'latent', label: 'Latent' },
-		{ id: 'reel', label: 'Reel' },
 		{ id: 'orbit', label: 'Orbit' }
 	] as const;
 

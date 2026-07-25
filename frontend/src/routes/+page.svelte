@@ -3,13 +3,12 @@
 	import { t } from '$lib/i18n.svelte';
 	import SketchLatent from '$lib/components/landing-krea/SketchLatent.svelte';
 	import SketchOrbit from '$lib/components/landing-krea/SketchOrbit.svelte';
-	import SketchReel from '$lib/components/landing-krea/SketchReel.svelte';
 	import SketchSwitcher, {
 		type SketchId
 	} from '$lib/components/landing-krea/SketchSwitcher.svelte';
 	import '../krea-tokens.css';
 
-	const ids = ['latent', 'reel', 'orbit'] as const;
+	const ids = ['latent', 'orbit'] as const;
 
 	function normalise(value: string | null): SketchId {
 		return (ids as readonly string[]).includes(value ?? '') ? (value as SketchId) : 'latent';
@@ -23,9 +22,7 @@
 	<meta name="description" content={t('hero.sub')} />
 </svelte:head>
 
-{#if sketch === 'reel'}
-	<SketchReel />
-{:else if sketch === 'orbit'}
+{#if sketch === 'orbit'}
 	<SketchOrbit />
 {:else}
 	<SketchLatent />
