@@ -101,10 +101,47 @@ FINAL_PAIRS: list[PromptPair] = [
     ),
 ]
 
+_PENCIL_PREFIX = "a centered intricate HB pencil illustration of "
+_PENCIL_SUFFIX = ", full object, strong silhouette, isolated on plain warm paper"
+
+
+def _reference_pair(pair_id: str, subject_a: str, subject_b: str) -> PromptPair:
+    return PromptPair(
+        pair_id,
+        subject_a,
+        subject_b,
+        f"{_PENCIL_PREFIX}{subject_a}{_PENCIL_SUFFIX}",
+        f"{_PENCIL_PREFIX}{subject_b}{_PENCIL_SUFFIX}",
+    )
+
+
+# A topology-focused corpus for the author-reference experiment. It is kept
+# separate from FINAL_PAIRS so it cannot silently alter the existing 24-case
+# acceptance gate.
+REFERENCE_PAIRS: list[PromptPair] = [
+    PromptPair(
+        "giraffe_penguin_calibration",
+        "a giraffe head",
+        "a penguin",
+        "an intricate detailed hb pencil sketch of a giraffe head",
+        "an intricate detailed hb pencil sketch of a penguin",
+    ),
+    _reference_pair("pine_chandelier", "a pine tree", "an ornate chandelier"),
+    _reference_pair("crown_octopus", "a royal crown", "an octopus"),
+    _reference_pair("volcano_bouquet", "an erupting volcano", "a bouquet of flowers"),
+    _reference_pair("lighthouse_goblet", "a lighthouse", "a stemmed goblet"),
+    _reference_pair("gown_jellyfish", "a flowing evening gown", "a jellyfish"),
+    _reference_pair(
+        "locomotive_eye_control",
+        "a side-view steam locomotive",
+        "a single human eye",
+    ),
+]
+
 _SCREEN_IDS = frozenset({"dog_sloth", "fox_rabbit", "walrus_ladybug", "mountain_valley"})
 SCREEN_PAIRS: list[PromptPair] = [p for p in FINAL_PAIRS if p.pair_id in _SCREEN_IDS]
 
-PAIR_BY_ID: dict[str, PromptPair] = {p.pair_id: p for p in FINAL_PAIRS}
+PAIR_BY_ID: dict[str, PromptPair] = {p.pair_id: p for p in [*FINAL_PAIRS, *REFERENCE_PAIRS]}
 
 _OIL_EQUIVALENT_STYLES = frozenset({None, "none", "oil"})
 
@@ -266,7 +303,22 @@ def is_completed_run(run_dir: Path) -> bool:
         return False
     if manifest.get("status") != "completed":
         return False
-    return (run_dir / "derived_1.png").is_file() and (run_dir / "derived_2.png").is_file()
+    d1 = run_dir / "derived_1.png"
+    d2 = run_dir / "derived_2.png"
+    if not d1.is_file() or not d2.is_file():
+        return False
+    # Reject all-black / NaN-cast PNGs so broken SDXL runs are retried.
+    try:
+        from PIL import Image
+
+        for path in (d1, d2):
+            extrema = Image.open(path).getextrema()
+            channels = extrema if isinstance(extrema[0], tuple) else (extrema,)
+            if not any(lo != hi or lo > 0 for lo, hi in channels):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def resolve_run_out(requested: Path) -> Path | None:
@@ -453,6 +505,82 @@ def make_contact_sheet(
         draw.text((col * cell_size + 4, row * cell_size + 4), label, fill=(255, 255, 0), font=font)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(out_path)
+
+
+def build_stage_blind_sheets(root: Path, out: Path, seed: int = 0) -> dict[str, Any]:
+    """Build separate SDS-end, Dream-d1, and final sheets with a rating template."""
+    runs: list[tuple[Path, dict[str, Any]]] = []
+    for manifest_path in sorted(root.rglob("manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("status") == "completed":
+            runs.append((manifest_path.parent, manifest))
+    if not runs:
+        raise ValueError(f"no completed runs under {root}")
+
+    rng = random.Random(seed)
+    stage_rows: dict[str, list[dict[str, Any]]] = {"sds_end": [], "dream_d1": [], "final": []}
+    for run_dir, manifest in runs:
+        sds_dirs = sorted(
+            run_dir.glob("ckpt_sds_[0-9][0-9][0-9][0-9]*"),
+            key=lambda path: int(path.name.removeprefix("ckpt_sds_")),
+        )
+        stage_dirs: dict[str, Path] = {
+            "final": run_dir,
+            "dream_d1": run_dir / "ckpt_dream_round_01",
+        }
+        if sds_dirs:
+            stage_dirs["sds_end"] = sds_dirs[-1]
+        for stage, stage_dir in stage_dirs.items():
+            paths = [stage_dir / "derived_1.png", stage_dir / "derived_2.png"]
+            if not all(path.is_file() for path in paths):
+                continue
+            for view, path in enumerate(paths, start=1):
+                stage_rows[stage].append(
+                    {
+                        "run_dir": str(run_dir),
+                        "pair_id": manifest.get("pair_id"),
+                        "seed": manifest.get("config", {}).get("seed"),
+                        "stage": stage,
+                        "view": view,
+                        "path": str(path),
+                    }
+                )
+
+    out.mkdir(parents=True, exist_ok=True)
+    answer_rows: list[dict[str, Any]] = []
+    ratings: list[dict[str, Any]] = []
+    from PIL import Image
+
+    for stage, rows in stage_rows.items():
+        rng.shuffle(rows)
+        cells = []
+        for index, row in enumerate(rows, start=1):
+            code = f"{stage[:2].upper()}-{index:03d}"
+            row["case_id"] = code
+            cells.append((Image.open(row["path"]).convert("RGB"), code))
+            answer_rows.append(row)
+            ratings.append(
+                {
+                    "case_id": code,
+                    "keep": None,
+                    "subject_read": None,
+                    "artifact": None,
+                    "notes": "",
+                }
+            )
+        if cells:
+            make_contact_sheet(cells, out / f"{stage}.png", cols=4)
+    write_manifest_atomic(out / "answer-key.json", {"seed": seed, "cases": answer_rows})
+    (out / "ratings.jsonl").write_text("".join(json.dumps(row) + "\n" for row in ratings))
+    summary = {
+        "runs": len(runs),
+        "cells": {stage: len(rows) for stage, rows in stage_rows.items()},
+    }
+    write_manifest_atomic(out / "summary.json", summary)
+    return summary
 
 
 def score_images_for_prompts(
@@ -1088,10 +1216,34 @@ def _build_illusion_config(args: argparse.Namespace):
         "checkpoint_steps": checkpoint_steps,
         "enable_vae_slicing": args.enable_vae_slicing,
         "channels_last": args.channels_last,
+        "strengths": list(args.dream_strength or []),
+        "experimental_recipe": args.experimental_recipe,
     }
+    if args.experimental_recipe == "author_reference":
+        kwargs.update(
+            {
+                "sds_steps": 10_000,
+                "sds_guidance": 60.0,
+                "sds_objective": "weighted_sds",
+                "sds_lr": 1e-4,
+                "dream_lr": 3e-3,
+                "dream_rounds": 8,
+                "dream_steps": 300,
+                "dream_joint": False,
+                "use_hifa_schedule": False,
+                "round_robin": False,
+                "view_batch_size": None,
+                "checkpoint_steps": (500, 2_000, 5_000, 10_000),
+                "sds_gradient_scale": 0.1,
+            }
+        )
     field_names = _illusion_config_field_names()
     if "collect_diagnostics" in field_names:
         kwargs["collect_diagnostics"] = args.collect_diagnostics
+    if "vae_id" in field_names and getattr(args, "vae", None):
+        kwargs["vae_id"] = args.vae
+    if "model_variant" in field_names and getattr(args, "model_variant", None):
+        kwargs["model_variant"] = args.model_variant
     return IllusionConfig(**kwargs), effective_prompts, subjects, style_requested
 
 
@@ -1418,6 +1570,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--dream-lr", type=float, default=1e-3)
     run.add_argument("--dream-rounds", type=int, default=8)
     run.add_argument("--dream-steps", type=int, default=300)
+    run.add_argument(
+        "--dream-strength",
+        action="append",
+        type=float,
+        help="explicit Dream strength; repeat to replace the generated schedule",
+    )
     run.add_argument("--dream-joint", action="store_true")
     run.add_argument("--sqrt-timestep-anneal", action="store_true")
     run.add_argument(
@@ -1430,7 +1588,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--view-batch-size", type=int, default=None)
     run.add_argument("--enable-vae-slicing", action="store_true")
     run.add_argument("--channels-last", action="store_true")
+    run.add_argument(
+        "--vae",
+        default=None,
+        help="optional VAE id/path (e.g. madebyollin/sdxl-vae-fp16-fix for SDXL)",
+    )
+    run.add_argument(
+        "--model-variant",
+        default=None,
+        help="diffusers weight variant (e.g. fp16 for SDXL Hub snapshots)",
+    )
     run.add_argument("--collect-diagnostics", action="store_true")
+    run.add_argument(
+        "--experimental-recipe",
+        choices=("legacy", "author_reference"),
+        default="legacy",
+        help="experiment-only frozen optimizer recipe; product default remains legacy",
+    )
     run.add_argument("--seed", type=int, default=2)
     run.add_argument("--device", default="cuda")
     run.add_argument("--out", type=Path, required=True)
@@ -1491,6 +1665,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     blind.add_argument("--out", type=Path, required=True)
     blind.add_argument("--seed", type=int, default=0)
 
+    stage_blind = sub.add_parser(
+        "build-stage-blind",
+        help="build SDS-end, Dream-d1, and final blind sheets from a campaign tree",
+    )
+    stage_blind.add_argument("--root", type=Path, required=True)
+    stage_blind.add_argument("--out", type=Path, required=True)
+    stage_blind.add_argument("--seed", type=int, default=0)
+
     return parser
 
 
@@ -1517,6 +1699,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("score-tree requires a tree root (positional or --root)")
         dirs = score_tree(root, device=args.device)
         print(f"scored {len(dirs)} runs under {root}")
+        return
+
+    if args.cmd == "build-stage-blind":
+        print(json.dumps(build_stage_blind_sheets(args.root, args.out, args.seed), indent=2))
         return
 
     if args.cmd == "blind-sheet":

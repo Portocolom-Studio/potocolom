@@ -10,10 +10,12 @@ import pytest
 from worker.illusion_experiment import (
     FINAL_PAIRS,
     PAIR_BY_ID,
+    REFERENCE_PAIRS,
     SCREEN_PAIRS,
     _build_illusion_config,
     _manual_roc_auc,
     build_arg_parser,
+    build_stage_blind_sheets,
     evaluate_ratings,
     is_completed_run,
     pair_margins,
@@ -36,6 +38,31 @@ def test_prompt_corpus_has_oil_painting_scenes() -> None:
     mtn = PAIR_BY_ID["mountain_valley"]
     assert "snowy mountain" in mtn.prompt_a
     assert "pine valley" in mtn.prompt_b
+    assert len(REFERENCE_PAIRS) == 7
+    assert "walrus_ladybug" not in {pair.pair_id for pair in REFERENCE_PAIRS}
+
+
+def test_author_reference_recipe_is_explicit_and_frozen() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--pair-id",
+            "giraffe_penguin_calibration",
+            "--experimental-recipe",
+            "author_reference",
+            "--out",
+            "x",
+        ]
+    )
+    config, *_ = _build_illusion_config(args)
+    assert config.experimental_recipe == "author_reference"
+    assert config.sds_steps == 10_000
+    assert config.sds_objective == "weighted_sds"
+    assert config.sds_guidance == 60
+    assert config.sds_lr == pytest.approx(1e-4)
+    assert config.dream_lr == pytest.approx(3e-3)
+    assert config.checkpoint_steps == (500, 2_000, 5_000, 10_000)
 
 
 def test_style_oil_on_oil_corpus_does_not_double_wrap() -> None:
@@ -93,6 +120,31 @@ def test_score_tree_argparse_accepts_root_flag_and_positional() -> None:
     assert flagged.root_flag == Path("some/tree")
     positional = parser.parse_args(["score-tree", "some/tree"])
     assert positional.root == Path("some/tree")
+
+
+def test_stage_blind_builds_three_separate_review_stages(tmp_path: Path) -> None:
+    from PIL import Image
+
+    run = tmp_path / "runs" / "attempt_001"
+    for directory in (
+        run,
+        run / "ckpt_sds_10000",
+        run / "ckpt_dream_round_01",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (4, 4), (10, 20, 30)).save(directory / "derived_1.png")
+        Image.new("RGB", (4, 4), (30, 20, 10)).save(directory / "derived_2.png")
+    write_manifest_atomic(
+        run / "manifest.json",
+        {"status": "completed", "pair_id": "pine_chandelier", "config": {"seed": 11}},
+    )
+    out = tmp_path / "review"
+    summary = build_stage_blind_sheets(tmp_path / "runs", out, seed=3)
+    assert summary["cells"] == {"sds_end": 2, "dream_d1": 2, "final": 2}
+    assert (out / "sds_end.png").is_file()
+    assert (out / "dream_d1.png").is_file()
+    assert (out / "final.png").is_file()
+    assert len((out / "ratings.jsonl").read_text().splitlines()) == 6
 
 
 def test_phase_timing_from_sds_end_only(tmp_path: Path, monkeypatch) -> None:
@@ -159,8 +211,10 @@ def test_manifest_resume_skips_only_completed_with_images(tmp_path: Path) -> Non
     assert is_completed_run(run) is False
     write_manifest_atomic(run / "manifest.json", {"status": "completed", "pid": 1})
     assert is_completed_run(run) is False
-    (run / "derived_1.png").write_bytes(b"x")
-    (run / "derived_2.png").write_bytes(b"x")
+    from PIL import Image
+
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(run / "derived_1.png")
+    Image.new("RGB", (2, 2), (4, 5, 6)).save(run / "derived_2.png")
     assert is_completed_run(run) is True
 
 
@@ -173,8 +227,10 @@ def test_allocate_run_dir_preserves_incomplete(tmp_path: Path) -> None:
     write_manifest_atomic(first / "manifest.json", {"status": "failed", "error": "oom"})
     second = resolve_run_out(requested)
     assert second == tmp_path / "exp_attempt_1"
-    (first / "derived_1.png").write_bytes(b"x")
-    (first / "derived_2.png").write_bytes(b"x")
+    from PIL import Image
+
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(first / "derived_1.png")
+    Image.new("RGB", (2, 2), (4, 5, 6)).save(first / "derived_2.png")
     write_manifest_atomic(first / "manifest.json", {"status": "completed"})
     assert resolve_run_out(requested) is None
 
@@ -293,6 +349,7 @@ def test_score_run_dir_writes_sidecar_not_manifest(tmp_path, monkeypatch) -> Non
     )
     # Minimal PNGs via PIL
     from PIL import Image
+
     Image.new("RGB", (8, 8), (10, 20, 30)).save(run / "derived_1.png")
     Image.new("RGB", (8, 8), (40, 50, 60)).save(run / "derived_2.png")
     before = (run / "manifest.json").read_text()

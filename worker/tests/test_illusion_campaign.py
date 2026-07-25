@@ -6,9 +6,11 @@ import subprocess
 from pathlib import Path
 
 from worker.illusion_campaign import (
+    build_early_dream_backup,
     build_full_plan,
     build_pilot_wave1,
     build_pilot_wave2,
+    build_reference_author_60h,
     plan_counts,
 )
 
@@ -16,6 +18,25 @@ from worker.illusion_campaign import (
 def test_wave_counts() -> None:
     assert len(build_pilot_wave1()) == 24
     assert len(build_pilot_wave2(["--sds-objective", "legacy"])) == 16
+
+
+def test_reference_campaign_is_breadth_first_and_excludes_walrus() -> None:
+    entries = build_reference_author_60h()
+    assert len(entries) == 36
+    assert entries[0].pair_id == "giraffe_penguin_calibration"
+    assert entries[0].seed == 11
+    assert {entry.seed for entry in entries} == {11, 23, 37, 53, 71, 89}
+    assert "walrus_ladybug" not in {entry.pair_id for entry in entries}
+    assert all("--experimental-recipe" in entry.flags for entry in entries)
+    assert all(entry.estimate_s == 5280 for entry in entries)
+
+
+def test_early_dream_backup_has_48_short_cells() -> None:
+    entries = build_early_dream_backup()
+    assert len(entries) == 48
+    assert all(entry.estimate_s == 600 for entry in entries)
+    assert all("--round-robin" in entry.flags for entry in entries)
+    assert all("--dream-strength" in entry.flags for entry in entries)
 
 
 def test_full_plan_dry_run_bounds(tmp_path: Path) -> None:

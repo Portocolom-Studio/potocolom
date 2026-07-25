@@ -11,7 +11,10 @@ from worker.illusions import (  # noqa: E402
     STYLE_TEMPLATES,
     DiffusionAdapter,
     IllusionConfig,
+    ReferenceFourierFeatureNetwork,
+    add_training_noise,
     apply_style_template,
+    balanced_view_schedule,
     build_arg_parser,
     checkpoint_name,
     compute_sds_gradient,
@@ -255,12 +258,64 @@ def test_checkpoint_names_phase_qualified() -> None:
 
 def test_defaults_are_legacy_equivalent() -> None:
     config = IllusionConfig(illusion="flip", prompts=["a", "b"])
+    assert config.experimental_recipe == "legacy"
     assert config.sds_objective == "legacy"
     assert config.checkpoint_steps == ()
     assert config.collect_diagnostics is False
     assert config.enable_vae_slicing is False
     assert config.channels_last is False
     assert resolve_learning_rates(config) == (1e-3, 1e-3)
+
+
+def test_reference_ffn_renders_native_256_canvas() -> None:
+    network = ReferenceFourierFeatureNetwork(features=8, hidden=16)
+    image = network.image()
+    assert image.shape == (1, 3, 256, 256)
+    assert image.min().item() >= 0
+    assert image.max().item() <= 1
+
+
+def test_balanced_view_schedule_is_deterministic_and_equal() -> None:
+    first = balanced_view_schedule(10, 2, seed=37)
+    second = balanced_view_schedule(10, 2, seed=37)
+    assert first == second
+    assert first.count(0) == first.count(1) == 5
+    assert first != [0, 1] * 5
+    with pytest.raises(ValueError, match="divisible"):
+        balanced_view_schedule(9, 2, seed=0)
+
+
+def test_training_noise_matches_alpha_cumprod_equation() -> None:
+    latent = torch.full((1, 1, 2, 2), 2.0)
+    noise = torch.full_like(latent, 3.0)
+    alphas = torch.tensor([0.81])
+    timestep = torch.tensor([0])
+    got = add_training_noise(latent, noise, timestep, alphas)
+    expected = 0.9 * latent + (1 - 0.81) ** 0.5 * noise
+    assert torch.allclose(got, expected)
+
+
+def test_euler_sds_uses_training_noise_not_inference_sigma() -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.scheduler = type(
+        "EulerDiscreteScheduler",
+        (),
+        {"add_noise": lambda *_: (_ for _ in ()).throw(AssertionError("must not call"))},
+    )()
+    latent = torch.ones(1, 1, 2, 2)
+    noise = torch.ones_like(latent)
+    timesteps = torch.tensor([0])
+    alphas = torch.tensor([0.25])
+    got = adapter._add_sds_noise(latent, noise, timesteps, alphas)
+    assert torch.allclose(got, torch.full_like(latent, 0.5 + 0.75**0.5))
+
+
+def test_sdxl_time_ids_match_actual_canvas() -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    got = adapter._sdxl_time_ids(2)
+    assert got.tolist() == [[512, 512, 0, 0, 512, 512]] * 2
 
 
 def test_preserve_rng_state_is_neutral() -> None:

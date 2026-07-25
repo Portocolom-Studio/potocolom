@@ -15,16 +15,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from worker.illusion_experiment import FINAL_PAIRS, SCREEN_PAIRS, PAIR_BY_ID, git_sha, repo_root, resolve_pair_prompts, write_manifest_atomic
+from worker.illusion_experiment import (
+    FINAL_PAIRS,
+    SCREEN_PAIRS,
+    PAIR_BY_ID,
+    git_sha,
+    is_completed_run,
+    repo_root,
+    resolve_pair_prompts,
+    write_manifest_atomic,
+)
 
-PREFERRED_EVIDENCE_ROOT = Path("/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-experiments-v3")
-DEFAULT_EVIDENCE_ROOT = PREFERRED_EVIDENCE_ROOT if PREFERRED_EVIDENCE_ROOT.exists() else Path(".local/illusion-experiments-v3")
+PREFERRED_EVIDENCE_ROOT = Path(
+    "/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-experiments-v3"
+)
+DEFAULT_EVIDENCE_ROOT = (
+    PREFERRED_EVIDENCE_ROOT
+    if PREFERRED_EVIDENCE_ROOT.exists()
+    else Path(".local/illusion-experiments-v3")
+)
 GENERATION_DEADLINE_S = 52 * 3600
 RUN_TIMEOUT_S = 65 * 60
 TELEMETRY_INTERVAL_S = 10
 START_RESERVE_S = 5 * 60
 BUSY_EXIT_CODE = 75
-EVENTS_PATH = Path("/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-reliability/events.jsonl")
+EVENTS_PATH = Path(
+    "/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/illusion-reliability/events.jsonl"
+)
 
 WAVE1_PROFILES: list[tuple[str, list[str]]] = [
     ("legacy", ["--sds-objective", "legacy"]),
@@ -122,6 +139,7 @@ def _entry(
     flags: list[str],
     priority: int,
     style: str = "none",
+    estimate_s: float = 950.0,
 ) -> CampaignEntry:
     out_rel = f"{tier}/{profile}/{pair_id}/seed_{seed}"
     entry_id = f"{tier}__{profile}__{pair_id}__s{seed}"
@@ -135,7 +153,98 @@ def _entry(
         out_rel=out_rel,
         priority=priority,
         style=style,
+        estimate_s=estimate_s,
     )
+
+
+REFERENCE_COMPATIBLE_PAIR_IDS = (
+    "pine_chandelier",
+    "crown_octopus",
+    "volcano_bouquet",
+    "lighthouse_goblet",
+    "gown_jellyfish",
+)
+REFERENCE_CALIBRATION_PAIR_ID = "giraffe_penguin_calibration"
+REFERENCE_CONTROL_PAIR_ID = "locomotive_eye_control"
+REFERENCE_SEEDS = (11, 23, 37, 53, 71, 89)
+
+
+def build_reference_author_60h() -> list[CampaignEntry]:
+    """36-cell breadth-first author-recipe matrix for the unattended window."""
+    pair_seeds: dict[str, tuple[int, ...]] = {
+        REFERENCE_CALIBRATION_PAIR_ID: REFERENCE_SEEDS[:4],
+        **{pair_id: REFERENCE_SEEDS for pair_id in REFERENCE_COMPATIBLE_PAIR_IDS},
+        REFERENCE_CONTROL_PAIR_ID: REFERENCE_SEEDS[:2],
+    }
+    pair_order = (
+        REFERENCE_CALIBRATION_PAIR_ID,
+        *REFERENCE_COMPATIBLE_PAIR_IDS,
+        REFERENCE_CONTROL_PAIR_ID,
+    )
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in REFERENCE_SEEDS:
+        for pair_id in pair_order:
+            if seed not in pair_seeds[pair_id]:
+                continue
+            entries.append(
+                _entry(
+                    tier="reference60h",
+                    profile="author_reference",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=[
+                        "--experimental-recipe",
+                        "author_reference",
+                        "--collect-diagnostics",
+                        "--skip-clip",
+                    ],
+                    priority=priority,
+                    estimate_s=5280,
+                )
+            )
+            priority += 1
+    return entries
+
+
+def build_early_dream_backup() -> list[CampaignEntry]:
+    """Cheap fallback emphasizing the retained early-Dream observation."""
+    seeds = (*REFERENCE_SEEDS, 107, 131)
+    pair_ids = (REFERENCE_CALIBRATION_PAIR_ID, *REFERENCE_COMPATIBLE_PAIR_IDS)
+    flags = [
+        "--sds-objective",
+        "legacy",
+        "--round-robin",
+        "--sds-steps",
+        "500",
+        "--dream-lr",
+        "3e-3",
+        "--dream-rounds",
+        "2",
+        "--dream-strength",
+        "0.95",
+        "--dream-strength",
+        "0.50",
+        "--collect-diagnostics",
+        "--skip-clip",
+    ]
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in seeds:
+        for pair_id in pair_ids:
+            entries.append(
+                _entry(
+                    tier="early_dream_backup",
+                    profile="legacy_rr_d1",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=flags,
+                    priority=priority,
+                    estimate_s=600,
+                )
+            )
+            priority += 1
+    return entries
 
 
 def build_pilot_wave1() -> list[CampaignEntry]:
@@ -166,9 +275,9 @@ def build_pilot_wave2(base_flags: list[str]) -> list[CampaignEntry]:
     ]
     # Legacy plus dream_joint was already measured in Wave 1, so retain four
     # novel ablations for the default campaign.
-    selected_profiles = [
-        candidate for candidate in candidates if candidate[0] != "B_dream_joint"
-    ][:4]
+    selected_profiles = [candidate for candidate in candidates if candidate[0] != "B_dream_joint"][
+        :4
+    ]
     out: list[CampaignEntry] = []
     for name, flags in selected_profiles:
         for pair in SCREEN_PAIRS:
@@ -362,7 +471,7 @@ def is_completed_matching(
         return False
     if expected_plan_sha is not None and manifest.get("plan_sha") != expected_plan_sha:
         return False
-    return (out_dir / "derived_1.png").is_file() and (out_dir / "derived_2.png").is_file()
+    return is_completed_run(out_dir)
 
 
 def _entry_root(plan: CampaignPlan, entry: CampaignEntry) -> Path:
@@ -498,7 +607,8 @@ def run_entry(
             )
             status["pid"] = proc.pid
             write_manifest_atomic(status_path, status)
-            deadline = time.monotonic() + RUN_TIMEOUT_S
+            timeout_s = max(RUN_TIMEOUT_S, entry.estimate_s * 1.5)
+            deadline = time.monotonic() + timeout_s
             telemetry: list[dict[str, Any]] = []
             next_tel = time.monotonic()
             while True:
@@ -513,7 +623,7 @@ def run_entry(
                 if now >= deadline:
                     os.killpg(proc.pid, signal.SIGKILL)
                     status["status"] = "timeout"
-                    status["error"] = f"exceeded {RUN_TIMEOUT_S}s"
+                    status["error"] = f"exceeded {timeout_s:.0f}s"
                     write_manifest_atomic(status_path, status)
                     return status
                 time.sleep(1.0)
@@ -533,7 +643,9 @@ def run_entry(
             return status
 
     result = _attempt()
-    _append_event({"campaign_id": plan.campaign_id, "entry_id": entry.entry_id, "status": result["status"]})
+    _append_event(
+        {"campaign_id": plan.campaign_id, "entry_id": entry.entry_id, "status": result["status"]}
+    )
     return result
 
 
@@ -606,6 +718,10 @@ def build_phase_plan(
         entries = _select_wave2(profiles[base_selection], wave2_profiles)
     elif phase == "away":
         entries = build_away_tiers(_finalists(finalists))
+    elif phase == "reference60h":
+        entries = build_reference_author_60h()
+    elif phase == "early-dream-backup":
+        entries = build_early_dream_backup()
     else:
         raise ValueError(f"unknown phase: {phase}")
     plan = CampaignPlan(
@@ -616,7 +732,11 @@ def build_phase_plan(
         model_id=model_id,
         dream_model_id=dream_model_id,
         optimizer_fingerprint=_optimizer_fingerprint(),
-        entries=_blocked_rotated(entries),
+        entries=(
+            entries
+            if phase in ("reference60h", "early-dream-backup")
+            else _blocked_rotated(entries)
+        ),
     )
     return plan
 
@@ -683,7 +803,11 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--evidence-root", type=Path, default=DEFAULT_EVIDENCE_ROOT)
     plan_cmd.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     plan_cmd.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
-    plan_cmd.add_argument("--phase", choices=("wave1", "wave2", "away"), required=True)
+    plan_cmd.add_argument(
+        "--phase",
+        choices=("wave1", "wave2", "away", "reference60h", "early-dream-backup"),
+        required=True,
+    )
     plan_cmd.add_argument("--base-selection", default="legacy")
     plan_cmd.add_argument("--wave2-profiles")
     plan_cmd.add_argument("--finalists")
@@ -723,7 +847,11 @@ def main(argv: list[str] | None = None) -> int:
 
     plan, plan_identity = load_plan(args.plan)
     if args.cmd in ("status", "audit", "report"):
-        print(json.dumps({"plan_sha": plan_identity, **_command_status(plan, plan_identity)}, indent=2))
+        print(
+            json.dumps(
+                {"plan_sha": plan_identity, **_command_status(plan, plan_identity)}, indent=2
+            )
+        )
         return 0
 
     if args.cmd == "dry-run":
@@ -752,6 +880,12 @@ def main(argv: list[str] | None = None) -> int:
         if away > 184:
             print(f"FAIL: away expected <=184 got {away}", file=sys.stderr)
             return 1
+        if counts.get("reference60h", 0) not in (0, 36):
+            print("FAIL: reference60h expected 36", file=sys.stderr)
+            return 1
+        if counts.get("early_dream_backup", 0) not in (0, 48):
+            print("FAIL: early_dream_backup expected 48", file=sys.stderr)
+            return 1
         print("dry-run ok")
         return 0
 
@@ -776,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.max_entries is not None and n >= args.max_entries:
                 break
             remaining = args.deadline_s - (time.monotonic() - started)
-            if remaining < entry.estimate_s * 1.5 + START_RESERVE_S:
+            if remaining < entry.estimate_s * 1.1 + START_RESERVE_S:
                 print(f"deadline reserve skips {entry.entry_id}")
                 break
             print(f"RUN {entry.entry_id}")

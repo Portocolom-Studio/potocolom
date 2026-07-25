@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import random
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -132,6 +133,57 @@ class FourierFeatureNetwork(nn.Module):
             self._coord_cache[key] = grid
         rgb = self(grid.reshape(-1, 2)).reshape(resolution, resolution, 3)
         return rgb.permute(2, 0, 1).unsqueeze(0)
+
+
+class ReferenceFourierFeatureNetwork(nn.Module):
+    """The 256px Fourier network used by the authors' public notebook.
+
+    This is experiment-only capacity. The legacy network remains the default.
+    """
+
+    frequencies: Tensor
+    _coord_cache: dict[tuple[int, torch.device], Tensor]
+
+    def __init__(self, features: int = 128, hidden: int = 256, scale: float = 10.0) -> None:
+        super().__init__()
+        self.register_buffer("frequencies", torch.randn(2, features) * scale)
+        encoded = 2 * features
+        self.model = nn.Sequential(
+            nn.Conv2d(encoded, hidden, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(hidden),
+            nn.Conv2d(hidden, hidden, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(hidden),
+            nn.Conv2d(hidden, hidden, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(hidden),
+            nn.Conv2d(hidden, 3, kernel_size=1),
+            nn.Sigmoid(),
+        )
+        self._coord_cache = {}
+
+    def forward(self, coords: Tensor) -> Tensor:
+        """Map a (B, 2, H, W) UV grid to a (B, 3, H, W) image."""
+        batch, channels, height, width = coords.shape
+        if channels != 2:
+            raise ValueError("reference Fourier coordinates need two channels")
+        flat = coords.permute(0, 2, 3, 1).reshape(-1, 2)
+        projected = 2 * math.pi * flat @ self.frequencies
+        encoded = torch.cat([torch.sin(projected), torch.cos(projected)], dim=-1)
+        encoded = encoded.reshape(batch, height, width, -1).permute(0, 3, 1, 2)
+        return self.model(encoded)
+
+    def image(self, resolution: int = 256) -> Tensor:
+        """Render the native author canvas, with coordinates in [0, 1)."""
+        device = self.frequencies.device
+        key = (resolution, device)
+        grid = self._coord_cache.get(key)
+        if grid is None:
+            axis = torch.arange(resolution, device=device, dtype=torch.float32) / resolution
+            grid = torch.stack(torch.meshgrid(axis, axis, indexing="ij"), dim=0).unsqueeze(0)
+            self._coord_cache[key] = grid
+        return self(grid)
 
 
 # ---------------------------------------------------------- arrangements
@@ -277,6 +329,33 @@ def sds_timestep_weight(alphas_cumprod: Tensor, timestep: int) -> Tensor:
     return 1.0 - alphas_cumprod[timestep].float()
 
 
+def add_training_noise(
+    latent: Tensor,
+    noise: Tensor,
+    timesteps: Tensor,
+    alphas_cumprod: Tensor,
+) -> Tensor:
+    """Forward-process noising independent of an inference scheduler.
+
+    Euler's ``add_noise`` uses its inference sigma parameterization and its
+    result must normally pass through ``scale_model_input``. SDS instead
+    needs the diffusion training equation directly.
+    """
+    alpha = alphas_cumprod.to(device=latent.device, dtype=latent.dtype)[timesteps]
+    while alpha.ndim < latent.ndim:
+        alpha = alpha.unsqueeze(-1)
+    return alpha.sqrt() * latent + (1 - alpha).sqrt() * noise
+
+
+def balanced_view_schedule(steps: int, views: int, seed: int) -> list[int]:
+    """Deterministically shuffle equal view exposures for reference SDS."""
+    if steps <= 0 or views <= 0 or steps % views:
+        raise ValueError("steps must be positive and divisible by views")
+    schedule = [view for view in range(views) for _ in range(steps // views)]
+    random.Random(seed).shuffle(schedule)
+    return schedule
+
+
 def compute_sds_gradient(
     *,
     objective: str,
@@ -399,8 +478,12 @@ class DiffusionAdapter:
         channels_last: bool = False,
         view_batch_size: int | None = None,
         sds_objective: str = "legacy",
+        sds_gradient_scale: float = 1.0,
+        vae_id: str | None = None,
+        model_variant: str | None = None,
     ) -> None:
         from diffusers import (  # imported here: heavy, inference extra only
+            AutoencoderKL,
             AutoPipelineForImage2Image,
             AutoPipelineForText2Image,
         )
@@ -408,19 +491,42 @@ class DiffusionAdapter:
         dtype = torch.float16 if device != "cpu" else torch.float32
         self.model_id = model_id
         self.dream_model_id = dream_model_id
+        self.vae_id = vae_id
+        self.model_variant = model_variant
         self.sds_objective = sds_objective
+        self.sds_gradient_scale = sds_gradient_scale
         self.view_batch_size = view_batch_size
         local_only = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
-        self.pipe = AutoPipelineForText2Image.from_pretrained(
-            model_id, torch_dtype=dtype, safety_checker=None, local_files_only=local_only
-        ).to(device)
+        load_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "local_files_only": local_only,
+            # Local SD1.5 snapshots often omit CompVis safety-checker weights;
+            # HF_HUB_OFFLINE cannot fetch them. Illusion SDS never uses the checker.
+            "safety_checker": None,
+            "requires_safety_checker": False,
+        }
+        if model_variant:
+            load_kwargs["variant"] = model_variant
+        if vae_id:
+            vae_kwargs: dict[str, Any] = {"torch_dtype": dtype, "local_files_only": local_only}
+            if model_variant:
+                # fp16-fix VAE usually has no variant suffix; try plain first.
+                try:
+                    load_kwargs["vae"] = AutoencoderKL.from_pretrained(vae_id, **vae_kwargs)
+                except OSError:
+                    vae_kwargs["variant"] = model_variant
+                    load_kwargs["vae"] = AutoencoderKL.from_pretrained(vae_id, **vae_kwargs)
+            else:
+                load_kwargs["vae"] = AutoencoderKL.from_pretrained(vae_id, **vae_kwargs)
+        self.pipe = AutoPipelineForText2Image.from_pretrained(model_id, **load_kwargs).to(device)
         self._configure_modules(self.pipe, enable_vae_slicing, channels_last)
         self.img2img = AutoPipelineForImage2Image.from_pipe(self.pipe)
         self.device = device
         self.dtype = dtype
         self.scheduler = self.pipe.scheduler
-        self.embeddings: dict[str, Tensor] = {}
-        self.dream_embeddings: dict[str, Tensor] = {}
+        # hidden: [uncond, cond]; pooled: optional SDXL [uncond, cond] or None
+        self.embeddings: dict[str, tuple[Tensor, Tensor | None]] = {}
+        self.dream_embeddings: dict[str, tuple[Tensor, Tensor | None]] = {}
         # Dream Target defaults: keep SDS img2img until begin_dream_phase()
         self.dream_inference_steps = 25
         self.dream_guidance = 7.5
@@ -431,11 +537,28 @@ class DiffusionAdapter:
         self.backward_before_next_encode: list[bool] = []
         self._encodes_since_backward = 0
 
+    def _is_sdxl(self) -> bool:
+        pipe = self.pipe if self.pipe is not None else self.img2img
+        return bool(
+            pipe is not None
+            and hasattr(pipe, "text_encoder_2")
+            and getattr(pipe, "text_encoder_2", None) is not None
+        )
+
+    def _sdxl_time_ids(self, batch: int) -> Tensor:
+        # Match diffusers' default 512px pipeline conditioning. Claiming a
+        # 1024px original for a canvas that was generated at 512 is false
+        # micro-conditioning and was one cause of the failed pilot.
+        values = [RESOLUTION, RESOLUTION, 0, 0, RESOLUTION, RESOLUTION]
+        return torch.tensor([values], device=self.device, dtype=self.dtype).repeat(batch, 1)
+
     def _configure_modules(self, pipe: Any, enable_vae_slicing: bool, channels_last: bool) -> None:
         pipe.unet.requires_grad_(False)
         pipe.vae.requires_grad_(False)
         if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
             pipe.text_encoder.requires_grad_(False)
+        if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
+            pipe.text_encoder_2.requires_grad_(False)
         if enable_vae_slicing and hasattr(pipe.vae, "enable_slicing"):
             pipe.vae.enable_slicing()
         if channels_last and self_device_is_cuda(pipe):
@@ -465,11 +588,18 @@ class DiffusionAdapter:
         if self.device != "cpu" and hasattr(torch, "cuda") and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        local_only = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
+        dream_kwargs: dict[str, Any] = {
+            "torch_dtype": self.dtype,
+            "local_files_only": local_only,
+            "safety_checker": None,
+            "requires_safety_checker": False,
+        }
+        # vae_id/model_variant describe the SDS backbone. Do not leak an
+        # SDXL VAE or variant into a different Dream Target checkpoint.
         self.img2img = AutoPipelineForImage2Image.from_pretrained(
             self.dream_model_id,
-            torch_dtype=self.dtype,
-            safety_checker=None,
-            local_files_only=os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"),
+            **dream_kwargs,
         ).to(self.device)
         # The LCM checkpoints ship a PNDM scheduler config; sampling an
         # LCM-distilled UNet with it gives mush from weakly structured
@@ -479,6 +609,8 @@ class DiffusionAdapter:
         self.img2img.vae.requires_grad_(False)
         if hasattr(self.img2img, "text_encoder") and self.img2img.text_encoder is not None:
             self.img2img.text_encoder.requires_grad_(False)
+        if hasattr(self.img2img, "text_encoder_2") and self.img2img.text_encoder_2 is not None:
+            self.img2img.text_encoder_2.requires_grad_(False)
         if getattr(self, "_enable_vae_slicing", False) and hasattr(
             self.img2img.vae, "enable_slicing"
         ):
@@ -489,17 +621,21 @@ class DiffusionAdapter:
         self.dream_inference_steps = 4
         self.dream_guidance = 2.0
 
-    def embed(self, prompt: str) -> Tensor:
-        """Cached [uncond, cond] embeddings for classifier-free guidance."""
+    def embed(self, prompt: str) -> tuple[Tensor, Tensor | None]:
+        """Cached ([uncond, cond] hidden, optional [uncond, cond] pooled for SDXL)."""
         if prompt not in self.embeddings:
             with torch.no_grad():
-                cond, uncond = self.pipe.encode_prompt(
+                encoded = self.pipe.encode_prompt(
                     prompt,
                     device=self.device,
                     num_images_per_prompt=1,
                     do_classifier_free_guidance=True,
-                )[:2]
-            self.embeddings[prompt] = torch.cat([uncond, cond])
+                )
+                cond, uncond = encoded[0], encoded[1]
+                pooled = None
+                if len(encoded) >= 4 and encoded[2] is not None and encoded[3] is not None:
+                    pooled = torch.cat([encoded[3], encoded[2]])
+                self.embeddings[prompt] = (torch.cat([uncond, cond]), pooled)
         return self.embeddings[prompt]
 
     def encode_latent(
@@ -597,29 +733,61 @@ class DiffusionAdapter:
     ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Run UNet with CFG layout; optionally a third neg chunk for NFSD."""
         batch = noised.shape[0]
-        unconds = [self.embed(prompt)[:1] for prompt in prompts]
-        conds = [self.embed(prompt)[1:] for prompt in prompts]
+        hidden_unconds = []
+        hidden_conds = []
+        pooled_unconds = []
+        pooled_conds = []
+        for prompt in prompts:
+            embedded = self.embed(prompt)
+            if isinstance(embedded, tuple):
+                hidden, pooled = embedded
+            else:  # compatibility with SD1.5-only adapter callers
+                hidden, pooled = embedded, None
+            hidden_unconds.append(hidden[:1])
+            hidden_conds.append(hidden[1:])
+            if pooled is not None:
+                pooled_unconds.append(pooled[:1])
+                pooled_conds.append(pooled[1:])
+
+        def _added(pooled_list: list[Tensor], chunk_batch: int) -> dict[str, Tensor] | None:
+            if not pooled_list:
+                return None
+            return {
+                "text_embeds": torch.cat(pooled_list, dim=0),
+                "time_ids": self._sdxl_time_ids(chunk_batch),
+            }
+
         if negative_prompts is None:
             model_in = torch.cat([noised, noised], dim=0)
             timesteps_cfg = torch.cat([timesteps, timesteps], dim=0)
-            encoder_hidden_states = torch.cat(unconds + conds, dim=0)
-            predicted = self.pipe.unet(
-                model_in,
-                timesteps_cfg,
-                encoder_hidden_states=encoder_hidden_states,
-            ).sample
+            encoder_hidden_states = torch.cat(hidden_unconds + hidden_conds, dim=0)
+            added = _added(pooled_unconds + pooled_conds, batch * 2)
+            kwargs: dict[str, Any] = {"encoder_hidden_states": encoder_hidden_states}
+            if added is not None:
+                kwargs["added_cond_kwargs"] = added
+            predicted = self.pipe.unet(model_in, timesteps_cfg, **kwargs).sample
             uncond, cond = predicted.chunk(2)
             return uncond, cond, None
 
-        negs = [self.embed(prompt)[1:] for prompt in negative_prompts]
+        hidden_negs = []
+        pooled_negs = []
+        for prompt in negative_prompts:
+            embedded = self.embed(prompt)
+            if isinstance(embedded, tuple):
+                hidden, pooled = embedded
+            else:
+                hidden, pooled = embedded, None
+            hidden_negs.append(hidden[1:])
+            if pooled is not None:
+                pooled_negs.append(pooled[1:])
         model_in = torch.cat([noised, noised, noised], dim=0)
         timesteps_cfg = torch.cat([timesteps, timesteps, timesteps], dim=0)
-        encoder_hidden_states = torch.cat(unconds + conds + negs, dim=0)
-        predicted = self.pipe.unet(
-            model_in,
-            timesteps_cfg,
-            encoder_hidden_states=encoder_hidden_states,
-        ).sample
+        encoder_hidden_states = torch.cat(hidden_unconds + hidden_conds + hidden_negs, dim=0)
+        added = _added(pooled_unconds + pooled_conds + pooled_negs, batch * 3)
+        kwargs = {"encoder_hidden_states": encoder_hidden_states}
+        if added is not None:
+            kwargs["added_cond_kwargs"] = added
+        predicted = self.pipe.unet(model_in, timesteps_cfg, **kwargs).sample
         uncond, cond, neg = predicted.split(batch, dim=0)
         return uncond, cond, neg
 
@@ -762,7 +930,7 @@ class DiffusionAdapter:
         timesteps = torch.full((batch,), timestep, device=self.device, dtype=torch.long)
         weight_t = sds_timestep_weight(alphas.to(self.device), timestep)
         with torch.no_grad():
-            noised = self.scheduler.add_noise(latent.detach(), noise, timesteps)
+            noised = self._add_sds_noise(latent.detach(), noise, timesteps, alphas)
             need_neg = objective == "nfsd" and timestep >= 200
             neg_prompts = [NFSD_NEGATIVE_PROMPT] * batch if need_neg else None
             uncond, cond, neg = self._unet_cfg(
@@ -780,9 +948,22 @@ class DiffusionAdapter:
                 weight_t=weight_t,
                 delta_d=delta_d,
             )
+            gradient = gradient * float(getattr(self, "sds_gradient_scale", 1.0))
         per_item = (latent.float() * gradient).reshape(batch, -1).sum(dim=1)
         weight_arr = torch.tensor(weights, device=per_item.device, dtype=per_item.dtype)
         return (per_item * weight_arr).sum()
+
+    def _add_sds_noise(
+        self,
+        latent: Tensor,
+        noise: Tensor,
+        timesteps: Tensor,
+        alphas: Tensor,
+    ) -> Tensor:
+        """Use training noising for Euler; preserve the SD1.5 legacy path."""
+        if type(self.scheduler).__name__.startswith("Euler"):
+            return add_training_noise(latent, noise, timesteps, alphas)
+        return self.scheduler.add_noise(latent, noise, timesteps)
 
     def sdedit(self, image: Tensor, prompt: str, strength: float, generator) -> Tensor:
         """SDEdit img2img: noise the derived image and denoise it toward
@@ -800,18 +981,21 @@ class DiffusionAdapter:
             ).images
         return result.float().clamp(0, 1)
 
-    def _dream_embed(self, prompt: str) -> Tensor:
-        """Cached [uncond, cond] embeddings from the Dream Target pipeline
-        (the SDS pipeline and its cache are gone after begin_dream_phase)."""
+    def _dream_embed(self, prompt: str) -> tuple[Tensor, Tensor | None]:
+        """Cached ([uncond, cond] hidden, optional pooled) from the Dream pipeline."""
         if prompt not in self.dream_embeddings:
             with torch.no_grad():
-                cond, uncond = self.img2img.encode_prompt(
+                encoded = self.img2img.encode_prompt(
                     prompt,
                     device=self.device,
                     num_images_per_prompt=1,
                     do_classifier_free_guidance=True,
-                )[:2]
-            self.dream_embeddings[prompt] = torch.cat([uncond, cond])
+                )
+                cond, uncond = encoded[0], encoded[1]
+                pooled = None
+                if len(encoded) >= 4 and encoded[2] is not None and encoded[3] is not None:
+                    pooled = torch.cat([encoded[3], encoded[2]])
+                self.dream_embeddings[prompt] = (torch.cat([uncond, cond]), pooled)
         return self.dream_embeddings[prompt]
 
     def sdedit_joint(
@@ -872,9 +1056,17 @@ class DiffusionAdapter:
                 predictions = []
                 for latent, prompt, scheduler in zip(latents, prompts, schedulers, strict=True):
                     model_in = scheduler.scale_model_input(torch.cat([latent, latent]), timestep)
-                    predicted = unet(
-                        model_in, timestep, encoder_hidden_states=self._dream_embed(prompt)
-                    ).sample
+                    hidden, pooled = self._dream_embed(prompt)
+                    added = None
+                    if pooled is not None:
+                        added = {
+                            "text_embeds": pooled,
+                            "time_ids": self._sdxl_time_ids(model_in.shape[0]),
+                        }
+                    kwargs: dict[str, Any] = {"encoder_hidden_states": hidden}
+                    if added is not None:
+                        kwargs["added_cond_kwargs"] = added
+                    predicted = unet(model_in, timestep, **kwargs).sample
                     uncond, cond = predicted.chunk(2)
                     epsilon = uncond + self.dream_guidance * (cond - uncond)
                     predictions.append(decode((latent - sqrt_one_minus * epsilon) / sqrt_alpha))
@@ -919,6 +1111,10 @@ class IllusionConfig:
     # Capacity opts stay off until measured; experiment harness opts in.
     enable_vae_slicing: bool = False
     channels_last: bool = False
+    # Optional VAE override (e.g. madebyollin/sdxl-vae-fp16-fix for SDXL).
+    vae_id: str | None = None
+    # Diffusers weight variant (e.g. "fp16" for SDXL Hub snapshots).
+    model_variant: str | None = None
     dream_rounds: int = 8
     # joint targets (issue #134): flip only - rotate/hidden views are
     # overlays of several primes, not orthogonal transforms of one image
@@ -935,6 +1131,9 @@ class IllusionConfig:
     checkpoint_steps: tuple[int, ...] = ()
     collect_diagnostics: bool = False
     style: str | None = None
+    # Experiment harness only. Never change this default without acceptance.
+    experimental_recipe: str = "legacy"
+    sds_gradient_scale: float = 1.0
 
     def strength_schedule(self) -> list[float]:
         if self.strengths:
@@ -995,6 +1194,11 @@ def optimize_illusion(
 
     if config.sds_objective not in SDS_OBJECTIVES:
         raise ValueError(f"unknown sds_objective {config.sds_objective!r}")
+    if config.experimental_recipe not in ("legacy", "author_reference"):
+        raise ValueError(f"unknown experimental_recipe {config.experimental_recipe!r}")
+    reference_recipe = config.experimental_recipe == "author_reference"
+    if reference_recipe and config.illusion != "flip":
+        raise ValueError("author_reference currently supports only flip illusions")
     # Hidden: prefer view_batch_size=1 when the caller opts into microbatching.
     # Do not force it by default (keeps legacy path unchanged).
     view_batch = config.view_batch_size
@@ -1004,11 +1208,16 @@ def optimize_illusion(
     torch.manual_seed(config.seed)
     generator = torch.Generator(device=config.device).manual_seed(config.seed)
 
-    networks = [FourierFeatureNetwork().to(config.device) for _ in range(spec.n_primes)]
+    network_type = ReferenceFourierFeatureNetwork if reference_recipe else FourierFeatureNetwork
+    networks = [network_type().to(config.device) for _ in range(spec.n_primes)]
     parameters = [p for network in networks for p in network.parameters()]
     sds_lr, dream_lr = resolve_learning_rates(config)
 
-    optimizer = torch.optim.Adam(parameters, lr=sds_lr)
+    optimizer = (
+        torch.optim.SGD(parameters, lr=sds_lr)
+        if reference_recipe
+        else torch.optim.Adam(parameters, lr=sds_lr)
+    )
     adapter = DiffusionAdapter(
         config.model_id,
         config.device,
@@ -1017,10 +1226,29 @@ def optimize_illusion(
         channels_last=config.channels_last,
         view_batch_size=view_batch,
         sds_objective=config.sds_objective,
+        sds_gradient_scale=config.sds_gradient_scale,
+        vae_id=config.vae_id,
+        model_variant=config.model_variant,
     )
 
+    def render_primes(resolution: int = RESOLUTION) -> list[Tensor]:
+        if reference_recipe:
+            return [network.image(256) for network in networks]
+        return [network.image(resolution) for network in networks]
+
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
-        return spec.arrange([network.image(resolution) for network in networks])
+        derived = spec.arrange(render_primes(resolution))
+        if reference_recipe and resolution != 256:
+            derived = [
+                tf.interpolate(
+                    image,
+                    size=(resolution, resolution),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                for image in derived
+            ]
+        return derived
 
     def emit(event: PhaseEvent) -> None:
         if on_phase is not None:
@@ -1035,13 +1263,18 @@ def optimize_illusion(
 
     def snapshot_images() -> tuple[list[Tensor], list[Tensor]]:
         with torch.no_grad():
-            primes_ck = [network.image().clamp(0, 1) for network in networks]
-            derived_ck = [image.clamp(0, 1) for image in spec.arrange(primes_ck)]
+            primes_ck = [image.clamp(0, 1) for image in render_primes()]
+            derived_ck = [image.clamp(0, 1) for image in render_derived()]
         return primes_ck, derived_ck
 
     sds_iterations = config.sds_steps
     if config.round_robin and config.illusion == "flip":
         sds_iterations = config.sds_steps * 2
+    reference_views = (
+        balanced_view_schedule(config.sds_steps, len(spec.weights), config.seed)
+        if reference_recipe
+        else None
+    )
 
     dream_rounds = len(config.strength_schedule())
     total = sds_iterations + dream_rounds * config.dream_steps
@@ -1056,6 +1289,8 @@ def optimize_illusion(
         "sds_objective": config.sds_objective,
         "sds_lr": sds_lr,
         "dream_lr": dream_lr,
+        "experimental_recipe": config.experimental_recipe,
+        "sds_gradient_scale": config.sds_gradient_scale,
         "effective_prompts": [t if isinstance(t, str) else "<image>" for t in targets],
     }
     checkpoint_set = set(config.checkpoint_steps)
@@ -1150,7 +1385,13 @@ def optimize_illusion(
                     )
                 loss = loss + weight * image_similarity_loss(derived, target_image)
 
-        if config.round_robin and config.illusion == "flip" and prompt_images:
+        if reference_views is not None and prompt_images:
+            active = reference_views[step]
+            diagnostics["round_robin_exposures"][active] += 1
+            prompt_images = [prompt_images[active]]
+            prompt_texts = [prompt_texts[active]]
+            prompt_weights = [prompt_weights[active]]
+        elif config.round_robin and config.illusion == "flip" and prompt_images:
             active = step % 2
             diagnostics["round_robin_exposures"][active] += 1
             prompt_images = [prompt_images[active]]
@@ -1320,8 +1561,8 @@ def optimize_illusion(
     )
 
     with torch.no_grad():
-        primes = [network.image().clamp(0, 1) for network in networks]
-        final = [image.clamp(0, 1) for image in spec.arrange(primes)]
+        primes = [image.clamp(0, 1) for image in render_primes()]
+        final = [image.clamp(0, 1) for image in render_derived()]
     emit(
         PhaseEvent(
             phase="final",

@@ -42,13 +42,15 @@ def _entry(pair_id: str = "dog_sloth") -> CampaignEntry:
 
 
 def test_skip_completed_matching_sha_and_spec(tmp_path: Path) -> None:
+    from PIL import Image
+
     plan = _plan(tmp_path)
     entry = _entry()
     plan_identity = plan.to_json()["plan_sha"]
     out = tmp_path / entry.out_rel / "attempt_001"
     out.mkdir(parents=True)
-    (out / "derived_1.png").write_bytes(b"a")
-    (out / "derived_2.png").write_bytes(b"b")
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(out / "derived_1.png")
+    Image.new("RGB", (2, 2), (4, 5, 6)).save(out / "derived_2.png")
     (out / "manifest.json").write_text(
         json.dumps(
             {
