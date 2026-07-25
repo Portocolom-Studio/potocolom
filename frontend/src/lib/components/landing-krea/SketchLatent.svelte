@@ -6,12 +6,22 @@
 	import SalonGrid from './SalonGrid.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { onMount } from 'svelte';
+	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
+	import CheckIcon from '@lucide/svelte/icons/check';
+	import GitForkIcon from '@lucide/svelte/icons/git-fork';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
+	const forkUrl = `${repoUrl}/fork`;
 	const resolving = collageImages.slice(0, 10);
 	const wall = collageImages.slice(0, 18);
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
+	const tiers = [
+		{ key: 't1', price: '9', featured: false },
+		{ key: 't2', price: '24', featured: true },
+		{ key: 't3', price: '59', featured: false }
+	] as const;
+	const bullets = ['b1', 'b2', 'b3'] as const;
 
 	let index = $state(0);
 	const tile = $derived(resolving[index]);
@@ -41,7 +51,10 @@
 		<nav aria-label={t('nav.features')}>
 			<a href="#does">{t('nav.features')}</a>
 			<a href="#work">{t('gallery.kicker')}</a>
+			<a href="#pricing">{t('nav.pricing')}</a>
 			<a href="#run">{t('nav.open')}</a>
+			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
+			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 		</nav>
 		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
 	</header>
@@ -118,16 +131,62 @@
 		</section>
 
 		<section id="run" class="panel run">
-			<div class="run-copy">
-				<h2>{t('fork.title')}</h2>
-				<ul>
-					{#each forkPoints as point (point)}
-						<li>{t(`fork.${point}`)}</li>
-					{/each}
-				</ul>
-				<a class="pill pill-ghost" href={repoUrl}>{t('fork.cta_source')}</a>
+			<h2>{t('fork.title')}</h2>
+			<div class="run-body">
+				<div class="run-card">
+					<ul>
+						{#each forkPoints as point (point)}
+							<li>
+								<CheckIcon aria-hidden="true" />
+								{t(`fork.${point}`)}
+							</li>
+						{/each}
+					</ul>
+					<div class="run-actions">
+						<a class="pill pill-solid" href={forkUrl}>
+							<GitForkIcon aria-hidden="true" />
+							{t('fork.cta_fork')}
+						</a>
+						<a class="pill pill-ghost" href={repoUrl}>
+							{t('fork.cta_source')}
+							<ArrowUpRightIcon aria-hidden="true" />
+						</a>
+					</div>
+				</div>
+				<ForkTerminal class="latent-terminal" />
 			</div>
-			<ForkTerminal class="latent-terminal" />
+		</section>
+
+		<section id="pricing" class="panel pricing">
+			<div class="panel-head">
+				<h2>{t('pricing.title')}</h2>
+				<p>{t('pricing.sub')}</p>
+			</div>
+			<div class="tiers">
+				{#each tiers as tier (tier.key)}
+					<article class:featured={tier.featured}>
+						<div class="tier-head">
+							<span class="tier-name">{t(`pricing.${tier.key}_name`)}</span>
+							{#if tier.featured}
+								<span class="tier-badge">{t('pricing.t2_badge')}</span>
+							{/if}
+						</div>
+						<p class="tier-price">
+							<span class="amount">&euro;{tier.price}</span>
+							<span class="term">{t('pricing.month')}</span>
+						</p>
+						<ul>
+							{#each bullets as bullet (bullet)}
+								<li>
+									<CheckIcon aria-hidden="true" />
+									{t(`pricing.${tier.key}_${bullet}`)}
+								</li>
+							{/each}
+						</ul>
+					</article>
+				{/each}
+			</div>
+			<p class="trial">{t('pricing.trial')}</p>
 		</section>
 
 		<section class="closing">
@@ -346,7 +405,6 @@
 
 	.panel-head p,
 	.does-grid p,
-	.run-copy li,
 	.closing p,
 	.work-plate p {
 		color: var(--k-muted);
@@ -380,6 +438,8 @@
 	.work-wall {
 		position: absolute;
 		inset: 0;
+		/* Opaque: dimmed tiles must fade to paper, never onto the moving canvas. */
+		background: var(--k-paper);
 	}
 
 	.work-plate {
@@ -402,26 +462,134 @@
 		border-radius: 1rem;
 	}
 
-	/* Run ------------------------------------------------------------------ */
-	.run-copy {
+	/* Pricing --------------------------------------------------------------- */
+	.tiers {
 		display: grid;
-		justify-items: start;
-		gap: 1.25rem;
+		gap: 1rem;
 	}
 
-	.run-copy ul {
+	.tiers article {
 		display: grid;
-		gap: 0.8rem;
-		max-width: 44ch;
+		align-content: start;
+		gap: 1rem;
+		padding: clamp(1.25rem, 3vw, 1.75rem);
+		border: 1px solid var(--k-line);
+		border-radius: 1.25rem;
+		background: var(--k-panel);
+	}
+
+	.tiers article.featured {
+		border-color: var(--k-accent);
+	}
+
+	.tier-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		color: var(--k-muted);
+		font-size: 0.9rem;
+	}
+
+	.tier-badge {
+		padding: 0.2rem 0.6rem;
+		border-radius: 999px;
+		background: var(--k-accent);
+		color: var(--k-accent-ink);
+		font-size: 0.72rem;
+		font-weight: 700;
+		white-space: nowrap;
+	}
+
+	.tier-price {
+		display: flex;
+		align-items: baseline;
+		gap: 0.45rem;
+	}
+
+	.amount {
+		font-size: clamp(2rem, 3vw, 2.6rem);
+		font-weight: 800;
+		font-variant-numeric: tabular-nums;
+		letter-spacing: -0.04em;
+	}
+
+	.term {
+		color: var(--k-muted);
+		font-size: 0.9rem;
+	}
+
+	.trial {
+		max-width: 60ch;
+		color: var(--k-muted);
+		font-size: 0.88rem;
+	}
+
+	/* Run ------------------------------------------------------------------ */
+	.run-body {
+		display: grid;
+		gap: 1rem;
+		align-items: stretch;
+	}
+
+	.run-card {
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		gap: 2rem;
+		min-height: 20rem;
+		padding: clamp(1.25rem, 3vw, 2rem);
+		border: 1px solid var(--k-line);
+		border-radius: 1.25rem;
+		background: var(--k-panel);
+	}
+
+	.run-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.7rem;
+	}
+
+	.tiers ul,
+	.run-card ul {
+		display: grid;
+		gap: 0.9rem;
 		margin: 0;
 		padding: 0;
 		list-style: none;
 	}
 
-	.run-copy li {
-		padding-inline-start: 1rem;
-		border-inline-start: 2px solid var(--k-accent);
-		line-height: 1.6;
+	.tiers li,
+	.run-card li {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: 0.6rem;
+		align-items: start;
+		color: var(--k-muted);
+		line-height: 1.55;
+	}
+
+	.tiers li :global(svg),
+	.run-card li :global(svg),
+	.pill :global(svg) {
+		width: 1rem;
+		height: 1rem;
+		flex: none;
+	}
+
+	.tiers li :global(svg),
+	.run-card li :global(svg) {
+		margin-block-start: 0.25rem;
+		color: var(--k-accent);
+	}
+
+	.pill :global(svg) {
+		margin-inline-end: 0.45rem;
+	}
+
+	.pill-ghost :global(svg) {
+		margin-inline: 0.45rem 0;
+		opacity: 0.7;
 	}
 
 	.latent :global(.latent-terminal) {
@@ -480,10 +648,17 @@
 			grid-template-columns: repeat(4, minmax(0, 1fr));
 		}
 
-		.studio,
-		.run {
+		.studio {
 			grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
 			align-items: center;
+		}
+
+		.run-body {
+			grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+		}
+
+		.tiers {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
 	}
 
