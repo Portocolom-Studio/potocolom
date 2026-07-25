@@ -13,13 +13,12 @@
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
-	const arcTiles = collageImages.slice(0, 14);
 	const wall = collageImages.slice(0, 18);
-	// Concentric rings under the arc: the whole gallery, orbiting.
-	const orbits = [
-		{ radius: 9, tiles: collageImages.slice(0, 7) },
-		{ radius: 15, tiles: collageImages.slice(7, 19) },
-		{ radius: 21, tiles: collageImages.slice(0, 18).toReversed() }
+	// One orbit system: arcs stacked under each other, wider as they descend.
+	const arcs = [
+		{ radius: 80, gap: 4, tiles: collageImages.slice(0, 13) },
+		{ radius: 75, gap: 4.3, tiles: collageImages.slice(13, 24) },
+		{ radius: 70.5, gap: 4.6, tiles: collageImages.slice(0, 17).toReversed() }
 	];
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
@@ -93,30 +92,19 @@
 					<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
 					<a class="pill pill-ghost" href={repoUrl}>{t('hero.cta_selfhost')}</a>
 				</div>
+				<p class="orbit-name" aria-live="polite">{orbitTile ? orbitTile.alt : ''}</p>
 			</div>
 
 			<div class="arc" aria-label={t('gallery.kicker')}>
 				<div class="arc-spin">
-					{#each arcTiles as tile, index (tile.file)}
-						{@const sources = collageLandingSources(tile)}
-						<span class="chip" style="--i: {index}; --n: {arcTiles.length}">
-							<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
-						</span>
-					{/each}
-				</div>
-			</div>
-		</section>
-
-		<section id="orbit" class="orbit-gallery" aria-label={t('gallery.kicker')}>
-			<div class="rings">
-				{#each orbits as ring, ringIndex (ringIndex)}
-					<div class="orbit-ring" style="--r: {ring.radius}rem; --spin: {26 + ringIndex * 14}s">
-						{#each ring.tiles as tile, index (`${ringIndex}-${tile.file}`)}
+					{#each arcs as layer, depth (depth)}
+						{#each layer.tiles as tile, index (`${depth}-${tile.file}`)}
 							{@const sources = collageLandingSources(tile)}
 							<button
 								type="button"
-								class="orb"
-								style="--i: {index}; --n: {ring.tiles.length}"
+								class="chip"
+								style="--i: {index}; --n: {layer.tiles
+									.length}; --r: {layer.radius}rem; --gap: {layer.gap}deg; --depth: {depth}"
 								onmouseenter={() => (orbitTile = tile)}
 								onmouseleave={() => (orbitTile = null)}
 								onfocus={() => (orbitTile = tile)}
@@ -125,11 +113,8 @@
 								<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
 							</button>
 						{/each}
-					</div>
-				{/each}
-				<p class="orbit-name" aria-live="polite">
-					{orbitTile ? orbitTile.alt : t('gallery.kicker')}
-				</p>
+					{/each}
+				</div>
 			</div>
 		</section>
 
@@ -401,10 +386,17 @@
 	}
 
 	.arc {
+		position: relative;
 		width: 100%;
-		height: clamp(8rem, 20vh, 12rem);
+		height: clamp(12rem, 32vh, 20rem);
 		margin-block-start: auto;
 		overflow: clip;
+	}
+
+	.orbit-name {
+		min-height: 1.3rem;
+		color: var(--k-accent);
+		font-size: 0.85rem;
 	}
 
 	.arc-spin {
@@ -428,88 +420,31 @@
 	.chip {
 		position: absolute;
 		display: block;
-		width: clamp(3.2rem, 6vw, 4.6rem);
+		width: clamp(2.9rem, 5.4vw, 4.2rem);
 		aspect-ratio: 1;
 		margin: -0.5rem 0 0 -0.5rem;
-		overflow: clip;
-		border: 1px solid var(--k-line);
-		border-radius: 999px;
-		background: var(--k-panel);
-		transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * 4deg)) translateY(-80rem);
-		transition: transform 300ms var(--k-ease);
-	}
-
-	.chip img {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-	}
-
-	/* Orbit gallery ---------------------------------------------------------- */
-	.orbit-gallery {
-		display: grid;
-		place-items: center;
-		padding: clamp(2rem, 6vw, 4rem) 1rem;
-		overflow: clip;
-	}
-
-	.rings {
-		position: relative;
-		display: grid;
-		place-items: center;
-		width: min(48rem, 100%);
-		aspect-ratio: 1;
-	}
-
-	.orbit-ring {
-		position: absolute;
-		inset: 0;
-		display: grid;
-		place-items: center;
-		animation: turn var(--spin) linear infinite;
-	}
-
-	.orbit-ring:nth-child(even) {
-		animation-direction: reverse;
-	}
-
-	@keyframes turn {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	.orb {
-		position: absolute;
-		width: clamp(2.6rem, 5vw, 4rem);
-		aspect-ratio: 1;
 		padding: 0;
 		overflow: clip;
 		border: 1px solid var(--k-line);
 		border-radius: 999px;
 		background: var(--k-panel);
 		cursor: pointer;
-		transform: rotate(calc(var(--i) * (360deg / var(--n)))) translateY(calc(var(--r) * -1))
-			rotate(calc(var(--i) * (-360deg / var(--n))));
+		/* Counter-rotate so the picture stays upright on the curve. */
+		transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap)))
+			translateY(calc(var(--r) * -1))
+			rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * -1));
 		transition:
 			width 260ms var(--k-ease),
 			border-color 260ms var(--k-ease),
-			box-shadow 260ms var(--k-ease);
+			box-shadow 260ms var(--k-ease),
+			opacity 260ms var(--k-ease);
+		opacity: calc(1 - var(--depth) * 0.12);
 	}
 
-	.orb img {
+	.chip img {
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
-	}
-
-	.orbit-name {
-		position: relative;
-		z-index: 3;
-		max-width: 18ch;
-		color: var(--k-muted);
-		font-size: 0.9rem;
-		text-align: center;
 	}
 
 	/* Shared section furniture ---------------------------------------------- */
@@ -838,23 +773,18 @@
 		}
 	}
 
-	@media (hover: hover) and (pointer: fine) {
-		.rings:hover .orbit-ring {
-			animation-play-state: paused;
-		}
+	/* Not behind a hover media query: the enlarge is the point of the section. */
+	.arc:hover .arc-spin {
+		animation-play-state: paused;
+	}
 
-		.orb:hover,
-		.orb:focus-visible {
-			z-index: 4;
-			width: clamp(6rem, 12vw, 10rem);
-			border-color: var(--k-accent);
-			box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 55%);
-		}
-
-		.chip:hover {
-			transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * 4deg)) translateY(-80.7rem)
-				scale(1.22);
-		}
+	.chip:hover,
+	.chip:focus-visible {
+		z-index: 5;
+		width: clamp(7rem, 13vw, 11rem);
+		border-color: var(--k-accent);
+		box-shadow: 0 1rem 3rem oklch(0 0 0 / 60%);
+		opacity: 1;
 	}
 
 	@media (max-width: 48rem) {
@@ -873,7 +803,9 @@
 
 	@media (max-width: 40rem) {
 		.chip {
-			transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * 7deg)) translateY(-80rem);
+			transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * 1.7))
+				translateY(calc(var(--r) * -1))
+				rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * -1.7));
 		}
 	}
 
@@ -890,8 +822,7 @@
 
 	@media (prefers-reduced-motion: reduce) {
 		.arc-spin,
-		.caret,
-		.orbit-ring {
+		.caret {
 			animation: none;
 		}
 	}
