@@ -19,7 +19,8 @@
 	const tiers = [
 		{ key: 't1', price: '9', featured: false },
 		{ key: 't2', price: '24', featured: true },
-		{ key: 't3', price: '59', featured: false }
+		{ key: 't3', price: '59', featured: false },
+		{ key: 't4', price: null, featured: false }
 	] as const;
 	const bullets = ['b1', 'b2', 'b3'] as const;
 
@@ -172,8 +173,12 @@
 							{/if}
 						</div>
 						<p class="tier-price">
-							<span class="amount">&euro;{tier.price}</span>
-							<span class="term">{t('pricing.month')}</span>
+							{#if tier.price}
+								<span class="amount">&euro;{tier.price}</span>
+								<span class="term">{t('pricing.month')}</span>
+							{:else}
+								<span class="amount amount-word">{t('pricing.t4_price')}</span>
+							{/if}
 						</p>
 						<ul>
 							{#each bullets as bullet (bullet)}
@@ -183,6 +188,11 @@
 								</li>
 							{/each}
 						</ul>
+						{#if !tier.price}
+							<a class="tier-contact" href="mailto:admin@leonfuller.com">
+								{t('footer.contact')}
+							</a>
+						{/if}
 					</article>
 				{/each}
 			</div>
@@ -246,7 +256,8 @@
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
 		gap: 1rem;
-		padding: 1.1rem clamp(1rem, 3vw, 2.5rem);
+		padding-block: 1.1rem;
+		padding-inline: max(clamp(1rem, 3vw, 2.5rem), calc((100% - 76rem) / 2));
 	}
 
 	.mark {
@@ -273,7 +284,8 @@
 		grid-template-columns: minmax(0, 1fr);
 		align-content: center;
 		min-height: calc(100svh - 5rem);
-		padding: clamp(2rem, 6vw, 4rem) clamp(1rem, 5vw, 4rem);
+		padding-block: clamp(2rem, 6vw, 4rem);
+		padding-inline: max(clamp(1rem, 5vw, 4rem), calc((100% - 72rem) / 2));
 	}
 
 	.stage {
@@ -374,7 +386,9 @@
 	.closing {
 		display: grid;
 		gap: clamp(1.75rem, 4vw, 3rem);
-		padding: clamp(3rem, 8vw, 6rem) clamp(1rem, 4vw, 3rem);
+		padding-block: clamp(3rem, 8vw, 6rem);
+		/* Full-bleed background, content centred inside a 72rem measure. */
+		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 72rem) / 2));
 	}
 
 	.panel {
@@ -471,8 +485,8 @@
 	.tiers article {
 		display: grid;
 		align-content: start;
-		gap: 1rem;
-		padding: clamp(1.25rem, 3vw, 1.75rem);
+		gap: 0.9rem;
+		padding: clamp(1.25rem, 2vw, 1.5rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
 		background: var(--k-panel);
@@ -508,7 +522,7 @@
 	}
 
 	.amount {
-		font-size: clamp(2rem, 3vw, 2.6rem);
+		font-size: clamp(1.9rem, 2.4vw, 2.3rem);
 		font-weight: 800;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.04em;
@@ -517,6 +531,19 @@
 	.term {
 		color: var(--k-muted);
 		font-size: 0.9rem;
+	}
+
+	.amount-word {
+		font-size: clamp(1.5rem, 2vw, 1.9rem);
+	}
+
+	/* The enterprise card carries a mail link instead of a price. */
+	.tier-contact {
+		justify-self: start;
+		color: var(--k-accent);
+		font-weight: 700;
+		text-decoration: underline;
+		text-underline-offset: 0.25em;
 	}
 
 	.trial {
@@ -537,7 +564,7 @@
 		flex-direction: column;
 		justify-content: space-between;
 		gap: 2rem;
-		min-height: 20rem;
+		min-height: 17rem;
 		padding: clamp(1.25rem, 3vw, 2rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
@@ -567,6 +594,10 @@
 		align-items: start;
 		color: var(--k-muted);
 		line-height: 1.55;
+	}
+
+	.tiers li {
+		font-size: 0.92rem;
 	}
 
 	.tiers li :global(svg),
@@ -614,7 +645,8 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem 2rem;
-		padding: 2rem clamp(1rem, 4vw, 3rem);
+		padding-block: 2rem;
+		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 72rem) / 2));
 		border-block-start: 1px solid var(--k-line);
 		background: oklch(0.08 0.012 265 / 72%);
 		color: var(--k-muted);
@@ -658,7 +690,13 @@
 		}
 
 		.tiers {
-			grid-template-columns: repeat(3, minmax(0, 1fr));
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	@media (min-width: 64rem) {
+		.tiers {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
 		}
 	}
 
