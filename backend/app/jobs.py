@@ -18,9 +18,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import count
-from typing import Protocol
+from typing import Literal, Protocol
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, or_, select
@@ -195,10 +195,13 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
 async def list_generations(
     limit: int = 50,
     cursor: uuid.UUID | None = None,
+    state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     query = select(Job).where(Job.user_id == user.id)
+    if state is not None:
+        query = query.where(Job.state == state)
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:

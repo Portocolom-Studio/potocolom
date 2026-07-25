@@ -24,7 +24,7 @@
 	import { computePipelineMetrics } from '$lib/studio-session-pipeline-metrics';
 	import { computeSessionMetrics } from '$lib/studio-session-metrics';
 	import { demoGpuHistory, demoGpuSamples, demoHistory } from '$lib/studio-demo-metrics';
-	import { studio } from '$lib/studio.svelte';
+	import { studio, type Generation } from '$lib/studio.svelte';
 	import StudioBenchmarkChart from '$lib/components/studio-benchmark-chart.svelte';
 	import StudioBenchmarkRunTimeline from '$lib/components/studio-benchmark-run-timeline.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
@@ -35,6 +35,8 @@
 	import * as Card from '$lib/components/ui/card';
 	import * as Select from '$lib/components/ui/select';
 
+	const FAILURES_LIMIT = 20;
+
 	let liveTick = $state(0);
 	let sessions = $state<BenchmarkSession[]>([]);
 	let sessionsLoading = $state(false);
@@ -42,6 +44,8 @@
 	let selectedSessionId = $state<string | null>(null);
 	let metricsRange = $state<MetricsRange>('5m');
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
+	let recentFailures = $state<Generation[]>([]);
+	let failuresLoading = $state(false);
 
 	const demoMode = $derived.by(() => {
 		void liveTick;
@@ -119,6 +123,44 @@
 		return samples.length > 0 ? samples[samples.length - 1] : null;
 	});
 
+	const displayedFailures = $derived.by(() => {
+		void liveTick;
+		if (demoMode) {
+			return demoHistory()
+				.filter((generation) => generation.state === 'failed')
+				.slice(0, FAILURES_LIMIT);
+		}
+		return recentFailures;
+	});
+
+	function formatFailureWhen(iso: string | null): string {
+		if (!iso) return '-';
+		const parsed = Date.parse(iso);
+		if (Number.isNaN(parsed)) return iso;
+		return new Date(parsed).toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
+		});
+	}
+
+	async function loadRecentFailures(): Promise<void> {
+		failuresLoading = true;
+		try {
+			const response = await fetch(`/api/v1/generations?state=failed&limit=${FAILURES_LIMIT}`);
+			if (!response.ok) {
+				recentFailures = [];
+				return;
+			}
+			recentFailures = (await response.json()) as Generation[];
+		} catch {
+			recentFailures = [];
+		} finally {
+			failuresLoading = false;
+		}
+	}
+
 	onMount(() => {
 		const unsubscribe = subscribeGpuSamples(() => {
 			liveTick += 1;
@@ -133,6 +175,13 @@
 		}
 		startGpuSampler(() => studio.history);
 		return () => stopGpuSampler();
+	});
+
+	$effect(() => {
+		if (studio.metricsTab !== 'usage') return;
+		// Refetch when the history window gains/loses failed jobs (tab stays open).
+		void studio.history.filter((generation) => generation.state === 'failed').length;
+		void loadRecentFailures();
 	});
 
 	$effect(() => {
@@ -284,6 +333,40 @@
 									<td class="px-4 py-2.5 font-mono text-xs tabular-nums">{formatMs(row.gpuMs)}</td>
 									<td class="px-4 py-2.5 font-mono text-xs tabular-nums">
 										{row.width} x {row.height}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
+		</section>
+
+		<section class="flex flex-col gap-2">
+			<h3 class="text-sm font-medium">{t('app.metrics.failures')}</h3>
+			{#if failuresLoading && displayedFailures.length === 0}
+				<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
+			{:else if displayedFailures.length === 0}
+				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_empty')}</p>
+			{:else}
+				<div class="border-border overflow-hidden rounded-lg border">
+					<table class="w-full min-w-[32rem] text-sm">
+						<thead class="bg-muted/30 text-muted-foreground text-left text-xs">
+							<tr>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_when')}</th>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_model')}</th>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_reason')}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each displayedFailures as row (row.id)}
+								<tr class="border-border/60 border-t align-top">
+									<td class="text-muted-foreground px-4 py-2.5 font-mono text-xs whitespace-nowrap">
+										{formatFailureWhen(row.finished_at ?? row.created_at)}
+									</td>
+									<td class="px-4 py-2.5 font-mono text-xs">{row.model_id}</td>
+									<td class="px-4 py-2.5 font-mono text-xs wrap-break-word whitespace-pre-wrap">
+										{row.failure_reason ?? '-'}
 									</td>
 								</tr>
 							{/each}

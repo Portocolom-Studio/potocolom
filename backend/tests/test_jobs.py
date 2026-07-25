@@ -518,6 +518,16 @@ def test_job_failure_reason_persisted():
             assert job["failure_reason"] == "CUDA OOM"
             assert job["finished_at"] is not None
 
+            failed = client.get("/api/v1/generations", params={"state": "failed", "limit": 20})
+            assert failed.status_code == 200
+            rows = failed.json()
+            assert any(row["id"] == job_id for row in rows)
+            assert all(row["state"] == "failed" for row in rows)
+            assert next(row for row in rows if row["id"] == job_id)["failure_reason"] == "CUDA OOM"
+
+            bad = client.get("/api/v1/generations", params={"state": "nope"})
+            assert bad.status_code == 422
+
 
 def _post_generation(client, prompt: str) -> str:
     created = client.post("/api/v1/generations",
