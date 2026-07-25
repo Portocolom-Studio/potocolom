@@ -480,14 +480,16 @@ class DiffusersEngine:
                 repo, _, weight = manifest.lora.rpartition("/")
                 pipeline.load_lora_weights(repo, weight_name=weight)
                 pipeline.fuse_lora()
-            if self.device == "cuda":
-                # Conv-heavy UNets run measurably faster in NHWC; converted
-                # while still on the CPU so the move needs no VRAM transient.
+            rung = self._pick_rung(manifest)
+            # NHWC helps full-resident CUDA/ROCm UNets, but channels_last makes
+            # tensors non-contiguous in the NCHW sense. Group-offload may write
+            # them through safetensors, which refuses non-contiguous params
+            # ("You are trying to save a non contiguous tensor").
+            if self.device == "cuda" and rung == "full":
                 for name in ("unet", "vae"):
                     module = getattr(pipeline, name, None)
                     if module is not None:
                         module.to(memory_format=self.torch.channels_last)
-            rung = self._pick_rung(manifest)
             pipeline = self._apply_rung(pipeline, manifest, rung)
             if rung == "full":
                 self._optimize_resident(pipeline, mode)

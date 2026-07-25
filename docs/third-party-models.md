@@ -12,10 +12,10 @@ select them. Reference timings may still appear on `/benchmark`.
 
 | Model | License | Product status |
 | --- | --- | --- |
-| sd-turbo, sdxl-turbo | Stability AI Community | Benchmark reference |
 | sdxl-hypersd | Open RAIL++-M base + Hyper-SD LoRA with NO declared license | Benchmark reference (issue #75); not promotable until ByteDance declares terms |
-
-If you later offer any of these in the product, the obligations below apply.
+| sd-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
+| sdxl-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
+| dreamshaper-lcm | CreativeML Open RAIL-M | Benchmark / self-host reference; hidden from studio for quality |
 
 ## Stability AI Community License (sd-turbo, sdxl-turbo)
 
@@ -24,7 +24,8 @@ annual revenue (aggregate, from any source). Above that threshold the Community
 License terminates and you must stop using these models or obtain an Enterprise
 license from Stability AI.
 
-**Before commercial use** (including offering these models in the hosted cloud):
+**Before commercial use** (including offering these models from a commercial
+benchmark or product surface):
 
 1. Register at [stability.ai/community-license](https://stability.ai/community-license).
 2. Comply with the [Stability AI Acceptable Use Policy](https://stability.ai/use-policy).
@@ -37,7 +38,7 @@ requires:
 - **Prominent display** of **"Powered by Stability AI"** on the website, user
   interface, or product documentation.
 
-## Unrestricted product models
+## Unrestricted product models (no Stability revenue cap)
 
 | Model | License |
 | --- | --- |
@@ -46,7 +47,6 @@ requires:
 | ssd-1b | Apache 2.0 |
 | vega-rt (base + VegaRT LCM LoRA) | Apache 2.0 |
 | ssd-1b-lightning (SSD-1B + SDXL Lightning LoRA) | Apache 2.0 base + CreativeML Open RAIL++-M LoRA |
-| dreamshaper-lcm | CreativeML Open RAIL-M |
 | realesrgan (RealESRGAN_x2plus / x4plus weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
 | realesrgan-fast (realesr-general-x4v3 weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
 

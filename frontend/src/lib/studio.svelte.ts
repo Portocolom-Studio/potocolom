@@ -101,6 +101,10 @@ export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
 }
 
 let polling = false;
+// Set when generate/upscale asks to poll while a loop is already winding down.
+// Without this, `if (polling) return` drops the request in the race between the
+// last idle check and `polling = false`, and the UI stops refreshing until reload.
+let pollRequested = false;
 
 // Diffusion models drive the generate form and the sidebar picker; upscalers
 // are reached only through the Upscale action (issue #91). Every model list
@@ -234,6 +238,7 @@ export async function loadStarredGenerations(): Promise<void> {
 	}
 
 	const missing = studio.starredIds.filter((id) => !resolved.has(id));
+	const gone = new Set<string>();
 	const fetched =
 		missing.length === 0
 			? []
@@ -241,6 +246,10 @@ export async function loadStarredGenerations(): Promise<void> {
 					await Promise.all(
 						missing.map(async (id) => {
 							const response = await fetch(`/api/v1/generations/${id}`);
+							if (response.status === 404) {
+								gone.add(id);
+								return null;
+							}
 							if (!response.ok) return null;
 							const generation = (await response.json()) as Generation;
 							return generation.state !== 'failed' && generation.assets.length > 0
@@ -252,6 +261,11 @@ export async function loadStarredGenerations(): Promise<void> {
 
 	for (const generation of fetched) {
 		resolved.set(generation.id, generation);
+	}
+
+	if (gone.size > 0) {
+		studio.starredIds = studio.starredIds.filter((id) => !gone.has(id));
+		saveStarredIds(studio.starredIds);
 	}
 
 	studio.starredExtras = studio.starredIds.flatMap((id) => {
@@ -283,18 +297,25 @@ export function toggleStarred(id: string): void {
 }
 
 export async function pollWhileWorking(): Promise<void> {
+	pollRequested = true;
 	if (polling) return;
 	polling = true;
 	try {
-		while (studio.history.some((g) => g.state === 'queued' || g.state === 'running')) {
-			await new Promise((resolve) => setTimeout(resolve, 1500));
-			try {
-				await loadHistory();
-			} catch {
-				continue;
+		do {
+			pollRequested = false;
+			while (studio.history.some((g) => g.state === 'queued' || g.state === 'running')) {
+				await new Promise((resolve) => setTimeout(resolve, 1500));
+				try {
+					await loadHistory();
+				} catch {
+					continue;
+				}
 			}
-		}
+			// Re-check: a generate() during the idle gap sets pollRequested and may
+			// have already refreshed history with new queued/running jobs.
+		} while (pollRequested || studio.history.some((g) => g.state === 'queued' || g.state === 'running'));
 	} finally {
 		polling = false;
+		if (pollRequested) void pollWhileWorking();
 	}
 }

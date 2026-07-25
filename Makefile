@@ -4,13 +4,15 @@
 #   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
+#     make dev-status          # pid files, ports, workers, model list
 #     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
 .PHONY: setup setup-rocm setup-cuda deps deps-down lint test build verify simulate \
-	api worker-rocm worker-cuda worker-sim web web-landing dev-start dev-stop dev-restart \
+	api worker-rocm worker-cuda worker-sim web web-landing \
+	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
@@ -71,15 +73,22 @@ api: ## API server on :8000; assets under ./data (make deps first)
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
 worker-cuda: ## inference worker on an NVIDIA GPU (make setup-cuda once)
 	cd worker && MODELS_DIR=models DEVICE=cuda \
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
-	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet .venv/bin/python -m worker
+	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
+		.venv/bin/python -m worker
 
 web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
@@ -90,53 +99,23 @@ web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
 site-preview: site-build ## serve the exact marketing-site artifact locally
 	cd frontend && npm run preview
 
+# Background stack: scripts/dev-stack.sh reaps workers by cwd (they have no
+# listen port, so fuser alone cannot stop them) and records real PIDs via exec.
 dev-stop: ## stop background API (:8000), frontend (:5173), and worker
-	@if [ -f "$(DEV_DIR)/api.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/api.pid") 2>/dev/null || true; \
-	fi
-	@if [ -f "$(DEV_DIR)/web.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/web.pid") 2>/dev/null || true; \
-	fi
-	@if [ -f "$(DEV_DIR)/worker.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/worker.pid") 2>/dev/null || true; \
-	fi
-	@fuser -k $(API_PORT)/tcp 2>/dev/null || true
-	@fuser -k $(WEB_PORT)/tcp 2>/dev/null || true
-	@rm -f "$(DEV_DIR)/api.pid" "$(DEV_DIR)/web.pid" "$(DEV_DIR)/worker.pid"
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" stop
 
 dev-start: ## start API, frontend, and worker in the background (make deps first)
-	@if [ "$(WORKER)" != "rocm" ] && [ "$(WORKER)" != "cuda" ] && [ "$(WORKER)" != "sim" ] && [ "$(WORKER)" != "off" ]; then \
-		echo "Unknown WORKER=$(WORKER); use rocm, cuda, sim, or off" >&2; exit 1; \
-	fi
-	@mkdir -p "$(DEV_DIR)"
-	@$(MAKE) dev-stop
-	@echo "Starting API on :$(API_PORT)..."
-	@bash -c 'cd "$(CURDIR)/backend" && STORAGE_LOCAL_PATH="$(CURDIR)/data" \
-		nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $(API_PORT) \
-		> "$(DEV_DIR)/api.log" 2>&1 & echo $$! > "$(DEV_DIR)/api.pid"'
-	@echo "Starting frontend on :$(WEB_PORT)..."
-	@bash -c 'cd "$(CURDIR)/frontend" && \
-		nohup npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) \
-		> "$(DEV_DIR)/web.log" 2>&1 & echo $$! > "$(DEV_DIR)/web.pid"'
-	@if [ "$(WORKER)" = "rocm" ] || [ "$(WORKER)" = "cuda" ]; then \
-		echo "Starting worker ($(WORKER), MODELS_DIR=models)..."; \
-		bash -c 'cd "$(CURDIR)/worker" && MODELS_DIR=models DEVICE=$(WORKER) \
-			API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
-			nohup .venv/bin/python -m worker \
-			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
-	elif [ "$(WORKER)" = "sim" ]; then \
-		echo "Starting worker (simulated engine)..."; \
-		bash -c 'cd "$(CURDIR)/worker" && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
-			nohup .venv/bin/python -m worker \
-			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
-	fi
-	@echo "API log:    $(DEV_DIR)/api.log"
-	@echo "Web log:    $(DEV_DIR)/web.log"
-	@if [ "$(WORKER)" != "off" ]; then echo "Worker log: $(DEV_DIR)/worker.log"; fi
-	@echo "API:        http://localhost:$(API_PORT)"
-	@echo "Studio:     http://localhost:$(WEB_PORT)"
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" start
 
-dev-restart: dev-stop dev-start ## restart background API, frontend, and worker
+dev-restart: ## restart background API, frontend, and worker
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" restart
+
+dev-status: ## show pid files, ports, local workers, and /api/v1/models
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" status
 
 stack-up: dev-start ## alias for dev-start
 stack-down: dev-stop ## alias for dev-stop
