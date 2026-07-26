@@ -27,6 +27,7 @@
 	--k-line: oklch(0.2 0.02 262 / 18%);
 	--k-accent: oklch(0.52 0.22 258);
 	--k-accent-ink: oklch(0.99 0.003 255);
+	--latent-scheme: light;
 }
 
 .krea *,
