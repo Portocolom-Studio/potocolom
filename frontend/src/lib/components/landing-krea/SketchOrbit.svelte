@@ -420,15 +420,15 @@
 		inset-inline-start: 50%;
 		width: 0;
 		height: 0;
-		animation: sway 44s ease-in-out infinite alternate;
+		animation: sway 15s ease-in-out infinite alternate;
 	}
 
 	@keyframes sway {
 		from {
-			transform: rotate(-3.5deg);
+			transform: rotate(-4.5deg);
 		}
 		to {
-			transform: rotate(3.5deg);
+			transform: rotate(4.5deg);
 		}
 	}
 
