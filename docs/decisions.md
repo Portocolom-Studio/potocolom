@@ -524,6 +524,14 @@ Supersedes "License: GPL-3.0 stays, AGPL rejected". The public repository moves 
 
 Rejected alternatives: staying GPL-3.0 (leaves the modified-network-service path entirely open, and relicensing only gets harder as outside contributions accumulate); BUSL-1.1 with a revenue-threshold use grant or PolyForm Noncommercial (closest to a Stability-style community license, but both are source-available rather than open source, and the project's positioning spends that credibility everywhere from the hero badge to the whitepaper).
 
+## Prerendering: every known route is rendered at build time
+
+Supersedes the `ssr = false` client-rendered shell in "Frontend: SvelteKit as a static SPA" above, without changing what that decision settled: there is still no server rendering at request time, and the build is still one static artifact that the API serves when self-hosted and a CDN serves in the cloud. What changed is that the same artifact also serves the public marketing site, where a shell containing no title, description or heading is the whole product a crawler and a social card ever see. SvelteKit prerenders known routes into complete documents, the client hydrates them, and the studio behaves exactly as before.
+
+Two consequences are accepted deliberately. The prerendered language is English, so the locale preference is restored after hydration rather than during module initialization, which means a Spanish visitor sees English for one frame. Benchmark results load after hydration rather than being inlined into the prerendered document, keeping the page small at the cost of the results table not being crawlable; the surrounding explanation and the model specifications are.
+
+Rejected alternatives: leaving the marketing routes client-rendered and accepting an empty shell in search results and social cards (the reason this project has a landing page at all is discovery); a separate marketing site or branch (rejected earlier and still rejected, since one codebase serving both surfaces is the point); server-side rendering at request time (needs a running server in front of the CDN, which the cloud profile deliberately avoids).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
