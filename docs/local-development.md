@@ -42,7 +42,7 @@ The NVIDIA variant (`:v0.x-cuda`) uses the `deploy.resources.reservations.device
 Dependencies run in containers; the three applications run natively for instant reload and debugger access:
 
 ```
-deploy/compose/dev.yml        # postgres, redis, minio, mailpit; nothing else
+deploy/compose/dev.yml        # postgres; redis, minio and mailpit behind --profile cloud-sim
 backend:  uvicorn app:app --reload          # against the dev containers
 frontend: npm run dev                        # Vite dev server, proxies /api to backend
 worker:   python -m worker --device rocm     # dials ws://localhost:8000/api/v1/fleet
@@ -75,11 +75,14 @@ The containerized applications are still exercised constantly: by the cloud simu
 ### Running each component
 
 ```
-# dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+# dependencies: PostgreSQL is the only one the native loop uses. Redis, MinIO
+# and Mailpit are cloud-profile substitutes; add --profile cloud-sim for them.
 docker compose -f deploy/compose/dev.yml up -d
 
+# Prefer `make setup` (picks a 3.11+ interpreter, installs into .venv only).
+# Manual equivalent - the interpreter must be 3.11+, not a system python3 of 3.10:
 # backend, from backend/
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"
 .venv/bin/uvicorn app.main:app --reload          # http://localhost:8000/api/v1/health
 .venv/bin/ruff check . && .venv/bin/pytest       # lint and tests
 
@@ -89,7 +92,7 @@ npm run dev                                      # http://localhost:5173
 npm run lint && npm run check                    # format check and type check
 
 # worker, from worker/
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m worker                       # dials the API and retries until one
                                                  # is running; Ctrl+C to stop
 .venv/bin/ruff check . && .venv/bin/pytest

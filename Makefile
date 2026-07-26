@@ -10,7 +10,8 @@
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm setup-cuda deps deps-down lint test build verify simulate \
+.PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
+	deps deps-all deps-down lint test build verify simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -19,23 +20,55 @@
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
 
-setup: ## create virtualenvs and install all dependencies
-	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-	cd worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+# Interpreter used only to create backend/.venv and worker/.venv. A system
+# python3 of 3.10 creates a venv that sends pip backtracking against
+# requires-python >=3.11, so take the first candidate that is new enough.
+# Project packages install into the venvs only, never system site-packages.
+# Override: make setup PYTHON=/path/to/python3.11
+VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
+PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
+	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
+
+check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
+	@test -n "$(PYTHON)" || { \
+		echo 'error: Python 3.11 or newer is required for backend/ and worker/.' >&2; \
+		echo 'Install it alongside the system python3 if needed (for example' >&2; \
+		echo 'apt install python3.11 python3.11-venv), or set PYTHON=/path/to/python3.11.' >&2; \
+		exit 1; }
+	@$(PYTHON) $(VENV_OK) 2>/dev/null || { \
+		echo 'error: $(PYTHON) is missing or older than Python 3.11.' >&2; exit 1; }
+	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
+		% ((sys.executable,) + sys.version_info[:3]))'
+
+check-worker-venv:
+	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null || { \
+		echo 'error: worker/.venv is missing or not Python 3.11+; run make setup.' >&2; \
+		exit 1; }
+
+setup: check-python ## create virtualenvs and install all dependencies
+	@for d in backend worker; do \
+		$$d/.venv/bin/python $(VENV_OK) 2>/dev/null \
+			|| $(PYTHON) -m venv --clear $$d/.venv; \
+	done
+	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
+	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
 
-setup-rocm: ## worker inference deps for AMD: ROCm torch wheels, then the extra
+setup-rocm: check-worker-venv ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
-setup-cuda: ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
+setup-cuda: check-worker-venv ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
-deps: ## start development dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+deps: ## start development dependencies (PostgreSQL: all the native dev loop uses)
 	docker compose -f deploy/compose/dev.yml up -d
+
+deps-all: ## also start Redis, MinIO and Mailpit (cloud-sim profile; idle in local dev)
+	docker compose -f deploy/compose/dev.yml --profile cloud-sim up -d
 
 deps-down:
 	docker compose -f deploy/compose/dev.yml down

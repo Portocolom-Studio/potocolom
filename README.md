@@ -24,6 +24,7 @@ Pre-alpha, under active development in the open. The architecture, protocols and
 cp deploy/compose/.env.example deploy/compose/.env
 # edit POSTGRES_PASSWORD
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+# AMD card: use --profile rocm instead of --profile gpu
 ```
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
@@ -54,7 +55,7 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 ### Prerequisites
 
 - Docker with Compose v2, for the development dependencies.
-- Python 3.11 or newer, for the backend and the worker.
+- Python 3.11 or newer, for the backend and the worker. `make setup` uses `python3` when it is new enough and otherwise falls back to a versioned `python3.11`/`3.12`/`3.13` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
 - Node.js 24 or newer, for the frontend.
 - A GPU is optional until inference lands (issue #15). Both NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets; machines without a supported GPU run the worker on CPU. Machine specific setup, including AMD desktops, is documented in [Local development and testing](docs/local-development.md).
 
@@ -62,7 +63,7 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 
 ```
 make setup      # create virtualenvs, install all dependencies
-make deps       # start PostgreSQL, Redis, MinIO and Mailpit
+make deps       # start PostgreSQL; make deps-all adds the cloud-sim containers
 make verify     # lint, test and build all components: exactly what CI runs
 make simulate   # live connection handling demo (API + workers + simulated browser)
 ```
