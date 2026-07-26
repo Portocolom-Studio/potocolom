@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import { collageImages, collageLandingSources, type CollageImage } from '$lib/collage-images';
+	import { customImages, customSources } from '$lib/custom-images';
 	import { favoriteImages, favoriteSources } from '$lib/favorite-images';
 	import { promptMarqueePrompts } from '$lib/prompt-marquee-prompts';
 	import { t } from '$lib/i18n.svelte';
@@ -15,13 +16,18 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
 	const wall = collageImages.slice(0, 18);
-	// Everything the studio has produced: the landing collage plus the starred
-	// generations exported from the app.
+	// Everything the studio has produced: the landing collage, the starred
+	// generations exported from the app, and the extra exports in data/custom.
 	const everything = [
 		...favoriteImages.map((image) => ({
 			key: image.id,
 			alt: image.alt,
 			...favoriteSources(image)
+		})),
+		...customImages.map((image) => ({
+			key: image.id,
+			alt: image.alt,
+			...customSources(image)
 		})),
 		...collageImages.map((image) => ({
 			key: image.file,
@@ -29,13 +35,70 @@
 			...collageLandingSources(image)
 		}))
 	];
-	// One orbit system: arcs stacked under each other, wider as they descend.
-	const arcs = [
-		{ radius: 80, gap: 4, tiles: everything.slice(0, 13) },
-		{ radius: 75, gap: 4.3, tiles: everything.slice(13, 26) },
-		{ radius: 70.5, gap: 4.6, tiles: everything.slice(26, 41) },
-		{ radius: 66.5, gap: 4.9, tiles: everything.slice(41, 58) }
-	];
+
+	/* One orbit system: concentric arcs around a centre far below the band, so
+	   only the crown of each circle shows. Every length here is rem and has to
+	   match the .arc and .arc-spin rules below.
+
+	   Tiles are placed by angle rather than by count, and a layer keeps going
+	   until its tiles leave the band, which is what closes the arcs at the sides
+	   instead of stopping them mid-air. */
+	// The band is a clamp, so coverage is planned against its tallest and the
+	// hover nudge against its shortest. Both bounds live in the .arc rule.
+	const BAND_MAX_REM = 21;
+	const BAND_MIN_REM = 17;
+	const CENTRE_REM = 80;
+	const SWAY_DEG = 3;
+	// Half the widest viewport the arcs run edge to edge on; past it they simply
+	// leave the frame, which reads better than an arc that visibly stops.
+	const REACH_REM = 60;
+	const SLACK_REM = 3;
+	const HOVER_REM = 8;
+	// Constant arc length between neighbours, so every layer looks equally spaced.
+	const SPACING_REM = 5.4;
+
+	const radians = (degrees: number) => (degrees * Math.PI) / 180;
+
+	/** Where a tile's centre sits, measured down from the top of the band. */
+	const depthAt = (radius: number, angle: number) => CENTRE_REM - radius * Math.cos(radians(angle));
+
+	/* Nudge an enlarged tile back inside the band. Tiles low on an arc would
+	   otherwise grow straight through the bottom edge and come back cropped. */
+	function hoverLift(radius: number, angle: number): number {
+		const half = HOVER_REM / 2;
+		const y = depthAt(radius, angle);
+		if (y < half) return half - y;
+		if (y > BAND_MIN_REM - half) return BAND_MIN_REM - half - y;
+		return 0;
+	}
+
+	/** Every angle on this arc that the band can actually show, sway included. */
+	function arcAngles(radius: number, gap: number): number[] {
+		const angles: number[] = [];
+		for (let step = 0; step * gap <= 90; step += 1) {
+			const angle = step * gap;
+			const inner = Math.max(0, angle - SWAY_DEG);
+			const outer = angle + SWAY_DEG;
+			if (depthAt(radius, inner) > BAND_MAX_REM + SLACK_REM) break;
+			if (radius * Math.sin(radians(inner)) > REACH_REM) break;
+			// Wide arcs crest above the band; they only appear out at the sides.
+			if (depthAt(radius, outer) < -SLACK_REM) continue;
+			angles.push(angle);
+			if (angle > 0) angles.push(-angle);
+		}
+		return angles.sort((a, b) => a - b);
+	}
+
+	let poured = 0;
+	const arcs = [84, 77.5, 73, 69, 65].map((radius, depth) => {
+		const gap = ((SPACING_REM / radius) * 180) / Math.PI;
+		const tiles = arcAngles(radius, gap).map((angle) => {
+			const image = everything[poured % everything.length];
+			poured += 1;
+			return { ...image, angle, lift: hoverLift(radius, angle) };
+		});
+		return { radius, depth, tiles };
+	});
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
 	const bullets = ['b1', 'b2', 'b3'] as const;
@@ -113,19 +176,26 @@
 
 			<div class="arc" aria-label={t('gallery.kicker')}>
 				<div class="arc-spin">
-					{#each arcs as layer, depth (depth)}
-						{#each layer.tiles as tile, index (`${depth}-${tile.key}`)}
+					{#each arcs as layer (layer.radius)}
+						{#each layer.tiles as tile (`${layer.radius}-${tile.angle}`)}
 							<button
 								type="button"
 								class="chip"
-								style="--i: {index}; --n: {layer.tiles
-									.length}; --r: {layer.radius}rem; --gap: {layer.gap}deg; --depth: {depth}"
+								style="--a: {tile.angle}deg; --r: {layer.radius}rem; --lift: {tile.lift}rem; --depth: {layer.depth}"
 								onmouseenter={() => (orbitName = tile.alt)}
 								onmouseleave={() => (orbitName = null)}
 								onfocus={() => (orbitName = tile.alt)}
 								onblur={() => (orbitName = null)}
 							>
-								<img src={tile.src} srcset={tile.srcset} alt={tile.alt} loading="lazy" />
+								<!-- Without sizes the browser assumes 100vw and takes the widest
+								     variant for a chip that is never bigger than HOVER_REM. -->
+								<img
+									src={tile.src}
+									srcset={tile.srcset}
+									sizes="8rem"
+									alt={tile.alt}
+									loading="lazy"
+								/>
 							</button>
 						{/each}
 					{/each}
@@ -400,10 +470,11 @@
 		gap: 0.7rem;
 	}
 
+	/* BAND_MIN_REM and BAND_MAX_REM in the script are these two bounds. */
 	.arc {
 		position: relative;
 		width: 100%;
-		height: clamp(12rem, 32vh, 20rem);
+		height: clamp(17rem, 34vh, 21rem);
 		margin-block-start: auto;
 		overflow: clip;
 	}
@@ -423,37 +494,60 @@
 		animation: sway 15s ease-in-out infinite alternate;
 	}
 
+	/* SWAY_DEG in the script has to cover this amplitude. */
 	@keyframes sway {
 		from {
-			transform: rotate(-4.5deg);
+			transform: rotate(-3deg);
 		}
 		to {
-			transform: rotate(4.5deg);
+			transform: rotate(3deg);
 		}
 	}
 
+	/* Both are registered so they interpolate as lengths, and both are what the
+	   transition names. Transitioning `width` or `transform` while the value
+	   arrives through an unregistered var leaves the property on its old value:
+	   the custom property changes and the transition never runs. */
+	@property --w {
+		syntax: '<length>';
+		inherits: false;
+		initial-value: 4.2rem;
+	}
+
+	@property --shift {
+		syntax: '<length>';
+		inherits: false;
+		initial-value: 0rem;
+	}
+
 	.chip {
+		--w: clamp(2.9rem, 5.4vw, 4.2rem);
 		position: absolute;
 		display: block;
-		width: clamp(2.9rem, 5.4vw, 4.2rem);
+		width: var(--w);
 		aspect-ratio: 1;
-		margin: -0.5rem 0 0 -0.5rem;
+		/* Pinning the origin to the corner and pulling back by half the current
+		   size centres the chip on its anchor whatever size it is, so growing on
+		   hover expands around the picture instead of dragging it down the arc. */
+		margin: calc(var(--w) / -2) 0 0 calc(var(--w) / -2);
+		transform-origin: 0 0;
 		padding: 0;
 		overflow: clip;
 		border: 1px solid var(--k-line);
 		border-radius: 999px;
 		background: var(--k-panel);
 		cursor: pointer;
-		/* Counter-rotate so the picture stays upright on the curve. */
-		transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap)))
-			translateY(calc(var(--r) * -1))
-			rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * -1));
+		/* Counter-rotate so the picture stays upright on the curve; the last
+		   translate is therefore in screen space, which is what --lift wants. */
+		transform: rotate(var(--a)) translateY(calc(var(--r) * -1)) rotate(calc(var(--a) * -1))
+			translateY(var(--shift));
 		transition:
-			width 260ms var(--k-ease),
+			--w 260ms var(--k-ease),
+			--shift 260ms var(--k-ease),
 			border-color 260ms var(--k-ease),
 			box-shadow 260ms var(--k-ease),
 			opacity 260ms var(--k-ease);
-		opacity: calc(1 - var(--depth) * 0.12);
+		opacity: calc(1 - var(--depth) * 0.1);
 	}
 
 	.chip img {
@@ -788,15 +882,20 @@
 		}
 	}
 
-	/* Not behind a hover media query: the enlarge is the point of the section. */
-	.arc:hover .arc-spin {
+	/* Keyed on a picture being under the cursor, not on the band. Hovering .arc
+	   froze the orbit from anywhere in the strip, including the empty sky.
+	   Not behind a hover media query: the enlarge is the point of the section. */
+	.arc-spin:has(.chip:hover),
+	.arc-spin:has(.chip:focus-visible) {
 		animation-play-state: paused;
 	}
 
+	/* HOVER_REM in the script is the largest this gets. */
 	.chip:hover,
 	.chip:focus-visible {
+		--w: clamp(6rem, 11vw, 8rem);
+		--shift: var(--lift);
 		z-index: 5;
-		width: clamp(7rem, 13vw, 11rem);
 		border-color: var(--k-accent);
 		box-shadow: 0 1rem 3rem oklch(0 0 0 / 60%);
 		opacity: 1;
@@ -813,14 +912,6 @@
 
 		.work-plate {
 			margin-block-start: -2.5rem;
-		}
-	}
-
-	@media (max-width: 40rem) {
-		.chip {
-			transform: rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * 1.7))
-				translateY(calc(var(--r) * -1))
-				rotate(calc((var(--i) - (var(--n) - 1) / 2) * var(--gap) * -1.7));
 		}
 	}
 
