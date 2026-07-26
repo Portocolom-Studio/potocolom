@@ -1,7 +1,7 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
 	import { page } from '$app/state';
 	import Seo from '$lib/components/Seo.svelte';
-	import { t } from '$lib/i18n.svelte';
 	import SketchLatent from '$lib/components/landing-krea/SketchLatent.svelte';
 	import SketchOrbit from '$lib/components/landing-krea/SketchOrbit.svelte';
 	import SketchSwitcher, {
@@ -15,7 +15,11 @@
 		return (ids as readonly string[]).includes(value ?? '') ? (value as SketchId) : 'latent';
 	}
 
-	const sketch = $derived(normalise(page.url.searchParams.get('s')));
+	// Prerender (from main) forbids reading searchParams at build time; default
+	// to latent on the server and resolve ?s= after hydrate.
+	const sketch = $derived(
+		browser ? normalise(page.url.searchParams.get('s')) : ('latent' as SketchId)
+	);
 
 	const structuredData = {
 		'@context': 'https://schema.org',
