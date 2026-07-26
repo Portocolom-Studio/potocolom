@@ -42,6 +42,10 @@ services:
       DEVICE: cuda
       API_URL: ws://api:8080/api/v1/fleet
       MODELS_DIR: /models
+      # Gated repositories (sd35-medium) need a Hugging Face read token; the
+      # hub client picks HF_TOKEN up from the environment. Empty is fine when
+      # no gated model is enabled.
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - models:/models
       # Downloaded model weights survive container recreation.

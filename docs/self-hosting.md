@@ -56,7 +56,9 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 ```
 
 - The first generation per model downloads its weights from Hugging Face
-  (2-7 GB); watch progress with `docker compose -f deploy/compose/compose.yml logs -f worker`.
+  (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
+  "Gated models" below); watch progress with
+  `docker compose -f deploy/compose/compose.yml logs -f worker`.
   Until the download finishes, jobs on that model sit in the queue.
 - Open http://localhost:8080; the studio is served by the API container.
 - The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile:
@@ -65,6 +67,23 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   `worker/models/` on first boot. Add or edit manifests in the volume (or
   rebuild the image) and restart the worker; see
   [third-party-models.md](third-party-models.md) for licensing notes.
+
+## Gated models
+
+`sd35-medium` (Stable Diffusion 3.5 Medium) is a gated Hugging Face
+repository. Without credentials the worker still advertises the model, and
+the first job against it fails when the download is refused.
+
+1. Accept the license at
+   [huggingface.co/stabilityai/stable-diffusion-3.5-medium](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium)
+   on the account that will download the weights.
+2. Create a read token and put it in `deploy/compose/.env` as `HF_TOKEN`.
+   The compose file passes it to the worker only, and the Hugging Face client
+   reads it from the environment; no other configuration is needed.
+3. Recreate the worker so it picks the variable up.
+
+Budget for it: roughly 15 GB of weights, well beyond the 2-7 GB the other
+models need, and the download is slow on a domestic connection.
 
 ## TLS and HSTS
 

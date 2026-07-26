@@ -6,6 +6,9 @@ export type Model = {
 	name: string;
 	capabilities: string[];
 	default: boolean;
+	// Non-empty when the model's license demands visible credit, e.g. the
+	// Stability Community License "Powered by Stability AI".
+	requires_attribution?: string;
 	estimated_gpu_ms_default: number | null;
 	estimated_gpu_ms_by_factor?: Record<string, number>;
 	parameters: {
