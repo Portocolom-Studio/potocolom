@@ -22,7 +22,13 @@
 	const robots = $derived(
 		landing ? (noindex ? 'noindex, follow' : 'index, follow') : 'noindex, nofollow'
 	);
-	const jsonLd = $derived(structuredData ? JSON.stringify(structuredData) : '');
+	// Every less-than becomes < so a value containing a closing script tag
+	// cannot end the tag it is written into. JSON parsers still see the original
+	// character. The pattern uses the escape as well, since a literal less-than
+	// inside a regex ends the script block for the Svelte compiler.
+	const jsonLd = $derived(
+		structuredData ? JSON.stringify(structuredData).replace(/\u003c/g, '\\u003c') : ''
+	);
 </script>
 
 <svelte:head>
