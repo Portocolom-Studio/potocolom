@@ -286,7 +286,7 @@ Rejected alternatives: CUDA only (the primary development machine could then nev
 
 ## Development loop: dependencies in containers, applications native
 
-PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
+PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. Only PostgreSQL starts by default, since the native loop keeps its queue and relay in process and stores assets locally; the other three are cloud-profile substitutes behind `--profile cloud-sim`. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
 
 Rejected alternatives: everything in containers (closest to what ships, but slower iteration and clumsier debugging every single day); everything native (host setups drift and version differences surface as mystery bugs).
 

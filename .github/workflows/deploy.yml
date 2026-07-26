@@ -1,0 +1,32 @@
+# The deployment artifacts operators actually run: every compose file and
+# profile is validated, then the shipped self-hosted stack is started with the
+# simulated worker, so no GPU is needed (issue #13 keeps one workflow per area).
+name: deploy
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "scripts/compose-smoke.sh"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - "scripts/compose-smoke.sh"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    steps:
+      - uses: actions/checkout@v7
+      - run: make verify-compose
+      # Builds the api and worker-sim images and drives a real generation
+      # through them; the script cleans up its containers and volumes.
+      - run: scripts/compose-smoke.sh
+        timeout-minutes: 20

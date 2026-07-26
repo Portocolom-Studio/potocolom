@@ -25,6 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: npm ci
-      - run: npm run lint
-      - run: npm run check
-      - run: npm run build
+      # The Makefile target is the single definition of what the job checks.
+      - run: make verify-frontend
+        working-directory: .

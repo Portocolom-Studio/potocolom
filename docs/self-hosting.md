@@ -31,21 +31,19 @@ NVIDIA (default images):
 
 AMD (ROCm):
 
-1. In `deploy/compose/compose.yml`, point the worker's `dockerfile` at
-   `deploy/docker/Dockerfile.worker-rocm`, set `DEVICE: rocm`, and replace the
-   NVIDIA device reservation with:
-
-   ```yaml
-   devices:
-     - /dev/kfd
-     - /dev/dri
-   group_add:
-     - video
-   ```
-
-2. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
+1. Install the ROCm kernel driver on the host so `/dev/kfd` and `/dev/dri`
+   exist, and add your user to the `video` (and on some distributions
+   `render`) group.
+2. `docker compose -f deploy/compose/compose.yml --profile rocm up -d --build`
+   builds `deploy/docker/Dockerfile.worker-rocm` and passes the devices
+   through; no editing of the compose file is needed.
+3. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
    natively by the torch ROCm 6.3+ wheels the image installs; do not set
    `HSA_OVERRIDE_GFX_VERSION`.
+4. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
+
+The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
+run one or the other, never both, since they share the model volumes.
 
 ## First run
 
@@ -107,6 +105,7 @@ references. `hf-cache` and `models` are reproducible.
 ```bash
 git pull
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+# AMD: --profile rocm, the same profile you first started with
 ```
 
 Database migrations run automatically at API startup (docs/decisions.md,
