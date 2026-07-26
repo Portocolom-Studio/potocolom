@@ -9,15 +9,27 @@ const dictionaries = { en, es } as const;
 export type Locale = keyof typeof dictionaries;
 export const locales = Object.keys(dictionaries) as Locale[];
 
-function initialLocale(): Locale {
+function preferredLocale(): Locale {
 	if (typeof localStorage === 'undefined') return 'en';
-	const saved = localStorage.getItem('locale');
-	if (saved && saved in dictionaries) return saved as Locale;
+	try {
+		const saved = localStorage.getItem('locale');
+		if (saved && saved in dictionaries) return saved as Locale;
+	} catch {
+		// Storage access throws where the browser blocks it, so fall back to the
+		// browser language rather than the stored one (as studio.svelte.ts does).
+	}
 	return navigator.language.startsWith('es') ? 'es' : 'en';
 }
 
-const state = $state({ locale: initialLocale() });
-if (typeof document !== 'undefined') document.documentElement.lang = state.locale;
+// English is the prerendered language. Restore the browser preference only
+// after hydration so the server and initial client render stay identical.
+const state = $state<{ locale: Locale }>({ locale: 'en' });
+
+export function initializeLocale(): void {
+	const locale = preferredLocale();
+	state.locale = locale;
+	document.documentElement.lang = locale;
+}
 
 export function getLocale(): Locale {
 	return state.locale;

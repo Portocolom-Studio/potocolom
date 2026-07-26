@@ -1,5 +1,6 @@
 <script lang="ts">
 	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
@@ -14,13 +15,23 @@
 			id: 's2',
 			title: 'wp.s2_title',
 			paragraphs: ['wp.s2_p1', 'wp.s2_p2', 'wp.s2_p3'],
-			figure: { src: '/whitepaper/under-the-hood.png', cap: 'wp.fig_arch_cap' }
+			figure: {
+				src: '/whitepaper/under-the-hood.png',
+				cap: 'wp.fig_arch_cap',
+				width: 3146,
+				height: 1084
+			}
 		},
 		{
 			id: 's3',
 			title: 'wp.s3_title',
 			paragraphs: ['wp.s3_p1', 'wp.s3_p2', 'wp.s3_p3'],
-			figure: { src: '/whitepaper/realtime-loop.png', cap: 'wp.fig_loop_cap' }
+			figure: {
+				src: '/whitepaper/realtime-loop.png',
+				cap: 'wp.fig_loop_cap',
+				width: 2365,
+				height: 1587
+			}
 		},
 		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
 		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
@@ -29,22 +40,33 @@
 			id: 's7',
 			title: 'wp.s7_title',
 			paragraphs: ['wp.s7_p1', 'wp.s7_p2', 'wp.s7_p3'],
-			figure: { src: '/whitepaper/credit-lifecycle.png', cap: 'wp.fig_credits_cap' }
+			figure: {
+				src: '/whitepaper/credit-lifecycle.png',
+				cap: 'wp.fig_credits_cap',
+				width: 2325,
+				height: 1627
+			}
 		},
 		{
 			id: 's8',
 			title: 'wp.s8_title',
 			paragraphs: ['wp.s8_p1', 'wp.s8_p2'],
-			figure: { src: '/whitepaper/failure-map.png', cap: 'wp.fig_failures_cap' }
+			figure: {
+				src: '/whitepaper/failure-map.png',
+				cap: 'wp.fig_failures_cap',
+				width: 2363,
+				height: 1502
+			}
 		},
 		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
 	] as const;
 </script>
 
-<svelte:head>
-	<title>potocolom - {t('wp.title')}</title>
-	<meta name="description" content={t('wp.sub')} />
-</svelte:head>
+<Seo
+	title="potocolom Architecture Whitepaper | Realtime AI Images"
+	description="Read how potocolom designs realtime canvas generation, GPU scheduling, self-hosting, privacy, and a shared AGPL-3.0 codebase."
+	path="/whitepaper"
+/>
 
 <SiteLandingHeader current="whitepaper" />
 
@@ -90,6 +112,8 @@
 							class="w-full rounded-lg"
 							src={section.figure.src}
 							alt={t(section.figure.cap)}
+							width={section.figure.width}
+							height={section.figure.height}
 							loading="lazy"
 						/>
 						<figcaption class="pt-2 pl-1 text-xs text-slate-600">
@@ -116,7 +140,7 @@
 	class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-8 sm:px-6"
 >
 	<p class="text-muted-foreground text-sm">{t('footer.tagline')}</p>
-	<nav class="text-muted-foreground flex flex-wrap gap-5 text-sm">
+	<nav class="text-muted-foreground flex flex-wrap gap-5 text-sm" aria-label={t('nav.footer')}>
 		<a class="hover:text-foreground transition-colors" href={repoUrl}>{t('footer.github')}</a>
 		<a class="hover:text-foreground transition-colors" href="{repoUrl}/tree/main/docs">
 			{t('footer.docs')}

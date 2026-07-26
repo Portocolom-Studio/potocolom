@@ -1,13 +1,16 @@
 <script lang="ts">
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 </script>
 
-<svelte:head>
-	<title>potocolom - {t('privacy.title')}</title>
-	<meta name="robots" content="noindex" />
-</svelte:head>
+<Seo
+	title="Privacy Notice | potocolom"
+	description="Privacy information for the potocolom pre-alpha marketing site and future invite-only cloud waitlist."
+	path="/privacy"
+	noindex
+/>
 
 <header class="border-b">
 	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
@@ -26,7 +29,9 @@
 	<h2 class="mt-10 text-lg font-medium">{t('privacy.cookies_h')}</h2>
 	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.cookies_body')}</p>
 	<h2 class="mt-10 text-lg font-medium">{t('privacy.processors_h')}</h2>
-	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.processors_body')}</p>
+	<p class="text-muted-foreground mt-2 text-base leading-relaxed">
+		{t('privacy.processors_body')}
+	</p>
 	<h2 class="mt-10 text-lg font-medium">{t('privacy.rights_h')}</h2>
 	<p class="text-muted-foreground mt-2 text-base leading-relaxed">{t('privacy.rights_body')}</p>
 </article>

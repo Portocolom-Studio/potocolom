@@ -1,5 +1,6 @@
 <script lang="ts">
 	import HeroImageField from '$lib/components/HeroImageField.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
 	import WaitlistForm from '$lib/components/WaitlistForm.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
@@ -42,12 +43,37 @@
 			class: 'rounded-md bg-chart-3/20 px-2 py-0.5 text-chart-3 leading-none'
 		}
 	]);
+
+	const structuredData = {
+		'@context': 'https://schema.org',
+		'@graph': [
+			{
+				'@type': 'WebSite',
+				name: 'potocolom',
+				url: 'https://potocolom.leonfuller.com/',
+				description: 'Pre-alpha open source platform for realtime generative image workflows.',
+				inLanguage: 'en'
+			},
+			{
+				'@type': 'SoftwareSourceCode',
+				name: 'potocolom',
+				description: 'AGPL-3.0 source code for a self-hostable realtime generative image platform.',
+				codeRepository: 'https://github.com/portocolom-studio/potocolom',
+				license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+				programmingLanguage: ['TypeScript', 'Python'],
+				runtimePlatform: ['Web', 'Linux'],
+				isAccessibleForFree: true
+			}
+		]
+	};
 </script>
 
-<svelte:head>
-	<title>potocolom</title>
-	<meta name="description" content={t('hero.sub')} />
-</svelte:head>
+<Seo
+	title="potocolom | Open Source Realtime AI Image Generation"
+	description="Sketch on a canvas and watch a diffusion model render live. potocolom is a pre-alpha AGPL-3.0 platform you can self-host for free."
+	path="/"
+	{structuredData}
+/>
 
 <SiteLandingHeader />
 
@@ -239,7 +265,7 @@
 	class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-8 sm:px-6"
 >
 	<p class="text-muted-foreground text-base leading-relaxed">{t('footer.tagline')}</p>
-	<nav class="text-muted-foreground flex flex-wrap gap-6 text-base">
+	<nav class="text-muted-foreground flex flex-wrap gap-6 text-base" aria-label={t('nav.footer')}>
 		<a class="hover:text-foreground transition-colors" href={resolve('/whitepaper')}>
 			{t('nav.whitepaper')}
 		</a>

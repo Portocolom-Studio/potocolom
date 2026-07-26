@@ -3,6 +3,8 @@
 	"nav.open": "Código abierto",
 	"nav.launch": "Abrir la app",
 	"nav.scroll_to_top": "Volver arriba",
+	"nav.primary": "Navegación principal",
+	"nav.footer": "Navegación del pie de página",
 	"hero.kicker": "Imágenes generativas en tiempo real, código abierto",
 	"hero.title1": "Dibújalo.",
 	"hero.title2": "Míralo renderizarse.",
