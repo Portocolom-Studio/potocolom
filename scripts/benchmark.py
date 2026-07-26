@@ -66,8 +66,9 @@ def load_prompts(ids: list[int], prompts_path: Path = PROMPTS_PATH) -> list[dict
     return [by_id[i] for i in ids]
 
 
-def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: bool) -> dict:
-    matrix = json.loads(MATRIX_PATH.read_text())
+def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: bool,
+                matrix_path: Path = MATRIX_PATH) -> dict:
+    matrix = json.loads(matrix_path.read_text())
     capped = matrix.get("capped_commercial", [])
     if model_filter:
         wanted = set(model_filter)
@@ -344,6 +345,8 @@ def main() -> None:
                         help="comma-separated prompt ids and/or ranges, e.g. 1,5,10-12")
     parser.add_argument("--models", default=None,
                         help="comma-separated model ids from benchmark-matrix.json")
+    parser.add_argument("--matrix", type=Path, default=MATRIX_PATH,
+                        help="model/variant matrix JSON (default: benchmark-matrix.json)")
     parser.add_argument("--quick", action="store_true",
                         help="one variant per model (smoke test)")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -361,7 +364,7 @@ def main() -> None:
     prompts = load_prompts(ids, prompts_path)
 
     model_filter = parse_csv(args.models)
-    matrix = load_matrix(model_filter, args.quick, args.include_capped)
+    matrix = load_matrix(model_filter, args.quick, args.include_capped, args.matrix)
     matrix_models = matrix["models"]
     variants_per_prompt = len(matrix_models[0]["variants"]) if matrix_models else 0
 
