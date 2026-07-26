@@ -11,7 +11,8 @@
 # See docs/self-hosted-runner.md
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
-	deps deps-all deps-down lint test build verify simulate \
+	deps deps-all deps-down verify verify-backend verify-worker \
+	verify-frontend verify-compose simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -73,20 +74,27 @@ deps-all: ## also start Redis, MinIO and Mailpit (cloud-sim profile; idle in loc
 deps-down:
 	docker compose -f deploy/compose/dev.yml down
 
-lint:
-	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy
-	cd worker && .venv/bin/ruff check . && .venv/bin/mypy
-	cd frontend && npm run lint
+# One target per component, and the per-component CI workflows run these exact
+# targets, so local verify and CI cannot drift. Installing dependencies is the
+# caller's job: make setup locally, a fresh venv and npm ci in CI.
+verify-backend:
+	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest
 
-test:
-	cd backend && .venv/bin/pytest
-	cd worker && .venv/bin/pytest
-	cd frontend && npm run check
+verify-worker:
+	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
 
-build:
-	cd frontend && npm run build
+verify-frontend:
+	cd frontend && npm run lint && npm run check && npm run build
 
-verify: lint test build ## everything CI runs, locally
+verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+verify-compose: ## validate every compose file and profile (no containers started)
+	cd deploy/compose && test -f .env || cp .env.example .env
+	cd deploy/compose && for p in gpu rocm smoke; do \
+		docker compose -f compose.yml --profile $$p config -q || exit 1; done
+	cd deploy/compose && docker compose -f dev.yml config -q \
+		&& docker compose -f dev.yml --profile cloud-sim config -q \
+		&& docker compose -f compose.smoke.yml config -q
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py

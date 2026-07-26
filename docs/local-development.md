@@ -161,10 +161,11 @@ GitHub Actions runs lint and tests on every pull request (issue #13). By default
 
 Per component, no GPU:
 
-1. Lint and unit tests per component (frontend, backend, worker), on every pull request.
-2. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
-3. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
-4. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
+1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
+2. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
+3. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
+4. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
+5. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
 
 ```mermaid
 flowchart LR

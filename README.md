@@ -18,6 +18,22 @@ Pre-alpha, under active development in the open. The architecture, protocols and
 - Models without releases: drop a model manifest and the interface adapts to its parameters.
 - Private by default: no public gallery, signed URLs, self-serve GDPR export and deletion.
 
+## Requirements
+
+To run potocolom on your own machine. Contributing to it instead needs a different set, under [Development](#development).
+
+| What | Needed | Notes |
+|---|---|---|
+| OS | Linux | What the project is developed, tested and released on. Docker Desktop hosts are untested. |
+| Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. |
+| GPU | NVIDIA or AMD, or none | NVIDIA needs the [Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html); AMD needs the ROCm kernel driver, so `/dev/kfd` and `/dev/dri` exist. Without a GPU the stack still runs against the simulated worker. |
+| VRAM | 6 GB minimum, 12-16 GB comfortable | 6 GB covers SD-class models at 512 px, 12-16 GB covers SDXL-class at 1024 px. Each model manifest declares its own floor. |
+| RAM | 8 GB, 16 GB comfortable | |
+| Disk | 20 GB free, 50 GB+ comfortable | Model weights are 2-7 GB each, plus your generated images. |
+| Network | Port 8080 free, outbound HTTPS | The studio is served on 8080; weights download from Hugging Face on first use of each model. |
+
+No account, no API key and no telemetry endpoint are required. [docs/self-hosting.md](docs/self-hosting.md) has the full breakdown, including GPU passthrough and what persists in which volume.
+
 ## Self-hosting
 
 ```bash
