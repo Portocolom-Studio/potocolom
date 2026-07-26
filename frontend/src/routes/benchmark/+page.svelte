@@ -7,7 +7,6 @@
 		formatSeconds,
 		promptAverages,
 		variantAverages,
-		isReferenceOnlyModel,
 		type BenchmarkReport
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
@@ -106,12 +105,7 @@
 								{@const variants = variantAverages(modelId, report.results)}
 								<details id={modelId}>
 									<summary>
-										<span class="model-id">
-											{modelId}
-											{#if isReferenceOnlyModel(modelId)}
-												<span class="chip chip-quiet">{t('bench.reference_badge')}</span>
-											{/if}
-										</span>
+										<span class="model-id">{modelId}</span>
 										{#if stats}
 											<span class="model-stat">
 												{formatMs(stats.avg_gpu_ms)} gpu / {formatSeconds(stats.avg_wall_s)} wall
@@ -192,9 +186,6 @@
 										<td>
 											<p class="spec-name">{spec.name}</p>
 											<p class="quiet mono">{spec.id}</p>
-											{#if isReferenceOnlyModel(spec.id)}
-												<span class="chip chip-quiet">{t('bench.reference_badge')}</span>
-											{/if}
 											{#if hasData && !benchmarkedModels.has(spec.id)}
 												<p class="quiet">{t('bench.no_timing')}</p>
 											{/if}
@@ -265,11 +256,6 @@
 		color: var(--k-muted);
 		font-size: 0.78rem;
 		white-space: nowrap;
-	}
-
-	.chip-quiet {
-		padding: 0.15rem 0.5rem;
-		font-size: 0.68rem;
 	}
 
 	.panel {
