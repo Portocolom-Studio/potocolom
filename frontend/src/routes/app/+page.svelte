@@ -3,6 +3,7 @@
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import StudioMetricsDashboard from '$lib/components/studio-metrics-dashboard.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
@@ -34,11 +35,20 @@
 	});
 </script>
 
-<svelte:head>
-	<title>potocolom - {t('app.title')}</title>
-</svelte:head>
+<Seo
+	title={landing
+		? 'potocolom Studio Preview | Realtime AI Canvas'
+		: `potocolom - ${t('app.title')}`}
+	description={landing
+		? 'Explore the static potocolom studio preview for its pre-alpha realtime generative image workflow. The managed cloud waitlist has not opened.'
+		: 'Open the potocolom studio on your connected self-hosted deployment.'}
+	path="/app"
+/>
 
 <div class="[--header-height:calc(var(--spacing)*14)]">
+	{#if landing}
+		<h1 class="sr-only">potocolom realtime generative image studio preview</h1>
+	{/if}
 	<Sidebar.Provider class="flex h-svh flex-col overflow-hidden">
 		<SiteHeader />
 		<div class="flex min-h-0 flex-1">

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import Seo from '$lib/components/Seo.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import SketchLatent from '$lib/components/landing-krea/SketchLatent.svelte';
 	import SketchOrbit from '$lib/components/landing-krea/SketchOrbit.svelte';
@@ -15,12 +16,37 @@
 	}
 
 	const sketch = $derived(normalise(page.url.searchParams.get('s')));
+
+	const structuredData = {
+		'@context': 'https://schema.org',
+		'@graph': [
+			{
+				'@type': 'WebSite',
+				name: 'potocolom',
+				url: 'https://potocolom.leonfuller.com/',
+				description: 'Pre-alpha open source platform for realtime generative image workflows.',
+				inLanguage: 'en'
+			},
+			{
+				'@type': 'SoftwareSourceCode',
+				name: 'potocolom',
+				description: 'AGPL-3.0 source code for a self-hostable realtime generative image platform.',
+				codeRepository: 'https://github.com/portocolom-studio/potocolom',
+				license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+				programmingLanguage: ['TypeScript', 'Python'],
+				runtimePlatform: ['Web', 'Linux'],
+				isAccessibleForFree: true
+			}
+		]
+	};
 </script>
 
-<svelte:head>
-	<title>{t('hero.title1')} {t('hero.title2')} - potocolom</title>
-	<meta name="description" content={t('hero.sub')} />
-</svelte:head>
+<Seo
+	title="potocolom | Open Source Realtime AI Image Generation"
+	description="Sketch on a canvas and watch a diffusion model render live. potocolom is a pre-alpha AGPL-3.0 platform you can self-host for free."
+	path="/"
+	{structuredData}
+/>
 
 <!-- The three orbits are one component; only the arc geometry differs. -->
 {#if sketch === 'latent'}

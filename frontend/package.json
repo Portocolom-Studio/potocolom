@@ -3,9 +3,12 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build && node scripts/verify-csp.mjs",
+		"build": "vite build && node scripts/add-jsonld-csp-hashes.mjs && node scripts/verify-csp.mjs",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

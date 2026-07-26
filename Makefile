@@ -1,52 +1,115 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
-#   make worker-rocm           # terminal 2 (or worker-sim without a GPU)
+#   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
-#     WORKER=sim|off to use the simulated worker or skip it
+#     make dev-status          # pid files, ports, workers, model list
+#     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm deps deps-down lint test build verify simulate \
-	api worker-rocm worker-sim web web-landing dev-start dev-stop dev-restart \
+.PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
+	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
+	verify-frontend verify-compose verify-guards simulate \
+	api worker-rocm worker-cuda worker-sim web web-landing \
+	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
 
-setup: ## create virtualenvs and install all dependencies
-	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-	cd worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+# Interpreter used only to create backend/.venv and worker/.venv. A system
+# python3 of 3.10 creates a venv that sends pip backtracking against
+# requires-python >=3.11, so take the first candidate that is new enough.
+# Project packages install into the venvs only, never system site-packages.
+# Override: make setup PYTHON=/path/to/python3.11
+VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
+PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
+	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
+
+check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
+	@test -n "$(PYTHON)" || { \
+		echo 'error: Python 3.11 or newer is required for backend/ and worker/.' >&2; \
+		echo 'Install it alongside the system python3 if needed (for example' >&2; \
+		echo 'apt install python3.11 python3.11-venv), or set PYTHON=/path/to/python3.11.' >&2; \
+		exit 1; }
+	@$(PYTHON) $(VENV_OK) 2>/dev/null || { \
+		echo 'error: $(PYTHON) is missing or older than Python 3.11.' >&2; exit 1; }
+	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
+		% ((sys.executable,) + sys.version_info[:3]))'
+
+check-worker-venv:
+	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null || { \
+		echo 'error: worker/.venv is missing or not Python 3.11+; run make setup.' >&2; \
+		exit 1; }
+
+setup: check-python ## create virtualenvs and install all dependencies
+	@for d in backend worker; do \
+		$$d/.venv/bin/python $(VENV_OK) 2>/dev/null \
+			|| $(PYTHON) -m venv --clear $$d/.venv; \
+	done
+	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
+	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
 
-setup-rocm: ## worker inference deps for AMD: ROCm torch wheels, then the extra
+setup-rocm: check-worker-venv ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
-deps: ## start development dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+setup-cuda: check-worker-venv ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
+	cd worker && .venv/bin/pip install --upgrade pip
+	cd worker && .venv/bin/pip install torch torchvision
+	cd worker && .venv/bin/pip install -e ".[inference]"
+
+deps: ## start development dependencies (PostgreSQL: all the native dev loop uses)
 	docker compose -f deploy/compose/dev.yml up -d
+
+deps-all: ## also start Redis, MinIO and Mailpit (cloud-sim profile; idle in local dev)
+	docker compose -f deploy/compose/dev.yml --profile cloud-sim up -d
 
 deps-down:
 	docker compose -f deploy/compose/dev.yml down
 
-lint:
-	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy
-	cd worker && .venv/bin/ruff check . && .venv/bin/mypy
-	cd frontend && npm run lint
+# One target per component, and the per-component CI workflows run these exact
+# targets, so local verify and CI cannot drift. Installing dependencies is the
+# caller's job: make setup locally, a fresh venv and npm ci in CI.
+verify-backend:
+	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest
 
-test:
-	cd backend && .venv/bin/pytest
-	cd worker && .venv/bin/pytest
-	cd frontend && npm run check
+verify-worker:
+	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
 
-build:
-	cd frontend && npm run build
+verify-frontend:
+	cd frontend && npm run lint && npm run check && npm run build
 
-verify: lint test build ## everything CI runs, locally
+verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
+	git config core.hooksPath .githooks
+	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
+	@echo 'Undo with: git config --unset core.hooksPath'
+
+verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for c in python3 python3.11 python3.12 python3.13; do \
+		printf '#!/bin/sh\nexit 1\n' > "$$tmp/$$c"; chmod +x "$$tmp/$$c"; done; \
+	if PATH="$$tmp:$$PATH" $(MAKE) --no-print-directory check-python >/dev/null 2>&1; then \
+		echo 'error: check-python accepted a PATH with no Python 3.11+ on it.' >&2; \
+		exit 1; \
+	fi; \
+	echo 'setup guards ok: no 3.11+ interpreter is refused, not silently used'
+
+verify-compose: ## validate every compose file and profile (no containers started)
+	cd deploy/compose && test -f .env || cp .env.example .env
+	cd deploy/compose && for p in gpu rocm smoke; do \
+		docker compose -f compose.yml --profile $$p config -q || exit 1; done
+	cd deploy/compose && docker compose -f dev.yml config -q \
+		&& docker compose -f dev.yml --profile cloud-sim config -q \
+		&& docker compose -f compose.smoke.yml config -q
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
@@ -66,10 +129,22 @@ api: ## API server on :8000; assets under ./data (make deps first)
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
+		.venv/bin/python -m worker
+
+worker-cuda: ## inference worker on an NVIDIA GPU (make setup-cuda once)
+	cd worker && MODELS_DIR=models DEVICE=cuda \
+		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
-	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet .venv/bin/python -m worker
+	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
+		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
+		.venv/bin/python -m worker
 
 web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
@@ -80,53 +155,23 @@ web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
 site-preview: site-build ## serve the exact marketing-site artifact locally
 	cd frontend && npm run preview
 
+# Background stack: scripts/dev-stack.sh reaps workers by cwd (they have no
+# listen port, so fuser alone cannot stop them) and records real PIDs via exec.
 dev-stop: ## stop background API (:8000), frontend (:5173), and worker
-	@if [ -f "$(DEV_DIR)/api.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/api.pid") 2>/dev/null || true; \
-	fi
-	@if [ -f "$(DEV_DIR)/web.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/web.pid") 2>/dev/null || true; \
-	fi
-	@if [ -f "$(DEV_DIR)/worker.pid" ]; then \
-		kill $$(cat "$(DEV_DIR)/worker.pid") 2>/dev/null || true; \
-	fi
-	@fuser -k $(API_PORT)/tcp 2>/dev/null || true
-	@fuser -k $(WEB_PORT)/tcp 2>/dev/null || true
-	@rm -f "$(DEV_DIR)/api.pid" "$(DEV_DIR)/web.pid" "$(DEV_DIR)/worker.pid"
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" stop
 
 dev-start: ## start API, frontend, and worker in the background (make deps first)
-	@if [ "$(WORKER)" != "rocm" ] && [ "$(WORKER)" != "sim" ] && [ "$(WORKER)" != "off" ]; then \
-		echo "Unknown WORKER=$(WORKER); use rocm, sim, or off" >&2; exit 1; \
-	fi
-	@mkdir -p "$(DEV_DIR)"
-	@$(MAKE) dev-stop
-	@echo "Starting API on :$(API_PORT)..."
-	@bash -c 'cd "$(CURDIR)/backend" && STORAGE_LOCAL_PATH="$(CURDIR)/data" \
-		nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $(API_PORT) \
-		> "$(DEV_DIR)/api.log" 2>&1 & echo $$! > "$(DEV_DIR)/api.pid"'
-	@echo "Starting frontend on :$(WEB_PORT)..."
-	@bash -c 'cd "$(CURDIR)/frontend" && \
-		nohup npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) \
-		> "$(DEV_DIR)/web.log" 2>&1 & echo $$! > "$(DEV_DIR)/web.pid"'
-	@if [ "$(WORKER)" = "rocm" ]; then \
-		echo "Starting worker (rocm, MODELS_DIR=models)..."; \
-		bash -c 'cd "$(CURDIR)/worker" && MODELS_DIR=models DEVICE=rocm \
-			API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
-			nohup .venv/bin/python -m worker \
-			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
-	elif [ "$(WORKER)" = "sim" ]; then \
-		echo "Starting worker (simulated engine)..."; \
-		bash -c 'cd "$(CURDIR)/worker" && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
-			nohup .venv/bin/python -m worker \
-			> "$(DEV_DIR)/worker.log" 2>&1 & echo $$! > "$(DEV_DIR)/worker.pid"'; \
-	fi
-	@echo "API log:    $(DEV_DIR)/api.log"
-	@echo "Web log:    $(DEV_DIR)/web.log"
-	@if [ "$(WORKER)" != "off" ]; then echo "Worker log: $(DEV_DIR)/worker.log"; fi
-	@echo "API:        http://localhost:$(API_PORT)"
-	@echo "Studio:     http://localhost:$(WEB_PORT)"
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" start
 
-dev-restart: dev-stop dev-start ## restart background API, frontend, and worker
+dev-restart: ## restart background API, frontend, and worker
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" restart
+
+dev-status: ## show pid files, ports, local workers, and /api/v1/models
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		bash "$(CURDIR)/scripts/dev-stack.sh" status
 
 stack-up: dev-start ## alias for dev-start
 stack-down: dev-stop ## alias for dev-stop

@@ -69,7 +69,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'CreativeML Open RAIL-M',
 		commercial: 'Unrestricted (RAIL use policy)',
-		studio: true,
+		studio: false,
 		source: 'lykon/dreamshaper-8-lcm'
 	},
 	{

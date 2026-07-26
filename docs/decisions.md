@@ -286,7 +286,7 @@ Rejected alternatives: CUDA only (the primary development machine could then nev
 
 ## Development loop: dependencies in containers, applications native
 
-PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
+PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. Only PostgreSQL starts by default, since the native loop keeps its queue and relay in process and stores assets locally; the other three are cloud-profile substitutes behind `--profile cloud-sim`. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
 
 Rejected alternatives: everything in containers (closest to what ships, but slower iteration and clumsier debugging every single day); everything native (host setups drift and version differences surface as mystery bugs).
 
@@ -490,11 +490,11 @@ Rejected alternatives: keeping everything hand-rolled (every new surface repays 
 
 ## Stability Community License models in the product
 
-sd-turbo and sdxl-turbo ship in the worker manifests with `benchmark_only: true`. They are available to the benchmark harness and hidden from `GET /api/v1/models`, so end users cannot select them in the studio. Timings may still appear on the public `/benchmark` page as reference hardware metrics.
+Updated 2026-07-25: the operator holds Stability AI Community License registration, but `sd-turbo` and `sdxl-turbo` both ship with `benchmark_only: true`. Quality at the shipped resolutions is not good enough for the studio picker; they remain loadable as benchmark speed anchors (issue #60). Revisit only if a higher default resolution (e.g. 1024 for SDXL Turbo) is measured and accepted.
 
-If these models are ever offered in the product, the same $1M annual revenue cap applies (Stability AI Community License); above that threshold the community license terminates and an enterprise license is required. Stability commercial use also requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
+The same $1M annual revenue cap still applies (Stability AI Community License); above that threshold the community license terminates and an enterprise license is required. Commercial use still requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
 
-Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
+Earlier shipping briefly set both to studio-visible after registration. Rejected alternative: deleting the manifests. They still give honest comparison points on `/benchmark`.
 
 ## Cloud asset storage: one bucket, prefix per tier
 
@@ -516,13 +516,21 @@ Rejected alternative: keep `ssd-1b-lightning` benchmark-only after the successfu
 
 `vega-rt` is the studio-shippable realtime model. Issue #75 measured median 381 ms gpu_ms at 512/2 t2i on the RX 7600 XT (clean GPU), within turbo-class range of the Stability benchmark anchors, under Apache 2.0 with no revenue cap. Issue #84 verified the realtime img2i frame path at warm median 452 ms (~2.2 fps) @ 512 with strength 0.7 on the same hardware. The manifest exposes `text_to_image`, `image_to_image`, and `realtime` with an LCM scheduler and fused VegaRT LoRA.
 
-Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75); sd-turbo and sdxl-turbo as product models - Stability Community License caps commercial use at USD $1M annual revenue (see "Stability Community License models in the product" above).
+Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75). sd-turbo / sdxl-turbo stay benchmark-only for quality (see "Stability Community License models in the product"). VegaRT is the license-clean realtime default without a revenue cap.
 
 ## License: AGPL-3.0 with commercial dual licensing
 
 Supersedes "License: GPL-3.0 stays, AGPL rejected". The public repository moves to AGPL-3.0 and the project sells commercial exceptions (COMMERCIAL.md). The earlier entry rejected AGPL as a competitive moat, and that reasoning still holds: AGPL does not stop a competitor hosting unmodified code, and the moat remains the closed business layer. The license changes anyway because the goal changed: companies that modify and operate the platform as a service must now either publish their changes or engage us commercially, turning the license into a funnel rather than a wall. Self-hosting, private use, internal use and contribution are unaffected, and the project's own cloud is unaffected because it runs unmodified images and the project holds the copyright. Dual licensing depends on retaining relicensing rights, so contributions require DCO sign-off from this point on (CONTRIBUTING.md).
 
 Rejected alternatives: staying GPL-3.0 (leaves the modified-network-service path entirely open, and relicensing only gets harder as outside contributions accumulate); BUSL-1.1 with a revenue-threshold use grant or PolyForm Noncommercial (closest to a Stability-style community license, but both are source-available rather than open source, and the project's positioning spends that credibility everywhere from the hero badge to the whitepaper).
+
+## Prerendering: every known route is rendered at build time
+
+Supersedes the `ssr = false` client-rendered shell in "Frontend: SvelteKit as a static SPA" above, without changing what that decision settled: there is still no server rendering at request time, and the build is still one static artifact that the API serves when self-hosted and a CDN serves in the cloud. What changed is that the same artifact also serves the public marketing site, where a shell containing no title, description or heading is the whole product a crawler and a social card ever see. SvelteKit prerenders known routes into complete documents, the client hydrates them, and the studio behaves exactly as before.
+
+Two consequences are accepted deliberately. The prerendered language is English, so the locale preference is restored after hydration rather than during module initialization, which means a Spanish visitor sees English for one frame. Benchmark results load after hydration rather than being inlined into the prerendered document, keeping the page small at the cost of the results table not being crawlable; the surrounding explanation and the model specifications are.
+
+Rejected alternatives: leaving the marketing routes client-rendered and accepting an empty shell in search results and social cards (the reason this project has a landing page at all is discovery); a separate marketing site or branch (rejected earlier and still rejected, since one codebase serving both surfaces is the point); server-side rendering at request time (needs a running server in front of the CDN, which the cloud profile deliberately avoids).
 
 ## Supporting defaults
 

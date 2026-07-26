@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     realtime_slots: int = 2  # upper bound; DiffusersEngine calibrates down at warmup
     heartbeat_seconds: float = 30.0
     models_dir: str = ""  # manifests directory; empty runs the simulated engine
+    # Exclusive flock path for a single local worker (make dev-start sets this).
+    worker_lock: str = ""
     inference_seconds: float = 0.15  # simulated engine only
     # Opt-in: ROCm A/B on the reference card showed ~0-7% warm denoise gain
     # against multi-minute cold loads (PR #141). CUDA fleet bake-off may flip.

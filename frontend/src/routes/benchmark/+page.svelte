@@ -1,5 +1,6 @@
 <script lang="ts">
 	import LatentShell from '$lib/components/landing-krea/LatentShell.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
 	import {
@@ -46,10 +47,11 @@
 	});
 </script>
 
-<svelte:head>
-	<title>potocolom - {benchmarkTitle}</title>
-	<meta name="description" content={t('bench.sub')} />
-</svelte:head>
+<Seo
+	title="potocolom Model Benchmarks | GPU Timing and Specs"
+	description={t('bench.sub')}
+	path="/benchmark"
+/>
 
 <LatentShell current="benchmark">
 	<main>

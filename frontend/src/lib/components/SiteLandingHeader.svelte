@@ -29,7 +29,7 @@
 		<a class="text-base font-bold" href={home}>
 			potocolom<span class="text-primary">_</span>
 		</a>
-		<nav class="text-muted-foreground hidden gap-6 text-base md:flex">
+		<nav class="text-muted-foreground hidden gap-6 text-base md:flex" aria-label={t('nav.primary')}>
 			<a class="hover:text-foreground transition-colors" href="{home}#features"
 				>{t('nav.features')}</a
 			>
