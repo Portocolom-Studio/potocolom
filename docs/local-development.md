@@ -48,6 +48,8 @@ frontend: npm run dev                        # Vite dev server, proxies /api to 
 worker:   python -m worker --device rocm     # dials ws://localhost:8000/api/v1/fleet
 ```
 
+Default native loop (what `make deps` starts). Redis, MinIO and Mailpit only appear when you add `--profile cloud-sim` / `make deps-all`; see the cloud simulation section below.
+
 ```mermaid
 flowchart LR
     subgraph NATIVE["Native processes, hot reload and debugger"]
@@ -55,19 +57,13 @@ flowchart LR
         BE["FastAPI<br>uvicorn --reload"]
         WK["Worker<br>--device rocm"]
     end
-    subgraph DEPS["Containers, deploy/compose/dev.yml"]
+    subgraph DEPS["Containers, make deps"]
         P[("PostgreSQL")]
-        R[("Redis")]
-        M[("MinIO")]
-        MP["Mailpit"]
     end
     B["Browser"] --> FE
     FE -->|"proxies /api"| BE
     WK -->|"dials the fleet endpoint"| BE
     BE --> P
-    BE --> R
-    BE --> M
-    BE -->|"SMTP"| MP
 ```
 
 The containerized applications are still exercised constantly: by the cloud simulation below, by CI image builds, and by running the shipped compose file before every release.
