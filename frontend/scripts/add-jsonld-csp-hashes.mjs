@@ -23,7 +23,10 @@ const buildDir = join(root, 'build');
 
 const JSON_LD_RE =
 	/<script(?![^>]*\bsrc=)[^>]*\btype=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-const META_RE = /(<meta\s+http-equiv=["']content-security-policy["']\s+content=")([^"]*)(")/i;
+// Same shape as the pattern in verify-csp.mjs, so the step that writes the
+// policy and the step that checks it agree on what a CSP meta tag looks like.
+const META_RE =
+	/(<meta\s+http-equiv=["']content-security-policy["']\s+content=)(["'])([\s\S]*?)\2/i;
 
 function walkHtml(dir) {
 	const files = [];
@@ -63,6 +66,9 @@ for (const file of walkHtml(buildDir)) {
 		throw new Error(`${relative(buildDir, file)}: missing Content-Security-Policy meta tag`);
 	}
 
-	const policy = withHashes(meta[2], hashes, relative(buildDir, file));
-	writeFileSync(file, html.replace(META_RE, `$1${policy}$3`));
+	const policy = withHashes(meta[3], hashes, relative(buildDir, file));
+	writeFileSync(
+		file,
+		html.replace(META_RE, (_match, prefix, quote) => `${prefix}${quote}${policy}${quote}`)
+	);
 }

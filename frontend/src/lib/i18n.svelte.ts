@@ -11,8 +11,13 @@ export const locales = Object.keys(dictionaries) as Locale[];
 
 function preferredLocale(): Locale {
 	if (typeof localStorage === 'undefined') return 'en';
-	const saved = localStorage.getItem('locale');
-	if (saved && saved in dictionaries) return saved as Locale;
+	try {
+		const saved = localStorage.getItem('locale');
+		if (saved && saved in dictionaries) return saved as Locale;
+	} catch {
+		// Storage access throws where the browser blocks it, so fall back to the
+		// browser language rather than the stored one (as studio.svelte.ts does).
+	}
 	return navigator.language.startsWith('es') ? 'es' : 'en';
 }
 
