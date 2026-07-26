@@ -50,7 +50,7 @@ first), `sd35-medium`, prompt fixed and seed fixed.
 | `model_offload`, T5 resident (shipped) | 49.5 s | 12.09 GB | The shipped 16 GB configuration |
 | `group_offload` | 46.5 s | 2.51 GB | Faster **and** 4.8x lighter |
 | 768 px instead of 1024 | 27.8 s | 12.09 GB | 1.78x fewer pixels, 1.78x less time |
-| Flash attention backend | 49.9 s | 12.09 GB | No effect, see caveat below |
+| Flash attention backend | 49.9 s | 12.09 GB | No effect; fused attention was already on |
 | No T5, `full` residency | 40.9 s | 8.83 GB | Loses the long-prompt window |
 | No T5, `full` + `torch.compile` | **26.0 s** | 8.84 GB | Fastest measured, but no T5 |
 | `full` residency with T5 | **OOM** | - | 15.15 GB of weights, 14.3 GiB available |
@@ -97,12 +97,19 @@ for diagnosis, not proposed as a product configuration.
 ratio almost exactly. This is the one lever a user can pull today, and the
 manifest exposes 768 alongside 1024 for that reason.
 
-**Flash attention backend.** No measurable change, and the result is
-**inconclusive rather than negative**. The engine catches a failed
-`set_attention_backend` and logs a warning before continuing, the measurement
-script did not configure logging, and the 0.4 s delta is within noise of the
-backend never having been applied. Re-test with logging enabled and a backend
-name verified against the installed diffusers before drawing a conclusion.
+**Flash attention backend.** No measurable change, and the reason is that
+there was nothing to gain. `DiffusersEngine.__init__` already sets
+`TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` for `DEVICE=rocm`, which is what
+gates the fused attention kernels on RDNA 3; without it torch falls back to
+math attention, which is several times slower. The baseline therefore already
+runs fused attention through torch SDPA, and an explicit backend can only
+match it or regress.
+
+Of the backends diffusers 0.39 exposes, none improves on that here. The
+FlashAttention-3 entries target Hopper. `aiter` is AMD's own kernel library
+and is the one plausible candidate, but it is not installed, as are
+`flash_attn`, `xformers` and `sageattention`. Adding attention backends to
+this card is a dependency decision with no demonstrated headroom behind it.
 
 **Quantizing T5.** Not attempted, because it cannot be attempted here.
 `bitsandbytes`, `torchao` and `optimum.quanto` are all absent from the worker
