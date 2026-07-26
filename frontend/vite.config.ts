@@ -23,9 +23,9 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			// Static SPA build: one artifact for every deployment, served by the API
-			// when self-hosted and by a CDN in the cloud (docs/architecture.md).
-			adapter: adapter({ fallback: 'index.html' }),
+			// Static build: every known route is prerendered. The API server still
+			// falls back to index.html for unknown GET paths in self-hosted mode.
+			adapter: adapter(),
 
 			// Hash-mode CSP for prerendered pages: SvelteKit injects a SHA-256
 			// script-src hash for its inline bootstrap. HTTP responses still

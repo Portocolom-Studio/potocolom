@@ -7,6 +7,7 @@
 
 <svelte:head>
 	<title>potocolom - {page.status === 404 ? t('error.title404') : t('error.titleOther')}</title>
+	<meta name="robots" content="noindex, follow" />
 </svelte:head>
 
 <main class="grid min-h-screen place-items-center px-6 text-center">

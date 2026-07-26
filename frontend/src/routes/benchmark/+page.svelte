@@ -1,7 +1,9 @@
 <script lang="ts">
 	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
+	import { onMount } from 'svelte';
 	import {
 		formatMs,
 		formatSeconds,
@@ -15,9 +17,8 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Card from '$lib/components/ui/card';
 
-	let { data } = $props();
+	let report = $state<BenchmarkReport | null>(null);
 
-	const report = $derived(data.report as BenchmarkReport | null);
 	const hasData = $derived(Boolean(report && report.results.length > 0));
 
 	const runDate = $derived(
@@ -46,12 +47,31 @@
 		items.push({ id: 'bench-specs', label: t('bench.toc_specs') });
 		return items;
 	});
+
+	onMount(async () => {
+		const response = await fetch('/benchmark/results.json');
+		if (!response.ok) return;
+
+		try {
+			const result = (await response.json()) as BenchmarkReport;
+			if (
+				typeof result.created_at === 'string' &&
+				Array.isArray(result.results) &&
+				result.results.length > 0
+			) {
+				report = result;
+			}
+		} catch {
+			// Keep the static model specifications visible when results are invalid.
+		}
+	});
 </script>
 
-<svelte:head>
-	<title>potocolom - {benchmarkTitle}</title>
-	<meta name="description" content={t('bench.sub')} />
-</svelte:head>
+<Seo
+	title="Generative AI Model Benchmarks on AMD ROCm | potocolom"
+	description="Compare measured generative image model speed, GPU time, VRAM, license, and studio status on the potocolom AMD ROCm reference hardware."
+	path="/benchmark"
+/>
 
 <SiteLandingHeader current="benchmark" />
 
@@ -134,7 +154,7 @@
 							</div>
 							{#if stats}
 								<span class="text-muted-foreground shrink-0 font-mono text-xs tabular-nums">
-									{formatMs(stats.avg_gpu_ms)} gpu · {formatSeconds(stats.avg_wall_s)} wall
+									{formatMs(stats.avg_gpu_ms)} gpu, {formatSeconds(stats.avg_wall_s)} wall
 								</span>
 							{/if}
 						</summary>
