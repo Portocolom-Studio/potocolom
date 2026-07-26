@@ -153,7 +153,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'Stability AI Community',
 		commercial: '<= $1M revenue / year',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/stable-diffusion-3.5-medium'
 	}
 ];

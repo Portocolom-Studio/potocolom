@@ -71,6 +71,13 @@ def test_shipped_manifests_load():
     assert sd35.requires_attribution == "Powered by Stability AI"
     assert sd35.scheduler == ""  # native flow-matching scheduler
     assert not sd35.lora and not sd35.vae
+    assert not sd35.benchmark_only  # studio-visible quality tier (issue #151)
+    # 20 steps measured at 56s vs 89s for 40 on the reference card, with no
+    # quality difference worth 33 seconds.
+    assert sd35.parameters["properties"]["steps"]["default"] == 20
+    # Full residency OOMs on a 16 GB card; this must stay above it so the
+    # ladder picks model_offload.
+    assert sd35.min_vram_gb > 16
     assert sd35.wire()["requires_attribution"] == "Powered by Stability AI"
     lightning = next(m for m in manifests if m.id == "ssd-1b-lightning")
     assert not lightning.benchmark_only

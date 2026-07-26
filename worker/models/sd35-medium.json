@@ -9,12 +9,11 @@
   "commercial_max_revenue_usd": 1000000,
   "license_registration_url": "https://stability.ai/community-license",
   "requires_attribution": "Powered by Stability AI",
-  "benchmark_only": true,
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": { "type": "string" },
-      "steps": { "type": "integer", "minimum": 20, "maximum": 50, "default": 40 },
+      "steps": { "type": "integer", "minimum": 20, "maximum": 50, "default": 20 },
       "guidance": { "type": "number", "minimum": 0, "maximum": 7, "default": 4.5 },
       "seed": { "type": "integer" },
       "width": { "type": "integer", "enum": [768, 1024], "default": 1024 },
