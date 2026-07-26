@@ -1,13 +1,19 @@
 <script lang="ts">
+	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
+
+	// Never indexed either way. The marketing build still lets a crawler follow
+	// the link home from a dead URL; the studio build is closed to crawlers, so
+	// it matches the noindex, nofollow that Seo.svelte emits there.
+	const robots = PUBLIC_SITE_MODE === 'landing' ? 'noindex, follow' : 'noindex, nofollow';
 </script>
 
 <svelte:head>
 	<title>potocolom - {page.status === 404 ? t('error.title404') : t('error.titleOther')}</title>
-	<meta name="robots" content="noindex, follow" />
+	<meta name="robots" content={robots} />
 </svelte:head>
 
 <main class="grid min-h-screen place-items-center px-6 text-center">
