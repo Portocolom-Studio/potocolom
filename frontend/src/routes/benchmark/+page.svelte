@@ -3,6 +3,7 @@
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
+	import { onMount } from 'svelte';
 	import {
 		formatMs,
 		formatSeconds,
@@ -14,9 +15,10 @@
 	import { t } from '$lib/i18n.svelte';
 	import '../../krea-tokens.css';
 
-	let { data } = $props();
+	// Fetch at runtime so prerender does not inline the multi-MB results JSON
+	// into an unhashed script tag (main's CSP check).
+	let report = $state<BenchmarkReport | null>(null);
 
-	const report = $derived(data.report as BenchmarkReport | null);
 	const hasData = $derived(Boolean(report && report.results.length > 0));
 
 	const runDate = $derived(
@@ -45,11 +47,28 @@
 		items.push({ id: 'bench-specs', label: t('bench.toc_specs') });
 		return items;
 	});
+
+	onMount(async () => {
+		const response = await fetch('/benchmark/results.json');
+		if (!response.ok) return;
+		try {
+			const result = (await response.json()) as BenchmarkReport;
+			if (
+				typeof result.created_at === 'string' &&
+				Array.isArray(result.results) &&
+				result.results.length > 0
+			) {
+				report = result;
+			}
+		} catch {
+			// Keep the static model specifications visible when results are invalid.
+		}
+	});
 </script>
 
 <Seo
-	title="potocolom Model Benchmarks | GPU Timing and Specs"
-	description={t('bench.sub')}
+	title="Generative AI Model Benchmarks on AMD ROCm | potocolom"
+	description="Compare measured generative image model speed, GPU time, VRAM, license, and studio status on the potocolom AMD ROCm reference hardware."
 	path="/benchmark"
 />
 
