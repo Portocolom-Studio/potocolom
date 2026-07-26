@@ -409,8 +409,15 @@
 		font-size: 0.88rem;
 	}
 
+	/* Ten columns. Trimmed just enough to clear the article column at desktop
+	   widths instead of scrolling sideways by a few dozen pixels. */
 	.table-wrap.wide table {
-		min-width: 60rem;
+		min-width: 54rem;
+		font-size: 0.82rem;
+	}
+
+	.table-wrap.wide :is(th, td) {
+		padding: 0.55rem 0.6rem;
 	}
 
 	th,
