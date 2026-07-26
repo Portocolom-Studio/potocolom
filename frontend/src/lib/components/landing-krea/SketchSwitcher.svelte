@@ -4,13 +4,15 @@
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import SunIcon from '@lucide/svelte/icons/sun';
 
-	export type SketchId = 'latent' | 'orbit';
+	export type SketchId = 'latent' | 'crown' | 'rings' | 'disc';
 
 	let { current }: { current: SketchId } = $props();
 
 	const sketches = [
 		{ id: 'latent', label: 'Latent' },
-		{ id: 'orbit', label: 'Orbit' }
+		{ id: 'crown', label: 'Crown' },
+		{ id: 'rings', label: 'Rings' },
+		{ id: 'disc', label: 'Disc' }
 	] as const;
 
 	let mode = $state<'dark' | 'light'>('dark');

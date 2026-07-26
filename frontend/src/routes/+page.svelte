@@ -8,7 +8,7 @@
 	} from '$lib/components/landing-krea/SketchSwitcher.svelte';
 	import '../krea-tokens.css';
 
-	const ids = ['latent', 'orbit'] as const;
+	const ids = ['latent', 'crown', 'rings', 'disc'] as const;
 
 	function normalise(value: string | null): SketchId {
 		return (ids as readonly string[]).includes(value ?? '') ? (value as SketchId) : 'latent';
@@ -22,10 +22,11 @@
 	<meta name="description" content={t('hero.sub')} />
 </svelte:head>
 
-{#if sketch === 'orbit'}
-	<SketchOrbit />
-{:else}
+<!-- The three orbits are one component; only the arc geometry differs. -->
+{#if sketch === 'latent'}
 	<SketchLatent />
+{:else}
+	<SketchOrbit shape={sketch} />
 {/if}
 
 <SketchSwitcher current={sketch} />

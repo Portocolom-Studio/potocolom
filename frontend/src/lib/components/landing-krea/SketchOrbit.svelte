@@ -36,44 +36,61 @@
 		}))
 	];
 
-	/* One orbit system: concentric arcs around a centre far below the band, so
-	   only the crown of each circle shows. Every length here is rem and has to
-	   match the .arc and .arc-spin rules below.
+	/* Three arrangements of the same four-layer orbit, chosen by the sketch.
+	   Every length is rem and has to match the .arc rules below; the whole-circle
+	   shapes are additionally scaled by --orbit-scale so they fit narrow screens.
 
-	   Tiles are placed by angle rather than by count, and a layer keeps going
-	   until its tiles leave the band, which is what closes the arcs at the sides
-	   instead of stopping them mid-air. */
-	// The band is a clamp, so coverage is planned against its tallest and the
-	// hover nudge against its shortest. Both bounds live in the .arc rule.
+	     crown - the centre sits far below a clipped band, so only the crown of
+	             each circle shows and the arcs run off the sides of the frame
+	     rings - whole circles centred on the stage, with the copy inside them
+	     disc  - whole circles as a medallion of their own, under the copy */
+	type Shape = 'crown' | 'rings' | 'disc';
+
+	let { shape = 'crown' }: { shape?: Shape } = $props();
+
+	const SWAY_DEG = 3;
+
+	// Constant arc length between neighbours, so every layer looks equally spaced.
+	const SPACING = { crown: 5.4, rings: 6.2, disc: 3 };
+	const RADII = {
+		crown: [63, 59, 55.5, 52],
+		rings: [22, 28, 34, 40],
+		// Small enough that all four circles close inside one screen, under the
+		// copy, and spaced by more than a tile so the rings stay separate.
+		disc: [10, 7.3, 4.6, 1.9]
+	};
+	// Both are also in the .arc rules; the pair sets how far a tile pushes out.
+	const CHIP_REM = { crown: 4.2, rings: 4.2, disc: 2.6 };
+	const HOVER_REM = { crown: 8, rings: 8, disc: 5.5 };
+
+	/* Crown only. The band is a clamp, so coverage is planned against its tallest
+	   and the hover nudge against its shortest; both bounds live in the .arc rule.
+	   REACH is half the widest viewport the arcs run edge to edge on - past it
+	   they leave the frame, which reads better than an arc that visibly stops. */
 	const BAND_MAX_REM = 21;
 	const BAND_MIN_REM = 17;
-	const CENTRE_REM = 80;
-	const SWAY_DEG = 3;
-	// Half the widest viewport the arcs run edge to edge on; past it they simply
-	// leave the frame, which reads better than an arc that visibly stops.
+	const CENTRE_REM = 65.5;
 	const REACH_REM = 60;
 	const SLACK_REM = 3;
-	const HOVER_REM = 8;
-	// Constant arc length between neighbours, so every layer looks equally spaced.
-	const SPACING_REM = 5.4;
 
 	const radians = (degrees: number) => (degrees * Math.PI) / 180;
 
-	/** Where a tile's centre sits, measured down from the top of the band. */
+	/** Where a crown tile's centre sits, measured down from the top of the band. */
 	const depthAt = (radius: number, angle: number) => CENTRE_REM - radius * Math.cos(radians(angle));
 
-	/* Nudge an enlarged tile back inside the band. Tiles low on an arc would
-	   otherwise grow straight through the bottom edge and come back cropped. */
+	/* Nudge an enlarged crown tile back inside the band. Tiles low on an arc
+	   would otherwise grow straight through the bottom edge and come back
+	   cropped. Whole circles have room around them and push outward instead. */
 	function hoverLift(radius: number, angle: number): number {
-		const half = HOVER_REM / 2;
+		const half = HOVER_REM.crown / 2;
 		const y = depthAt(radius, angle);
 		if (y < half) return half - y;
 		if (y > BAND_MIN_REM - half) return BAND_MIN_REM - half - y;
 		return 0;
 	}
 
-	/** Every angle on this arc that the band can actually show, sway included. */
-	function arcAngles(radius: number, gap: number): number[] {
+	/** Every angle on a crown arc the band can actually show, sway included. */
+	function crownAngles(radius: number, gap: number): number[] {
 		const angles: number[] = [];
 		for (let step = 0; step * gap <= 90; step += 1) {
 			const angle = step * gap;
@@ -89,15 +106,32 @@
 		return angles.sort((a, b) => a - b);
 	}
 
-	let poured = 0;
-	const arcs = [84, 77.5, 73, 69, 65].map((radius, depth) => {
-		const gap = ((SPACING_REM / radius) * 180) / Math.PI;
-		const tiles = arcAngles(radius, gap).map((angle) => {
-			const image = everything[poured % everything.length];
-			poured += 1;
-			return { ...image, angle, lift: hoverLift(radius, angle) };
+	/** A closed ring: the gap is trued up so the last tile meets the first. */
+	function ringAngles(radius: number, spacing: number): number[] {
+		const count = Math.max(6, Math.round((2 * Math.PI * radius) / spacing));
+		return Array.from({ length: count }, (_, index) => (360 / count) * index);
+	}
+
+	const arcs = $derived.by(() => {
+		const spacing = SPACING[shape];
+		let poured = 0;
+		return RADII[shape].map((radius, depth) => {
+			const gap = ((spacing / radius) * 180) / Math.PI;
+			const angles = shape === 'crown' ? crownAngles(radius, gap) : ringAngles(radius, spacing);
+			const tiles = angles.map((angle) => {
+				const image = everything[poured % everything.length];
+				poured += 1;
+				return {
+					...image,
+					angle,
+					// Crown tiles slide vertically to stay in the band; ring tiles grow
+					// outward so an inner ring never swallows what it surrounds.
+					lift: shape === 'crown' ? hoverLift(radius, angle) : 0,
+					push: shape === 'crown' ? 0 : (HOVER_REM[shape] - CHIP_REM[shape]) / 2
+				};
+			});
+			return { radius, depth, tiles };
 		});
-		return { radius, depth, tiles };
 	});
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
@@ -157,7 +191,7 @@
 	</header>
 
 	<main>
-		<section class="stage">
+		<section class="stage {shape}">
 			<div class="dots"><ParticleField density={0.0016} /></div>
 			<div class="stage-copy">
 				<h1>
@@ -174,14 +208,14 @@
 				<p class="orbit-name" aria-live="polite">{orbitName ?? ''}</p>
 			</div>
 
-			<div class="arc" aria-label={t('gallery.kicker')}>
+			<div class="arc {shape}" aria-label={t('gallery.kicker')}>
 				<div class="arc-spin">
 					{#each arcs as layer (layer.radius)}
 						{#each layer.tiles as tile (`${layer.radius}-${tile.angle}`)}
 							<button
 								type="button"
 								class="chip"
-								style="--a: {tile.angle}deg; --r: {layer.radius}rem; --lift: {tile.lift}rem; --depth: {layer.depth}"
+								style="--a: {tile.angle}deg; --r: {layer.radius}rem; --lift: {tile.lift}rem; --out: {tile.push}rem; --depth: {layer.depth}"
 								onmouseenter={() => (orbitName = tile.alt)}
 								onmouseleave={() => (orbitName = null)}
 								onfocus={() => (orbitName = tile.alt)}
@@ -422,6 +456,34 @@
 		gap: 1.5rem;
 	}
 
+	/* The copy sits inside the innermost ring, so it has to clear its diameter
+	   rather than the viewport. */
+	.stage.rings .stage-copy {
+		max-width: calc(36rem * var(--orbit-scale, 1));
+	}
+
+	.stage.rings h1,
+	.stage.disc h1 {
+		font-size: clamp(2rem, 4.4vw, 3.4rem);
+	}
+
+	.stage.rings .lede,
+	.stage.disc .lede {
+		max-width: 34ch;
+		font-size: 0.95rem;
+	}
+
+	/* Room above and below for the rings to close without meeting the header. */
+	.stage.rings {
+		min-height: calc(100svh - 4rem);
+		padding-block: clamp(2rem, 6vh, 4rem);
+	}
+
+	/* Copy plus a whole medallion has to clear one screen between them. */
+	.stage.disc {
+		padding-block-start: clamp(1.5rem, 4vh, 3rem);
+	}
+
 	h1 {
 		display: grid;
 		gap: 0.2rem;
@@ -470,13 +532,103 @@
 		gap: 0.7rem;
 	}
 
-	/* BAND_MIN_REM and BAND_MAX_REM in the script are these two bounds. */
 	.arc {
+		--chip-rest: clamp(2.9rem, 5.4vw, 4.2rem);
+		--chip-hover: clamp(6rem, 11vw, 8rem);
 		position: relative;
 		width: 100%;
+	}
+
+	/* CHIP_REM and HOVER_REM in the script are these two, for the disc. */
+	.arc.disc {
+		--chip-rest: clamp(1.8rem, 3.2vw, 2.6rem);
+		--chip-hover: clamp(4rem, 7.5vw, 5.5rem);
+	}
+
+	/* Whole circles shrink by --orbit-scale, so the tiles have to shrink with
+	   them. Scaling only the radii packs full-size pictures into a smaller ring
+	   until they close over whatever the ring is meant to surround. */
+	.arc.rings,
+	.arc.disc {
+		--chip-rest: calc(clamp(2.9rem, 5.4vw, 4.2rem) * var(--orbit-scale));
+		--chip-hover: calc(clamp(6rem, 11vw, 8rem) * var(--orbit-scale));
+	}
+
+	.arc.disc {
+		--chip-rest: calc(clamp(1.8rem, 3.2vw, 2.6rem) * var(--orbit-scale));
+		--chip-hover: calc(clamp(4rem, 7.5vw, 5.5rem) * var(--orbit-scale));
+	}
+
+	/* Whole-circle shapes are laid out in rem, so they get scaled down rather
+	   than reflowed; the crown's geometry is viewport-independent by design.
+	   It lives on .stage because the copy inside the rings is sized off it too. */
+	.stage {
+		--orbit-scale: 1;
+	}
+
+	/* The rings barely shrink: their clear centre still has to cover a copy block
+	   that gets taller as it narrows, and a smaller ring closes over it. The disc
+	   shrinks harder because the whole medallion has to fit the screen. */
+	@media (max-width: 64rem) {
+		.stage.rings {
+			--orbit-scale: 0.86;
+		}
+
+		.stage.disc {
+			--orbit-scale: 0.9;
+		}
+	}
+
+	@media (max-width: 40rem) {
+		.stage.rings {
+			--orbit-scale: 0.74;
+		}
+
+		.stage.disc {
+			--orbit-scale: 0.76;
+		}
+	}
+
+	/* Crown: a clipped strip with the circle centre far below it, so only the
+	   crown of each arc shows. BAND_MIN_REM and BAND_MAX_REM are these bounds. */
+	.arc.crown {
 		height: clamp(17rem, 34vh, 21rem);
 		margin-block-start: auto;
 		overflow: clip;
+	}
+
+	.arc.crown .arc-spin {
+		inset-block-start: 65.5rem;
+	}
+
+	/* Rings: whole circles centred on the stage with the copy inside them. Four
+	   rings wide enough to clear the headline cannot all close on a laptop, so
+	   the outer two run off the top and bottom. Clipped to the stage rather than
+	   left to spill, which put pictures behind the header nav. The layer ignores
+	   the pointer except on the pictures themselves. */
+	.arc.rings {
+		position: absolute;
+		inset: 0;
+		overflow: clip;
+		pointer-events: none;
+	}
+
+	.arc.rings .chip {
+		pointer-events: auto;
+	}
+
+	.arc.rings .arc-spin {
+		inset-block-start: 50%;
+	}
+
+	/* Disc: whole circles as a medallion of their own, under the copy. */
+	.arc.disc {
+		height: calc(2 * 11.3rem * var(--orbit-scale));
+		margin-block-start: auto;
+	}
+
+	.arc.disc .arc-spin {
+		inset-block-start: 50%;
 	}
 
 	.orbit-name {
@@ -487,11 +639,22 @@
 
 	.arc-spin {
 		position: absolute;
-		inset-block-start: 80rem;
 		inset-inline-start: 50%;
 		width: 0;
 		height: 0;
 		animation: sway 15s ease-in-out infinite alternate;
+	}
+
+	/* Whole circles turn rather than sway; a rocking ring reads as a mistake. */
+	.arc.rings .arc-spin,
+	.arc.disc .arc-spin {
+		animation: turn 150s linear infinite;
+	}
+
+	@keyframes turn {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	/* SWAY_DEG in the script has to cover this amplitude. */
@@ -520,8 +683,14 @@
 		initial-value: 0rem;
 	}
 
+	@property --grow {
+		syntax: '<length>';
+		inherits: false;
+		initial-value: 0rem;
+	}
+
 	.chip {
-		--w: clamp(2.9rem, 5.4vw, 4.2rem);
+		--w: var(--chip-rest);
 		position: absolute;
 		display: block;
 		width: var(--w);
@@ -537,13 +706,15 @@
 		border-radius: 999px;
 		background: var(--k-panel);
 		cursor: pointer;
-		/* Counter-rotate so the picture stays upright on the curve; the last
-		   translate is therefore in screen space, which is what --lift wants. */
-		transform: rotate(var(--a)) translateY(calc(var(--r) * -1)) rotate(calc(var(--a) * -1))
-			translateY(var(--shift));
+		/* --grow rides the radius, so it pushes a tile outward along its own
+		   spoke. Counter-rotating next leaves the picture upright, which makes
+		   the last translate screen-vertical, which is what --shift wants. */
+		transform: rotate(var(--a)) translateY(calc((var(--r) * var(--orbit-scale) + var(--grow)) * -1))
+			rotate(calc(var(--a) * -1)) translateY(var(--shift));
 		transition:
 			--w 260ms var(--k-ease),
 			--shift 260ms var(--k-ease),
+			--grow 260ms var(--k-ease),
 			border-color 260ms var(--k-ease),
 			box-shadow 260ms var(--k-ease),
 			opacity 260ms var(--k-ease);
@@ -554,6 +725,20 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+	}
+
+	/* A turning ring would carry its pictures round with it. The counter-spin
+	   runs at the same rate; a square always covers its own inscribed circle,
+	   so the round mask stays filled at every angle. */
+	.arc.rings .chip img,
+	.arc.disc .chip img {
+		animation: unturn 150s linear infinite;
+	}
+
+	@keyframes unturn {
+		to {
+			transform: rotate(-360deg);
+		}
 	}
 
 	/* Shared section furniture ---------------------------------------------- */
@@ -721,6 +906,12 @@
 	}
 
 	/* Run -------------------------------------------------------------------- */
+	/* Wider than the other blocks, and weighted toward the terminal: the clone
+	   line is 74 monospace characters and was scrolling sideways inside it. */
+	.run {
+		max-width: 78rem;
+	}
+
 	.run-body {
 		display: grid;
 		gap: 1rem;
@@ -862,7 +1053,7 @@
 		}
 
 		.run-body {
-			grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+			grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
 		}
 
 		.split {
@@ -893,8 +1084,9 @@
 	/* HOVER_REM in the script is the largest this gets. */
 	.chip:hover,
 	.chip:focus-visible {
-		--w: clamp(6rem, 11vw, 8rem);
+		--w: var(--chip-hover);
 		--shift: var(--lift);
+		--grow: var(--out);
 		z-index: 5;
 		border-color: var(--k-accent);
 		box-shadow: 0 1rem 3rem oklch(0 0 0 / 60%);
@@ -928,6 +1120,7 @@
 
 	@media (prefers-reduced-motion: reduce) {
 		.arc-spin,
+		.chip img,
 		.caret {
 			animation: none;
 		}
