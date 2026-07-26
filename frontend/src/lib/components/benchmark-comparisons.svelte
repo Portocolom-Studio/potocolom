@@ -2,6 +2,7 @@
 	import {
 		categoryLineSeries,
 		formatMs,
+		formatSeconds,
 		leaderboardRows,
 		type BenchmarkReport
 	} from '$lib/benchmark';
@@ -11,6 +12,21 @@
 
 	const rows = $derived(leaderboardRows(report.model_stats));
 	const lineData = $derived(categoryLineSeries(report.results, report.models));
+
+	/* One readout for both charts, placed over whichever one the cursor is in.
+	   Coordinates are relative to .stack, which is the positioning context. */
+	let stackEl = $state<HTMLDivElement | null>(null);
+	let readout = $state<{ x: number; y: number; title: string; lines: string[] } | null>(null);
+
+	function showReadout(event: PointerEvent | MouseEvent, title: string, lines: string[]) {
+		const box = stackEl?.getBoundingClientRect();
+		if (!box) return;
+		readout = { x: event.clientX - box.left, y: event.clientY - box.top, title, lines };
+	}
+
+	function clearReadout() {
+		readout = null;
+	}
 
 	function statsFor(modelId: string) {
 		return report.model_stats.find((row) => row.model_id === modelId);
@@ -109,6 +125,39 @@
 		return 'middle';
 	}
 
+	/* Which model's wedge the cursor is in. The svg scales and can letterbox, so
+	   go through the screen CTM rather than assuming the box matches the viewBox. */
+	let radarHover = $state<number | null>(null);
+
+	function radarMove(event: PointerEvent) {
+		const svg = event.currentTarget as SVGSVGElement;
+		const ctm = svg.getScreenCTM();
+		if (!ctm) return;
+		const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse());
+		const dx = point.x - rcx;
+		const dy = point.y - rcy;
+		if (Math.hypot(dx, dy) > radarR * 1.2) {
+			radarHover = null;
+			clearReadout();
+			return;
+		}
+		const step = (2 * Math.PI) / rows.length;
+		const turn = (Math.atan2(dy, dx) + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI);
+		const index = Math.round(turn / step) % rows.length;
+		radarHover = index;
+		const row = rows[index];
+		showReadout(event, row.model_id, [
+			`GPU ${row.gpu_display}`,
+			`Wall ${row.wall_display}`,
+			`${t('bench.overhead')} ${formatSeconds(Math.max(0, row.wall_s - row.gpu_ms / 1000))}`
+		]);
+	}
+
+	function radarLeave() {
+		radarHover = null;
+		clearReadout();
+	}
+
 	/* Spread -----------------------------------------------------------------
 	   One row per model, one dot per prompt category. How far the dots scatter
 	   along the row is the thing the averages hide. */
@@ -119,18 +168,16 @@
 	const dotW = dotLabelW + dotPlotW + 24;
 	const dotH = $derived(rows.length * dotRowH + dotAxisH);
 
-	const dotLo = $derived(
-		Math.max(
-			1,
-			Math.min(
-				...lineData.series.flatMap((s) => s.points.map((p) => p.avg_gpu_ms)).filter((ms) => ms > 0),
-				Infinity
-			) * 0.8
-		)
+	const everyCategoryMs = $derived(
+		lineData.series.flatMap((series) => series.points.map((point) => point.avg_gpu_ms))
 	);
-	const dotHi = $derived(
-		Math.max(...lineData.series.flatMap((s) => s.points.map((p) => p.avg_gpu_ms)), 1) * 1.25
+	const spreadMin = $derived(
+		Math.max(1, Math.min(...everyCategoryMs.filter((ms) => ms > 0), Infinity))
 	);
+	const spreadMax = $derived(Math.max(...everyCategoryMs, 1));
+
+	const dotLo = $derived(spreadMin * 0.8);
+	const dotHi = $derived(spreadMax * 1.25);
 	const dotTicks = $derived(niceTicks(dotLo, dotHi));
 
 	function dotX(ms: number): number {
@@ -159,9 +206,51 @@
 	function categoryColor(index: number, count: number): string {
 		return `oklch(var(--dot-l) 0.15 ${Math.round((310 / Math.max(count - 1, 1)) * index + 20)})`;
 	}
+
+	let spreadHover = $state<{ model: string; category: string } | null>(null);
+
+	function isDimmed(modelId: string, category: string): boolean {
+		return (
+			spreadHover !== null && spreadHover.model !== modelId && spreadHover.category !== category
+		);
+	}
+
+	function dotEnter(event: PointerEvent, modelId: string, category: string, ms: number) {
+		spreadHover = { model: modelId, category };
+		showReadout(event, modelId, [category, formatMs(ms)]);
+	}
+
+	function dotLeave() {
+		spreadHover = null;
+		clearReadout();
+	}
+
+	/* Heat tint, kept for the numbers table: log-scaled so 306 ms against 13.4 s
+	   still separates, sequential so faster reads as a stronger tint. */
+	const heatFast = 'oklch(0.72 0.11 205)';
+
+	function heatFill(ms: number): string {
+		if (ms <= 0) return 'var(--heat-base)';
+		const slow = logPosition(ms, spreadMin, Math.max(spreadMax, spreadMin * 1.01));
+		const fast = 1 - Math.pow(slow, 0.82);
+		return `color-mix(in oklch, ${heatFast} ${2 + fast * 66}%, var(--heat-base))`;
+	}
+
+	function heatLegendMs(fraction: number): number {
+		return Math.exp(Math.log(spreadMin) + fraction * (Math.log(spreadMax) - Math.log(spreadMin)));
+	}
 </script>
 
-<div class="stack">
+<div class="stack" bind:this={stackEl}>
+	{#if readout}
+		<div class="readout" style:left="{readout.x}px" style:top="{readout.y}px" aria-hidden="true">
+			<p class="mono">{readout.title}</p>
+			{#each readout.lines as line (line)}
+				<p class="mono num">{line}</p>
+			{/each}
+		</div>
+	{/if}
+
 	<section class="card">
 		<header>
 			<h3>{t('bench.leaderboard')}</h3>
@@ -185,12 +274,7 @@
 						{@const stats = statsFor(row.model_id)}
 						<tr>
 							<td class="num quiet">{row.rank}</td>
-							<td>
-								<span class="mono">{row.model_id}</span>
-								{#if row.reference}
-									<span class="tag">{t('bench.reference_badge')}</span>
-								{/if}
-							</td>
+							<td><span class="mono">{row.model_id}</span></td>
 							<td>
 								<div class="meter">
 									<div class="track">
@@ -233,6 +317,8 @@
 				class="radar"
 				role="img"
 				aria-label={t('bench.chart_grouped')}
+				onpointermove={radarMove}
+				onpointerleave={radarLeave}
 			>
 				{#each radarRings as ring (ring)}
 					<path d={ringPath(logPosition(ring, radarLo, radarHi), rows.length)} class="grid" />
@@ -241,11 +327,19 @@
 				{#each rows as row, i (row.model_id)}
 					{@const outer = radarPoint(i, rows.length, 1)}
 					{@const label = radarPoint(i, rows.length, labelR / radarR)}
-					<line x1={rcx} y1={rcy} x2={outer.x} y2={outer.y} class="grid" />
+					<line
+						x1={rcx}
+						y1={rcy}
+						x2={outer.x}
+						y2={outer.y}
+						class="grid"
+						class:axis-live={radarHover === i}
+					/>
 					<text
 						x={label.x}
 						y={label.y}
 						class="tick"
+						class:label-live={radarHover === i}
 						text-anchor={labelAnchor(i, rows.length)}
 						dominant-baseline="middle"
 					>
@@ -263,10 +357,14 @@
 						logPosition(row.wall_s * 1000, radarLo, radarHi)
 					)}
 					{@const gpu = radarPoint(i, rows.length, logPosition(row.gpu_ms, radarLo, radarHi))}
-					<circle cx={wall.x} cy={wall.y} r="4" class="dot-wall">
+					{@const live = radarHover === i}
+					{#if live}
+						<line x1={gpu.x} y1={gpu.y} x2={wall.x} y2={wall.y} class="gap-live" />
+					{/if}
+					<circle cx={wall.x} cy={wall.y} r={live ? 6 : 4} class="dot-wall">
 						<title>{row.model_id} wall: {row.wall_display}</title>
 					</circle>
-					<circle cx={gpu.x} cy={gpu.y} r="4" class="dot-gpu">
+					<circle cx={gpu.x} cy={gpu.y} r={live ? 6 : 4} class="dot-gpu">
 						<title>{row.model_id} GPU: {row.gpu_display}</title>
 					</circle>
 				{/each}
@@ -326,7 +424,12 @@
 									cy={dotY(i, c, lineData.categories.length)}
 									r="4.5"
 									class="dot"
+									class:dimmed={isDimmed(row.model_id, category)}
 									style:fill={categoryColor(c, lineData.categories.length)}
+									role="img"
+									aria-label="{row.model_id} {category}: {formatMs(ms)}"
+									onpointerenter={(event) => dotEnter(event, row.model_id, category, ms)}
+									onpointerleave={dotLeave}
 								>
 									<title>{row.model_id} {category}: {formatMs(ms)}</title>
 								</circle>
@@ -338,6 +441,16 @@
 		</div>
 		<details>
 			<summary>{t('bench.spread_numbers')}</summary>
+			<div class="legend heat-legend">
+				<span>{t('bench.heatmap_fast')}</span>
+				<div class="ramp">
+					{#each [0, 1, 2, 3, 4] as bucket (bucket)}
+						<div style:background={heatFill(heatLegendMs(bucket / 4))}></div>
+					{/each}
+				</div>
+				<span>{t('bench.heatmap_slow')}</span>
+				<span class="mono num range">{formatMs(spreadMin)} - {formatMs(spreadMax)}</span>
+			</div>
 			<div class="scroll">
 				<table class="grid-table">
 					<thead>
@@ -353,7 +466,14 @@
 							<tr>
 								<th scope="row" class="sticky">{category}</th>
 								{#each rows as row (row.model_id)}
-									<td class="mono num">{formatMs(categoryMs(row.model_id, category))}</td>
+									{@const ms = categoryMs(row.model_id, category)}
+									<td
+										class="mono num cell"
+										class:dimmed={isDimmed(row.model_id, category)}
+										style:background={heatFill(ms)}
+									>
+										{formatMs(ms)}
+									</td>
 								{/each}
 							</tr>
 						{/each}
@@ -369,6 +489,8 @@
 	.stack {
 		--dot-l: 0.76;
 		--wall-tone: oklch(0.72 0.11 205);
+		--heat-base: oklch(0.13 0.018 265);
+		position: relative;
 		display: grid;
 		gap: 1rem;
 		min-width: 0;
@@ -376,6 +498,36 @@
 
 	:global(:root[data-krea-mode='light']) .stack {
 		--dot-l: 0.58;
+		--heat-base: oklch(0.96 0.004 255);
+	}
+
+	/* Follows the cursor across both charts. Offset so it never sits under it. */
+	.readout {
+		position: absolute;
+		z-index: 3;
+		translate: 0.9rem -50%;
+		padding: 0.45rem 0.7rem;
+		border: 1px solid var(--k-line);
+		border-radius: 0.5rem;
+		background: var(--heat-base);
+		box-shadow: 0 0.5rem 1.5rem oklch(0 0 0 / 35%);
+		pointer-events: none;
+		white-space: nowrap;
+	}
+
+	.readout p {
+		margin: 0;
+		font-size: 0.74rem;
+		line-height: 1.5;
+	}
+
+	.readout p:first-child {
+		color: var(--k-ink);
+		font-weight: 600;
+	}
+
+	.readout p + p {
+		color: var(--k-muted);
 	}
 
 	.card {
@@ -511,15 +663,6 @@
 		color: var(--k-muted);
 	}
 
-	.tag {
-		margin-inline-start: 0.4rem;
-		padding: 0.1rem 0.45rem;
-		border: 1px solid var(--k-line);
-		border-radius: 999px;
-		color: var(--k-muted);
-		font-size: 0.68rem;
-	}
-
 	.meter {
 		display: flex;
 		align-items: center;
@@ -627,11 +770,67 @@
 		fill-opacity: 0.8;
 		stroke: var(--k-panel);
 		stroke-width: 1;
+		transition:
+			fill-opacity 120ms var(--k-ease),
+			r 120ms var(--k-ease);
+	}
+
+	.dot:hover {
+		r: 7;
+		fill-opacity: 1;
+	}
+
+	.dot.dimmed {
+		fill-opacity: 0.18;
 	}
 
 	.range-bar {
 		stroke: var(--k-line);
 		stroke-width: 10;
 		stroke-linecap: round;
+	}
+
+	/* Hover states ---------------------------------------------------------- */
+	.axis-live {
+		stroke: var(--k-accent);
+	}
+
+	.label-live {
+		fill: var(--k-ink);
+	}
+
+	.gap-live {
+		stroke: var(--k-ink);
+		stroke-width: 1.5;
+		stroke-dasharray: 2 3;
+	}
+
+	.cell {
+		border-inline-start: 1px solid var(--k-line);
+		text-align: center;
+		transition: opacity 120ms var(--k-ease);
+	}
+
+	.cell.dimmed {
+		opacity: 0.45;
+	}
+
+	.heat-legend {
+		padding: 0 1.1rem 0.6rem;
+	}
+
+	.ramp {
+		display: flex;
+		width: 11rem;
+		height: 0.5rem;
+		border: 1px solid var(--k-line);
+	}
+
+	.ramp div {
+		flex: 1;
+	}
+
+	.range {
+		margin-inline-start: auto;
 	}
 </style>
