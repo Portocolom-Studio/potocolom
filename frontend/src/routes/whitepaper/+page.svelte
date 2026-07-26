@@ -13,13 +13,13 @@
 			id: 's2',
 			title: 'wp.s2_title',
 			paragraphs: ['wp.s2_p1', 'wp.s2_p2', 'wp.s2_p3'],
-			figure: { src: '/whitepaper/under-the-hood.png', cap: 'wp.fig_arch_cap' }
+			figure: { src: '/whitepaper/under-the-hood.webp', cap: 'wp.fig_arch_cap' }
 		},
 		{
 			id: 's3',
 			title: 'wp.s3_title',
 			paragraphs: ['wp.s3_p1', 'wp.s3_p2', 'wp.s3_p3'],
-			figure: { src: '/whitepaper/realtime-loop.png', cap: 'wp.fig_loop_cap' }
+			figure: { src: '/whitepaper/realtime-loop.webp', cap: 'wp.fig_loop_cap' }
 		},
 		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
 		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
@@ -28,13 +28,13 @@
 			id: 's7',
 			title: 'wp.s7_title',
 			paragraphs: ['wp.s7_p1', 'wp.s7_p2', 'wp.s7_p3'],
-			figure: { src: '/whitepaper/credit-lifecycle.png', cap: 'wp.fig_credits_cap' }
+			figure: { src: '/whitepaper/credit-lifecycle.webp', cap: 'wp.fig_credits_cap' }
 		},
 		{
 			id: 's8',
 			title: 'wp.s8_title',
 			paragraphs: ['wp.s8_p1', 'wp.s8_p2'],
-			figure: { src: '/whitepaper/failure-map.png', cap: 'wp.fig_failures_cap' }
+			figure: { src: '/whitepaper/failure-map.webp', cap: 'wp.fig_failures_cap' }
 		},
 		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
 	] as const;
