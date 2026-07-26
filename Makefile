@@ -12,7 +12,7 @@
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down verify verify-backend verify-worker \
-	verify-frontend verify-compose simulate \
+	verify-frontend verify-compose verify-guards simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -87,6 +87,16 @@ verify-frontend:
 	cd frontend && npm run lint && npm run check && npm run build
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for c in python3 python3.11 python3.12 python3.13; do \
+		printf '#!/bin/sh\nexit 1\n' > "$$tmp/$$c"; chmod +x "$$tmp/$$c"; done; \
+	if PATH="$$tmp:$$PATH" $(MAKE) --no-print-directory check-python >/dev/null 2>&1; then \
+		echo 'error: check-python accepted a PATH with no Python 3.11+ on it.' >&2; \
+		exit 1; \
+	fi; \
+	echo 'setup guards ok: no 3.11+ interpreter is refused, not silently used'
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && test -f .env || cp .env.example .env

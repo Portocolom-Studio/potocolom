@@ -5,7 +5,9 @@ services:
   postgres:
     image: postgres:16
     ports:
-      - "5432:5432"
+      # Override when 5432 is taken by another PostgreSQL on the host, and set
+      # DATABASE_URL to the same port for the backend and the tests.
+      - "${DEV_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: potocolom
       POSTGRES_PASSWORD: potocolom

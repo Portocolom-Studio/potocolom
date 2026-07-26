@@ -73,6 +73,8 @@ The containerized applications are still exercised constantly: by the cloud simu
 ```
 # dependencies: PostgreSQL is the only one the native loop uses. Redis, MinIO
 # and Mailpit are cloud-profile substitutes; add --profile cloud-sim for them.
+# Host 5432 already taken? DEV_POSTGRES_PORT=5433 docker compose ... up -d, and
+# point DATABASE_URL at the same port for the backend and the tests.
 docker compose -f deploy/compose/dev.yml up -d
 
 # Prefer `make setup` (picks a 3.11+ interpreter, installs into .venv only).
@@ -162,10 +164,11 @@ GitHub Actions runs lint and tests on every pull request (issue #13). By default
 Per component, no GPU:
 
 1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
-2. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
-3. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
-4. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
-5. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
+2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
+3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
+4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
+5. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
+6. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
 
 ```mermaid
 flowchart LR
