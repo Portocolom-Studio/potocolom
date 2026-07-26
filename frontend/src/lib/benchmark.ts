@@ -265,23 +265,3 @@ export function categoryLineSeries(
 	}));
 	return { categories, series };
 }
-
-export type MetricKey = 'gpu' | 'wall' | 'load';
-
-export function metricValue(row: LeaderboardRow, metric: MetricKey): number {
-	if (metric === 'gpu') return row.gpu_ms;
-	if (metric === 'wall') return row.wall_s * 1000;
-	return row.load_ms;
-}
-
-export function metricRatio(row: LeaderboardRow, metric: MetricKey): number {
-	if (metric === 'gpu') return row.gpu_ratio;
-	if (metric === 'wall') return row.wall_ratio;
-	return row.load_ratio;
-}
-
-export function metricDisplay(row: LeaderboardRow, metric: MetricKey): string {
-	if (metric === 'gpu') return row.gpu_display;
-	if (metric === 'wall') return row.wall_display;
-	return row.load_display;
-}
