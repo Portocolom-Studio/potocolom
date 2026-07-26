@@ -11,7 +11,7 @@
 # See docs/self-hosted-runner.md
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
-	deps deps-all deps-down verify verify-backend verify-worker \
+	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-frontend verify-compose verify-guards simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -87,6 +87,11 @@ verify-frontend:
 	cd frontend && npm run lint && npm run check && npm run build
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
+	git config core.hooksPath .githooks
+	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
+	@echo 'Undo with: git config --unset core.hooksPath'
 
 verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
