@@ -107,6 +107,102 @@ transformer on a doubled batch and therefore roughly doubles per-step cost.
 that doubling is paid on every step. This is not a defect to optimize away;
 it is the cost of the quality the model is selected for.
 
+## The cost model
+
+Generation time on this card decomposes cleanly. For `sdxl-base` at 1024 px,
+measured by running the same pipeline at 10 and 20 steps and solving for the
+constant, then repeating with `output_type="latent"` to remove the decode:
+
+```
+total = 717 ms fixed  +  steps x 750 ms
+        |                        |
+        |                        +-- 2 UNet evaluations at ~375 ms (CFG doubles it)
+        +-- 667 ms VAE decode + 50 ms text encode and setup
+```
+
+Both halves were verified against the measurements they predict: 10 steps
+gives 8218 ms and 20 gives 15719 ms, and the fit reproduces them exactly. Step
+scaling is perfectly linear from 10 to 50 steps.
+
+Three consequences worth internalising.
+
+**The fixed cost is almost entirely VAE decode.** 667 ms of the 717 ms floor
+is turning the final latent into pixels, and it is paid once per image no
+matter how many steps ran. Text encoding is 50 ms, which is noise. For a
+50-step render the floor is 2% of runtime and irrelevant; for `vega-rt` at
+1.87 s it is **36% of the total**, and on the fast tier it is the single
+largest optimisation target left. `AutoencoderTiny` (TAESD) decodes in
+roughly 10 ms instead of 667 ms at some fidelity cost, and the deferred
+realtime ladder in [decisions.md](decisions.md) already anticipates exactly
+this ("tiny-autoencoder decode for the live preview with full VAE on refine").
+This measurement is the quantitative case for it.
+
+**Guidance above 1.0 doubles per-step cost.** Diffusers sets
+`do_classifier_free_guidance = guidance_scale > 1.0`, so every step runs the
+UNet on a batch of two, conditional and unconditional. That is why the roster
+spans 258x: `sdxl-fast` at 8 steps with guidance 0 runs 8 UNet evaluations,
+`sdxl-base` at 50 steps with guidance 6 runs 100, on the same 3.5B UNet.
+Distilled models set guidance 0 and cap it at 2 in the manifest precisely
+because their distillation bakes the guidance effect into the weights;
+applying CFG on top oversaturates.
+
+**Steps are linear and buy less than they cost.** See the sweep below.
+
+## Step count: 50 buys nothing over 20
+
+`sdxl-base` and `ssd-1b` already ship `dpmsolver` (DPM++ 2M Karras), a
+fast-converging solver. The question is therefore not which scheduler but how
+few steps it needs. Same prompt, same seed 100, 1024 px, guidance 6:
+
+| Steps | dpmsolver | euler-trailing | stock Euler |
+| ---: | ---: | ---: | ---: |
+| 10 | 8.29 s | - | - |
+| 15 | 12.02 s | - | - |
+| 20 | 15.76 s | 15.72 s | 15.70 s |
+| 25 | 19.51 s | - | - |
+| 30 | 23.27 s | 23.17 s | 23.15 s |
+| 40 | 30.66 s | - | - |
+| 50 | 38.03 s | - | - |
+
+Scheduler choice does not change runtime at matched steps, to within 60 ms.
+Solvers change the trajectory through latent space, not the arithmetic per
+step, so any speed argument between them is really an argument about how few
+steps each needs to converge.
+
+On quality, 20 and 50 steps are effectively indistinguishable at a fixed seed:
+same composition, same anatomy, marginally cleaner background detail at 50 for
+2.4x the time. Even 10 steps produces a sharp, well-formed image. Note that
+composition shifts with step count because the trajectory differs, so this is
+not a strict quality ladder, but there is no degradation to point at.
+
+The practical conclusion: the shipped default of 20 is sound and the 50-step
+manifest ceiling exists for headroom rather than because anyone should use it.
+The roster benchmark ran ceilings deliberately, which is why `sdxl-base` shows
+37.34 s there against 15.76 s at its default.
+
+## Batching does not work on this card
+
+The obvious way to spend spare VRAM is to generate several images per denoise
+loop. Measured with `num_images_per_prompt`, per-image time and peak VRAM:
+
+| Model | batch 1 | batch 2 | batch 4 | batch 8 |
+| --- | ---: | ---: | ---: | ---: |
+| sdxl-fast | 3.69 s / 9.44 GB | 3.67 s / 14.22 GB | OOM | - |
+| ssd-1b-lightning | 2.55 s / 6.91 GB | 2.50 s / 9.38 GB | 3.15 s / 14.44 GB | OOM |
+| vega-rt | 1.87 s / 5.71 GB | 1.83 s / 8.18 GB | 1.82 s / 13.12 GB | OOM |
+| sdxl-base | 15.34 s / 9.07 GB | 15.12 s / 11.54 GB | OOM | - |
+
+Best case is a 3% improvement. `ssd-1b-lightning` at batch 4 is 19% **worse**
+than batch 1. Everything OOMs by batch 4 or 8, because VRAM grows steeply
+(9.44 to 14.22 GB going from one image to two on `sdxl-fast`).
+
+The reason is that 32 CUs against a 128x128 latent are already saturated at
+batch 1. Batching pays on large datacenter GPUs precisely because a single
+image **underutilises** them; a small consumer card has the opposite problem
+and there is no idle capacity for a second image to fill. This is worth
+knowing before anyone implements queued-job micro-batching for throughput:
+on hardware this size it would deliver nothing.
+
 ## What was tried, and what it bought
 
 **`group_offload` instead of `model_offload`.** Worth knowing about. The
@@ -167,6 +263,90 @@ compile. Drop T5 and you get 26.0 s but lose the reason the model was chosen.
 
 The shipped configuration takes the first branch deliberately. A working
 int8 T5 would break the deadlock and is the obvious next investigation.
+
+## Which limits are which
+
+Every slow thing measured above falls into one of three categories, and the
+category determines whether spending money, changing code, or neither will
+help.
+
+| Limit | Category | Escapable? |
+| --- | --- | --- |
+| CFG doubles per-step compute | Fundamental | No, not while you want CFG |
+| Steps multiply evaluations linearly | Fundamental | No |
+| Denoising cannot be parallelised across steps | Fundamental | No |
+| SD 3.5 cannot be fully resident | This GPU | Yes, a 24 GB card |
+| `torch.compile` unavailable for SD 3.5 | This GPU | Yes, follows from residency |
+| Batching gains nothing | This GPU | Yes, a larger GPU |
+| ~375 ms per SDXL UNet evaluation | This GPU | Yes, faster silicon |
+| No int8/fp8 quantisation path | This GPU + stack | Partly |
+| T5-XXL costs 9.12 GB | The model | No, inherent to SD 3.5 |
+| Distilled models refuse CFG | The model | No, by design |
+| 667 ms VAE decode per image | The model | **Yes, and it is the best target left** |
+| More steps stop helping around 20 | The model | No, that is convergence |
+
+### Fundamental: no hardware or software bypasses these
+
+**Diffusion is sequential.** Step N needs step N-1's latent. You cannot spend
+parallelism, VRAM or money to compute steps concurrently. This is the root
+reason the batching result came out flat and why latency has a hard floor
+independent of how large a GPU you buy.
+
+**Classifier-free guidance costs exactly 2x.** Any `guidance_scale > 1.0`
+evaluates the network twice per step. The only escape is not using CFG, which
+is what distillation does, and that is a different model rather than a faster
+one.
+
+**Steps are linear.** Measured across 10 to 50 steps with no sublinearity to
+exploit. Fewer steps is the only lever, which makes solver convergence and
+distillation the real levers.
+
+### This GPU: a bigger card fixes these
+
+**16 GB is the binding constraint, more than compute is.** SD 3.5 Medium needs
+15.15 GB of weights against ~14.3 GiB usable after the desktop. That single
+fact forces the offload rung, and the offload rung forfeits `torch.compile`,
+which measured 36%. A 24 GB card would give back both at once. The projection
+table below makes the same point: a V100 32 GB is expected to roughly double a
+V100 16 GB on identical compute, purely because the pipeline fits.
+
+**Batching is dead here specifically because the card is small.** 32 CUs are
+saturated by one 1024 px image. The same experiment on an A100 would very
+likely show real gains, because there a single image leaves the machine idle.
+Do not generalise the flat result above to other hardware.
+
+**Raw throughput is what it is.** ~375 ms per SDXL UNet evaluation at 1024 px
+on ~11.3 TFLOPS fp32 / ~22.6 TFLOPS fp16 shader throughput, with no
+datacenter-class tensor cores. Faster silicon is the only answer.
+
+**Quantisation is blocked by both hardware and stack.** `bitsandbytes`,
+`torchao` and `optimum.quanto` are all absent, and RDNA 3 has no native fp8
+matmul, so the upstream `t5xxl_fp8` file would be upcast on load and save
+nothing. On an NVIDIA card with the libraries installed, int8 T5 would fit SD
+3.5 fully resident and unlock compile. Here it needs both a dependency
+decision and hardware that can execute the format.
+
+### The model: inherent to the weights, except one
+
+**T5-XXL is 9.12 GB and that is the point of it.** It is what gives SD 3.5 a
+prompt window past CLIP's 77 tokens, which is the entire reason the model was
+chosen over SDXL. Removing it measured 26.0 s against 49.5 s, and would
+discard the feature.
+
+**Distilled models cannot take CFG.** Lightning, Hyper-SD, Turbo and LCM bake
+guidance into the weights. Their manifests cap guidance at 2 as a guard rail.
+This is not a limitation to fix; it is the trade that makes them 8-step models.
+
+**Convergence stops around 20 steps.** DPM++ has essentially converged by
+then, so the remaining 30 steps of the manifest ceiling buy nothing.
+
+**VAE decode is the exception, and it is the best remaining target.** 667 ms
+per image regardless of resolution-independent work, model, or step count. On
+a 50-step render it is 2% and invisible; on `vega-rt` at 1.87 s it is 36% of
+total runtime. `AutoencoderTiny` decodes in roughly 10 ms. Nothing about the
+hardware forces this cost, and the deferred realtime ladder already names the
+approach. Of everything measured in this document, this is the one large win
+that is neither blocked by VRAM nor by physics.
 
 ## Projecting to other hardware
 
