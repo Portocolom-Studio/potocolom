@@ -40,6 +40,46 @@ throughput, which is why it sits an order of magnitude below an A100's
 quoted tensor number and why those two numbers must never be compared
 directly.
 
+## The roster at its manifest ceiling
+
+Every text-to-image model at the highest steps and largest resolution its
+manifest allows, across the 60-prompt suite in
+`scripts/benchmark-prompts-60.json`. 600 images, 600 successes, no failures.
+Measured 2026-07-27 on the reference card through the API and worker, not
+through the engine directly, so these include the real dispatch path.
+
+| Model | Res | Steps | Median | Min | Max | Load |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sd-turbo | 512 | 4 | 0.43 s | 0.43 s | 0.64 s | 5.0 s |
+| sdxl-turbo | 512 | 4 | 0.64 s | 0.64 s | 0.85 s | 15.1 s |
+| vega-rt | 1024 | 8 | 1.96 s | 1.91 s | 2.37 s | 6.3 s |
+| ssd-1b-lightning | 1024 | 8 | 2.61 s | 2.58 s | 2.90 s | 8.3 s |
+| sdxl-hypersd | 1024 | 8 | 3.77 s | 3.73 s | 4.08 s | 11.1 s |
+| sdxl-fast | 1024 | 8 | 3.77 s | 3.74 s | 4.08 s | 10.4 s |
+| dreamshaper-lcm | 768 | 15 | 5.57 s | 5.56 s | 6.05 s | 4.6 s |
+| ssd-1b | 1024 | 40 | 18.55 s | 18.20 s | 18.61 s | 9.8 s |
+| sdxl-base | 1024 | 50 | 37.34 s | 37.23 s | 37.68 s | 15.1 s |
+| **sd35-medium** | 1024 | 50 | **110.94 s** | 110.52 s | 119.08 s | 2.2 s |
+
+This is a ceiling comparison, not a defaults comparison. Several of these
+models ship far lower defaults because their distillation does not benefit
+from more steps: `vega-rt` runs 2 steps at 512 in the studio, not 8 at 1024.
+For the numbers the studio picker actually shows, see
+`backend/app/model_timings.json`.
+
+Read across the table and the spread is 258x, from `sd-turbo` at 0.43 s to
+`sd35-medium` at 110.94 s. The distilled 8-step models cluster tightly around
+2 to 4 seconds and are the practical working tier. `sdxl-fast` and
+`sdxl-hypersd` are within 0.01 s of each other, which is worth remembering
+given `sdxl-hypersd` remains benchmark-only over its undeclared LoRA license:
+there is nothing to gain by promoting it.
+
+`sd35-medium` is 3x its own 20-step default for a quality difference that did
+not survive inspection at a fixed seed, which is why the manifest defaults to
+20. Its load time of 2.2 s looks anomalous next to `sdxl-base` at 15.1 s only
+because the offload rung leaves the weights on the host: it never pays a full
+transfer to VRAM at load, it pays it during every generation instead.
+
 ## Measured: where the time goes
 
 All figures at 1024x1024, 20 steps, fp16, warm (second run discarded the
