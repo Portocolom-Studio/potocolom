@@ -1,0 +1,193 @@
+{
+  "target_vram_gb": 16,
+  "images_per_prompt": 1,
+  "_purpose": "Each model at the settings this project now believes are correct, not at its manifest ceiling. sdxl-base and ssd-1b use the new 15-step default, sd35-medium uses 20. Distilled models keep their 8-step and 4-step design points, which are already their best. Compare against benchmark-matrix-best.json to see what the ceilings cost for nothing.",
+  "models": [
+    {
+      "id": "sdxl-base",
+      "license": "CreativeML Open RAIL++-M",
+      "commercial": "yes - no revenue cap; RAIL use restrictions",
+      "notes": "Manifest ceiling 50 steps at 1024, guidance 6.",
+      "variants": [
+        {
+          "label": "tuned-1024-15step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 15,
+            "guidance": 6,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "sdxl-fast",
+      "license": "CreativeML Open RAIL++-M (base) + ByteDance SDXL Lightning LoRA",
+      "commercial": "yes - no revenue cap; RAIL use restrictions on base weights",
+      "notes": "Lightning distillation tops out at 8 steps; guidance stays 0 by design.",
+      "variants": [
+        {
+          "label": "best-1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "ssd-1b",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted",
+      "notes": "Manifest ceiling 40 steps at 1024, guidance 7.",
+      "variants": [
+        {
+          "label": "tuned-1024-15step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 15,
+            "guidance": 7,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "ssd-1b-lightning",
+      "license": "Apache 2.0 base + CreativeML Open RAIL++-M LoRA",
+      "commercial": "yes - RAIL use policy applies to the LoRA",
+      "notes": "Lightning distillation tops out at 8 steps; guidance stays 0 by design.",
+      "variants": [
+        {
+          "label": "best-1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "vega-rt",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted",
+      "notes": "LCM adapter; 8 steps at 1024 is the manifest ceiling, well above its 2-step realtime setting.",
+      "variants": [
+        {
+          "label": "best-1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "dreamshaper-lcm",
+      "license": "CreativeML Open RAIL-M",
+      "commercial": "yes - no revenue cap; RAIL use restrictions",
+      "notes": "SD 1.5 LCM; ceiling 15 steps at 768, guidance 1.5.",
+      "variants": [
+        {
+          "label": "best-768-15step",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 15,
+            "guidance": 1.5,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "sdxl-hypersd",
+      "license": "Base Open RAIL++-M; Hyper-SD LoRA has NO declared license",
+      "commercial": "unclear - LoRA terms undeclared, benchmark reference only",
+      "notes": "8-step distillation ceiling at 1024, euler-trailing.",
+      "variants": [
+        {
+          "label": "best-1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    }
+  ],
+  "capped_commercial": [
+    {
+      "id": "sd35-medium",
+      "license": "Stability AI Community",
+      "commercial": "capped - <= $1M annual revenue; attribution required",
+      "notes": "MMDiT with T5-XXL. Ceiling 50 steps at 1024, guidance 4.5. Runs on the model-offload rung on a 16 GB card, so it is by far the slowest entry here.",
+      "variants": [
+        {
+          "label": "tuned-1024-20step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 4.5,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "sd-turbo",
+      "license": "Stability AI Community",
+      "commercial": "capped - <= $1M annual revenue; attribution required",
+      "notes": "512 only; 4 steps is the distillation ceiling.",
+      "variants": [
+        {
+          "label": "best-512-4step",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "sdxl-turbo",
+      "license": "Stability AI Community",
+      "commercial": "capped - <= $1M annual revenue; attribution required",
+      "notes": "512 only; 4 steps is the distillation ceiling.",
+      "variants": [
+        {
+          "label": "best-512-4step",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
+      ]
+    }
+  ],
+  "excluded": {
+    "realesrgan": "upscaler, not a text-to-image model",
+    "realesrgan-fast": "upscaler, not a text-to-image model"
+  }
+}
