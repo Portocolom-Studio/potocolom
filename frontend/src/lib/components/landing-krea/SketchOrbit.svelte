@@ -1,21 +1,28 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
-	import { collageImages, collageLandingSources, type CollageImage } from '$lib/collage-images';
+	import PromptMarquee from '$lib/components/PromptMarquee.svelte';
+	import { collageImages, collageLandingSources } from '$lib/collage-images';
 	import { customImages, customSources } from '$lib/custom-images';
 	import { favoriteImages, favoriteSources } from '$lib/favorite-images';
+	import { makingImages, makingSources } from '$lib/making-images';
 	import { promptMarqueePrompts } from '$lib/prompt-marquee-prompts';
 	import { t } from '$lib/i18n.svelte';
 	import { onMount } from 'svelte';
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import KreaWaitlist from './KreaWaitlist.svelte';
 	import ParticleField from './ParticleField.svelte';
-	import SalonGrid from './SalonGrid.svelte';
+	import SalonGrid, { type SalonTile } from './SalonGrid.svelte';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
-	const wall = collageImages.slice(0, 18);
+	const wall: SalonTile[] = makingImages.map((image) => ({
+		key: image.id,
+		alt: image.alt,
+		...makingSources(image)
+	}));
 	// Everything the studio has produced: the landing collage, the starred
 	// generations exported from the app, and the extra exports in data/custom.
 	const everything = [
@@ -36,40 +43,37 @@
 		}))
 	];
 
-	/* Three arrangements of the same four-layer orbit, chosen by the sketch.
+	/* Two arrangements of the same four-layer orbit, chosen by the sketch.
 	   Every length is rem and has to match the .arc rules below; the whole-circle
-	   shapes are additionally scaled by --orbit-scale so they fit narrow screens.
+	   shape is additionally scaled by --orbit-scale so it fits narrow screens.
 
 	     crown - the centre sits far below a clipped band, so only the crown of
 	             each circle shows and the arcs run off the sides of the frame
-	     rings - whole circles centred on the stage, with the copy inside them
-	     disc  - whole circles as a medallion of their own, under the copy */
-	type Shape = 'crown' | 'rings' | 'disc';
+	     rings - whole circles centred on the stage, with the copy inside them */
+	type Shape = 'crown' | 'rings';
 
 	let { shape = 'crown' }: { shape?: Shape } = $props();
 
 	const SWAY_DEG = 3;
 
 	// Constant arc length between neighbours, so every layer looks equally spaced.
-	const SPACING = { crown: 5.4, rings: 6.2, disc: 3 };
+	// Crown radial gaps must stay above CHIP_REM or the crest stacks overlap.
+	const SPACING = { crown: 4.9, rings: 6.2 };
 	const RADII = {
-		crown: [63, 59, 55.5, 52],
-		rings: [22, 28, 34, 40],
-		// Small enough that all four circles close inside one screen, under the
-		// copy, and spaced by more than a tile so the rings stay separate.
-		disc: [10, 7.3, 4.6, 1.9]
+		crown: [62, 57.1, 52.2, 47.3],
+		rings: [22, 28, 34, 40]
 	};
 	// Both are also in the .arc rules; the pair sets how far a tile pushes out.
-	const CHIP_REM = { crown: 4.2, rings: 4.2, disc: 2.6 };
-	const HOVER_REM = { crown: 8, rings: 8, disc: 5.5 };
+	const CHIP_REM = { crown: 4.2, rings: 4.2 };
+	const HOVER_REM = { crown: 8, rings: 8 };
 
 	/* Crown only. The band is a clamp, so coverage is planned against its tallest
 	   and the hover nudge against its shortest; both bounds live in the .arc rule.
 	   REACH is half the widest viewport the arcs run edge to edge on - past it
 	   they leave the frame, which reads better than an arc that visibly stops. */
-	const BAND_MAX_REM = 21;
-	const BAND_MIN_REM = 17;
-	const CENTRE_REM = 65.5;
+	const BAND_MAX_REM = 40;
+	const BAND_MIN_REM = 26;
+	const CENTRE_REM = 64;
 	const REACH_REM = 60;
 	const SLACK_REM = 3;
 
@@ -146,7 +150,7 @@
 	// The headline types real sample prompts, one character at a time.
 	let typed = $state('');
 	let promptIndex = $state(0);
-	let shownTile = $state<CollageImage | null>(null);
+	let shownTile = $state<SalonTile | null>(null);
 	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
 
@@ -253,18 +257,21 @@
 		</section>
 
 		<section id="work" class="work">
-			<div class="work-wall">
-				<SalonGrid tiles={wall} columns={6} rows="26svh" onactive={(next) => (shownTile = next)} />
+			<div class="work-stage">
+				<div class="work-wall">
+					<SalonGrid tiles={wall} onactive={(next) => (shownTile = next)} />
+				</div>
+				<div class="work-plate">
+					{#if shownTile}
+						<span class="piece">{shownTile.alt}</span>
+						<span class="meta">{t('gallery.kicker')}</span>
+					{:else}
+						<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
+						<p>{t('gallery.sub')}</p>
+					{/if}
+				</div>
 			</div>
-			<div class="work-plate">
-				{#if shownTile}
-					<span class="piece">{shownTile.alt}</span>
-					<span class="meta">{t('gallery.kicker')}</span>
-				{:else}
-					<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
-					<p>{t('gallery.sub')}</p>
-				{/if}
-			</div>
+			<PromptMarquee />
 		</section>
 
 		<section id="pricing" class="pricing">
@@ -333,7 +340,7 @@
 			</div>
 		</section>
 
-		<!-- The two-column close, with the pointer lighting the field behind it. -->
+		<!-- Self-host vs cloud close; pointer-lit particle field on each half. -->
 		<section class="split">
 			<div
 				class="split-half"
@@ -360,15 +367,17 @@
 				<div class="dots">
 					<ParticleField density={0.003} glyph={'{}'} active={hoveredHalf === 'cloud'} />
 				</div>
-				<span class="tag">{t('wl.kicker')}</span>
+				<span class="tag">{t('split.cloud_p1')}</span>
 				<h2>
 					<span class="quiet">{t('split.cloud_title')}</span>
 					{t('wl.title')}
 				</h2>
-				<a class="pill pill-accent" href={resolve('/app')}>{t('wl.cta')}</a>
+				<a class="pill pill-accent" href="#waitlist">{t('wl.cta')}</a>
 			</div>
 		</section>
 	</main>
+
+	<KreaWaitlist />
 
 	<footer>
 		<p>{t('footer.tagline')}</p>
@@ -437,6 +446,15 @@
 		text-align: center;
 	}
 
+	/* Crown: copy on top, then a tall clipped band that eats the leftover stage
+	   so chips fill the particle field instead of sitting in a short footer strip. */
+	.stage.crown {
+		align-content: start;
+		grid-template-rows: auto minmax(26rem, 1fr);
+		padding-block-end: 0;
+		gap: 1rem;
+	}
+
 	.dots {
 		position: absolute;
 		inset: 0;
@@ -462,13 +480,11 @@
 		max-width: calc(36rem * var(--orbit-scale, 1));
 	}
 
-	.stage.rings h1,
-	.stage.disc h1 {
+	.stage.rings h1 {
 		font-size: clamp(2rem, 4.4vw, 3.4rem);
 	}
 
-	.stage.rings .lede,
-	.stage.disc .lede {
+	.stage.rings .lede {
 		max-width: 34ch;
 		font-size: 0.95rem;
 	}
@@ -477,11 +493,6 @@
 	.stage.rings {
 		min-height: calc(100svh - 4rem);
 		padding-block: clamp(2rem, 6vh, 4rem);
-	}
-
-	/* Copy plus a whole medallion has to clear one screen between them. */
-	.stage.disc {
-		padding-block-start: clamp(1.5rem, 4vh, 3rem);
 	}
 
 	h1 {
@@ -539,24 +550,12 @@
 		width: 100%;
 	}
 
-	/* CHIP_REM and HOVER_REM in the script are these two, for the disc. */
-	.arc.disc {
-		--chip-rest: clamp(1.8rem, 3.2vw, 2.6rem);
-		--chip-hover: clamp(4rem, 7.5vw, 5.5rem);
-	}
-
 	/* Whole circles shrink by --orbit-scale, so the tiles have to shrink with
 	   them. Scaling only the radii packs full-size pictures into a smaller ring
 	   until they close over whatever the ring is meant to surround. */
-	.arc.rings,
-	.arc.disc {
+	.arc.rings {
 		--chip-rest: calc(clamp(2.9rem, 5.4vw, 4.2rem) * var(--orbit-scale));
 		--chip-hover: calc(clamp(6rem, 11vw, 8rem) * var(--orbit-scale));
-	}
-
-	.arc.disc {
-		--chip-rest: calc(clamp(1.8rem, 3.2vw, 2.6rem) * var(--orbit-scale));
-		--chip-hover: calc(clamp(4rem, 7.5vw, 5.5rem) * var(--orbit-scale));
 	}
 
 	/* Whole-circle shapes are laid out in rem, so they get scaled down rather
@@ -567,15 +566,10 @@
 	}
 
 	/* The rings barely shrink: their clear centre still has to cover a copy block
-	   that gets taller as it narrows, and a smaller ring closes over it. The disc
-	   shrinks harder because the whole medallion has to fit the screen. */
+	   that gets taller as it narrows, and a smaller ring closes over it. */
 	@media (max-width: 64rem) {
 		.stage.rings {
 			--orbit-scale: 0.86;
-		}
-
-		.stage.disc {
-			--orbit-scale: 0.9;
 		}
 	}
 
@@ -583,22 +577,21 @@
 		.stage.rings {
 			--orbit-scale: 0.74;
 		}
-
-		.stage.disc {
-			--orbit-scale: 0.76;
-		}
 	}
 
 	/* Crown: a clipped strip with the circle centre far below it, so only the
 	   crown of each arc shows. BAND_MIN_REM and BAND_MAX_REM are these bounds. */
 	.arc.crown {
-		height: clamp(17rem, 34vh, 21rem);
-		margin-block-start: auto;
+		width: 100%;
+		height: 100%;
+		min-height: clamp(26rem, calc(100svh - 20rem), 40rem);
+		margin-block-start: 0;
 		overflow: clip;
+		align-self: stretch;
 	}
 
 	.arc.crown .arc-spin {
-		inset-block-start: 65.5rem;
+		inset-block-start: 64rem;
 	}
 
 	/* Rings: whole circles centred on the stage with the copy inside them. Four
@@ -621,16 +614,6 @@
 		inset-block-start: 50%;
 	}
 
-	/* Disc: whole circles as a medallion of their own, under the copy. */
-	.arc.disc {
-		height: calc(2 * 11.3rem * var(--orbit-scale));
-		margin-block-start: auto;
-	}
-
-	.arc.disc .arc-spin {
-		inset-block-start: 50%;
-	}
-
 	.orbit-name {
 		min-height: 1.3rem;
 		color: var(--k-accent);
@@ -646,8 +629,7 @@
 	}
 
 	/* Whole circles turn rather than sway; a rocking ring reads as a mistake. */
-	.arc.rings .arc-spin,
-	.arc.disc .arc-spin {
+	.arc.rings .arc-spin {
 		animation: turn 150s linear infinite;
 	}
 
@@ -730,8 +712,7 @@
 	/* A turning ring would carry its pictures round with it. The counter-spin
 	   runs at the same rate; a square always covers its own inscribed circle,
 	   so the round mask stays filled at every angle. */
-	.arc.rings .chip img,
-	.arc.disc .chip img {
+	.arc.rings .chip img {
 		animation: unturn 150s linear infinite;
 	}
 
@@ -798,30 +779,49 @@
 	/* Work ------------------------------------------------------------------ */
 	.work {
 		position: relative;
-		display: grid;
-		align-content: end;
-		min-height: 78svh;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		height: auto;
+		overflow: visible;
+	}
+
+	.work-stage {
+		position: relative;
+		display: block;
+		width: 100%;
+		height: auto;
+		overflow: visible;
 	}
 
 	.work-wall {
-		position: absolute;
-		inset: 0;
+		position: relative;
+		z-index: 0;
+		width: 100%;
+		height: auto;
+		overflow: visible;
 		background: var(--k-paper);
 	}
 
 	.work-plate {
-		position: relative;
+		position: absolute;
 		z-index: 2;
+		inset-block-end: clamp(1rem, 3vw, 2.5rem);
+		inset-inline-start: clamp(1rem, 3vw, 2.5rem);
 		display: grid;
 		gap: 0.45rem;
-		justify-self: start;
 		width: min(38rem, calc(100% - 2rem));
-		margin: clamp(1rem, 3vw, 2.5rem);
 		padding: clamp(1.25rem, 3vw, 2rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
 		background: var(--k-panel);
 		backdrop-filter: blur(24px);
+		pointer-events: none;
+	}
+
+	.work-plate :global(a),
+	.work-plate :global(button) {
+		pointer-events: auto;
 	}
 
 	.piece {
@@ -1094,16 +1094,14 @@
 	}
 
 	@media (max-width: 48rem) {
-		.work {
+		.work-stage {
 			min-height: 0;
 		}
 
-		.work-wall {
-			position: static;
-		}
-
 		.work-plate {
-			margin-block-start: -2.5rem;
+			position: relative;
+			inset: auto;
+			margin: -2.5rem clamp(1rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2.5rem);
 		}
 	}
 

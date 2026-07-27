@@ -9,7 +9,7 @@
 	} from '$lib/components/landing-krea/SketchSwitcher.svelte';
 	import '../krea-tokens.css';
 
-	const ids = ['latent', 'crown', 'rings', 'disc'] as const;
+	const ids = ['latent', 'crown', 'rings'] as const;
 
 	function normalise(value: string | null): SketchId {
 		return (ids as readonly string[]).includes(value ?? '') ? (value as SketchId) : 'latent';
@@ -52,7 +52,7 @@
 	{structuredData}
 />
 
-<!-- The three orbits are one component; only the arc geometry differs. -->
+<!-- The two orbits are one component; only the arc geometry differs. -->
 {#if sketch === 'latent'}
 	<SketchLatent />
 {:else}

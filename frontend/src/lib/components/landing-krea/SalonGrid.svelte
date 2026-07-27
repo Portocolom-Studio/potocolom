@@ -1,18 +1,18 @@
 <script lang="ts">
-	import { collageLandingSources, type CollageImage } from '$lib/collage-images';
+	export type SalonTile = {
+		key: string;
+		alt: string;
+		src: string;
+		srcset: string;
+	};
 
 	let {
 		tiles,
-		columns = 6,
-		rows = '25svh',
 		onactive
 	}: {
-		tiles: CollageImage[];
-		/** Columns at the widest breakpoint; halved below 40rem. */
-		columns?: number;
-		rows?: string;
+		tiles: SalonTile[];
 		/** Fires with the tile under focus, or null when nothing is engaged. */
-		onactive?: (tile: CollageImage | null) => void;
+		onactive?: (tile: SalonTile | null) => void;
 	} = $props();
 
 	let hovered = $state<string | null>(null);
@@ -21,24 +21,31 @@
 	const shown = $derived(pinned ?? hovered);
 
 	$effect(() => {
-		onactive?.(tiles.find((tile) => tile.file === shown) ?? null);
+		onactive?.(tiles.find((tile) => tile.key === shown) ?? null);
 	});
 </script>
 
-<div class="salon-grid" class:focused={shown !== null} style="--cols: {columns}; --rows: {rows}">
-	{#each tiles as tile (tile.file)}
-		{@const sources = collageLandingSources(tile)}
+<!-- Column counts are literal in CSS on purpose: repeat(var(--n)) was resolving
+     to broken layouts (2 visible columns, clipped rows) in the built page. -->
+<div class="salon-grid" class:focused={shown !== null}>
+	{#each tiles as tile (tile.key)}
 		<button
 			type="button"
-			class:lit={shown === tile.file}
-			aria-pressed={pinned === tile.file}
-			onmouseenter={() => (hovered = tile.file)}
+			class:lit={shown === tile.key}
+			aria-pressed={pinned === tile.key}
+			onmouseenter={() => (hovered = tile.key)}
 			onmouseleave={() => (hovered = null)}
-			onfocus={() => (hovered = tile.file)}
+			onfocus={() => (hovered = tile.key)}
 			onblur={() => (hovered = null)}
-			onclick={() => (pinned = pinned === tile.file ? null : tile.file)}
+			onclick={() => (pinned = pinned === tile.key ? null : tile.key)}
 		>
-			<img src={sources.src} srcset={sources.srcset} alt={tile.alt} loading="lazy" />
+			<img
+				src={tile.src}
+				srcset={tile.srcset}
+				sizes="(max-width: 40rem) 33vw, 16vw"
+				alt={tile.alt}
+				loading="lazy"
+			/>
 		</button>
 	{/each}
 </div>
@@ -46,14 +53,18 @@
 <style>
 	.salon-grid {
 		display: grid;
-		grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
-		grid-auto-rows: var(--rows);
-		height: 100%;
+		grid-template-columns: repeat(6, minmax(0, 1fr));
+		grid-auto-rows: auto;
+		width: 100%;
+		height: auto;
+		overflow: visible;
 	}
 
 	button {
 		position: relative;
 		min-width: 0;
+		width: 100%;
+		aspect-ratio: 1 / 1;
 		padding: 0;
 		border: 0;
 		background: none;
@@ -85,7 +96,7 @@
 
 	@media (max-width: 40rem) {
 		.salon-grid {
-			grid-template-columns: repeat(calc(var(--cols) / 2), minmax(0, 1fr));
+			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
 	}
 

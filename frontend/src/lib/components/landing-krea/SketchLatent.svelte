@@ -2,8 +2,11 @@
 	import { resolve } from '$app/paths';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
-	import { collageImages, collageLandingSources, type CollageImage } from '$lib/collage-images';
-	import SalonGrid from './SalonGrid.svelte';
+	import PromptMarquee from '$lib/components/PromptMarquee.svelte';
+	import { collageImages, collageLandingSources } from '$lib/collage-images';
+	import { makingImages, makingSources } from '$lib/making-images';
+	import KreaWaitlist from './KreaWaitlist.svelte';
+	import SalonGrid, { type SalonTile } from './SalonGrid.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { onMount } from 'svelte';
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
@@ -13,7 +16,11 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
 	const resolving = collageImages.slice(0, 10);
-	const wall = collageImages.slice(0, 18);
+	const wall: SalonTile[] = makingImages.map((image) => ({
+		key: image.id,
+		alt: image.alt,
+		...makingSources(image)
+	}));
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
 	const tiers = [
@@ -28,7 +35,7 @@
 	const tile = $derived(resolving[index]);
 	const sources = $derived(collageLandingSources(tile));
 
-	let shownTile = $state<CollageImage | null>(null);
+	let shownTile = $state<SalonTile | null>(null);
 
 	function step(direction: 1 | -1) {
 		index = (index + direction + resolving.length) % resolving.length;
@@ -109,18 +116,21 @@
 		</section>
 
 		<section id="work" class="work">
-			<div class="work-wall">
-				<SalonGrid tiles={wall} columns={6} rows="26svh" onactive={(next) => (shownTile = next)} />
+			<div class="work-stage">
+				<div class="work-wall">
+					<SalonGrid tiles={wall} onactive={(next) => (shownTile = next)} />
+				</div>
+				<div class="work-plate">
+					{#if shownTile}
+						<span class="piece">{shownTile.alt}</span>
+						<span class="meta"><span>{t('gallery.kicker')}</span></span>
+					{:else}
+						<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
+						<p>{t('gallery.sub')}</p>
+					{/if}
+				</div>
 			</div>
-			<div class="work-plate">
-				{#if shownTile}
-					<span class="piece">{shownTile.alt}</span>
-					<span class="meta"><span>{t('gallery.kicker')}</span></span>
-				{:else}
-					<h2>{t('gallery.title_before')} {t('gallery.word_making')}</h2>
-					<p>{t('gallery.sub')}</p>
-				{/if}
-			</div>
+			<PromptMarquee />
 		</section>
 
 		<section class="panel studio">
@@ -198,16 +208,9 @@
 				<ForkTerminal class="latent-terminal" />
 			</div>
 		</section>
-
-		<section class="closing">
-			<h2>{t('wl.title')}</h2>
-			<p>{t('wl.sub')}</p>
-			<div class="actions">
-				<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
-				<a class="pill pill-ghost" href={repoUrl}>{t('fork.cta_fork')}</a>
-			</div>
-		</section>
 	</main>
+
+	<KreaWaitlist field={false} />
 
 	<footer>
 		<p>{t('footer.tagline')}</p>
@@ -380,8 +383,7 @@
 	}
 
 	/* Panels --------------------------------------------------------------- */
-	.panel,
-	.closing {
+	.panel {
 		display: grid;
 		gap: clamp(1.75rem, 4vw, 3rem);
 		padding: clamp(3rem, 8vw, 6rem) clamp(1rem, 4vw, 3rem);
@@ -422,7 +424,6 @@
 
 	.panel-head p,
 	.does-grid p,
-	.closing p,
 	.work-plate p {
 		color: var(--k-muted);
 	}
@@ -447,24 +448,39 @@
 	/* Work wall ------------------------------------------------------------ */
 	.work {
 		position: relative;
-		display: grid;
-		align-content: end;
-		min-height: 78svh;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		height: auto;
+		overflow: visible;
+	}
+
+	.work-stage {
+		position: relative;
+		display: block;
+		width: 100%;
+		height: auto;
+		overflow: visible;
 	}
 
 	.work-wall {
-		position: absolute;
-		inset: 0;
+		position: relative;
+		z-index: 0;
+		width: 100%;
+		height: auto;
+		overflow: visible;
 		/* Opaque: dimmed tiles must fade to paper, never onto the moving canvas. */
 		background: var(--k-paper);
 	}
 
 	.work-plate {
-		position: relative;
+		position: absolute;
 		z-index: 2;
-		justify-self: start;
+		inset-block-end: clamp(1rem, 3vw, 2.5rem);
+		inset-inline-start: clamp(1rem, 3vw, 2.5rem);
+		display: grid;
+		gap: 0.45rem;
 		width: min(38rem, calc(100% - 2rem));
-		margin: clamp(1rem, 3vw, 2.5rem);
 		padding: clamp(1.25rem, 3vw, 2rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
@@ -631,17 +647,6 @@
 		border-radius: 1rem;
 	}
 
-	/* Closing -------------------------------------------------------------- */
-	.closing {
-		justify-items: center;
-		gap: 1.1rem;
-		text-align: center;
-	}
-
-	.closing p {
-		max-width: 48ch;
-	}
-
 	footer {
 		display: flex;
 		flex-wrap: wrap;
@@ -703,16 +708,14 @@
 	}
 
 	@media (max-width: 48rem) {
-		.work {
+		.work-stage {
 			min-height: 0;
 		}
 
-		.work-wall {
-			position: static;
-		}
-
 		.work-plate {
-			margin-block-start: -2.5rem;
+			position: relative;
+			inset: auto;
+			margin: -2.5rem clamp(1rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2.5rem);
 		}
 	}
 
