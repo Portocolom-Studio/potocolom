@@ -196,12 +196,59 @@ Best case is a 3% improvement. `ssd-1b-lightning` at batch 4 is 19% **worse**
 than batch 1. Everything OOMs by batch 4 or 8, because VRAM grows steeply
 (9.44 to 14.22 GB going from one image to two on `sdxl-fast`).
 
-The reason is that 32 CUs against a 128x128 latent are already saturated at
-batch 1. Batching pays on large datacenter GPUs precisely because a single
-image **underutilises** them; a small consumer card has the opposite problem
-and there is no idle capacity for a second image to fill. This is worth
-knowing before anyone implements queued-job micro-batching for throughput:
-on hardware this size it would deliver nothing.
+### Why batching works everywhere else but not here
+
+The flat result above is easy to misread as "GPUs cannot process images
+concurrently". They can, it is how every inference provider operates, and the
+result here is a property of *this* card rather than of GPUs.
+
+A GPU runs one kernel across thousands of threads grouped into workgroups,
+scheduled onto compute units. Throughput depends on **occupancy**: whether
+there is enough independent work in flight to keep every CU busy and to hide
+memory latency behind arithmetic. Batching adds independent work along the
+batch dimension, so it raises occupancy whenever occupancy is the thing you
+are short of.
+
+That is the whole story. Batching helps exactly when the GPU is starved, and
+this card is not starved:
+
+- A 1024 px SDXL latent is 128x128. Every convolution in the UNet already
+  unfolds into millions of independent output elements, which is far more
+  parallel work than 32 CUs can consume at once. The machine is saturated by
+  one image, so a second image simply queues behind the first. Time doubles,
+  per-image time does not improve, and that is precisely what the table shows.
+- An A100 has 108 SMs and roughly 14x the FP16 throughput. There, one 1024 px
+  image genuinely leaves the machine partly idle, and batch 4 or 8 costs far
+  less than 4x or 8x the time of batch 1. This is why datacenter inference is
+  quoted in images per second per GPU rather than seconds per image.
+
+Two further mechanisms matter at enterprise scale and neither applies to a
+single consumer card:
+
+**Continuous batching across requests.** Providers do not batch one user's
+four images; they batch four different users' requests into one denoise loop,
+refilling slots as requests complete. That converts idle occupancy into
+throughput at high request volume. It needs many concurrent requests to be
+worth it, which a self-hosted install does not have.
+
+**Multi-GPU and partitioning.** Large deployments run many GPUs, and a single
+A100 or H100 can be partitioned (MIG) into instances serving separate streams.
+Concurrency there comes from having more silicon, not from making one image
+faster.
+
+So the honest statement is not "batching does not work" but **"batching
+converts spare occupancy into throughput, and this card has no spare
+occupancy"**. The same experiment on a rented A100 would very likely show
+large gains, and the cloud fleet should measure it rather than inherit this
+conclusion. What it does mean concretely: implementing queued-job
+micro-batching for a 16 GB self-hosted box would deliver nothing, which is
+consistent with that work already being deferred in
+[decisions.md](decisions.md).
+
+One caveat on the numbers above: batching also does not help **latency** even
+on a large GPU. Every image in a batch finishes when the slowest does, so
+per-image latency never improves; only images-per-second does. For an
+interactive studio, latency is what a user feels.
 
 ## What was tried, and what it bought
 
@@ -247,22 +294,64 @@ and is the one plausible candidate, but it is not installed, as are
 `flash_attn`, `xformers` and `sageattention`. Adding attention backends to
 this card is a dependency decision with no demonstrated headroom behind it.
 
-**Quantizing T5.** Not attempted, because it cannot be attempted here.
-`bitsandbytes`, `torchao` and `optimum.quanto` are all absent from the worker
-environment. The upstream repository does ship `t5xxl_fp8_e4m3fn.safetensors`
-at 4.56 GB against 9.12 GB for fp16, but RDNA 3 has no native fp8 matmul, so
-torch would upcast on load and the saving would evaporate. This is the single
-most promising unexplored avenue and it needs a dependency decision first.
+**Quantizing T5.** The one that paid off, covered in full above. Two
+practical notes for anyone repeating it.
 
-## The headline conclusion
+`bitsandbytes` does not work on this card. It installs, warns that it is
+substituting a ROCm 6.4 binary for ROCm 6.3, and then fails on the GPU with
+`Error invalid device function at line 432 in file /src/csrc/ops.cu`. Its
+int8 kernels are not built for gfx1102. Do not spend time on it.
 
-On a 16 GB card, SD 3.5 Medium cannot have all three of T5-XXL, full
-residency, and `torch.compile`. The weights alone are 15.15 GB against 14.3
-GiB of usable VRAM. Ship T5 and you take the offload rung, which forfeits
-compile. Drop T5 and you get 26.0 s but lose the reason the model was chosen.
+`torchao` does work, with `Int8WeightOnlyConfig`, despite warning at import
+that its C++ extensions want torch >= 2.11 (this environment has 2.9.1). A
+quantised linear layer matches its fp16 counterpart to five decimal places.
 
-The shipped configuration takes the first branch deliberately. A working
-int8 T5 would break the deadlock and is the obvious next investigation.
+The upstream `t5xxl_fp8_e4m3fn.safetensors` at 4.56 GB is a red herring:
+RDNA 3 has no native fp8 matmul, so torch upcasts it on load and the saving
+evaporates. int8 weight-only is the format that works here.
+
+## The headline conclusion: int8 T5 breaks the deadlock
+
+An earlier revision of this document concluded that a 16 GB card cannot have
+all three of T5-XXL, full residency and `torch.compile`, because 15.15 GB of
+fp16 weights do not fit in ~14.3 GiB. That conclusion was correct about fp16
+and wrong as a general statement. Quantising T5 to int8 with `torchao` fits
+everything, and the payoff is large:
+
+| Configuration | Time | Peak VRAM | T5? |
+| --- | ---: | ---: | --- |
+| fp16 T5, `model_offload` (shipped today) | 49.5 s | 12.09 GB | Yes |
+| int8 T5, full residency, eager | 43.1 s | 13.44 GB | Yes |
+| **int8 T5, full residency, `torch.compile`** | **28.0 s** | 13.44 GB | **Yes** |
+| fp16, no T5, full residency + compile | 26.0 s | 8.84 GB | No |
+
+**1.77x faster than the shipped configuration, with the long-prompt window
+intact.** int8 brings T5 from 9.12 GB to 4.57 GB, which puts the whole
+pipeline at 10.93 GB resident against 15.15 GB before. Full residency then
+makes `torch.compile` available, and compile is worth 35% here (43.1 s to
+28.0 s), consistent with the 36% measured on the no-T5 pipeline.
+
+It lands within 2 s of the no-T5 configuration while keeping the feature that
+no-T5 throws away.
+
+Quality survives. On a 90-word prompt the int8 pipeline still renders detail
+from past CLIP's 77-token cutoff, including a cat and a lamp named only in the
+tail. Weight-only int8 perturbs the text encoder slightly; it did not cost
+prompt comprehension, which is the property that matters for choosing SD 3.5
+over SDXL in the first place.
+
+Two caveats before this ships:
+
+- 13.44 GB peak against ~14.3 GiB usable is **tight**. A desktop session
+  holding more VRAM than usual would push it back to OOM, and unlike the
+  offload rung there is no graceful degradation: `_pick_rung` pins a rung and
+  retries the same one after an OOM.
+- It adds a `torchao` dependency to the worker and makes `torch.compile`
+  load-bearing rather than opt-in, which is a change to the engine's failure
+  surface, not just its speed.
+
+This is measured, not shipped. Adopting it is a separate decision from
+issue #151.
 
 ## Which limits are which
 
@@ -275,11 +364,12 @@ help.
 | CFG doubles per-step compute | Fundamental | No, not while you want CFG |
 | Steps multiply evaluations linearly | Fundamental | No |
 | Denoising cannot be parallelised across steps | Fundamental | No |
-| SD 3.5 cannot be fully resident | This GPU | Yes, a 24 GB card |
-| `torch.compile` unavailable for SD 3.5 | This GPU | Yes, follows from residency |
+| SD 3.5 cannot be fully resident **in fp16** | This GPU | **Yes, int8 T5 fixes it today** |
+| `torch.compile` unavailable for SD 3.5 | This GPU | **Yes, follows from int8 residency** |
 | Batching gains nothing | This GPU | Yes, a larger GPU |
 | ~375 ms per SDXL UNet evaluation | This GPU | Yes, faster silicon |
-| No int8/fp8 quantisation path | This GPU + stack | Partly |
+| No fp8 quantisation path | This GPU | No, RDNA 3 lacks fp8 matmul |
+| int8 quantisation | Stack only | **Solved, torchao works** |
 | T5-XXL costs 9.12 GB | The model | No, inherent to SD 3.5 |
 | Distilled models refuse CFG | The model | No, by design |
 | 667 ms VAE decode per image | The model | **Yes, and it is the best target left** |
@@ -304,11 +394,15 @@ distillation the real levers.
 ### This GPU: a bigger card fixes these
 
 **16 GB is the binding constraint, more than compute is.** SD 3.5 Medium needs
-15.15 GB of weights against ~14.3 GiB usable after the desktop. That single
-fact forces the offload rung, and the offload rung forfeits `torch.compile`,
-which measured 36%. A 24 GB card would give back both at once. The projection
-table below makes the same point: a V100 32 GB is expected to roughly double a
-V100 16 GB on identical compute, purely because the pipeline fits.
+15.15 GB of fp16 weights against ~14.3 GiB usable after the desktop. That
+single fact forces the offload rung, and the offload rung forfeits
+`torch.compile`. A 24 GB card would give back both at once, and so, as it
+turns out, does int8 quantisation on this card: 10.93 GB resident, 28.0 s
+against 49.5 s. The constraint is real but it is a memory constraint, which
+means it has software answers as well as hardware ones. The projection table
+below makes the same point from the other side: a V100 32 GB is expected to
+roughly double a V100 16 GB on identical compute, purely because the pipeline
+fits.
 
 **Batching is dead here specifically because the card is small.** 32 CUs are
 saturated by one 1024 px image. The same experiment on an A100 would very
