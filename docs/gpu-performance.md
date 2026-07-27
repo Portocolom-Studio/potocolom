@@ -549,3 +549,18 @@ backend/.venv/bin/python scripts/benchmark.py \
 Stop competing GPU workloads first. An earlier issue #75 run was invalidated
 by an unrelated process holding ~14 GB, and on a card this size anything
 resident changes which rung the ladder picks.
+
+## Adopting the int8 path
+
+The int8 configuration is measured, not shipped. Issue #155 covers the work to
+adopt it. That issue exists because three engine changes come first.
+
+1. A manifest needs a way to ask for a quantized component.
+2. `_from_pretrained` needs to quantize that component before the device move.
+3. `_load_model` needs to fall back to `model_offload` when full residency
+   runs out of memory.
+
+The third item is the important one. Peak VRAM is 13.44 GB against about
+14.3 GiB of usable memory. `_pick_rung` pins a rung and retries the same rung
+after a failure, so a heavier desktop session turns a slow path into a failed
+job. The fallback is a requirement, not a refinement.
