@@ -2,7 +2,7 @@
 /**
  * Build WebP orbit variants for the extra studio exports.
  * Sources: data/custom/*.webp (repo root, not shipped)
- * Output:  frontend/static/images/custom/<id>-{320,480}.webp
+ * Output:  frontend/static/images/custom/<id>-480.webp
  *          frontend/src/lib/custom-images.ts
  *
  * Identical bytes are dropped, so re-exporting the same generation twice does
@@ -19,7 +19,7 @@ const sourceDir = join(__dirname, '..', '..', 'data', 'custom');
 const outDir = join(__dirname, '..', 'static', 'images', 'custom');
 const catalogPath = join(__dirname, '..', 'src', 'lib', 'custom-images.ts');
 
-const widths = [320, 480];
+const widths = [480];
 const quality = 82;
 
 const KNOWN_MODELS = [
@@ -109,7 +109,7 @@ ${entries}
 export function customSources(image: CustomImage) {
 	return {
 		src: \`/images/custom/\${image.id}-480.webp\`,
-		srcset: \`/images/custom/\${image.id}-320.webp 320w, /images/custom/\${image.id}-480.webp 480w\`
+		srcset: \`/images/custom/\${image.id}-480.webp 480w\`
 	};
 }
 `,

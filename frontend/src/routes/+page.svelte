@@ -35,6 +35,6 @@
 	{structuredData}
 />
 
-<SketchOrbit shape="rings" />
+<SketchOrbit />
 
 <SketchSwitcher />

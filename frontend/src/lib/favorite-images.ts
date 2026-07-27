@@ -1,6 +1,6 @@
 // Starred generations exported from the studio (data/favorites). The caption is
 // the opening of each image's own prompt, taken from its filename, and the model
-// is the one that produced it. Variants are generated at 320 and 480.
+// is the one that produced it. Orbit chips ship a single 480 variant.
 export type FavoriteImage = {
 	id: string;
 	alt: string;
@@ -281,6 +281,6 @@ export const favoriteImages: FavoriteImage[] = [
 export function favoriteSources(image: FavoriteImage) {
 	return {
 		src: `/images/favorites/${image.id}-480.webp`,
-		srcset: `/images/favorites/${image.id}-320.webp 320w, /images/favorites/${image.id}-480.webp 480w`
+		srcset: `/images/favorites/${image.id}-480.webp 480w`
 	};
 }

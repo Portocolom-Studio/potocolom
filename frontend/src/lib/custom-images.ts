@@ -449,6 +449,6 @@ export const customImages: CustomImage[] = [
 export function customSources(image: CustomImage) {
 	return {
 		src: `/images/custom/${image.id}-480.webp`,
-		srcset: `/images/custom/${image.id}-320.webp 320w, /images/custom/${image.id}-480.webp 480w`
+		srcset: `/images/custom/${image.id}-480.webp 480w`
 	};
 }
