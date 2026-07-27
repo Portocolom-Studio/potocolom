@@ -353,6 +353,41 @@ Two caveats before this ships:
 This is measured, not shipped. Adopting it is a separate decision from
 issue #151.
 
+## int8 does not generalize to the other models
+
+int8 helps `sd35-medium` because that model does not fit. The other models
+already fit. This section records what int8 does to them, so nobody repeats
+the test.
+
+Measured at 1024 px, `sdxl-base` at 20 steps and guidance 6, `sdxl-fast` at
+8 steps and guidance 0. Times are per image.
+
+| Model | Weights | batch 1 | batch 2 | batch 4 |
+| --- | --- | ---: | ---: | ---: |
+| sdxl-base | fp16 | 15.66 s / 9.07 GB | 15.23 s / 11.54 GB | OOM |
+| sdxl-base | int8 | 15.84 s / 6.98 GB | 15.10 s / 9.45 GB | OOM |
+| sdxl-fast | fp16 | 3.87 s / 11.62 GB | OOM | OOM |
+| sdxl-fast | int8 | 4.01 s / 7.22 GB | 3.77 s / 9.69 GB | OOM |
+
+Three results follow from the table.
+
+int8 costs a small amount of speed at batch 1. `sdxl-base` slows by 1.1 percent
+and `sdxl-fast` by 3.6 percent. `Int8WeightOnlyConfig` stores the weights as
+int8 and converts them back to fp16 for each matrix multiply. RDNA 3 has no
+fast int8 matmul, so the conversion adds work and returns nothing.
+
+int8 frees real memory. `sdxl-base` drops 2.09 GB and `sdxl-fast` drops
+4.40 GB. This is the same mechanism that rescues `sd35-medium`.
+
+The freed memory buys almost no speed. `sdxl-fast` at batch 2 becomes possible
+under int8, where fp16 runs out of memory. It then delivers 3.77 s per image
+against 3.87 s for fp16 at batch 1, which is 2.6 percent. The card stays
+compute-bound, so a larger batch still finds no idle capacity to use.
+
+The conclusion is narrow and worth stating plainly. int8 solves a memory
+problem. Only `sd35-medium` has a memory problem. For every other model in the
+roster, int8 trades a little speed for memory that the model does not need.
+
 ## Which limits are which
 
 Every slow thing measured above falls into one of three categories, and the
