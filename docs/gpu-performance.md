@@ -564,3 +564,27 @@ The third item is the important one. Peak VRAM is 13.44 GB against about
 14.3 GiB of usable memory. `_pick_rung` pins a rung and retries the same rung
 after a failure, so a heavier desktop session turns a slow path into a failed
 job. The fallback is a requirement, not a refinement.
+
+## The 15-step default
+
+The 50-step ceiling buys nothing over 20. A wider sweep shows that 20 also
+buys little over 15. Six prompts, four step counts, two models, seed 100,
+1024 px, dpmsolver.
+
+| Model | 12 steps | 15 steps | 20 steps | 30 steps |
+| --- | ---: | ---: | ---: | ---: |
+| sdxl-base | 9.73 s | 11.96 s | 15.69 s | 23.09 s |
+| ssd-1b | 6.21 s | 7.58 s | 9.81 s | 14.27 s |
+
+Both models moved from a 20-step default to 15. That returns 24 percent of the
+time on every image the studio makes with them.
+
+The visual check covered a portrait with hands and a face, a botanical
+illustration with fine linework, and a forge scene with sparks. Faces, hands
+and crosshatching stay clean at 15 steps. They also stay clean at 12, which
+suggests more headroom, but the sample does not support a further cut yet.
+
+Read this as a sample, not a proof. The sweep produced 48 images and a person
+looked at four of them. Step count changes the path through latent space, so
+two step counts give different compositions rather than the same image at two
+levels of polish. That rules out a pixel metric and leaves human judgment.
