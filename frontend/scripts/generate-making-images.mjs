@@ -2,13 +2,13 @@
 /**
  * Build WebP variants for the "what people are making" wall.
  * Sources: data/making/*.webp (repo root, not shipped)
- * Output:  frontend/static/images/making/<id>-{320,480}.webp
+ * Output:  frontend/static/images/making/<id>-{480,768,1024}.webp
  *          frontend/src/lib/making-images.ts
  *
  * Identical bytes are dropped. Re-run when data/making changes.
  */
 import { createHash } from 'node:crypto';
-import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readdir, readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -18,8 +18,10 @@ const sourceDir = join(__dirname, '..', '..', 'data', 'making');
 const outDir = join(__dirname, '..', 'static', 'images', 'making');
 const catalogPath = join(__dirname, '..', 'src', 'lib', 'making-images.ts');
 
-const widths = [320, 480];
-const quality = 82;
+/* Wall cells are ~16vw (6-col) / ~33vw (3-col). Retina needs ~2x that, so ship
+   up to the 1024 source rather than the old 320/480 pair that looked soft. */
+const widths = [480, 768, 1024];
+const quality = 88;
 
 const KNOWN_MODELS = [
 	'sdxl-base',
@@ -33,6 +35,30 @@ const KNOWN_MODELS = [
 	'vega-rt',
 	'sd35-medium'
 ];
+
+/** Human captions for the wall plate. Keyed by content-hash id so regenerating
+ *  the catalog keeps the copy even when the source filename is a bare UUID or
+ *  a truncated run slug. */
+const ALT_BY_ID = {
+	'4051b8cd': 'Slot canyon sandstone looking up to a blue sky slit',
+	c4011165: 'Symmetrical neon green and orange filament field',
+	'40eb17e1': 'Close-up red squirrel portrait',
+	e2254b6c: 'Watercolor red fox in autumn leaves',
+	'46c51269': 'Classical oil portrait of a white-bearded sage',
+	'0fe51cef': 'Tide pool macro with pink anemones',
+	'9630a3f6': 'Abandoned stone observatory under the Milky Way',
+	74834694: 'Twin golden hourglasses on a starlit shore',
+	dbabe82b: 'Open door standing alone in a wheat field by the sea',
+	dfbc1ddc: 'Autumn dragon perched above a mountain lake',
+	f4c54d4a: 'Geometric gold phoenix rising from red flame',
+	'9ed37faf': 'Harpist with a glowing harp in a blue canyon',
+	'52dcdb6f': 'Astronaut beside a golden solar sail over Earth',
+	'372573a5': 'Ink-wash pine and misty mountain peaks',
+	db8c2afa: 'Snowy owl on a snow-dusted branch',
+	'3f10ffd0': 'White ceramic dragon head, low-angle snarl',
+	a0fd46ac: 'Floating ribbons of magenta, cyan, and gold smoke',
+	a1bf8914: 'Anime sky-pirate airship through cotton-candy clouds'
+};
 
 /**
  * Filenames carry the prompt and sometimes the model, in a few shapes:
@@ -59,6 +85,7 @@ function describe(file) {
 }
 
 const files = (await readdir(sourceDir)).filter((file) => /\.webp$/i.test(file)).sort();
+await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 
 const seen = new Map();
@@ -75,12 +102,14 @@ for (const file of files) {
 	seen.set(digest, file);
 
 	const id = digest.slice(0, 8);
-	const { alt, model, slug } = describe(file);
+	const described = describe(file);
+	const alt = ALT_BY_ID[id] ?? described.alt;
+	const { model, slug } = described;
 	const meta = await sharp(bytes).metadata();
 	for (const width of widths) {
 		await sharp(bytes)
-			.resize({ width })
-			.webp({ quality })
+			.resize({ width, withoutEnlargement: true })
+			.webp({ quality, effort: 5 })
 			.toFile(join(outDir, `${id}-${width}.webp`));
 	}
 	catalog.push({ id, alt, model, slug, width: meta.width, height: meta.height });
@@ -116,8 +145,8 @@ ${entries}
 
 export function makingSources(image: MakingImage) {
 	return {
-		src: \`/images/making/\${image.id}-480.webp\`,
-		srcset: \`/images/making/\${image.id}-320.webp 320w, /images/making/\${image.id}-480.webp 480w\`
+		src: \`/images/making/\${image.id}-768.webp\`,
+		srcset: \`/images/making/\${image.id}-480.webp 480w, /images/making/\${image.id}-768.webp 768w, /images/making/\${image.id}-1024.webp 1024w\`
 	};
 }
 `,

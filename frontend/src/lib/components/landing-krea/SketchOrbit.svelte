@@ -58,14 +58,16 @@
 
 	// Constant arc length between neighbours, so every layer looks equally spaced.
 	// Crown radial gaps must stay above CHIP_REM or the crest stacks overlap.
-	const SPACING = { crown: 4.9, rings: 6.2 };
+	const SPACING = { crown: 4.9, rings: 5.5 };
 	const RADII = {
 		crown: [62, 57.1, 52.2, 47.3],
-		rings: [22, 28, 34, 40]
+		// Slightly tighter radial gaps and a smaller outer ring so the
+		// medallion sits more compact and leaves room for the wall below.
+		rings: [20, 25.4, 30.8, 36.2]
 	};
 	// Both are also in the .arc rules; the pair sets how far a tile pushes out.
-	const CHIP_REM = { crown: 4.2, rings: 4.2 };
-	const HOVER_REM = { crown: 8, rings: 8 };
+	const CHIP_REM = { crown: 4.2, rings: 3.9 };
+	const HOVER_REM = { crown: 8, rings: 7.4 };
 
 	/* Crown only. The band is a clamp, so coverage is planned against its tallest
 	   and the hover nudge against its shortest; both bounds live in the .arc rule.
@@ -151,8 +153,33 @@
 	let typed = $state('');
 	let promptIndex = $state(0);
 	let shownTile = $state<SalonTile | null>(null);
+	let plateSide = $state<'start' | 'end'>('start');
+	let workStage: HTMLElement | undefined = $state();
 	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
+
+	function onWallActive(next: SalonTile | null) {
+		shownTile = next;
+		if (!next) {
+			plateSide = 'start';
+			return;
+		}
+		// After the lit class lands, park the plate on the opposite half so it
+		// does not sit on the image under the cursor.
+		requestAnimationFrame(() => {
+			const stage = workStage;
+			const lit = stage?.querySelector('.salon-grid button.lit');
+			if (!(lit instanceof HTMLElement) || !stage) {
+				plateSide = 'start';
+				return;
+			}
+			const tileBox = lit.getBoundingClientRect();
+			const stageBox = stage.getBoundingClientRect();
+			const tileMid = (tileBox.left + tileBox.right) / 2;
+			const stageMid = (stageBox.left + stageBox.right) / 2;
+			plateSide = tileMid < stageMid ? 'end' : 'start';
+		});
+	}
 
 	onMount(() => {
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -257,11 +284,11 @@
 		</section>
 
 		<section id="work" class="work">
-			<div class="work-stage">
+			<div class="work-stage" bind:this={workStage}>
 				<div class="work-wall">
-					<SalonGrid tiles={wall} onactive={(next) => (shownTile = next)} />
+					<SalonGrid tiles={wall} onactive={onWallActive} />
 				</div>
-				<div class="work-plate">
+				<div class="work-plate" class:side-end={plateSide === 'end'}>
 					{#if shownTile}
 						<span class="piece">{shownTile.alt}</span>
 						<span class="meta">{t('gallery.kicker')}</span>
@@ -340,44 +367,50 @@
 			</div>
 		</section>
 
-		<!-- Self-host vs cloud close; pointer-lit particle field on each half. -->
-		<section class="split">
-			<div
-				class="split-half"
-				onmouseenter={() => (hoveredHalf = 'oss')}
-				onmouseleave={() => (hoveredHalf = null)}
-				role="presentation"
-			>
-				<div class="dots">
-					<ParticleField density={0.003} glyph={'()'} active={hoveredHalf === 'oss'} />
+		<!-- Particles under the split; waitlist keeps its LatentCanvas field. -->
+		<section class="close">
+			<div class="split">
+				<div class="close-field" aria-hidden="true">
+					<ParticleField density={0.0024} />
 				</div>
-				<span class="tag">{t('split.oss_p1')}</span>
-				<h2>
-					<span class="quiet">{t('split.oss_title')}</span>
-					{t('fork.title')}
-				</h2>
-				<a class="pill pill-solid" href={repoUrl}>{t('fork.cta_source')}</a>
-			</div>
-			<div
-				class="split-half"
-				onmouseenter={() => (hoveredHalf = 'cloud')}
-				onmouseleave={() => (hoveredHalf = null)}
-				role="presentation"
-			>
-				<div class="dots">
-					<ParticleField density={0.003} glyph={'{}'} active={hoveredHalf === 'cloud'} />
+				<div class="split-veil" aria-hidden="true"></div>
+				<div
+					class="split-half"
+					onmouseenter={() => (hoveredHalf = 'oss')}
+					onmouseleave={() => (hoveredHalf = null)}
+					role="presentation"
+				>
+					<div class="dots">
+						<ParticleField density={0.003} glyph={'()'} active={hoveredHalf === 'oss'} />
+					</div>
+					<span class="tag">{t('split.oss_p1')}</span>
+					<h2>
+						<span class="quiet">{t('split.oss_title')}</span>
+						{t('fork.title')}
+					</h2>
+					<a class="pill pill-solid" href={repoUrl}>{t('fork.cta_source')}</a>
 				</div>
-				<span class="tag">{t('split.cloud_p1')}</span>
-				<h2>
-					<span class="quiet">{t('split.cloud_title')}</span>
-					{t('wl.title')}
-				</h2>
-				<a class="pill pill-accent" href="#waitlist">{t('wl.cta')}</a>
+				<div
+					class="split-half"
+					onmouseenter={() => (hoveredHalf = 'cloud')}
+					onmouseleave={() => (hoveredHalf = null)}
+					role="presentation"
+				>
+					<div class="dots">
+						<ParticleField density={0.003} glyph={'{}'} active={hoveredHalf === 'cloud'} />
+					</div>
+					<span class="tag">{t('split.cloud_p1')}</span>
+					<h2>
+						<span class="quiet">{t('split.cloud_title')}</span>
+						{t('wl.title')}
+					</h2>
+					<a class="pill pill-accent" href="#waitlist">{t('wl.cta')}</a>
+				</div>
 			</div>
+
+			<KreaWaitlist />
 		</section>
 	</main>
-
-	<KreaWaitlist />
 
 	<footer>
 		<p>{t('footer.tagline')}</p>
@@ -477,7 +510,7 @@
 	/* The copy sits inside the innermost ring, so it has to clear its diameter
 	   rather than the viewport. */
 	.stage.rings .stage-copy {
-		max-width: calc(36rem * var(--orbit-scale, 1));
+		max-width: calc(32rem * var(--orbit-scale, 1));
 	}
 
 	.stage.rings h1 {
@@ -489,10 +522,12 @@
 		font-size: 0.95rem;
 	}
 
-	/* Room above and below for the rings to close without meeting the header. */
+	/* Room above and below so the rings can close without meeting the header
+	   or sitting hard on the making section. Absolute arc fills this box. */
 	.stage.rings {
-		min-height: calc(100svh - 4rem);
-		padding-block: clamp(2rem, 6vh, 4rem);
+		min-height: calc(92svh - 4rem);
+		padding-block-start: clamp(1.5rem, 4.5vh, 3rem);
+		padding-block-end: clamp(3rem, 8vh, 5.5rem);
 	}
 
 	h1 {
@@ -554,8 +589,8 @@
 	   them. Scaling only the radii packs full-size pictures into a smaller ring
 	   until they close over whatever the ring is meant to surround. */
 	.arc.rings {
-		--chip-rest: calc(clamp(2.9rem, 5.4vw, 4.2rem) * var(--orbit-scale));
-		--chip-hover: calc(clamp(6rem, 11vw, 8rem) * var(--orbit-scale));
+		--chip-rest: calc(clamp(2.7rem, 5vw, 3.9rem) * var(--orbit-scale));
+		--chip-hover: calc(clamp(5.5rem, 10vw, 7.4rem) * var(--orbit-scale));
 	}
 
 	/* Whole-circle shapes are laid out in rem, so they get scaled down rather
@@ -565,17 +600,21 @@
 		--orbit-scale: 1;
 	}
 
+	.stage.rings {
+		--orbit-scale: 0.94;
+	}
+
 	/* The rings barely shrink: their clear centre still has to cover a copy block
 	   that gets taller as it narrows, and a smaller ring closes over it. */
 	@media (max-width: 64rem) {
 		.stage.rings {
-			--orbit-scale: 0.86;
+			--orbit-scale: 0.82;
 		}
 	}
 
 	@media (max-width: 40rem) {
 		.stage.rings {
-			--orbit-scale: 0.74;
+			--orbit-scale: 0.7;
 		}
 	}
 
@@ -792,6 +831,7 @@
 		width: 100%;
 		height: auto;
 		overflow: visible;
+		container-type: inline-size;
 	}
 
 	.work-wall {
@@ -804,19 +844,27 @@
 	}
 
 	.work-plate {
+		--plate-inset: clamp(1rem, 3vw, 2.5rem);
 		position: absolute;
 		z-index: 2;
-		inset-block-end: clamp(1rem, 3vw, 2.5rem);
-		inset-inline-start: clamp(1rem, 3vw, 2.5rem);
+		inset-block-end: var(--plate-inset);
+		inset-inline-start: var(--plate-inset);
 		display: grid;
 		gap: 0.45rem;
-		width: min(38rem, calc(100% - 2rem));
+		width: min(38rem, calc(100% - 2 * var(--plate-inset)));
 		padding: clamp(1.25rem, 3vw, 2rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
 		background: var(--k-panel);
 		backdrop-filter: blur(24px);
 		pointer-events: none;
+		transform: translate3d(0, 0, 0);
+		transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+	}
+
+	/* Slide to the opposite edge without using inset:auto (that cannot ease). */
+	.work-plate.side-end {
+		transform: translate3d(calc(100cqi - 100% - 2 * var(--plate-inset)), 0, 0);
 	}
 
 	.work-plate :global(a),
@@ -980,12 +1028,62 @@
 		justify-content: flex-start;
 	}
 
-	/* Split close ------------------------------------------------------------ */
+	/* Close: particles stay in the split; waitlist brings its LatentCanvas. */
+	.close {
+		position: relative;
+		isolation: isolate;
+		overflow: clip;
+		border-block-start: 1px solid color-mix(in oklch, var(--k-line) 45%, transparent);
+	}
+
 	.split {
+		position: relative;
+		z-index: 1;
 		display: grid;
-		gap: clamp(2rem, 5vw, 3rem);
-		padding: clamp(4rem, 11vw, 8rem) clamp(1rem, 4vw, 3rem);
-		border-block-start: 1px solid var(--k-line);
+		gap: clamp(1.5rem, 4vw, 2.5rem);
+		padding: clamp(3.5rem, 9vw, 6.5rem) clamp(1rem, 4vw, 3rem) clamp(1.5rem, 4vw, 2.5rem);
+		overflow: clip;
+	}
+
+	.close-field {
+		position: absolute;
+		inset: 0;
+		z-index: 0;
+		pointer-events: none;
+		/* Soft exit so the particle band does not hard-cut into the waitlist. */
+		-webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 100%);
+		mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 100%);
+	}
+
+	/* Glyph particles in each half fade with the shared field. */
+	.split .dots {
+		-webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 58%, transparent 100%);
+		mask-image: linear-gradient(to bottom, #000 0%, #000 58%, transparent 100%);
+	}
+
+	/* Upper band starts veiled for type contrast, then opens gradually. */
+	.split-veil {
+		position: absolute;
+		inset: 0;
+		z-index: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			to bottom,
+			var(--k-veil) 0%,
+			oklch(0.08 0.012 265 / 28%) 40%,
+			oklch(0.08 0.012 265 / 8%) 72%,
+			transparent 100%
+		);
+	}
+
+	:global(:root[data-krea-mode='light']) .split-veil {
+		background: linear-gradient(
+			to bottom,
+			var(--k-veil) 0%,
+			oklch(0.97 0.004 255 / 32%) 40%,
+			oklch(0.97 0.004 255 / 10%) 72%,
+			transparent 100%
+		);
 	}
 
 	.split-half {
@@ -1006,10 +1104,16 @@
 
 	.tag {
 		padding: 0.25rem 0.7rem;
+		border: 1px solid var(--k-line);
 		border-radius: 999px;
-		background: var(--k-panel);
+		background: oklch(0.14 0.018 265 / 55%);
+		backdrop-filter: blur(10px);
 		color: var(--k-muted);
 		font-size: 0.76rem;
+	}
+
+	:global(:root[data-krea-mode='light']) .tag {
+		background: oklch(1 0 0 / 55%);
 	}
 
 	.split-half h2 {
@@ -1098,10 +1202,13 @@
 			min-height: 0;
 		}
 
-		.work-plate {
+		.work-plate,
+		.work-plate.side-end {
 			position: relative;
 			inset: auto;
 			margin: -2.5rem clamp(1rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2.5rem);
+			transform: none;
+			transition: none;
 		}
 	}
 
@@ -1121,6 +1228,10 @@
 		.chip img,
 		.caret {
 			animation: none;
+		}
+
+		.work-plate {
+			transition: none;
 		}
 	}
 </style>

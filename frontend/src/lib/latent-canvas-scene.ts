@@ -54,8 +54,18 @@ const SCHEMES: Record<'dark' | 'light', Scheme> = {
 };
 
 function readScheme(canvas: HTMLCanvasElement): Scheme {
-	const name = getComputedStyle(canvas).getPropertyValue('--latent-scheme').trim();
-	return name === 'light' ? SCHEMES.light : SCHEMES.dark;
+	const styles = getComputedStyle(canvas);
+	const name = styles.getPropertyValue('--latent-scheme').trim();
+	const base = name === 'light' ? SCHEMES.light : SCHEMES.dark;
+	/* Optional overrides so a section can share the page paper (e.g. waitlist
+	   matching the particle stage) without changing the global dark clear. */
+	const clear = styles.getPropertyValue('--latent-clear').trim();
+	const fade = styles.getPropertyValue('--latent-fade').trim();
+	return {
+		...base,
+		clear: clear || base.clear,
+		fade: fade || base.fade
+	};
 }
 
 export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCanvasOptions = {}) {
@@ -215,7 +225,9 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 	/* The theme toggle flips an attribute on <html>; re-read the scheme and redraw. */
 	const themeObserver = new MutationObserver(() => {
 		const next = readScheme(canvas);
-		if (next === scheme) return;
+		if (next.clear === scheme.clear && next.fade === scheme.fade && next.blend === scheme.blend) {
+			return;
+		}
 		scheme = next;
 		if (started) repaint(90);
 	});

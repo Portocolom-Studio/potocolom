@@ -36,6 +36,29 @@
 	const sources = $derived(collageLandingSources(tile));
 
 	let shownTile = $state<SalonTile | null>(null);
+	let plateSide = $state<'start' | 'end'>('start');
+	let workStage: HTMLElement | undefined = $state();
+
+	function onWallActive(next: SalonTile | null) {
+		shownTile = next;
+		if (!next) {
+			plateSide = 'start';
+			return;
+		}
+		requestAnimationFrame(() => {
+			const stage = workStage;
+			const lit = stage?.querySelector('.salon-grid button.lit');
+			if (!(lit instanceof HTMLElement) || !stage) {
+				plateSide = 'start';
+				return;
+			}
+			const tileBox = lit.getBoundingClientRect();
+			const stageBox = stage.getBoundingClientRect();
+			const tileMid = (tileBox.left + tileBox.right) / 2;
+			const stageMid = (stageBox.left + stageBox.right) / 2;
+			plateSide = tileMid < stageMid ? 'end' : 'start';
+		});
+	}
 
 	function step(direction: 1 | -1) {
 		index = (index + direction + resolving.length) % resolving.length;
@@ -116,11 +139,11 @@
 		</section>
 
 		<section id="work" class="work">
-			<div class="work-stage">
+			<div class="work-stage" bind:this={workStage}>
 				<div class="work-wall">
-					<SalonGrid tiles={wall} onactive={(next) => (shownTile = next)} />
+					<SalonGrid tiles={wall} onactive={onWallActive} />
 				</div>
-				<div class="work-plate">
+				<div class="work-plate" class:side-end={plateSide === 'end'}>
 					{#if shownTile}
 						<span class="piece">{shownTile.alt}</span>
 						<span class="meta"><span>{t('gallery.kicker')}</span></span>
@@ -461,6 +484,7 @@
 		width: 100%;
 		height: auto;
 		overflow: visible;
+		container-type: inline-size;
 	}
 
 	.work-wall {
@@ -474,18 +498,25 @@
 	}
 
 	.work-plate {
+		--plate-inset: clamp(1rem, 3vw, 2.5rem);
 		position: absolute;
 		z-index: 2;
-		inset-block-end: clamp(1rem, 3vw, 2.5rem);
-		inset-inline-start: clamp(1rem, 3vw, 2.5rem);
+		inset-block-end: var(--plate-inset);
+		inset-inline-start: var(--plate-inset);
 		display: grid;
 		gap: 0.45rem;
-		width: min(38rem, calc(100% - 2rem));
+		width: min(38rem, calc(100% - 2 * var(--plate-inset)));
 		padding: clamp(1.25rem, 3vw, 2rem);
 		border: 1px solid var(--k-line);
 		border-radius: 1.25rem;
 		background: var(--k-panel);
 		backdrop-filter: blur(24px);
+		transform: translate3d(0, 0, 0);
+		transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+	}
+
+	.work-plate.side-end {
+		transform: translate3d(calc(100cqi - 100% - 2 * var(--plate-inset)), 0, 0);
 	}
 
 	/* Studio --------------------------------------------------------------- */
@@ -712,10 +743,13 @@
 			min-height: 0;
 		}
 
-		.work-plate {
+		.work-plate,
+		.work-plate.side-end {
 			position: relative;
 			inset: auto;
 			margin: -2.5rem clamp(1rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2.5rem);
+			transform: none;
+			transition: none;
 		}
 	}
 

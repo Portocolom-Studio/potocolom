@@ -142,6 +142,19 @@
 		pointer-events: none;
 	}
 
+	/* Same paper as the self-host / cloud particle stage. The strokes use
+	   additive blending, so a solid black cover (or a heavy veil) kills them;
+	   tint the canvas clear to paper and keep the veil light. */
+	.field {
+		--latent-clear: var(--k-paper);
+		--latent-fade: oklch(0.08 0.012 265 / 4.5%);
+		background: var(--k-paper);
+	}
+
+	:global(:root[data-krea-mode='light']) .field {
+		--latent-fade: oklch(0.97 0.004 255 / 5%);
+	}
+
 	.field :global(canvas) {
 		width: 100%;
 		height: 100%;
@@ -149,8 +162,14 @@
 
 	.veil {
 		background:
-			radial-gradient(38% 46% at 50% 42%, oklch(0.62 0.2 255 / 18%) 0%, transparent 72%),
-			radial-gradient(70% 60% at 50% 50%, transparent 0%, var(--k-veil) 88%);
+			radial-gradient(38% 46% at 50% 42%, oklch(0.62 0.2 255 / 12%) 0%, transparent 72%),
+			radial-gradient(70% 60% at 50% 50%, transparent 0%, oklch(0.08 0.012 265 / 22%) 92%);
+	}
+
+	:global(:root[data-krea-mode='light']) .veil {
+		background:
+			radial-gradient(38% 46% at 50% 42%, oklch(0.62 0.2 255 / 10%) 0%, transparent 72%),
+			radial-gradient(70% 60% at 50% 50%, transparent 0%, oklch(0.97 0.004 255 / 28%) 92%);
 	}
 
 	.body {

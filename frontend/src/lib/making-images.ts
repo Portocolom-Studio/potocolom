@@ -11,126 +11,126 @@ export type MakingImage = {
 export const makingImages: MakingImage[] = [
 	{
 		id: '4051b8cd',
-		alt: "Studio generation",
+		alt: 'Slot canyon sandstone looking up to a blue sky slit',
 		model: null,
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'c4011165',
-		alt: "Studio generation",
+		alt: 'Symmetrical neon green and orange filament field',
 		model: null,
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '40eb17e1',
-		alt: "Studio squirrel portrait",
+		alt: 'Close-up red squirrel portrait',
 		model: 'ssd-1b-lightning',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'e2254b6c',
-		alt: "Watercolor fox in autumn",
+		alt: 'Watercolor red fox in autumn leaves',
 		model: 'sdxl-hypersd',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '46c51269',
-		alt: "Merlin oil portrait classical",
+		alt: 'Classical oil portrait of a white-bearded sage',
 		model: 'ssd-1b',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '0fe51cef',
-		alt: "Tide pool macro",
+		alt: 'Tide pool macro with pink anemones',
 		model: 'ssd-1b',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '9630a3f6',
-		alt: "Abandoned observatory",
+		alt: 'Abandoned stone observatory under the Milky Way',
 		model: 'sdxl-fast',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '74834694',
-		alt: "Best 1024 50step",
+		alt: 'Twin golden hourglasses on a starlit shore',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'dbabe82b',
-		alt: "Best 1024 50step",
+		alt: 'Open door standing alone in a wheat field by the sea',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'dfbc1ddc',
-		alt: "Best 1024 50step",
+		alt: 'Autumn dragon perched above a mountain lake',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'f4c54d4a',
-		alt: "Best 1024 50step",
+		alt: 'Geometric gold phoenix rising from red flame',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '9ed37faf',
-		alt: "Best 1024 50step",
+		alt: 'Harpist with a glowing harp in a blue canyon',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '52dcdb6f',
-		alt: "Best 1024 50step",
+		alt: 'Astronaut beside a golden solar sail over Earth',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '372573a5',
-		alt: "Best 1024 50step",
+		alt: 'Ink-wash pine and misty mountain peaks',
 		model: 'sd35-medium',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'db8c2afa',
-		alt: "High guidance",
+		alt: 'Snowy owl on a snow-dusted branch',
 		model: 'sdxl-base',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: '3f10ffd0',
-		alt: "An intimate head on low angle close up p",
+		alt: 'White ceramic dragon head, low-angle snarl',
 		model: 'sdxl-fast',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'a0fd46ac',
-		alt: "Abstract ribbons of colored smoke forming a floa",
+		alt: 'Floating ribbons of magenta, cyan, and gold smoke',
 		model: 'sdxl-hypersd',
 		width: 1024,
 		height: 1024
 	},
 	{
 		id: 'a1bf8914',
-		alt: "Anime sky pirate airship sailing through cotton",
+		alt: 'Anime sky-pirate airship through cotton-candy clouds',
 		model: 'ssd-1b',
 		width: 1024,
 		height: 1024
@@ -139,7 +139,7 @@ export const makingImages: MakingImage[] = [
 
 export function makingSources(image: MakingImage) {
 	return {
-		src: `/images/making/${image.id}-480.webp`,
-		srcset: `/images/making/${image.id}-320.webp 320w, /images/making/${image.id}-480.webp 480w`
+		src: `/images/making/${image.id}-768.webp`,
+		srcset: `/images/making/${image.id}-480.webp 480w, /images/making/${image.id}-768.webp 768w, /images/making/${image.id}-1024.webp 1024w`
 	};
 }

@@ -42,7 +42,7 @@
 			<img
 				src={tile.src}
 				srcset={tile.srcset}
-				sizes="(max-width: 40rem) 33vw, 16vw"
+				sizes="(max-width: 40rem) 33vw, 17vw"
 				alt={tile.alt}
 				loading="lazy"
 			/>
@@ -51,10 +51,12 @@
 </div>
 
 <style>
+	/* Three rows must clear one viewport on desktop; squares on a wide screen
+	   overshoot and force scrolling the wall. Cap the track height instead. */
 	.salon-grid {
 		display: grid;
 		grid-template-columns: repeat(6, minmax(0, 1fr));
-		grid-auto-rows: auto;
+		grid-auto-rows: calc(80svh / 3);
 		width: 100%;
 		height: auto;
 		overflow: visible;
@@ -64,7 +66,7 @@
 		position: relative;
 		min-width: 0;
 		width: 100%;
-		aspect-ratio: 1 / 1;
+		height: 100%;
 		padding: 0;
 		border: 0;
 		background: none;
@@ -97,6 +99,7 @@
 	@media (max-width: 40rem) {
 		.salon-grid {
 			grid-template-columns: repeat(3, minmax(0, 1fr));
+			grid-auto-rows: calc(90svh / 6);
 		}
 	}
 
