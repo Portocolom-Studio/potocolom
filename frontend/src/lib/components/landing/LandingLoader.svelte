@@ -6,6 +6,13 @@
 	};
 
 	export type LandingEntrancePhase = 'loading' | 'revealing' | 'ready';
+
+	// Module state survives SvelteKit route changes but resets on a full reload.
+	let entranceCompleted = false;
+
+	export function hasCompletedLandingEntrance(): boolean {
+		return entranceCompleted;
+	}
 </script>
 
 <script lang="ts">
@@ -20,9 +27,9 @@
 		onphase?: (phase: LandingEntrancePhase) => void;
 	} = $props();
 
-	let phase: LandingEntrancePhase = $state('loading');
+	let phase: LandingEntrancePhase = $state(hasCompletedLandingEntrance() ? 'ready' : 'loading');
 	let progress = $state(0);
-	let visible = $state(true);
+	let visible = $state(!hasCompletedLandingEntrance());
 
 	function preload(asset: LandingAsset): Promise<void> {
 		return new Promise((resolve) => {
@@ -63,6 +70,11 @@
 	}
 
 	onMount(() => {
+		if (entranceCompleted) {
+			onphase?.('ready');
+			return;
+		}
+
 		let cancelled = false;
 		const timers = new Set<number>();
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -106,6 +118,7 @@
 			await wait(revealMs);
 			if (cancelled) return;
 			phase = 'ready';
+			entranceCompleted = true;
 			onphase?.(phase);
 			visible = false;
 		});

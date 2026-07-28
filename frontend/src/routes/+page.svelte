@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import SketchOrbit from '$lib/components/landing/SketchOrbit.svelte';
 	import SketchSwitcher from '$lib/components/landing/SketchSwitcher.svelte';
@@ -38,3 +39,5 @@
 <SketchOrbit />
 
 <SketchSwitcher />
+
+<ScrollToTop />

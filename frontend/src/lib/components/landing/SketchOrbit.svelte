@@ -14,6 +14,7 @@
 	import LandingFaq from './LandingFaq.svelte';
 	import LandingWaitlist from './LandingWaitlist.svelte';
 	import LandingLoader, {
+		hasCompletedLandingEntrance,
 		type LandingAsset,
 		type LandingEntrancePhase
 	} from './LandingLoader.svelte';
@@ -106,7 +107,9 @@
 	let workStage: HTMLElement | undefined = $state();
 	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
-	let entrancePhase: LandingEntrancePhase = $state('loading');
+	let entrancePhase: LandingEntrancePhase = $state(
+		hasCompletedLandingEntrance() ? 'ready' : 'loading'
+	);
 
 	function onWallActive(next: SalonTile | null) {
 		shownTile = next;

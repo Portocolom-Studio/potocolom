@@ -18,10 +18,9 @@
 	</div>
 
 	<div class="questions">
-		{#each items as item, index (item.question)}
+		{#each items as item (item.question)}
 			<details name="landing-faq">
 				<summary>
-					<span class="number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
 					<span>{t(item.question)}</span>
 					<span class="toggle" aria-hidden="true">
 						<ChevronDownIcon />
@@ -77,7 +76,7 @@
 
 	summary {
 		display: grid;
-		grid-template-columns: 2rem minmax(0, 1fr) 2.25rem;
+		grid-template-columns: minmax(0, 1fr) 2.25rem;
 		align-items: center;
 		gap: clamp(0.75rem, 2vw, 1.25rem);
 		min-height: 5.25rem;
@@ -96,14 +95,6 @@
 	summary:focus-visible {
 		outline: 2px solid var(--k-accent);
 		outline-offset: 4px;
-	}
-
-	.number {
-		color: var(--k-muted);
-		font-family: var(--k-mono);
-		font-size: 0.72rem;
-		font-weight: 500;
-		letter-spacing: 0.04em;
 	}
 
 	.toggle {
@@ -133,7 +124,7 @@
 
 	details > p {
 		max-width: 62ch;
-		padding: 0 3.5rem 1.75rem 3.25rem;
+		padding: 0 clamp(0.75rem, 5vw, 3.5rem) 1.75rem 0;
 		color: var(--k-muted);
 		font-size: 0.98rem;
 	}
@@ -161,20 +152,6 @@
 
 		h2 {
 			max-width: 12ch;
-		}
-	}
-
-	@media (max-width: 30rem) {
-		summary {
-			grid-template-columns: minmax(0, 1fr) 2.25rem;
-		}
-
-		.number {
-			display: none;
-		}
-
-		details > p {
-			padding-inline: 0 3rem;
 		}
 	}
 
