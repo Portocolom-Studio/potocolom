@@ -556,7 +556,7 @@ A new install starts with the shipped reference-card GPU timings. Once a model h
 
 Rejected alternatives: shipping one machine's constants forever, which is wrong on every other hardware profile; calibrating on every boot, which spends GPU time and measures idle synthetic conditions rather than the real workload.
 
-The refresh reads the newest succeeded jobs per model, which `jobs_user_created` cannot answer because it leads with `user_id`, so migration `0010` adds a partial index on `(model_id, finished_at DESC)` limited to succeeded rows carrying a GPU time.
+The refresh reads the newest succeeded jobs per model, which `jobs_user_created` cannot answer because it leads with `user_id`, so migration `0010` adds a partial index on `(model_id, finished_at DESC)` limited to the succeeded rows with a positive GPU time, which is the query's own filter.
 
 ## Supporting defaults
 

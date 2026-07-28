@@ -14,13 +14,14 @@ depends_on = None
 
 def upgrade() -> None:
     # Serves the observed-timings refresh: newest succeeded jobs per model. The
-    # partial predicate keeps the index to the rows that query looks at, and
-    # jobs_user_created cannot answer it because it leads with user_id.
+    # predicate mirrors that query's own filter, since every succeeded job records
+    # a gpu_ms and IS NOT NULL would therefore cover almost every row.
+    # jobs_user_created cannot answer this because it leads with user_id.
     op.create_index(
         "jobs_model_finished",
         "jobs",
         ["model_id", sa.text("finished_at DESC")],
-        postgresql_where=sa.text("state = 'succeeded' AND gpu_ms IS NOT NULL"),
+        postgresql_where=sa.text("state = 'succeeded' AND gpu_ms > 0"),
     )
 
 
