@@ -128,15 +128,19 @@ def test_generation_end_to_end():
             async def usage_written() -> bool:
                 assert db.session_factory is not None
                 async with db.session_factory() as session:
+                    # Select the row this case waits for rather than the newest
+                    # for the model: another case writing a later event for the
+                    # same model would otherwise make this flaky.
                     row = (
                         await session.execute(
-                            select(UsageEvent)
-                            .where(UsageEvent.model_id == "sd-test")
-                            .order_by(UsageEvent.created_at.desc())
-                            .limit(1)
+                            select(UsageEvent).where(
+                                UsageEvent.model_id == "sd-test",
+                                UsageEvent.kind == "job",
+                                UsageEvent.action == "generate",
+                            ).order_by(UsageEvent.created_at.desc()).limit(1)
                         )
                     ).scalar_one_or_none()
-                    return row is not None and row.kind == "job" and row.action == "generate"
+                    return row is not None
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not asyncio.run(usage_written()):
