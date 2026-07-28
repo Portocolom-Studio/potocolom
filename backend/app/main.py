@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -21,17 +22,31 @@ from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.studio import router as studio_router
+from app.telemetry import DESTINATION, telemetry_loop
+from app.telemetry import router as telemetry_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    setup_logging(get_settings().log_format)
+    settings = get_settings()
+    setup_logging(settings.log_format)
+    if settings.telemetry:
+        logging.getLogger("potocolom.telemetry").info(
+            "anonymous daily telemetry destination=%s payload=aggregate usage counts and "
+            "worker device/memory mode; set TELEMETRY=false to disable",
+            DESTINATION,
+        )
+    else:
+        logging.getLogger("potocolom.telemetry").info(
+            "anonymous daily telemetry disabled by TELEMETRY=false"
+        )
     if await db.connect():
         await jobs.recover()
     tasks = [
         asyncio.create_task(reap_dead_workers()),
         asyncio.create_task(jobs.dispatch_loop()),
         asyncio.create_task(maintain_loop()),
+        asyncio.create_task(telemetry_loop()),
     ]
     yield
     for task in tasks:
@@ -64,6 +79,7 @@ app.include_router(jobs_router)
 app.include_router(files_router)
 app.include_router(studio_router)
 app.include_router(metrics_router)
+app.include_router(telemetry_router)
 
 
 @app.get("/api/v1/health")

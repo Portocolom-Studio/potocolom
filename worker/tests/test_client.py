@@ -41,6 +41,7 @@ def test_latest_input_wins():
 
     runner = asyncio.run(scenario())
     assert runner.dropped == 2
+    assert not hasattr(runner, "last_output")
     assert len(socket.sent) == 1
     assert socket.sent[0][FRAME_HEADER_BYTES:] == b"third"
 
@@ -94,6 +95,8 @@ def test_hello_carries_manifests():
     assert manifest["id"] == "sd-sim"
     assert "realtime" in manifest["capabilities"]
     assert "source" not in manifest  # weight locations stay worker side
+    assert hello["device"] == "cpu"
+    assert hello["memory_mode"] == "auto"
 
 
 def test_rejected_registration_raises_cleanly():
@@ -194,6 +197,9 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     assert done["input_fetch_ms"] >= 0
     assert done["load_ms"] >= 0
     assert done["postprocess_ms"] >= 0
+    assert done["duration_ms"] >= 0
+    assert done["category"] == "other"
+    assert "category_score" not in done
     assert done["has_thumbnail"] is True
 
 

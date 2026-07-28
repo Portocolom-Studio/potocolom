@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     storage_s3_secret_key: str = ""
 
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
+    telemetry: bool = True
 
     # When set, the API serves the built SPA from this directory (self-hosted
     # profile; docs/blueprint.md).

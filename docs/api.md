@@ -45,7 +45,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |
 | DELETE `/api/v1/assets/{id}/share` | issue #17 | revoke the share token |
 | GET `/shared/{token}` | issue #17 | public share link target (CDN path in the cloud) |
-| GET `/api/v1/telemetry/preview` | issue #29 | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
+| GET `/api/v1/telemetry/preview` | implemented (#29) | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints
 
@@ -162,6 +162,8 @@ GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session su
                                         session id as ?cursor to read the next page
 GET  /api/v1/benchmark/sessions/{id}  200 full report in the existing results.json shape;
                                         404 for a missing session
+GET  /api/v1/telemetry/preview        200 exact previous UTC day's anonymous aggregate payload;
+                                        503 when the database is unavailable
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
 GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)

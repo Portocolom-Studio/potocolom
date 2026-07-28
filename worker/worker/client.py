@@ -18,6 +18,7 @@ import httpx
 import websockets
 
 from worker.engine import Engine, SimulatedEngine, make_thumbnail_webp
+from worker.categorize import categorize_output
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
@@ -25,7 +26,7 @@ from worker.settings import Settings, get_settings
 logger = logging.getLogger("potocolom.worker")
 
 # Wire constants; keep in sync with backend/app/realtime.py.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
 CLOSE_PROTOCOL_VIOLATION = 4000
@@ -110,6 +111,8 @@ class SessionRunner:
         self.arrived = asyncio.Event()
         self.dropped = 0
         self.frames = 0
+        self.gpu_ms = 0
+        self.started_at = time.monotonic()
         self._task = asyncio.create_task(self._run(ws, engine, manifest, params))
 
     def submit(self, payload: bytes) -> None:
@@ -134,8 +137,10 @@ class SessionRunner:
                                  self.session_id)
                 continue
             self.frames += 1
+            self.gpu_ms += generated.gpu_ms
             try:
-                await ws.send(bytes([GENERATED_FRAME]) + self.session_id.bytes + generated)
+                await ws.send(
+                    bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)
             except websockets.WebSocketException:
                 logger.warning("session %s lost the connection while sending a frame",
                                self.session_id)
@@ -149,6 +154,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     """One queued job: generate, upload to the given target, report the result.
     Failures are reported, never raised: the connection outlives the job."""
     job_id = control["job_id"]
+    job_started = time.monotonic()
     progress_tasks: list[asyncio.Task[None]] = []
     last_fraction = 0.0
 
@@ -219,8 +225,15 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                           "load_ms": result.load_ms,
                           "postprocess_ms": postprocess_ms,
                           "width": result.width, "height": result.height}
+        category, score = categorize_output(result.data)
+        done_msg["category"] = category
+        if score is not None:
+            done_msg["category_score"] = score
         if has_thumbnail:
             done_msg["has_thumbnail"] = True
+        # Stamped last so it covers every step the user waits through, including
+        # categorization once that stops being a stub.
+        done_msg["duration_ms"] = int((time.monotonic() - job_started) * 1000)
         await ws.send(json.dumps(done_msg))
         logger.info("job %s done in %d gpu_ms", job_id, result.gpu_ms)
     except asyncio.CancelledError:
@@ -294,6 +307,8 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         "models": wire_manifests,
         "realtime_slots": engine.effective_realtime_slots(wire_manifests,
                                                            settings.realtime_slots),
+        "device": settings.device,
+        "memory_mode": settings.memory_mode,
     }))
     try:
         response = json.loads(await ws.recv())
@@ -350,9 +365,19 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
                         if runner is not None:
                             runner.close()
-                            await ws.send(json.dumps({"type": "session_closed",
-                                                      "session_id": control["session_id"],
-                                                      "frames": runner.frames}))
+                            category, score = categorize_output(None)
+                            closed = {
+                                "type": "session_closed",
+                                "session_id": control["session_id"],
+                                "frames": runner.frames,
+                                "gpu_ms": runner.gpu_ms,
+                                "duration_ms": int(
+                                    (time.monotonic() - runner.started_at) * 1000),
+                                "category": category,
+                            }
+                            if score is not None:
+                                closed["category_score"] = score
+                            await ws.send(json.dumps(closed))
                     elif control["type"] == "dispatch_job":
                         task = asyncio.create_task(run_job(
                             ws, engine, by_id[control["model_id"]], control))

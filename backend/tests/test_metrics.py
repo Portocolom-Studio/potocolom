@@ -9,10 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app import db
+from app import db, gpu_samples
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import GpuSample, GpuSampleRollup, Job
+from app.tables import GpuSample, GpuSampleRollup, Job, WorkerIdentity
 
 MANIFEST = {
     "id": "sd-metrics",
@@ -30,6 +30,8 @@ def fleet_hello(ws, worker_id="w-metrics"):
         "worker_id": worker_id,
         "models": [MANIFEST],
         "realtime_slots": 1,
+        "device": "rocm",
+        "memory_mode": "model_offload",
     })
     assert ws.receive_json()["type"] == "registered"
 
@@ -52,6 +54,58 @@ async def _wait_for_samples(count: int = 1, timeout: float = 3.0) -> list[GpuSam
                 return rows
         await asyncio.sleep(0.05)
     return []
+
+
+async def _wait_for_worker(worker_id: str, timeout: float = 3.0) -> WorkerIdentity | None:
+    assert db.session_factory is not None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        async with db.session_factory() as session:
+            row = await session.get(WorkerIdentity, worker_id)
+            if row is not None:
+                return row
+        await asyncio.sleep(0.05)
+    return None
+
+
+@pytest.mark.db
+def test_registration_persists_worker_identity():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-identity")
+            identity = asyncio.run(_wait_for_worker("w-identity"))
+            assert identity is not None
+            assert identity.device == "rocm"
+            assert identity.memory_mode == "model_offload"
+
+
+@pytest.mark.db
+def test_maintenance_prunes_stale_worker_identities():
+    now = datetime.now(timezone.utc)
+
+    async def exercise() -> tuple[WorkerIdentity | None, WorkerIdentity | None]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(WorkerIdentity(
+                worker_id="w-retention-stale",
+                last_seen=now - gpu_samples.WORKER_RETENTION - timedelta(seconds=1),
+            ))
+            session.add(WorkerIdentity(
+                worker_id="w-retention-recent",
+                last_seen=now,
+            ))
+            await session.commit()
+        await gpu_samples.maintain_once()
+        async with db.session_factory() as session:
+            return (
+                await session.get(WorkerIdentity, "w-retention-stale"),
+                await session.get(WorkerIdentity, "w-retention-recent"),
+            )
+
+    with TestClient(app):
+        stale, recent = asyncio.run(exercise())
+        assert stale is None
+        assert recent is not None
 
 
 @pytest.mark.db
@@ -79,6 +133,17 @@ def test_heartbeat_persists_gpu_sample():
             assert row.worker_id == "w-metrics"
             assert row.util_pct == 42
             assert row.loaded_models == ["sd-metrics"]
+
+            async def read_worker() -> WorkerIdentity | None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return await session.get(WorkerIdentity, "w-metrics")
+
+            identity = asyncio.run(read_worker())
+            assert identity is not None
+            assert identity.device == "rocm"
+            assert identity.memory_mode == "model_offload"
+            assert identity.last_seen >= row.sampled_at
 
 
 @pytest.mark.db

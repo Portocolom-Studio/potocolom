@@ -98,6 +98,12 @@ POST https://telemetry.potocolom.com/v1/report
 }
 ```
 
+The `workers` field includes identities whose `last_seen` is at or after the
+start of the reported UTC day. A continuously connected worker remains included,
+while workers gone before that day drop out. A worker first seen on the following
+day can be included in the previous day's report; this small over-inclusion avoids
+an unbounded identity history without adding a per-day activity log.
+
 A failed send is dropped, never queued: telemetry must never affect the install that emits it.
 
 ## Operational metrics: planes and export paths
@@ -118,7 +124,7 @@ The worker samples its card once per heartbeat - GPU utilization, VRAM used and 
 
 A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
 
-The studio's own usage panel has a fourth consumer: each heartbeat's GPU sample is also written to the deployment's PostgreSQL (`gpu_samples`, raw rows kept 48 hours) and rolled into five-minute buckets (`gpu_sample_rollups`, kept 30 days) by a maintenance loop in the API. `GET /api/v1/metrics/gpu/history` serves both: raw rows for windows up to an hour, rollups beyond. This is per-install history for the user's own hardware; the CloudWatch plane above stays aggregate-only.
+The studio's own usage panel has a fourth consumer: each heartbeat's GPU sample is also written to the deployment's PostgreSQL (`gpu_samples`, raw rows kept 48 hours) and rolled into five-minute buckets (`gpu_sample_rollups`, kept 30 days) by a maintenance loop in the API. Static `device` and `memory_mode` facts live once per worker in `workers`, refreshed at registration and heartbeat, instead of being repeated on every sample. `GET /api/v1/metrics/gpu/history` serves raw and rolled-up samples: raw rows for windows up to an hour, rollups beyond. This is per-install history for the user's own hardware; the CloudWatch plane above stays aggregate-only.
 
 ## Frame loop metrics
 

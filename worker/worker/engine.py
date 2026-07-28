@@ -56,13 +56,19 @@ class GeneratedImage:
     load_ms: int = 0
 
 
+@dataclass
+class GeneratedFrame:
+    data: bytes
+    gpu_ms: int
+
+
 class Engine(Protocol):
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
     ) -> GeneratedImage: ...
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame: ...
 
     def loaded_models(self) -> list[str]: ...
 
@@ -203,9 +209,10 @@ class SimulatedEngine:
         gpu_ms = int((time.monotonic() - start) * 1000)
         return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        started = time.monotonic()
         await asyncio.sleep(self.inference_seconds)
-        return payload
+        return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
 
 
 class DiffusersEngine:
@@ -836,10 +843,12 @@ class DiffusersEngine:
         loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
         async with self._gpu:
             try:
-                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+                data, gpu_ms = await asyncio.to_thread(
+                    self._frame, manifest, dict(params), payload)
+                return GeneratedFrame(data, gpu_ms)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -848,9 +857,11 @@ class DiffusersEngine:
                 self._evict_poisoned(manifest.id)
                 raise
             self._evict_except(manifest.id)
-            return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+            data, gpu_ms = await asyncio.to_thread(
+                self._frame, manifest, dict(params), payload)
+            return GeneratedFrame(data, gpu_ms)
 
-    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> tuple[bytes, int]:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
         if self._pick_rung(manifest) != "full":
@@ -859,6 +870,7 @@ class DiffusersEngine:
         canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
         strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)
         pipeline = self._pipeline(manifest, "i2i")
+        started = time.monotonic()
         image = pipeline(
             prompt=str(params.get("prompt", "")),
             image=canvas,
@@ -868,4 +880,5 @@ class DiffusersEngine:
             strength=strength,
             guidance_scale=0.0,
         ).images[0]
-        return encode_webp(image)
+        gpu_ms = int((time.monotonic() - started) * 1000)
+        return encode_webp(image), gpu_ms
