@@ -28,6 +28,7 @@ inference = [
     "diffusers>=0.39",
     "transformers>=4.44",
     "accelerate>=0.33",
+    "torchao>=0.17",
     "peft>=0.13",
     "spandrel>=0.4",
 ]
@@ -51,7 +52,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["torch.*", "diffusers.*", "spandrel.*"]
+module = ["torch.*", "torchao.*", "diffusers.*", "spandrel.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

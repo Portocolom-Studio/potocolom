@@ -1,5 +1,7 @@
 import asyncio
 import io
+import sys
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
@@ -249,6 +251,55 @@ def test_optimize_resident_skipped_when_compile_disabled():
     engine._warmup_pipeline.assert_not_called()
 
 
+def test_load_quantizes_named_component_before_device_move():
+    pipeline = MagicMock()
+    component = object()
+    pipeline.text_encoder_3 = component
+    events: list[str] = []
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cpu"
+    engine._pipelines = {}
+    engine._from_pretrained = MagicMock(return_value=pipeline)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._apply_rung = MagicMock(
+        side_effect=lambda *_args: events.append("apply_rung") or pipeline,
+    )
+    engine._optimize_resident = MagicMock()
+
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = object()
+    diffusers.AutoPipelineForImage2Image = object()
+    quantization = ModuleType("torchao.quantization")
+    quantization.quantize_ = MagicMock(
+        side_effect=lambda *_args: events.append("quantize"),
+    )
+    config = object()
+    quantization.Int8WeightOnlyConfig = MagicMock(return_value=config)
+    torchao = ModuleType("torchao")
+    torchao.quantization = quantization
+    manifest = Manifest(
+        id="m",
+        name="M",
+        capabilities=["text_to_image"],
+        quantize="text_encoder_3:int8",
+    )
+
+    with patch.dict(
+        sys.modules,
+        {"diffusers": diffusers, "torchao": torchao, "torchao.quantization": quantization},
+    ):
+        loaded = engine._load(manifest, "t2i")
+
+    assert loaded is pipeline
+    quantization.quantize_.assert_called_once_with(component, config)
+    engine._apply_rung.assert_called_once_with(pipeline, manifest, "full")
+    assert events == ["quantize", "apply_rung"]
+    engine._optimize_resident.assert_called_once_with(
+        pipeline, "t2i", force_compile=True,
+    )
+
+
 def test_calibrate_realtime_sets_slots_from_p95():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
@@ -391,6 +442,73 @@ def test_evict_cold_removes_oldest_first():
     assert "b" not in engine._rungs
 
 
+def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
+    torch_stub = MagicMock()
+    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._free_gpu_cache = MagicMock()
+    engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
+    engine._select_rung = MagicMock(return_value="full")
+    attempts: list[str] = []
+
+    def load(manifest, _mode):
+        rung = engine._pick_rung(manifest)
+        attempts.append(rung)
+        if rung in failing_rungs:
+            raise torch_stub.OutOfMemoryError
+        return object()
+
+    engine._load = load
+    return engine, attempts
+
+
+def test_load_oom_demotes_full_to_model_offload():
+    engine, attempts = _load_oom_engine({"full"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "model_offload"]
+    assert engine.model_rung("m") == "model_offload"
+
+
+def test_load_second_oom_demotes_model_to_group_offload():
+    engine, attempts = _load_oom_engine({"full", "model_offload"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "model_offload", "group_offload"]
+    assert engine.model_rung("m") == "group_offload"
+
+
+def test_load_oom_does_not_demote_pinned_rung():
+    engine, attempts = _load_oom_engine(set())
+    engine.memory_mode = "full"
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    def load(current_manifest, _mode):
+        rung = engine._pick_rung(current_manifest)
+        attempts.append(rung)
+        if len(attempts) == 1:
+            raise engine.torch.OutOfMemoryError
+        return object()
+
+    engine._load = load
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "full"]
+    assert engine.model_rung("m") == "full"
+
+
 def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     from worker.engine import GeneratedImage
 
@@ -478,3 +596,29 @@ def test_generate_value_error_does_not_evict():
     asyncio.run(scenario())
     assert ("m", "t2i") in engine._pipelines
     assert engine._poison_evict_count == {}
+
+
+def test_generation_oom_demotes_once_and_retries_once():
+    engine = _poison_engine()
+    engine.memory_mode = "auto"
+    engine._pipeline = MagicMock()
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    async def scenario():
+        with patch(
+            "asyncio.to_thread",
+            side_effect=engine.torch.OutOfMemoryError,
+        ) as run:
+            try:
+                await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
+            except engine.torch.OutOfMemoryError:
+                pass
+            else:
+                raise AssertionError("expected OutOfMemoryError")
+        assert run.call_count == 3
+
+    asyncio.run(scenario())
+    assert engine.model_rung("m") == "model_offload"
+    engine._pipeline.assert_called_once_with(
+        manifest, "t2i", allow_demotion=False,
+    )

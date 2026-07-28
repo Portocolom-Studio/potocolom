@@ -152,6 +152,14 @@ flowchart TD
 
 The rung is per model, not per worker: an 8 GB card can hold sd-turbo fully resident for drawing sessions while running a much larger generation model on group offload beside it. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
 
+An automatically selected rung is also corrected after an out-of-memory error.
+At load time the worker descends from full residency to model offload, then
+from model offload to group offload. Generation can need more memory than
+loading: if the existing eviction and retry still runs out of memory, the
+worker descends one rung, reloads the pipeline and retries the job once.
+The one-rung and one-retry limit keeps a bad job from walking the whole ladder.
+An operator-selected `MEMORY_MODE` rung never descends.
+
 ### When the pool is full
 
 A session request that finds no free slot waits in an admission queue. The user sees their position and an estimated wait; the autoscaler treats queue length as a scale up signal, so waits shrink as new machines boot (one to two minutes on rented GPU providers). Once billing exists, paid tiers move ahead in the queue; nothing ever preempts an active session. There is no time slice sharing and no hard reject.
@@ -379,6 +387,11 @@ Every model the worker can serve is described by a manifest. Example:
 `min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. `tier` feeds model routing: requests that do not pin a model resolve to the cheapest tier that satisfies them.
 
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
+
+Loading fields such as `source`, `vae`, `scheduler`, `lora` and `quantize`
+stay inside the worker and never cross the wire. `quantize` names exactly one
+pipeline component and scheme as `component:scheme`; the only shipped use is
+`text_encoder_3:int8` on `sd35-medium`.
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
 

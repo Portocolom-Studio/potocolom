@@ -24,6 +24,10 @@ class Manifest(BaseModel):
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
     scheduler: str = ""  # optional scheduler override, worker side only
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
+    quantize: str = Field(
+        default="",
+        pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:[A-Za-z0-9_-]+)?$",
+    )  # optional component:scheme, worker side only
     license_id: str = ""  # e.g. stability-ai-community, apache-2.0
     license_url: str = ""
     commercial_max_revenue_usd: int | None = None  # None = no cap
@@ -32,7 +36,7 @@ class Manifest(BaseModel):
     benchmark_only: bool = False  # benchmark reference; hidden from GET /api/v1/models
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae", "scheduler", "lora"})
+        return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "quantize"})
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare

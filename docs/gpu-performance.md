@@ -87,7 +87,7 @@ first), `sd35-medium`, prompt fixed and seed fixed.
 
 | Configuration | Time | Peak VRAM | Note |
 | --- | ---: | ---: | --- |
-| `model_offload`, T5 resident (shipped) | 49.5 s | 12.09 GB | The shipped 16 GB configuration |
+| `model_offload`, T5 resident (previous) | 49.5 s | 12.09 GB | The previous 16 GB configuration |
 | `group_offload` | 46.5 s | 2.51 GB | Faster **and** 4.8x lighter |
 | 768 px instead of 1024 | 27.8 s | 12.09 GB | 1.78x fewer pixels, 1.78x less time |
 | Flash attention backend | 49.9 s | 12.09 GB | No effect; fused attention was already on |
@@ -95,7 +95,7 @@ first), `sd35-medium`, prompt fixed and seed fixed.
 | No T5, `full` + `torch.compile` | **26.0 s** | 8.84 GB | Fastest measured, but no T5 |
 | `full` residency with T5 | **OOM** | - | 15.15 GB of weights, 14.3 GiB available |
 
-Step scaling on the shipped configuration is roughly a fixed floor plus a
+Step scaling on the previous configuration is roughly a fixed floor plus a
 per-step cost: 56 s at 20 steps, 65 s at 28, 89 s at 40 on first-run timings,
 which works out near 1.7 s per step over a fixed overhead in the low twenties
 of seconds. The per-step cost is transformer compute and the floor is text
@@ -265,7 +265,7 @@ of them. Recorded here so the next person does not assume the bottom rung is
 always the slow one.
 
 **`torch.compile`.** The largest single win measured anywhere: 40.9 s down to
-26.0 s, a 36% reduction. It is also unreachable in the shipped configuration.
+26.0 s, a 36% reduction. It was unreachable in the previous configuration.
 Compile is applied only to full-resident pipelines because accelerate's
 offload hooks and Inductor fight each other, so a model forced onto an offload
 rung cannot have it. On this card T5-XXL forces the offload rung, so the 36%
@@ -287,6 +287,10 @@ gates the fused attention kernels on RDNA 3; without it torch falls back to
 math attention, which is several times slower. The baseline therefore already
 runs fused attention through torch SDPA, and an explicit backend can only
 match it or regress.
+
+Any standalone ROCm test script must set
+`TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` before SDPA first dispatch. Without
+it SDPA falls back to math attention and allocates a 3.51 GiB attention matrix.
 
 Of the backends diffusers 0.39 exposes, none improves on that here. The
 FlashAttention-3 entries target Hopper. `aiter` is AMD's own kernel library
@@ -320,12 +324,12 @@ everything, and the payoff is large:
 
 | Configuration | Time | Peak VRAM | T5? |
 | --- | ---: | ---: | --- |
-| fp16 T5, `model_offload` (shipped today) | 49.5 s | 12.09 GB | Yes |
+| fp16 T5, `model_offload` (previous) | 49.5 s | 12.09 GB | Yes |
 | int8 T5, full residency, eager | 43.1 s | 13.44 GB | Yes |
 | **int8 T5, full residency, `torch.compile`** | **28.0 s** | 13.44 GB | **Yes** |
 | fp16, no T5, full residency + compile | 26.0 s | 8.84 GB | No |
 
-**1.77x faster than the shipped configuration, with the long-prompt window
+**1.77x faster than the previous configuration, with the long-prompt window
 intact.** int8 brings T5 from 9.12 GB to 4.57 GB, which puts the whole
 pipeline at 10.93 GB resident against 15.15 GB before. Full residency then
 makes `torch.compile` available, and compile is worth 35% here (43.1 s to
@@ -340,18 +344,18 @@ tail. Weight-only int8 perturbs the text encoder slightly; it did not cost
 prompt comprehension, which is the property that matters for choosing SD 3.5
 over SDXL in the first place.
 
-Two caveats before this ships:
+Two implementation constraints follow from the measurements:
 
 - 13.44 GB peak against ~14.3 GiB usable is **tight**. A desktop session
-  holding more VRAM than usual would push it back to OOM, and unlike the
-  offload rung there is no graceful degradation: `_pick_rung` pins a rung and
-  retries the same one after an OOM.
+  holding more VRAM than usual can push it back to OOM. Under
+  `MEMORY_MODE=auto`, the worker now descends one rung after its generation
+  eviction retry fails, reloads and retries the job once.
 - It adds a `torchao` dependency to the worker and makes `torch.compile`
-  load-bearing rather than opt-in, which is a change to the engine's failure
-  surface, not just its speed.
+  required for the quantized full-resident pipeline, which is a change to the
+  engine's failure surface, not just its speed.
 
-This is measured, not shipped. Adopting it is a separate decision from
-issue #151.
+Issue #155 adopts this path for `sd35-medium` only. CUDA workers still need
+their own acceptance measurement.
 
 ## int8 does not generalize to the other models
 
@@ -448,12 +452,11 @@ Do not generalise the flat result above to other hardware.
 on ~11.3 TFLOPS fp32 / ~22.6 TFLOPS fp16 shader throughput, with no
 datacenter-class tensor cores. Faster silicon is the only answer.
 
-**Quantisation is blocked by both hardware and stack.** `bitsandbytes`,
-`torchao` and `optimum.quanto` are all absent, and RDNA 3 has no native fp8
-matmul, so the upstream `t5xxl_fp8` file would be upcast on load and save
-nothing. On an NVIDIA card with the libraries installed, int8 T5 would fit SD
-3.5 fully resident and unlock compile. Here it needs both a dependency
-decision and hardware that can execute the format.
+**Quantisation is limited by both hardware and stack.** `torchao`
+`Int8WeightOnlyConfig` works on the reference card through its pure PyTorch
+path. `bitsandbytes` does not: its int8 kernel is not built for gfx1102. RDNA 3
+still has no native fp8 matmul, so the upstream `t5xxl_fp8` file is upcast on
+load and saves nothing.
 
 ### The model: inherent to the weights, except one
 
@@ -494,7 +497,7 @@ so the table uses real parts.
 
 | GPU | VRAM | FP16 throughput | Fits resident? | Estimated 1024/20 |
 | --- | ---: | --- | --- | ---: |
-| RX 7600 XT (this card) | 16 GB | ~22.6 TFLOPS shader | No, offload forced | **49.5 s measured** |
+| RX 7600 XT (this card) | 16 GB | ~22.6 TFLOPS shader | Yes, with int8 T5 | **28.0 s measured** |
 | Tesla T4 | 16 GB | ~65 TFLOPS tensor | No, offload forced | 40 to 70 s |
 | Tesla V100 16 GB | 16 GB | ~125 TFLOPS tensor | No, offload forced | 25 to 40 s |
 | Tesla V100 32 GB | 32 GB | ~125 TFLOPS tensor | Yes | 10 to 18 s |
@@ -503,7 +506,9 @@ so the table uses real parts.
 | H100 80 GB | 80 GB | ~756 TFLOPS tensor (dense) | Yes | 2 to 5 s |
 
 **Every figure in the last column except the first is an estimate, not a
-measurement**, and the ranges are deliberately wide. Diffusion rarely scales
+measurement**, and the ranges are deliberately wide. The estimates for the
+other cards remain fp16 projections because the int8 path has not been
+accepted on CUDA. Diffusion rarely scales
 with peak FLOPS: real speedups land well below the paper ratio because
 attention is partly memory-bound, and the fixed costs of text encoding and VAE
 decode do not shrink with tensor throughput. Treat the ordering as reliable
@@ -517,21 +522,18 @@ For self-hosters on 16 GB or less, `group_offload` at 2.51 GB peak means
 `sd35-medium` will run on far smaller cards than its `min_vram_gb` suggests;
 it will simply be slow.
 
-## Why `min_vram_gb` is 24
+## Why `min_vram_gb` is 14
 
-`min_vram_gb` documents the **full residency** requirement, and full residency
-OOMs on this card, so its true value cannot be measured here. 24 is bounded
-below by the measurement that 15.98 GiB is insufficient and is otherwise a
-conservative estimate. Any value from 18 upward behaves identically on this
-hardware: the ladder selects `model_offload` either way. Pinning it exactly
-needs a card with more than 16 GB.
+The int8 pipeline is 10.93 GB resident and reaches 13.44 GB during generation.
+`min_vram_gb` is the full-residency requirement, so 14 rounds up from the
+measured peak rather than from the weight-only resident figure. This lets a
+reference-card worker with about 14.3 GiB free select full residency while a
+busier desktop can select model offload before attempting a tight load.
 
-The value that matters is not the estimate itself but what it makes the ladder
-do. At 24, the existing 0.55 largest-component fraction sets a 13.2 GB
-threshold for the model-offload rung, against a measured peak of 12.09 GB.
-Correct, with margin. That is why the proposed
-`largest_component_vram_gb` manifest override was not added: the heuristic it
-would have replaced makes the right call.
+Free memory can change between rung selection and the generation peak. The
+automatic fallback therefore remains required even with the measured value:
+after the existing eviction retry fails, generation descends one rung, reloads
+and retries once.
 
 ## Reproducing
 
@@ -550,20 +552,19 @@ Stop competing GPU workloads first. An earlier issue #75 run was invalidated
 by an unrelated process holding ~14 GB, and on a card this size anything
 resident changes which rung the ladder picks.
 
-## Adopting the int8 path
+## The int8 path
 
-The int8 configuration is measured, not shipped. Issue #155 covers the work to
-adopt it. That issue exists because three engine changes come first.
+Issue #155 adds one worker-only manifest field naming a component and scheme.
+`sd35-medium` declares `text_encoder_3:int8`; no other model is quantized.
+The engine applies torchao immediately after `_from_pretrained`, before the
+device move, and requires compile when that quantized pipeline is fully
+resident.
 
-1. A manifest needs a way to ask for a quantized component.
-2. `_from_pretrained` needs to quantize that component before the device move.
-3. `_load_model` needs to fall back to `model_offload` when full residency
-   runs out of memory.
-
-The third item is the important one. Peak VRAM is 13.44 GB against about
-14.3 GiB of usable memory. `_pick_rung` pins a rung and retries the same rung
-after a failure, so a heavier desktop session turns a slow path into a failed
-job. The fallback is a requirement, not a refinement.
+Load-time out-of-memory errors under `MEMORY_MODE=auto` descend from full
+residency to model offload, then to group offload. Generation first evicts
+other residents and retries as before. If that still fails, it descends one
+rung, reloads and retries the job once. Explicitly pinned memory modes never
+descend.
 
 ## The 15-step default
 
