@@ -15,7 +15,7 @@
 	} = $props();
 </script>
 
-<div class="krea latent-page">
+<div class="landing-surface latent-page">
 	<div class="canvas" aria-hidden="true">
 		<LatentCanvas followCursor animate warmupFrames={1400} />
 	</div>
@@ -119,7 +119,7 @@
 		backdrop-filter: blur(28px);
 	}
 
-	:global(:root[data-krea-mode='light']) footer {
+	:global(:root[data-landing-mode='light']) footer {
 		background: oklch(0.97 0.004 255 / 78%);
 	}
 

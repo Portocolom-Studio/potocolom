@@ -499,7 +499,7 @@
 		min-width: 0;
 	}
 
-	:global(:root[data-krea-mode='light']) .stack {
+	:global(:root[data-landing-mode='light']) .stack {
 		--dot-l: 0.58;
 		--heat-base: oklch(0.96 0.004 255);
 	}

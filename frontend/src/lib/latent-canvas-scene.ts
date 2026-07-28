@@ -233,7 +233,7 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 	});
 	themeObserver.observe(document.documentElement, {
 		attributes: true,
-		attributeFilter: ['data-krea-mode']
+		attributeFilter: ['data-landing-mode']
 	});
 
 	document.addEventListener('visibilitychange', onVisibility);

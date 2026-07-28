@@ -2,21 +2,24 @@
 	import { onMount } from 'svelte';
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import SunIcon from '@lucide/svelte/icons/sun';
+	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import { t } from '$lib/i18n.svelte';
 
 	let mode = $state<'dark' | 'light'>('dark');
 
 	function toggleMode() {
 		mode = mode === 'dark' ? 'light' : 'dark';
-		document.documentElement.dataset.kreaMode = mode;
+		document.documentElement.dataset.landingMode = mode;
 	}
 
 	onMount(() => {
-		document.documentElement.dataset.kreaMode = mode;
+		document.documentElement.dataset.landingMode = mode;
 	});
 </script>
 
-<aside class="sketch-switcher" aria-label={t('ui.display_mode')}>
+<div class="sketch-switcher">
+	<LanguageToggle />
+	<span class="divider" aria-hidden="true"></span>
 	<button
 		type="button"
 		class="mode"
@@ -29,7 +32,7 @@
 			<MoonIcon aria-hidden="true" />
 		{/if}
 	</button>
-</aside>
+</div>
 
 <style>
 	.sketch-switcher {
@@ -49,6 +52,35 @@
 		box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 45%);
 		transform: translateX(-50%);
 		font-family: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+	}
+
+	.sketch-switcher :global([data-slot='toggle-group']) {
+		gap: 0.15rem;
+		padding: 0;
+		border: 0;
+	}
+
+	.sketch-switcher :global([data-slot='toggle-group-item']) {
+		height: 2.4rem;
+		min-width: 2.4rem;
+		padding-inline: 0.7rem;
+		border: 0;
+		color: oklch(0.72 0.015 255);
+	}
+
+	.sketch-switcher :global([data-slot='toggle-group-item']:hover) {
+		color: oklch(0.98 0.005 250);
+	}
+
+	.sketch-switcher :global([data-slot='toggle-group-item'][data-state='on']) {
+		background: oklch(0.424 0.199 265.6);
+		color: oklch(0.97 0.014 254.6);
+	}
+
+	.divider {
+		width: 1px;
+		height: 1.4rem;
+		background: oklch(1 0 0 / 14%);
 	}
 
 	.mode {

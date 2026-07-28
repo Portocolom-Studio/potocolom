@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import LatentShell from '$lib/components/landing-krea/LatentShell.svelte';
+	import LatentShell from '$lib/components/landing/LatentShell.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import { t } from '$lib/i18n.svelte';
-	import '../../krea-tokens.css';
+	import '../../landing-tokens.css';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
@@ -160,7 +160,7 @@
 		backdrop-filter: blur(28px);
 	}
 
-	:global(:root[data-krea-mode='light']) .panel {
+	:global(:root[data-landing-mode='light']) .panel {
 		background: oklch(0.97 0.004 255 / 78%);
 	}
 

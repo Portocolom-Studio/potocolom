@@ -1,5 +1,5 @@
 <script lang="ts">
-	import LatentShell from '$lib/components/landing-krea/LatentShell.svelte';
+	import LatentShell from '$lib/components/landing/LatentShell.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
@@ -13,7 +13,7 @@
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
 	import { t } from '$lib/i18n.svelte';
-	import '../../krea-tokens.css';
+	import '../../landing-tokens.css';
 
 	// Fetch at runtime so prerender does not inline the multi-MB results JSON
 	// into an unhashed script tag (main's CSP check).
@@ -285,7 +285,7 @@
 		backdrop-filter: blur(28px);
 	}
 
-	:global(:root[data-krea-mode='light']) .panel {
+	:global(:root[data-landing-mode='light']) .panel {
 		background: oklch(0.97 0.004 255 / 78%);
 	}
 
