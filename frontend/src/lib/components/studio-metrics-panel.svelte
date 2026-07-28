@@ -501,6 +501,8 @@
 			</div>
 		{:else if reportLoadingId === selectedSession?.id}
 			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
+		{:else if reportErrorId === selectedSession?.id}
+			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_error')}</p>
 		{:else}
 			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_empty')}</p>
 		{/if}
