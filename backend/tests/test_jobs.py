@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
 from app import db
@@ -214,6 +214,11 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     queued_id = uuid.uuid4()
     running_id = uuid.uuid4()
     async with db.session_factory() as session:
+        # recover() dispatches everything queued or running, so a leftover job
+        # from an earlier case in this session would arrive at the worker here
+        # and break the assertion about which two were dispatched. The database
+        # is truncated once per session, not per test.
+        await session.execute(delete(Job).where(Job.state.in_(("queued", "running"))))
         if await session.get(Model, "sd-test") is None:
             session.add(Model(
                 id="sd-test",
