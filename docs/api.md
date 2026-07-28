@@ -152,9 +152,11 @@ The studio opens at most four generation event streams. An `EventSource` error
 before or after the initial event moves that job to the 1.5-second history
 polling fallback; jobs above the stream cap share the same fallback refresh.
 After a streamed terminal event, the studio reads that generation once so its
-final row, timings and assets equal a history poll. Active streams also reconcile
-their single job row every 15 seconds, so a cross-replica event missed during a
-relay interruption cannot leave a spinner running forever.
+final row, timings and assets equal a history poll. A missed cross-replica event
+cannot leave a spinner running forever, by one of two paths: while every working
+job is streamed, each streamed row is reconciled on its own every 15 seconds;
+while any job is on the fallback, the 1.5-second history refresh already covers
+every row, streamed or not.
 
 Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
 
