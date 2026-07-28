@@ -410,7 +410,7 @@ sequenceDiagram
     A->>P: single row update of jobs.starred_at
     P-->>A: ok
     A-->>B: 204
-    note over A: AUTH_MODE=none skips the lookup entirely:<br>every request acts as the single local user.<br>Self-hosted without Redis reads the<br>session row from PostgreSQL directly.
+    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In the accounts modes, an install without Redis<br>reads the session row from PostgreSQL every time.
 ```
 
 ### Adding a new model
@@ -518,7 +518,7 @@ flowchart LR
     B["Browser<br>history, gallery, favorites,<br>share links"]
     API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
     CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
-    W -->|"PUT to the dispatched upload target:<br>presigned URL in the cloud, API route<br>when local. master and thumbnail"| STORE
+    W -->|"PUT master and thumbnail to the dispatched<br>upload target: a presigned URL in the cloud,<br>an API route on a local install"| STORE
     W -->|"job_done"| J
     J --- AS
     B -->|"session cookie"| API
