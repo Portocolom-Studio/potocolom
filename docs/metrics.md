@@ -120,7 +120,9 @@ The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, det
 
 ## GPU fleet metrics
 
-The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - via NVML on CUDA and amd-smi on ROCm, behind the same device layer as inference. The API fans each heartbeat out three ways: the `worker:{id}` Redis hash (the admin fleet view and the autoscaler read this), fleet-level CloudWatch aggregates (workers connected, slots in use and free, average and max GPU utilization, minimum VRAM free), and one JSON log line for history.
+The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - with one `nvidia-smi` subprocess on CUDA or one combined `rocm-smi --json` subprocess on ROCm. The blocking hardware query runs through `asyncio.to_thread`, off the async event loop that relays realtime frames and dispatches jobs. The ROCm parser prefers structured output and retains the human-readable regex parsers as defensive fallbacks. The API fans each heartbeat out three ways: the `worker:{id}` Redis hash (the admin fleet view and the autoscaler read this), fleet-level CloudWatch aggregates (workers connected, slots in use and free, average and max GPU utilization, minimum VRAM free), and one JSON log line for history.
+
+In-process NVML and amd-smi bindings remain a possible future optimization with no licensing obstacle. They are not adopted here because each GPU family would add a new vendor dependency, while the single subprocess per heartbeat captures most of the benefit.
 
 A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
 

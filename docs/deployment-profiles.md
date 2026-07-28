@@ -87,6 +87,19 @@ flowchart TB
 
 The corresponding editable diagram is the Profile comparison page in [diagrams/](diagrams/).
 
+## Cloud-readiness ledger
+
+This table records local choices whose deferred consequences have a concrete
+scaling trigger. It is a status ledger, not a roadmap or a new decision record.
+
+| Local choice | Why it is safe today | Trigger that forces the change |
+|---|---|---|
+| **Database connection pooling.** `backend/app/db.py` uses `NullPool`, so each request and fire-and-forget write opens a connection. Tests currently drive requests and WebSockets on separate event loops, and asyncpg connections are loop-bound. | A single self-hosted API process has modest connection concurrency. | More than one API replica, or use of managed PostgreSQL with a connection ceiling. Move the tests to one event loop, then tune the pool per profile. |
+| **In-process queue and relay.** With `REDIS_URL` empty, dispatch uses an in-process heap and frame relay uses an in-process call. | One API process owns all workers and browser connections. | More than one API replica. Configure the Redis queue and frame bus described in [04 - Architecture seams](internals/04-architecture-seams.md). |
+| **Container log rotation.** Compose uses Docker's bounded `json-file` driver. | The self-hosted stack runs as Docker containers on one host. | The cloud deployment. ECS must use `awslogs`; the compose logging block does not apply there. |
+| **Shipped model timings.** `backend/app/estimates.py` reads committed `model_timings.json` measurements from one machine. | Estimates are advisory rather than billing or scheduling inputs in the current profile. | Any deployment on different hardware, including every packaged install. Measure and select timings for that hardware. |
+| **Worker and usage event retention.** Worker identities are pruned after 30 days; `usage_events` has no retention window. | Worker identity growth is bounded, and one self-hosted install produces a modest event volume. | `usage_events` reaching a size where the admin usage view or daily telemetry aggregation slows down. Add retention or partitioning based on measured query behavior. |
+
 ## Migration paths
 
 Every path below is possible because the schema, storage keys and API are identical everywhere. Paths that need a small tool name the issue that ships it; nothing here requires code the architecture does not already plan.

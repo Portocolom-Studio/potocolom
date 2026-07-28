@@ -32,6 +32,7 @@ from app.tables import User
 logger = logging.getLogger("potocolom.db")
 
 LOCAL_USER_EMAIL = "local@localhost"
+MIN_POSTGRES_VERSION = (13, 0)
 
 engine: AsyncEngine | None = None
 session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -51,10 +52,33 @@ def _migrate(database_url: str) -> None:
     command.upgrade(config, "head")
 
 
+def _postgres_version_supported(version: tuple[int, ...]) -> bool:
+    return version >= MIN_POSTGRES_VERSION
+
+
+async def _postgres_version(database_url: str) -> tuple[int, ...]:
+    check_engine = create_async_engine(async_url(database_url), poolclass=NullPool)
+    try:
+        async with check_engine.connect() as connection:
+            version = connection.dialect.server_version_info
+            if version is None:
+                raise RuntimeError("could not determine PostgreSQL server version")
+            return version
+    finally:
+        await check_engine.dispose()
+
+
 async def connect() -> bool:
     global engine, session_factory, local_user_id
     settings = get_settings()
     try:
+        postgres_version = await _postgres_version(settings.database_url)
+        if not _postgres_version_supported(postgres_version):
+            minimum = ".".join(str(part) for part in MIN_POSTGRES_VERSION)
+            found = ".".join(str(part) for part in postgres_version)
+            raise RuntimeError(
+                f"PostgreSQL {minimum} or newer is required; found PostgreSQL {found}"
+            )
         # Alembic's env.py runs its own event loop, so migrate off this one.
         await asyncio.to_thread(_migrate, settings.database_url)
     except Exception as error:
@@ -86,8 +110,11 @@ async def _ensure_local_user(factory: async_sessionmaker[AsyncSession]) -> uuid.
             await session.execute(select(User).where(User.email == LOCAL_USER_EMAIL))
         ).scalar_one_or_none()
         if user is None:
-            user = User(email=LOCAL_USER_EMAIL)
+            user = User(email=LOCAL_USER_EMAIL, role="admin")
             session.add(user)
+            await session.commit()
+        elif user.role != "admin":
+            user.role = "admin"
             await session.commit()
         return user.id
 

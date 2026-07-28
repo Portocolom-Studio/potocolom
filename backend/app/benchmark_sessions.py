@@ -13,7 +13,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
-from app.auth import current_user
+from app.auth import current_user, require_role
 from app.settings import get_settings
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
 
@@ -140,7 +140,7 @@ def require_benchmark_api() -> None:
 async def create_benchmark_session(
     report: BenchmarkInput,
     _: None = Depends(require_benchmark_api),
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     row = BenchmarkSession(

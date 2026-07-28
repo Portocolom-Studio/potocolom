@@ -64,6 +64,11 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   rebuild the image) and restart the worker; see
   [third-party-models.md](third-party-models.md) for licensing notes.
 
+The bundled profile runs PostgreSQL 16. PostgreSQL 13 or newer is required if
+you point `DATABASE_URL` at an existing server. The API checks the server version
+before running migrations and starts in degraded mode with a clear warning when
+the server is too old.
+
 ## TLS and HSTS
 
 The API emits `Strict-Transport-Security: max-age=31536000` on every HTTP
@@ -99,6 +104,29 @@ upgrade an initial plain-HTTP connection.
 Back up `pgdata` and `assets` together: jobs and asset rows reference files
 by storage key, so restoring one without the other leaves dangling
 references. `hf-cache` and `models` are reproducible.
+
+## Logs
+
+Every service in `deploy/compose/compose.yml` uses Docker's `json-file`
+logging driver with five 10 MB files per container. The files live in Docker's
+data directory on the host, survive container restarts, and are removed when
+the container is removed. Read them with:
+
+```bash
+docker compose -f deploy/compose/compose.yml logs
+docker compose -f deploy/compose/compose.yml logs -f api worker
+```
+
+To change the approximately 50 MB per-container limit, edit `max-size` or
+`max-file` in the `x-logging` block and recreate the services. Job state,
+`jobs.failure_reason`, phase timings, GPU sample history, and usage events are
+operational records in PostgreSQL; container logs retain the remaining process
+detail such as startup, protocol, driver, and traceback messages.
+
+The API sends the anonymous daily aggregate documented in
+[metrics.md](metrics.md) by default. Set `TELEMETRY=false` in
+`deploy/compose/.env` and recreate the API service to disable it. The exact
+next payload is available from `GET /api/v1/telemetry/preview`.
 
 ## Updating
 

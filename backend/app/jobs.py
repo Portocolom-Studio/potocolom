@@ -27,7 +27,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, realtime, registry
-from app.auth import current_user
+from app.auth import current_user, require_role
 from app.manifests import validate_params
 from app.settings import get_settings
 from app.storage import get_storage
@@ -114,7 +114,7 @@ class GenerationRequest(BaseModel):
 @router.post("/api/v1/generations", status_code=202)
 async def create_generation(
     request: GenerationRequest,
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     manifest = registry.for_jobs().get(request.model_id)
@@ -286,7 +286,7 @@ async def _set_star(
 @router.post("/api/v1/generations/{job_id}/star", status_code=204)
 async def star_generation(
     job_id: uuid.UUID,
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> Response:
     await _set_star(session, job_id, user, func.coalesce(Job.starred_at, func.now()))
@@ -296,7 +296,7 @@ async def star_generation(
 @router.delete("/api/v1/generations/{job_id}/star", status_code=204)
 async def unstar_generation(
     job_id: uuid.UUID,
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> Response:
     await _set_star(session, job_id, user, None)
