@@ -8,6 +8,21 @@
   Strict-Transport-Security: max-age=31536000
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
 
+# The entry document must not be reused across a deploy: it carries the hashed
+# asset names for one build. Pages serves the root index.html at its canonical
+# extensionless path, so the rule targets "/".
+# Other prerendered routes (/app, /benchmark, ...) are separate HTML documents
+# served directly by Pages, which revalidates HTML by default.
+# This file is read only by Cloudflare Pages. The self-hosted profile sets the
+# same header in SPAStaticFiles (backend/app/main.py), where every client-side
+# route arrives through the index.html fallback.
+/
+  Cache-Control: no-cache
+
+# The same document is reachable at its file path, by tooling or a direct link.
+/index.html
+  Cache-Control: no-cache
+
 # Long-cache static image assets. Filenames are stable slugs; regenerate under a
 # new slug (or purge) when replacing an image in place.
 /images/*

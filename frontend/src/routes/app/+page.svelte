@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { updated } from '$app/stores';
 	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
@@ -7,6 +8,7 @@
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import StudioMetricsDashboard from '$lib/components/studio-metrics-dashboard.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
+	import { Button } from '$lib/components/ui/button';
 	import {
 		loadHistory,
 		loadModels,
@@ -23,6 +25,8 @@
 	// behind it: PUBLIC_SITE_MODE=landing shows the canvas preview instead
 	// of the studio. Product builds leave the variable empty.
 	const landing = PUBLIC_SITE_MODE === 'landing';
+	let updateDismissed = $state(false);
+	const updateAvailable = $derived(!landing && $updated && !updateDismissed);
 
 	// Set on teardown: the preload chain can resolve after unmount, and starting
 	// the update loop then would run streams with no UI mounted.
@@ -73,10 +77,25 @@
 			<AppSidebar />
 			<Sidebar.Inset class="min-h-0 overflow-hidden">
 				<div class="relative flex h-full min-h-0 flex-col p-4">
-					{#if studio.favoriteNotice}
-						<p role="status" aria-live="polite" class="bg-muted mb-3 rounded-md px-3 py-2 text-sm">
-							{studio.favoriteNotice}
-						</p>
+					{#if studio.favoriteNotice || updateAvailable}
+						<div class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm">
+							<!-- The live region is the text only: a region containing focusable
+							     controls makes screen reader announcements confusing. Flex with a
+							     gap, so the messages are spaced by layout rather than by template
+							     whitespace. -->
+							<span role="status" aria-live="polite" class="flex flex-1 flex-wrap gap-x-1">
+								{#if studio.favoriteNotice}<span>{studio.favoriteNotice}</span>{/if}
+								{#if updateAvailable}<span>{t('app.update.available')}</span>{/if}
+							</span>
+							{#if updateAvailable}
+								<Button size="sm" onclick={() => location.reload()}>
+									{t('app.update.reload')}
+								</Button>
+								<Button variant="ghost" size="sm" onclick={() => (updateDismissed = true)}>
+									{t('app.update.dismiss')}
+								</Button>
+							{/if}
+						</div>
 					{/if}
 					{#if landing}
 						<StudioPreview />
