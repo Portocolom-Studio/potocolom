@@ -191,7 +191,7 @@
 		});
 		themeWatcher.observe(document.documentElement, {
 			attributes: true,
-			attributeFilter: ['data-krea-mode']
+			attributeFilter: ['data-landing-mode']
 		});
 
 		// The copy sits above this canvas, so listen on the window instead.

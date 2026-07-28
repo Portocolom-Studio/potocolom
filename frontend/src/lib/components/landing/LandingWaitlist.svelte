@@ -65,7 +65,7 @@
 	});
 </script>
 
-<section id="waitlist" class="closing" bind:this={root} aria-labelledby="krea-wl-title">
+<section id="waitlist" class="closing" bind:this={root} aria-labelledby="waitlist-title">
 	{#if field}
 		<div class="field" aria-hidden="true">
 			<LatentCanvas
@@ -81,7 +81,7 @@
 	{/if}
 
 	<div class="body">
-		<h2 id="krea-wl-title">{t('wl.title')}</h2>
+		<h2 id="waitlist-title">{t('wl.title')}</h2>
 		<p>{t('wl.sub')}</p>
 
 		{#if endpoint}
@@ -89,9 +89,9 @@
 				<p class="note ok" role="status">{status === 'done' ? t('wl.done') : t('wl.already')}</p>
 			{:else}
 				<form onsubmit={submit}>
-					<label class="sr-only" for="krea-wl-email">{t('wl.email_label')}</label>
+					<label class="sr-only" for="waitlist-email">{t('wl.email_label')}</label>
 					<input
-						id="krea-wl-email"
+						id="waitlist-email"
 						type="email"
 						name="email"
 						required
@@ -152,7 +152,7 @@
 		background: var(--k-paper);
 	}
 
-	:global(:root[data-krea-mode='light']) .field {
+	:global(:root[data-landing-mode='light']) .field {
 		--latent-fade: oklch(0.97 0.004 255 / 5%);
 	}
 
@@ -167,7 +167,7 @@
 			radial-gradient(70% 60% at 50% 50%, transparent 0%, oklch(0.08 0.012 265 / 22%) 92%);
 	}
 
-	:global(:root[data-krea-mode='light']) .veil {
+	:global(:root[data-landing-mode='light']) .veil {
 		background:
 			radial-gradient(38% 46% at 50% 42%, oklch(0.62 0.2 255 / 10%) 0%, transparent 72%),
 			radial-gradient(70% 60% at 50% 50%, transparent 0%, oklch(0.97 0.004 255 / 28%) 92%);

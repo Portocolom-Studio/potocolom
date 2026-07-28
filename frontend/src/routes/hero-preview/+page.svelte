@@ -7,7 +7,7 @@
 	const height = Number(params?.get('h') ?? 630);
 	const seed = Number(params?.get('seed') ?? 42);
 
-	function markReady() {
+	function setReady() {
 		(window as Window & { __heroPreviewReady?: boolean }).__heroPreviewReady = true;
 	}
 </script>
@@ -20,13 +20,7 @@
 />
 
 <div class="frame" style:width="{width}px" style:height="{height}px">
-	<LatentCanvas
-		class="frame-canvas"
-		{seed}
-		warmupFrames={400}
-		animate={false}
-		onReady={markReady}
-	/>
+	<LatentCanvas class="frame-canvas" {seed} warmupFrames={400} animate={false} onReady={setReady} />
 </div>
 
 <style>

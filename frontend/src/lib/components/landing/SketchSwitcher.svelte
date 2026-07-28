@@ -8,11 +8,11 @@
 
 	function toggleMode() {
 		mode = mode === 'dark' ? 'light' : 'dark';
-		document.documentElement.dataset.kreaMode = mode;
+		document.documentElement.dataset.landingMode = mode;
 	}
 
 	onMount(() => {
-		document.documentElement.dataset.kreaMode = mode;
+		document.documentElement.dataset.landingMode = mode;
 	});
 </script>
 

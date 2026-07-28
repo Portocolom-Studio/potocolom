@@ -11,6 +11,7 @@
 	"hero.sub": "potocolom convierte tu lienzo en imágenes terminadas mientras dibujas. Úsalo gratis en tu propia GPU o deja que la nube haga el trabajo pesado.",
 	"hero.cta_launch": "Abrir la app",
 	"hero.cta_selfhost": "Autoalójalo gratis",
+	"loader.loading": "Cargando el estudio",
 	"features.title": "Hecho para los dos mundos",
 	"features.sub": "Un solo código detrás de todo: la instalación gratuita en tu escritorio y la nube gestionada son la misma aplicación.",
 	"features.f1_title": "Un bucle en vivo, no una cola",

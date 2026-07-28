@@ -11,6 +11,7 @@
 	"hero.sub": "potocolom turns your canvas into finished images while you sketch. Run it on your own GPU for free, or let the cloud carry the weight.",
 	"hero.cta_launch": "Launch the app",
 	"hero.cta_selfhost": "Self-host for free",
+	"loader.loading": "Loading studio",
 	"features.title": "Built for both worlds",
 	"features.sub": "One codebase behind everything: the free install on your desk and the managed cloud are the same application.",
 	"features.f1_title": "A live loop, not a queue",

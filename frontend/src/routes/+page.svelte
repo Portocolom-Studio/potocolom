@@ -1,8 +1,8 @@
 <script lang="ts">
 	import Seo from '$lib/components/Seo.svelte';
-	import SketchOrbit from '$lib/components/landing-krea/SketchOrbit.svelte';
-	import SketchSwitcher from '$lib/components/landing-krea/SketchSwitcher.svelte';
-	import '../krea-tokens.css';
+	import SketchOrbit from '$lib/components/landing/SketchOrbit.svelte';
+	import SketchSwitcher from '$lib/components/landing/SketchSwitcher.svelte';
+	import '../landing-tokens.css';
 
 	const structuredData = {
 		'@context': 'https://schema.org',

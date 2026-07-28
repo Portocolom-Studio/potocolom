@@ -8,11 +8,14 @@
 	import { makingImages, makingSources } from '$lib/making-images';
 	import { promptMarqueePrompts } from '$lib/prompt-marquee-prompts';
 	import { t } from '$lib/i18n.svelte';
-	import { onMount } from 'svelte';
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
-	import KreaWaitlist from './KreaWaitlist.svelte';
+	import LandingWaitlist from './LandingWaitlist.svelte';
+	import LandingLoader, {
+		type LandingAsset,
+		type LandingEntrancePhase
+	} from './LandingLoader.svelte';
 	import ParticleField from './ParticleField.svelte';
 	import SalonGrid, { type SalonTile } from './SalonGrid.svelte';
 
@@ -74,6 +77,16 @@
 			return { radius, depth, tiles };
 		});
 	});
+	const orbitAssets: LandingAsset[] = $derived.by(() => {
+		const unique = new Map<string, LandingAsset>();
+		for (const layer of arcs) {
+			for (const tile of layer.tiles) {
+				const asset = { src: tile.src, srcset: tile.srcset, sizes: '8rem' };
+				unique.set(`${asset.srcset}|${asset.sizes}`, asset);
+			}
+		}
+		return [...unique.values()];
+	});
 	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
 	const bullets = ['b1', 'b2', 'b3'] as const;
@@ -92,6 +105,7 @@
 	let workStage: HTMLElement | undefined = $state();
 	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
+	let entrancePhase: LandingEntrancePhase = $state('loading');
 
 	function onWallActive(next: SalonTile | null) {
 		shownTile = next;
@@ -116,7 +130,8 @@
 		});
 	}
 
-	onMount(() => {
+	$effect(() => {
+		if (entrancePhase !== 'ready') return;
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		if (reduced) {
 			typed = promptMarqueePrompts[0].primary;
@@ -143,8 +158,20 @@
 	});
 </script>
 
-<div class="krea orbit">
-	<header>
+<div
+	class="landing-surface orbit"
+	class:entrance-loading={entrancePhase === 'loading'}
+	class:entrance-revealing={entrancePhase === 'revealing'}
+	class:entrance-ready={entrancePhase === 'ready'}
+	aria-busy={entrancePhase !== 'ready'}
+>
+	<LandingLoader assets={orbitAssets} onphase={(phase) => (entrancePhase = phase)} />
+
+	<header
+		class="landing-content"
+		inert={entrancePhase !== 'ready'}
+		aria-hidden={entrancePhase !== 'ready'}
+	>
 		<a class="mark" href={resolve('/')}>potocolom</a>
 		<nav aria-label={t('nav.features')}>
 			<a href="#does">{t('nav.features')}</a>
@@ -157,7 +184,11 @@
 		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
 	</header>
 
-	<main>
+	<main
+		class="landing-content"
+		inert={entrancePhase !== 'ready'}
+		aria-hidden={entrancePhase !== 'ready'}
+	>
 		<section class="stage">
 			<div class="dots"><ParticleField density={0.0016} /></div>
 			<div class="stage-copy">
@@ -190,13 +221,15 @@
 							>
 								<!-- Without sizes the browser assumes 100vw and takes the widest
 								     variant for a chip that is never bigger than HOVER_REM. -->
-								<img
-									src={tile.src}
-									srcset={tile.srcset}
-									sizes="8rem"
-									alt={tile.alt}
-									loading="lazy"
-								/>
+								{#if entrancePhase !== 'loading'}
+									<img
+										src={tile.src}
+										srcset={tile.srcset}
+										sizes="8rem"
+										alt={tile.alt}
+										loading="lazy"
+									/>
+								{/if}
 							</button>
 						{/each}
 					{/each}
@@ -344,11 +377,15 @@
 				</div>
 			</div>
 
-			<KreaWaitlist />
+			<LandingWaitlist />
 		</section>
 	</main>
 
-	<footer>
+	<footer
+		class="landing-content"
+		inert={entrancePhase !== 'ready'}
+		aria-hidden={entrancePhase !== 'ready'}
+	>
 		<p>{t('footer.tagline')}</p>
 		<nav aria-label={t('footer.docs')}>
 			<a href={repoUrl}>{t('footer.github')}</a>
@@ -369,7 +406,22 @@
 		--pf-accent: oklch(0.62 0.2 255);
 	}
 
-	:global(:root[data-krea-mode='light']) .orbit {
+	:global(body:has(.orbit.entrance-loading)),
+	:global(body:has(.orbit.entrance-revealing)) {
+		overflow: hidden;
+	}
+
+	.landing-content {
+		opacity: 0;
+		transition: opacity 760ms var(--k-ease) 480ms;
+	}
+
+	.entrance-revealing .landing-content,
+	.entrance-ready .landing-content {
+		opacity: 1;
+	}
+
+	:global(:root[data-landing-mode='light']) .orbit {
 		--pf-quiet: oklch(0.2 0.02 262 / 22%);
 		--pf-accent: oklch(0.52 0.22 258);
 	}
@@ -519,6 +571,18 @@
 		overflow: clip;
 		pointer-events: none;
 		width: 100%;
+		opacity: 0;
+		transform: scale(0.14);
+		transform-origin: 50% 50%;
+		transition:
+			opacity 760ms var(--k-ease) 520ms,
+			transform 1500ms var(--k-ease-in-out);
+	}
+
+	.entrance-revealing .arc,
+	.entrance-ready .arc {
+		opacity: 1;
+		transform: scale(1);
 	}
 
 	.arc .chip {
@@ -936,7 +1000,7 @@
 		);
 	}
 
-	:global(:root[data-krea-mode='light']) .split-veil {
+	:global(:root[data-landing-mode='light']) .split-veil {
 		background: linear-gradient(
 			to bottom,
 			var(--k-veil) 0%,
@@ -972,7 +1036,7 @@
 		font-size: 0.76rem;
 	}
 
-	:global(:root[data-krea-mode='light']) .tag {
+	:global(:root[data-landing-mode='light']) .tag {
 		background: oklch(1 0 0 / 55%);
 	}
 
@@ -1083,6 +1147,18 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
+		.landing-content,
+		.arc {
+			transition-duration: 120ms;
+			transition-delay: 0ms;
+		}
+
+		.arc,
+		.entrance-revealing .arc,
+		.entrance-ready .arc {
+			transform: none;
+		}
+
 		.arc-spin,
 		.chip img,
 		.caret {
