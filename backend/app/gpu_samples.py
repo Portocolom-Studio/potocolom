@@ -360,23 +360,25 @@ async def _rebuild_usage_rollups(session: AsyncSession, before_ts: datetime) -> 
         UsageEvent.tier,
         UsageEvent.category,
     )
-    rows = (
-        await session.execute(
-            select(
-                *dimensions,
-                func.count().label("event_count"),
-                func.sum(UsageEvent.category_score).label("category_score_sum"),
-                func.count(UsageEvent.category_score).label("category_score_count"),
-                func.sum(UsageEvent.gpu_ms).label("gpu_ms_sum"),
-                func.sum(UsageEvent.duration_ms).label("duration_ms_sum"),
-                func.sum(UsageEvent.frames).label("frames_sum"),
-            )
-            .where(UsageEvent.created_at < before_ts)
-            .group_by(*dimensions)
+    aggregate = (
+        select(
+            *dimensions,
+            func.count().label("event_count"),
+            func.sum(UsageEvent.category_score).label("category_score_sum"),
+            func.count(UsageEvent.category_score).label("category_score_count"),
+            func.sum(UsageEvent.gpu_ms).label("gpu_ms_sum"),
+            func.sum(UsageEvent.duration_ms).label("duration_ms_sum"),
+            func.sum(UsageEvent.frames).label("frames_sum"),
         )
-    ).mappings().all()
+        .where(UsageEvent.created_at < before_ts)
+        .group_by(*dimensions)
+    )
+    # Streamed rather than buffered: the first run after an upgrade folds however
+    # much history the install already has, and that result set has no reason to
+    # sit in memory all at once.
+    result = await session.stream(aggregate)
 
-    for row in rows:
+    async for row in result.mappings():
         stmt = insert(UsageEventRollup).values(**row)
         excluded = stmt.excluded
         stmt = stmt.on_conflict_do_update(
