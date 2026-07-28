@@ -146,8 +146,8 @@
 {/if}
 
 <style>
-	/* Hallmark - pre-emit critique: P5 H5 E4 S5 R5 V4
-	   The loader borrows the landing's existing orbit geometry and tokens. */
+	/* The four rings expand from this compact loader into the matching
+	   production orbit geometry while the overlay fades. */
 	.landing-loader {
 		position: fixed;
 		inset: 0;

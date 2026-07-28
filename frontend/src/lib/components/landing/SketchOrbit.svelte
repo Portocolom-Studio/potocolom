@@ -11,6 +11,7 @@
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import LandingFaq from './LandingFaq.svelte';
 	import LandingWaitlist from './LandingWaitlist.svelte';
 	import LandingLoader, {
 		type LandingAsset,
@@ -377,6 +378,7 @@
 				</div>
 			</div>
 
+			<LandingFaq />
 			<LandingWaitlist />
 		</section>
 	</main>
