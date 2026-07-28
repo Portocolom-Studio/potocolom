@@ -1,17 +1,22 @@
-# The deployment artifacts operators actually run: every compose file and
-# profile is validated, then the shipped self-hosted stack is started with the
-# simulated worker, so no GPU is needed (issue #13 keeps one workflow per area).
+# The shipped API image contains backend/ and built frontend/ files, so both
+# path filters include them with deploy/. Otherwise route or static asset changes
+# could bypass the compose smoke test.
+# The simulated worker means no GPU is needed (issue #13 keeps one workflow per area).
 name: deploy
 
 on:
   pull_request:
     paths:
+      - "backend/**"
+      - "frontend/**"
       - "deploy/**"
       - "scripts/compose-smoke.sh"
       - ".github/workflows/deploy.yml"
   push:
     branches: [main]
     paths:
+      - "backend/**"
+      - "frontend/**"
       - "deploy/**"
       - "scripts/compose-smoke.sh"
       - ".github/workflows/deploy.yml"

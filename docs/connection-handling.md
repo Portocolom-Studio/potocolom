@@ -74,7 +74,7 @@ sequenceDiagram
     W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
-        Note over W,A: worker is dispatchable; heartbeats begin
+        Note over W,A: worker is dispatchable and heartbeats begin
     else version too old
         A-->>W: rejected (min_supported_version)
         A->>W: close 4002

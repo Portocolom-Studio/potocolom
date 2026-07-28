@@ -25,4 +25,4 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 - No emojis or decorative characters in code, comments, commits, issues or PRs.
 - Match the existing style of the file you are editing.
 - Run `make verify` locally before opening or updating a PR; it runs exactly what CI runs.
-- Mermaid diagrams must render; validate them before pushing.
+- Mermaid diagrams must render; run `make verify-mermaid` before pushing.
