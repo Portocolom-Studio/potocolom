@@ -588,3 +588,34 @@ Read this as a sample, not a proof. The sweep produced 48 images and a person
 looked at four of them. Step count changes the path through latent space, so
 two step counts give different compositions rather than the same image at two
 levels of polish. That rules out a pixel metric and leaves human judgment.
+
+## Tuned settings against manifest ceilings
+
+The cosmic suite (`scripts/benchmark-prompts-cosmic.json`, 60 prompts on black
+holes, deep space and cosmic fantasy) ran the whole roster twice over: once at
+manifest ceilings, once at the settings this project now believes are correct.
+600 images each time, no failures either time.
+
+| Model | Ceiling | Tuned | Change |
+| --- | ---: | ---: | ---: |
+| sdxl-base | 37.34 s at 50 steps | **11.69 s at 15** | 3.2x faster |
+| ssd-1b | 18.55 s at 40 steps | **7.37 s at 15** | 2.5x faster |
+| sd35-medium | 110.94 s at 50 steps | **48.33 s at 20** | 2.3x faster |
+| sdxl-fast | 3.77 s at 8 steps | 3.77 s at 8 | unchanged |
+| sdxl-hypersd | 3.77 s at 8 steps | 3.77 s at 8 | unchanged |
+| ssd-1b-lightning | 2.61 s at 8 steps | 2.62 s at 8 | unchanged |
+| vega-rt | 1.96 s at 8 steps | 1.96 s at 8 | unchanged |
+| dreamshaper-lcm | 5.57 s at 15 steps | 5.58 s at 15 | unchanged |
+| sdxl-turbo | 0.64 s at 4 steps | 0.64 s at 4 | unchanged |
+| sd-turbo | 0.43 s at 4 steps | 0.43 s at 4 | unchanged |
+
+The distilled models do not move, because their design point already is their
+ceiling. Only the three models that take real step counts had anything to
+give back, and they gave back a lot.
+
+The whole suite fell from 3 hours 7 minutes to 1 hour 31 minutes. Nothing in
+the roster got worse.
+
+Read the two runs together and the point is simple. The ceilings were never a
+recommendation. They were headroom that cost 2.3 to 3.2 times the time and
+returned quality that did not survive inspection at a fixed seed.
