@@ -18,8 +18,10 @@ def upgrade() -> None:
         "benchmark_sessions",
         sa.Column("id", sa.Uuid(), primary_key=True,
                   server_default=sa.text("gen_random_uuid()")),
-        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"),
-                  nullable=False),
+        # Provenance, not ownership: reads are install-scoped, so deleting the
+        # account that ran a benchmark must not delete the install's history.
+        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="SET NULL"),
+                  nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("target_vram_gb", sa.Float(), nullable=True),
         sa.Column("prompt_count", sa.Integer(), nullable=False),

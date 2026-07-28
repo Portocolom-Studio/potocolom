@@ -3,6 +3,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import delete
 
 from app import db
 from app.main import app
@@ -135,5 +136,44 @@ def test_benchmark_session_reads_are_install_scoped(monkeypatch):
             assert client.get(
                 f"/api/v1/benchmark/sessions/{session_id}"
             ).status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_benchmark_history_survives_deleting_the_account_that_ran_it(monkeypatch):
+    """Provenance, not ownership: the install keeps its own hardware history."""
+    monkeypatch.setenv("BENCHMARK_API", "1")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            created = client.post("/api/v1/benchmark/sessions", json=REPORT)
+            assert created.status_code == 201
+            session_id = uuid.UUID(created.json()["id"])
+
+            async def delete_the_runner() -> None:
+                assert db.session_factory is not None
+                runner_id = uuid.uuid4()
+                async with db.session_factory() as session:
+                    session.add(User(id=runner_id, email=f"{runner_id}@example.test"))
+                    await session.flush()
+                    row = await session.get(BenchmarkSession, session_id)
+                    assert row is not None
+                    row.user_id = runner_id
+                    await session.commit()
+                async with db.session_factory() as session:
+                    await session.execute(delete(User).where(User.id == runner_id))
+                    await session.commit()
+
+            asyncio.run(delete_the_runner())
+            assert client.get(f"/api/v1/benchmark/sessions/{session_id}").status_code == 200
+
+            async def provenance_cleared() -> None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = await session.get(BenchmarkSession, session_id)
+                    assert row is not None and row.user_id is None
+
+            asyncio.run(provenance_cleared())
     finally:
         get_settings.cache_clear()

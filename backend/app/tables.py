@@ -108,7 +108,9 @@ class BenchmarkSession(Base):
     __tablename__ = "benchmark_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # Who ran the suite, kept as provenance only; the history belongs to the install.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime]
     target_vram_gb: Mapped[float | None] = mapped_column(Float)
     prompt_count: Mapped[int]
