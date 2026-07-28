@@ -54,6 +54,7 @@ class Job(Base):
         ForeignKey("assets.id", ondelete="SET NULL"))
     dispatched_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
+    starred_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
