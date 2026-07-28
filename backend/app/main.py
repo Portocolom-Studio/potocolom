@@ -86,15 +86,23 @@ async def config() -> dict:
 class SPAStaticFiles(StaticFiles):
     """Serve a built SPA: unknown GET paths fall back to index.html."""
 
+    def _may_fall_back(self, path: str, scope) -> bool:
+        # Unknown API paths must stay 404s; only page routes fall back.
+        return scope["method"] == "GET" and path != "api" and not path.startswith("api/")
+
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            # Unknown API paths must stay 404s; only page routes fall back.
-            is_api = path == "api" or path.startswith("api/")
-            if exc.status_code == 404 and scope["method"] == "GET" and not is_api:
+            if exc.status_code == 404 and self._may_fall_back(path, scope):
                 return await super().get_response("index.html", scope)
             raise
+        # With html=True, StaticFiles answers a miss with 404.html when the build
+        # ships one instead of raising, which would leave every client-side route
+        # (/app, /benchmark) serving the error page in the self-hosted container.
+        if response.status_code == 404 and self._may_fall_back(path, scope):
+            return await super().get_response("index.html", scope)
+        return response
 
 
 _settings = get_settings()
