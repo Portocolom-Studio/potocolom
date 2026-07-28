@@ -12,7 +12,7 @@
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards simulate \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -110,6 +110,9 @@ verify-compose: ## validate every compose file and profile (no containers starte
 	cd deploy/compose && docker compose -f dev.yml config -q \
 		&& docker compose -f dev.yml --profile cloud-sim config -q \
 		&& docker compose -f compose.smoke.yml config -q
+
+verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
+	python3 scripts/verify-mermaid.py
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
