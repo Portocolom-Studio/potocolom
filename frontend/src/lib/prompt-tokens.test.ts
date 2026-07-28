@@ -5,11 +5,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { estimatePromptTokens, promptExceedsWindow } from './prompt-tokens.ts';
+import { estimatePromptTokens, exceedsWindow } from './prompt-tokens.ts';
 
-test('an empty prompt spends nothing', () => {
-	assert.equal(estimatePromptTokens(''), 0);
-	assert.equal(estimatePromptTokens('   '), 0);
+test('an empty prompt still spends the two markers', () => {
+	assert.equal(estimatePromptTokens(''), 2);
+	assert.equal(estimatePromptTokens('   '), 2);
 });
 
 test('short words cost about one token each plus the two markers', () => {
@@ -34,25 +34,25 @@ test('a typical studio prompt lands near the real CLIP count', () => {
 });
 
 test('a prompt well past the window is flagged', () => {
-	const long = 'a detailed painting of a garden '.repeat(20);
-	assert.ok(estimatePromptTokens(long) > 77);
-	assert.ok(promptExceedsWindow(long, 77));
+	const tokens = estimatePromptTokens('a detailed painting of a garden '.repeat(20));
+	assert.ok(tokens > 77);
+	assert.ok(exceedsWindow(tokens, 77));
 });
 
 test('a prompt inside the window is not flagged', () => {
-	assert.equal(promptExceedsWindow('a red cat on a fence', 77), false);
+	assert.equal(exceedsWindow(estimatePromptTokens('a red cat on a fence'), 77), false);
 });
 
 test('an undeclared window never warns', () => {
 	// 0 is the manifest default: no claim about the encoder, so no warning.
-	const long = 'a detailed painting of a garden '.repeat(20);
-	assert.equal(promptExceedsWindow(long, 0), false);
-	assert.equal(promptExceedsWindow(long, undefined), false);
+	const tokens = estimatePromptTokens('a detailed painting of a garden '.repeat(20));
+	assert.equal(exceedsWindow(tokens, 0), false);
+	assert.equal(exceedsWindow(tokens, undefined), false);
 });
 
 test('a larger declared window tolerates a longer prompt', () => {
 	// What a T5 based model buys: same prompt, no warning (issue #148).
-	const long = 'a detailed painting of a garden '.repeat(20);
-	assert.ok(promptExceedsWindow(long, 77));
-	assert.equal(promptExceedsWindow(long, 512), false);
+	const tokens = estimatePromptTokens('a detailed painting of a garden '.repeat(20));
+	assert.ok(exceedsWindow(tokens, 77));
+	assert.equal(exceedsWindow(tokens, 512), false);
 });

@@ -25,7 +25,7 @@
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
-	import { estimatePromptTokens, promptExceedsWindow } from '$lib/prompt-tokens';
+	import { estimatePromptTokens, exceedsWindow } from '$lib/prompt-tokens';
 	import {
 		defaultUpscaleModelId,
 		filterDiffusionModels,
@@ -134,11 +134,11 @@
 	// Diffusers truncates at the text encoder window and only logs it worker
 	// side, so the prompt tail silently stops affecting the image (issue #148).
 	const promptWindow = $derived(selectedModel?.prompt_token_limit ?? 0);
-	const promptOverflows = $derived(promptExceedsWindow(studio.prompt, promptWindow));
+	const promptTokens = $derived(estimatePromptTokens(studio.prompt));
 	const promptTokenNotice = $derived(
-		promptOverflows
+		exceedsWindow(promptTokens, promptWindow)
 			? t('app.gen.prompt_too_long')
-					.replace('{tokens}', String(estimatePromptTokens(studio.prompt)))
+					.replace('{tokens}', String(promptTokens))
 					.replace('{limit}', String(promptWindow))
 			: null
 	);

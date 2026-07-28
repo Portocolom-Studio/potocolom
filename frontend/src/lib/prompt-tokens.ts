@@ -16,12 +16,14 @@ const WHOLE_WORD_CHARS = 6;
 /** Every further run of this many characters costs roughly one more token. */
 const EXTRA_TOKEN_CHARS = 4;
 
-/** Approximate tokens the encoder would spend on this prompt. */
+/**
+ * Approximate tokens the encoder would spend on this prompt. An empty prompt
+ * still costs the two markers, which is what the encoder itself would spend.
+ */
 export function estimatePromptTokens(prompt: string): number {
 	// Punctuation is matched apart from words because CLIP gives the comma,
 	// which is how prompts separate tags, a token of its own.
-	const pieces = prompt.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu);
-	if (!pieces) return 0;
+	const pieces = prompt.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? [];
 	let tokens = SPECIAL_TOKENS;
 	for (const piece of pieces) {
 		const overflow = Math.max(0, piece.length - WHOLE_WORD_CHARS);
@@ -31,10 +33,13 @@ export function estimatePromptTokens(prompt: string): number {
 }
 
 /**
- * Whether to tell the user their prompt tail will not reach the image.
+ * Whether to tell the user their prompt tail will not reach the image. Takes
+ * the count rather than the prompt so a caller rendering both the number and
+ * the warning only scans the text once.
+ *
  * A limit of 0 means the manifest never declared a window, so say nothing
  * rather than guess at one (see worker/worker/manifests.py).
  */
-export function promptExceedsWindow(prompt: string, limit: number | undefined): boolean {
-	return !!limit && limit > 0 && estimatePromptTokens(prompt) > limit;
+export function exceedsWindow(tokens: number, limit: number | undefined): boolean {
+	return !!limit && limit > 0 && tokens > limit;
 }
