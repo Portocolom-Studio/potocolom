@@ -520,6 +520,8 @@ def main() -> None:
     print(f"\nresults.json -> {results_path}")
     print(f"report.md    -> {md_path}")
     print(f"report.html  -> {html_path}")
+    # A one-off request, not the shared client above: that context manager closed
+    # with the run, and reopening it just to publish would outlive its purpose.
     try:
         response = httpx.post(
             f"{args.api.rstrip('/')}/api/v1/benchmark/sessions",

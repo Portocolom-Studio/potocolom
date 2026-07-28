@@ -72,7 +72,14 @@ export async function loadBenchmarkSessions(): Promise<BenchmarkSession[]> {
 }
 
 export async function loadBenchmarkSessionReport(id: string): Promise<BenchmarkReport | null> {
-	const response = await fetch(`/api/v1/benchmark/sessions/${id}`);
-	if (!response.ok) return null;
-	return (await response.json()) as BenchmarkReport;
+	// Same guard as the listing above: this module ships in the marketing bundle
+	// too, where there is no API to answer.
+	if (landing) return null;
+	try {
+		const response = await fetch(`/api/v1/benchmark/sessions/${id}`);
+		if (!response.ok) return null;
+		return (await response.json()) as BenchmarkReport;
+	} catch {
+		return null;
+	}
 }
