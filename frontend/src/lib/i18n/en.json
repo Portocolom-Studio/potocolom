@@ -215,6 +215,7 @@
 	"app.gen.model": "Model",
 	"app.gen.prompt": "Prompt",
 	"app.gen.prompt_placeholder": "a castle on a hill at sunset, oil painting",
+	"app.gen.prompt_too_long": "About {tokens} tokens. This model reads the first {limit}; the rest is saved with the image but does not shape it.",
 	"app.gen.steps": "Steps",
 	"app.gen.guidance": "Guidance",
 	"app.gen.seed": "Seed",

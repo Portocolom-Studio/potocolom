@@ -27,6 +27,7 @@ class Manifest(BaseModel):
     capabilities: list[str]
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
+    prompt_token_limit: int = 0  # text encoder window; 0 means the studio stays quiet
     default: bool = False  # preselected by clients when nothing is pinned
     license_id: str = ""
     license_url: str = ""

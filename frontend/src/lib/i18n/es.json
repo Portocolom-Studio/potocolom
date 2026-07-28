@@ -215,6 +215,7 @@
 	"app.gen.model": "Modelo",
 	"app.gen.prompt": "Prompt",
 	"app.gen.prompt_placeholder": "un castillo en una colina al atardecer, pintura al oleo",
+	"app.gen.prompt_too_long": "Unos {tokens} tokens. Este modelo lee los primeros {limit}; el resto se guarda con la imagen pero no la modifica.",
 	"app.gen.steps": "Pasos",
 	"app.gen.guidance": "Guidance",
 	"app.gen.seed": "Semilla",

@@ -610,6 +610,12 @@ Each API release tolerates the previous release's SPA. Response shapes follow th
 
 Rejected alternative: breaking response changes plus a forced reload. That makes SPA and API deploys lockstep and can discard in-flight work.
 
+## Prompt token window: declared per manifest, silent when undeclared
+
+The text encoder window a prompt is measured against comes from the manifest field `prompt_token_limit`, not from a constant in the frontend. The shipped CLIP based models declare 77; a model whose encoder differs declares its own figure and the studio warning follows it without a frontend change. An absent or zero value means the window is unknown and no warning appears, so a manifest that forgets the field fails back to the behaviour before the warning existed instead of asserting a limit its encoder does not have. Upscale manifests take no prompt and leave it unset. The count itself is estimated in the browser from words and punctuation rather than tokenized exactly, because the real CLIP tokenizer means shipping roughly a megabyte of BPE vocabulary to phrase a warning that only needs to be right within a few tokens.
+
+Rejected alternatives: hardcoding 77 in the studio, which is correct only for the models shipped today and silently wrong for the first model with a larger encoder; defaulting the field to 77 so existing manifests need no edit, which turns a forgotten declaration into a confident false warning rather than silence; asking the worker for an exact count per keystroke, which spends a round trip on a hint; and bundling a real tokenizer, which costs more transfer than the feature is worth.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

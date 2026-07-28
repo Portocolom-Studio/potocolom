@@ -37,6 +37,29 @@ def test_validate_params_accepts_on_invalid_schema():
     assert validate_params(manifest, {"anything": True}) is None
 
 
+def test_prompt_token_limit_crosses_the_wire():
+    """The studio warning (issue #148) reads this off GET /api/v1/models, so it
+    has to survive parsing rather than be dropped as an unknown worker field."""
+    parsed = parse_manifests([{
+        "id": "m1",
+        "name": "M1",
+        "capabilities": ["text_to_image"],
+        "parameters": SCHEMA,
+        "prompt_token_limit": 77,
+        "source": "worker/side/only",
+    }])
+    assert parsed[0].prompt_token_limit == 77
+
+
+def test_prompt_token_limit_defaults_to_undeclared():
+    """A worker that never declares a window leaves the studio silent instead
+    of asserting a CLIP limit the model may not have."""
+    parsed = parse_manifests([
+        {"id": "m1", "name": "M1", "capabilities": ["text_to_image"], "parameters": SCHEMA},
+    ])
+    assert parsed[0].prompt_token_limit == 0
+
+
 def test_parse_manifests_rejects_upscale_mixed_with_diffusion():
     try:
         parse_manifests([{

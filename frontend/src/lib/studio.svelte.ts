@@ -8,6 +8,8 @@ export type Model = {
 	name: string;
 	capabilities: string[];
 	default: boolean;
+	/** Text encoder window; absent or 0 means the model never declared one. */
+	prompt_token_limit?: number;
 	estimated_gpu_ms_default: number | null;
 	estimated_gpu_ms_by_factor?: Record<string, number>;
 	parameters: {
