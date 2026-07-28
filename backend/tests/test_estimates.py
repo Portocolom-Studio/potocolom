@@ -1,4 +1,16 @@
+import asyncio
+
+import pytest
+
+from app import db, estimates
 from app.estimates import estimate_gpu_ms, schema_defaults
+
+
+@pytest.fixture(autouse=True)
+def clear_observed_timings():
+    estimates._observed_scales = {}
+    yield
+    estimates._observed_scales = {}
 
 
 def test_schema_defaults_reads_property_defaults():
@@ -66,6 +78,63 @@ def test_estimate_gpu_ms_upscale_uses_measured_factor_map():
     assert estimate_gpu_ms("realesrgan-fast", {"factor": 4}) == 532
     assert estimate_gpu_ms("realesrgan-fast", {}) == 711
     assert estimate_gpu_ms("realesrgan", {"factor": 3}) is None
+
+
+def test_observed_timing_below_threshold_keeps_shipped_constant():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3736
+
+
+def test_observed_timing_at_threshold_uses_median():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300, 3400)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3200
+
+
+def test_observed_timing_median_resists_outlier():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300, 999_999)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3200
+
+
+def test_observed_timing_database_failure_uses_shipped_constant(monkeypatch):
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("database unavailable")
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    estimates._observed_scales = {"sdxl-fast": 0.5}
+    monkeypatch.setattr(db, "session_factory", BrokenSession)
+
+    asyncio.run(estimates.refresh_observed_timings())
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3736
 
 
 def test_load_timings_survives_bad_json(tmp_path, monkeypatch):
