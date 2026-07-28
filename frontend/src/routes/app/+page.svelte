@@ -84,8 +84,8 @@
 							class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm"
 						>
 							<span class="flex-1">
-								{studio.favoriteNotice}
-								{#if updateAvailable}{t('app.update.available')}{/if}
+								{#if studio.favoriteNotice}<span>{studio.favoriteNotice}</span>{/if}
+								{#if updateAvailable}<span>{t('app.update.available')}</span>{/if}
 							</span>
 							{#if updateAvailable}
 								<Button size="sm" onclick={() => location.reload()}>

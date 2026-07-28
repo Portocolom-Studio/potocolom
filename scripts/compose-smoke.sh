@@ -44,7 +44,9 @@ if [[ "$app_code" != "200" ]]; then
 fi
 if ! curl -sfD - -o /dev/null "${base}/app" \
   | tr -d '\r' \
-  | awk 'BEGIN { found = 0 } tolower($0) == "cache-control: no-cache" { found = 1 } END { exit !found }'; then
+  | awk 'BEGIN { found = 0 }
+         tolower($0) ~ /^cache-control:/ && tolower($0) ~ /no-cache/ { found = 1 }
+         END { exit !found }'; then
   echo "expected /app to return Cache-Control: no-cache" >&2
   exit 1
 fi
