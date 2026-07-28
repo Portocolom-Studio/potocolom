@@ -140,9 +140,11 @@ License obligations if you ever ship them to users: [docs/third-party-models.md]
 1. **Preflight** - `GET /api/v1/benchmark/gpu`. If any model is resident, abort
    (or pass `--force` to unload first).
 2. **Per model** - explicit load → all prompts × variants → explicit unload.
-3. **Summarize** - `results.json`, `report.md`, `report.html` with `load_ms`,
+3. **Cleanup** - unload anything still on the GPU (even after errors).
+4. **Summarize** - `results.json`, `report.md`, `report.html` with `load_ms`,
    `gpu_ms`, and `wall_s` per image.
-4. **Cleanup** - unload anything still on the GPU (even after errors).
+5. **Persist** - after the artifacts are written, best-effort POST the complete
+   report to `/api/v1/benchmark/sessions` on the same running install.
 
 Load and unload go through the API → fleet socket → worker `DiffusersEngine`,
 so the benchmark controls VRAM instead of relying on lazy load / OOM eviction.

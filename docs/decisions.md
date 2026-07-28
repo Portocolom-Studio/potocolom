@@ -538,6 +538,12 @@ Favorites are persisted as nullable `jobs.starred_at`. The timestamp is both mem
 
 Rejected alternatives: keeping UUIDs in browser localStorage, which strands favorites across browsers, reinstalls and regenerated rows; a separate favorites join table, which adds a join and lifecycle without buying many-to-many ownership because assets and their jobs have one owner.
 
+## Benchmark history: PostgreSQL sessions and measurements
+
+Supersedes issue #107's static-JSON-only position. Each completed suite run is one benchmark session with ordered per-model measurements in PostgreSQL, and reads are install-scoped because a benchmark measures the shared GPU rather than one person's work. The existing JSON artifacts remain a portable report and the public static page's fallback, while an installed studio can list and compare every retained run in either deployment profile.
+
+Rejected alternatives: keeping session history solely as committed static JSON, where each run overwrites the previous report, publishing runtime data requires a source-control operation, and the session picker can never show more than one run; scoping sessions to the account that ran them, which would hide an install's own hardware history from everyone but whoever happened to trigger the benchmark.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

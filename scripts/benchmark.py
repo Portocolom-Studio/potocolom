@@ -520,6 +520,18 @@ def main() -> None:
     print(f"\nresults.json -> {results_path}")
     print(f"report.md    -> {md_path}")
     print(f"report.html  -> {html_path}")
+    try:
+        response = httpx.post(
+            f"{args.api.rstrip('/')}/api/v1/benchmark/sessions",
+            json=summary,
+            timeout=30,
+        )
+        response.raise_for_status()
+        print(f"session       -> {response.json()['id']}")
+    except (httpx.HTTPError, KeyError, ValueError) as error:
+        # Artifacts are already durable. History ingest is best effort and
+        # must not turn a completed benchmark into a failed run.
+        print(f"warning: benchmark session ingest failed: {error}", file=sys.stderr)
 
     if failures:
         sys.exit(1)

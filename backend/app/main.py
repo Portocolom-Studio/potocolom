@@ -9,6 +9,7 @@ from starlette.staticfiles import StaticFiles
 
 from app import db, jobs
 from app.benchmark import router as benchmark_router
+from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
 from app.gpu_samples import maintain_loop
 from app.jobs import router as jobs_router
@@ -57,6 +58,7 @@ app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
 if get_settings().benchmark_api:
     app.include_router(benchmark_router)
+app.include_router(benchmark_sessions_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)
