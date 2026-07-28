@@ -159,11 +159,17 @@ async def refresh_observed_timings() -> None:
         return
     recent_rank = func.row_number().over(
         partition_by=Job.model_id,
-        order_by=(Job.finished_at.desc().nulls_last(), Job.created_at.desc()),
+        order_by=(Job.finished_at.desc(), Job.created_at.desc()),
     ).label("recent_rank")
     recent = (
         select(Job.model_id, Job.params, Job.gpu_ms, recent_rank)
-        .where(Job.state == "succeeded", Job.gpu_ms.is_not(None), Job.gpu_ms > 0)
+        .where(
+            Job.state == "succeeded",
+            Job.gpu_ms > 0,
+            # Ordering leads with finished_at, so a succeeded row without one
+            # cannot be placed and would defeat the partial index.
+            Job.finished_at.is_not(None),
+        )
         .subquery()
     )
     try:
