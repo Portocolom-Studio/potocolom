@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ logger = logging.getLogger("potocolom.estimates")
 TIMINGS_PATH = Path(__file__).with_name("model_timings.json")
 OBSERVED_SAMPLE_THRESHOLD = 5
 OBSERVED_SAMPLE_WINDOW = 50
+# Lifetime history would make the five-minute refresh scan more rows every week.
+OBSERVED_SAMPLE_MAX_AGE = timedelta(days=30)
 
 _observed_scales: dict[str, float] = {}
 
@@ -169,6 +172,10 @@ async def refresh_observed_timings() -> None:
             # Ordering leads with finished_at, so a succeeded row without one
             # cannot be placed and would defeat the partial index.
             Job.finished_at.is_not(None),
+            # Bounds the rows the window has to rank: without this the refresh
+            # reads the whole of an install's history every five minutes, and a
+            # year-old timing describes hardware the install may no longer have.
+            Job.finished_at >= datetime.now(timezone.utc) - OBSERVED_SAMPLE_MAX_AGE,
         )
         .subquery()
     )
