@@ -19,8 +19,7 @@ def _category(control: dict) -> tuple[str, float | None]:
     category = control.get("category")
     if category not in LABELS:
         category = "other"
-    score = control.get("category_score")
-    return category, float(score) if isinstance(score, (int, float)) else None
+    return category, _optional_float(control.get("category_score"))
 
 
 async def record_job(job_id: uuid.UUID, control: dict) -> None:
@@ -39,7 +38,6 @@ async def record_job(job_id: uuid.UUID, control: dict) -> None:
                 "edit"
             )
             category, score = _category(control)
-            duration = control.get("duration_ms")
             session.add(UsageEvent(
                 user_id=job.user_id,
                 kind="job",
@@ -50,7 +48,7 @@ async def record_job(job_id: uuid.UUID, control: dict) -> None:
                 category=category,
                 category_score=score,
                 gpu_ms=job.gpu_ms,
-                duration_ms=int(duration) if duration is not None else None,
+                duration_ms=_optional_int(control.get("duration_ms")),
                 frames=1,
             ))
             await session.commit()
@@ -83,8 +81,17 @@ async def record_realtime(
         logger.exception("usage event write failed for realtime session")
 
 
+def _numeric(value: Any) -> bool:
+    """bool is a subclass of int, and these values arrive from the worker."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _optional_int(value: Any) -> int | None:
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return int(value) if _numeric(value) else None
+
+
+def _optional_float(value: Any) -> float | None:
+    return float(value) if _numeric(value) else None
 
 
 def schedule_job(job_id: uuid.UUID, control: dict) -> None:

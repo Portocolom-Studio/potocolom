@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
@@ -39,24 +39,32 @@ async def _state(session: AsyncSession) -> TelemetryState:
     return state
 
 
-def _counts(values: list[str]) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for value in values:
-        result[value] = result.get(value, 0) + 1
-    return result
+async def _counts_by(session: AsyncSession, column, start: datetime, end: datetime) -> dict[str, int]:
+    """One GROUP BY per dimension, so a busy day never lands in memory."""
+    rows = await session.execute(
+        select(column, func.count())
+        .where(UsageEvent.created_at >= start, UsageEvent.created_at < end,
+               column.is_not(None))
+        .group_by(column)
+    )
+    return {str(value): int(total) for value, total in rows.all()}
 
 
 async def payload_for_day(session: AsyncSession, day: date) -> dict:
     start = datetime.combine(day, time.min, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
-    events = (
-        await session.execute(
-            select(UsageEvent).where(
-                UsageEvent.created_at >= start,
-                UsageEvent.created_at < end,
-            )
-        )
-    ).scalars().all()
+    in_day = (UsageEvent.created_at >= start, UsageEvent.created_at < end)
+    active_users = await session.scalar(
+        select(func.count(func.distinct(UsageEvent.user_id))).where(*in_day)
+    )
+    realtime_ms = await session.scalar(
+        select(func.coalesce(func.sum(UsageEvent.duration_ms), 0))
+        .where(*in_day, UsageEvent.kind == "realtime")
+    )
+    by_kind = await _counts_by(session, UsageEvent.kind, start, end)
+    by_action = await _counts_by(session, UsageEvent.action, start, end)
+    by_category = await _counts_by(session, UsageEvent.category, start, end)
+    by_tier = await _counts_by(session, UsageEvent.tier, start, end)
     workers = (
         await session.execute(
             select(WorkerIdentity)
@@ -70,15 +78,12 @@ async def payload_for_day(session: AsyncSession, day: date) -> dict:
         "install_id": str(state.install_id),
         "version": _version(),
         "day": day.isoformat(),
-        "active_users": len({event.user_id for event in events}),
-        "events": _counts([event.kind for event in events]),
-        "by_action": _counts([event.action for event in events]),
-        "by_category": _counts([event.category for event in events]),
-        "by_tier": _counts([event.tier for event in events if event.tier is not None]),
-        "realtime_minutes": round(
-            sum((event.duration_ms or 0) for event in events if event.kind == "realtime")
-            / 60_000
-        ),
+        "active_users": int(active_users or 0),
+        "events": by_kind,
+        "by_action": by_action,
+        "by_category": by_category,
+        "by_tier": by_tier,
+        "realtime_minutes": round(int(realtime_ms or 0) / 60_000),
         "workers": [
             {"device": worker.device, "memory_mode": worker.memory_mode}
             for worker in workers
