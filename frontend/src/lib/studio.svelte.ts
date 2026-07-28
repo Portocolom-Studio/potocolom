@@ -135,6 +135,8 @@ const generationStreams = new Map<string, EventSource>();
 const failedGenerationStreams = new Set<string>();
 const pendingTerminalRefreshes = new Set<string>();
 const generationRefreshesInFlight = new Set<string>();
+const terminalRefreshAttempts = new Map<string, number>();
+const MAX_TERMINAL_REFRESH_ATTEMPTS = 3;
 
 // Diffusion models drive the generate form and the sidebar picker; upscalers
 // are reached only through the Upscale action (issue #91). Every model list
@@ -391,24 +393,51 @@ function closeGenerationStream(id: string): void {
 	generationStreams.delete(id);
 }
 
+function abandonTerminalRefresh(id: string): void {
+	// Give up rather than leave the entry pending: the loop keeps running while
+	// anything is pending, so a refresh that can never succeed would poll forever.
+	closeGenerationStream(id);
+	pendingTerminalRefreshes.delete(id);
+	terminalRefreshAttempts.delete(id);
+}
+
 async function refreshGeneration(id: string): Promise<void> {
 	if (generationRefreshesInFlight.has(id)) return;
 	generationRefreshesInFlight.add(id);
 	try {
 		const response = await fetch(`/api/v1/generations/${id}`);
-		if (!response.ok) return;
+		if (response.status === 404) {
+			// The generation is gone; retrying cannot change that.
+			abandonTerminalRefresh(id);
+			return;
+		}
+		if (!response.ok) {
+			countTerminalRefreshFailure(id);
+			return;
+		}
 		const generation = (await response.json()) as Generation;
 		replaceGeneration(generation);
 		if (generation.state === 'succeeded' || generation.state === 'failed') {
 			closeGenerationStream(id);
 			pendingTerminalRefreshes.delete(id);
+			terminalRefreshAttempts.delete(id);
 		}
 	} catch {
-		// The update loop retries terminal refreshes. A running stream gets
-		// another low-rate reconciliation without affecting its live events.
+		countTerminalRefreshFailure(id);
 	} finally {
 		generationRefreshesInFlight.delete(id);
 	}
+}
+
+function countTerminalRefreshFailure(id: string): void {
+	if (!pendingTerminalRefreshes.has(id)) return;
+	const attempts = (terminalRefreshAttempts.get(id) ?? 0) + 1;
+	if (attempts >= MAX_TERMINAL_REFRESH_ATTEMPTS) {
+		// The next full history refresh reconciles this row.
+		abandonTerminalRefresh(id);
+		return;
+	}
+	terminalRefreshAttempts.set(id, attempts);
 }
 
 function subscribeToGeneration(id: string): void {
@@ -476,6 +505,7 @@ export function stopGenerationUpdates(): void {
 	for (const id of generationStreams.keys()) closeGenerationStream(id);
 	failedGenerationStreams.clear();
 	pendingTerminalRefreshes.clear();
+	terminalRefreshAttempts.clear();
 }
 
 export async function pollWhileWorking(): Promise<void> {
