@@ -78,14 +78,12 @@
 			<Sidebar.Inset class="min-h-0 overflow-hidden">
 				<div class="relative flex h-full min-h-0 flex-col p-4">
 					{#if studio.favoriteNotice || updateAvailable}
-						<p
-							role="status"
-							aria-live="polite"
-							class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-						>
-							<!-- Flex with a gap, so the two messages are spaced by layout rather
-							     than by template whitespace. -->
-							<span class="flex flex-1 flex-wrap gap-x-1">
+						<div class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm">
+							<!-- The live region is the text only: a region containing focusable
+							     controls makes screen reader announcements confusing. Flex with a
+							     gap, so the messages are spaced by layout rather than by template
+							     whitespace. -->
+							<span role="status" aria-live="polite" class="flex flex-1 flex-wrap gap-x-1">
 								{#if studio.favoriteNotice}<span>{studio.favoriteNotice}</span>{/if}
 								{#if updateAvailable}<span>{t('app.update.available')}</span>{/if}
 							</span>
@@ -97,7 +95,7 @@
 									{t('app.update.dismiss')}
 								</Button>
 							{/if}
-						</p>
+						</div>
 					{/if}
 					{#if landing}
 						<StudioPreview />
