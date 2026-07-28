@@ -396,7 +396,7 @@ sequenceDiagram
     participant A as API replica, any of N
     participant R as Redis
     participant P as PostgreSQL
-    B->>LB: POST /api/v1/generations/:id/star<br>HttpOnly session cookie
+    B->>LB: POST /api/v1/generations/{id}/star<br>HttpOnly session cookie
     LB->>A: route to any replica, no sticky sessions
     A->>R: rate limit counter, per user<br>(with accounts, issue #5)
     A->>R: session token lookup
@@ -407,7 +407,7 @@ sequenceDiagram
         P-->>A: user id
         A->>R: re-cache session
     end
-    A->>P: UPDATE jobs SET starred_at, single row
+    A->>P: single row update of jobs.starred_at
     P-->>A: ok
     A-->>B: 204
     note over A: AUTH_MODE=none skips the lookup entirely:<br>every request acts as the single local user.<br>Self-hosted without Redis reads the<br>session row from PostgreSQL directly.
@@ -518,7 +518,7 @@ flowchart LR
     B["Browser<br>history, gallery, favorites,<br>share links"]
     API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
     CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
-    W -->|"presigned PUT<br>master and thumbnail"| STORE
+    W -->|"PUT to the dispatched upload target:<br>presigned URL in the cloud, API route<br>when local. master and thumbnail"| STORE
     W -->|"job_done"| J
     J --- AS
     B -->|"session cookie"| API
