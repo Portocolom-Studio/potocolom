@@ -502,7 +502,12 @@
 		{:else if reportLoadingId === selectedSession?.id}
 			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
 		{:else if reportErrorId === selectedSession?.id}
-			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_error')}</p>
+			<div class="flex items-center gap-3">
+				<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_error')}</p>
+				<Button variant="outline" size="sm" onclick={() => (reportErrorId = null)}>
+					{t('app.metrics.benchmark_retry')}
+				</Button>
+			</div>
 		{:else}
 			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_empty')}</p>
 		{/if}
