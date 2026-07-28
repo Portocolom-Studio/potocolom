@@ -1,11 +1,10 @@
 <script lang="ts">
-	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import { resolve } from '$app/paths';
+	import LatentShell from '$lib/components/landing-krea/LatentShell.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import { t } from '$lib/i18n.svelte';
-	import { resolve } from '$app/paths';
-	import { Button } from '$lib/components/ui/button';
-	import { Separator } from '$lib/components/ui/separator';
+	import '../../krea-tokens.css';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
@@ -16,7 +15,7 @@
 			title: 'wp.s2_title',
 			paragraphs: ['wp.s2_p1', 'wp.s2_p2', 'wp.s2_p3'],
 			figure: {
-				src: '/whitepaper/under-the-hood.png',
+				src: '/whitepaper/under-the-hood.webp',
 				cap: 'wp.fig_arch_cap',
 				width: 3146,
 				height: 1084
@@ -27,7 +26,7 @@
 			title: 'wp.s3_title',
 			paragraphs: ['wp.s3_p1', 'wp.s3_p2', 'wp.s3_p3'],
 			figure: {
-				src: '/whitepaper/realtime-loop.png',
+				src: '/whitepaper/realtime-loop.webp',
 				cap: 'wp.fig_loop_cap',
 				width: 2365,
 				height: 1587
@@ -41,7 +40,7 @@
 			title: 'wp.s7_title',
 			paragraphs: ['wp.s7_p1', 'wp.s7_p2', 'wp.s7_p3'],
 			figure: {
-				src: '/whitepaper/credit-lifecycle.png',
+				src: '/whitepaper/credit-lifecycle.webp',
 				cap: 'wp.fig_credits_cap',
 				width: 2325,
 				height: 1627
@@ -52,7 +51,7 @@
 			title: 'wp.s8_title',
 			paragraphs: ['wp.s8_p1', 'wp.s8_p2'],
 			figure: {
-				src: '/whitepaper/failure-map.png',
+				src: '/whitepaper/failure-map.webp',
 				cap: 'wp.fig_failures_cap',
 				width: 2363,
 				height: 1502
@@ -68,93 +67,202 @@
 	path="/whitepaper"
 />
 
-<SiteLandingHeader current="whitepaper" />
+<LatentShell current="whitepaper">
+	<main>
+		<section class="opening">
+			<h1>{t('wp.title')}</h1>
+			<p class="lede">{t('wp.sub')}</p>
+			<div class="actions">
+				<a class="pill pill-accent" href={`${repoUrl}/tree/main/docs`}>{t('wp.cta_docs')}</a>
+				<a class="pill pill-ghost" href={resolve('/benchmark')}>{t('wp.cta_benchmark')}</a>
+			</div>
+		</section>
 
-<div class="mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-28">
-	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{t('wp.title')}</h1>
-	<p class="text-muted-foreground mt-4 max-w-2xl text-lg">{t('wp.sub')}</p>
-</div>
+		<div class="panel document">
+			<aside aria-label={t('wp.toc')}>
+				<p class="rail-label">{t('wp.toc')}</p>
+				<ol>
+					{#each sections as section (section.id)}
+						<li><a href="#{section.id}">{t(section.title)}</a></li>
+					{/each}
+				</ol>
+			</aside>
 
-<div class="mx-auto grid max-w-6xl gap-12 px-4 py-12 sm:px-6 lg:grid-cols-[220px_1fr]">
-	<aside class="hidden self-start lg:sticky lg:top-20 lg:block" aria-label={t('wp.toc')}>
-		<p class="text-muted-foreground text-xs font-semibold tracking-[0.18em] uppercase">
-			{t('wp.toc')}
-		</p>
-		<ol class="mt-3 flex flex-col border-l">
-			{#each sections as section (section.id)}
-				<li>
-					<a
-						class="text-muted-foreground hover:text-foreground hover:border-primary -ml-px block border-l-2 border-transparent py-1.5 pl-4 text-sm transition-colors"
-						href="#{section.id}"
-					>
-						{t(section.title)}
-					</a>
-				</li>
-			{/each}
-		</ol>
-	</aside>
-
-	<article>
-		{#each sections as section, index (section.id)}
-			<section
-				id={section.id}
-				class={index === sections.length - 1 ? 'scroll-mt-20' : 'mb-14 scroll-mt-20'}
-			>
-				<h2 class="text-2xl font-semibold">{t(section.title)}</h2>
-				{#each section.paragraphs as paragraph (paragraph)}
-					<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-						{t(paragraph)}
-					</p>
+			<article>
+				{#each sections as section (section.id)}
+					<section id={section.id}>
+						<h2>{t(section.title)}</h2>
+						{#each section.paragraphs as paragraph (paragraph)}
+							<p>{t(paragraph)}</p>
+						{/each}
+						{#if 'figure' in section}
+							<figure>
+								<img
+									src={section.figure.src}
+									alt={t(section.figure.cap)}
+									width={section.figure.width}
+									height={section.figure.height}
+									loading="lazy"
+								/>
+								<figcaption>{t(section.figure.cap)}</figcaption>
+							</figure>
+						{/if}
+					</section>
 				{/each}
-				{#if 'figure' in section}
-					<figure class="mt-6 rounded-xl border bg-white p-3">
-						<img
-							class="w-full rounded-lg"
-							src={section.figure.src}
-							alt={t(section.figure.cap)}
-							width={section.figure.width}
-							height={section.figure.height}
-							loading="lazy"
-						/>
-						<figcaption class="pt-2 pl-1 text-xs text-slate-600">
-							{t(section.figure.cap)}
-						</figcaption>
-					</figure>
-				{/if}
-			</section>
-		{/each}
-		<div class="mt-6 flex flex-wrap gap-3">
-			<Button variant="outline" href="{repoUrl}/tree/main/docs">
-				{t('wp.cta_docs')}
-			</Button>
-			<Button variant="outline" href={resolve('/benchmark')}>
-				{t('wp.cta_benchmark')}
-			</Button>
+
+				<div class="actions closing-actions">
+					<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
+					<a class="pill pill-ghost" href={repoUrl}>{t('fork.cta_source')}</a>
+				</div>
+			</article>
 		</div>
-	</article>
-</div>
-
-<Separator />
-
-<footer
-	class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-8 sm:px-6"
->
-	<p class="text-muted-foreground text-sm">{t('footer.tagline')}</p>
-	<nav class="text-muted-foreground flex flex-wrap gap-5 text-sm" aria-label={t('nav.footer')}>
-		<a class="hover:text-foreground transition-colors" href={repoUrl}>{t('footer.github')}</a>
-		<a class="hover:text-foreground transition-colors" href="{repoUrl}/tree/main/docs">
-			{t('footer.docs')}
-		</a>
-		<a class="hover:text-foreground transition-colors" href={resolve('/legal')}>
-			{t('footer.legal')}
-		</a>
-		<a class="hover:text-foreground transition-colors" href={resolve('/privacy')}>
-			{t('footer.privacy')}
-		</a>
-		<a class="hover:text-foreground transition-colors" href="mailto:admin@leonfuller.com">
-			{t('footer.contact')}
-		</a>
-	</nav>
-</footer>
+	</main>
+</LatentShell>
 
 <ScrollToTop />
+
+<style>
+	/* Hallmark - macrostructure: Latent Document - genre: abstract atmospheric - the landing's canvas and panels carry the whitepaper - contrast: pass - mobile: pass */
+	main {
+		position: relative;
+		z-index: 1;
+		display: grid;
+	}
+
+	.opening {
+		display: grid;
+		justify-items: start;
+		gap: 1.1rem;
+		max-width: 52rem;
+		padding: clamp(3rem, 9vw, 6rem) clamp(1rem, 5vw, 4rem) clamp(2rem, 6vw, 4rem);
+	}
+
+	h1 {
+		font-size: clamp(2.4rem, 5.5vw, 4.4rem);
+		line-height: 0.98;
+	}
+
+	.lede {
+		max-width: 52ch;
+		color: var(--k-muted);
+		font-size: 1.05rem;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.7rem;
+	}
+
+	.panel {
+		border-block-start: 1px solid var(--k-line);
+		background: oklch(0.08 0.012 265 / 72%);
+		backdrop-filter: blur(28px);
+	}
+
+	:global(:root[data-krea-mode='light']) .panel {
+		background: oklch(0.97 0.004 255 / 78%);
+	}
+
+	.document {
+		display: grid;
+		gap: clamp(2rem, 5vw, 4rem);
+		padding-block: clamp(3rem, 8vw, 5rem);
+		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 72rem) / 2));
+	}
+
+	aside {
+		display: none;
+		position: sticky;
+		inset-block-start: 1.5rem;
+		align-self: start;
+	}
+
+	.rail-label {
+		color: var(--k-muted);
+		font-size: 0.85rem;
+	}
+
+	aside ol {
+		display: grid;
+		margin: 0.85rem 0 0;
+		padding: 0;
+		list-style: none;
+		border-inline-start: 1px solid var(--k-line);
+	}
+
+	aside a {
+		display: block;
+		margin-inline-start: -1px;
+		padding: 0.4rem 0 0.4rem 0.9rem;
+		border-inline-start: 2px solid transparent;
+		color: var(--k-muted);
+		font-size: 0.88rem;
+		white-space: normal;
+		transition: color 140ms var(--k-ease);
+	}
+
+	aside a:hover {
+		border-inline-start-color: var(--k-accent);
+		color: var(--k-ink);
+	}
+
+	article {
+		display: grid;
+		gap: clamp(2.5rem, 5vw, 3.5rem);
+		min-width: 0;
+	}
+
+	article section {
+		display: grid;
+		gap: 0.9rem;
+		scroll-margin-block-start: 2rem;
+	}
+
+	h2 {
+		font-size: clamp(1.5rem, 2.6vw, 2rem);
+		line-height: 1.1;
+	}
+
+	article p {
+		max-width: 68ch;
+		color: var(--k-muted);
+		line-height: 1.75;
+	}
+
+	/* The diagrams are dark-on-light, so they keep a paper card of their own. */
+	figure {
+		margin: 0.5rem 0 0;
+		padding: 0.75rem;
+		border: 1px solid var(--k-line);
+		border-radius: 1rem;
+		background: oklch(0.99 0.003 255);
+	}
+
+	figure img {
+		display: block;
+		width: 100%;
+		border-radius: 0.6rem;
+	}
+
+	figcaption {
+		padding: 0.6rem 0.25rem 0.1rem;
+		color: oklch(0.42 0.02 258);
+		font-size: 0.78rem;
+		line-height: 1.5;
+	}
+
+	.closing-actions {
+		padding-block-start: 0.5rem;
+	}
+
+	@media (min-width: 64rem) {
+		.document {
+			grid-template-columns: 14rem minmax(0, 1fr);
+		}
+
+		aside {
+			display: block;
+		}
+	}
+</style>

@@ -15,13 +15,6 @@ export type BenchmarkResult = {
 	error?: string;
 };
 
-/** Reference timings only - not offered in the studio UI. */
-export const CAPPED_BENCHMARK_MODELS = new Set(['sd-turbo', 'sdxl-turbo']);
-
-export function isReferenceOnlyModel(modelId: string): boolean {
-	return CAPPED_BENCHMARK_MODELS.has(modelId);
-}
-
 export type ModelStats = {
 	model_id: string;
 	succeeded: number;
@@ -103,14 +96,6 @@ export function variantAverages(modelId: string, results: BenchmarkResult[]) {
 	}));
 }
 
-export type ComparisonBar = {
-	id: string;
-	label: string;
-	value: number;
-	display: string;
-	reference?: boolean;
-};
-
 const CHART_COLORS = [
 	'var(--chart-1)',
 	'var(--chart-2)',
@@ -133,49 +118,6 @@ export function barScale(value: number, max: number, log = false): number {
 		return Math.max(2, (logVal / logMax) * 100);
 	}
 	return Math.max(2, (value / max) * 100);
-}
-
-export function modelMetricBars(
-	modelStats: ModelStats[],
-	metric: 'avg_gpu_ms' | 'median_gpu_ms' | 'avg_wall_s' | 'load_ms',
-	format: (value: number) => string,
-	getValue: (row: ModelStats) => number | null = (row) => row[metric] as number | null
-): ComparisonBar[] {
-	const bars: ComparisonBar[] = [];
-	for (const row of modelStats) {
-		const raw = getValue(row);
-		if (raw == null) continue;
-		bars.push({
-			id: row.model_id,
-			label: row.model_id,
-			value: raw,
-			display: format(raw),
-			reference: isReferenceOnlyModel(row.model_id)
-		});
-	}
-	return bars.sort((a, b) => a.value - b.value);
-}
-
-export type DualMetricBar = {
-	id: string;
-	label: string;
-	gpu_s: number;
-	wall_s: number;
-	reference?: boolean;
-};
-
-/** Per-model GPU denoise vs end-to-end wall time (seconds). */
-export function gpuVsWallBars(modelStats: ModelStats[]): DualMetricBar[] {
-	return modelStats
-		.filter((row) => row.avg_gpu_ms != null)
-		.map((row) => ({
-			id: row.model_id,
-			label: row.model_id,
-			gpu_s: (row.avg_gpu_ms as number) / 1000,
-			wall_s: row.avg_wall_s,
-			reference: isReferenceOnlyModel(row.model_id)
-		}))
-		.sort((a, b) => a.gpu_s - b.gpu_s);
 }
 
 /** Average GPU ms per prompt category across all models (for heatmap-style comparison). */
@@ -207,7 +149,6 @@ export type LeaderboardRow = {
 	gpu_display: string;
 	wall_display: string;
 	load_display: string;
-	reference: boolean;
 	gpu_ratio: number;
 	wall_ratio: number;
 	load_ratio: number;
@@ -234,7 +175,6 @@ export function leaderboardRows(modelStats: ModelStats[]): LeaderboardRow[] {
 			gpu_display: formatMs(gpu_ms),
 			wall_display: formatSeconds(row.avg_wall_s),
 			load_display: formatMs(load_ms),
-			reference: isReferenceOnlyModel(row.model_id),
 			gpu_ratio: gpu_ms / maxGpu,
 			wall_ratio: row.avg_wall_s / maxWall,
 			load_ratio: load_ms / maxLoad
@@ -264,24 +204,4 @@ export function categoryLineSeries(
 		})
 	}));
 	return { categories, series };
-}
-
-export type MetricKey = 'gpu' | 'wall' | 'load';
-
-export function metricValue(row: LeaderboardRow, metric: MetricKey): number {
-	if (metric === 'gpu') return row.gpu_ms;
-	if (metric === 'wall') return row.wall_s * 1000;
-	return row.load_ms;
-}
-
-export function metricRatio(row: LeaderboardRow, metric: MetricKey): number {
-	if (metric === 'gpu') return row.gpu_ratio;
-	if (metric === 'wall') return row.wall_ratio;
-	return row.load_ratio;
-}
-
-export function metricDisplay(row: LeaderboardRow, metric: MetricKey): string {
-	if (metric === 'gpu') return row.gpu_display;
-	if (metric === 'wall') return row.wall_display;
-	return row.load_display;
 }

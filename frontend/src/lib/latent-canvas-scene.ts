@@ -28,6 +28,46 @@ type Particle = {
 	speed: number;
 };
 
+type Scheme = {
+	clear: string;
+	fade: string;
+	blend: GlobalCompositeOperation;
+	stroke: (hue: number) => string;
+};
+
+/* Dark is the default, so every canvas that says nothing keeps the look it had.
+   A light page opts in with --latent-scheme: light on or above the canvas.
+   Light cannot use additive blending: on paper it saturates straight to white. */
+const SCHEMES: Record<'dark' | 'light', Scheme> = {
+	dark: {
+		clear: '#070b14',
+		fade: 'rgba(7, 11, 20, 0.045)',
+		blend: 'lighter',
+		stroke: (hue) => `hsla(${hue}, 92%, 68%, 0.55)`
+	},
+	light: {
+		clear: '#f5f6f9',
+		fade: 'rgba(245, 246, 249, 0.05)',
+		blend: 'source-over',
+		stroke: (hue) => `hsla(${hue}, 74%, 44%, 0.42)`
+	}
+};
+
+function readScheme(canvas: HTMLCanvasElement): Scheme {
+	const styles = getComputedStyle(canvas);
+	const name = styles.getPropertyValue('--latent-scheme').trim();
+	const base = name === 'light' ? SCHEMES.light : SCHEMES.dark;
+	/* Optional overrides so a section can share the page paper (e.g. waitlist
+	   matching the particle stage) without changing the global dark clear. */
+	const clear = styles.getPropertyValue('--latent-clear').trim();
+	const fade = styles.getPropertyValue('--latent-fade').trim();
+	return {
+		...base,
+		clear: clear || base.clear,
+		fade: fade || base.fade
+	};
+}
+
 export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCanvasOptions = {}) {
 	const context = canvas.getContext('2d');
 	if (!context) return () => {};
@@ -39,6 +79,8 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 	let height = 0;
 	let particles: Particle[] = [];
 	let started = false;
+	let running = false;
+	let scheme = readScheme(canvas);
 	let time = 0;
 	let frame = 0;
 	let cursorX: number | null = null;
@@ -74,7 +116,10 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 	}
 
 	function initParticles() {
-		particles = Array.from({ length: 90 }, () => ({
+		/* Constant density rather than a constant count, floored at the old 90 so the
+		   small preview panels are untouched and only large fields gain particles. */
+		const count = Math.min(260, Math.max(90, Math.round((width * height) / 11400)));
+		particles = Array.from({ length: count }, () => ({
 			x: rng() * width,
 			y: rng() * height,
 			hue: 225 + rng() * 65,
@@ -86,9 +131,9 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 	function step() {
 		time += 0.0035;
 		brush.globalCompositeOperation = 'source-over';
-		brush.fillStyle = 'rgba(7, 11, 20, 0.045)';
+		brush.fillStyle = scheme.fade;
 		brush.fillRect(0, 0, width, height);
-		brush.globalCompositeOperation = 'lighter';
+		brush.globalCompositeOperation = scheme.blend;
 		for (const p of particles) {
 			const organic =
 				Math.sin(p.x * 0.0022 + time) * 2.4 + Math.cos(p.y * 0.0019 - time * 1.3) * 2.4;
@@ -100,7 +145,7 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 			}
 			const nx = p.x + Math.cos(angle) * p.speed;
 			const ny = p.y + Math.sin(angle) * p.speed;
-			brush.strokeStyle = `hsla(${p.hue}, 92%, 68%, 0.55)`;
+			brush.strokeStyle = scheme.stroke(p.hue);
 			brush.lineWidth = 1.4;
 			brush.beginPath();
 			brush.moveTo(p.x, p.y);
@@ -115,17 +160,26 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 		}
 	}
 
+	/* step() leaves the blend mode set, so the clear has to reset it or it is a no-op. */
+	function repaint(warmup: number) {
+		brush.globalCompositeOperation = 'source-over';
+		brush.fillStyle = scheme.clear;
+		brush.fillRect(0, 0, width, height);
+		initParticles();
+		for (let i = 0; i < warmup; i += 1) step();
+	}
+
+	function loop() {
+		step();
+		frame = requestAnimationFrame(loop);
+	}
+
 	function start() {
 		if (started || !applySize()) return;
 		started = true;
 
-		brush.fillStyle = '#070b14';
-		brush.fillRect(0, 0, width, height);
-		initParticles();
-
 		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		const warmup = options.warmupFrames ?? (reducedMotion ? 600 : 300);
-		for (let i = 0; i < warmup; i += 1) step();
+		repaint(options.warmupFrames ?? (reducedMotion ? 600 : 300));
 
 		if (!options.animate) {
 			observer.disconnect();
@@ -133,14 +187,8 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 
 		options.onReady?.();
 
-		const animate = options.animate ?? !reducedMotion;
-		if (animate) {
-			const loop = () => {
-				step();
-				frame = requestAnimationFrame(loop);
-			};
-			frame = requestAnimationFrame(loop);
-		}
+		running = options.animate ?? !reducedMotion;
+		if (running) frame = requestAnimationFrame(loop);
 	}
 
 	function resize() {
@@ -150,12 +198,18 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 		}
 
 		if (!applySize()) return;
-
-		brush.fillStyle = '#070b14';
-		brush.fillRect(0, 0, width, height);
 		time = 0;
-		initParticles();
-		for (let i = 0; i < 60; i += 1) step();
+		repaint(60);
+	}
+
+	/* A fixed full-page field would otherwise keep burning frames in a background tab. */
+	function onVisibility() {
+		if (document.hidden) {
+			cancelAnimationFrame(frame);
+			frame = 0;
+		} else if (running && !frame) {
+			frame = requestAnimationFrame(loop);
+		}
 	}
 
 	if (options.followCursor && options.onAttach) {
@@ -167,11 +221,29 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 
 	const observer = new ResizeObserver(() => resize());
 	observer.observe(canvas);
+
+	/* The theme toggle flips an attribute on <html>; re-read the scheme and redraw. */
+	const themeObserver = new MutationObserver(() => {
+		const next = readScheme(canvas);
+		if (next.clear === scheme.clear && next.fade === scheme.fade && next.blend === scheme.blend) {
+			return;
+		}
+		scheme = next;
+		if (started) repaint(90);
+	});
+	themeObserver.observe(document.documentElement, {
+		attributes: true,
+		attributeFilter: ['data-krea-mode']
+	});
+
+	document.addEventListener('visibilitychange', onVisibility);
 	requestAnimationFrame(() => start());
 
 	return () => {
 		cancelAnimationFrame(frame);
 		observer.disconnect();
+		themeObserver.disconnect();
+		document.removeEventListener('visibilitychange', onVisibility);
 		if (options.followCursor) {
 			canvas.removeEventListener('pointermove', onPointerMove);
 			canvas.removeEventListener('pointerleave', onPointerLeave);

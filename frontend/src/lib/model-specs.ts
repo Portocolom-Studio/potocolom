@@ -83,7 +83,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image', 'image_to_image', 'realtime'],
 		license: 'Stability AI Community',
 		commercial: '≤ $1M revenue / year',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/sd-turbo'
 	},
 	{
@@ -97,7 +97,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image', 'image_to_image', 'realtime'],
 		license: 'Stability AI Community',
 		commercial: '≤ $1M revenue / year',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/sdxl-turbo'
 	},
 	{
@@ -111,7 +111,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'RAIL++-M base; LoRA: no declared license',
 		commercial: 'Unclear - LoRA license undeclared',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/stable-diffusion-xl-base-1.0'
 	},
 	{

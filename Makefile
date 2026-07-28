@@ -150,7 +150,7 @@ web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
 
 web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
-	cd frontend && PUBLIC_SITE_MODE=landing npm run dev
+	cd frontend && PUBLIC_WAITLIST_URL=$(WAITLIST_URL) PUBLIC_SITE_MODE=landing npm run dev
 
 site-preview: site-build ## serve the exact marketing-site artifact locally
 	cd frontend && npm run preview

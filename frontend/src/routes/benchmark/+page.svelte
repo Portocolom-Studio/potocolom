@@ -1,5 +1,5 @@
 <script lang="ts">
-	import SiteLandingHeader from '$lib/components/SiteLandingHeader.svelte';
+	import LatentShell from '$lib/components/landing-krea/LatentShell.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
@@ -9,14 +9,14 @@
 		formatSeconds,
 		promptAverages,
 		variantAverages,
-		isReferenceOnlyModel,
 		type BenchmarkReport
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
 	import { t } from '$lib/i18n.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import * as Card from '$lib/components/ui/card';
+	import '../../krea-tokens.css';
 
+	// Fetch at runtime so prerender does not inline the multi-MB results JSON
+	// into an unhashed script tag (main's CSP check).
 	let report = $state<BenchmarkReport | null>(null);
 
 	const hasData = $derived(Boolean(report && report.results.length > 0));
@@ -51,7 +51,6 @@
 	onMount(async () => {
 		const response = await fetch('/benchmark/results.json');
 		if (!response.ok) return;
-
 		try {
 			const result = (await response.json()) as BenchmarkReport;
 			if (
@@ -73,198 +72,443 @@
 	path="/benchmark"
 />
 
-<SiteLandingHeader current="benchmark" />
-
-<div class="mx-auto max-w-6xl px-4 pt-24 sm:px-6 sm:pt-28">
-	<h1 class="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{benchmarkTitle}</h1>
-	<p class="text-muted-foreground mt-4 max-w-2xl text-lg leading-relaxed">{t('bench.sub')}</p>
-
-	{#if hasData && report}
-		<div class="mt-6 flex flex-wrap gap-2.5">
-			{#if runDate}
-				<Badge variant="outline">{t('bench.run')}: {runDate}</Badge>
-			{/if}
-			{#if report.target_vram_gb}
-				<Badge variant="outline">{report.target_vram_gb} GB VRAM</Badge>
-			{/if}
-			<Badge variant="outline">
-				{report.succeeded}/{report.total_jobs}
-				{t('bench.images')}
-			</Badge>
-		</div>
-	{/if}
-</div>
-
-<div class="mx-auto grid max-w-6xl gap-12 px-4 py-12 sm:px-6 lg:grid-cols-[220px_1fr]">
-	<aside class="hidden self-start lg:sticky lg:top-20 lg:block" aria-label={t('bench.toc')}>
-		<p class="text-muted-foreground text-xs font-semibold tracking-[0.18em] uppercase">
-			{t('bench.toc')}
-		</p>
-		<ol class="mt-3 flex flex-col border-l">
-			{#each tocSections as section (section.id)}
-				<li>
-					<a
-						class="text-muted-foreground hover:text-foreground hover:border-primary -ml-px block border-l-2 border-transparent py-1.5 pl-4 font-mono text-xs transition-colors"
-						href="#{section.id}"
-					>
-						{section.label}
-					</a>
-				</li>
-			{/each}
-		</ol>
-	</aside>
-
-	<article class="min-w-0 pb-12">
-		{#if !hasData || !report}
-			<Card.Root class="mb-14 [--card-spacing:--spacing(6)]">
-				<Card.Header>
-					<Card.Title>{t('bench.empty_title')}</Card.Title>
-					<Card.Description class="text-base leading-relaxed">
-						{t('bench.empty_body')}
-					</Card.Description>
-				</Card.Header>
-			</Card.Root>
-		{:else}
-			<section id="bench-charts" class="mb-14 scroll-mt-20">
-				<h2 class="text-2xl font-semibold">{t('bench.charts')}</h2>
-				<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-					{t('bench.charts_note')}
-				</p>
-				<div class="mt-6">
-					<BenchmarkComparisons {report} />
+<LatentShell current="benchmark">
+	<main>
+		<section class="opening">
+			<h1>{benchmarkTitle}</h1>
+			<p class="lede">{t('bench.sub')}</p>
+			{#if hasData && report}
+				<div class="chips">
+					{#if runDate}
+						<span class="chip">{t('bench.run')}: {runDate}</span>
+					{/if}
+					{#if report.target_vram_gb}
+						<span class="chip">{report.target_vram_gb} GB VRAM</span>
+					{/if}
+					<span class="chip">
+						{report.succeeded}/{report.total_jobs}
+						{t('bench.images')}
+					</span>
 				</div>
-			</section>
-
-			<section class="mb-14 space-y-3">
-				<h2 class="text-lg font-semibold">{t('bench.details')}</h2>
-				<p class="text-muted-foreground text-sm">{t('bench.details_note')}</p>
-				{#each report.models as modelId (modelId)}
-					{@const stats = report.model_stats.find((row) => row.model_id === modelId)}
-					{@const prompts = promptAverages(modelId, report.results)}
-					{@const variants = variantAverages(modelId, report.results)}
-					<details id={modelId} class="group scroll-mt-20 rounded-xl border">
-						<summary
-							class="hover:bg-muted/30 flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden"
-						>
-							<div class="flex min-w-0 items-center gap-2">
-								<span class="font-mono text-sm font-medium">{modelId}</span>
-								{#if isReferenceOnlyModel(modelId)}
-									<Badge variant="secondary">{t('bench.reference_badge')}</Badge>
-								{/if}
-							</div>
-							{#if stats}
-								<span class="text-muted-foreground shrink-0 font-mono text-xs tabular-nums">
-									{formatMs(stats.avg_gpu_ms)} gpu, {formatSeconds(stats.avg_wall_s)} wall
-								</span>
-							{/if}
-						</summary>
-						<div class="space-y-4 border-t px-4 py-4">
-							<div class="overflow-x-auto rounded-lg border">
-								<table class="w-full min-w-[400px] text-left text-sm">
-									<thead class="bg-muted/40 border-b">
-										<tr>
-											<th class="px-3 py-2 font-medium">{t('bench.col_variant')}</th>
-											<th class="px-3 py-2 font-medium">{t('bench.col_gpu_avg')}</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each variants as row (row.variant)}
-											<tr class="border-b last:border-b-0">
-												<td class="px-3 py-2 font-mono text-xs">{row.variant}</td>
-												<td class="px-3 py-2 tabular-nums">{formatMs(row.avg_gpu_ms)}</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-							<div class="overflow-x-auto rounded-lg border">
-								<table class="w-full min-w-[480px] text-left text-sm">
-									<thead class="bg-muted/40 border-b">
-										<tr>
-											<th class="px-3 py-2 font-medium">#</th>
-											<th class="px-3 py-2 font-medium">{t('bench.by_prompt')}</th>
-											<th class="px-3 py-2 font-medium">{t('bench.col_gpu_avg')}</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each prompts as prompt (prompt.id)}
-											<tr class="border-b last:border-b-0">
-												<td class="text-muted-foreground px-3 py-2 tabular-nums">{prompt.id}</td>
-												<td class="px-3 py-2">
-													<p class="text-sm">{prompt.title}</p>
-													<p class="text-muted-foreground text-xs">{prompt.category}</p>
-												</td>
-												<td class="px-3 py-2 font-mono text-xs tabular-nums">
-													{formatMs(prompt.avg_gpu_ms)}
-												</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-						</div>
-					</details>
-				{/each}
-			</section>
-		{/if}
-
-		<section id="bench-specs" class="scroll-mt-20">
-			<h2 class="text-2xl font-semibold">{t('bench.specs')}</h2>
-			<p class="text-muted-foreground mt-3 max-w-[68ch] text-base leading-relaxed">
-				{t('bench.specs_note')}
-			</p>
-			<Card.Root class="mt-6 overflow-hidden p-0 [--card-spacing:0]">
-				<div class="overflow-x-auto">
-					<table class="w-full min-w-[960px] text-left text-sm">
-						<thead class="bg-muted/40 border-b">
-							<tr>
-								<th class="px-4 py-3 font-medium">{t('bench.col_model')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_arch')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_params')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_vram')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_resolution')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_steps')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_capabilities')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_license')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_commercial')}</th>
-								<th class="px-4 py-3 font-medium">{t('bench.col_studio')}</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each MODEL_SPECS as spec (spec.id)}
-								<tr
-									class="border-b last:border-b-0"
-									class:opacity-60={hasData && !benchmarkedModels.has(spec.id)}
-								>
-									<td class="px-4 py-3">
-										<p class="font-medium">{spec.name}</p>
-										<p class="text-muted-foreground mt-0.5 font-mono text-xs">{spec.id}</p>
-										{#if isReferenceOnlyModel(spec.id)}
-											<Badge class="mt-1" variant="secondary">{t('bench.reference_badge')}</Badge>
-										{/if}
-										{#if hasData && !benchmarkedModels.has(spec.id)}
-											<p class="text-muted-foreground mt-1 text-xs">{t('bench.no_timing')}</p>
-										{/if}
-									</td>
-									<td class="px-4 py-3">{spec.architecture}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.parameters}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.min_vram_gb} GB</td>
-									<td class="px-4 py-3 tabular-nums">{spec.resolutions}</td>
-									<td class="px-4 py-3 tabular-nums">{spec.step_range}</td>
-									<td class="px-4 py-3 text-xs">{formatCapabilities(spec.capabilities)}</td>
-									<td class="px-4 py-3 text-xs">{spec.license}</td>
-									<td class="px-4 py-3 text-xs">{spec.commercial}</td>
-									<td class="px-4 py-3 text-xs">
-										{spec.studio ? t('bench.studio_yes') : t('bench.studio_no')}
-									</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			</Card.Root>
+			{/if}
 		</section>
-	</article>
-</div>
+
+		<div class="panel document">
+			<aside aria-label={t('bench.toc')}>
+				<p class="rail-label">{t('bench.toc')}</p>
+				<ol>
+					{#each tocSections as section (section.id)}
+						<li><a href="#{section.id}">{section.label}</a></li>
+					{/each}
+				</ol>
+			</aside>
+
+			<article>
+				{#if !hasData || !report}
+					<section class="empty">
+						<h2>{t('bench.empty_title')}</h2>
+						<p>{t('bench.empty_body')}</p>
+					</section>
+				{:else}
+					<section id="bench-charts">
+						<h2>{t('bench.charts')}</h2>
+						<p>{t('bench.charts_note')}</p>
+						<div class="charts"><BenchmarkComparisons {report} /></div>
+					</section>
+
+					<section>
+						<h2>{t('bench.details')}</h2>
+						<p>{t('bench.details_note')}</p>
+						<div class="models">
+							{#each report.models as modelId (modelId)}
+								{@const stats = report.model_stats.find((row) => row.model_id === modelId)}
+								{@const prompts = promptAverages(modelId, report.results)}
+								{@const variants = variantAverages(modelId, report.results)}
+								<details id={modelId}>
+									<summary>
+										<span class="model-id">{modelId}</span>
+										{#if stats}
+											<span class="model-stat">
+												{formatMs(stats.avg_gpu_ms)} gpu / {formatSeconds(stats.avg_wall_s)} wall
+											</span>
+										{/if}
+									</summary>
+									<div class="model-body">
+										<div class="table-wrap">
+											<table>
+												<thead>
+													<tr>
+														<th scope="col">{t('bench.col_variant')}</th>
+														<th scope="col">{t('bench.col_gpu_avg')}</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each variants as row (row.variant)}
+														<tr>
+															<td class="mono">{row.variant}</td>
+															<td class="num">{formatMs(row.avg_gpu_ms)}</td>
+														</tr>
+													{/each}
+												</tbody>
+											</table>
+										</div>
+										<div class="table-wrap">
+											<table>
+												<thead>
+													<tr>
+														<th scope="col">#</th>
+														<th scope="col">{t('bench.by_prompt')}</th>
+														<th scope="col">{t('bench.col_gpu_avg')}</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each prompts as prompt (prompt.id)}
+														<tr>
+															<td class="num quiet">{prompt.id}</td>
+															<td>
+																<p>{prompt.title}</p>
+																<p class="quiet">{prompt.category}</p>
+															</td>
+															<td class="num mono">{formatMs(prompt.avg_gpu_ms)}</td>
+														</tr>
+													{/each}
+												</tbody>
+											</table>
+										</div>
+									</div>
+								</details>
+							{/each}
+						</div>
+					</section>
+				{/if}
+
+				<section id="bench-specs">
+					<h2>{t('bench.specs')}</h2>
+					<p>{t('bench.specs_note')}</p>
+					<div class="table-wrap wide">
+						<table>
+							<thead>
+								<tr>
+									<th scope="col">{t('bench.col_model')}</th>
+									<th scope="col">{t('bench.col_arch')}</th>
+									<th scope="col">{t('bench.col_params')}</th>
+									<th scope="col">{t('bench.col_vram')}</th>
+									<th scope="col">{t('bench.col_resolution')}</th>
+									<th scope="col">{t('bench.col_steps')}</th>
+									<th scope="col">{t('bench.col_capabilities')}</th>
+									<th scope="col">{t('bench.col_license')}</th>
+									<th scope="col">{t('bench.col_commercial')}</th>
+									<th scope="col">{t('bench.col_studio')}</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each MODEL_SPECS as spec (spec.id)}
+									<tr class:dimmed={hasData && !benchmarkedModels.has(spec.id)}>
+										<td>
+											<p class="spec-name">{spec.name}</p>
+											<p class="quiet mono">{spec.id}</p>
+											{#if hasData && !benchmarkedModels.has(spec.id)}
+												<p class="quiet">{t('bench.no_timing')}</p>
+											{/if}
+										</td>
+										<td>{spec.architecture}</td>
+										<td class="num">{spec.parameters}</td>
+										<td class="num">{spec.min_vram_gb} GB</td>
+										<td class="num">{spec.resolutions}</td>
+										<td class="num">{spec.step_range}</td>
+										<td class="small">{formatCapabilities(spec.capabilities)}</td>
+										<td class="small">{spec.license}</td>
+										<td class="small">{spec.commercial}</td>
+										<td class="small">
+											{spec.studio ? t('bench.studio_yes') : t('bench.studio_no')}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</section>
+			</article>
+		</div>
+	</main>
+</LatentShell>
 
 <ScrollToTop />
+
+<style>
+	/* Hallmark - macrostructure: Latent Document - genre: abstract atmospheric - the landing's canvas and panels carry the benchmark report - contrast: pass - mobile: pass */
+	main {
+		position: relative;
+		z-index: 1;
+		display: grid;
+	}
+
+	.opening {
+		display: grid;
+		justify-items: start;
+		gap: 1.1rem;
+		max-width: 56rem;
+		padding: clamp(3rem, 9vw, 6rem) clamp(1rem, 5vw, 4rem) clamp(2rem, 6vw, 4rem);
+	}
+
+	h1 {
+		font-size: clamp(2.2rem, 5vw, 4rem);
+		line-height: 1;
+	}
+
+	.lede {
+		max-width: 56ch;
+		color: var(--k-muted);
+		font-size: 1.05rem;
+	}
+
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.chip {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.3rem 0.7rem;
+		border: 1px solid var(--k-line);
+		border-radius: 999px;
+		color: var(--k-muted);
+		font-size: 0.78rem;
+		white-space: nowrap;
+	}
+
+	.panel {
+		border-block-start: 1px solid var(--k-line);
+		background: oklch(0.08 0.012 265 / 72%);
+		backdrop-filter: blur(28px);
+	}
+
+	:global(:root[data-krea-mode='light']) .panel {
+		background: oklch(0.97 0.004 255 / 78%);
+	}
+
+	.document {
+		display: grid;
+		gap: clamp(2rem, 5vw, 4rem);
+		padding-block: clamp(3rem, 8vw, 5rem);
+		padding-inline: max(clamp(1rem, 4vw, 3rem), calc((100% - 78rem) / 2));
+	}
+
+	aside {
+		display: none;
+		position: sticky;
+		inset-block-start: 1.5rem;
+		align-self: start;
+	}
+
+	.rail-label {
+		color: var(--k-muted);
+		font-size: 0.85rem;
+	}
+
+	aside ol {
+		display: grid;
+		margin: 0.85rem 0 0;
+		padding: 0;
+		list-style: none;
+		border-inline-start: 1px solid var(--k-line);
+	}
+
+	aside a {
+		display: block;
+		margin-inline-start: -1px;
+		padding: 0.4rem 0 0.4rem 0.9rem;
+		border-inline-start: 2px solid transparent;
+		overflow: hidden;
+		color: var(--k-muted);
+		font-family: var(--k-mono);
+		font-size: 0.76rem;
+		text-overflow: ellipsis;
+		transition: color 140ms var(--k-ease);
+	}
+
+	aside a:hover {
+		border-inline-start-color: var(--k-accent);
+		color: var(--k-ink);
+	}
+
+	article {
+		display: grid;
+		gap: clamp(2.5rem, 5vw, 3.5rem);
+		min-width: 0;
+	}
+
+	article > section {
+		display: grid;
+		gap: 0.9rem;
+		min-width: 0;
+		scroll-margin-block-start: 2rem;
+	}
+
+	h2 {
+		font-size: clamp(1.5rem, 2.6vw, 2rem);
+		line-height: 1.1;
+	}
+
+	article p {
+		max-width: 68ch;
+		color: var(--k-muted);
+		line-height: 1.7;
+	}
+
+	.charts {
+		min-width: 0;
+		margin-block-start: 0.5rem;
+	}
+
+	/* Models ---------------------------------------------------------------- */
+	.models {
+		display: grid;
+		gap: 0.6rem;
+		min-width: 0;
+		margin-block-start: 0.5rem;
+	}
+
+	details {
+		border: 1px solid var(--k-line);
+		border-radius: 0.9rem;
+		background: var(--k-panel);
+		scroll-margin-block-start: 2rem;
+	}
+
+	summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.85rem 1rem;
+		cursor: pointer;
+		list-style: none;
+	}
+
+	summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.model-id {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
+		font-family: var(--k-mono);
+		font-size: 0.85rem;
+	}
+
+	.model-stat {
+		color: var(--k-muted);
+		font-family: var(--k-mono);
+		font-size: 0.75rem;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+
+	.model-body {
+		display: grid;
+		gap: 1rem;
+		padding: 1rem;
+		border-block-start: 1px solid var(--k-line);
+	}
+
+	/* Tables ---------------------------------------------------------------- */
+	.table-wrap {
+		min-width: 0;
+		overflow-x: auto;
+		border: 1px solid var(--k-line);
+		border-radius: 0.75rem;
+	}
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.88rem;
+	}
+
+	/* Ten columns. Trimmed just enough to clear the article column at desktop
+	   widths instead of scrolling sideways by a few dozen pixels. */
+	.table-wrap.wide table {
+		min-width: 54rem;
+		font-size: 0.82rem;
+	}
+
+	.table-wrap.wide :is(th, td) {
+		padding: 0.55rem 0.6rem;
+	}
+
+	th,
+	td {
+		padding: 0.65rem 0.85rem;
+		border-block-end: 1px solid var(--k-line);
+		text-align: start;
+		vertical-align: top;
+	}
+
+	thead th {
+		color: var(--k-muted);
+		font-size: 0.76rem;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	tbody tr:last-child td {
+		border-block-end: 0;
+	}
+
+	td {
+		color: var(--k-ink);
+	}
+
+	td p {
+		margin: 0;
+		color: inherit;
+	}
+
+	.quiet {
+		color: var(--k-muted);
+		font-size: 0.76rem;
+	}
+
+	.mono {
+		font-family: var(--k-mono);
+		font-size: 0.78rem;
+	}
+
+	.num {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.small {
+		font-size: 0.78rem;
+	}
+
+	.spec-name {
+		font-weight: 600;
+	}
+
+	.dimmed {
+		opacity: 0.6;
+	}
+
+	.empty {
+		padding: clamp(1.5rem, 4vw, 2.5rem);
+		border: 1px solid var(--k-line);
+		border-radius: 1rem;
+		background: var(--k-panel);
+	}
+
+	@media (min-width: 64rem) {
+		.document {
+			grid-template-columns: 14rem minmax(0, 1fr);
+		}
+
+		aside {
+			display: block;
+		}
+	}
+</style>
