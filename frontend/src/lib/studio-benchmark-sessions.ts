@@ -31,12 +31,16 @@ export async function loadBenchmarkSessions(): Promise<BenchmarkSession[]> {
 			const response = await fetch('/api/v1/benchmark/sessions');
 			if (response.ok) {
 				const summaries = (await response.json()) as { id: string; created_at: string }[];
-				return summaries.map((summary) => ({
-					id: summary.id,
-					label: sessionLabel(summary.created_at),
-					createdAt: summary.created_at,
-					report: null
-				}));
+				// An install that has never ingested a run still ships the committed
+				// report, so an empty list falls through rather than showing nothing.
+				if (summaries.length > 0) {
+					return summaries.map((summary) => ({
+						id: summary.id,
+						label: sessionLabel(summary.created_at),
+						createdAt: summary.created_at,
+						report: null
+					}));
+				}
 			}
 		} catch {
 			// An install without a reachable API still has the committed report.
