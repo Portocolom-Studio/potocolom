@@ -12,8 +12,10 @@
 # asset names for one build. Pages serves the root index.html at its canonical
 # extensionless path, so the rule targets "/".
 # Other prerendered routes (/app, /benchmark, ...) are separate HTML documents
-# served directly by Pages, which revalidates HTML by default; the self-hosted
-# profile reaches them through the index.html fallback, which this covers.
+# served directly by Pages, which revalidates HTML by default.
+# This file is read only by Cloudflare Pages. The self-hosted profile sets the
+# same header in SPAStaticFiles (backend/app/main.py), where every client-side
+# route arrives through the index.html fallback.
 /
   Cache-Control: no-cache
 
