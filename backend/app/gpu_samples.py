@@ -362,6 +362,9 @@ async def _rebuild_usage_rollups(session: AsyncSession, before_ts: datetime) -> 
     )
     aggregate = (
         select(
+            # Selected explicitly: a Python-side uuid default is evaluated once for
+            # the whole INSERT ... FROM SELECT, so every row would share one id.
+            func.gen_random_uuid().label("id"),
             *dimensions,
             func.count().label("event_count"),
             func.sum(UsageEvent.category_score).label("category_score_sum"),
@@ -373,34 +376,48 @@ async def _rebuild_usage_rollups(session: AsyncSession, before_ts: datetime) -> 
         .where(UsageEvent.created_at < before_ts)
         .group_by(*dimensions)
     )
-    # Streamed rather than buffered: the first run after an upgrade folds however
-    # much history the install already has, and that result set has no reason to
-    # sit in memory all at once.
-    result = await session.stream(aggregate)
-
-    async for row in result.mappings():
-        stmt = insert(UsageEventRollup).values(**row)
-        excluded = stmt.excluded
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[
-                "user_id",
-                "bucket_date",
-                "kind",
-                "action",
-                "model_id",
-                text("COALESCE(tier, '')"),
-                "category",
-            ],
-            set_={
-                "event_count": excluded.event_count,
-                "category_score_sum": excluded.category_score_sum,
-                "category_score_count": excluded.category_score_count,
-                "gpu_ms_sum": excluded.gpu_ms_sum,
-                "duration_ms_sum": excluded.duration_ms_sum,
-                "frames_sum": excluded.frames_sum,
-            },
-        )
-        await session.execute(stmt)
+    # One server-side statement: the aggregate never lands in Python, and the
+    # first run after an upgrade does not become a round trip per rollup row.
+    stmt = insert(UsageEventRollup).from_select(
+        [
+            "id",
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            "tier",
+            "category",
+            "event_count",
+            "category_score_sum",
+            "category_score_count",
+            "gpu_ms_sum",
+            "duration_ms_sum",
+            "frames_sum",
+        ],
+        aggregate,
+    )
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            text("COALESCE(tier, '')"),
+            "category",
+        ],
+        set_={
+            "event_count": excluded.event_count,
+            "category_score_sum": excluded.category_score_sum,
+            "category_score_count": excluded.category_score_count,
+            "gpu_ms_sum": excluded.gpu_ms_sum,
+            "duration_ms_sum": excluded.duration_ms_sum,
+            "frames_sum": excluded.frames_sum,
+        },
+    )
+    await session.execute(stmt)
 
 
 async def maintain_loop() -> None:
