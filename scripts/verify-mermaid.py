@@ -18,6 +18,26 @@ FENCED_MERMAID = re.compile(
 )
 
 
+def tracked_docs(root: Path) -> list[Path]:
+    """Only what the repository carries.
+
+    docs/internals/ and docs/guide/ are gitignored local notes, so walking the
+    tree would fail a maintainer's pre-push check on files CI never sees, and
+    report a different diagram count than CI does.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", "docs"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if listed.returncode:
+        sys.exit("error: git ls-files failed; run this inside the repository")
+    return sorted(
+        root / name
+        for name in listed.stdout.split("\0")
+        if name.endswith(".md")
+    )
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     # Same override order as frontend/scripts/generate-hero-preview.mjs.
@@ -36,7 +56,7 @@ def main() -> int:
         )
 
     diagrams = []
-    for path in sorted((root / "docs").rglob("*.md")):
+    for path in tracked_docs(root):
         text = path.read_text(encoding="utf-8")
         for block, match in enumerate(FENCED_MERMAID.finditer(text), start=1):
             diagrams.append((path, block, match.group(1)))
