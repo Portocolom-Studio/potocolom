@@ -424,7 +424,17 @@ Account deletion and data export are self serve, since GDPR makes both obligatio
 
 ## Usage metrics and telemetry
 
-Two streams, specified in [metrics.md](metrics.md). Usage events: every completed job and closed realtime session writes one user-linked row (action, model, tier, output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the deployment's own `usage_events` table - the same code in both modes, never crosses the network, dies with the account purge, and stores no prompts or images. Telemetry: self-hosted installs additionally send anonymous daily aggregates to project infrastructure, on by default with `TELEMETRY=false` to disable; the payload is documented, previewable and contains nothing joinable to a person. There are no cookies beyond the session cookie and no client side analytics anywhere.
+Two streams, specified in [metrics.md](metrics.md). Usage events: every completed
+job and closed realtime session writes one user-linked row (action, model, tier,
+output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the
+deployment's own `usage_events` table. Raw rows are kept for 90 days, then become
+daily per-user and per-dimension `usage_event_rollups` before pruning. Both
+tables run in both modes, never cross the network, die with the account purge,
+and store no prompts or images. Telemetry: self-hosted installs additionally
+send anonymous daily aggregates to project infrastructure, on by default with
+`TELEMETRY=false` to disable; the payload is documented, previewable and contains
+nothing joinable to a person. There are no cookies beyond the session cookie and
+no client side analytics anywhere.
 
 ## Data model
 
@@ -439,6 +449,7 @@ erDiagram
     users ||--o{ realtime_sessions : opens
     users ||--o{ metering_events : accrues
     users ||--o{ usage_events : generates
+    users ||--o{ usage_event_rollups : aggregates
     users ||--o{ benchmark_sessions : runs
     benchmark_sessions ||--o{ benchmark_measurements : contains
     models ||--o{ jobs : runs
@@ -533,6 +544,22 @@ erDiagram
         int duration_ms
         int frames
         timestamptz created_at
+    }
+    usage_event_rollups {
+        uuid id PK
+        uuid user_id FK "deleted with the account"
+        date bucket_date "UTC day"
+        text kind
+        text action
+        text model_id
+        text tier
+        text category
+        bigint event_count
+        float category_score_sum
+        bigint category_score_count
+        bigint gpu_ms_sum
+        bigint duration_ms_sum
+        bigint frames_sum
     }
     benchmark_sessions {
         uuid id PK

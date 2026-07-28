@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
-from app import db, telemetry
+from app import db, gpu_samples, telemetry
 from app.main import app
 from app.tables import TelemetryState, UsageEvent, User, WorkerIdentity
 
@@ -53,6 +53,7 @@ def test_telemetry_preview_is_exact_daily_aggregate():
                 last_seen=start - timedelta(seconds=1),
             ))
             await session.commit()
+        await gpu_samples.maintain_once()
 
     with TestClient(app) as client:
         asyncio.run(seed())

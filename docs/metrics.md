@@ -26,8 +26,9 @@ flowchart TB
         LOG["One JSON log line<br>Logs Insights history"]
         GS[("PostgreSQL gpu_samples<br>raw 48 h, 5 min rollups 30 d<br>studio usage panel")]
     end
-    subgraph USAGE["Product plane: one row per completed event"]
-        UE[("PostgreSQL usage_events<br>action, model, tier, category, gpu_ms<br>never prompts, images, IPs")]
+    subgraph USAGE["Product plane: raw events plus cohort rollups"]
+        UE[("PostgreSQL usage_events<br>raw detail for 90 days<br>never prompts, images, IPs")]
+        UR[("PostgreSQL usage_event_rollups<br>daily per user and dimension tuple<br>long-lived cohort history")]
         ADMIN["Admin usage view"]
         OWN["Studio own-metrics view"]
     end
@@ -42,8 +43,11 @@ flowchart TB
     A --> LOG
     A --> GS
     A --> UE
+    UE -->|"roll up complete UTC days,<br>then prune raw rows"| UR
     UE --> ADMIN
+    UR --> ADMIN
     UE --> OWN
+    UR --> OWN
     UE -->|"counts by action, category, tier<br>joinable to no person"| AGG
     AGG -->|"one POST per day"| ING
 ```
@@ -64,7 +68,43 @@ Every completed job and every closed realtime session writes one row to a `usage
 
 Deliberately never stored in this table: prompt text, images, IP addresses, user agents. Time-on-project metrics derive from these server-visible rows (session durations, first to last activity per day), not from any frontend ping; the frontend contains no analytics code at all.
 
-Rows are user-linked because that is what retention, cohort and funnel analysis need. The obligations that come with that: rows are hard deleted with the account's 30 day purge, and they appear in the GDPR export like everything else ([architecture.md](architecture.md), content safety and privacy).
+Raw rows are retained from the start of the UTC day 90 days before the current
+day. This keeps at least 90 days of event-level detail: far more than the previous
+UTC day read by telemetry, and enough for short-horizon session, funnel and
+quarter-scale product questions. The fixed window gives both deployment
+profiles the same analysis contract; their different event rates change the
+bounded raw row count, not the meaning of the data.
+
+Because pruning is aligned to midnight, the raw table contains between 90 and
+91 days of arrivals: at an average `R` completed events per day, about 90 x `R`
+to 91 x `R` rows.
+
+On the existing five-minute maintenance loop, complete older UTC days are first
+written to `usage_event_rollups`, then the corresponding raw rows are deleted in
+the same transaction. The rollup grain is one row per user, UTC day, kind,
+action, model, tier and category. It stores the event count and sums for category
+score (with a separate non-null score count), GPU time, duration and frames.
+Daily user presence answers the long-horizon retention question directly: did
+this user return on a later day or in a later week or month. It also preserves
+DAU/WAU, days active per week and cohorts whose first week begins on the user's
+signup date; a weekly or monthly bucket would blur those questions.
+Exact event ordering for funnel sequences is available only inside the raw
+window; older history keeps the funnel's daily dimensional counts, not a
+replayable event stream.
+
+The row consequence is one row per dimension tuple a user uses on each active
+day. A user active every day with one tuple produces 365 rollup rows per year;
+with `D` distinct tuples every active day, the result is 365 x `D`. This remains
+long-lived history, but growth is periodic and dimension-bounded instead of one
+row per completed event. At the current product paths, `D` comes from four
+kind/action paths, six categories, the registered models and the tier values
+actually used.
+
+Both raw and rollup rows remain user-linked because that is what retention,
+cohort and funnel analysis need. The obligations apply to both tables: the
+foreign keys use `ON DELETE CASCADE`, so both are hard deleted with the account's
+30 day purge, and issue #10's GDPR export must include both
+([architecture.md](architecture.md), content safety and privacy).
 
 ## Content categorization
 
@@ -134,7 +174,12 @@ Two recorded decisions depend on observing the realtime loop, so its numbers are
 
 ## Unit economics
 
-The number the pricing model stands on is utilization: gpu_ms sold (summed from `usage_events`) divided by machine-hours bought (the autoscaler's per-machine-hour accounting rows). The warehouse computes it by joining the two; it is reviewed weekly against the pricing assumptions, and a sustained fall below the assumed floor is a money alarm, not a curiosity.
+The number the pricing model stands on is utilization: gpu_ms sold (summed from
+non-overlapping raw `usage_events` and older `usage_event_rollups`) divided by
+machine-hours bought (the autoscaler's per-machine-hour accounting rows). The
+warehouse computes it by joining the two; it is reviewed weekly against the
+pricing assumptions, and a sustained fall below the assumed floor is a money
+alarm, not a curiosity.
 
 ## Dashboards and the boundary
 
@@ -143,4 +188,7 @@ The number the pricing model stands on is utilization: gpu_ms sold (summed from 
 
 ## Commitments, in one place
 
-No cookies beyond the session cookie. No third party analytics or trackers, self-hosted or cloud. No prompt or image content in any metrics store. Usage events die with the account. The telemetry payload is public, aggregate-only, previewable and one variable away from off.
+No cookies beyond the session cookie. No third party analytics or trackers,
+self-hosted or cloud. No prompt or image content in any metrics store. Raw usage
+events and their user-linked rollups die with the account. The telemetry payload
+is public, aggregate-only, previewable and one variable away from off.

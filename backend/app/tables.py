@@ -8,7 +8,8 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
-    BigInteger, Date, DateTime, Float, ForeignKey, Integer, SmallInteger, Text, text,
+    BigInteger, Date, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -162,6 +163,39 @@ class UsageEvent(Base):
     duration_ms: Mapped[int | None]
     frames: Mapped[int | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class UsageEventRollup(Base):
+    __tablename__ = "usage_event_rollups"
+    __table_args__ = (
+        Index(
+            "usage_event_rollups_key",
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            text("COALESCE(tier, '')"),
+            "category",
+            unique=True,
+        ),
+        Index("usage_event_rollups_bucket_date", "bucket_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    bucket_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    tier: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    event_count: Mapped[int] = mapped_column(BigInteger)
+    category_score_sum: Mapped[float | None] = mapped_column(Float)
+    category_score_count: Mapped[int] = mapped_column(BigInteger)
+    gpu_ms_sum: Mapped[int | None] = mapped_column(BigInteger)
+    duration_ms_sum: Mapped[int | None] = mapped_column(BigInteger)
+    frames_sum: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class TelemetryState(Base):
