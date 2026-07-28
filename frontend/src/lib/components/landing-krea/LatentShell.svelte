@@ -41,7 +41,7 @@
 		<p>{t('footer.tagline')}</p>
 		<nav aria-label={t('footer.docs')}>
 			<a href={repoUrl}>{t('footer.github')}</a>
-			<a href="{repoUrl}/tree/main/docs">{t('footer.docs')}</a>
+			<a href={`${repoUrl}/tree/main/docs`}>{t('footer.docs')}</a>
 			<a href={resolve('/legal')}>{t('footer.legal')}</a>
 			<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
 			<a href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>

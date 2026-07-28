@@ -231,7 +231,10 @@ export function attachLatentCanvas(canvas: HTMLCanvasElement, options: LatentCan
 		scheme = next;
 		if (started) repaint(90);
 	});
-	themeObserver.observe(document.documentElement, { attributes: true });
+	themeObserver.observe(document.documentElement, {
+		attributes: true,
+		attributeFilter: ['data-krea-mode']
+	});
 
 	document.addEventListener('visibilitychange', onVisibility);
 	requestAnimationFrame(() => start());

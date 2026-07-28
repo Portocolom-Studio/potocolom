@@ -187,10 +187,11 @@
 	/* Most models land every category within a few milliseconds of each other, so
 	   the dots pile up. The range bar keeps that readable: a tight cluster draws
 	   a short bar rather than an ambiguous smudge, and an outlier stretches it. */
-	function rowRange(modelId: string): { min: number; max: number } {
+	function rowRange(modelId: string): { min: number; max: number } | null {
 		const values = lineData.categories
 			.map((category) => categoryMs(modelId, category))
 			.filter((ms) => ms > 0);
+		if (!values.length) return null;
 		return { min: Math.min(...values), max: Math.max(...values) };
 	}
 
@@ -411,11 +412,13 @@
 						{@const y = i * dotRowH + dotRowH / 2}
 						{@const range = rowRange(row.model_id)}
 						<text x="0" {y} class="tick" dominant-baseline="middle">{row.model_id}</text>
-						<line x1={dotX(range.min)} y1={y} x2={dotX(range.max)} y2={y} class="range-bar">
-							<title>
-								{row.model_id}: {formatMs(range.min)} to {formatMs(range.max)} across categories
-							</title>
-						</line>
+						{#if range}
+							<line x1={dotX(range.min)} y1={y} x2={dotX(range.max)} y2={y} class="range-bar">
+								<title>
+									{row.model_id}: {formatMs(range.min)} to {formatMs(range.max)} across categories
+								</title>
+							</line>
+						{/if}
 						{#each lineData.categories as category, c (category)}
 							{@const ms = categoryMs(row.model_id, category)}
 							{#if ms > 0}

@@ -9,7 +9,7 @@
  * not put the same picture in the orbit twice. Re-run when data/custom changes.
  */
 import { createHash } from 'node:crypto';
-import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readdir, readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -50,6 +50,7 @@ function describe(file) {
 }
 
 const files = (await readdir(sourceDir)).filter((file) => /\.webp$/i.test(file)).sort();
+await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 
 const seen = new Map();

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import SunIcon from '@lucide/svelte/icons/sun';
+	import { t } from '$lib/i18n.svelte';
 
 	let mode = $state<'dark' | 'light'>('dark');
 
@@ -15,12 +16,12 @@
 	});
 </script>
 
-<aside class="sketch-switcher" aria-label="Display mode">
+<aside class="sketch-switcher" aria-label={t('ui.display_mode')}>
 	<button
 		type="button"
 		class="mode"
 		onclick={toggleMode}
-		aria-label="Switch to {mode === 'dark' ? 'light' : 'dark'} mode"
+		aria-label={mode === 'dark' ? t('ui.switch_to_light') : t('ui.switch_to_dark')}
 	>
 		{#if mode === 'dark'}
 			<SunIcon aria-hidden="true" />

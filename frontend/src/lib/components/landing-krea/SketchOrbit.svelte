@@ -152,6 +152,7 @@
 			<a href="#pricing">{t('nav.pricing')}</a>
 			<a href="#run">{t('nav.open')}</a>
 			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
+			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 		</nav>
 		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
 	</header>
@@ -404,15 +405,16 @@
 	/* Stage ---------------------------------------------------------------- */
 	.stage {
 		--orbit-scale: 0.94;
+		--orbit-tail: clamp(1.5rem, 3vh, 2rem);
 		position: relative;
 		display: grid;
 		grid-template-columns: minmax(0, 1fr);
 		justify-items: center;
 		align-content: center;
 		gap: 1.5rem;
-		min-height: calc(92svh - 4rem);
+		min-height: calc(92svh - 4rem + var(--orbit-tail));
 		padding-block-start: clamp(1.5rem, 4.5vh, 3rem);
-		padding-block-end: clamp(3rem, 8vh, 5.5rem);
+		padding-block-end: calc(clamp(3.5rem, 10vh, 6.5rem) + var(--orbit-tail));
 		padding-inline: clamp(1rem, 4vw, 3rem);
 		text-align: center;
 	}
@@ -568,6 +570,8 @@
 
 	.chip {
 		--w: var(--chip-rest);
+		--shift: 0rem;
+		--grow: 0rem;
 		position: absolute;
 		display: block;
 		width: var(--w);

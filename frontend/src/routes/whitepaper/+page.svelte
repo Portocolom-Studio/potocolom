@@ -73,7 +73,7 @@
 			<h1>{t('wp.title')}</h1>
 			<p class="lede">{t('wp.sub')}</p>
 			<div class="actions">
-				<a class="pill pill-accent" href="{repoUrl}/tree/main/docs">{t('wp.cta_docs')}</a>
+				<a class="pill pill-accent" href={`${repoUrl}/tree/main/docs`}>{t('wp.cta_docs')}</a>
 				<a class="pill pill-ghost" href={resolve('/benchmark')}>{t('wp.cta_benchmark')}</a>
 			</div>
 		</section>

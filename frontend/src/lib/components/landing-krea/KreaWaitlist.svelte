@@ -14,6 +14,7 @@
 
 	const endpoint = PUBLIC_WAITLIST_URL;
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
+	const forkUrl = `${repoUrl}/fork`;
 
 	let email = $state('');
 	let honeypot = $state('');
@@ -119,7 +120,7 @@
 		{:else}
 			<div class="actions">
 				<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
-				<a class="pill pill-ghost" href={repoUrl}>{t('fork.cta_fork')}</a>
+				<a class="pill pill-ghost" href={forkUrl}>{t('fork.cta_fork')}</a>
 			</div>
 		{/if}
 	</div>

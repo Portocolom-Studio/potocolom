@@ -36,12 +36,17 @@
 		let frame = 0;
 		let width = 0;
 		let height = 0;
-		let visible = true;
+		let quiet = 'rgba(255,255,255,0.18)';
+		let accent = 'rgb(80,140,255)';
+		let face = 'sans-serif';
 
-		const styles = getComputedStyle(canvas);
-		const quiet = styles.getPropertyValue('--pf-quiet').trim() || 'rgba(255,255,255,0.18)';
-		const accent = styles.getPropertyValue('--pf-accent').trim() || 'rgb(80,140,255)';
-		const face = styles.fontFamily || 'sans-serif';
+		const readStyles = () => {
+			const styles = getComputedStyle(canvas);
+			quiet = styles.getPropertyValue('--pf-quiet').trim() || 'rgba(255,255,255,0.18)';
+			accent = styles.getPropertyValue('--pf-accent').trim() || 'rgb(80,140,255)';
+			face = styles.fontFamily || 'sans-serif';
+		};
+		readStyles();
 
 		/** Points along a stroked character, in canvas coordinates. */
 		const sampleGlyph = (character: string, centreX: number, box: number) => {
@@ -140,8 +145,18 @@
 		};
 
 		const tick = () => {
-			if (visible) draw();
+			draw();
 			frame = requestAnimationFrame(tick);
+		};
+
+		const start = () => {
+			if (!reduced && !frame) frame = requestAnimationFrame(tick);
+		};
+
+		const stop = () => {
+			if (!frame) return;
+			cancelAnimationFrame(frame);
+			frame = 0;
 		};
 
 		const resize = () => {
@@ -162,9 +177,22 @@
 
 		// Idle off-screen; a field two sections down should not cost frames.
 		const watcher = new IntersectionObserver((entries) => {
-			visible = entries[0]?.isIntersecting ?? true;
+			if (entries[0]?.isIntersecting ?? true) {
+				start();
+			} else {
+				stop();
+			}
 		});
 		watcher.observe(canvas);
+
+		const themeWatcher = new MutationObserver(() => {
+			readStyles();
+			draw();
+		});
+		themeWatcher.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['data-krea-mode']
+		});
 
 		// The copy sits above this canvas, so listen on the window instead.
 		const onMove = (event: PointerEvent) => {
@@ -178,13 +206,13 @@
 		};
 
 		window.addEventListener('pointermove', onMove, { passive: true });
-		if (!reduced) frame = requestAnimationFrame(tick);
 
 		return () => {
 			sizer.disconnect();
 			watcher.disconnect();
+			themeWatcher.disconnect();
 			window.removeEventListener('pointermove', onMove);
-			if (frame) cancelAnimationFrame(frame);
+			stop();
 		};
 	}
 </script>
