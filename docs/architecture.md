@@ -99,11 +99,77 @@ flowchart TB
     FLEET -->|"start and stop machines"| POOL
 ```
 
+### The cloud profile in detail
+
+The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: the session-cookie path inside `current_user` (issue #5), the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95).
+
+```mermaid
+flowchart TB
+    subgraph SPA["Browser: SvelteKit SPA, one build for every mode"]
+        UI["Studio: realtime canvas,<br>generate panel"]
+        GAL["Gallery and history"]
+        MET["Metrics panel"]
+        CFG["Login screen built from<br>GET /api/v1/config"]
+    end
+    subgraph EDGE["Edge"]
+        CF["CloudFront<br>SPA assets, signed image URLs"]
+        ALB["ALB: TLS and routing"]
+    end
+    subgraph API["API replica: FastAPI, stateless, N copies behind the ALB"]
+        AUTH["current_user dependency and role check<br>accounts modes: session cookie to<br>Redis cache, PostgreSQL on miss"]
+        REST["REST routers: auth, models,<br>generations, metrics, studio"]
+        RELAY["Realtime relay<br>browser WS to worker WS"]
+        SCHED["Scheduler leader, Redis lease<br>admission, dispatch, preemption"]
+        SAMP["gpu_samples writer and<br>5-minute rollup maintenance"]
+        STOR["Storage adapter<br>presigned PUT, signed GET"]
+        QC["Quota client: reserve, commit,<br>refund, outbox retries"]
+    end
+    subgraph DATA["Data plane"]
+        PG[("RDS PostgreSQL, source of truth:<br>users, sessions, jobs, assets,<br>models, usage_events, gpu_samples")]
+        RED[("ElastiCache Valkey, namespaced:<br>session cache, job and admission<br>queues, rt pub/sub, rate limits")]
+        S3[("S3 private assets bucket<br>users/ and trial/ prefixes")]
+    end
+    subgraph POOL["GPU pool: rented machines, RunPod and vast.ai"]
+        W["One worker per GPU<br>heartbeat every 30 s with GPU sample<br>CLIP category at job_done"]
+        R2[("Cloudflare R2<br>model weights")]
+    end
+    subgraph PRIV["Private repo services, HTTP boundaries"]
+        BILL["Billing: Stripe, credit ledger,<br>QuotaService contract"]
+        FLEET["Fleet autoscaler<br>queue depth to machines rented"]
+        TEL["Telemetry ingest<br>daily aggregates, self-hosted installs"]
+    end
+    OBS["CloudWatch and Sentry"]
+    SES["SES: verification and<br>sign-in notification email"]
+
+    SPA -->|"static assets, then<br>signed URLs for images"| CF
+    CF -->|"origin fetch under origin access control:<br>the bucket accepts no public requests"| S3
+    SPA <-->|"REST and WS, session cookie"| ALB
+    ALB --> API
+    AUTH --> RED
+    AUTH --> PG
+    REST --> PG
+    REST --> SES
+    RELAY <--> RED
+    SCHED <--> RED
+    SCHED --> PG
+    SAMP --> PG
+    STOR --> S3
+    QC <-->|"HTTP"| BILL
+    W -->|"dials out, one WSS"| RELAY
+    W -->|"weights at boot"| R2
+    RED -.->|"queue depth"| FLEET
+    FLEET -->|"start and stop"| POOL
+    API -.->|"logs, metrics, alarms"| OBS
+    INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate;<br>this deployment sends nothing"| TEL
+```
+
+Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
+
 ## Pluggable seams
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
+- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
@@ -317,6 +383,36 @@ sequenceDiagram
     end
 ```
 
+### Every request after login
+
+There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
+
+> Shipped status (2026-07-28): the dependency and the endpoint are real, and starring writes `jobs.starred_at` as drawn. What the diagram describes ahead of the code is the session half: `AUTH_MODE=none` is the only mode implemented (backend/app/auth.py), so there is no cookie, no session row and no Redis lookup yet, and the per-user rate limit counter arrives with accounts (issue #5). Roles already exist on the user row and are checked beside `current_user`.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant LB as Load balancer
+    participant A as API replica, any of N
+    participant R as Redis
+    participant P as PostgreSQL
+    B->>LB: POST /api/v1/generations/{id}/star<br>HttpOnly session cookie
+    LB->>A: route to any replica, no sticky sessions
+    A->>R: rate limit counter, per user<br>(with accounts, issue #5)
+    A->>R: session token lookup
+    alt cache hit
+        R-->>A: user id
+    else cache miss
+        A->>P: SELECT session row
+        P-->>A: user id
+        A->>R: re-cache session
+    end
+    A->>P: single row update of jobs.starred_at
+    P-->>A: ok
+    A-->>B: 204
+    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In the accounts modes, an install without Redis<br>reads the session row from PostgreSQL every time.
+```
+
 ### Adding a new model
 
 The issue #11 goal: no frontend release needed.
@@ -405,6 +501,33 @@ Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp`
 **Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
 **Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+
+How the pieces reference each other - bytes live once in object storage, every relationship (thumbnail, lineage, favorite per issue #124, category per issue #95) is a column or foreign key on the PostgreSQL rows, and the browser only ever reaches bytes through URLs the API minted from those rows:
+
+```mermaid
+flowchart LR
+    W["Worker<br>finished generation"]
+    subgraph STORE["Object storage, one adapter"]
+        LD[("Self-hosted: local disk<br>STORAGE_LOCAL_PATH")]
+        S3[("Cloud: private S3 bucket<br>users/ and trial/ prefixes")]
+    end
+    subgraph PG["PostgreSQL, source of truth"]
+        J[("jobs<br>params incl. prompt, timings,<br>category, starred_at")]
+        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
+    end
+    B["Browser<br>history, gallery, favorites,<br>share links"]
+    API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
+    CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
+    W -->|"PUT master and thumbnail to the dispatched<br>upload target: a presigned URL in the cloud,<br>an API route on a local install"| STORE
+    W -->|"job_done"| J
+    J --- AS
+    B -->|"session cookie"| API
+    API -->|"owned rows only"| PG
+    API -->|"URLs it minted for owned rows<br>never ListBucket"| B
+    B -->|"fetch bytes: straight to the CDN or bucket<br>in the cloud, back through the API file<br>route on a local install"| STORE
+    CLEAN -.-> AS
+    CLEAN -.-> STORE
+```
 
 **Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.webp` key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
