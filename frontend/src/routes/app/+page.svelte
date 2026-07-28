@@ -26,10 +26,11 @@
 	onMount(() => {
 		if (landing) return;
 		void loadModels();
-		// Favorites load once here; history refreshes reconcile locally rather than
-		// re-fetching the list on every poll tick.
-		void migrateStoredFavorites()
-			.then(loadHistory)
+		// History first so it paints without waiting on the one-time favorites
+		// migration, which stars each stored id in turn. Favorites then load once;
+		// later history refreshes reconcile locally instead of re-fetching the list.
+		void loadHistory()
+			.then(migrateStoredFavorites)
 			.then(loadStarredGenerations)
 			.then(pollWhileWorking)
 			.catch(() => {

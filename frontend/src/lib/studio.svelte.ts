@@ -312,15 +312,18 @@ export function isStarred(id: string): boolean {
 
 export function toggleStarred(id: string): void {
 	const wasStarred = isStarred(id);
+	// Restoring the snapshot keeps a failed toggle from reordering the list, which
+	// rebuilding it through a Set would do.
+	const previous = studio.starredIds;
 	const rollback = () => {
-		studio.starredIds = wasStarred
-			? [...new Set([...studio.starredIds, id])]
-			: studio.starredIds.filter((starredId) => starredId !== id);
+		studio.starredIds = previous;
 		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
 	};
+	// The API orders favorites newest-first by starred_at, so a new star belongs at
+	// the front; appending would make it jump once the list reloads.
 	studio.starredIds = wasStarred
 		? studio.starredIds.filter((starredId) => starredId !== id)
-		: [...studio.starredIds, id];
+		: [id, ...studio.starredIds];
 	void fetch(`/api/v1/generations/${id}/star`, {
 		method: wasStarred ? 'DELETE' : 'POST'
 	})
