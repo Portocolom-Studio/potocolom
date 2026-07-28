@@ -46,6 +46,8 @@ export type Generation = {
 };
 
 const HISTORY_LIMIT = 50;
+const MAX_GENERATION_STREAMS = 4;
+const STREAM_RECONCILE_MS = 15_000;
 const STARRED_STORAGE_KEY = 'potocolom-starred';
 
 function loadStarredIds(): string[] {
@@ -120,6 +122,21 @@ let polling = false;
 // Without this, `if (polling) return` drops the request in the race between the
 // last idle check and `polling = false`, and the UI stops refreshing until reload.
 let pollRequested = false;
+let updatesEnabled = true;
+
+type GenerationEvent = {
+	job_id: string;
+	state: string;
+	progress?: number | null;
+	reason?: string;
+};
+
+const generationStreams = new Map<string, EventSource>();
+const failedGenerationStreams = new Set<string>();
+const pendingTerminalRefreshes = new Set<string>();
+const generationRefreshesInFlight = new Set<string>();
+const terminalRefreshAttempts = new Map<string, number>();
+const MAX_TERMINAL_REFRESH_ATTEMPTS = 3;
 
 // Diffusion models drive the generate form and the sidebar picker; upscalers
 // are reached only through the Upscale action (issue #91). Every model list
@@ -256,6 +273,33 @@ export function generationById(id: string): Generation | undefined {
 	);
 }
 
+function replaceGeneration(incoming: Generation): void {
+	const replace = (generations: Generation[]) =>
+		generations.map((generation) =>
+			generation.id === incoming.id ? preserveAssetUrls([incoming], [generation])[0] : generation
+		);
+	studio.history = replace(studio.history);
+	studio.historyRecent = replace(studio.historyRecent);
+	studio.starredExtras = replace(studio.starredExtras);
+}
+
+function applyGenerationEvent(event: GenerationEvent): void {
+	const apply = (generations: Generation[]) =>
+		generations.map((generation) => {
+			if (generation.id !== event.job_id) return generation;
+			return {
+				...generation,
+				state: event.state,
+				progress: event.state === 'running' ? (event.progress ?? generation.progress) : null,
+				failure_reason:
+					event.state === 'failed' ? (event.reason ?? generation.failure_reason) : null
+			};
+		});
+	studio.history = apply(studio.history);
+	studio.historyRecent = apply(studio.historyRecent);
+	studio.starredExtras = apply(studio.starredExtras);
+}
+
 export function starredGenerations(): Generation[] {
 	return studio.starredIds.flatMap((id) => {
 		const generation = generationById(id);
@@ -264,8 +308,8 @@ export function starredGenerations(): Generation[] {
 }
 
 // History refreshes cannot change which generations are starred, only whether a
-// favorite is already on the page. Reconciling locally keeps the 1.5s polling
-// loop from re-paginating the whole favorites list on every tick.
+// favorite is already on the page. Reconciling locally keeps fallback history
+// refreshes from re-paginating the whole favorites list.
 export function reconcileStarredExtras(): void {
 	const historyIds = new Set(studio.history.map((generation) => generation.id));
 	studio.starredExtras = studio.starredExtras.filter(
@@ -344,29 +388,176 @@ export function toggleStarred(id: string): void {
 		});
 }
 
+function closeGenerationStream(id: string): void {
+	generationStreams.get(id)?.close();
+	generationStreams.delete(id);
+}
+
+function abandonTerminalRefresh(id: string): void {
+	// Give up rather than leave the entry pending: the loop keeps running while
+	// anything is pending, so a refresh that can never succeed would poll forever.
+	closeGenerationStream(id);
+	pendingTerminalRefreshes.delete(id);
+	terminalRefreshAttempts.delete(id);
+}
+
+async function refreshGeneration(id: string): Promise<void> {
+	if (generationRefreshesInFlight.has(id)) return;
+	generationRefreshesInFlight.add(id);
+	try {
+		const response = await fetch(`/api/v1/generations/${id}`);
+		if (response.status === 404) {
+			// The generation is gone; retrying cannot change that.
+			abandonTerminalRefresh(id);
+			return;
+		}
+		if (!response.ok) {
+			countTerminalRefreshFailure(id);
+			return;
+		}
+		const generation = (await response.json()) as Generation;
+		// The page may have unmounted while this was in flight.
+		if (!updatesEnabled) return;
+		replaceGeneration(generation);
+		if (generation.state === 'succeeded' || generation.state === 'failed') {
+			closeGenerationStream(id);
+			pendingTerminalRefreshes.delete(id);
+			terminalRefreshAttempts.delete(id);
+		}
+	} catch {
+		countTerminalRefreshFailure(id);
+	} finally {
+		generationRefreshesInFlight.delete(id);
+	}
+}
+
+function countTerminalRefreshFailure(id: string): void {
+	if (!pendingTerminalRefreshes.has(id)) return;
+	const attempts = (terminalRefreshAttempts.get(id) ?? 0) + 1;
+	if (attempts >= MAX_TERMINAL_REFRESH_ATTEMPTS) {
+		// The next full history refresh reconciles this row.
+		abandonTerminalRefresh(id);
+		return;
+	}
+	terminalRefreshAttempts.set(id, attempts);
+}
+
+function subscribeToGeneration(id: string): void {
+	if (typeof EventSource === 'undefined') {
+		failedGenerationStreams.add(id);
+		return;
+	}
+	let source: EventSource;
+	try {
+		source = new EventSource(`/api/v1/generations/${id}/events`);
+	} catch {
+		failedGenerationStreams.add(id);
+		return;
+	}
+	generationStreams.set(id, source);
+	source.onmessage = (message) => {
+		let event: GenerationEvent;
+		try {
+			event = JSON.parse(message.data) as GenerationEvent;
+		} catch {
+			return;
+		}
+		if (event.job_id !== id) return;
+		applyGenerationEvent(event);
+		if (event.state === 'succeeded' || event.state === 'failed') {
+			closeGenerationStream(id);
+			pendingTerminalRefreshes.add(id);
+			void refreshGeneration(id);
+		}
+	};
+	source.onerror = () => {
+		if (generationStreams.get(id) !== source) return;
+		// This covers an error before the initial snapshot as well as a broken
+		// established stream. Polling is safer than relying on a reconnect that
+		// may have missed the terminal event.
+		closeGenerationStream(id);
+		failedGenerationStreams.add(id);
+		pollRequested = true;
+	};
+}
+
+function syncGenerationStreams(): boolean {
+	const working = studio.history.filter(
+		(generation) => generation.state === 'queued' || generation.state === 'running'
+	);
+	const workingIds = new Set(working.map((generation) => generation.id));
+	for (const id of generationStreams.keys()) {
+		if (!workingIds.has(id)) closeGenerationStream(id);
+	}
+	for (const id of failedGenerationStreams) {
+		if (!workingIds.has(id)) failedGenerationStreams.delete(id);
+	}
+	for (const generation of working) {
+		if (generationStreams.size >= MAX_GENERATION_STREAMS) break;
+		if (!generationStreams.has(generation.id) && !failedGenerationStreams.has(generation.id)) {
+			subscribeToGeneration(generation.id);
+		}
+	}
+	return working.some((generation) => !generationStreams.has(generation.id));
+}
+
+export function stopGenerationUpdates(): void {
+	updatesEnabled = false;
+	pollRequested = false;
+	for (const id of generationStreams.keys()) closeGenerationStream(id);
+	failedGenerationStreams.clear();
+	pendingTerminalRefreshes.clear();
+	terminalRefreshAttempts.clear();
+}
+
+/** Enable updates for a mounted view. Only the route that mounts should call this. */
+export async function startGenerationUpdates(): Promise<void> {
+	updatesEnabled = true;
+	await pollWhileWorking();
+}
+
 export async function pollWhileWorking(): Promise<void> {
+	// Requesting a tick must not re-enable a stopped view: callers reach here from
+	// async work that can resolve after teardown.
+	if (!updatesEnabled) return;
 	pollRequested = true;
 	if (polling) return;
 	polling = true;
+	let nextStreamReconcile = Date.now() + STREAM_RECONCILE_MS;
 	try {
 		do {
 			pollRequested = false;
-			while (studio.history.some((g) => g.state === 'queued' || g.state === 'running')) {
+			while (
+				updatesEnabled &&
+				(studio.history.some((g) => g.state === 'queued' || g.state === 'running') ||
+					pendingTerminalRefreshes.size > 0)
+			) {
+				syncGenerationStreams();
 				await new Promise((resolve) => setTimeout(resolve, 1500));
-				try {
-					await loadHistory();
-				} catch {
-					continue;
+				if (!updatesEnabled) break;
+				if (syncGenerationStreams()) {
+					try {
+						await loadHistory();
+						nextStreamReconcile = Date.now() + STREAM_RECONCILE_MS;
+					} catch {
+						// Keep the fallback active until history answers again.
+					}
+				} else if (Date.now() >= nextStreamReconcile) {
+					await Promise.all([...generationStreams.keys()].map((id) => refreshGeneration(id)));
+					nextStreamReconcile = Date.now() + STREAM_RECONCILE_MS;
 				}
+				await Promise.all([...pendingTerminalRefreshes].map((id) => refreshGeneration(id)));
 			}
 			// Re-check: a generate() during the idle gap sets pollRequested and may
 			// have already refreshed history with new queued/running jobs.
 		} while (
-			pollRequested ||
-			studio.history.some((g) => g.state === 'queued' || g.state === 'running')
+			updatesEnabled &&
+			(pollRequested || studio.history.some((g) => g.state === 'queued' || g.state === 'running'))
 		);
 	} finally {
+		for (const id of generationStreams.keys()) closeGenerationStream(id);
+		failedGenerationStreams.clear();
 		polling = false;
-		if (pollRequested) void pollWhileWorking();
+		if (updatesEnabled && pollRequested) void pollWhileWorking();
 	}
 }

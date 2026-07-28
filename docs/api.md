@@ -148,6 +148,16 @@ DELETE /api/v1/generations/{id}/star  user or admin; 204; idempotent, 403 for vi
                                       404 for another user's or missing job
 ```
 
+The studio opens at most four generation event streams. An `EventSource` error
+before or after the initial event moves that job to the 1.5-second history
+polling fallback; jobs above the stream cap share the same fallback refresh.
+After a streamed terminal event, the studio reads that generation once so its
+final row, timings and assets equal a history poll. A missed cross-replica event
+cannot leave a spinner running forever, by one of two paths: while every working
+job is streamed, each streamed row is reconciled on its own every 15 seconds;
+while any job is on the fallback, the 1.5-second history refresh already covers
+every row, streamed or not.
+
 Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
 
 <!-- Corrected 2026-07-23: model_id is required (was documented optional with tier routing, which is unshipped); history is GET /api/v1/generations (was mislabeled GET /api/v1/assets); added shipped response fields and the SSE events endpoint. -->

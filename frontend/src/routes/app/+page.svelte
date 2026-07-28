@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
@@ -12,7 +12,8 @@
 		loadModels,
 		loadStarredGenerations,
 		migrateStoredFavorites,
-		pollWhileWorking,
+		startGenerationUpdates,
+		stopGenerationUpdates,
 		studio
 	} from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -23,6 +24,10 @@
 	// of the studio. Product builds leave the variable empty.
 	const landing = PUBLIC_SITE_MODE === 'landing';
 
+	// Set on teardown: the preload chain can resolve after unmount, and starting
+	// the update loop then would run streams with no UI mounted.
+	let cancelled = false;
+
 	onMount(() => {
 		if (landing) return;
 		void loadModels();
@@ -32,11 +37,19 @@
 		void loadHistory()
 			.then(migrateStoredFavorites)
 			.then(loadStarredGenerations)
-			.then(pollWhileWorking)
+			.then(() => {
+				if (cancelled) return;
+				return startGenerationUpdates();
+			})
 			.catch(() => {
 				// Best-effort preload: the panel shows its empty states and the
 				// poll loop recovers once the API answers.
 			});
+	});
+
+	onDestroy(() => {
+		cancelled = true;
+		stopGenerationUpdates();
 	});
 </script>
 
