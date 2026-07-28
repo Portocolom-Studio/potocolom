@@ -120,7 +120,7 @@ flowchart TB
         REST["REST routers: auth, models,<br>generations, metrics, studio"]
         RELAY["Realtime relay<br>browser WS to worker WS"]
         SCHED["Scheduler leader, Redis lease<br>admission, dispatch, preemption"]
-        SAMP["gpu_samples writer and<br>5 minute rollup maintenance"]
+        SAMP["gpu_samples writer and<br>5-minute rollup maintenance"]
         STOR["Storage adapter<br>presigned PUT, signed GET"]
         QC["Quota client: reserve, commit,<br>refund, outbox retries"]
     end
@@ -160,7 +160,7 @@ flowchart TB
     RED -.->|"queue depth"| FLEET
     FLEET -->|"start and stop"| POOL
     API -.->|"logs, metrics, alarms"| OBS
-    INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate.<br>this deployment sends nothing"| TEL
+    INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate;<br>this deployment sends nothing"| TEL
 ```
 
 Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
