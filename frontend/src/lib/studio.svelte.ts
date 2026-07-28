@@ -416,6 +416,8 @@ async function refreshGeneration(id: string): Promise<void> {
 			return;
 		}
 		const generation = (await response.json()) as Generation;
+		// The page may have unmounted while this was in flight.
+		if (!updatesEnabled) return;
 		replaceGeneration(generation);
 		if (generation.state === 'succeeded' || generation.state === 'failed') {
 			closeGenerationStream(id);
