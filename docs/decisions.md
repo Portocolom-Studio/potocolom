@@ -532,6 +532,12 @@ Two consequences are accepted deliberately. The prerendered language is English,
 
 Rejected alternatives: leaving the marketing routes client-rendered and accepting an empty shell in search results and social cards (the reason this project has a landing page at all is discovery); a separate marketing site or branch (rejected earlier and still rejected, since one codebase serving both surfaces is the point); server-side rendering at request time (needs a running server in front of the CDN, which the cloud profile deliberately avoids).
 
+## Favorites: a timestamp on the job row
+
+Favorites are persisted as nullable `jobs.starred_at`. The timestamp is both membership and newest-first ordering, the existing job owner scopes every operation, and job retention remains authoritative. This gives the implicit self-hosted user and future account users the same endpoint and database path.
+
+Rejected alternatives: keeping UUIDs in browser localStorage, which strands favorites across browsers, reinstalls and regenerated rows; a separate favorites join table, which adds a join and lifecycle without buying many-to-many ownership because assets and their jobs have one owner.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

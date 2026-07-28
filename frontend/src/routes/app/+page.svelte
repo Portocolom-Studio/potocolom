@@ -10,9 +10,9 @@
 	import {
 		loadHistory,
 		loadModels,
+		migrateStoredFavorites,
 		pollWhileWorking,
-		studio,
-		syncStarredIdsFromStorage
+		studio
 	} from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
@@ -24,9 +24,9 @@
 
 	onMount(() => {
 		if (landing) return;
-		syncStarredIdsFromStorage();
 		void loadModels();
-		void loadHistory()
+		void migrateStoredFavorites()
+			.then(loadHistory)
 			.then(pollWhileWorking)
 			.catch(() => {
 				// Best-effort preload: the panel shows its empty states and the
@@ -55,6 +55,9 @@
 			<AppSidebar />
 			<Sidebar.Inset class="min-h-0 overflow-hidden">
 				<div class="relative flex h-full min-h-0 flex-col p-4">
+					{#if studio.favoriteNotice}
+						<p class="bg-muted mb-3 rounded-md px-3 py-2 text-sm">{studio.favoriteNotice}</p>
+					{/if}
 					{#if landing}
 						<StudioPreview />
 					{:else if studio.shellView === 'metrics'}

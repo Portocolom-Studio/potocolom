@@ -25,6 +25,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
+| POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
 | GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
 | GET `/api/v1/metrics/gpu/history` | implemented (#98) | GPU telemetry over a time range (raw, or 5-minute rollups) |
 | GET, POST `/api/v1/benchmark/*` | implemented (#83), `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking |
@@ -129,8 +130,12 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
                              carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
                              (This is the real history endpoint. There is no /api/v1/assets.)
+                             ?starred=true uses starred_at newest-first; false excludes favorites.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
+
+POST /api/v1/generations/{id}/star    204; idempotent, 404 for another user's or missing job
+DELETE /api/v1/generations/{id}/star  204; idempotent, 404 for another user's or missing job
 ```
 
 Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.

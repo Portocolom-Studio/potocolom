@@ -1,6 +1,8 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { t } from '$lib/i18n.svelte';
+
 export type Model = {
 	id: string;
 	name: string;
@@ -38,6 +40,8 @@ export type Generation = {
 	created_at: string;
 	dispatched_at: string | null;
 	finished_at: string | null;
+	starred_at: string | null;
+	expired_favorite: boolean;
 	assets: Asset[];
 };
 
@@ -48,15 +52,13 @@ function loadStarredIds(): string[] {
 	if (typeof localStorage === 'undefined') return [];
 	try {
 		const raw = localStorage.getItem(STARRED_STORAGE_KEY);
-		return raw ? (JSON.parse(raw) as string[]) : [];
+		const parsed = raw ? JSON.parse(raw) : [];
+		return Array.isArray(parsed)
+			? parsed.filter((value): value is string => typeof value === 'string')
+			: [];
 	} catch {
 		return [];
 	}
-}
-
-function saveStarredIds(ids: string[]): void {
-	if (typeof localStorage === 'undefined') return;
-	localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(ids));
 }
 
 function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Generation[] {
@@ -85,11 +87,24 @@ export const studio = $state({
 	historyRecentFull: false, // true when the latest API page hit the limit
 	historyHasMore: false,
 	historyExtended: false,
-	starredIds: loadStarredIds() as string[],
+	starredIds: [] as string[],
 	starredExtras: [] as Generation[], // starred jobs fetched outside the history pages
+	favoriteNotice: '',
 	shellView: 'playground' as 'playground' | 'metrics',
 	metricsTab: 'usage' as 'usage' | 'benchmarks'
 });
+
+type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
+const favoriteNotices = new Map<FavoriteNoticeKind, string>();
+
+function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): void {
+	if (message === null) {
+		favoriteNotices.delete(kind);
+	} else {
+		favoriteNotices.set(kind, message);
+	}
+	studio.favoriteNotice = [...favoriteNotices.values()].join(' ');
+}
 
 export function openPlayground(): void {
 	studio.shellView = 'playground';
@@ -148,8 +163,39 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
-export function syncStarredIdsFromStorage(): void {
-	studio.starredIds = loadStarredIds();
+export async function migrateStoredFavorites(): Promise<void> {
+	const ids = loadStarredIds();
+	if (ids.length === 0 || typeof localStorage === 'undefined') return;
+	let missing = 0;
+	let complete = true;
+	for (const id of ids) {
+		try {
+			const generation = await fetch(`/api/v1/generations/${id}`);
+			if (generation.status === 404) {
+				missing += 1;
+				continue;
+			}
+			if (!generation.ok) {
+				complete = false;
+				continue;
+			}
+			const starred = await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
+			if (!starred.ok && starred.status === 404) {
+				missing += 1;
+			} else if (!starred.ok) {
+				complete = false;
+			}
+		} catch {
+			complete = false;
+		}
+	}
+	if (complete) localStorage.removeItem(STARRED_STORAGE_KEY);
+	if (missing > 0) {
+		setFavoriteNotice(
+			'migration',
+			t('app.gen.favorite_missing').replace('{count}', String(missing))
+		);
+	}
 }
 
 export async function loadHistory(): Promise<void> {
@@ -221,58 +267,29 @@ export function starredGenerations(): Generation[] {
 }
 
 export async function loadStarredGenerations(): Promise<void> {
+	const favorites: Generation[] = [];
+	let cursor: string | null = null;
+	while (true) {
+		const query = cursor === null ? '' : `&cursor=${cursor}`;
+		const response = await fetch(`/api/v1/generations?starred=true&limit=200${query}`);
+		if (!response.ok) return;
+		const page = (await response.json()) as Generation[];
+		favorites.push(...page);
+		if (page.length < 200) break;
+		const nextCursor = page.at(-1)?.id;
+		if (!nextCursor || nextCursor === cursor) break;
+		cursor = nextCursor;
+	}
+	studio.starredIds = favorites.map((generation) => generation.id);
 	const historyIds = new Set(studio.history.map((generation) => generation.id));
-	const extrasById = new Map(studio.starredExtras.map((generation) => [generation.id, generation]));
-
-	const resolved = new Map<string, Generation>();
-	for (const id of studio.starredIds) {
-		const fromHistory = studio.history.find((generation) => generation.id === id);
-		if (fromHistory !== undefined && fromHistory.assets.length > 0) {
-			resolved.set(id, fromHistory);
-			continue;
-		}
-		const cached = extrasById.get(id);
-		if (cached !== undefined && cached.assets.length > 0) {
-			resolved.set(id, cached);
-		}
+	studio.starredExtras = favorites.filter(
+		(generation) => !historyIds.has(generation.id) && generation.assets.length > 0
+	);
+	if (favorites.some((generation) => generation.expired_favorite)) {
+		setFavoriteNotice('expired', t('app.gen.favorite_expired'));
+	} else {
+		setFavoriteNotice('expired', null);
 	}
-
-	const missing = studio.starredIds.filter((id) => !resolved.has(id));
-	const gone = new Set<string>();
-	const fetched =
-		missing.length === 0
-			? []
-			: (
-					await Promise.all(
-						missing.map(async (id) => {
-							const response = await fetch(`/api/v1/generations/${id}`);
-							if (response.status === 404) {
-								gone.add(id);
-								return null;
-							}
-							if (!response.ok) return null;
-							const generation = (await response.json()) as Generation;
-							return generation.state !== 'failed' && generation.assets.length > 0
-								? generation
-								: null;
-						})
-					)
-				).filter((generation): generation is Generation => generation !== null);
-
-	for (const generation of fetched) {
-		resolved.set(generation.id, generation);
-	}
-
-	if (gone.size > 0) {
-		studio.starredIds = studio.starredIds.filter((id) => !gone.has(id));
-		saveStarredIds(studio.starredIds);
-	}
-
-	studio.starredExtras = studio.starredIds.flatMap((id) => {
-		if (historyIds.has(id)) return [];
-		const generation = resolved.get(id);
-		return generation !== undefined ? [generation] : [];
-	});
 }
 
 export async function resetHistoryToRecent(): Promise<void> {
@@ -287,13 +304,34 @@ export function isStarred(id: string): boolean {
 }
 
 export function toggleStarred(id: string): void {
-	studio.starredIds = isStarred(id)
+	const wasStarred = isStarred(id);
+	const rollback = () => {
+		studio.starredIds = wasStarred
+			? [...new Set([...studio.starredIds, id])]
+			: studio.starredIds.filter((starredId) => starredId !== id);
+		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
+	};
+	studio.starredIds = wasStarred
 		? studio.starredIds.filter((starredId) => starredId !== id)
 		: [...studio.starredIds, id];
-	saveStarredIds(studio.starredIds);
-	// Best-effort refresh: a failed fetch leaves the previous starred set
-	// in place and the next history load retries it.
-	void loadStarredGenerations().catch(() => {});
+	void fetch(`/api/v1/generations/${id}/star`, {
+		method: wasStarred ? 'DELETE' : 'POST'
+	})
+		.then(async (response) => {
+			if (!response.ok) {
+				rollback();
+				return;
+			}
+			setFavoriteNotice('save', null);
+			try {
+				await loadStarredGenerations();
+			} catch {
+				// The save succeeded; the next history refresh retries the list.
+			}
+		})
+		.catch(() => {
+			rollback();
+		});
 }
 
 export async function pollWhileWorking(): Promise<void> {

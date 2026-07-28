@@ -4,6 +4,7 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 import asyncio
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pytest
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Job, Model
+from app.tables import Asset, Job, Model
 
 MANIFEST = {
     "id": "sd-test",
@@ -94,6 +95,30 @@ def test_generation_end_to_end():
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
+
+            assert client.post(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.post(f"/api/v1/generations/{job_id}/star").status_code == 204
+            favorites = client.get("/api/v1/generations?starred=true").json()
+            assert [entry["id"] for entry in favorites] == [job_id]
+            assert favorites[0]["starred_at"] is not None
+
+            async def expire_asset() -> None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = await session.get(Asset, uuid.UUID(asset["id"]))
+                    assert row is not None
+                    row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                    await session.commit()
+
+            asyncio.run(expire_asset())
+            expired = client.get("/api/v1/generations?starred=true").json()[0]
+            assert expired["assets"] == []
+            assert expired["expired_favorite"] is True
+
+            assert client.delete(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.delete(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.get("/api/v1/generations?starred=true").json() == []
+            assert client.post(f"/api/v1/generations/{uuid.uuid4()}/star").status_code == 404
 
             # The event stream replays the terminal state and ends.
             events = client.get(f"/api/v1/generations/{job_id}/events")
