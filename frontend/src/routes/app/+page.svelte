@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
@@ -13,6 +13,7 @@
 		loadStarredGenerations,
 		migrateStoredFavorites,
 		pollWhileWorking,
+		stopGenerationUpdates,
 		studio
 	} from '$lib/studio.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -38,6 +39,8 @@
 				// poll loop recovers once the API answers.
 			});
 	});
+
+	onDestroy(stopGenerationUpdates);
 </script>
 
 <Seo
