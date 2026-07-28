@@ -83,7 +83,9 @@
 							aria-live="polite"
 							class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm"
 						>
-							<span class="flex-1">
+							<!-- Flex with a gap, so the two messages are spaced by layout rather
+							     than by template whitespace. -->
+							<span class="flex flex-1 flex-wrap gap-x-1">
 								{#if studio.favoriteNotice}<span>{studio.favoriteNotice}</span>{/if}
 								{#if updateAvailable}<span>{t('app.update.available')}</span>{/if}
 							</span>
