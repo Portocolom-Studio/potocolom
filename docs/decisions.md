@@ -550,6 +550,12 @@ Access is a single `role` column on `users` with three values, checked by a depe
 
 Rejected alternatives: a per-resource permission table, and admin-assignable per-tab grants, both of which add a matrix nobody has asked for and can be layered on these tiers later if a real need appears; no roles at all, which cannot express read-only access and leaves install-wide endpoints open to any authenticated account once the cloud has more than one.
 
+## Model timings: observed per-install medians supersede shipped constants
+
+A new install starts with the shipped reference-card GPU timings. Once a model has five eligible succeeded jobs, the median observed GPU speed from its latest 50 jobs supersedes that reference speed for the install. Five leaves four representative observations when one job is pathological without delaying convergence for a lightly used model; 50 smooths ordinary workload variance while allowing the cache to follow a hardware change. Observations are normalized for each job's steps, dimensions or upscale factor before the median is taken, and the existing five-minute maintenance loop refreshes the derived in-memory cache. Jobs do not record their worker or memory mode, so the cache is keyed by model alone rather than inventing an unreliable join.
+
+Rejected alternatives: shipping one machine's constants forever, which is wrong on every other hardware profile; calibrating on every boot, which spends GPU time and measures idle synthetic conditions rather than the real workload.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db
+from app import db, estimates
 from app.tables import GpuSample, GpuSampleRollup, WorkerIdentity
 
 logger = logging.getLogger("potocolom.gpu_samples")
@@ -253,7 +253,8 @@ def _serialize_rollup(row: GpuSampleRollup) -> dict:
 
 
 async def maintain_once() -> None:
-    """Roll raw samples into five-minute buckets, then prune old rows."""
+    """Refresh estimates, roll raw samples into buckets, then prune old rows."""
+    await estimates.refresh_observed_timings()
     if db.session_factory is None:
         return
     now = _utcnow()
@@ -331,11 +332,11 @@ async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: date
 
 async def maintain_loop() -> None:
     while True:
-        await asyncio.sleep(MAINTAIN_INTERVAL)
         try:
             await maintain_once()
         except Exception:
             logger.exception("gpu sample maintenance failed")
+        await asyncio.sleep(MAINTAIN_INTERVAL)
 
 
 async def latest_sample_at(session: AsyncSession) -> datetime | None:
