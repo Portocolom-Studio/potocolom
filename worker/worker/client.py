@@ -224,14 +224,16 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                           "input_fetch_ms": input_fetch_ms,
                           "load_ms": result.load_ms,
                           "postprocess_ms": postprocess_ms,
-                          "width": result.width, "height": result.height,
-                          "duration_ms": int((time.monotonic() - job_started) * 1000)}
+                          "width": result.width, "height": result.height}
         category, score = categorize_output(result.data)
         done_msg["category"] = category
         if score is not None:
             done_msg["category_score"] = score
         if has_thumbnail:
             done_msg["has_thumbnail"] = True
+        # Stamped last so it covers every step the user waits through, including
+        # categorization once that stops being a stub.
+        done_msg["duration_ms"] = int((time.monotonic() - job_started) * 1000)
         await ws.send(json.dumps(done_msg))
         logger.info("job %s done in %d gpu_ms", job_id, result.gpu_ms)
     except asyncio.CancelledError:
