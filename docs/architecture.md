@@ -449,7 +449,7 @@ erDiagram
     users {
         uuid id PK
         text email
-        text role "user or admin"
+        text role "viewer, user (member), or admin"
         timestamptz deleted_at "starts 30 day purge"
         timestamptz created_at
     }

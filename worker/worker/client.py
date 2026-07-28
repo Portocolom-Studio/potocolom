@@ -334,11 +334,12 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
+            gpu = await asyncio.to_thread(sample_gpu, settings.device)
             await ws.send(json.dumps({
                 "type": "heartbeat",
                 "slots_in_use": len(runners),
                 "loaded_models": engine.loaded_models(),
-                "gpu": sample_gpu(settings.device),
+                "gpu": gpu,
             }))
 
     heartbeat_task = asyncio.create_task(heartbeats())
@@ -384,11 +385,12 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         jobs.add(task)
                         task.add_done_callback(jobs.discard)
                     elif control["type"] == "gpu_status":
+                        gpu = await asyncio.to_thread(sample_gpu, settings.device)
                         await ws.send(json.dumps({
                             "type": "gpu_status",
                             "request_id": control["request_id"],
                             "loaded_models": engine.loaded_models(),
-                            "gpu": sample_gpu(settings.device),
+                            "gpu": gpu,
                         }))
                     elif control["type"] == "load_model":
                         await _gpu_load(ws, engine, by_id, control)

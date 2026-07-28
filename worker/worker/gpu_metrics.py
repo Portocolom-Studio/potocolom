@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -66,9 +67,12 @@ def _torch_vram_bytes() -> tuple[int, int] | None:
         import torch
     except ImportError:
         return None
-    if not torch.cuda.is_available():
+    try:
+        if not torch.cuda.is_available():
+            return None
+        free, total = torch.cuda.mem_get_info()
+    except Exception:
         return None
-    free, total = torch.cuda.mem_get_info()
     used = int(total) - int(free)
     return used, int(total)
 
@@ -122,31 +126,66 @@ def _rocm_gpu0_vram_bytes(mem_text: str) -> tuple[int, int] | None:
     return None
 
 
-def _rocm_metrics() -> dict[str, Any]:
+def _json_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        match = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
+        if match:
+            return float(match.group(0))
+    return None
+
+
+def _parse_rocm_json(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    card = next((value for value in payload.values() if isinstance(value, dict)), payload)
     metrics: dict[str, Any] = {}
-    use_text = _run_smi(["rocm-smi", "--showuse"])
-    util = _parse_util(use_text)
+    for key, value in card.items():
+        name = str(key).lower()
+        number = _json_number(value)
+        if number is None:
+            continue
+        if "gpu use" in name and "(%)" in name:
+            metrics["util_pct"] = int(number)
+        elif "temperature" in name and "(c)" in name:
+            metrics["temperature_c"] = number
+        elif "power" in name and "(w)" in name:
+            metrics["power_w"] = number
+        elif "vram total used memory" in name and "(b)" in name:
+            metrics["vram_used_bytes"] = int(number)
+        elif "vram total memory" in name and "(b)" in name:
+            metrics["vram_total_bytes"] = int(number)
+    return metrics
+
+
+def _parse_rocm_text(text: str) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    util = _parse_util(text)
     if util is not None:
         metrics["util_pct"] = util
 
-    temp_text = _run_smi(["rocm-smi", "--showtemp"])
-    temp = _parse_temperature(temp_text)
+    temp = _parse_temperature(text)
     if temp is not None:
         metrics["temperature_c"] = temp
 
-    power_text = _run_smi(["rocm-smi", "--showpower"])
-    power = _parse_power(power_text)
+    power = _parse_power(text)
     if power is not None:
         metrics["power_w"] = power
 
-    mem_text = _run_smi(["rocm-smi", "--showmeminfo", "vram"])
-    gpu0_vram = _rocm_gpu0_vram_bytes(mem_text)
+    gpu0_vram = _rocm_gpu0_vram_bytes(text)
     if gpu0_vram is not None:
         used, total = gpu0_vram
         metrics["vram_used_bytes"] = used
         metrics["vram_total_bytes"] = total
     else:
-        pair = _VRAM_PAIR_RE.search(mem_text.replace(",", " "))
+        pair = _VRAM_PAIR_RE.search(text.replace(",", " "))
         if pair:
             used = int(pair.group(1))
             total = int(pair.group(2))
@@ -154,8 +193,8 @@ def _rocm_metrics() -> dict[str, Any]:
                 metrics["vram_used_bytes"] = used
                 metrics["vram_total_bytes"] = total
         else:
-            used_match = _VRAM_USED_B_RE.search(mem_text)
-            total_match = _VRAM_TOTAL_B_RE.search(mem_text)
+            used_match = _VRAM_USED_B_RE.search(text)
+            total_match = _VRAM_TOTAL_B_RE.search(text)
             if used_match and total_match:
                 used = int(used_match.group(1))
                 total = int(total_match.group(1))
@@ -163,6 +202,26 @@ def _rocm_metrics() -> dict[str, Any]:
                     metrics["vram_used_bytes"] = used
                     metrics["vram_total_bytes"] = total
     return metrics
+
+
+def _parse_rocm_metrics(text: str) -> dict[str, Any]:
+    metrics = _parse_rocm_json(text)
+    for key, value in _parse_rocm_text(text).items():
+        metrics.setdefault(key, value)
+    return metrics
+
+
+def _rocm_metrics() -> dict[str, Any]:
+    text = _run_smi([
+        "rocm-smi",
+        "--showuse",
+        "--showtemp",
+        "--showpower",
+        "--showmeminfo",
+        "vram",
+        "--json",
+    ])
+    return _parse_rocm_metrics(text)
 
 
 def _attach_vram_pct(metrics: dict[str, Any]) -> None:
@@ -180,12 +239,18 @@ def sample_gpu(device: str) -> dict[str, Any]:
         metrics["available"] = False
         return metrics
 
-    if device == "rocm" and shutil.which("rocm-smi"):
-        metrics.update(_rocm_metrics())
-    elif device == "cuda" and shutil.which("nvidia-smi"):
-        metrics.update(_nvidia_metrics())
+    try:
+        if device == "rocm" and shutil.which("rocm-smi"):
+            metrics.update(_rocm_metrics())
+        elif device == "cuda" and shutil.which("nvidia-smi"):
+            metrics.update(_nvidia_metrics())
+    except Exception:
+        pass
 
-    vram = _torch_vram_bytes()
+    try:
+        vram = _torch_vram_bytes()
+    except Exception:
+        vram = None
     if vram is not None:
         used, total = vram
         metrics.setdefault("vram_used_bytes", used)

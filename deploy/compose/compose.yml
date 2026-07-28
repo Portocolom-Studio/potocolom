@@ -1,7 +1,14 @@
 # Self-hosted stack: one API (SPA + backend), PostgreSQL and one GPU worker.
 # Shape matches docs/blueprint.md; no Redis, billing or safety services.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   api:
+    logging: *default-logging
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
@@ -21,6 +28,7 @@ services:
         condition: service_healthy
 
   postgres:
+    logging: *default-logging
     image: postgres:16
     environment:
       POSTGRES_USER: potocolom
@@ -35,6 +43,7 @@ services:
       retries: 5
 
   worker:
+    logging: *default-logging
     profiles: ["gpu"]
     build:
       context: ../..
@@ -60,6 +69,7 @@ services:
   # AMD worker (docker compose --profile rocm). Same volumes as the NVIDIA
   # worker: run one profile or the other, not both.
   worker-rocm:
+    logging: *default-logging
     profiles: ["rocm"]
     build:
       context: ../..
@@ -81,6 +91,7 @@ services:
 
   # Simulated worker for smoke tests (docker compose --profile smoke).
   worker-sim:
+    logging: *default-logging
     profiles: ["smoke"]
     build:
       context: ../..
