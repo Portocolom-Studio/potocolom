@@ -10,6 +10,7 @@
 	import {
 		loadHistory,
 		loadModels,
+		loadStarredGenerations,
 		migrateStoredFavorites,
 		pollWhileWorking,
 		studio
@@ -25,8 +26,11 @@
 	onMount(() => {
 		if (landing) return;
 		void loadModels();
+		// Favorites load once here; history refreshes reconcile locally rather than
+		// re-fetching the list on every poll tick.
 		void migrateStoredFavorites()
 			.then(loadHistory)
+			.then(loadStarredGenerations)
 			.then(pollWhileWorking)
 			.catch(() => {
 				// Best-effort preload: the panel shows its empty states and the
@@ -56,7 +60,9 @@
 			<Sidebar.Inset class="min-h-0 overflow-hidden">
 				<div class="relative flex h-full min-h-0 flex-col p-4">
 					{#if studio.favoriteNotice}
-						<p class="bg-muted mb-3 rounded-md px-3 py-2 text-sm">{studio.favoriteNotice}</p>
+						<p role="status" aria-live="polite" class="bg-muted mb-3 rounded-md px-3 py-2 text-sm">
+							{studio.favoriteNotice}
+						</p>
 					{/if}
 					{#if landing}
 						<StudioPreview />

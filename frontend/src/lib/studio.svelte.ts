@@ -163,24 +163,21 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function migrateStoredFavorites(): Promise<void> {
-	const ids = loadStarredIds();
-	if (ids.length === 0 || typeof localStorage === 'undefined') return;
-	let missing = 0;
+	const stored = loadStarredIds();
+	if (stored.length === 0 || typeof localStorage === 'undefined') return;
+	// A value that was never a job id can never resolve, so count it as missing
+	// rather than letting its 422 hold the migration open forever.
+	let missing = stored.filter((id) => !UUID_PATTERN.test(id)).length;
 	let complete = true;
-	for (const id of ids) {
+	for (const id of stored.filter((value) => UUID_PATTERN.test(value))) {
 		try {
-			const generation = await fetch(`/api/v1/generations/${id}`);
-			if (generation.status === 404) {
-				missing += 1;
-				continue;
-			}
-			if (!generation.ok) {
-				complete = false;
-				continue;
-			}
+			// Star directly: the endpoint's own 404 already reports an id that no
+			// longer resolves, so a preceding GET would only double the requests.
 			const starred = await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
-			if (!starred.ok && starred.status === 404) {
+			if (starred.status === 404) {
 				missing += 1;
 			} else if (!starred.ok) {
 				complete = false;
@@ -201,7 +198,7 @@ export async function migrateStoredFavorites(): Promise<void> {
 export async function loadHistory(): Promise<void> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
 	if (!response.ok) {
-		await loadStarredGenerations();
+		reconcileStarredExtras();
 		return;
 	}
 	const page = (await response.json()) as Generation[];
@@ -212,14 +209,14 @@ export async function loadHistory(): Promise<void> {
 	if (!studio.historyExtended) {
 		studio.history = recent;
 		studio.historyHasMore = recentFull;
-		await loadStarredGenerations();
+		reconcileStarredExtras();
 		return;
 	}
 	// Keep older pages at the tail while refreshing the newest slice in place.
 	const recentIds = new Set(recent.map((generation) => generation.id));
 	const olderTail = studio.history.filter((generation) => !recentIds.has(generation.id));
 	studio.history = [...recent, ...olderTail];
-	await loadStarredGenerations();
+	reconcileStarredExtras();
 }
 
 export async function loadOlderHistory(): Promise<boolean> {
@@ -248,7 +245,7 @@ export async function loadOlderHistory(): Promise<boolean> {
 	studio.history = [...studio.history, ...unique];
 	studio.historyHasMore = result.raw.length === HISTORY_LIMIT;
 	studio.historyExtended = studio.history.length > studio.historyRecent.length;
-	await loadStarredGenerations();
+	reconcileStarredExtras();
 	return true;
 }
 
@@ -264,6 +261,16 @@ export function starredGenerations(): Generation[] {
 		const generation = generationById(id);
 		return generation !== undefined && generation.assets.length > 0 ? [generation] : [];
 	});
+}
+
+// History refreshes cannot change which generations are starred, only whether a
+// favorite is already on the page. Reconciling locally keeps the 1.5s polling
+// loop from re-paginating the whole favorites list on every tick.
+export function reconcileStarredExtras(): void {
+	const historyIds = new Set(studio.history.map((generation) => generation.id));
+	studio.starredExtras = studio.starredExtras.filter(
+		(generation) => !historyIds.has(generation.id)
+	);
 }
 
 export async function loadStarredGenerations(): Promise<void> {
