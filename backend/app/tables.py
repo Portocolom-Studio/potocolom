@@ -102,3 +102,44 @@ class GpuSampleRollup(Base):
     vram_used_pct_max: Mapped[int | None] = mapped_column(SmallInteger)
     temperature_mean: Mapped[float | None] = mapped_column(Float)
     power_mean: Mapped[float | None] = mapped_column(Float)
+
+
+class BenchmarkSession(Base):
+    __tablename__ = "benchmark_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # Who ran the suite, kept as provenance only; the history belongs to the install.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime]
+    target_vram_gb: Mapped[float | None] = mapped_column(Float)
+    prompt_count: Mapped[int]
+    models: Mapped[list] = mapped_column(JSONB)
+    variants_per_prompt: Mapped[int]
+    total_jobs: Mapped[int]
+    succeeded: Mapped[int]
+    failed: Mapped[int]
+
+
+class BenchmarkMeasurement(Base):
+    __tablename__ = "benchmark_measurements"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("benchmark_sessions.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(primary_key=True)
+    prompt_id: Mapped[int]
+    title: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    variant: Mapped[str] = mapped_column(Text)
+    cell_key: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict] = mapped_column(JSONB)
+    model_load_ms: Mapped[int | None]
+    state: Mapped[str] = mapped_column(Text)
+    gpu_ms: Mapped[int | None]
+    wall_s: Mapped[float | None] = mapped_column(Float)
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    job_id: Mapped[str | None] = mapped_column(Text)
+    file: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)

@@ -26,6 +26,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
 | POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
+| GET `/api/v1/benchmark/sessions/*` | implemented (#107) | list and read durable benchmark sessions, install-scoped |
+| POST `/api/v1/benchmark/sessions` | implemented (#107), `BENCHMARK_API`-gated | ingest a completed benchmark session |
 | GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
 | GET `/api/v1/metrics/gpu/history` | implemented (#98) | GPU telemetry over a time range (raw, or 5-minute rollups) |
 | GET, POST `/api/v1/benchmark/*` | implemented (#83), `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking |
@@ -152,6 +154,14 @@ GET /api/v1/metrics/gpu/history        ?from&to&rollup - GPU samples over a rang
                                         (30d retention) for the requested window. See metrics.md.
 GET  /api/v1/benchmark/models          list benchmarkable models (BENCHMARK_API-gated)
 POST /api/v1/benchmark/{load|unload|run}   drive a model for a benchmark run
+POST /api/v1/benchmark/sessions       BENCHMARK_API-gated completed scripts/benchmark.py report;
+                                        201 {"id": "..."}; 404 when the benchmark API is disabled;
+                                        malformed reports return 422
+GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session summaries;
+                                        ?limit defaults to 50 and is capped at 200; pass the last
+                                        session id as ?cursor to read the next page
+GET  /api/v1/benchmark/sessions/{id}  200 full report in the existing results.json shape;
+                                        404 for a missing session
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
 GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)

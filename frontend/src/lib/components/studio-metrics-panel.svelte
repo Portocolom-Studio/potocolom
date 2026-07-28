@@ -4,7 +4,11 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { t } from '$lib/i18n.svelte';
 	import { formatMs, leaderboardRows } from '$lib/benchmark';
-	import { loadBenchmarkSessions, type BenchmarkSession } from '$lib/studio-benchmark-sessions';
+	import {
+		loadBenchmarkSessionReport,
+		loadBenchmarkSessions,
+		type BenchmarkSession
+	} from '$lib/studio-benchmark-sessions';
 	import {
 		fetchGpuHistory,
 		historyRollupForRange,
@@ -42,12 +46,15 @@
 	let sessionsLoading = $state(false);
 	let sessionsError = $state(false);
 	let selectedSessionId = $state<string | null>(null);
+	let reportLoadingId = $state<string | null>(null);
+	let reportErrorId = $state<string | null>(null);
 	let metricsRange = $state<MetricsRange>('5m');
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
 	let recentFailures = $state<Generation[]>([]);
 	let failuresLoading = $state(false);
 	let fetchedFailedCount = $state<number | null>(null);
 	let failuresInFlight = false;
+	const loadingReports = new Set<string>();
 
 	const demoMode = $derived.by(() => {
 		void liveTick;
@@ -117,7 +124,7 @@
 		sessions.find((entry) => entry.id === selectedSessionId) ?? sessions[0] ?? null
 	);
 	const benchmarkRows = $derived(
-		selectedSession ? leaderboardRows(selectedSession.report.model_stats) : []
+		selectedSession?.report ? leaderboardRows(selectedSession.report.model_stats) : []
 	);
 	const latestSample = $derived.by(() => {
 		void liveTick;
@@ -210,6 +217,37 @@
 			})
 			.finally(() => {
 				sessionsLoading = false;
+			});
+	});
+
+	$effect(() => {
+		if (studio.metricsTab !== 'benchmarks') return;
+		const selected = selectedSession;
+		if (
+			!selected ||
+			selected.report ||
+			loadingReports.has(selected.id) ||
+			reportErrorId === selected.id
+		) {
+			return;
+		}
+		const id = selected.id;
+		loadingReports.add(id);
+		reportLoadingId = id;
+		void loadBenchmarkSessionReport(id)
+			.then((report) => {
+				if (report === null) {
+					reportErrorId = id;
+					return;
+				}
+				sessions = sessions.map((entry) => (entry.id === id ? { ...entry, report } : entry));
+			})
+			.catch(() => {
+				reportErrorId = id;
+			})
+			.finally(() => {
+				loadingReports.delete(id);
+				if (reportLoadingId === id) reportLoadingId = null;
 			});
 	});
 </script>
@@ -401,7 +439,10 @@
 				type="single"
 				value={selectedSessionId ?? undefined}
 				onValueChange={(next) => {
-					if (next) selectedSessionId = next;
+					if (next) {
+						selectedSessionId = next;
+						reportErrorId = null;
+					}
 				}}
 			>
 				<Select.Trigger class="w-full">
@@ -417,7 +458,7 @@
 			</Select.Root>
 		</div>
 
-		{#if selectedSession}
+		{#if selectedSession?.report}
 			<div class="flex flex-wrap items-center gap-2">
 				{#if selectedSession.report.target_vram_gb}
 					<Badge variant="secondary">{selectedSession.report.target_vram_gb} GB VRAM</Badge>
@@ -458,6 +499,17 @@
 					</tbody>
 				</table>
 			</div>
+		{:else if reportLoadingId === selectedSession?.id}
+			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
+		{:else if reportErrorId === selectedSession?.id}
+			<div class="flex items-center gap-3">
+				<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_error')}</p>
+				<Button variant="outline" size="sm" onclick={() => (reportErrorId = null)}>
+					{t('app.metrics.benchmark_retry')}
+				</Button>
+			</div>
+		{:else}
+			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_empty')}</p>
 		{/if}
 	{/if}
 </div>

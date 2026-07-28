@@ -307,6 +307,8 @@
 	"app.metrics.benchmark_timeline_desc": "Tiempo de GPU por imagen a lo largo de la ejecución. Los huecos entre modelos son tiempo de carga; el informe no incluye muestras de GPU o VRAM del hardware.",
 	"app.metrics.benchmark_images": "imágenes",
 	"app.metrics.open_benchmark_page": "Abrir página de benchmark",
+	"app.metrics.benchmark_retry": "Reintentar",
+	"app.metrics.benchmark_error": "No se pudo cargar esa sesión de benchmark.",
 	"app.metrics.benchmark_empty": "Aún no hay resultados publicados. Ejecuta make benchmark y luego make benchmark-publish.",
 	"app.metrics.benchmark_loading": "Cargando resultados del benchmark...",
 	"app.metrics.benchmark_session": "Sesión de benchmark",

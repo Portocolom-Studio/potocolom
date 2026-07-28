@@ -5,6 +5,10 @@
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
 	import { onMount } from 'svelte';
 	import {
+		loadBenchmarkSessionReport,
+		loadBenchmarkSessions
+	} from '$lib/studio-benchmark-sessions';
+	import {
 		formatMs,
 		formatSeconds,
 		promptAverages,
@@ -49,13 +53,13 @@
 	});
 
 	onMount(async () => {
-		const response = await fetch('/benchmark/results.json');
-		if (!response.ok) return;
 		try {
-			const result = (await response.json()) as BenchmarkReport;
+			const sessions = await loadBenchmarkSessions();
+			const first = sessions[0];
+			const result = first?.report ?? (first ? await loadBenchmarkSessionReport(first.id) : null);
 			if (
-				typeof result.created_at === 'string' &&
-				Array.isArray(result.results) &&
+				typeof result?.created_at === 'string' &&
+				Array.isArray(result?.results) &&
 				result.results.length > 0
 			) {
 				report = result;

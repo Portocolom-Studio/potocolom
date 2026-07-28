@@ -44,9 +44,19 @@ def _prepare_database() -> bool:
                                      user=url.username, password=url.password,
                                      database=database, timeout=3)
         try:
-            await conn.execute("TRUNCATE gpu_samples, gpu_sample_rollups, assets, jobs")
-        except asyncpg.UndefinedTableError:
-            pass  # first run; migrations have not created the tables yet
+            # Truncate per table that exists: one missing name must not skip the
+            # rest, or a run against a database from before the newest migration
+            # leaves stale rows behind in the tables that are already there.
+            candidates = (
+                "benchmark_measurements", "benchmark_sessions",
+                "gpu_samples", "gpu_sample_rollups", "assets", "jobs",
+            )
+            existing = [
+                name for name in candidates
+                if await conn.fetchval("SELECT to_regclass($1)", f"public.{name}") is not None
+            ]
+            if existing:
+                await conn.execute(f"TRUNCATE {', '.join(existing)} CASCADE")
         finally:
             await conn.close()
 
