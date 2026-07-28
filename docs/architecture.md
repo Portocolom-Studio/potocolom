@@ -142,7 +142,7 @@ flowchart TB
     SES["SES: verification and<br>sign-in notification email"]
 
     SPA -->|"static assets, then<br>signed URLs for images"| CF
-    CF -->|"origin fetch, origin access control<br>the bucket takes no public request"| S3
+    CF -->|"origin fetch under origin access control:<br>the bucket accepts no public requests"| S3
     SPA <-->|"REST and WS, session cookie"| ALB
     ALB --> API
     AUTH --> RED
@@ -160,7 +160,7 @@ flowchart TB
     RED -.->|"queue depth"| FLEET
     FLEET -->|"start and stop"| POOL
     API -.->|"logs, metrics, alarms"| OBS
-    TEL -.-|"receives from other installs,<br>not from this deployment"| PRIV
+    INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate.<br>this deployment sends nothing"| TEL
 ```
 
 Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
@@ -523,8 +523,8 @@ flowchart LR
     J --- AS
     B -->|"session cookie"| API
     API -->|"owned rows only"| PG
-    API -->|"signed URLs it minted<br>never ListBucket"| B
-    B -->|"fetch bytes"| STORE
+    API -->|"URLs it minted for owned rows<br>never ListBucket"| B
+    B -->|"fetch bytes: straight to the CDN or bucket<br>in the cloud, back through the API file<br>route on a local install"| STORE
     CLEAN -.-> AS
     CLEAN -.-> STORE
 ```
