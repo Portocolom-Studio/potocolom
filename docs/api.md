@@ -97,6 +97,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
     "name": "SDXL Base",
     "capabilities": ["text_to_image", "image_to_image"],
     "min_vram_gb": 10,
+    "prompt_token_limit": 77,
     "default": true,
     "benchmark_only": false,
     "estimated_gpu_ms_default": 4200,
@@ -112,7 +113,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 ]
 ```
 
-`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness.
+`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown.
 
 <!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
 

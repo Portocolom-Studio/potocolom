@@ -26,6 +26,7 @@ MANIFEST = {
         "required": ["prompt"],
     },
     "min_vram_gb": 0,
+    "prompt_token_limit": 77,
 }
 
 MANIFEST_T2I_ONLY = {
@@ -64,6 +65,10 @@ def test_generation_end_to_end():
 
             models = client.get("/api/v1/models").json()
             assert any(m["id"] == "sd-test" for m in models)
+            # The studio's prompt warning (issue #148) reads the window here,
+            # so it has to survive the worker hello and reach the browser.
+            listed = next(m for m in models if m["id"] == "sd-test")
+            assert listed["prompt_token_limit"] == 77
 
             async def job_events() -> int:
                 assert db.session_factory is not None

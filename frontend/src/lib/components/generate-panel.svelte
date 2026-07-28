@@ -25,6 +25,7 @@
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
+	import { estimatePromptTokens, promptExceedsWindow } from '$lib/prompt-tokens';
 	import {
 		defaultUpscaleModelId,
 		filterDiffusionModels,
@@ -130,6 +131,17 @@
 		})
 	);
 	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
+	// Diffusers truncates at the text encoder window and only logs it worker
+	// side, so the prompt tail silently stops affecting the image (issue #148).
+	const promptWindow = $derived(selectedModel?.prompt_token_limit ?? 0);
+	const promptOverflows = $derived(promptExceedsWindow(studio.prompt, promptWindow));
+	const promptTokenNotice = $derived(
+		promptOverflows
+			? t('app.gen.prompt_too_long')
+					.replace('{tokens}', String(estimatePromptTokens(studio.prompt)))
+					.replace('{limit}', String(promptWindow))
+			: null
+	);
 	const upscaleSource = $derived(
 		shown !== null && shown.assets.length > 0
 			? { width: shown.assets[0].width, height: shown.assets[0].height }
@@ -363,7 +375,16 @@
 								id="gen-prompt"
 								class={fieldClass + ' no-scrollbar h-44 resize-none overflow-y-auto py-2'}
 								placeholder={t('app.gen.prompt_placeholder')}
+								aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
 								bind:value={studio.prompt}></textarea>
+							{#if promptTokenNotice}
+								<!-- Described by the field rather than announced from a live region:
+								the count changes on every keystroke, which a polite region would
+								read out again and again while the user is still typing. -->
+								<p id="gen-prompt-window" class="text-muted-foreground text-sm leading-relaxed">
+									{promptTokenNotice}
+								</p>
+							{/if}
 						</div>
 						<div class="grid grid-cols-2 gap-3">
 							<div class="flex flex-col gap-2">
