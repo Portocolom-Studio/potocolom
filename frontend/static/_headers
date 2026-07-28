@@ -17,6 +17,10 @@
 /
   Cache-Control: no-cache
 
+# The same document is reachable at its file path, by tooling or a direct link.
+/index.html
+  Cache-Control: no-cache
+
 # Long-cache static image assets. Filenames are stable slugs; regenerate under a
 # new slug (or purge) when replacing an image in place.
 /images/*
