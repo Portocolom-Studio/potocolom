@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pytest
+from sqlalchemy import func, select
 from fastapi.testclient import TestClient
 
 from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Asset, Job, Model
+from app.tables import Asset, Job, Model, UsageEvent
 
 MANIFEST = {
     "id": "sd-test",
@@ -63,6 +64,22 @@ def test_generation_end_to_end():
 
             models = client.get("/api/v1/models").json()
             assert any(m["id"] == "sd-test" for m in models)
+
+            async def job_events() -> int:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return int(await session.scalar(
+                        select(func.count()).select_from(UsageEvent).where(
+                            UsageEvent.model_id == "sd-test",
+                            UsageEvent.kind == "job",
+                            UsageEvent.action == "generate",
+                        )
+                    ) or 0)
+
+            # usage_events carries no job id, and the database is truncated once
+            # per session, so this job's row is identified by the count rising
+            # rather than by any matching row existing.
+            events_before = asyncio.run(job_events())
 
             created = client.post("/api/v1/generations",
                                   json={"model_id": "sd-test",
@@ -123,6 +140,14 @@ def test_generation_end_to_end():
             # The event stream replays the terminal state and ends.
             events = client.get(f"/api/v1/generations/{job_id}/events")
             assert "succeeded" in events.text
+
+            def usage_written() -> bool:
+                return asyncio.run(job_events()) > events_before
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not usage_written():
+                time.sleep(0.05)
+            assert usage_written()
 
 
 @pytest.mark.db
