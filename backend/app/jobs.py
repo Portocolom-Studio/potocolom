@@ -574,6 +574,8 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
+        from app import usage_events
+        usage_events.schedule_job(job_id, control)
     else:
         reason = str(control.get("reason", "worker reported failure"))
         await mark_failed(job_id, reason)

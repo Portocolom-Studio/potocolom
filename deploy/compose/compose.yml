@@ -13,6 +13,7 @@ services:
       STORAGE_BACKEND: local
       PUBLIC_URL: http://localhost:8080
       INTERNAL_URL: http://api:8080
+      TELEMETRY: ${TELEMETRY:-true}
     volumes:
       - assets:/data/assets
     depends_on:

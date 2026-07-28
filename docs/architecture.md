@@ -439,6 +439,8 @@ erDiagram
     users ||--o{ realtime_sessions : opens
     users ||--o{ metering_events : accrues
     users ||--o{ usage_events : generates
+    users ||--o{ benchmark_sessions : runs
+    benchmark_sessions ||--o{ benchmark_measurements : contains
     models ||--o{ jobs : runs
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
@@ -474,10 +476,9 @@ erDiagram
         int min_vram_gb
     }
     workers {
-        text id PK
-        jsonb model_ids
-        int realtime_slots
-        int protocol_version
+        text worker_id PK
+        text device
+        text memory_mode
         timestamptz last_seen
     }
     jobs {
@@ -487,6 +488,7 @@ erDiagram
         jsonb params
         text state "queued, running, succeeded, failed"
         int gpu_ms
+        timestamptz starred_at "null unless favorited"
         timestamptz created_at
     }
     assets {
@@ -526,9 +528,37 @@ erDiagram
         text model_id
         text tier
         text category "CLIP zero-shot on the output"
+        float category_score
         int gpu_ms
         int duration_ms
+        int frames
         timestamptz created_at
+    }
+    benchmark_sessions {
+        uuid id PK
+        uuid user_id FK
+        timestamptz created_at
+        jsonb models
+        int total_jobs
+        int succeeded
+        int failed
+    }
+    benchmark_measurements {
+        uuid session_id PK,FK
+        int position PK
+        int prompt_id
+        text model_id
+        text variant
+        jsonb params
+        int model_load_ms
+        int gpu_ms
+        float wall_s
+        text state
+    }
+    telemetry_state {
+        int id PK
+        uuid install_id
+        date last_report_day
     }
 ```
 

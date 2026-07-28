@@ -41,6 +41,8 @@ The NVIDIA variant (`:v0.x-cuda`) uses the `deploy.resources.reservations.device
 
 Dependencies run in containers; the three applications run natively for instant reload and debugger access:
 
+The `make api` target sets `TELEMETRY=false`, so the native development loop never reports telemetry.
+
 ```
 deploy/compose/dev.yml        # postgres; redis, minio and mailpit behind --profile cloud-sim
 backend:  uvicorn app:app --reload          # against the dev containers

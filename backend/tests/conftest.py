@@ -16,6 +16,7 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/potocolom_test")
+os.environ.setdefault("TELEMETRY", "false")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
@@ -44,12 +45,10 @@ def _prepare_database() -> bool:
                                      user=url.username, password=url.password,
                                      database=database, timeout=3)
         try:
-            # Truncate per table that exists: one missing name must not skip the
-            # rest, or a run against a database from before the newest migration
-            # leaves stale rows behind in the tables that are already there.
             candidates = (
-                "benchmark_measurements", "benchmark_sessions",
-                "gpu_samples", "gpu_sample_rollups", "assets", "jobs",
+                "telemetry_state", "usage_events", "benchmark_measurements",
+                "benchmark_sessions", "workers", "gpu_samples", "gpu_sample_rollups",
+                "assets", "jobs",
             )
             existing = [
                 name for name in candidates
