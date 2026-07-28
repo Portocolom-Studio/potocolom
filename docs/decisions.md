@@ -398,6 +398,52 @@ Every completed job and closed realtime session writes one user-linked row (acti
 
 Rejected alternatives: a third party analytics product (PostHog, Amplitude: client side trackers and data sharing contradict the no-cookies posture and add a dependency); daily aggregates only (privacy-trivial but cannot answer retention or cohort questions); classifying the prompt text instead of the output (prompts are short, misleading or absent in drawing and enhance flows); pseudonymous ids (loses the join to plan and cohort, which is the point of the exercise).
 
+## Usage event retention: 90-day raw rows plus daily user rollups
+
+Raw `usage_events` are retained from the UTC midnight 90 days before maintenance
+runs. Before older complete days are pruned, the existing five-minute maintenance
+loop replaces an idempotent `usage_event_rollups` row for each user, UTC day,
+kind, action, model, tier and category with the raw count and numeric sums. The
+rollup and prune commit in one transaction. Ninety days keeps a substantial
+recent window of event-level session and funnel detail while placing a direct
+bound on the table daily telemetry and the future admin view scan most often.
+The window is fixed because both profiles need the same metric semantics;
+event-rate differences change the bounded raw volume rather than the retention
+contract.
+
+The UTC alignment means 90 to 91 days of arrivals remain, or about 90 x `R` to
+91 x `R` raw rows at an average `R` completed events per day.
+
+The daily per-user grain preserves the question the table exists to answer: did
+this user return in a later period. Daily presence can be regrouped into DAU,
+WAU, calendar periods or signup-relative first-week cohorts; a coarser stored
+bucket cannot recover those boundaries. The dimensions preserve category, model,
+tier and action retention, while count, category-score count and sum, gpu_ms,
+duration and frames preserve the additive usage measures. Per-user annual row
+count is the sum of distinct dimension tuples used on each active day: 365 rows
+for a daily user with one tuple, or 365 x `D` when that user uses `D` tuples every
+day. The rollup is long-lived, but its growth is periodic and dimension-bounded
+rather than per completed event.
+
+`usage_event_rollups.user_id` uses the same `ON DELETE CASCADE` as raw events.
+The rollup is personal data, dies with the account purge, and belongs in the GDPR
+export when issue #10 implements it. This retains the existing privacy
+commitment; an aggregate-only rollup would not, because a later purge could not
+remove that user's contribution.
+
+The existing `usage_events_created_at` index remains: it serves both the
+maintenance rollup/prune range and telemetry's previous-day range. The unique
+rollup key serves the idempotent conflict update and user-scoped cohort/GDPR
+reads; its leading `user_id` also supports the cascade lookup. A separate
+`usage_event_rollups_bucket_date` index serves cross-user period scans for cohort
+and admin aggregation.
+
+Rejected alternatives: no retention, which leaves per-event growth unbounded;
+plain deletion after the raw window, which destroys returning-user and cohort
+history; aggregate-only rollups, which cannot identify a returning user and
+cannot remove one person's contribution on purge; weekly or monthly user
+rollups, which cannot reconstruct daily activity or signup-relative first weeks.
+
 ## Telemetry: opt-out anonymous aggregates from self-hosted installs
 
 Supersedes "Telemetry: none from self-hosted installs". Self-hosted installs post one anonymous daily aggregate (counts by action, category and tier, active user count, worker device and memory mode, version, random install id) to a project ingest endpoint, on by default, disabled with `TELEMETRY=false`. Three properties keep opt-out defensible to a GPL audience: the payload is aggregates only and joinable to no person, the exact payload is documented publicly and previewable locally, and the API logs the destination and the off switch at every startup. A failed send is dropped, never queued. Specified in [metrics.md](metrics.md).

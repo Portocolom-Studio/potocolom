@@ -46,9 +46,9 @@ def _prepare_database() -> bool:
                                      database=database, timeout=3)
         try:
             candidates = (
-                "telemetry_state", "usage_events", "benchmark_measurements",
-                "benchmark_sessions", "workers", "gpu_samples", "gpu_sample_rollups",
-                "assets", "jobs",
+                "telemetry_state", "usage_event_rollups", "usage_events",
+                "benchmark_measurements", "benchmark_sessions", "workers",
+                "gpu_samples", "gpu_sample_rollups", "assets", "jobs",
             )
             existing = [
                 name for name in candidates
