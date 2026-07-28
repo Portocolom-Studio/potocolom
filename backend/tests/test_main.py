@@ -27,7 +27,10 @@ def test_spa_static_files_fallback_to_index(tmp_path: Path):
             assert response.status_code == 200
             assert "potocolom" in response.text
             assert response.headers["Cache-Control"] == "no-cache"
-        assert "Cache-Control" not in client.get("/asset.txt").headers
+        # The contract is that a hashed asset is not forced to revalidate, not
+        # that the framework omits the header entirely.
+        asset = client.get("/asset.txt")
+        assert "no-cache" not in asset.headers.get("Cache-Control", "")
         # API paths must stay 404s, never the SPA shell.
         for path in ("/api", "/api/v1/no-such-endpoint"):
             response = client.get(path)
