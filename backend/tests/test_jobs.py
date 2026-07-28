@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import pytest
+from sqlalchemy import select
 from fastapi.testclient import TestClient
 
 from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Asset, Job, Model
+from app.tables import Asset, Job, Model, UsageEvent
 
 MANIFEST = {
     "id": "sd-test",
@@ -123,6 +124,24 @@ def test_generation_end_to_end():
             # The event stream replays the terminal state and ends.
             events = client.get(f"/api/v1/generations/{job_id}/events")
             assert "succeeded" in events.text
+
+            async def usage_written() -> bool:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = (
+                        await session.execute(
+                            select(UsageEvent)
+                            .where(UsageEvent.model_id == "sd-test")
+                            .order_by(UsageEvent.created_at.desc())
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    return row is not None and row.kind == "job" and row.action == "generate"
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not asyncio.run(usage_written()):
+                time.sleep(0.05)
+            assert asyncio.run(usage_written())
 
 
 @pytest.mark.db

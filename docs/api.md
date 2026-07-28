@@ -8,6 +8,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication is a session cookie (opaque token, httpOnly), set by the auth endpoints (issue #5). Until those ship, the prototype endpoints are unauthenticated and run as a single implicit local user (`AUTH_MODE=none`).
+- Authorization is the `role` column on the user: `admin` (everything, plus install
+  configuration), `user` (the member tier: create and mutate own work) and `viewer`
+  (read-only). Write endpoints require member or higher and answer 403 for a viewer.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
 - API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise.
@@ -116,7 +119,8 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 `POST` queues a job; the job endpoint and the SSE stream report progress; the list endpoint is the history.
 
 ```
-POST /api/v1/generations     {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
+POST /api/v1/generations     member or admin; viewer receives 403
+                             {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
                              model_id is REQUIRED. For image_to_image or upscale, also pass
                              "source_asset_id"; upscale requires a source and is mutually
                              exclusive with the diffusion capabilities.
@@ -136,8 +140,10 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 
-POST /api/v1/generations/{id}/star    204; idempotent, 404 for another user's or missing job
-DELETE /api/v1/generations/{id}/star  204; idempotent, 404 for another user's or missing job
+POST /api/v1/generations/{id}/star    member or admin; 204; idempotent, 403 for viewer,
+                                      404 for another user's or missing job
+DELETE /api/v1/generations/{id}/star  member or admin; 204; idempotent, 403 for viewer,
+                                      404 for another user's or missing job
 ```
 
 Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
@@ -154,7 +160,8 @@ GET /api/v1/metrics/gpu/history        ?from&to&rollup - GPU samples over a rang
                                         (30d retention) for the requested window. See metrics.md.
 GET  /api/v1/benchmark/models          list benchmarkable models (BENCHMARK_API-gated)
 POST /api/v1/benchmark/{load|unload|run}   drive a model for a benchmark run
-POST /api/v1/benchmark/sessions       BENCHMARK_API-gated completed scripts/benchmark.py report;
+POST /api/v1/benchmark/sessions       member or admin; BENCHMARK_API-gated completed
+                                        scripts/benchmark.py report;
                                         201 {"id": "..."}; 404 when the benchmark API is disabled;
                                         malformed reports return 422
 GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session summaries;
@@ -162,7 +169,8 @@ GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session su
                                         session id as ?cursor to read the next page
 GET  /api/v1/benchmark/sessions/{id}  200 full report in the existing results.json shape;
                                         404 for a missing session
-GET  /api/v1/telemetry/preview        200 exact previous UTC day's anonymous aggregate payload;
+GET  /api/v1/telemetry/preview        admin only; 403 for viewer or member; 200 exact previous
+                                        UTC day's anonymous aggregate payload;
                                         503 when the database is unavailable
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
