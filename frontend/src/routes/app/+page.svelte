@@ -12,7 +12,7 @@
 		loadModels,
 		loadStarredGenerations,
 		migrateStoredFavorites,
-		pollWhileWorking,
+		startGenerationUpdates,
 		stopGenerationUpdates,
 		studio
 	} from '$lib/studio.svelte';
@@ -39,7 +39,7 @@
 			.then(loadStarredGenerations)
 			.then(() => {
 				if (cancelled) return;
-				return pollWhileWorking();
+				return startGenerationUpdates();
 			})
 			.catch(() => {
 				// Best-effort preload: the panel shows its empty states and the

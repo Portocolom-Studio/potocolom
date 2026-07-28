@@ -510,9 +510,17 @@ export function stopGenerationUpdates(): void {
 	terminalRefreshAttempts.clear();
 }
 
-export async function pollWhileWorking(): Promise<void> {
-	pollRequested = true;
+/** Enable updates for a mounted view. Only the route that mounts should call this. */
+export async function startGenerationUpdates(): Promise<void> {
 	updatesEnabled = true;
+	await pollWhileWorking();
+}
+
+export async function pollWhileWorking(): Promise<void> {
+	// Requesting a tick must not re-enable a stopped view: callers reach here from
+	// async work that can resolve after teardown.
+	if (!updatesEnabled) return;
+	pollRequested = true;
 	if (polling) return;
 	polling = true;
 	let nextStreamReconcile = Date.now() + STREAM_RECONCILE_MS;
