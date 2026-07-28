@@ -15,7 +15,7 @@ Every call a customer's browser makes, from first page load to account deletion.
   `require_role("member")`; the stored value is `user`.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
-- API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise.
+- API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise, and the API tolerates the previous release's SPA through additive-only response changes over the same release window.
 
 ## Endpoint catalogue
 

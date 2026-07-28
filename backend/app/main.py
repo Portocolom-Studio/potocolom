@@ -1,12 +1,15 @@
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from app import db, jobs
 from app.benchmark import router as benchmark_router
@@ -101,6 +104,18 @@ async def config() -> dict:
 
 class SPAStaticFiles(StaticFiles):
     """Serve a built SPA: unknown GET paths fall back to index.html."""
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if Path(full_path).name == "index.html":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     def _may_fall_back(self, path: str, scope) -> bool:
         # Unknown API paths must stay 404s; only page routes fall back.

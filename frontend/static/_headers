@@ -8,6 +8,15 @@
   Strict-Transport-Security: max-age=31536000
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
 
+# The entry document must not be reused across a deploy: it carries the hashed
+# asset names for one build. Pages serves the root index.html at its canonical
+# extensionless path, so the rule targets "/".
+# Other prerendered routes (/app, /benchmark, ...) are separate HTML documents
+# served directly by Pages, which revalidates HTML by default; the self-hosted
+# profile reaches them through the index.html fallback, which this covers.
+/
+  Cache-Control: no-cache
+
 # Long-cache static image assets. Filenames are stable slugs; regenerate under a
 # new slug (or purge) when replacing an image in place.
 /images/*

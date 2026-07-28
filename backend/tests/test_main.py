@@ -12,15 +12,22 @@ def test_spa_static_files_fallback_to_index(tmp_path: Path):
     dist = tmp_path / "static"
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html><title>potocolom</title>")
+    (dist / "asset.txt").write_text("asset")
 
     app = Starlette()
     app.mount("/", SPAStaticFiles(directory=dist, html=True))
 
     with TestClient(app) as client:
+        for path in ("/", "/index.html"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers["Cache-Control"] == "no-cache"
         for path in ("/app", "/app/generate", "/whitepaper"):
             response = client.get(path)
             assert response.status_code == 200
             assert "potocolom" in response.text
+            assert response.headers["Cache-Control"] == "no-cache"
+        assert "Cache-Control" not in client.get("/asset.txt").headers
         # API paths must stay 404s, never the SPA shell.
         for path in ("/api", "/api/v1/no-such-endpoint"):
             response = client.get(path)
@@ -46,5 +53,6 @@ def test_spa_fallback_wins_over_a_shipped_404_document(tmp_path: Path):
             response = client.get(path)
             assert response.status_code == 200
             assert "potocolom" in response.text
+            assert response.headers["Cache-Control"] == "no-cache"
         for path in ("/api", "/api/v1/no-such-endpoint"):
             assert client.get(path).status_code == 404

@@ -23,6 +23,11 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
+			// Bound stale-shell detection without polling an idle tab aggressively.
+			version: {
+				pollInterval: 5 * 60 * 1000
+			},
+
 			// Static build: every known route is prerendered. The fallback document
 			// is the error page, so a CDN answers an unknown path with a real 404
 			// carrying this project's page rather than a 200 app shell that a

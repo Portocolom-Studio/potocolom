@@ -144,6 +144,11 @@ def test_cloudflare_headers_byte_for_byte_aligned():
     assert block == SECURITY_HEADERS
 
 
+def test_cloudflare_entry_document_is_not_cached():
+    text = f"\n{_HEADERS_FILE.read_text()}\n"
+    assert "\n/\n  Cache-Control: no-cache\n" in text
+
+
 def test_csp_img_src_allows_http_object_store():
     """S3-compatible stores (MinIO on :9100) may be http on another origin.
 

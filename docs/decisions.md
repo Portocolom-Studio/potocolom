@@ -604,6 +604,12 @@ Rejected alternatives: shipping one machine's constants forever, which is wrong 
 
 The refresh reads the newest succeeded jobs per model, which `jobs_user_created` cannot answer because it leads with `user_id`, so migration `0010` adds a partial index on `(model_id, finished_at DESC)` limited to the succeeded rows with a positive GPU time, which is the query's own filter.
 
+## SPA/API compatibility: N-1 through expand-contract
+
+Each API release tolerates the previous release's SPA. Response shapes follow the same expand-contract discipline as the worker protocol and database migrations: expand with new fields, move clients off old fields, then contract only after the N-1 window has passed. New-build polling offers the user a reload, but compatibility does not depend on taking it.
+
+Rejected alternative: breaking response changes plus a forced reload. That makes SPA and API deploys lockstep and can discard in-flight work.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
