@@ -101,7 +101,7 @@ flowchart TB
 
 ### The cloud profile in detail
 
-The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data.
+The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: the session-cookie path inside `current_user` (issue #5), the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95).
 
 ```mermaid
 flowchart TB
@@ -116,7 +116,7 @@ flowchart TB
         ALB["ALB: TLS and routing"]
     end
     subgraph API["API replica: FastAPI, stateless, N copies behind the ALB"]
-        AUTH["current_user dependency<br>session cookie to Redis cache,<br>PostgreSQL on miss"]
+        AUTH["current_user dependency and role check<br>accounts modes: session cookie to<br>Redis cache, PostgreSQL on miss"]
         REST["REST routers: auth, models,<br>generations, metrics, studio"]
         RELAY["Realtime relay<br>browser WS to worker WS"]
         SCHED["Scheduler leader, Redis lease<br>admission, dispatch, preemption"]
@@ -141,8 +141,8 @@ flowchart TB
     OBS["CloudWatch and Sentry"]
     SES["SES: verification and<br>sign-in notification email"]
 
-    SPA -->|"static"| CF
-    CF -->|"signed URLs"| S3
+    SPA -->|"static assets, then<br>signed URLs for images"| CF
+    CF -->|"origin fetch, origin access control<br>the bucket takes no public request"| S3
     SPA <-->|"REST and WS, session cookie"| ALB
     ALB --> API
     AUTH --> RED
@@ -169,7 +169,7 @@ Reading the boxes against the seams: `AUTH` is the authentication seam (`none` s
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
+- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
@@ -385,7 +385,9 @@ sequenceDiagram
 
 ### Every request after login
 
-There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint already resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation, issue #124); reads follow the same path without the UPDATE.
+There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
+
+> Shipped status (2026-07-28): the dependency and the endpoint are real, and starring writes `jobs.starred_at` as drawn. What the diagram describes ahead of the code is the session half: `AUTH_MODE=none` is the only mode implemented (backend/app/auth.py), so there is no cookie, no session row and no Redis lookup yet, and the per-user rate limit counter arrives with accounts (issue #5). Roles already exist on the user row and are checked beside `current_user`.
 
 ```mermaid
 sequenceDiagram
@@ -394,9 +396,9 @@ sequenceDiagram
     participant A as API replica, any of N
     participant R as Redis
     participant P as PostgreSQL
-    B->>LB: POST /api/v1/generations/:id/star<br>httpOnly session cookie
+    B->>LB: POST /api/v1/generations/:id/star<br>HttpOnly session cookie
     LB->>A: route to any replica, no sticky sessions
-    A->>R: rate limit counter, per user
+    A->>R: rate limit counter, per user<br>(with accounts, issue #5)
     A->>R: session token lookup
     alt cache hit
         R-->>A: user id
@@ -407,7 +409,7 @@ sequenceDiagram
     end
     A->>P: UPDATE jobs SET starred_at, single row
     P-->>A: ok
-    A-->>B: 200
+    A-->>B: 204
     note over A: AUTH_MODE=none skips the lookup entirely:<br>every request acts as the single local user.<br>Self-hosted without Redis reads the<br>session row from PostgreSQL directly.
 ```
 
@@ -514,12 +516,14 @@ flowchart LR
         AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
     end
     B["Browser<br>history, gallery, favorites,<br>share links"]
+    API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
     CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
     W -->|"presigned PUT<br>master and thumbnail"| STORE
     W -->|"job_done"| J
     J --- AS
-    B -->|"GET /api/v1/generations<br>filters: starred, category"| PG
-    PG -->|"signed URLs for owned rows<br>never ListBucket"| B
+    B -->|"session cookie"| API
+    API -->|"owned rows only"| PG
+    API -->|"signed URLs it minted<br>never ListBucket"| B
     B -->|"fetch bytes"| STORE
     CLEAN -.-> AS
     CLEAN -.-> STORE
