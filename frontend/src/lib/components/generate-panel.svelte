@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -623,19 +624,30 @@
 		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
 			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
 				{#if shown !== null}
-					<a
-						href={shown.assets[0].url}
-						target="_blank"
-						rel="noopener"
-						class="block min-h-0 flex-1"
-						title={t('app.gen.open_full')}
-					>
-						<img
-							src={shown.assets[0].url}
-							alt={shown.params.prompt ?? t('app.gen.result')}
-							class="h-full w-full rounded-lg object-contain"
-						/>
-					</a>
+					<div class="relative min-h-0 flex-1">
+						<a
+							href={shown.assets[0].url}
+							target="_blank"
+							rel="noopener"
+							class="block h-full"
+							title={t('app.gen.open_full')}
+						>
+							<img
+								src={shown.assets[0].url}
+								alt={shown.params.prompt ?? t('app.gen.result')}
+								class="h-full w-full rounded-lg object-contain"
+							/>
+						</a>
+						<Button
+							href={shown.assets[0].download_url}
+							variant="secondary"
+							size="sm"
+							class="absolute top-2 right-2"
+						>
+							<DownloadIcon />
+							{t('app.gen.download')}
+						</Button>
+					</div>
 					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
 						{#if shown.params.prompt}
 							{shown.params.prompt}

@@ -29,7 +29,13 @@ export type Model = {
 	} & Record<string, unknown>;
 };
 
-export type Asset = { id: string; url: string; width: number; height: number };
+export type Asset = {
+	id: string;
+	url: string;
+	download_url: string;
+	width: number;
+	height: number;
+};
 
 export type Generation = {
 	id: string;

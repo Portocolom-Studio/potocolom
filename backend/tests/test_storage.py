@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +26,12 @@ def test_local_storage_urls(tmp_path):
     thumb_target = asyncio.run(storage.upload_target("u/j-thumb.webp"))
     assert thumb_target.headers == {"Content-Type": "image/webp"}
     assert asyncio.run(storage.url("u/j.webp")) == "http://browser/api/v1/files/u/j.webp"
+    download_url = asyncio.run(
+        storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
+    )
+    assert parse_qs(urlsplit(download_url).query) == {
+        "download": ["potocolom-20260729-142530-castle.png"],
+    }
 
 
 def test_s3_storage_presigns_offline():
@@ -44,6 +51,18 @@ def test_s3_storage_presigns_offline():
     assert view.startswith("http://localhost:9100/")
     assert "u/j.png" in view
     assert "X-Amz-Signature" in view
+    download = asyncio.run(
+        storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
+    )
+    assert parse_qs(urlsplit(download).query)["response-content-disposition"] == [
+        'attachment; filename="potocolom-20260729-142530-castle.png"',
+    ]
+
+
+def test_storage_rejects_unsafe_download_name(tmp_path):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    with pytest.raises(ValueError, match="unsafe download filename"):
+        asyncio.run(storage.url("u/j.png", download_name='safe.png"\r\nX-Evil: injected'))
 
 
 def test_files_get_after_direct_write():
@@ -57,6 +76,12 @@ def test_files_get_after_direct_write():
     assert response.status_code == 200
     assert response.content == b"image-bytes"
     assert response.headers["content-type"] == "image/webp"
+    assert "content-disposition" not in response.headers
+    unsafe_response = client.get(
+        "/api/v1/files/u1/j1.webp",
+        params={"download": 'safe.webp"\r\nX-Evil: injected'},
+    )
+    assert unsafe_response.status_code == 400
     png_path = storage.path("u1/j2.png")
     png_path.write_bytes(b"png-bytes")
     png_response = client.get("/api/v1/files/u1/j2.png")
