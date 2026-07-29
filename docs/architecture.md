@@ -566,6 +566,10 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
+Twelve of these tables exist at migration head 0011. Four are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` with the drawing loop's own history, and `metering_events` with billing.
+
+Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
+
 ```mermaid
 erDiagram
     users ||--o{ auth_identities : has
@@ -581,6 +585,8 @@ erDiagram
     models ||--o{ jobs : runs
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
+    workers ||--o{ gpu_samples : reports
+    gpu_samples ||--o{ gpu_sample_rollups : condenses
     jobs |o--o{ assets : produces
 
     users {
@@ -617,6 +623,26 @@ erDiagram
         text device
         text memory_mode
         timestamptz last_seen
+    }
+    gpu_samples {
+        uuid id PK
+        text worker_id "matches workers, deliberately no FK"
+        timestamptz sampled_at
+        smallint util_pct
+        bigint vram_used_bytes
+        bigint vram_total_bytes
+        float temperature_c
+        float power_w
+        jsonb loaded_models
+    }
+    gpu_sample_rollups {
+        text worker_id PK
+        timestamptz bucket_start PK "5 minute bucket"
+        int sample_count
+        float util_mean "with min and max"
+        float vram_used_pct_mean "with min and max"
+        float temperature_mean
+        float power_mean
     }
     jobs {
         uuid id PK
