@@ -593,6 +593,34 @@ Measured on the reference RX 7600 (gfx1102, 15.98 GiB) on 2026-07-26: full resid
 
 Rejected alternatives: a `pipeline_family` manifest field or inferring the family from `source` (AutoPipeline already dispatches correctly, source inference breaks for mirrors and local paths, and the field would be a speculative seam maintained against upstream configuration); a `largest_component_vram_gb` override for the memory ladder's 0.55 largest-component fraction, whose UNet-dominant assumption T5-XXL breaks in principle (the measurement showed the heuristic picking the correct rung with margin, so the field would have been schema without a problem to solve); shipping `realtime` or `image_to_image` (realtime would need a distilled SD3 and would run a 21-frame calibration at every startup; i2i doubles the acceptance surface for no motivation in the issue); a site-wide attribution banner (it would credit Stability for output from Apache-licensed models too); teaching the engine to descend a rung after an OOM (a general failure-path state machine that changes every model's behavior, and a separate issue if measurement shows it is needed).
 
+## SD 3.5 Medium: int8 T5 with bounded memory rung demotion
+
+Issue #155 supplies the measurement that the earlier SD 3.5 decision required
+before changing the failure path. The worker quantizes only the manifest-named
+`text_encoder_3` with torchao weight-only int8, before moving the pipeline to
+the device. T5-XXL falls from 9.12 GB to 4.57 GB, the resident pipeline is
+10.93 GB, and generation peaks at 13.44 GB. `min_vram_gb` is therefore 14,
+rounded up from the measured generation peak rather than from resident weights.
+Full residency also makes `torch.compile` safe from accelerate offload hooks,
+so a quantized full-resident manifest requires compile even when the global
+opt-in is off. The measured reference path is 28.0 s at 1024 px and 20 steps,
+against 49.5 s for the previous fp16 model-offload path.
+
+The 13.44 GB peak leaves little room for a desktop session to vary. Under
+`MEMORY_MODE=auto`, an out-of-memory error while loading descends from `full`
+to `model_offload`, then to `group_offload`. A generation out-of-memory error
+first keeps the existing behavior of evicting other residents and retrying. If
+that retry also fails, the worker descends exactly one rung, reloads and tries
+the job once more. Operator-pinned memory modes never descend, because a pin
+is an explicit choice rather than a heuristic to correct.
+
+Rejected alternatives: bitsandbytes (its gfx1102 kernel fails with
+`Error invalid device function at line 432 in file /src/csrc/ops.cu`);
+quantizing the other models (they already fit and measured 1.1 to 3.6 percent
+slower); unbounded generation descent or retry (one bad job could repeatedly
+reload a large pipeline); demoting an operator-pinned rung (silently ignores
+explicit configuration).
+
 ## Prerendering: every known route is rendered at build time
 
 Supersedes the `ssr = false` client-rendered shell in "Frontend: SvelteKit as a static SPA" above, without changing what that decision settled: there is still no server rendering at request time, and the build is still one static artifact that the API serves when self-hosted and a CDN serves in the cloud. What changed is that the same artifact also serves the public marketing site, where a shell containing no title, description or heading is the whole product a crawler and a social card ever see. SvelteKit prerenders known routes into complete documents, the client hydrates them, and the studio behaves exactly as before.

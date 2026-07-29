@@ -147,7 +147,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		name: 'Stable Diffusion 3.5 Medium',
 		architecture: 'MMDiT + CLIP-L + OpenCLIP-G + T5-XXL',
 		parameters: '~2.5B',
-		min_vram_gb: 24,
+		min_vram_gb: 14,
 		resolutions: '768, 1024',
 		step_range: '20-50',
 		capabilities: ['text_to_image'],

@@ -301,20 +301,32 @@ class DiffusersEngine:
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
 
-    def _pipeline(self, manifest: Manifest, mode: str) -> Any:
+    def _pipeline(
+        self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
+    ) -> Any:
         key = (manifest.id, mode)
-        if key not in self._pipelines:
+        while key not in self._pipelines:
             self._ensure_vram(manifest)
             try:
                 self._pipelines[key] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
+            except self.torch.OutOfMemoryError as error:
                 # Retry OUTSIDE this block: while the except frame is alive,
                 # its traceback pins the half-moved weights of the failed
                 # attempt and the eviction below could not reclaim them.
-                pass
-            if key not in self._pipelines:
-                self._evict_cold(except_model_id=manifest.id)
+                load_error = error.with_traceback(None)
+            if key in self._pipelines:
+                break
+            if allow_demotion and self._demote_rung(manifest, phase="load"):
+                continue
+            if not allow_demotion:
+                raise load_error
+            self._evict_cold(except_model_id=manifest.id)
+            try:
                 self._pipelines[key] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError as error:
+                load_error = error.with_traceback(None)
+            if key not in self._pipelines:
+                raise load_error
         self._touch(manifest.id)
         return self._pipelines[key]
 
@@ -324,6 +336,25 @@ class DiffusersEngine:
         rung = self._select_rung(manifest)
         self._rungs[manifest.id] = rung
         return rung
+
+    def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
+        if self.memory_mode != "auto":
+            return False
+        rung = self._pick_rung(manifest)
+        lower: dict[MemoryRung, MemoryRung] = {
+            "full": "model_offload",
+            "model_offload": "group_offload",
+        }
+        demoted = lower.get(rung)
+        if demoted is None:
+            return False
+        self._evict_model(manifest.id)
+        self._rungs[manifest.id] = demoted
+        logger.error(
+            "out of memory during %s for %s; demoting from %s to %s",
+            phase, manifest.id, rung, demoted,
+        )
+        return True
 
     def _select_rung(self, manifest: Manifest) -> MemoryRung:
         # Upscalers are plain nn.Modules run tiled; the offload rungs are
@@ -344,8 +375,12 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
+        use_group_offload_fast_path = not manifest.quantize
         offload_dir = None
-        if self.models_dir:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors
+        # or handle aten.is_pinned for stream prefetch. They must remain in host
+        # RAM without streaming, so this rung is slower and needs enough host RAM.
+        if self.models_dir and use_group_offload_fast_path:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -354,7 +389,7 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=True,
+            use_stream=use_group_offload_fast_path,
             offload_to_disk_path=offload_dir,
         )
         return pipeline
@@ -420,7 +455,9 @@ class DiffusersEngine:
             logger.warning("torch.compile failed for %s: %s", name, error)
             return None
 
-    def _optimize_resident(self, pipeline: Any, mode: str) -> None:
+    def _optimize_resident(
+        self, pipeline: Any, mode: str, *, force_compile: bool = False,
+    ) -> None:
         """Attention backend + torch.compile for full-resident GPU pipelines.
 
         Offload rungs skip compile: accelerate hooks fight Inductor. Failures
@@ -433,7 +470,7 @@ class DiffusersEngine:
             return
         applied = self._set_attention_backend(pipeline)
         originals: list[tuple[str, Any]] = []
-        if self.torch_compile:
+        if self.torch_compile or force_compile:
             for name, module in self._denoise_modules(pipeline):
                 original = self._compile_module(pipeline, name, module)
                 if original is not None:
@@ -486,6 +523,21 @@ class DiffusersEngine:
             pipeline = cls.from_pipe(loaded)  # shares weights already on the device
         else:
             pipeline = self._from_pretrained(cls, manifest)
+            if manifest.quantize:
+                component_name, scheme = manifest.quantize.split(":", 1)
+                if scheme != "int8":
+                    raise ValueError(
+                        f"unknown quantization scheme for {manifest.id}: {scheme}"
+                    )
+                component = getattr(pipeline, component_name, None)
+                if component is None:
+                    raise ValueError(
+                        f"unknown quantization component for {manifest.id}: {component_name}"
+                    )
+                from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+                quantize_(component, Int8WeightOnlyConfig())
+                logger.info("quantized %s on %s with int8", component_name, manifest.id)
             if manifest.lora:
                 # "org/repo/file.safetensors": a distillation LoRA (Lightning,
                 # Hyper-SD class) fused into the weights while still on the
@@ -506,7 +558,9 @@ class DiffusersEngine:
                         module.to(memory_format=self.torch.channels_last)
             pipeline = self._apply_rung(pipeline, manifest, rung)
             if rung == "full":
-                self._optimize_resident(pipeline, mode)
+                self._optimize_resident(
+                    pipeline, mode, force_compile=bool(manifest.quantize),
+                )
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
@@ -664,18 +718,9 @@ class DiffusersEngine:
         if "upscale" in manifest.capabilities:
             factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
             mode = f"upscale-{int(factor_spec.get('default', 2))}"
-            try:
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
         else:
-            try:
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-        self._touch(manifest.id)
+            mode = "t2i"
+        self._pipeline(manifest, mode)
         return int((time.monotonic() - start) * 1000)
 
     async def unload_model(self, model_id: str) -> None:
@@ -921,6 +966,20 @@ class DiffusersEngine:
             # Two resident models plus activations can exceed a 16 GB card
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
+            try:
+                return await asyncio.to_thread(runner, manifest, dict(params),
+                                               progress, loop, input_image)
+            except self.torch.OutOfMemoryError as error:
+                retry_error = error.with_traceback(None)
+            if not self._demote_rung(manifest, phase="generation retry"):
+                raise retry_error
+            if "upscale" in manifest.capabilities:
+                mode = f"upscale-{int(params.get('factor', 0))}"
+            else:
+                mode = "i2i" if input_image is not None else "t2i"
+            await asyncio.to_thread(
+                self._pipeline, manifest, mode, allow_demotion=False,
+            )
             return await asyncio.to_thread(runner, manifest, dict(params),
                                            progress, loop, input_image)
 
