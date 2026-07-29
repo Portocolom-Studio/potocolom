@@ -586,7 +586,8 @@ erDiagram
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
     workers ||--o{ gpu_samples : reports
-    gpu_samples ||--o{ gpu_sample_rollups : condenses
+    workers ||--o{ gpu_sample_rollups : summarized_by
+    gpu_sample_rollups ||--o{ gpu_samples : condenses
     jobs |o--o{ assets : produces
 
     users {
