@@ -637,8 +637,8 @@ erDiagram
         jsonb loaded_models
     }
     gpu_sample_rollups {
-        text worker_id PK
-        timestamptz bucket_start PK "5 minute bucket"
+        text worker_id PK "matches workers, deliberately no FK"
+        timestamptz bucket_start PK "five-minute bucket"
         int sample_count
         float util_mean "with min and max"
         float vram_used_pct_mean "with min and max"
