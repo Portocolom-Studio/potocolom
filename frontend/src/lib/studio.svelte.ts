@@ -26,11 +26,18 @@ export type Model = {
 	} & Record<string, unknown>;
 };
 
-export type Asset = { id: string; url: string; width: number; height: number };
+export type Asset = {
+	id: string;
+	url: string;
+	thumbnail_url: string | null;
+	width: number;
+	height: number;
+};
 
 export type Generation = {
 	id: string;
 	model_id: string;
+	source_asset_id: string | null;
 	params: { prompt?: string } & Record<string, unknown>;
 	state: string;
 	progress: number | null; // denoising fraction while running, else null
@@ -45,6 +52,23 @@ export type Generation = {
 	starred_at: string | null;
 	expired_favorite: boolean;
 	assets: Asset[];
+};
+
+export type LineageEntry = {
+	job_id: string | null;
+	asset_id: string;
+	action: 'generate' | 'image_to_image' | 'upscale' | 'upload';
+	model_id: string | null;
+	created_at: string;
+	state: string | null;
+	thumbnail_url: string | null;
+	missing: boolean;
+};
+
+export type GenerationLineage = {
+	ancestors: LineageEntry[];
+	children: LineageEntry[];
+	descendant_count: number;
 };
 
 const HISTORY_LIMIT = 50;
@@ -70,12 +94,18 @@ function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Gene
 	return incoming.map((generation) => {
 		const previous = byId.get(generation.id);
 		if (!previous || generation.state !== previous.state) return generation;
-		const urlByAssetId = new Map(previous.assets.map((asset) => [asset.id, asset.url]));
+		const previousByAssetId = new Map(previous.assets.map((asset) => [asset.id, asset]));
 		return {
 			...generation,
 			assets: generation.assets.map((asset) => {
-				const url = urlByAssetId.get(asset.id);
-				return url ? { ...asset, url } : asset;
+				const previousAsset = previousByAssetId.get(asset.id);
+				return previousAsset
+					? {
+							...asset,
+							url: previousAsset.url,
+							thumbnail_url: previousAsset.thumbnail_url ?? asset.thumbnail_url
+						}
+					: asset;
 			})
 		};
 	});
@@ -86,6 +116,7 @@ export const studio = $state({
 	modelId: '',
 	prompt: '',
 	selectedId: null as string | null, // generation pinned in the viewer
+	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
 	history: [] as Generation[],
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
 	historyRecentFull: false, // true when the latest API page hit the limit
@@ -271,8 +302,22 @@ export async function loadOlderHistory(): Promise<boolean> {
 export function generationById(id: string): Generation | undefined {
 	return (
 		studio.history.find((generation) => generation.id === id) ??
-		studio.starredExtras.find((generation) => generation.id === id)
+		studio.starredExtras.find((generation) => generation.id === id) ??
+		(studio.selectedExtra?.id === id ? studio.selectedExtra : undefined)
 	);
+}
+
+export async function selectGeneration(id: string): Promise<void> {
+	studio.selectedId = id;
+	if (generationById(id) !== undefined) return;
+	try {
+		const response = await fetch(`/api/v1/generations/${id}`);
+		if (!response.ok) return;
+		const generation = (await response.json()) as Generation;
+		if (studio.selectedId === id) studio.selectedExtra = generation;
+	} catch {
+		// Keep the current detail visible when an older lineage node cannot load.
+	}
 }
 
 function replaceGeneration(incoming: Generation): void {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -34,10 +35,13 @@
 		isStarred,
 		loadHistory,
 		pollWhileWorking,
+		selectGeneration,
 		studio,
 		toggleStarred,
 		UPSCALE_FAST_ID,
 		UPSCALE_QUALITY_ID,
+		type GenerationLineage,
+		type LineageEntry,
 		type Model
 	} from '$lib/studio.svelte';
 	import HistoryStrip from '$lib/components/history-strip.svelte';
@@ -67,13 +71,14 @@
 	// null = follow defaultUpscaleModelId (fast when present).
 	let upscaleTierChoice = $state<string | null>(null);
 	let errorText = $state('');
+	let lineage = $state<GenerationLineage | null>(null);
 
 	// The viewer shows the clicked generation, or the newest finished one.
 	const shown = $derived(
 		(() => {
 			if (studio.selectedId) {
 				const selected = generationById(studio.selectedId);
-				if (selected !== undefined && selected.assets.length > 0) return selected;
+				if (selected !== undefined) return selected;
 			}
 			return (
 				studio.history.find((g) => g.assets.length > 0) ??
@@ -92,6 +97,22 @@
 	);
 	const shownPrompt = $derived((shown?.params.prompt ?? '').trim());
 	const shownStarred = $derived(shown !== null && isStarred(shown.id));
+	// The lineage fetch keys on this, not on shown: a history poll rebuilds every
+	// generation object, so tracking shown itself would refetch and blank the
+	// breadcrumb every 1.5 seconds while a job is running.
+	const shownId = $derived(shown?.id ?? null);
+	const shownThumbnail = $derived(shown?.assets[0]?.thumbnail_url ?? null);
+	const shownAction = $derived(
+		shown === null
+			? null
+			: shown.source_asset_id === null
+				? 'generate'
+				: studio.models
+							.find((model) => model.id === shown.model_id)
+							?.capabilities.includes('upscale')
+					? 'upscale'
+					: 'image_to_image'
+	);
 
 	// Diffusion models drive the generate form; upscalers are chosen in the
 	// Upscale panel mode (fast default, quality optional).
@@ -175,6 +196,25 @@
 		panelMode === 'generate' ? t('app.gen.title') : t('app.upscale.title')
 	);
 	const panelSub = $derived(panelMode === 'generate' ? t('app.gen.sub') : t('app.upscale.sub'));
+
+	$effect(() => {
+		const jobId = shownId;
+		lineage = null;
+		if (!jobId) return;
+		let cancelled = false;
+		void fetch(`/api/v1/generations/${jobId}/lineage`)
+			.then(async (response) => {
+				if (!response.ok) return;
+				const loaded = (await response.json()) as GenerationLineage;
+				if (!cancelled) lineage = loaded;
+			})
+			.catch(() => {
+				// The detail remains usable when lineage cannot load.
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	$effect(() => {
 		if (!selectedModel?.capabilities.includes('image_to_image')) {
@@ -319,6 +359,14 @@
 		return model.estimated_gpu_ms_default != null
 			? `${model.name} (~${formatMs(model.estimated_gpu_ms_default)})`
 			: model.name;
+	}
+
+	function lineageActionLabel(action: LineageEntry['action']): string {
+		return t(`app.lineage.${action}`);
+	}
+
+	function selectLineage(entry: LineageEntry): void {
+		if (entry.job_id !== null) void selectGeneration(entry.job_id);
 	}
 </script>
 
@@ -620,25 +668,93 @@
 		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
 			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
 				{#if shown !== null}
-					<a
-						href={shown.assets[0].url}
-						target="_blank"
-						rel="noopener"
-						class="block min-h-0 flex-1"
-						title={t('app.gen.open_full')}
-					>
-						<img
-							src={shown.assets[0].url}
-							alt={shown.params.prompt ?? t('app.gen.result')}
-							class="h-full w-full rounded-lg object-contain"
-						/>
-					</a>
+					{#if lineage !== null}
+						<div class="shrink-0">
+							<p class="text-muted-foreground mb-1 text-[0.65rem] font-medium uppercase">
+								{t('app.lineage.ancestors')}
+							</p>
+							<div
+								class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
+								aria-label={t('app.lineage.ancestors')}
+							>
+								{#each lineage.ancestors as entry (entry.asset_id)}
+									<button
+										type="button"
+										class="border-border bg-muted/30 hover:bg-muted flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem] disabled:cursor-default"
+										disabled={entry.job_id === null}
+										title={lineageActionLabel(entry.action)}
+										onclick={() => selectLineage(entry)}
+									>
+										{#if entry.thumbnail_url !== null}
+											<img
+												src={entry.thumbnail_url}
+												alt={lineageActionLabel(entry.action)}
+												class="size-12 rounded object-cover"
+											/>
+										{:else}
+											<span
+												class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
+											>
+												{t('app.lineage.missing')}
+											</span>
+										{/if}
+										<span class="w-full truncate">{lineageActionLabel(entry.action)}</span>
+									</button>
+									<ChevronRightIcon class="text-muted-foreground size-3 shrink-0" />
+								{/each}
+								<div
+									class="border-primary bg-primary/10 flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
+									aria-current="page"
+								>
+									{#if shownThumbnail !== null}
+										<img
+											src={shownThumbnail}
+											alt={shown.params.prompt ?? t('app.gen.result')}
+											class="size-12 rounded object-cover"
+										/>
+									{:else}
+										<span
+											class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
+										>
+											{t('app.lineage.missing')}
+										</span>
+									{/if}
+									<span class="w-full truncate">
+										{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
+									</span>
+								</div>
+							</div>
+						</div>
+					{/if}
+					{#if shown.assets.length > 0}
+						<a
+							href={shown.assets[0].url}
+							target="_blank"
+							rel="noopener"
+							class="block min-h-0 flex-1"
+							title={t('app.gen.open_full')}
+						>
+							<img
+								src={shown.assets[0].url}
+								alt={shown.params.prompt ?? t('app.gen.result')}
+								class="h-full w-full rounded-lg object-contain"
+							/>
+						</a>
+					{:else}
+						<div
+							class="border-border text-muted-foreground grid min-h-0 flex-1 place-items-center rounded-lg border border-dashed text-sm"
+						>
+							{t('app.lineage.missing')}
+						</div>
+					{/if}
 					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
 						{#if shown.params.prompt}
 							{shown.params.prompt}
 						{:else}
 							{shown.model_id}{shownFactor != null ? ` · x${shownFactor}` : ''}
-							· {shown.assets[0].width}x{shown.assets[0].height}
+							{#if shown.assets.length > 0}
+								· {shown.assets[0].width}x{shown.assets[0].height}
+							{/if}
 						{/if}
 						{#if shown.gpu_ms != null}
 							<span class="text-foreground/70">
@@ -646,6 +762,42 @@
 							>
 						{/if}
 					</p>
+					{#if lineage !== null}
+						<div class="shrink-0">
+							<p class="text-muted-foreground mb-1 text-[0.65rem] font-medium uppercase">
+								{t('app.lineage.derivatives')}
+							</p>
+							{#if lineage.children.length > 0}
+								<div class="no-scrollbar flex min-w-0 gap-2 overflow-x-auto">
+									{#each lineage.children as entry (entry.asset_id)}
+										<button
+											type="button"
+											class="border-border bg-muted/30 hover:bg-muted flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
+											title={lineageActionLabel(entry.action)}
+											onclick={() => selectLineage(entry)}
+										>
+											{#if entry.thumbnail_url !== null}
+												<img
+													src={entry.thumbnail_url}
+													alt={lineageActionLabel(entry.action)}
+													class="size-12 rounded object-cover"
+												/>
+											{:else}
+												<span
+													class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
+												>
+													{t('app.lineage.missing')}
+												</span>
+											{/if}
+											<span class="w-full truncate">{lineageActionLabel(entry.action)}</span>
+										</button>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-muted-foreground text-xs">{t('app.lineage.no_derivatives')}</p>
+							{/if}
+						</div>
+					{/if}
 				{:else}
 					<div
 						class="text-foreground/55 grid h-full place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
