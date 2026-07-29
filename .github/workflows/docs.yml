@@ -27,4 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The Makefile target is the single definition of what the job checks.
+      # Bounded because it drives headless Chrome, and a hung browser would
+      # hold the single self-hosted runner against every other job. The real
+      # run takes about 25 seconds for 35 diagrams.
       - run: make verify-mermaid
+        timeout-minutes: 5
