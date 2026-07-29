@@ -165,6 +165,20 @@ def test_short_prompt_keeps_existing_pipeline_prompt_path():
     assert pipeline.text_encoder.calls == 0
 
 
+def test_third_text_encoder_keeps_pipeline_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline(dual=True)
+    pipeline.tokenizer_3 = object()
+    pipeline.text_encoder_3 = object()
+    prompt = " ".join(f"w{index}" for index in range(80))
+
+    kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), prompt, "w0")
+
+    assert kwargs == {"prompt": prompt, "negative_prompt": "w0"}
+    assert pipeline.text_encoder.calls == 0
+    assert pipeline.text_encoder_2.calls == 0
+
+
 def test_fake_tokenizer_only_offers_what_a_real_one_does():
     """The chunking code is exercised above against a fake tokenizer, which can
     drift from the library and hide a crash. It already did once: the fake

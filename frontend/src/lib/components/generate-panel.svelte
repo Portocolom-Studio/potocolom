@@ -368,6 +368,9 @@
 									</Select.Group>
 								</Select.Content>
 							</Select.Root>
+							{#if selectedModel?.requires_attribution}
+								<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
+							{/if}
 						</div>
 						<div class="flex flex-col gap-2">
 							<Label for="gen-prompt">{t('app.gen.prompt')}</Label>

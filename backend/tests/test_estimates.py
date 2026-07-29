@@ -49,14 +49,16 @@ def test_estimate_gpu_ms_scales_with_pixel_count():
 
 
 def test_estimate_gpu_ms_uses_schema_defaults_when_params_omitted():
+    # 15 steps is sdxl-base's recorded baseline, so this asserts the stored
+    # timing rather than an extrapolation off it.
     defaults = schema_defaults({
         "properties": {
-            "steps": {"default": 20},
+            "steps": {"default": 15},
             "width": {"default": 1024},
             "height": {"default": 1024},
         },
     })
-    assert estimate_gpu_ms("sdxl-base", defaults) == 15274
+    assert estimate_gpu_ms("sdxl-base", defaults) == 11960
 
 
 def test_estimate_gpu_ms_unknown_model_returns_none():

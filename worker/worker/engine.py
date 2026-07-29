@@ -776,6 +776,14 @@ class DiffusersEngine:
         if declared_window <= 0:
             return prompt_kwargs
 
+        if (
+            getattr(pipeline, "tokenizer_3", None) is not None
+            and getattr(pipeline, "text_encoder_3", None) is not None
+        ):
+            # SD3 requires joint CLIP+T5 prompt embeddings. This CLIP-only
+            # chunker cannot satisfy that contract, so let diffusers encode it.
+            return prompt_kwargs
+
         tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
         text_encoder_2 = getattr(pipeline, "text_encoder_2", None)
         dual_encoder = tokenizer_2 is not None and text_encoder_2 is not None

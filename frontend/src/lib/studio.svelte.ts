@@ -8,6 +8,9 @@ export type Model = {
 	name: string;
 	capabilities: string[];
 	default: boolean;
+	// Non-empty when the model's license demands visible credit, e.g. the
+	// Stability Community License "Powered by Stability AI".
+	requires_attribution?: string;
 	/** Text encoder window; absent or 0 means the model never declared one. */
 	prompt_token_limit?: number;
 	estimated_gpu_ms_default: number | null;

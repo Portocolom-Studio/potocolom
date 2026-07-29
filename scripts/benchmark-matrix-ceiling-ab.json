@@ -1,0 +1,63 @@
+{
+  "target_vram_gb": 16,
+  "images_per_prompt": 1,
+  "_purpose": "The three models whose step defaults changed, at their manifest ceilings. Pair this with benchmark-matrix-tuned.json over the same prompt suite to judge whether the extra steps show in the image.",
+  "models": [
+    {
+      "id": "sdxl-base",
+      "license": "CreativeML Open RAIL++-M",
+      "commercial": "yes - no revenue cap; RAIL use restrictions",
+      "notes": "Manifest ceiling 50 steps at 1024, guidance 6.",
+      "variants": [
+        {
+          "label": "best-1024-50step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 6,
+            "seed": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": "ssd-1b",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted",
+      "notes": "Manifest ceiling 40 steps at 1024, guidance 7.",
+      "variants": [
+        {
+          "label": "best-1024-40step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 40,
+            "guidance": 7,
+            "seed": 100
+          }
+        }
+      ]
+    }
+  ],
+  "capped_commercial": [
+    {
+      "id": "sd35-medium",
+      "license": "Stability AI Community",
+      "commercial": "capped - <= $1M annual revenue; attribution required",
+      "notes": "MMDiT with T5-XXL. Ceiling 50 steps at 1024, guidance 4.5. Runs on the model-offload rung on a 16 GB card, so it is by far the slowest entry here.",
+      "variants": [
+        {
+          "label": "best-1024-50step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 4.5,
+            "seed": 100
+          }
+        }
+      ]
+    }
+  ]
+}
