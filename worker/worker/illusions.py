@@ -84,6 +84,21 @@ STYLE_TEMPLATES: dict[str, str] = {
     "coherent_oil": "a coherent oil painting of {}",
     "pencil": "a detailed HB pencil sketch of {}",
     "editorial": "a centered editorial illustration of {} with a clear silhouette",
+    # The wording of the one author-reference cell that has actually been run
+    # and passed human review (the giraffe/penguin calibration smoke).
+    "reference_sketch": "an intricate detailed hb pencil sketch of {}",
+    # The heavier scaffolding the untested reference pairs carry, and that same
+    # scaffolding with only the medium swapped. Holding the framing words
+    # identical is what makes a pencil-versus-oil arm an attribution test of
+    # the medium alone.
+    "reference_pencil": (
+        "a centered intricate HB pencil illustration of {}"
+        ", full object, strong silhouette, isolated on plain warm paper"
+    ),
+    "reference_oil": (
+        "a centered intricate oil painting of {}"
+        ", full object, strong silhouette, isolated on plain warm canvas"
+    ),
 }
 
 # Square-root SDS timestep anneal (NOT full HiFA): endpoints and exponent.
@@ -1134,6 +1149,11 @@ class IllusionConfig:
     # Experiment harness only. Never change this default without acceptance.
     experimental_recipe: str = "legacy"
     sds_gradient_scale: float = 1.0
+    # Native resolution the primes are rendered at. None means "the arrangement
+    # resolution" for legacy and 256 for author_reference (the paper renders a
+    # 256px network and upsamples for diffusion, paper Sec. 4.3). The prime is
+    # the printable artifact, so this bounds print quality.
+    prime_resolution: int | None = None
 
     def strength_schedule(self) -> list[float]:
         if self.strengths:
@@ -1231,14 +1251,16 @@ def optimize_illusion(
         model_variant=config.model_variant,
     )
 
+    # None means "render at the arrangement resolution", which is the legacy
+    # path. author_reference defaults to the paper's 256px network.
+    prime_res = config.prime_resolution or (256 if reference_recipe else None)
+
     def render_primes(resolution: int = RESOLUTION) -> list[Tensor]:
-        if reference_recipe:
-            return [network.image(256) for network in networks]
-        return [network.image(resolution) for network in networks]
+        return [network.image(prime_res or resolution) for network in networks]
 
     def render_derived(resolution: int = RESOLUTION) -> list[Tensor]:
         derived = spec.arrange(render_primes(resolution))
-        if reference_recipe and resolution != 256:
+        if prime_res is not None and prime_res != resolution:
             derived = [
                 tf.interpolate(
                     image,

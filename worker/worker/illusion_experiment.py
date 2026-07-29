@@ -32,7 +32,13 @@ class PromptPair:
     ``prompt_a`` / ``prompt_b`` are the exact strings used by every prior
     run and must never be re-wrapped by a style template. ``subject_a`` /
     ``subject_b`` are the style-free subjects fed to ``apply_style_template``
-    when a non-oil style is requested.
+    when a different style is requested.
+
+    ``baked_style`` names the style already present in ``prompt_a`` /
+    ``prompt_b``. Requesting it (or no style at all) returns those strings
+    verbatim; requesting any other style wraps the subjects exactly once.
+    Without this, asking a pencil-baked pair for oil silently returned the
+    pencil prompts, which would make a style arm compare pencil to pencil.
     """
 
     pair_id: str
@@ -40,6 +46,7 @@ class PromptPair:
     subject_b: str
     prompt_a: str
     prompt_b: str
+    baked_style: str = "oil"
 
 
 FINAL_PAIRS: list[PromptPair] = [
@@ -101,30 +108,39 @@ FINAL_PAIRS: list[PromptPair] = [
     ),
 ]
 
-_PENCIL_PREFIX = "a centered intricate HB pencil illustration of "
-_PENCIL_SUFFIX = ", full object, strong silhouette, isolated on plain warm paper"
 
+def _styled_pair(pair_id: str, subject_a: str, subject_b: str, style: str) -> PromptPair:
+    """A corpus pair whose prompts are one style template applied once."""
+    from worker.illusions import apply_style_template
 
-def _reference_pair(pair_id: str, subject_a: str, subject_b: str) -> PromptPair:
     return PromptPair(
         pair_id,
         subject_a,
         subject_b,
-        f"{_PENCIL_PREFIX}{subject_a}{_PENCIL_SUFFIX}",
-        f"{_PENCIL_PREFIX}{subject_b}{_PENCIL_SUFFIX}",
+        apply_style_template(subject_a, style),
+        apply_style_template(subject_b, style),
+        baked_style=style,
     )
+
+
+def _reference_pair(pair_id: str, subject_a: str, subject_b: str) -> PromptPair:
+    return _styled_pair(pair_id, subject_a, subject_b, "reference_pencil")
 
 
 # A topology-focused corpus for the author-reference experiment. It is kept
 # separate from FINAL_PAIRS so it cannot silently alter the existing 24-case
 # acceptance gate.
+#
+# NOTE the calibration pair carries "reference_sketch", the wording of the one
+# cell that has been run and reviewed. Every other pair here carries the
+# heavier "reference_pencil" scaffolding, which no GPU cell has validated. That
+# difference is a confound, so it is named rather than buried.
 REFERENCE_PAIRS: list[PromptPair] = [
-    PromptPair(
+    _styled_pair(
         "giraffe_penguin_calibration",
         "a giraffe head",
         "a penguin",
-        "an intricate detailed hb pencil sketch of a giraffe head",
-        "an intricate detailed hb pencil sketch of a penguin",
+        "reference_sketch",
     ),
     _reference_pair("pine_chandelier", "a pine tree", "an ornate chandelier"),
     _reference_pair("crown_octopus", "a royal crown", "an octopus"),
@@ -138,23 +154,82 @@ REFERENCE_PAIRS: list[PromptPair] = [
     ),
 ]
 
+
+def _rules_pair(pair_id: str, subject_a: str, subject_b: str) -> PromptPair:
+    return _styled_pair(pair_id, subject_a, subject_b, "oil")
+
+
+# The curated next-batch list from issue #138, which encodes the pairing rules
+# derived from the 2026-07-19 curation: one shared scene, frame-scale
+# compatibility, and inversion-native anatomy. Never GPU-tested. The issue's
+# entries 1 and 13 are dog_sloth and mountain_valley, already in FINAL_PAIRS,
+# so they stay there and serve as the proven controls.
+PAIRING_RULES_PAIRS: list[PromptPair] = [
+    _rules_pair("stag_oak", "a stag standing in a forest clearing", "an ancient oak tree"),
+    _rules_pair("eagle_phoenix", "an eagle diving with folded wings", "a phoenix rising in flames"),
+    _rules_pair(
+        "heron_swan",
+        "a heron wading in a still lake",
+        "a swan gliding, reflected in the water",
+    ),
+    _rules_pair(
+        "bear_salmon",
+        "a bear standing in a rushing river",
+        "a salmon leaping up a waterfall",
+    ),
+    _rules_pair("galleon_whale", "a galleon riding a storm wave", "a whale breaching the surface"),
+    _rules_pair("horse_wave", "a white horse rearing in sea mist", "a great ocean wave crashing"),
+    _rules_pair(
+        "hummingbird_fuchsia",
+        "a hummingbird hovering at a blossom",
+        "a fuchsia flower hanging from its stem",
+    ),
+    _rules_pair("candle_droplet", "a candle flame in the dark", "a single falling water drop"),
+    _rules_pair("ballerina_leaf", "a ballerina in mid-leap", "an autumn leaf falling"),
+    _rules_pair(
+        "penguin_bat",
+        "a standing emperor penguin on ice",
+        "a fruit bat hanging in a wintry cave",
+    ),
+    _rules_pair("koi_moon", "two koi circling in a dark pond", "a crescent moon over water"),
+    _rules_pair("wolf_raven", "a wolf howling, muzzle raised", "a raven perched, head bowed"),
+    _rules_pair("fox_snowspiral", "a curled sleeping fox in snow", "a spiral of drifting snow"),
+    _rules_pair(
+        "octopus_camel",
+        "an octopus resting on the seafloor, tentacles spread downward",
+        "a camel lying at rest in the desert",
+    ),
+    _rules_pair(
+        "rabbit_fox",
+        "a rabbit sitting upright in a tall meadow, filling the frame",
+        "a red fox curled at rest",
+    ),
+    _rules_pair(
+        "deer_turtle",
+        "a deer drinking at a forest pool",
+        "a sea turtle gliding over a sunlit reef",
+    ),
+]
+
 _SCREEN_IDS = frozenset({"dog_sloth", "fox_rabbit", "walrus_ladybug", "mountain_valley"})
 SCREEN_PAIRS: list[PromptPair] = [p for p in FINAL_PAIRS if p.pair_id in _SCREEN_IDS]
 
-PAIR_BY_ID: dict[str, PromptPair] = {p.pair_id: p for p in [*FINAL_PAIRS, *REFERENCE_PAIRS]}
+PAIR_BY_ID: dict[str, PromptPair] = {
+    p.pair_id: p for p in [*FINAL_PAIRS, *REFERENCE_PAIRS, *PAIRING_RULES_PAIRS]
+}
 
-_OIL_EQUIVALENT_STYLES = frozenset({None, "none", "oil"})
+_UNSTYLED = frozenset({None, "none"})
 
 
 def resolve_pair_prompts(pair: PromptPair, style: str | None) -> tuple[list[str], list[str]]:
     """Return ``(subjects, effective_prompts)`` for a corpus pair.
 
-    style None/"none"/"oil" uses the exact legacy oil prompts verbatim (never
-    double-wrapped). Any other style wraps each subject with
+    No style, or the pair's own ``baked_style``, uses its exact prompts
+    verbatim (never double-wrapped). Any other style wraps each subject with
     ``apply_style_template`` exactly once.
     """
     subjects = [pair.subject_a, pair.subject_b]
-    if style in _OIL_EQUIVALENT_STYLES:
+    if style in _UNSTYLED or style == pair.baked_style:
         return subjects, [pair.prompt_a, pair.prompt_b]
     from worker.illusions import apply_style_template
 
@@ -162,6 +237,23 @@ def resolve_pair_prompts(pair: PromptPair, style: str | None) -> tuple[list[str]
 
 
 INSTRUMENTED_CHECKPOINT_STEPS = (60, 125, 250, 500)
+
+AUTHOR_REFERENCE_SDS_STEPS = 10_000
+# The ladder the calibration smoke used, expressed as fractions of the SDS
+# budget so a shorter arm still records where its own subjects form. At 10,000
+# steps this reproduces (500, 2000, 5000, 10000) exactly.
+_REFERENCE_CHECKPOINT_FRACTIONS = (0.05, 0.2, 0.5, 1.0)
+
+
+def _or_default(value: int | None, default: int) -> int:
+    return default if value is None else value
+
+
+def reference_checkpoint_ladder(sds_steps: int) -> tuple[int, ...]:
+    """Checkpoint steps for an author-reference run of ``sds_steps`` steps."""
+    steps = {int(round(sds_steps * f)) for f in _REFERENCE_CHECKPOINT_FRACTIONS}
+    return tuple(sorted(s for s in steps if s > 0))
+
 
 CONTROL_PAIR_IDS = frozenset({"elephant_swan", "moose_butterfly"})
 
@@ -319,6 +411,79 @@ def is_completed_run(run_dir: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+# Catastrophe floors for a derived image: a near-constant field, i.e. the
+# optimizer produced nothing at all. Calibrated against this repository's own
+# evidence, measured over every completed run under .local/:
+#
+#   worst non-catastrophic run (Wave 1 legacy)   std 0.101   detail 0.0054
+#   human-approved calibration smoke             std 0.351   detail 0.0122
+#   catastrophic SDXL P0 cell (uniform gray)     std 0.006   detail 0.0017
+#
+# These are DELIBERATELY far below any plausible quality bar. Measurement shows
+# no simple image statistic separates the human-rejected SDXL pilot (median
+# detail 0.0088) from the human-tolerated Wave 1 corpus (median 0.0097), so an
+# automated quality gate is not available for this workload and is not
+# attempted here. Clearing these floors means "the optimizer emitted an image",
+# never "the image is good". Quality stays a human judgment.
+DEGENERATE_STD_FLOOR = 0.05
+DEGENERATE_DETAIL_FLOOR = 0.003
+# Gradient is measured on a downscale: enough to detect a flat field, and cheap
+# enough to run once per cell without touching the GPU.
+_DEGENERATE_PROBE_SIZE = 128
+
+
+def image_flatness(path: Path) -> tuple[float, float]:
+    """Return ``(luma std, mean absolute gradient)`` in [0, 1] for an image.
+
+    ``(0.0, 0.0)`` for a file that cannot be read, so unreadable output counts
+    as catastrophic rather than silently passing.
+    """
+    try:
+        from PIL import Image
+
+        probe = Image.open(path).convert("L")
+        probe = probe.resize((_DEGENERATE_PROBE_SIZE, _DEGENERATE_PROBE_SIZE))
+    except OSError:
+        return 0.0, 0.0
+    width, height = probe.size
+    flat = [b / 255.0 for b in probe.tobytes()]
+    n = len(flat)
+    if n == 0:
+        return 0.0, 0.0
+    mean = sum(flat) / n
+    std = (sum((v - mean) ** 2 for v in flat) / n) ** 0.5
+    horizontal = [
+        abs(flat[y * width + x + 1] - flat[y * width + x])
+        for y in range(height)
+        for x in range(width - 1)
+    ]
+    vertical = [
+        abs(flat[(y + 1) * width + x] - flat[y * width + x])
+        for y in range(height - 1)
+        for x in range(width)
+    ]
+    deltas = horizontal + vertical
+    detail = sum(deltas) / len(deltas) if deltas else 0.0
+    return std, detail
+
+
+def degenerate_run(run_dir: Path) -> bool:
+    """True when a completed run's derived views are near-constant fields.
+
+    Used by the unattended campaign driver to stop an axis that is emitting
+    nothing at all, which is what wasted the SDXL pilot night. It cannot and
+    does not judge whether a formed image is a good illusion.
+    """
+    derived = sorted(run_dir.glob("derived_*.png"))
+    if not derived:
+        return True
+    for path in derived:
+        std, detail = image_flatness(path)
+        if std < DEGENERATE_STD_FLOOR or detail < DEGENERATE_DETAIL_FLOOR:
+            return True
+    return False
 
 
 def resolve_run_out(requested: Path) -> Path | None:
@@ -1185,7 +1350,9 @@ def _build_illusion_config(args: argparse.Namespace):
         raise ValueError("need two prompts or --pair-id")
 
     checkpoint_steps: tuple[int, ...] = ()
-    if args.collect_diagnostics:
+    if args.checkpoint_step:
+        checkpoint_steps = tuple(sorted(set(args.checkpoint_step)))
+    elif args.collect_diagnostics:
         checkpoint_steps = INSTRUMENTED_CHECKPOINT_STEPS
 
     kwargs: dict[str, Any] = {
@@ -1193,15 +1360,15 @@ def _build_illusion_config(args: argparse.Namespace):
         "prompts": effective_prompts,
         "model_id": args.model,
         "dream_model_id": None if args.dream_model.lower() == "none" else args.dream_model,
-        "sds_steps": args.sds_steps,
+        "sds_steps": _or_default(args.sds_steps, 500),
         "sds_guidance": (
             1.0
             if args.sds_objective == "csd"
             else (100.0 if args.sds_guidance is None else args.sds_guidance)
         ),
         "sds_objective": args.sds_objective,
-        "dream_rounds": args.dream_rounds,
-        "dream_steps": args.dream_steps,
+        "dream_rounds": _or_default(args.dream_rounds, 8),
+        "dream_steps": _or_default(args.dream_steps, 300),
         "dream_joint": args.dream_joint,
         "sds_lr": args.sds_lr,
         "dream_lr": args.dream_lr,
@@ -1220,23 +1387,26 @@ def _build_illusion_config(args: argparse.Namespace):
         "experimental_recipe": args.experimental_recipe,
     }
     if args.experimental_recipe == "author_reference":
+        # Recipe identity stays fixed. Budget knobs yield to explicit flags, so
+        # a shorter-SDS or joint-Dream arm is still the same recipe rather than
+        # a fork of it.
         kwargs.update(
             {
-                "sds_steps": 10_000,
                 "sds_guidance": 60.0,
                 "sds_objective": "weighted_sds",
                 "sds_lr": 1e-4,
                 "dream_lr": 3e-3,
-                "dream_rounds": 8,
-                "dream_steps": 300,
-                "dream_joint": False,
                 "use_hifa_schedule": False,
                 "round_robin": False,
                 "view_batch_size": None,
-                "checkpoint_steps": (500, 2_000, 5_000, 10_000),
                 "sds_gradient_scale": 0.1,
             }
         )
+        kwargs["sds_steps"] = _or_default(args.sds_steps, AUTHOR_REFERENCE_SDS_STEPS)
+        if not args.checkpoint_step:
+            kwargs["checkpoint_steps"] = reference_checkpoint_ladder(int(kwargs["sds_steps"]))
+    if "prime_resolution" in _illusion_config_field_names():
+        kwargs["prime_resolution"] = args.prime_resolution
     field_names = _illusion_config_field_names()
     if "collect_diagnostics" in field_names:
         kwargs["collect_diagnostics"] = args.collect_diagnostics
@@ -1563,13 +1733,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--style", default="none")
     run.add_argument("--model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     run.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
-    run.add_argument("--sds-steps", type=int, default=500)
+    # None means "the profile default": 500 for legacy, 10,000 for
+    # author_reference. An explicit value wins over both.
+    run.add_argument("--sds-steps", type=int, default=None)
     run.add_argument("--sds-guidance", type=float, default=None)
     run.add_argument("--sds-objective", default="legacy")
     run.add_argument("--sds-lr", type=float, default=1e-3)
     run.add_argument("--dream-lr", type=float, default=1e-3)
-    run.add_argument("--dream-rounds", type=int, default=8)
-    run.add_argument("--dream-steps", type=int, default=300)
+    run.add_argument("--dream-rounds", type=int, default=None)
+    run.add_argument("--dream-steps", type=int, default=None)
+    run.add_argument(
+        "--checkpoint-step",
+        type=int,
+        action="append",
+        default=[],
+        help="explicit checkpoint step; repeatable. Overrides the profile ladder.",
+    )
+    run.add_argument(
+        "--prime-resolution",
+        type=int,
+        default=None,
+        help="native prime render size. Default 256 for author_reference. "
+        "The prime is the printable artifact, so this bounds print quality.",
+    )
     run.add_argument(
         "--dream-strength",
         action="append",

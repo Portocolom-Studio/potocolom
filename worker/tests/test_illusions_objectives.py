@@ -464,3 +464,67 @@ def test_instrumented_vs_uninstrumented_legacy_toy_equivalence() -> None:
     preserve_rng_state(lambda: torch.rand(16))
     b = torch.rand(4)
     assert torch.equal(a, b)
+
+
+def test_reference_checkpoint_ladder_reproduces_the_smoke_budget() -> None:
+    from worker.illusion_experiment import reference_checkpoint_ladder
+
+    assert reference_checkpoint_ladder(10_000) == (500, 2_000, 5_000, 10_000)
+    assert reference_checkpoint_ladder(3_000) == (150, 600, 1_500, 3_000)
+    # No zero-step checkpoint on a tiny smoke budget.
+    assert all(step > 0 for step in reference_checkpoint_ladder(10))
+
+
+def test_baked_style_lets_a_pencil_pair_be_asked_for_oil() -> None:
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    pair = PAIR_BY_ID["pine_chandelier"]
+    # Its own style, and no style, stay verbatim.
+    assert resolve_pair_prompts(pair, None)[1] == [pair.prompt_a, pair.prompt_b]
+    assert resolve_pair_prompts(pair, "reference_pencil")[1] == [pair.prompt_a, pair.prompt_b]
+    # A different medium actually changes the prompt, so a style arm is real.
+    oil = resolve_pair_prompts(pair, "reference_oil")[1]
+    assert oil != [pair.prompt_a, pair.prompt_b]
+    assert all("oil painting" in prompt for prompt in oil)
+
+
+def test_legacy_oil_pairs_keep_their_exact_prompts() -> None:
+    from worker.illusion_experiment import FINAL_PAIRS, resolve_pair_prompts
+
+    for pair in FINAL_PAIRS:
+        for style in (None, "none", "oil"):
+            assert resolve_pair_prompts(pair, style)[1] == [pair.prompt_a, pair.prompt_b]
+
+
+def test_calibration_pair_keeps_the_wording_that_was_actually_run() -> None:
+    from worker.illusion_experiment import PAIR_BY_ID
+
+    pair = PAIR_BY_ID["giraffe_penguin_calibration"]
+    assert pair.prompt_a == "an intricate detailed hb pencil sketch of a giraffe head"
+    assert pair.prompt_b == "an intricate detailed hb pencil sketch of a penguin"
+
+
+def test_degenerate_run_flags_a_flat_field_but_not_a_textured_image(tmp_path) -> None:
+    import random
+
+    from PIL import Image
+
+    from worker.illusion_experiment import degenerate_run
+
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    for name in ("derived_1.png", "derived_2.png"):
+        Image.new("RGB", (64, 64), (127, 127, 127)).save(flat / name)
+    assert degenerate_run(flat) is True
+
+    noisy = tmp_path / "noisy"
+    noisy.mkdir()
+    rng = random.Random(0)
+    for name in ("derived_1.png", "derived_2.png"):
+        image = Image.new("RGB", (64, 64))
+        image.putdata([(rng.randrange(256),) * 3 for _ in range(64 * 64)])
+        image.save(noisy / name)
+    assert degenerate_run(noisy) is False
+
+    # No output at all counts as catastrophic.
+    assert degenerate_run(tmp_path / "missing") is True

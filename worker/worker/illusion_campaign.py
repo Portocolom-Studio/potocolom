@@ -19,6 +19,7 @@ from worker.illusion_experiment import (
     FINAL_PAIRS,
     SCREEN_PAIRS,
     PAIR_BY_ID,
+    degenerate_run,
     git_sha,
     is_completed_run,
     repo_root,
@@ -821,6 +822,14 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-entries", type=int, default=None)
     run.add_argument("--deadline-s", type=float, default=GENERATION_DEADLINE_S)
     run.add_argument("--cooldown-s", type=float, default=300.0)
+    run.add_argument(
+        "--abort-after-dead",
+        type=int,
+        default=4,
+        help="stop after this many consecutive cells emit near-constant images "
+        "(0 disables). A catastrophe brake for unattended windows, not a "
+        "quality gate: no image statistic separates good illusions from bad.",
+    )
 
     for command in ("status", "audit", "report"):
         command_parser = sub.add_parser(command, help=f"show campaign {command}")
@@ -904,6 +913,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         started = time.monotonic()
         n = 0
+        dead_streak = 0
         pending = list(plan.entries)
         while pending:
             entry = pending.pop(0)
@@ -923,6 +933,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"GPU busy; retrying after {args.cooldown_s:.0f}s")
                 time.sleep(args.cooldown_s)
                 pending.insert(0, entry)
+                continue
+            if args.abort_after_dead and result.get("status") == "completed":
+                if degenerate_run(Path(str(result.get("out")))):
+                    dead_streak += 1
+                    print(f"degenerate output {dead_streak}/{args.abort_after_dead}")
+                    if dead_streak >= args.abort_after_dead:
+                        print(
+                            f"ABORT: {dead_streak} consecutive cells emitted near-constant "
+                            f"images. Stopping so the rest of the window is not spent on a "
+                            f"dead axis.",
+                            file=sys.stderr,
+                        )
+                        return 3
+                else:
+                    dead_streak = 0
         return 0
 
     return 1
