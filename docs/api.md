@@ -31,6 +31,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
 | POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
+| GET `/api/v1/generations/{id}/lineage` | implemented (#129) | ancestry, direct derivatives and subtree size of an owned generation |
 | GET `/api/v1/benchmark/sessions/*` | implemented (#107) | list and read durable benchmark sessions, install-scoped |
 | POST `/api/v1/benchmark/sessions` | implemented (#107), `BENCHMARK_API`-gated | ingest a completed benchmark session |
 | GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
@@ -147,6 +148,19 @@ POST /api/v1/generations/{id}/star    user or admin; 204; idempotent, 403 for vi
                                       404 for another user's or missing job
 DELETE /api/v1/generations/{id}/star  user or admin; 204; idempotent, 403 for viewer,
                                       404 for another user's or missing job
+
+GET /api/v1/generations/{id}/lineage  the derivation chain around one generation (#129)
+                                      {"ancestors": [entry], root first, direct parent last, [] for a root
+                                       "children":  [entry], direct derivatives, created_at ascending
+                                       "descendant_count": full subtree size, for "and N more"}
+                                      entry = {"job_id": null when the source was an upload,
+                                               "asset_id", "action": generate|image_to_image|upscale|upload,
+                                               "model_id", "created_at", "state", "thumbnail_url",
+                                               "missing": true once the bytes are gone, renders a ghost}
+                                      404 for another user's or missing job. The walk is bounded at depth
+                                      100 and skips already-visited assets, so a cycle cannot hang it.
+                                      A missing ancestor keeps its place: the chain stays intact because
+                                      purging an asset drops its bytes and keeps the row (decisions.md).
 ```
 
 The studio opens at most four generation event streams. An `EventSource` error

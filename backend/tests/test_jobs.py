@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Asset, Job, Model, UsageEvent
+from app.tables import Asset, Job, Model, UsageEvent, User
 
 MANIFEST = {
     "id": "sd-test",
@@ -369,6 +369,7 @@ def test_img2img_dispatch_includes_input_url():
                               "gpu_ms": 200, "width": 512, "height": 512})
             edit_job = poll_until(client, edit_job_id, "succeeded")
             assert edit_job["assets"][0]["url"].endswith(".png")
+            assert edit_job["source_asset_id"] == source_asset_id
 
 
 @pytest.mark.db
@@ -759,3 +760,355 @@ def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
                 first = _wait_for_dispatch(worker, {first_id})
                 assert client.get(f"/api/v1/generations/{second_id}").json()["state"] == "queued"
                 _finish_job(client, worker, first)
+
+
+async def _seed_lineage_generation(
+    session,
+    *,
+    user_id: uuid.UUID,
+    model_id: str,
+    capabilities: list[str],
+    prompt: str,
+    created_at: datetime,
+    source_asset_id: uuid.UUID | None = None,
+    expires_at: datetime | None = None,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    if await session.get(Model, model_id) is None:
+        session.add(Model(
+            id=model_id,
+            name=model_id,
+            capabilities=capabilities,
+            parameters_schema={},
+            min_vram_gb=0,
+        ))
+        await session.flush()
+    job_id = uuid.uuid4()
+    asset_id = uuid.uuid4()
+    session.add(Job(
+        id=job_id,
+        user_id=user_id,
+        model_id=model_id,
+        params={"prompt": prompt},
+        state="succeeded",
+        attempt=1,
+        source_asset_id=source_asset_id,
+        created_at=created_at,
+    ))
+    await session.flush()
+    session.add(Asset(
+        id=asset_id,
+        user_id=user_id,
+        job_id=job_id,
+        parent_asset_id=source_asset_id,
+        storage_key=f"{user_id}/{job_id}.png",
+        mime="image/png",
+        width=512,
+        height=512,
+        expires_at=expires_at,
+    ))
+    await session.flush()
+    session.add(Asset(
+        user_id=user_id,
+        job_id=job_id,
+        parent_asset_id=asset_id,
+        storage_key=f"{user_id}/{job_id}-thumb.webp",
+        mime="image/webp",
+        width=384,
+        height=384,
+    ))
+    await session.flush()
+    return job_id, asset_id
+
+
+@pytest.mark.db
+def test_generation_lineage_chain_orders_ancestors_and_children():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-chain-generate",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                edit_id, edit_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-chain-edit",
+                    capabilities=["image_to_image"],
+                    prompt="edit",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=root_asset_id,
+                )
+                upscale_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-chain-upscale",
+                    capabilities=["upscale"],
+                    prompt="upscale",
+                    created_at=now + timedelta(seconds=2),
+                    source_asset_id=edit_asset_id,
+                )
+                await session.commit()
+            return root_id, edit_id, upscale_id
+
+        root_id, edit_id, upscale_id = asyncio.run(seed())
+
+        root = client.get(f"/api/v1/generations/{root_id}/lineage").json()
+        assert root["ancestors"] == []
+        assert [entry["job_id"] for entry in root["children"]] == [str(edit_id)]
+        assert root["children"][0]["action"] == "image_to_image"
+
+        edit = client.get(f"/api/v1/generations/{edit_id}/lineage").json()
+        assert [entry["job_id"] for entry in edit["ancestors"]] == [str(root_id)]
+        assert edit["ancestors"][0]["action"] == "generate"
+        assert [entry["job_id"] for entry in edit["children"]] == [str(upscale_id)]
+        assert edit["children"][0]["action"] == "upscale"
+
+        upscale = client.get(f"/api/v1/generations/{upscale_id}/lineage").json()
+        assert [entry["job_id"] for entry in upscale["ancestors"]] == [
+            str(root_id),
+            str(edit_id),
+        ]
+        assert [entry["action"] for entry in upscale["ancestors"]] == [
+            "generate",
+            "image_to_image",
+        ]
+        assert upscale["children"] == []
+
+
+@pytest.mark.db
+def test_generation_lineage_fanout_orders_children_by_created_at():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, list[uuid.UUID]]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-fanout-root",
+                    capabilities=["text_to_image"],
+                    prompt="base",
+                    created_at=now,
+                )
+                children = []
+                for offset, prompt in enumerate(("third prompt", "first prompt", "second prompt")):
+                    child_id, _ = await _seed_lineage_generation(
+                        session,
+                        user_id=db.local_user_id,
+                        model_id="lineage-fanout-edit",
+                        capabilities=["image_to_image"],
+                        prompt=prompt,
+                        created_at=now + timedelta(seconds=(3, 1, 2)[offset]),
+                        source_asset_id=root_asset_id,
+                    )
+                    children.append(child_id)
+                await session.commit()
+            return root_id, [children[1], children[2], children[0]]
+
+        root_id, expected = asyncio.run(seed())
+        lineage = client.get(f"/api/v1/generations/{root_id}/lineage").json()
+        assert [entry["job_id"] for entry in lineage["children"]] == [
+            str(job_id) for job_id in expected
+        ]
+        assert lineage["descendant_count"] == 3
+
+
+@pytest.mark.db
+def test_generation_lineage_root_counts_grandchildren():
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-count-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                _, child_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-count-edit",
+                    capabilities=["image_to_image"],
+                    prompt="child",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=root_asset_id,
+                )
+                await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-count-upscale",
+                    capabilities=["upscale"],
+                    prompt="grandchild",
+                    created_at=now + timedelta(seconds=2),
+                    source_asset_id=child_asset_id,
+                )
+                await session.commit()
+            return root_id
+
+        root_id = asyncio.run(seed())
+        lineage = client.get(f"/api/v1/generations/{root_id}/lineage").json()
+        assert lineage["ancestors"] == []
+        assert len(lineage["children"]) == 1
+        assert lineage["descendant_count"] == 2
+
+
+@pytest.mark.db
+def test_generation_lineage_includes_upload_root():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            upload_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(Asset(
+                    id=upload_id,
+                    user_id=db.local_user_id,
+                    job_id=None,
+                    parent_asset_id=None,
+                    storage_key=f"{db.local_user_id}/upload.png",
+                    mime="image/png",
+                    width=512,
+                    height=512,
+                ))
+                await session.flush()
+                session.add(Asset(
+                    user_id=db.local_user_id,
+                    job_id=None,
+                    parent_asset_id=upload_id,
+                    storage_key=f"{db.local_user_id}/upload-thumb.webp",
+                    mime="image/webp",
+                    width=384,
+                    height=384,
+                ))
+                edit_id, edit_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-upload-edit",
+                    capabilities=["image_to_image"],
+                    prompt="edit upload",
+                    created_at=now,
+                    source_asset_id=upload_id,
+                )
+                leaf_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-upload-upscale",
+                    capabilities=["upscale"],
+                    prompt="upscale edit",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=edit_asset_id,
+                )
+                await session.commit()
+            return leaf_id, edit_id
+
+        leaf_id, edit_id = asyncio.run(seed())
+        lineage = client.get(f"/api/v1/generations/{leaf_id}/lineage").json()
+        assert [entry["job_id"] for entry in lineage["ancestors"]] == [None, str(edit_id)]
+        upload = lineage["ancestors"][0]
+        assert upload["action"] == "upload"
+        assert upload["model_id"] is None
+        assert upload["state"] is None
+        assert upload["created_at"] is not None
+        assert upload["thumbnail_url"] is not None
+
+
+@pytest.mark.db
+def test_generation_lineage_keeps_missing_middle_ancestor():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-missing-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                middle_id, middle_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-missing-edit",
+                    capabilities=["image_to_image"],
+                    prompt="missing",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=root_asset_id,
+                    expires_at=now - timedelta(seconds=1),
+                )
+                leaf_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-missing-upscale",
+                    capabilities=["upscale"],
+                    prompt="leaf",
+                    created_at=now + timedelta(seconds=2),
+                    source_asset_id=middle_asset_id,
+                )
+                await session.commit()
+            return leaf_id, root_id, middle_id
+
+        leaf_id, root_id, middle_id = asyncio.run(seed())
+        lineage = client.get(f"/api/v1/generations/{leaf_id}/lineage").json()
+        assert [entry["job_id"] for entry in lineage["ancestors"]] == [
+            str(root_id),
+            str(middle_id),
+        ]
+        assert lineage["ancestors"][0]["missing"] is False
+        assert lineage["ancestors"][1]["missing"] is True
+        assert lineage["ancestors"][1]["thumbnail_url"] is None
+
+
+@pytest.mark.db
+def test_generation_lineage_foreign_job_is_not_found():
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.session_factory is not None
+            foreign_user_id = uuid.uuid4()
+            model_id = f"lineage-foreign-{uuid.uuid4()}"
+            job_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(User(
+                    id=foreign_user_id,
+                    email=f"{foreign_user_id}@example.com",
+                    role="user",
+                ))
+                session.add(Model(
+                    id=model_id,
+                    name=model_id,
+                    capabilities=["text_to_image"],
+                    parameters_schema={},
+                    min_vram_gb=0,
+                ))
+                await session.flush()
+                session.add(Job(
+                    id=job_id,
+                    user_id=foreign_user_id,
+                    model_id=model_id,
+                    params={"prompt": "foreign"},
+                    state="succeeded",
+                    attempt=1,
+                ))
+                await session.commit()
+            return job_id
+
+        job_id = asyncio.run(seed())
+        response = client.get(f"/api/v1/generations/{job_id}/lineage")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "no such generation"}

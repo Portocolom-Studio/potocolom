@@ -23,7 +23,8 @@ from typing import Literal, Protocol
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, realtime, registry
@@ -162,6 +163,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
         {
             "id": str(job.id),
             "model_id": job.model_id,
+            "source_asset_id": str(job.source_asset_id) if job.source_asset_id else None,
             "params": job.params,
             "state": job.state,
             "attempt": job.attempt,
@@ -256,6 +258,206 @@ async def owned_job(session: AsyncSession, job_id: uuid.UUID, user: User) -> Job
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="no such generation")
     return job
+
+
+async def serialize_lineage_entry(row: RowMapping, now: datetime) -> dict:
+    missing = row["expires_at"] is not None and row["expires_at"] <= now
+    thumbnail_missing = (
+        row["thumbnail_expires_at"] is not None
+        and row["thumbnail_expires_at"] <= now
+    )
+    thumbnail_url = None
+    if not missing and not thumbnail_missing and row["thumbnail_storage_key"] is not None:
+        thumbnail_url = await get_storage().url(row["thumbnail_storage_key"])
+    capabilities = set(row["capabilities"] or [])
+    action = (
+        "upload" if row["job_id"] is None else
+        "generate" if row["source_asset_id"] is None else
+        "upscale" if "upscale" in capabilities else
+        "image_to_image"
+    )
+    return {
+        "job_id": str(row["job_id"]) if row["job_id"] is not None else None,
+        "asset_id": str(row["asset_id"]),
+        "action": action,
+        "model_id": row["model_id"],
+        "created_at": row["created_at"].isoformat(),
+        "state": row["state"],
+        "thumbnail_url": thumbnail_url,
+        "missing": missing,
+    }
+
+
+@router.get("/api/v1/generations/{job_id}/lineage")
+async def generation_lineage(
+    job_id: uuid.UUID,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+) -> dict:
+    await owned_job(session, job_id, user)
+    params = {"job_id": job_id, "user_id": user.id}
+    ancestor_result = await session.execute(text("""
+        WITH RECURSIVE ancestor_walk AS (
+            SELECT
+                source.id AS asset_id,
+                source.job_id,
+                parent.model_id,
+                parent.source_asset_id,
+                parent.created_at AS job_created_at,
+                current.created_at AS reference_created_at,
+                parent.state,
+                model.capabilities,
+                source.expires_at,
+                1 AS depth,
+                ARRAY[source.id]::uuid[] AS visited
+            FROM jobs AS current
+            JOIN assets AS source ON source.id = current.source_asset_id
+            LEFT JOIN jobs AS parent
+                ON parent.id = source.job_id
+                AND parent.user_id = :user_id
+            LEFT JOIN models AS model ON model.id = parent.model_id
+            WHERE current.id = :job_id
+                AND current.user_id = :user_id
+                AND source.user_id = :user_id
+                AND source.storage_key NOT LIKE '%-thumb.webp'
+
+            UNION ALL
+
+            SELECT
+                source.id,
+                source.job_id,
+                parent.model_id,
+                parent.source_asset_id,
+                parent.created_at,
+                ancestor_walk.job_created_at,
+                parent.state,
+                model.capabilities,
+                source.expires_at,
+                ancestor_walk.depth + 1,
+                ancestor_walk.visited || ARRAY[source.id]
+            FROM ancestor_walk
+            JOIN assets AS source ON source.id = ancestor_walk.source_asset_id
+            LEFT JOIN jobs AS parent
+                ON parent.id = source.job_id
+                AND parent.user_id = :user_id
+            LEFT JOIN models AS model ON model.id = parent.model_id
+            WHERE ancestor_walk.depth < 100
+                AND source.user_id = :user_id
+                AND source.storage_key NOT LIKE '%-thumb.webp'
+                AND NOT (source.id = ANY(ancestor_walk.visited))
+        )
+        SELECT
+            ancestor_walk.asset_id,
+            ancestor_walk.job_id,
+            ancestor_walk.model_id,
+            ancestor_walk.source_asset_id,
+            COALESCE(
+                ancestor_walk.job_created_at,
+                ancestor_walk.reference_created_at
+            ) AS created_at,
+            ancestor_walk.state,
+            ancestor_walk.capabilities,
+            ancestor_walk.expires_at,
+            thumbnail.storage_key AS thumbnail_storage_key,
+            thumbnail.expires_at AS thumbnail_expires_at
+        FROM ancestor_walk
+        LEFT JOIN LATERAL (
+            SELECT storage_key, expires_at
+            FROM assets
+            WHERE parent_asset_id = ancestor_walk.asset_id
+                AND user_id = :user_id
+                AND storage_key LIKE '%-thumb.webp'
+            ORDER BY id
+            LIMIT 1
+        ) AS thumbnail ON TRUE
+        ORDER BY ancestor_walk.depth DESC
+    """), params)
+
+    child_result = await session.execute(text("""
+        SELECT
+            child.id AS job_id,
+            master.id AS asset_id,
+            child.model_id,
+            child.source_asset_id,
+            child.created_at,
+            child.state,
+            model.capabilities,
+            master.expires_at,
+            thumbnail.storage_key AS thumbnail_storage_key,
+            thumbnail.expires_at AS thumbnail_expires_at
+        FROM jobs AS current
+        JOIN assets AS current_asset
+            ON current_asset.job_id = current.id
+            AND current_asset.user_id = :user_id
+            AND current_asset.storage_key NOT LIKE '%-thumb.webp'
+        JOIN jobs AS child
+            ON child.source_asset_id = current_asset.id
+            AND child.user_id = :user_id
+        JOIN assets AS master
+            ON master.job_id = child.id
+            AND master.user_id = :user_id
+            AND master.storage_key NOT LIKE '%-thumb.webp'
+        JOIN models AS model ON model.id = child.model_id
+        LEFT JOIN LATERAL (
+            SELECT storage_key, expires_at
+            FROM assets
+            WHERE parent_asset_id = master.id
+                AND user_id = :user_id
+                AND storage_key LIKE '%-thumb.webp'
+            ORDER BY id
+            LIMIT 1
+        ) AS thumbnail ON TRUE
+        WHERE current.id = :job_id
+            AND current.user_id = :user_id
+        ORDER BY child.created_at, child.id
+    """), params)
+
+    descendant_count = await session.scalar(text("""
+        WITH RECURSIVE descendants AS (
+            SELECT
+                child.id AS job_id,
+                ARRAY[child.id]::uuid[] AS visited
+            FROM jobs AS current
+            JOIN assets AS current_asset
+                ON current_asset.job_id = current.id
+                AND current_asset.user_id = :user_id
+                AND current_asset.storage_key NOT LIKE '%-thumb.webp'
+            JOIN jobs AS child
+                ON child.source_asset_id = current_asset.id
+                AND child.user_id = :user_id
+            WHERE current.id = :job_id
+                AND current.user_id = :user_id
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                descendants.visited || ARRAY[child.id]
+            FROM descendants
+            JOIN assets AS output
+                ON output.job_id = descendants.job_id
+                AND output.user_id = :user_id
+                AND output.storage_key NOT LIKE '%-thumb.webp'
+            JOIN jobs AS child
+                ON child.source_asset_id = output.id
+                AND child.user_id = :user_id
+            WHERE NOT (child.id = ANY(descendants.visited))
+        )
+        SELECT count(DISTINCT job_id)
+        FROM descendants
+    """), params)
+    now = datetime.now(timezone.utc)
+    return {
+        "ancestors": [
+            await serialize_lineage_entry(row, now)
+            for row in ancestor_result.mappings()
+        ],
+        "children": [
+            await serialize_lineage_entry(row, now)
+            for row in child_result.mappings()
+        ],
+        "descendant_count": int(descendant_count or 0),
+    }
 
 
 @router.get("/api/v1/generations/{job_id}")
