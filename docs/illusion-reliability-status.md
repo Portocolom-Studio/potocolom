@@ -60,16 +60,31 @@ Inspect `git log f03bbf5..HEAD` on this branch for:
 Full 500-SDS + Dream parity later passed, but Wave 1/2 human review did not
 freeze a base B. The author-reference campaign below supersedes that axis.
 
-## Current direction (2026-07-25)
+## Current direction (2026-07-29)
 
-Wave 1/2 and the SDXL pilot did not freeze a keeper profile. The steps below
-are retained as historical provenance, but they are superseded by the
-experiment-only author-reference campaign in
-[illusion-reliability-60h.md](illusion-reliability-60h.md).
-
-The new primary phase is `reference60h` (36 cells). Its fallback is
+The primary phase is now `window60h` (154 cells), documented in
+[illusion-window-60h.md](illusion-window-60h.md). Its fallback remains
 `early-dream-backup` (48 short cells). Product defaults and PR #118 remain
 unchanged.
+
+`reference60h` (36 cells) is superseded, for three reasons recorded in that
+document: its budget came from the paper rather than from the calibration
+smoke's own checkpoints, where quality had already saturated at a third of
+the cost; it varied six things at once against the failed runs, so no
+outcome would have been attributable; and it sampled five pairs on the axis
+docs/illusions.md calls the biggest lever, while the curated pairing-rule
+corpus in issue #138 had never been run at all.
+
+Its calibration smoke is retained as evidence and reused as the new
+window's rig check.
+
+### Superseded direction (2026-07-25)
+
+Wave 1/2 and the SDXL pilot did not freeze a keeper profile. The steps below
+are retained as historical provenance, superseded first by the
+author-reference campaign in
+[illusion-reliability-60h.md](illusion-reliability-60h.md) and then by the
+window above.
 
 ### Author-reference smoke result
 

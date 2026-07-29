@@ -176,7 +176,9 @@ A/B ratings, and the acceptance gate) are documented in
 [illusion-reliability.md](illusion-reliability.md). Defaults remain legacy
 until that gate passes. Failed experimental modes may stay behind flags for
 reproducibility; they do not become defaults merely because they exist.
-The replacement 60-hour author-reference campaign is documented in
+The 60-hour yield window that is the current primary axis is documented in
+[illusion-window-60h.md](illusion-window-60h.md); the author-reference
+campaign it replaced is in
 [illusion-reliability-60h.md](illusion-reliability-60h.md).
 
 ## Fabrication
