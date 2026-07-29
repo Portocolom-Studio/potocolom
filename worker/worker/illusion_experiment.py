@@ -469,6 +469,37 @@ def image_flatness(path: Path) -> tuple[float, float]:
     return std, detail
 
 
+def local_snapshot(model_id: str) -> str:
+    """Resolve a Hub id to its cached snapshot directory when one exists.
+
+    ``HF_HUB_OFFLINE`` refuses an *incomplete* snapshot even when every file the
+    pipeline actually needs is on disk. This machine's SD 1.5 cache is missing
+    the safety checker and 22 other files, so the Hub-id form aborts before
+    loading anything, while a snapshot path loads straight off disk.
+
+    The 36-cell plan hardcoded absolute paths for exactly this reason. Resolving
+    here means a plan cannot be built with the footgun still in it. Paths that
+    are already directories pass through unchanged, so this is idempotent.
+    """
+    if os.path.isdir(model_id):
+        return model_id
+    org, _, name = model_id.partition("/")
+    if not name:
+        return model_id
+    hub = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    repo = hub / f"models--{org}--{name}"
+    ref = repo / "refs" / "main"
+    if ref.is_file():
+        pinned = repo / "snapshots" / ref.read_text().strip()
+        if pinned.is_dir():
+            return str(pinned)
+    snapshots = repo / "snapshots"
+    found = sorted(p for p in snapshots.glob("*") if p.is_dir()) if snapshots.is_dir() else []
+    # Only an unambiguous cache resolves; several snapshots means the caller has
+    # to name the revision it wants rather than have one guessed.
+    return str(found[0]) if len(found) == 1 else model_id
+
+
 def degenerate_run(run_dir: Path) -> bool:
     """True when a completed run's derived views are near-constant fields.
 
@@ -1358,8 +1389,10 @@ def _build_illusion_config(args: argparse.Namespace):
     kwargs: dict[str, Any] = {
         "illusion": args.type,
         "prompts": effective_prompts,
-        "model_id": args.model,
-        "dream_model_id": None if args.dream_model.lower() == "none" else args.dream_model,
+        "model_id": local_snapshot(args.model),
+        "dream_model_id": (
+            None if args.dream_model.lower() == "none" else local_snapshot(args.dream_model)
+        ),
         "sds_steps": _or_default(args.sds_steps, 500),
         "sds_guidance": (
             1.0

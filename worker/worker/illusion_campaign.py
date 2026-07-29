@@ -22,6 +22,7 @@ from worker.illusion_experiment import (
     degenerate_run,
     git_sha,
     is_completed_run,
+    local_snapshot,
     repo_root,
     resolve_pair_prompts,
     write_manifest_atomic,
@@ -565,8 +566,10 @@ def build_full_plan(
         git_sha=git_sha(),
         created_at=datetime.now(timezone.utc).isoformat(),
         evidence_root=str(evidence_root),
-        model_id=model_id,
-        dream_model_id=dream_model_id,
+        # Offline cells need the cached snapshot directory, not the Hub id: this
+        # machine's snapshot is incomplete and HF_HUB_OFFLINE refuses it outright.
+        model_id=local_snapshot(model_id),
+        dream_model_id=local_snapshot(dream_model_id),
         entries=unique,
     )
 
@@ -868,8 +871,10 @@ def build_phase_plan(
         git_sha=git_sha(),
         created_at=datetime.now(timezone.utc).isoformat(),
         evidence_root=str(evidence_root),
-        model_id=model_id,
-        dream_model_id=dream_model_id,
+        # Offline cells need the cached snapshot directory, not the Hub id: this
+        # machine's snapshot is incomplete and HF_HUB_OFFLINE refuses it outright.
+        model_id=local_snapshot(model_id),
+        dream_model_id=local_snapshot(dream_model_id),
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries

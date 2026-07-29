@@ -219,3 +219,46 @@ def test_shard_splits_a_plan_disjointly_and_covers_it() -> None:
         assert len(seen) == len(set(seen))
         # And the work is split about evenly.
         assert max(len(s) for s in shards) - min(len(s) for s in shards) <= 1
+
+
+def test_local_snapshot_resolves_hub_ids_offline(tmp_path, monkeypatch) -> None:
+    """HF_HUB_OFFLINE refuses an incomplete snapshot; a path loads off disk."""
+    from worker.illusion_experiment import local_snapshot
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    repo = tmp_path / "hub" / "models--org--model"
+    (repo / "snapshots" / "abc123").mkdir(parents=True)
+    (repo / "refs").mkdir(parents=True)
+    (repo / "refs" / "main").write_text("abc123\n")
+    assert local_snapshot("org/model") == str(repo / "snapshots" / "abc123")
+
+    # A single snapshot with no ref still resolves unambiguously.
+    solo = tmp_path / "hub" / "models--org--solo"
+    (solo / "snapshots" / "deadbeef").mkdir(parents=True)
+    assert local_snapshot("org/solo") == str(solo / "snapshots" / "deadbeef")
+
+    # Two snapshots and no ref is ambiguous: the caller must name a revision.
+    two = tmp_path / "hub" / "models--org--two"
+    (two / "snapshots" / "aaa").mkdir(parents=True)
+    (two / "snapshots" / "bbb").mkdir(parents=True)
+    assert local_snapshot("org/two") == "org/two"
+
+    # Uncached ids and existing directories pass through, so it is idempotent.
+    assert local_snapshot("org/missing") == "org/missing"
+    assert local_snapshot(str(tmp_path)) == str(tmp_path)
+    assert local_snapshot(local_snapshot("org/model")) == local_snapshot("org/model")
+
+
+def test_plan_pins_model_snapshots_so_offline_cells_can_load(tmp_path) -> None:
+    from worker.illusion_campaign import build_phase_plan
+
+    plan = build_phase_plan(
+        phase="window60h",
+        evidence_root=tmp_path,
+        model_id="stable-diffusion-v1-5/stable-diffusion-v1-5",
+        dream_model_id="lykon/dreamshaper-8-lcm",
+    )
+    # Whatever the caller passed, the plan records something a pipeline can
+    # actually open with outgoing traffic disabled.
+    for recorded in (plan.model_id, plan.dream_model_id):
+        assert Path(recorded).is_dir(), recorded
