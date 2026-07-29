@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - "worker/**"
+      - "Makefile"
       - ".github/workflows/worker.yml"
   push:
     branches: [main]
     paths:
       - "worker/**"
+      - "Makefile"
       - ".github/workflows/worker.yml"
 
 permissions:
