@@ -94,16 +94,84 @@ Every cell of the first attempt died in 11 seconds with
 `IncompleteSnapshotError`: `HF_HUB_OFFLINE` refuses this machine's SD 1.5
 snapshot, which is missing 23 files including the safety checker the code
 already works around. The 36-cell plan hardcoded absolute snapshot paths, so
-its smoke ran. A freshly built plan took the Hub-id defaults instead, so all
-154 window cells would have died at launch with nobody watching, and the
+its smoke ran. A freshly built plan took the Hub-id defaults instead, so
+every window cell would have died at launch with nobody watching, and the
 window would have been spent before anyone looked. Model ids are now resolved
 to cached snapshot directories where plans are built and where the experiment
 CLI builds its config.
 
+### A2: prompt wording
+
+Same pair, seed, budget, guidance and objective; only the wording differs.
+
+| Wording | Medium delivered | Crown view | std / detail |
+|---|---|---|---|
+| `a centered intricate HB pencil illustration of X, full object, strong silhouette, isolated on plain warm paper` | no, neon pink on green | crown lost to tentacles | 0.108 / 0.0209 |
+| `a centered intricate oil painting of X, ...` | yes, oil on canvas | flat octopus silhouette | 0.307 / 0.0393 |
+| `an intricate detailed hb pencil sketch of X` | yes, graphite on paper | ornate crown, most detail | 0.317 / 0.0587 |
+
+The window uses the third. It is the only wording with a human-approved cell
+behind it, it delivered its own medium everywhere it was tried, and monochrome
+removes the colour agreement the two flip views would otherwise negotiate.
+
+A3 qualifies this: the scaffolded wording did NOT go neon on
+`lighthouse_goblet`. Wording interacts with the pair rather than being
+categorically broken. What stands is that the short wording was never worse.
+
+### A3: the budget cut was wrong
+
+On `lighthouse_goblet`, a pair no cell had run, quality improved monotonically:
+
+| SDS steps | Result |
+|---|---|
+| 1500 | readable, mottled, low contrast |
+| 2000 | marginally better than 1500 |
+| 3000 | noticeably cleaner structure |
+| 5000 | cleanest tone and detail |
+
+There is no plateau at 2,000. The calibration smoke saturating there was the
+paper's own easiest pair, which is exactly the caveat attached to the original
+proposal, now measured and now falsified for the general case. Cutting to 3,000
+would have under-baked every cell and understated yield by blaming pairs for
+the schedule.
+
+5,000 steps at four seeds and 3,000 at six cost the same ~50 GPU-hours, so the
+budget goes up and the seed count comes down. The per-cell ladder means the
+yield-versus-budget curve still comes free from the same sweep.
+
+### A4: 512px primes rejected
+
+The prime is the printable artifact, so a 512px network was worth asking about.
+It cost 1491s of SDS against 638s and 2665s total against 810s, a 3.3x with
+Dream alone 6.8x slower, for no visible quality gain at equal steps. VRAM rose
+from 4331 to 5680 MB. The paper's 256px network stands.
+
+### A5: joint Dream Targets, the largest single win
+
+The recipe pinned `dream_joint` off. Turning it on, with the same pair, seed,
+budget and wording as the neon cell above, and therefore from an identical neon
+SDS state:
+
+| Dream targets | Result | Total | std |
+|---|---|---|---|
+| independent per view | purple mush, crown gone | 810s | 0.108 |
+| joint, reconciled | legible monochrome crown and octopus | 807s | 0.296 |
+
+It rescued a failing cell for nothing. This is issue #134's mechanism measured
+rather than argued: independent per-view targets fight over the shared pixels
+and drive the collapse that has been the dominant failure mode all along.
+
+Because it is one comparison on one pair, the window carries an
+`independent_dream_control` arm that duplicates two sweep cells with joint
+targets off, so the result is refreshed at window scale instead of trusted.
+
 ## The matrix
 
-Phase `window60h`, 154 cells over 25 pairs and six seeds
-(11, 23, 37, 53, 71, 89):
+Phase `window60h`, 104 cells over 25 pairs and four seeds (11, 23, 37, 53),
+at 5,000 SDS steps with joint Dream, `reference_sketch` wording and 256px
+primes. Estimated 52.9h against a 58h driver deadline.
+
+The 25 pairs:
 
 - the 16 curated pairing-rule pairs from issue #138, never GPU-tested;
 - the five topology-compatible reference pairs the earlier plan would have run;
@@ -118,13 +186,18 @@ rather than "these three pairs work". Cell 1 is the rig check: the anchor
 pair at the window's own settings. If a shorter budget or a different wording
 broke what already worked, it shows in one cell rather than fifty.
 
-Four full-budget control cells run last, at the paper's 10,000 steps on two
-pairs and two seeds, so the shorter budget is defensible on this window's own
-evidence rather than only on the pre-window ladder.
+Four control cells run last, each duplicating a sweep cell's pair and seed so
+the comparison is direct rather than across the corpus:
 
-Every cell writes its own checkpoint ladder as fractions of its budget, so
-each records where its subjects actually formed instead of relying on the
-calibration pair's saturation point generalising.
+- `independent_dream_control`, two cells with joint Dream off, refreshing A5;
+- `budget_control_10k`, two cells at the paper's 10,000 steps, testing on this
+  window's own evidence whether 5,000 left anything on the table.
+
+Every cell writes its own checkpoint ladder as fractions of its budget
+(250, 1000, 2500, 5000) plus Dream rounds 1, 4 and 8 and the final image. So
+each cell records where its own subjects formed rather than inheriting the
+calibration pair's saturation point, and the yield-versus-budget question is
+answered by the sweep itself.
 
 ## What the harness will and will not do unattended
 
@@ -176,8 +249,8 @@ before opening the answer key. The smoke is the precedent for why stages are
 split: SDS-end had the strongest raw dual-subject structure while final had
 the cleaner presentation, and a finals-only sheet would have hidden that.
 
-Do not use the blind sheets as the yield readout. At 154 runs they are a
-1024x19712 strip per stage, and the shuffle that makes them fair for an A/B
+Do not use the blind sheets as the yield readout. At this scale they are a
+tall shuffled strip per stage, and the shuffle that makes them fair for an A/B
 is exactly what destroys per-pair grouping.
 
 CLIP pair scores are written as sidecars for post-hoc calibration against

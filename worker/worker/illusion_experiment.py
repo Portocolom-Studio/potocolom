@@ -726,9 +726,10 @@ def build_yield_sheets(root: Path, out: Path, stage: str = "final") -> dict[str,
     """One sheet per pair, all its seeds side by side, for reading yield.
 
     The blind stage sheets are the acceptance path and stay that way, but they
-    shuffle every cell of every pair together. At 154 runs that is a 1024x19712
-    strip per stage, and it deliberately destroys the grouping that answers the
-    question this window asks: which PAIRS work, and how often across seeds.
+    shuffle every cell of every pair together. At a hundred-odd runs that is one
+    very tall strip per stage, and the shuffle deliberately destroys the grouping
+    that answers what a yield sweep asks: which PAIRS work, and how often across
+    seeds.
 
     ``stage`` picks which images are shown, and it matters. On both pre-window
     pairs inspected, ``dream_d1`` held more tonal detail than the final, which
