@@ -335,6 +335,16 @@ pipeline at 10.93 GB resident against 15.15 GB before. Full residency then
 makes `torch.compile` available, and compile is worth 35% here (43.1 s to
 28.0 s), consistent with the 36% measured on the no-T5 pipeline.
 
+The 28.0 s figure is steady state, not startup latency. A second and later
+generation measured 27.2 s. The first generation in a fresh worker measured
+138.8 s with the Inductor cache populated, and 528.9 s when compiling from
+cold for the first time on the machine. Model load itself takes 220 to 239 s
+at full residency because quantisation happens during load. Against the
+previous 49.5 s `model_offload` path with no compile warm-up, the cached int8
+path is still behind after five images in a worker's life and pulls ahead on
+the sixth. One image after a restart therefore waits longer than before,
+while a session of twelve finishes sooner.
+
 It lands within 2 s of the no-T5 configuration while keeping the feature that
 no-T5 throws away.
 
