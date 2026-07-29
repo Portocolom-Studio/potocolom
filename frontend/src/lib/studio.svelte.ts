@@ -7,6 +7,7 @@ export type Model = {
 	id: string;
 	name: string;
 	capabilities: string[];
+	min_vram_gb: number;
 	default: boolean;
 	/** Text encoder window; absent or 0 means the model never declared one. */
 	prompt_token_limit?: number;
@@ -75,11 +76,25 @@ const HISTORY_LIMIT = 50;
 const MAX_GENERATION_STREAMS = 4;
 const STREAM_RECONCILE_MS = 15_000;
 const STARRED_STORAGE_KEY = 'potocolom-starred';
+const REMOVED_MODELS_STORAGE_KEY = 'potocolom-removed-models';
 
 function loadStarredIds(): string[] {
 	if (typeof localStorage === 'undefined') return [];
 	try {
 		const raw = localStorage.getItem(STARRED_STORAGE_KEY);
+		const parsed = raw ? JSON.parse(raw) : [];
+		return Array.isArray(parsed)
+			? parsed.filter((value): value is string => typeof value === 'string')
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function loadRemovedModelIds(): string[] {
+	if (typeof localStorage === 'undefined') return [];
+	try {
+		const raw = localStorage.getItem(REMOVED_MODELS_STORAGE_KEY);
 		const parsed = raw ? JSON.parse(raw) : [];
 		return Array.isArray(parsed)
 			? parsed.filter((value): value is string => typeof value === 'string')
@@ -114,6 +129,9 @@ function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Gene
 export const studio = $state({
 	models: [] as Model[],
 	modelId: '',
+	imageToImageModelId: '',
+	upscaleModelId: '',
+	removedModelIds: [] as string[],
 	prompt: '',
 	selectedId: null as string | null, // generation pinned in the viewer
 	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
@@ -125,7 +143,15 @@ export const studio = $state({
 	starredIds: [] as string[],
 	starredExtras: [] as Generation[], // starred jobs fetched outside the history pages
 	favoriteNotice: '',
-	shellView: 'playground' as 'playground' | 'metrics',
+	shellView: 'generate' as
+		| 'generate'
+		| 'image_to_image'
+		| 'upscale'
+		| 'edit_image'
+		| 'image_to_text'
+		| 'realtime_canvas'
+		| 'models'
+		| 'metrics',
 	metricsTab: 'usage' as 'usage' | 'benchmarks'
 });
 
@@ -142,7 +168,20 @@ function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): vo
 }
 
 export function openPlayground(): void {
-	studio.shellView = 'playground';
+	studio.shellView = 'generate';
+}
+
+export function openService(
+	view:
+		| 'generate'
+		| 'image_to_image'
+		| 'upscale'
+		| 'edit_image'
+		| 'image_to_text'
+		| 'realtime_canvas'
+		| 'models'
+): void {
+	studio.shellView = view;
 }
 
 export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
@@ -171,18 +210,29 @@ const generationRefreshesInFlight = new Set<string>();
 const terminalRefreshAttempts = new Map<string, number>();
 const MAX_TERMINAL_REFRESH_ATTEMPTS = 3;
 
-// Diffusion models drive the generate form and the sidebar picker; upscalers
-// are reached only through the Upscale action (issue #91). Every model list
-// the user can select from must go through this filter.
-export function filterDiffusionModels(models: Model[]): Model[] {
-	return models.filter((model) => !model.capabilities.includes('upscale'));
+export function modelIsRemoved(modelId: string): boolean {
+	return studio.removedModelIds.includes(modelId);
+}
+
+export function filterTextToImageModels(models: Model[]): Model[] {
+	return models.filter(
+		(model) => model.capabilities.includes('text_to_image') && !modelIsRemoved(model.id)
+	);
+}
+
+export function filterImageToImageModels(models: Model[]): Model[] {
+	return models.filter(
+		(model) => model.capabilities.includes('image_to_image') && !modelIsRemoved(model.id)
+	);
 }
 
 export const UPSCALE_FAST_ID = 'realesrgan-fast';
 export const UPSCALE_QUALITY_ID = 'realesrgan';
 
 export function filterUpscaleModels(models: Model[]): Model[] {
-	return models.filter((model) => model.capabilities.includes('upscale'));
+	return models.filter(
+		(model) => model.capabilities.includes('upscale') && !modelIsRemoved(model.id)
+	);
 }
 
 /** Prefer fast when registered; else quality; else first sorted id. */
@@ -196,17 +246,55 @@ export function defaultUpscaleModelId(models: Model[]): string {
 
 function applyModels(models: Model[]): void {
 	studio.models = models;
-	const selectable = filterDiffusionModels(models);
-	if (!studio.modelId || !selectable.some((model) => model.id === studio.modelId)) {
-		studio.modelId =
-			selectable.length > 0 ? (selectable.find((model) => model.default) ?? selectable[0]).id : '';
+	applyModelSelections();
+}
+
+function fallbackModelId(models: Model[]): string {
+	return models.length > 0 ? (models.find((model) => model.default) ?? models[0]).id : '';
+}
+
+function applyModelSelections(): void {
+	const textToImage = filterTextToImageModels(studio.models);
+	if (!textToImage.some((model) => model.id === studio.modelId)) {
+		studio.modelId = fallbackModelId(textToImage);
 	}
+	const imageToImage = filterImageToImageModels(studio.models);
+	if (!imageToImage.some((model) => model.id === studio.imageToImageModelId)) {
+		studio.imageToImageModelId = fallbackModelId(imageToImage);
+	}
+	const upscalers = filterUpscaleModels(studio.models);
+	if (!upscalers.some((model) => model.id === studio.upscaleModelId)) {
+		studio.upscaleModelId = defaultUpscaleModelId(studio.models);
+	}
+}
+
+function saveRemovedModelIds(): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(REMOVED_MODELS_STORAGE_KEY, JSON.stringify(studio.removedModelIds));
+	} catch {
+		// The preference remains active for this tab when storage is unavailable.
+	}
+}
+
+export function removeModel(modelId: string): void {
+	if (modelIsRemoved(modelId)) return;
+	studio.removedModelIds = [...studio.removedModelIds, modelId];
+	saveRemovedModelIds();
+	applyModelSelections();
+}
+
+export function addModel(modelId: string): void {
+	studio.removedModelIds = studio.removedModelIds.filter((id) => id !== modelId);
+	saveRemovedModelIds();
+	applyModelSelections();
 }
 
 export async function loadModels(): Promise<void> {
 	try {
 		const response = await fetch('/api/v1/models');
 		if (!response.ok) return;
+		studio.removedModelIds = loadRemovedModelIds();
 		applyModels((await response.json()) as Model[]);
 	} catch {
 		// API unreachable; studio shows the empty-model state.

@@ -15,7 +15,7 @@
 		studio,
 		starredGenerations,
 		openPlayground,
-		filterDiffusionModels
+		filterTextToImageModels
 	} from '$lib/studio.svelte';
 
 	// Most recent distinct prompts; clicking one refills the form.
@@ -68,13 +68,9 @@
 		<Collapsible.Root open class="group/collapsible">
 			{#snippet child({ props })}
 				<Sidebar.MenuItem {...props}>
-					<Sidebar.MenuButton
-						tooltipContent={t('app.shell.playground')}
-						isActive={studio.shellView === 'playground'}
-						onclick={openPlayground}
-					>
+					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')}>
 						<SquareTerminalIcon />
-						<span>{t('app.shell.playground')}</span>
+						<span>{t('app.shell.workspace')}</span>
 					</Sidebar.MenuButton>
 					<Collapsible.Trigger>
 						{#snippet child({ props: triggerProps })}
@@ -115,10 +111,10 @@
 										</div>
 										<Collapsible.Content>
 											<Sidebar.MenuSub>
-												{#each filterDiffusionModels(studio.models) as model (model.id)}
+												{#each filterTextToImageModels(studio.models) as model (model.id)}
 													<Sidebar.MenuSubItem>
 														<Sidebar.MenuSubButton
-															isActive={studio.shellView === 'playground' &&
+															isActive={studio.shellView === 'generate' &&
 																studio.modelId === model.id}
 														>
 															{#snippet child({ props })}

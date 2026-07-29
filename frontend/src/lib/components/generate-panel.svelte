@@ -22,6 +22,7 @@
 		normToValue,
 		sizeOptions as modelSizeOptions,
 		stepsSpec,
+		strengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
@@ -29,22 +30,24 @@
 	import { estimatePromptTokens, exceedsWindow } from '$lib/prompt-tokens';
 	import {
 		defaultUpscaleModelId,
-		filterDiffusionModels,
+		filterImageToImageModels,
+		filterTextToImageModels,
 		filterUpscaleModels,
 		generationById,
 		isStarred,
 		loadHistory,
+		openService,
 		pollWhileWorking,
 		selectGeneration,
 		studio,
 		toggleStarred,
-		UPSCALE_FAST_ID,
-		UPSCALE_QUALITY_ID,
 		type GenerationLineage,
 		type LineageEntry,
 		type Model
 	} from '$lib/studio.svelte';
 	import HistoryStrip from '$lib/components/history-strip.svelte';
+
+	let { mode }: { mode: 'generate' | 'image_to_image' | 'upscale' } = $props();
 
 	// Matches the Input component's field styling for the native controls it
 	// does not vendor (select, textarea).
@@ -58,9 +61,9 @@
 	const toggleOnClass =
 		'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:hover:bg-primary/90';
 
-	let panelMode = $state<'generate' | 'upscale'>('generate');
 	let stepsNorm = $state(0);
 	let guidanceNorm = $state(0);
+	let strengthNorm = $state(0);
 	let sizeIndex = $state(0);
 	let sizeContext = $state({ modelId: '', optionCount: 0 });
 	let count = $state('1');
@@ -68,8 +71,6 @@
 	let seed = $state('');
 	let sourceAssetId = $state<string | null>(null);
 	let upscaleFactor = $state(2);
-	// null = follow defaultUpscaleModelId (fast when present).
-	let upscaleTierChoice = $state<string | null>(null);
 	let errorText = $state('');
 	let lineage = $state<GenerationLineage | null>(null);
 
@@ -114,34 +115,46 @@
 					: 'image_to_image'
 	);
 
-	// Diffusion models drive the generate form; upscalers are chosen in the
-	// Upscale panel mode (fast default, quality optional).
-	const diffusionModels = $derived(filterDiffusionModels(studio.models));
+	const textToImageModels = $derived(filterTextToImageModels(studio.models));
+	const imageToImageModels = $derived(filterImageToImageModels(studio.models));
+	const diffusionModels = $derived(
+		mode === 'image_to_image' ? imageToImageModels : textToImageModels
+	);
 	const upscaleModels = $derived(filterUpscaleModels(studio.models));
-	const hasUpscaleFast = $derived(upscaleModels.some((model) => model.id === UPSCALE_FAST_ID));
-	const hasUpscaleQuality = $derived(
-		upscaleModels.some((model) => model.id === UPSCALE_QUALITY_ID)
+	const compatibleModelsRegistered = $derived(
+		studio.models.some((model) =>
+			model.capabilities.includes(
+				mode === 'image_to_image'
+					? 'image_to_image'
+					: mode === 'upscale'
+						? 'upscale'
+						: 'text_to_image'
+			)
+		)
+	);
+	const activeModelId = $derived(
+		mode === 'image_to_image' ? studio.imageToImageModelId : studio.modelId
 	);
 	const upscaleModelId = $derived(
-		upscaleTierChoice !== null && upscaleModels.some((model) => model.id === upscaleTierChoice)
-			? upscaleTierChoice
+		upscaleModels.some((model) => model.id === studio.upscaleModelId)
+			? studio.upscaleModelId
 			: defaultUpscaleModelId(studio.models)
 	);
 	const upscaleModel = $derived(upscaleModels.find((model) => model.id === upscaleModelId));
-	const selectedModel = $derived(studio.models.find((m) => m.id === studio.modelId));
+	const selectedModel = $derived(diffusionModels.find((model) => model.id === activeModelId));
 	const canEdit = $derived(
-		shown !== null &&
-			shown.assets.length > 0 &&
-			(selectedModel?.capabilities.includes('image_to_image') ?? false)
+		shown !== null && shown.assets.length > 0 && imageToImageModels.length > 0
 	);
 	const canUpscale = $derived(
 		shown !== null && shown.assets.length > 0 && shown.state === 'succeeded' && upscaleModel != null
 	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
+	const strengthRange = $derived(strengthSpec(selectedModel));
 	const sizeOptions = $derived(modelSizeOptions(selectedModel));
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
 	const guidanceValue = $derived(normToValue(guidanceNorm, guidanceRange));
+	const strengthValue = $derived(normToValue(strengthNorm, strengthRange));
 	const sizeValue = $derived(sizeOptions[sizeIndex] ?? sizeOptions[0]);
 	const sizeKey = $derived(String(sizeValue));
 	const gpuEstimateMs = $derived(
@@ -181,21 +194,42 @@
 	);
 	const upscaleChoiceLabel = $derived(
 		upscaleModel != null
-			? `${upscaleModel.name} · x${upscaleFactor}` +
+			? `${upscaleModel.name} - x${upscaleFactor}` +
 					(upscaleSource != null
-						? ` · ${upscaleSource.width}x${upscaleSource.height}` +
+						? ` - ${upscaleSource.width}x${upscaleSource.height}` +
 							(upscaleOutLabel != null ? ` -> ${upscaleOutLabel}` : '')
 						: '') +
-					(upscaleEstimateLabel != null ? ` · ${upscaleEstimateLabel}` : '')
+					(upscaleEstimateLabel != null ? ` - ${upscaleEstimateLabel}` : '')
 			: null
 	);
 	const shownFactor = $derived(
 		typeof shown?.params.factor === 'number' ? shown.params.factor : null
 	);
 	const panelTitle = $derived(
-		panelMode === 'generate' ? t('app.gen.title') : t('app.upscale.title')
+		mode === 'generate'
+			? t('app.gen.title')
+			: mode === 'image_to_image'
+				? t('app.image_to_image.title')
+				: t('app.upscale.title')
 	);
-	const panelSub = $derived(panelMode === 'generate' ? t('app.gen.sub') : t('app.upscale.sub'));
+	const panelSub = $derived(
+		mode === 'generate'
+			? t('app.gen.sub')
+			: mode === 'image_to_image'
+				? t('app.image_to_image.sub')
+				: t('app.upscale.sub')
+	);
+	const sourceAsset = $derived(
+		sourceAssetId === null
+			? null
+			: ([
+					...studio.history,
+					...studio.starredExtras,
+					...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
+				]
+					.flatMap((generation) => generation.assets)
+					.find((asset) => asset.id === sourceAssetId) ?? null)
+	);
 
 	$effect(() => {
 		const jobId = shownId;
@@ -250,6 +284,7 @@
 		if (!selectedModel || normsReady) return;
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
 		guidanceNorm = valueToNorm(guidanceRange.default, guidanceRange);
+		strengthNorm = valueToNorm(strengthRange.default, strengthRange);
 		normsReady = true;
 	});
 
@@ -266,16 +301,15 @@
 				width: sizeValue,
 				height: sizeValue
 			};
+			if (mode === 'image_to_image') params.strength = strengthValue;
 			if (seed.trim() !== '') params.seed = Number(seed) + index;
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
-					model_id: studio.modelId,
+					model_id: activeModelId,
 					params,
-					...(sourceAssetId && selectedModel?.capabilities.includes('image_to_image')
-						? { source_asset_id: sourceAssetId }
-						: {})
+					...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
 				})
 			});
 			if (!response.ok) {
@@ -332,6 +366,7 @@
 		}
 		sourceAssetId = assetId;
 		if (shownPrompt !== '') studio.prompt = shownPrompt;
+		openService('image_to_image');
 	}
 
 	function onSizeChange(value: string): void {
@@ -339,8 +374,12 @@
 		if (index >= 0) sizeIndex = index;
 	}
 
-	function onPanelModeChange(value: string): void {
-		if (value === 'generate' || value === 'upscale') panelMode = value;
+	function onModelChange(value: string): void {
+		if (mode === 'image_to_image') {
+			studio.imageToImageModelId = value;
+		} else {
+			studio.modelId = value;
+		}
 	}
 
 	function onUpscaleFactorChange(value: string): void {
@@ -348,10 +387,8 @@
 		if (factor === 2 || factor === 4) upscaleFactor = factor;
 	}
 
-	function onUpscaleTierChange(value: string): void {
-		if (value === UPSCALE_FAST_ID || value === UPSCALE_QUALITY_ID) {
-			if (upscaleModels.some((model) => model.id === value)) upscaleTierChoice = value;
-		}
+	function onUpscaleModelChange(value: string): void {
+		if (upscaleModels.some((model) => model.id === value)) studio.upscaleModelId = value;
 	}
 
 	function modelOptionLabel(model: Model | undefined): string {
@@ -373,38 +410,29 @@
 <div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
 	<Card.Root class="no-scrollbar flex min-h-0 flex-col overflow-y-auto">
 		<Card.Header class="gap-3">
-			<ToggleGroup.Root
-				type="single"
-				variant="outline"
-				spacing={0}
-				class="flex w-full"
-				value={panelMode}
-				onValueChange={(value) => value && onPanelModeChange(value)}
-			>
-				<ToggleGroup.Item value="generate" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
-					{t('app.gen.mode_generate')}
-				</ToggleGroup.Item>
-				<ToggleGroup.Item value="upscale" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
-					{t('app.gen.mode_upscale')}
-				</ToggleGroup.Item>
-			</ToggleGroup.Root>
 			<div class="flex flex-col gap-1.5">
 				<Card.Title>{panelTitle}</Card.Title>
 				<Card.Description>{panelSub}</Card.Description>
 			</div>
 		</Card.Header>
 		<Card.Content class="flex min-h-0 flex-1 flex-col">
-			{#if panelMode === 'generate'}
+			{#if mode !== 'upscale'}
 				{#if diffusionModels.length === 0}
-					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
+					<p class="text-muted-foreground text-sm leading-relaxed">
+						{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
+					</p>
 				{:else}
 					<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>
 						<div class="flex flex-col gap-2">
 							<Label for="gen-model">{t('app.gen.model')}</Label>
-							<Select.Root type="single" bind:value={studio.modelId}>
+							<Select.Root
+								type="single"
+								value={activeModelId}
+								onValueChange={(value) => value && onModelChange(value)}
+							>
 								<Select.Trigger id="gen-model" class="w-full" size="sm">
 									{modelOptionLabel(
-										diffusionModels.find((model) => model.id === studio.modelId) ??
+										diffusionModels.find((model) => model.id === activeModelId) ??
 											diffusionModels[0]
 									)}
 								</Select.Trigger>
@@ -417,6 +445,51 @@
 								</Select.Content>
 							</Select.Root>
 						</div>
+						{#if mode === 'image_to_image'}
+							<div class="flex flex-col gap-2">
+								<Label>{t('app.image_to_image.source')}</Label>
+								<div
+									class="border-border bg-muted/20 flex min-h-20 items-center gap-3 rounded-lg border border-dashed p-3"
+								>
+									{#if sourceAsset !== null}
+										<img
+											src={sourceAsset.thumbnail_url ?? sourceAsset.url}
+											alt={t('app.image_to_image.source')}
+											class="size-14 rounded-md object-cover"
+										/>
+										<p class="min-w-0 flex-1 truncate text-sm">{t('app.image_to_image.ready')}</p>
+									{:else}
+										<p class="text-muted-foreground flex-1 text-sm">
+											{t('app.image_to_image.source_empty')}
+										</p>
+									{/if}
+								</div>
+								<div class="flex flex-col gap-2">
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										disabled={shown === null || shown.assets.length === 0}
+										onclick={() => {
+											if (shown !== null && shown.assets.length > 0) {
+												sourceAssetId = shown.assets[0].id;
+											}
+										}}
+									>
+										{t('app.image_to_image.use_selected')}
+									</Button>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										disabled={sourceAssetId === null}
+										onclick={() => (sourceAssetId = null)}
+									>
+										{t('app.image_to_image.clear')}
+									</Button>
+								</div>
+							</div>
+						{/if}
 						<div class="flex flex-col gap-2">
 							<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
 							<textarea
@@ -487,10 +560,26 @@
 									maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
 									valueLabel={formatParamValue(guidanceValue, guidanceRange)}
 								/>
+								{#if mode === 'image_to_image'}
+									<ParamSliderField
+										id="gen-strength"
+										label={t('app.image_to_image.strength')}
+										bind:norm={strengthNorm}
+										minLabel={formatParamValue(strengthRange.min, strengthRange)}
+										maxLabel={formatParamValue(strengthRange.max, strengthRange)}
+										valueLabel={formatParamValue(strengthValue, strengthRange)}
+									/>
+								{/if}
 							</div>
 						{/if}
-						<Button type="submit" disabled={studio.prompt.trim() === ''}>
-							{t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
+						<Button
+							type="submit"
+							disabled={studio.prompt.trim() === '' ||
+								(mode === 'image_to_image' && sourceAssetId === null)}
+						>
+							{mode === 'image_to_image'
+								? t('app.image_to_image.generate')
+								: t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
 						</Button>
 						<div class="border-border flex flex-col gap-2 border-t pt-4">
 							<div class="grid grid-cols-2 gap-2">
@@ -525,7 +614,7 @@
 									onclick={editShown}
 								>
 									<PencilIcon />
-									{t('app.gen.edit')}
+									{t('app.image_to_image.use_action')}
 								</Button>
 								<Button
 									type="button"
@@ -554,7 +643,9 @@
 					</form>
 				{/if}
 			{:else if upscaleModels.length === 0}
-				<p class="text-muted-foreground text-sm leading-relaxed">{t('app.upscale.no_models')}</p>
+				<p class="text-muted-foreground text-sm leading-relaxed">
+					{compatibleModelsRegistered ? t('app.models.none_available') : t('app.upscale.no_models')}
+				</p>
 			{:else if !canUpscale}
 				<div class="flex min-h-0 flex-1 flex-col gap-4">
 					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.upscale.need_image')}</p>
@@ -580,34 +671,23 @@
 						</p>
 					</div>
 					<div class="flex flex-col gap-2">
-						<Label>{t('app.gen.upscaler')}</Label>
-						{#if hasUpscaleFast || hasUpscaleQuality}
-							<ToggleGroup.Root
-								type="single"
-								variant="outline"
-								spacing={0}
-								class="flex w-full"
-								value={upscaleModelId}
-								onValueChange={(value) => value && onUpscaleTierChange(value)}
-							>
-								<ToggleGroup.Item
-									value={UPSCALE_FAST_ID}
-									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
-									disabled={!hasUpscaleFast}
-								>
-									{t('app.gen.upscale_fast')}
-								</ToggleGroup.Item>
-								<ToggleGroup.Item
-									value={UPSCALE_QUALITY_ID}
-									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
-									disabled={!hasUpscaleQuality}
-								>
-									{t('app.gen.upscale_quality')}
-								</ToggleGroup.Item>
-							</ToggleGroup.Root>
-						{:else}
-							<p class="text-sm">{upscaleModel?.name ?? upscaleModelId}</p>
-						{/if}
+						<Label for="upscale-model">{t('app.gen.upscaler')}</Label>
+						<Select.Root
+							type="single"
+							value={upscaleModelId}
+							onValueChange={(value) => value && onUpscaleModelChange(value)}
+						>
+							<Select.Trigger id="upscale-model" class="w-full" size="sm">
+								{modelOptionLabel(upscaleModel)}
+							</Select.Trigger>
+							<Select.Content>
+								<Select.Group>
+									{#each upscaleModels as model (model.id)}
+										<Select.Item value={model.id} label={modelOptionLabel(model)} />
+									{/each}
+								</Select.Group>
+							</Select.Content>
+						</Select.Root>
 						{#if upscaleChoiceLabel != null}
 							<p class="text-muted-foreground text-xs leading-relaxed">{upscaleChoiceLabel}</p>
 						{/if}
