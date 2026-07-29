@@ -152,3 +152,48 @@ def test_encode_latent_sample_ignores_sds_generator() -> None:
     gen = torch.Generator().manual_seed(0)
     DiffusionAdapter.encode_latent(adapter, image, generator=gen)
     assert calls and calls[0]["args"] == () and calls[0]["kwargs"] == {}
+
+
+def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
+    from worker.illusion_campaign import (
+        WINDOW_SEEDS,
+        build_window_60h,
+        _window_pair_ids,
+    )
+
+    entries = build_window_60h()
+    pair_ids = _window_pair_ids()
+
+    # The curated issue #138 corpus is actually in the sweep, not just the five
+    # reference pairs the earlier plan sampled.
+    assert "stag_oak" in pair_ids
+    assert "penguin_bat" in pair_ids
+    assert len(pair_ids) >= 20
+
+    # The rig check is first, on the one pair whose good outcome is known.
+    assert entries[0].profile == "anchor"
+    assert entries[0].pair_id == "giraffe_penguin_calibration"
+    assert entries[0].seed == WINDOW_SEEDS[0]
+
+    # Breadth-first: every pair gets its first seed before any gets its second,
+    # so a window that ends early still answers which pairs work at all.
+    sweep = [e for e in entries if e.profile in ("anchor", "sweep")]
+    first_block = sweep[: len(pair_ids)]
+    assert {e.pair_id for e in first_block} == set(pair_ids)
+    assert {e.seed for e in first_block} == {WINDOW_SEEDS[0]}
+
+    # No pair/seed is planned twice, and the anchor is not duplicated.
+    keys = [(e.pair_id, e.seed, e.profile) for e in entries]
+    assert len(keys) == len(set(keys))
+    sweep_keys = [(e.pair_id, e.seed) for e in sweep]
+    assert len(sweep_keys) == len(set(sweep_keys))
+
+    # The full-budget control exists and is scheduled last.
+    controls = [e for e in entries if e.profile == "budget_control_10k"]
+    assert controls
+    assert [e.priority for e in controls] == sorted(e.priority for e in entries)[-len(controls) :]
+    assert "--sds-steps" in controls[0].flags
+    assert controls[0].flags[controls[0].flags.index("--sds-steps") + 1] == "10000"
+
+    hashes = [e.spec_hash() for e in entries]
+    assert len(hashes) == len(set(hashes))

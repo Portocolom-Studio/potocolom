@@ -170,6 +170,131 @@ REFERENCE_CONTROL_PAIR_ID = "locomotive_eye_control"
 REFERENCE_SEEDS = (11, 23, 37, 53, 71, 89)
 
 
+# --- The 60-hour window matrix -------------------------------------------
+#
+# Every value below is a decision taken from the pre-window measurements under
+# .local/illusion-reliability/campaigns/prewindow/. Changing one changes the
+# plan SHA, which is the point: the plan file IS the record of the decision.
+#
+# The window asks how often the recipe produces a usable illusion, so coverage
+# is the deliverable. That is why the budget is set from where quality
+# saturates rather than from the paper's figure, and why the corpus is wide.
+WINDOW_SDS_STEPS = 3_000
+WINDOW_DREAM_ROUNDS = 8
+WINDOW_STYLE = "none"
+WINDOW_PRIME_RESOLUTION: int | None = None
+WINDOW_SEEDS = (11, 23, 37, 53, 71, 89)
+WINDOW_CELL_ESTIMATE_S = 1_200.0
+# A budget control: the same pairs and seeds at the paper's full 10,000 steps,
+# to show on this evidence that the shorter budget gave nothing away. Runs last,
+# because the pre-window ladder already answered it once.
+WINDOW_CONTROL_SDS_STEPS = 10_000
+WINDOW_CONTROL_PAIRS = ("crown_octopus", "stag_oak")
+WINDOW_CONTROL_SEEDS = (11, 23)
+WINDOW_CONTROL_ESTIMATE_S = 3_500.0
+# Proven legacy keepers, carried in so the sweep has a pair whose outcome is
+# already known from human review, and the incompatible negative control.
+WINDOW_LEGACY_CONTROL_PAIR_IDS = ("dog_sloth", "mountain_valley")
+
+
+def _window_pair_ids() -> tuple[str, ...]:
+    """Every pair the window sweeps, widest axis first.
+
+    docs/illusions.md calls prompts "the biggest lever by far", and issue #138
+    already curated a pairing-rule corpus that no GPU cell has ever run. The
+    earlier plan sampled five pairs; this samples the axis.
+    """
+    from worker.illusion_experiment import PAIRING_RULES_PAIRS
+
+    return (
+        REFERENCE_CALIBRATION_PAIR_ID,
+        *(pair.pair_id for pair in PAIRING_RULES_PAIRS),
+        *REFERENCE_COMPATIBLE_PAIR_IDS,
+        *WINDOW_LEGACY_CONTROL_PAIR_IDS,
+        REFERENCE_CONTROL_PAIR_ID,
+    )
+
+
+def _window_flags(sds_steps: int) -> list[str]:
+    flags = [
+        "--experimental-recipe",
+        "author_reference",
+        "--collect-diagnostics",
+        "--skip-clip",
+        "--sds-steps",
+        str(sds_steps),
+        "--dream-rounds",
+        str(WINDOW_DREAM_ROUNDS),
+    ]
+    if WINDOW_PRIME_RESOLUTION is not None:
+        flags += ["--prime-resolution", str(WINDOW_PRIME_RESOLUTION)]
+    return flags
+
+
+def build_window_60h() -> list[CampaignEntry]:
+    """Breadth-first yield sweep for the unattended 60-hour window.
+
+    Ordering is breadth-first by seed so the matrix degrades gracefully: every
+    pair has one seed before any pair has two. A window that ends early still
+    answers "which pairs work at all" rather than "these three pairs work".
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    pair_ids = _window_pair_ids()
+
+    # The rig check runs first: the known-good pair at the window's own
+    # settings. If the short budget or the chosen wording broke what already
+    # worked, it shows here in one cell rather than in fifty.
+    entries.append(
+        _entry(
+            tier="window60h",
+            profile="anchor",
+            pair_id=REFERENCE_CALIBRATION_PAIR_ID,
+            seed=WINDOW_SEEDS[0],
+            flags=_window_flags(WINDOW_SDS_STEPS),
+            priority=priority,
+            style=WINDOW_STYLE,
+            estimate_s=WINDOW_CELL_ESTIMATE_S,
+        )
+    )
+    priority += 1
+
+    for seed in WINDOW_SEEDS:
+        for pair_id in pair_ids:
+            if pair_id == REFERENCE_CALIBRATION_PAIR_ID and seed == WINDOW_SEEDS[0]:
+                continue  # already covered by the anchor cell
+            entries.append(
+                _entry(
+                    tier="window60h",
+                    profile="sweep",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window_flags(WINDOW_SDS_STEPS),
+                    priority=priority,
+                    style=WINDOW_STYLE,
+                    estimate_s=WINDOW_CELL_ESTIMATE_S,
+                )
+            )
+            priority += 1
+
+    for seed in WINDOW_CONTROL_SEEDS:
+        for pair_id in WINDOW_CONTROL_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window60h",
+                    profile="budget_control_10k",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window_flags(WINDOW_CONTROL_SDS_STEPS),
+                    priority=priority,
+                    style=WINDOW_STYLE,
+                    estimate_s=WINDOW_CONTROL_ESTIMATE_S,
+                )
+            )
+            priority += 1
+    return entries
+
+
 def build_reference_author_60h() -> list[CampaignEntry]:
     """36-cell breadth-first author-recipe matrix for the unattended window."""
     pair_seeds: dict[str, tuple[int, ...]] = {
@@ -721,6 +846,8 @@ def build_phase_plan(
         entries = build_away_tiers(_finalists(finalists))
     elif phase == "reference60h":
         entries = build_reference_author_60h()
+    elif phase == "window60h":
+        entries = build_window_60h()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -735,7 +862,7 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "early-dream-backup")
+            if phase in ("reference60h", "window60h", "early-dream-backup")
             else _blocked_rotated(entries)
         ),
     )
@@ -806,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
     plan_cmd.add_argument(
         "--phase",
-        choices=("wave1", "wave2", "away", "reference60h", "early-dream-backup"),
+        choices=("wave1", "wave2", "away", "reference60h", "window60h", "early-dream-backup"),
         required=True,
     )
     plan_cmd.add_argument("--base-selection", default="legacy")
