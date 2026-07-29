@@ -178,21 +178,45 @@ REFERENCE_SEEDS = (11, 23, 37, 53, 71, 89)
 # plan SHA, which is the point: the plan file IS the record of the decision.
 #
 # The window asks how often the recipe produces a usable illusion, so coverage
-# is the deliverable. That is why the budget is set from where quality
-# saturates rather than from the paper's figure, and why the corpus is wide.
-WINDOW_SDS_STEPS = 3_000
+# is the deliverable. The corpus is therefore wide, and the per-cell budget is
+# set from where quality stopped improving on a pair nobody had run.
+#
+# A3 measured that it does not stop at 2,000. On lighthouse_goblet, quality
+# improved monotonically through 5,000 steps. The calibration smoke saturating
+# by 2,000 was the paper's own easiest pair, not the general case, so an earlier
+# plan to cut to 3,000 would have under-baked every cell and understated yield
+# by blaming pairs for the schedule. 5,000 steps at 4 seeds and 5,000 at 6 seeds
+# cost the same ~50 GPU-hours; well-baked cells win because a thin cell answers
+# a different question.
+WINDOW_SDS_STEPS = 5_000
 WINDOW_DREAM_ROUNDS = 8
-WINDOW_STYLE = "none"
+# A2: the only wording with a human-approved cell behind it, and the only one
+# that delivered its own medium on every pair tried. Monochrome also removes the
+# colour agreement the two flip views would otherwise have to negotiate.
+WINDOW_STYLE = "reference_sketch"
+# A4: 512px native primes cost 3.3x total (2665s against 810s, Dream alone
+# 6.8x) for no visible gain. The paper's 256px network stands.
 WINDOW_PRIME_RESOLUTION: int | None = None
-WINDOW_SEEDS = (11, 23, 37, 53, 71, 89)
-WINDOW_CELL_ESTIMATE_S = 1_200.0
-# A budget control: the same pairs and seeds at the paper's full 10,000 steps,
-# to show on this evidence that the shorter budget gave nothing away. Runs last,
-# because the pre-window ladder already answered it once.
+# A5: joint Dream Targets, which the recipe pinned off. From an identical neon
+# SDS state, joint targets returned a legible monochrome crown and octopus where
+# independent targets returned mush, for 807s against 810s. This is issue #134's
+# mechanism measured: independent per-view targets fight over shared pixels.
+WINDOW_DREAM_JOINT = True
+WINDOW_SEEDS = (11, 23, 37, 53)
+# A3 measured 1750s for a 5,000-step cell with eight Dream rounds; A5 showed
+# joint Dream adds nothing. Rounded up so the deadline reserve stays honest.
+WINDOW_CELL_ESTIMATE_S = 1_800.0
+# A budget control at the paper's full 10,000 steps, to show on this window's own
+# evidence whether 5,000 left anything on the table. Runs last: the pre-window
+# ladder already answered it once, on one pair.
 WINDOW_CONTROL_SDS_STEPS = 10_000
 WINDOW_CONTROL_PAIRS = ("crown_octopus", "stag_oak")
-WINDOW_CONTROL_SEEDS = (11, 23)
-WINDOW_CONTROL_ESTIMATE_S = 3_500.0
+WINDOW_CONTROL_SEEDS = (11,)
+WINDOW_CONTROL_ESTIMATE_S = 3_450.0
+# A joint-Dream control: the same cells with joint targets off, so A5's n=1
+# result is refreshed at window scale instead of being taken on faith.
+WINDOW_JOINT_CONTROL_PAIRS = ("crown_octopus", "lighthouse_goblet")
+WINDOW_JOINT_CONTROL_SEEDS = (11,)
 # Proven legacy keepers, carried in so the sweep has a pair whose outcome is
 # already known from human review, and the incompatible negative control.
 WINDOW_LEGACY_CONTROL_PAIR_IDS = ("dog_sloth", "mountain_valley")
@@ -216,7 +240,7 @@ def _window_pair_ids() -> tuple[str, ...]:
     )
 
 
-def _window_flags(sds_steps: int) -> list[str]:
+def _window_flags(sds_steps: int, *, dream_joint: bool = WINDOW_DREAM_JOINT) -> list[str]:
     flags = [
         "--experimental-recipe",
         "author_reference",
@@ -227,6 +251,8 @@ def _window_flags(sds_steps: int) -> list[str]:
         "--dream-rounds",
         str(WINDOW_DREAM_ROUNDS),
     ]
+    if dream_joint:
+        flags.append("--dream-joint")
     if WINDOW_PRIME_RESOLUTION is not None:
         flags += ["--prime-resolution", str(WINDOW_PRIME_RESOLUTION)]
     return flags
@@ -271,6 +297,24 @@ def build_window_60h() -> list[CampaignEntry]:
                     pair_id=pair_id,
                     seed=seed,
                     flags=_window_flags(WINDOW_SDS_STEPS),
+                    priority=priority,
+                    style=WINDOW_STYLE,
+                    estimate_s=WINDOW_CELL_ESTIMATE_S,
+                )
+            )
+            priority += 1
+
+    # Controls run last. Each duplicates a sweep cell's pair and seed with one
+    # thing changed, so the comparison is direct rather than across-corpus.
+    for seed in WINDOW_JOINT_CONTROL_SEEDS:
+        for pair_id in WINDOW_JOINT_CONTROL_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window60h",
+                    profile="independent_dream_control",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window_flags(WINDOW_SDS_STEPS, dream_joint=False),
                     priority=priority,
                     style=WINDOW_STYLE,
                     estimate_s=WINDOW_CELL_ESTIMATE_S,

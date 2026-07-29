@@ -262,3 +262,40 @@ def test_plan_pins_model_snapshots_so_offline_cells_can_load(tmp_path) -> None:
     # actually open with outgoing traffic disabled.
     for recorded in (plan.model_id, plan.dream_model_id):
         assert Path(recorded).is_dir(), recorded
+
+
+def test_window_plan_reflects_the_pre_window_measurements() -> None:
+    """The constants encode measured decisions; guard the ones that cost money."""
+    from worker.illusion_campaign import (
+        WINDOW_CELL_ESTIMATE_S,
+        WINDOW_SDS_STEPS,
+        build_window_60h,
+    )
+
+    entries = build_window_60h()
+
+    # A5: joint Dream rescued a failing cell at zero cost, so the sweep uses it.
+    sweep = [e for e in entries if e.profile in ("anchor", "sweep")]
+    assert all("--dream-joint" in e.flags for e in sweep)
+    # ...and a control keeps it off so that n=1 result gets refreshed at scale.
+    independent = [e for e in entries if e.profile == "independent_dream_control"]
+    assert independent
+    assert all("--dream-joint" not in e.flags for e in independent)
+    # Each control duplicates a sweep cell's pair and seed, so it is comparable.
+    sweep_keys = {(e.pair_id, e.seed) for e in sweep}
+    assert all((e.pair_id, e.seed) in sweep_keys for e in independent)
+
+    # A3: quality still improved at 5000, so the budget is not cut below it.
+    assert WINDOW_SDS_STEPS >= 5_000
+    assert all(e.flags[e.flags.index("--sds-steps") + 1] == str(WINDOW_SDS_STEPS) for e in sweep)
+
+    # A2: the wording with a human-approved cell behind it.
+    assert all(e.style == "reference_sketch" for e in entries)
+
+    # A4: 512px primes cost 3.3x for no gain, so no cell asks for them.
+    assert all("--prime-resolution" not in e.flags for e in entries)
+
+    # The whole matrix must fit the 58h unattended deadline with real margin.
+    total = sum(e.estimate_s for e in entries)
+    assert total < 55 * 3600, f"{total / 3600:.1f}h leaves too little slack"
+    assert WINDOW_CELL_ESTIMATE_S >= 1_750, "must not undercut the measured cell time"
