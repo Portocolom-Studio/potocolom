@@ -123,6 +123,12 @@ def test_generation_download_names_match_master_extensions_and_positions():
                     parameters_schema=MANIFEST["parameters"],
                     min_vram_gb=0,
                 ))
+            # The models table is deliberately not truncated, so an existing row
+            # can hide this model-to-job ordering requirement. Flush the model
+            # before the job on a pristine database, then flush the job before its
+            # asset because jobs.source_asset_id and assets.job_id form a cycle
+            # that SQLAlchemy cannot order.
+            await session.flush()
             session.add(Job(
                 id=job_id,
                 user_id=db.local_user_id,
@@ -131,7 +137,6 @@ def test_generation_download_names_match_master_extensions_and_positions():
                 state="succeeded",
                 created_at=created_at,
             ))
-            # Flush the job first because jobs and assets have circular foreign keys.
             await session.flush()
             session.add(Asset(
                 user_id=db.local_user_id,
@@ -366,6 +371,8 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
                 parameters_schema=MANIFEST["parameters"],
                 min_vram_gb=0,
             ))
+        # Keep the model-to-job foreign key order explicit on a pristine database.
+        await session.flush()
         session.add(Job(
             id=queued_id,
             user_id=db.local_user_id,
