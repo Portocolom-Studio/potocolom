@@ -1,7 +1,11 @@
 <script lang="ts">
 	import '../app.css';
+	import { onMount } from 'svelte';
+	import { initializeLocale } from '$lib/i18n.svelte';
 
 	let { children } = $props();
+
+	onMount(initializeLocale);
 </script>
 
 <svelte:head>

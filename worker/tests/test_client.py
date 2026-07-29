@@ -41,6 +41,7 @@ def test_latest_input_wins():
 
     runner = asyncio.run(scenario())
     assert runner.dropped == 2
+    assert not hasattr(runner, "last_output")
     assert len(socket.sent) == 1
     assert socket.sent[0][FRAME_HEADER_BYTES:] == b"third"
 
@@ -94,6 +95,8 @@ def test_hello_carries_manifests():
     assert manifest["id"] == "sd-sim"
     assert "realtime" in manifest["capabilities"]
     assert "source" not in manifest  # weight locations stay worker side
+    assert hello["device"] == "cpu"
+    assert hello["memory_mode"] == "auto"
 
 
 def test_rejected_registration_raises_cleanly():
@@ -116,7 +119,7 @@ def test_rejected_registration_raises_cleanly():
 class FakeUpload:
     """Stands in for httpx.AsyncClient; records the PUT it receives."""
 
-    puts: list[tuple[str, bytes]] = []
+    puts: list[tuple[str, bytes, dict[str, str] | None]] = []
     gets: list[str] = []
     get_body = b"input-webp"
     fail = False
@@ -145,7 +148,7 @@ class FakeUpload:
         return Response()
 
     async def put(self, url, content=b"", headers=None):
-        FakeUpload.puts.append((url, content))
+        FakeUpload.puts.append((url, content, headers))
 
         class Response:
             @staticmethod
@@ -164,8 +167,14 @@ def dispatch_control():
         "job_id": "j-1",
         "model_id": "sd-sim",
         "params": {"prompt": "a test"},
-        "upload": {"url": "http://api/api/v1/files/u/j-1.webp", "headers": {}},
-        "thumb_upload": {"url": "http://api/api/v1/files/u/j-1-thumb.webp", "headers": {}},
+        "upload": {
+            "url": "http://api/api/v1/files/u/j-1.png",
+            "headers": {"Content-Type": "image/png"},
+        },
+        "thumb_upload": {
+            "url": "http://api/api/v1/files/u/j-1-thumb.webp",
+            "headers": {"Content-Type": "image/webp"},
+        },
     }
 
 
@@ -178,11 +187,13 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, dispatch_control()))
 
     assert len(FakeUpload.puts) == 2
-    url, content = FakeUpload.puts[0]
-    assert url.endswith("j-1.webp")
-    assert content[:4] == b"RIFF"  # WebP container
-    thumb_url, thumb_content = FakeUpload.puts[1]
+    url, content, headers = FakeUpload.puts[0]
+    assert url.endswith("j-1.png")
+    assert headers == {"Content-Type": "image/png"}
+    assert content[:8] == b"\x89PNG\r\n\x1a\n"
+    thumb_url, thumb_content, thumb_headers = FakeUpload.puts[1]
     assert thumb_url.endswith("j-1-thumb.webp")
+    assert thumb_headers == {"Content-Type": "image/webp"}
     assert thumb_content[:4] == b"RIFF"
     reports = [json.loads(m) for m in socket.sent]
     types = [r["type"] for r in reports]
@@ -194,6 +205,9 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     assert done["input_fetch_ms"] >= 0
     assert done["load_ms"] >= 0
     assert done["postprocess_ms"] >= 0
+    assert done["duration_ms"] >= 0
+    assert done["category"] == "other"
+    assert "category_score" not in done
     assert done["has_thumbnail"] is True
 
 

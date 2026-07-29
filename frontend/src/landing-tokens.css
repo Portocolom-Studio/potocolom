@@ -1,0 +1,118 @@
+/* Shared chrome tokens for the image-first landing sketches. The images carry
+   the page, so these only style the chrome that floats over them. */
+
+.landing-surface {
+	--k-ink: oklch(0.98 0.005 250);
+	--k-muted: oklch(0.72 0.015 255);
+	--k-paper: oklch(0.08 0.012 265);
+	--k-veil: oklch(0.06 0.01 265 / 62%);
+	--k-panel: oklch(0.14 0.018 265 / 92%);
+	--k-line: oklch(1 0 0 / 16%);
+	--k-accent: oklch(0.62 0.2 255);
+	--k-accent-ink: oklch(0.98 0.005 255);
+	--k-display: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+	--k-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', monospace;
+	--k-ease: cubic-bezier(0.16, 1, 0.3, 1);
+	--k-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	color: var(--k-ink);
+	background: var(--k-paper);
+	font-family: var(--k-display);
+}
+
+:root[data-landing-mode='light'] .landing-surface {
+	--k-ink: oklch(0.16 0.02 262);
+	--k-muted: oklch(0.44 0.02 258);
+	--k-paper: oklch(0.97 0.004 255);
+	--k-veil: oklch(0.99 0.004 255 / 55%);
+	--k-panel: oklch(1 0 0 / 92%);
+	--k-line: oklch(0.2 0.02 262 / 18%);
+	--k-accent: oklch(0.52 0.22 258);
+	--k-accent-ink: oklch(0.99 0.003 255);
+	--latent-scheme: light;
+}
+
+.landing-surface *,
+.landing-surface *::before,
+.landing-surface *::after {
+	box-sizing: border-box;
+}
+
+.landing-surface h1,
+.landing-surface h2,
+.landing-surface h3 {
+	margin: 0;
+	font-weight: 800;
+	font-style: normal;
+	letter-spacing: -0.045em;
+	overflow-wrap: anywhere;
+}
+
+.landing-surface p {
+	margin: 0;
+	line-height: 1.6;
+}
+
+.landing-surface a {
+	color: inherit;
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.landing-surface a:focus-visible,
+.landing-surface button:focus-visible {
+	outline: 2px solid var(--k-accent);
+	outline-offset: 3px;
+}
+
+/* One pill system across every sketch. */
+.landing-surface .pill {
+	display: inline-flex;
+	min-height: 2.9rem;
+	align-items: center;
+	justify-content: center;
+	padding-inline: 1.4rem;
+	border: 1px solid transparent;
+	border-radius: 999px;
+	font-size: 0.95rem;
+	font-weight: 700;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: transform 140ms var(--k-ease);
+}
+
+.landing-surface .pill-solid {
+	background: var(--k-ink);
+	color: var(--k-paper);
+}
+
+.landing-surface .pill-accent {
+	background: var(--k-accent);
+	color: var(--k-accent-ink);
+}
+
+.landing-surface .pill-ghost {
+	border-color: var(--k-line);
+	background: var(--k-panel);
+	color: var(--k-ink);
+	backdrop-filter: blur(12px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+	.landing-surface .pill:hover {
+		transform: translateY(-0.1rem);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.landing-surface *,
+	.landing-surface *::before,
+	.landing-surface *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+
+	.landing-surface .pill:hover {
+		transform: none;
+	}
+}

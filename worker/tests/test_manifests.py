@@ -11,6 +11,7 @@ SD_TURBO = {
     "name": "SD Turbo",
     "capabilities": ["text_to_image", "realtime"],
     "min_vram_gb": 8,
+    "prompt_token_limit": 77,
     "source": "stabilityai/sd-turbo",
     "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
 }
@@ -25,6 +26,7 @@ def test_load_manifests_and_wire_shape(tmp_path):
     assert manifests[0].quantize == "text_encoder_3:int8"
     wire = manifests[0].wire()
     assert wire["capabilities"] == ["text_to_image", "realtime"]
+    assert wire["prompt_token_limit"] == 77  # the studio warning reads this
     assert "source" not in wire  # weight locations stay worker side
     assert "quantize" not in wire
 
@@ -105,6 +107,19 @@ def test_shipped_manifests_load():
     assert fast.source.endswith("realesr-general-x4v3.pth")
     assert fast.min_vram_gb == 1
     assert fast.parameters["properties"]["factor"]["enum"] == [2, 4]
+
+
+def test_every_prompting_manifest_declares_its_token_window():
+    """A missing window silences the studio warning (issue #148), so a new
+    diffusion manifest that forgets it should fail here rather than ship a
+    prompt whose tail is dropped with nothing said. Upscalers take no prompt.
+    """
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    for manifest in load_manifests(str(models_dir)):
+        if "upscale" in manifest.capabilities:
+            assert manifest.prompt_token_limit == 0, manifest.id
+        else:
+            assert manifest.prompt_token_limit > 0, manifest.id
 
 
 def test_upscale_cannot_mix_with_diffusion(tmp_path):

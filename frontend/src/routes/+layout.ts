@@ -1,2 +1,2 @@
-// The application is a client-rendered SPA (docs/architecture.md).
-export const ssr = false;
+// Render known routes at build time so crawlers receive complete documents.
+export const prerender = true;

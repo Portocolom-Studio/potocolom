@@ -1,16 +1,29 @@
-"""GPU time estimates from curated benchmark baselines (issue #47)."""
+"""GPU time estimates from shipped and per-install observed timings."""
 
 from __future__ import annotations
 
 import json
 import logging
+import statistics
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func, select
+
+from app import db
+from app.tables import Job
+
 logger = logging.getLogger("potocolom.estimates")
 
 TIMINGS_PATH = Path(__file__).with_name("model_timings.json")
+OBSERVED_SAMPLE_THRESHOLD = 5
+OBSERVED_SAMPLE_WINDOW = 50
+# Lifetime history would make the five-minute refresh scan more rows every week.
+OBSERVED_SAMPLE_MAX_AGE = timedelta(days=30)
+
+_observed_scales: dict[str, float] = {}
 
 
 @lru_cache(maxsize=1)
@@ -75,12 +88,9 @@ def schema_defaults(parameters: dict[str, Any]) -> dict[str, Any]:
     return defaults
 
 
-def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
-    """Estimate GPU milliseconds for model_id at the given generation params."""
-    baseline = _load_timings().get(model_id)
-    if baseline is None:
-        return None
-
+def _estimate_from_baseline(
+    baseline: dict[str, Any], params: dict[str, Any]
+) -> int | None:
     factors = baseline.get("factors")
     if factors is not None:
         if "factor" not in params:
@@ -108,3 +118,90 @@ def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
     step_scale = steps / baseline["steps"]
     pixel_scale = (width * height) / (baseline["width"] * baseline["height"])
     return max(1, round(baseline["gpu_ms"] * step_scale * pixel_scale))
+
+
+def _params_with_timing_defaults(
+    baseline: dict[str, Any], params: dict[str, Any]
+) -> dict[str, Any]:
+    if "factors" in baseline:
+        return params
+    return {
+        "steps": baseline["steps"],
+        "width": baseline["width"],
+        "height": baseline["height"],
+        **params,
+    }
+
+
+def _derive_observed_scales(
+    rows: list[tuple[str, dict[str, Any], int]]
+) -> dict[str, float]:
+    samples: dict[str, list[float]] = {}
+    shipped = _load_timings()
+    for model_id, params, gpu_ms in rows:
+        baseline = shipped.get(model_id)
+        if baseline is None or gpu_ms <= 0:
+            continue
+        expected = _estimate_from_baseline(
+            baseline, _params_with_timing_defaults(baseline, params)
+        )
+        if expected is not None:
+            samples.setdefault(model_id, []).append(gpu_ms / expected)
+    return {
+        model_id: float(statistics.median(values))
+        for model_id, values in samples.items()
+        if len(values) >= OBSERVED_SAMPLE_THRESHOLD
+    }
+
+
+async def refresh_observed_timings() -> None:
+    """Refresh the in-memory per-install timing cache from recent jobs."""
+    global _observed_scales
+    if db.session_factory is None:
+        _observed_scales = {}
+        return
+    recent_rank = func.row_number().over(
+        partition_by=Job.model_id,
+        order_by=(Job.finished_at.desc(), Job.created_at.desc()),
+    ).label("recent_rank")
+    recent = (
+        select(Job.model_id, Job.params, Job.gpu_ms, recent_rank)
+        .where(
+            Job.state == "succeeded",
+            Job.gpu_ms > 0,
+            # Ordering leads with finished_at, so a succeeded row without one
+            # cannot be placed and would defeat the partial index.
+            Job.finished_at.is_not(None),
+            # Bounds the rows the window has to rank: without this the refresh
+            # reads the whole of an install's history every five minutes, and a
+            # year-old timing describes hardware the install may no longer have.
+            Job.finished_at >= datetime.now(timezone.utc) - OBSERVED_SAMPLE_MAX_AGE,
+        )
+        .subquery()
+    )
+    try:
+        async with db.session_factory() as session:
+            result = await session.execute(
+                select(recent.c.model_id, recent.c.params, recent.c.gpu_ms).where(
+                    recent.c.recent_rank <= OBSERVED_SAMPLE_WINDOW
+                )
+            )
+            rows = [
+                (model_id, params, gpu_ms)
+                for model_id, params, gpu_ms in result.all()
+            ]
+        _observed_scales = _derive_observed_scales(rows)
+    except Exception as error:
+        _observed_scales = {}
+        logger.warning("observed model timings unavailable; using shipped timings: %s", error)
+
+
+def estimate_gpu_ms(model_id: str, params: dict[str, Any]) -> int | None:
+    """Estimate GPU milliseconds for model_id at the given generation params."""
+    baseline = _load_timings().get(model_id)
+    if baseline is None:
+        return None
+    shipped = _estimate_from_baseline(baseline, params)
+    if shipped is None:
+        return None
+    return max(1, round(shipped * _observed_scales.get(model_id, 1.0)))

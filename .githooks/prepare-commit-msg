@@ -1,0 +1,10 @@
+#!/bin/sh
+# Appends the DCO sign-off CONTRIBUTING.md requires, unless one is already
+# there. Enable it in your clone with `make dco-hook`.
+NAME=$(git config user.name)
+EMAIL=$(git config user.email)
+if [ -z "$NAME" ] || [ -z "$EMAIL" ]; then
+	echo "prepare-commit-msg: set git config user.name and user.email for the DCO sign-off" >&2
+	exit 1
+fi
+grep -qs "^Signed-off-by: " "$1" || printf "\nSigned-off-by: %s <%s>\n" "$NAME" "$EMAIL" >> "$1"

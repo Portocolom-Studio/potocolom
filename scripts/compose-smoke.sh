@@ -42,6 +42,14 @@ if [[ "$app_code" != "200" ]]; then
   echo "expected /app to return 200, got ${app_code}" >&2
   exit 1
 fi
+if ! curl -sfD - -o /dev/null "${base}/app" \
+  | tr -d '\r' \
+  | awk 'BEGIN { found = 0 }
+         tolower($0) ~ /^cache-control:/ && tolower($0) ~ /no-cache/ { found = 1 }
+         END { exit !found }'; then
+  echo "expected /app to return Cache-Control: no-cache" >&2
+  exit 1
+fi
 
 job_id=$(curl -sf -X POST "${base}/api/v1/generations" \
   -H 'Content-Type: application/json' \

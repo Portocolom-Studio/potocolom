@@ -5,9 +5,12 @@ rebuilt from these rows (docs/blueprint.md, Redis layout).
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, SmallInteger, Text, text
+from sqlalchemy import (
+    BigInteger, Date, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -54,6 +57,7 @@ class Job(Base):
         ForeignKey("assets.id", ondelete="SET NULL"))
     dispatched_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
+    starred_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -101,3 +105,111 @@ class GpuSampleRollup(Base):
     vram_used_pct_max: Mapped[int | None] = mapped_column(SmallInteger)
     temperature_mean: Mapped[float | None] = mapped_column(Float)
     power_mean: Mapped[float | None] = mapped_column(Float)
+
+
+class BenchmarkSession(Base):
+    __tablename__ = "benchmark_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # Who ran the suite, kept as provenance only; the history belongs to the install.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime]
+    target_vram_gb: Mapped[float | None] = mapped_column(Float)
+    prompt_count: Mapped[int]
+    models: Mapped[list] = mapped_column(JSONB)
+    variants_per_prompt: Mapped[int]
+    total_jobs: Mapped[int]
+    succeeded: Mapped[int]
+    failed: Mapped[int]
+
+
+class BenchmarkMeasurement(Base):
+    __tablename__ = "benchmark_measurements"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("benchmark_sessions.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(primary_key=True)
+    prompt_id: Mapped[int]
+    title: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    variant: Mapped[str] = mapped_column(Text)
+    cell_key: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict] = mapped_column(JSONB)
+    model_load_ms: Mapped[int | None]
+    state: Mapped[str] = mapped_column(Text)
+    gpu_ms: Mapped[int | None]
+    wall_s: Mapped[float | None] = mapped_column(Float)
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    job_id: Mapped[str | None] = mapped_column(Text)
+    file: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    tier: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    category_score: Mapped[float | None] = mapped_column(Float)
+    gpu_ms: Mapped[int | None]
+    duration_ms: Mapped[int | None]
+    frames: Mapped[int | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class UsageEventRollup(Base):
+    __tablename__ = "usage_event_rollups"
+    __table_args__ = (
+        Index(
+            "usage_event_rollups_key",
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            text("COALESCE(tier, '')"),
+            "category",
+            unique=True,
+        ),
+        Index("usage_event_rollups_bucket_date", "bucket_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    bucket_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    tier: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    event_count: Mapped[int] = mapped_column(BigInteger)
+    category_score_sum: Mapped[float | None] = mapped_column(Float)
+    category_score_count: Mapped[int] = mapped_column(BigInteger)
+    gpu_ms_sum: Mapped[int | None] = mapped_column(BigInteger)
+    duration_ms_sum: Mapped[int | None] = mapped_column(BigInteger)
+    frames_sum: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class TelemetryState(Base):
+    __tablename__ = "telemetry_state"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    install_id: Mapped[uuid.UUID] = mapped_column(default=uuid.uuid4)
+    last_report_day: Mapped[date | None] = mapped_column(Date)
+
+
+class WorkerIdentity(Base):
+    __tablename__ = "workers"
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device: Mapped[str | None] = mapped_column(Text)
+    memory_mode: Mapped[str | None] = mapped_column(Text)
+    last_seen: Mapped[datetime]

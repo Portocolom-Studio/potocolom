@@ -8,9 +8,14 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication is a session cookie (opaque token, httpOnly), set by the auth endpoints (issue #5). Until those ship, the prototype endpoints are unauthenticated and run as a single implicit local user (`AUTH_MODE=none`).
+- Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
+  `admin` covers everything including install configuration, `user` creates and mutates
+  its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
+  answer 403 for a `viewer`. The code calls the `user` tier "member" in
+  `require_role("member")`; the stored value is `user`.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
-- API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise.
+- API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise, and the API tolerates the previous release's SPA through additive-only response changes over the same release window.
 
 ## Endpoint catalogue
 
@@ -25,6 +30,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
+| POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
+| GET `/api/v1/benchmark/sessions/*` | implemented (#107) | list and read durable benchmark sessions, install-scoped |
+| POST `/api/v1/benchmark/sessions` | implemented (#107), `BENCHMARK_API`-gated | ingest a completed benchmark session |
 | GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
 | GET `/api/v1/metrics/gpu/history` | implemented (#98) | GPU telemetry over a time range (raw, or 5-minute rollups) |
 | GET, POST `/api/v1/benchmark/*` | implemented (#83), `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking |
@@ -42,7 +50,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |
 | DELETE `/api/v1/assets/{id}/share` | issue #17 | revoke the share token |
 | GET `/shared/{token}` | issue #17 | public share link target (CDN path in the cloud) |
-| GET `/api/v1/telemetry/preview` | issue #29 | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
+| GET `/api/v1/telemetry/preview` | implemented (#29) | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints
 
@@ -89,6 +97,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
     "name": "SDXL Base",
     "capabilities": ["text_to_image", "image_to_image"],
     "min_vram_gb": 10,
+    "prompt_token_limit": 77,
     "default": true,
     "benchmark_only": false,
     "estimated_gpu_ms_default": 4200,
@@ -104,7 +113,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 ]
 ```
 
-`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness.
+`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown.
 
 <!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
 
@@ -113,7 +122,8 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 `POST` queues a job; the job endpoint and the SSE stream report progress; the list endpoint is the history.
 
 ```
-POST /api/v1/generations     {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
+POST /api/v1/generations     user or admin; viewer receives 403
+                             {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
                              model_id is REQUIRED. For image_to_image or upscale, also pass
                              "source_asset_id"; upscale requires a source and is mutually
                              exclusive with the diffusion capabilities.
@@ -129,9 +139,25 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
                              carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
                              (This is the real history endpoint. There is no /api/v1/assets.)
+                             ?starred=true uses starred_at newest-first; false excludes favorites.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
+
+POST /api/v1/generations/{id}/star    user or admin; 204; idempotent, 403 for viewer,
+                                      404 for another user's or missing job
+DELETE /api/v1/generations/{id}/star  user or admin; 204; idempotent, 403 for viewer,
+                                      404 for another user's or missing job
 ```
+
+The studio opens at most four generation event streams. An `EventSource` error
+before or after the initial event moves that job to the 1.5-second history
+polling fallback; jobs above the stream cap share the same fallback refresh.
+After a streamed terminal event, the studio reads that generation once so its
+final row, timings and assets equal a history poll. A missed cross-replica event
+cannot leave a spinner running forever, by one of two paths: while every working
+job is streamed, each streamed row is reconciled on its own every 15 seconds;
+while any job is on the fallback, the 1.5-second history refresh already covers
+every row, streamed or not.
 
 Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
 
@@ -147,6 +173,18 @@ GET /api/v1/metrics/gpu/history        ?from&to&rollup - GPU samples over a rang
                                         (30d retention) for the requested window. See metrics.md.
 GET  /api/v1/benchmark/models          list benchmarkable models (BENCHMARK_API-gated)
 POST /api/v1/benchmark/{load|unload|run}   drive a model for a benchmark run
+POST /api/v1/benchmark/sessions       user or admin; BENCHMARK_API-gated completed
+                                        scripts/benchmark.py report;
+                                        201 {"id": "..."}; 404 when the benchmark API is disabled;
+                                        malformed reports return 422
+GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session summaries;
+                                        ?limit defaults to 50 and is capped at 200; pass the last
+                                        session id as ?cursor to read the next page
+GET  /api/v1/benchmark/sessions/{id}  200 full report in the existing results.json shape;
+                                        404 for a missing session
+GET  /api/v1/telemetry/preview        admin only; 403 for viewer or user; 200 exact previous
+                                        UTC day's anonymous aggregate payload;
+                                        503 when the database is unavailable
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
 GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)

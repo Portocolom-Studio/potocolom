@@ -3,6 +3,7 @@
   "name": "SDXL Turbo",
   "capabilities": ["text_to_image", "image_to_image", "realtime"],
   "min_vram_gb": 10,
+  "prompt_token_limit": 77,
   "source": "stabilityai/sdxl-turbo",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "license_id": "stability-ai-community",

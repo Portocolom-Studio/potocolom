@@ -5,7 +5,9 @@ services:
   postgres:
     image: postgres:16
     ports:
-      - "5432:5432"
+      # Override when 5432 is taken by another PostgreSQL on the host, and set
+      # DATABASE_URL to the same port for the backend and the tests.
+      - "${DEV_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: potocolom
       POSTGRES_PASSWORD: potocolom
@@ -13,7 +15,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # Redis, MinIO and Mailpit are cloud-profile substitutes: nothing in the
+  # native dev loop connects to them (storage_backend defaults to local, the
+  # job queue and relay are in-process). Opt in with --profile cloud-sim.
   redis:
+    profiles: ["cloud-sim"]
     image: redis:7
     ports:
       - "6379:6379"
@@ -21,6 +27,7 @@ services:
   # Host ports are offset from the defaults (9000, 9001, 1025, 8025) because
   # development machines often run other services on them.
   minio:
+    profiles: ["cloud-sim"]
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     ports:
@@ -33,6 +40,7 @@ services:
       - miniodata:/data
 
   mailpit:
+    profiles: ["cloud-sim"]
     # Pinned by digest: the image publishes no version tag label.
     image: axllent/mailpit@sha256:3bd7c2f2696deb35a4780d152b404dceec99cb041b942c0877b3b22384714f85
     ports:

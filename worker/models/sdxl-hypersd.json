@@ -3,6 +3,7 @@
   "name": "SDXL Hyper-SD",
   "capabilities": ["text_to_image"],
   "min_vram_gb": 10,
+  "prompt_token_limit": 77,
   "source": "stabilityai/stable-diffusion-xl-base-1.0",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "euler-trailing",

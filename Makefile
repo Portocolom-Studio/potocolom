@@ -10,7 +10,9 @@
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm setup-cuda deps deps-down lint test build verify simulate \
+.PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
+	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -19,41 +21,98 @@
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
 
-setup: ## create virtualenvs and install all dependencies
-	cd backend && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-	cd worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+# Interpreter used only to create backend/.venv and worker/.venv. A system
+# python3 of 3.10 creates a venv that sends pip backtracking against
+# requires-python >=3.11, so take the first candidate that is new enough.
+# Project packages install into the venvs only, never system site-packages.
+# Override: make setup PYTHON=/path/to/python3.11
+VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
+PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
+	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
+
+check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
+	@test -n "$(PYTHON)" || { \
+		echo 'error: Python 3.11 or newer is required for backend/ and worker/.' >&2; \
+		echo 'Install it alongside the system python3 if needed (for example' >&2; \
+		echo 'apt install python3.11 python3.11-venv), or set PYTHON=/path/to/python3.11.' >&2; \
+		exit 1; }
+	@$(PYTHON) $(VENV_OK) 2>/dev/null || { \
+		echo 'error: $(PYTHON) is missing or older than Python 3.11.' >&2; exit 1; }
+	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
+		% ((sys.executable,) + sys.version_info[:3]))'
+
+check-worker-venv:
+	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null || { \
+		echo 'error: worker/.venv is missing or not Python 3.11+; run make setup.' >&2; \
+		exit 1; }
+
+setup: check-python ## create virtualenvs and install all dependencies
+	@for d in backend worker; do \
+		$$d/.venv/bin/python $(VENV_OK) 2>/dev/null \
+			|| $(PYTHON) -m venv --clear $$d/.venv; \
+	done
+	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
+	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
 
-setup-rocm: ## worker inference deps for AMD: ROCm torch wheels, then the extra
+setup-rocm: check-worker-venv ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
-setup-cuda: ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
+setup-cuda: check-worker-venv ## worker inference deps for NVIDIA: CUDA torch wheels (PyPI default), then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
 	cd worker && .venv/bin/pip install torch torchvision
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
-deps: ## start development dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+deps: ## start development dependencies (PostgreSQL: all the native dev loop uses)
 	docker compose -f deploy/compose/dev.yml up -d
+
+deps-all: ## also start Redis, MinIO and Mailpit (cloud-sim profile; idle in local dev)
+	docker compose -f deploy/compose/dev.yml --profile cloud-sim up -d
 
 deps-down:
 	docker compose -f deploy/compose/dev.yml down
 
-lint:
-	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy
-	cd worker && .venv/bin/ruff check . && .venv/bin/mypy
-	cd frontend && npm run lint
+# One target per component, and the per-component CI workflows run these exact
+# targets, so local verify and CI cannot drift. Installing dependencies is the
+# caller's job: make setup locally, a fresh venv and npm ci in CI.
+verify-backend:
+	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest
 
-test:
-	cd backend && .venv/bin/pytest
-	cd worker && .venv/bin/pytest
-	cd frontend && npm run check
+verify-worker:
+	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
 
-build:
-	cd frontend && npm run build
+verify-frontend:
+	cd frontend && npm run lint && npm run check && npm test && npm run build
 
-verify: lint test build ## everything CI runs, locally
+verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
+	git config core.hooksPath .githooks
+	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
+	@echo 'Undo with: git config --unset core.hooksPath'
+
+verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for c in python3 python3.11 python3.12 python3.13; do \
+		printf '#!/bin/sh\nexit 1\n' > "$$tmp/$$c"; chmod +x "$$tmp/$$c"; done; \
+	if PATH="$$tmp:$$PATH" $(MAKE) --no-print-directory check-python >/dev/null 2>&1; then \
+		echo 'error: check-python accepted a PATH with no Python 3.11+ on it.' >&2; \
+		exit 1; \
+	fi; \
+	echo 'setup guards ok: no 3.11+ interpreter is refused, not silently used'
+
+verify-compose: ## validate every compose file and profile (no containers started)
+	cd deploy/compose && test -f .env || cp .env.example .env
+	cd deploy/compose && for p in gpu rocm smoke; do \
+		docker compose -f compose.yml --profile $$p config -q || exit 1; done
+	cd deploy/compose && docker compose -f dev.yml config -q \
+		&& docker compose -f dev.yml --profile cloud-sim config -q \
+		&& docker compose -f compose.smoke.yml config -q
+
+verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
+	python3 scripts/verify-mermaid.py
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
@@ -68,7 +127,7 @@ WORKER ?= rocm
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
-		BENCHMARK_API=1 .venv/bin/uvicorn app.main:app --port 8000
+		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port 8000
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
@@ -94,7 +153,7 @@ web: ## studio dev server; proxies /api/v1 to localhost:8000
 	cd frontend && npm run dev
 
 web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
-	cd frontend && PUBLIC_SITE_MODE=landing npm run dev
+	cd frontend && PUBLIC_WAITLIST_URL=$(WAITLIST_URL) PUBLIC_SITE_MODE=landing npm run dev
 
 site-preview: site-build ## serve the exact marketing-site artifact locally
 	cd frontend && npm run preview

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CollageGraph from '$lib/components/collage/CollageGraph.svelte';
 	import CollageMasonry from '$lib/components/collage/CollageMasonry.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import {
 		collagePreviewVariants,
 		masonryCollageVariants,
@@ -17,9 +18,12 @@
 	);
 </script>
 
-<svelte:head>
-	<title>potocolom - {entry.title}</title>
-</svelte:head>
+<Seo
+	title="{entry.title} Development Preview | potocolom"
+	description="Internal collage layout preview for potocolom development."
+	path="/collage-preview/{variantId}"
+	noindex
+/>
 
 <div class="bg-background min-h-svh p-4 sm:p-6">
 	<header class="mb-4 flex flex-wrap items-center justify-between gap-3">

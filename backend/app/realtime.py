@@ -21,11 +21,12 @@ from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.manifests import Manifest, parse_manifests, validate_params
+from app import db
 
 logger = logging.getLogger("potocolom.realtime")
 
 # Wire constants; keep in sync with worker/worker/client.py.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
 
 CANVAS_FRAME = 0x01
@@ -93,6 +94,8 @@ class Worker:
     ws: WebSocket
     manifests: list[Manifest]
     realtime_slots: int
+    device: str | None = None
+    memory_mode: str | None = None
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
@@ -112,6 +115,7 @@ class Session:
     model_id: str
     browser: WebSocket
     params: dict = field(default_factory=dict)
+    user_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -124,6 +128,7 @@ class Session:
 workers: dict[str, Worker] = {}
 sessions: dict[uuid.UUID, Session] = {}
 gpu_requests: dict[str, asyncio.Future] = {}
+closing_sessions: dict[uuid.UUID, tuple[uuid.UUID, str, Worker]] = {}
 
 
 def pick_any_worker() -> Worker | None:
@@ -263,9 +268,13 @@ async def fleet(ws: WebSocket) -> None:
         except ValueError as error:
             raise ProtocolError(str(error)) from error
         worker = Worker(id=hello["worker_id"], ws=ws, manifests=worker_manifests,
-                        realtime_slots=hello["realtime_slots"])
+                        realtime_slots=hello["realtime_slots"],
+                        device=hello.get("device"),
+                        memory_mode=hello.get("memory_mode"))
         if not (isinstance(version, int) and isinstance(worker.id, str)
-                and isinstance(worker.realtime_slots, int)):
+                and isinstance(worker.realtime_slots, int)
+                and (worker.device is None or isinstance(worker.device, str))
+                and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
     except (ProtocolError, KeyError):
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
@@ -282,6 +291,7 @@ async def fleet(ws: WebSocket) -> None:
                 worker.id, worker.models, worker.realtime_slots)
     await ws.send_json({"type": "registered"})
     from app import gpu_samples, registry  # late import; registry reads this module's state
+    gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
     await registry.persist_manifests(worker.manifests)
     try:
         while True:
@@ -304,11 +314,28 @@ async def fleet(ws: WebSocket) -> None:
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
+                    elif control["type"] == "session_closed":
+                        session_id = uuid.UUID(control["session_id"])
+                        owner = closing_sessions.pop(session_id, None)
+                        if owner is not None:
+                            from app import usage_events
+                            usage_events.schedule_realtime(owner[0], owner[1], control)
                     elif control["type"] in ("gpu_status", "model_loaded",
                                              "model_unloaded", "gpu_error"):
                         resolve_gpu_request(control)
                     elif control["type"] == "heartbeat":
-                        gpu_samples.schedule_heartbeat_sample(worker.id, control)
+                        gpu = control.get("gpu")
+                        if worker.device is None and isinstance(gpu, dict):
+                            device = gpu.get("device")
+                            if isinstance(device, str):
+                                worker.device = device
+                        if worker.memory_mode is None:
+                            memory_mode = control.get("memory_mode")
+                            if isinstance(memory_mode, str):
+                                worker.memory_mode = memory_mode
+                        gpu_samples.schedule_heartbeat_sample(
+                            worker.id, control, worker.device, worker.memory_mode
+                        )
                     # Heartbeats refresh last_seen only; slot accounting has
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.
@@ -319,6 +346,9 @@ async def fleet(ws: WebSocket) -> None:
     finally:
         if workers.get(worker.id) is worker:
             del workers[worker.id]
+        for session_id, owner in list(closing_sessions.items()):
+            if owner[2] is worker:
+                closing_sessions.pop(session_id, None)
         from app import jobs
         jobs.on_worker_lost(worker)
         orphaned = [s for s in sessions.values() if s.worker is worker]
@@ -357,7 +387,11 @@ async def realtime(ws: WebSocket) -> None:
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
         return
-    session = Session(id=uuid.uuid4(), model_id=model_id, browser=ws, params=params)
+    session = Session(
+        id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
+        # WebSocket identity is not derived from current_user until upgrade auth
+        # gains a session cookie or one-time ticket.
+        user_id=db.local_user_id)
     sessions[session.id] = session
     try:
         if not await assign(session, worker):
@@ -385,4 +419,12 @@ async def realtime(ws: WebSocket) -> None:
                 break
     finally:
         sessions.pop(session.id, None)
+        worker = session.worker
+        if (
+            worker is not None
+            and session.user_id is not None
+            and workers.get(worker.id) is worker
+        ):
+            closing_sessions[session.id] = (
+                session.user_id, session.model_id, worker)
         await release(session)

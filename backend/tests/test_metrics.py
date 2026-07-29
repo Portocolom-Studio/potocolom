@@ -3,16 +3,24 @@
 import asyncio
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app import db
+from app import db, gpu_samples
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import GpuSample, GpuSampleRollup, Job
+from app.tables import (
+    GpuSample,
+    GpuSampleRollup,
+    Job,
+    UsageEvent,
+    UsageEventRollup,
+    User,
+    WorkerIdentity,
+)
 
 MANIFEST = {
     "id": "sd-metrics",
@@ -30,6 +38,8 @@ def fleet_hello(ws, worker_id="w-metrics"):
         "worker_id": worker_id,
         "models": [MANIFEST],
         "realtime_slots": 1,
+        "device": "rocm",
+        "memory_mode": "model_offload",
     })
     assert ws.receive_json()["type"] == "registered"
 
@@ -52,6 +62,243 @@ async def _wait_for_samples(count: int = 1, timeout: float = 3.0) -> list[GpuSam
                 return rows
         await asyncio.sleep(0.05)
     return []
+
+
+async def _wait_for_worker(worker_id: str, timeout: float = 3.0) -> WorkerIdentity | None:
+    assert db.session_factory is not None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        async with db.session_factory() as session:
+            row = await session.get(WorkerIdentity, worker_id)
+            if row is not None:
+                return row
+        await asyncio.sleep(0.05)
+    return None
+
+
+@pytest.mark.db
+def test_registration_persists_worker_identity():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-identity")
+            identity = asyncio.run(_wait_for_worker("w-identity"))
+            assert identity is not None
+            assert identity.device == "rocm"
+            assert identity.memory_mode == "model_offload"
+
+
+@pytest.mark.db
+def test_maintenance_prunes_stale_worker_identities():
+    now = datetime.now(timezone.utc)
+
+    async def exercise() -> tuple[WorkerIdentity | None, WorkerIdentity | None]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(WorkerIdentity(
+                worker_id="w-retention-stale",
+                last_seen=now - gpu_samples.WORKER_RETENTION - timedelta(seconds=1),
+            ))
+            session.add(WorkerIdentity(
+                worker_id="w-retention-recent",
+                last_seen=now,
+            ))
+            await session.commit()
+        await gpu_samples.maintain_once()
+        async with db.session_factory() as session:
+            return (
+                await session.get(WorkerIdentity, "w-retention-stale"),
+                await session.get(WorkerIdentity, "w-retention-recent"),
+            )
+
+    with TestClient(app):
+        stale, recent = asyncio.run(exercise())
+        assert stale is None
+        assert recent is not None
+
+
+@pytest.mark.db
+def test_usage_event_maintenance_rolls_up_prunes_and_is_idempotent(monkeypatch):
+    now = datetime(2026, 7, 28, 15, tzinfo=timezone.utc)
+    cutoff = gpu_samples._usage_raw_cutoff(now)
+    user_id = uuid.uuid4()
+    old_ids = (uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
+    recent_id = uuid.uuid4()
+    monkeypatch.setattr(gpu_samples, "_utcnow", lambda: now)
+
+    async def snapshot() -> tuple[list[uuid.UUID], list[tuple]]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            raw_ids = (
+                (
+                    await session.execute(
+                        select(UsageEvent.id)
+                        .where(UsageEvent.user_id == user_id)
+                        .order_by(UsageEvent.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            rollups = (
+                (
+                    await session.execute(
+                        select(UsageEventRollup)
+                        .where(UsageEventRollup.user_id == user_id)
+                        .order_by(UsageEventRollup.category)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return raw_ids, [
+                (
+                    row.bucket_date,
+                    row.category,
+                    row.event_count,
+                    row.category_score_sum,
+                    row.category_score_count,
+                    row.gpu_ms_sum,
+                    row.duration_ms_sum,
+                    row.frames_sum,
+                )
+                for row in rollups
+            ]
+
+    async def exercise() -> tuple[list[tuple], list[tuple], tuple, tuple]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(User(id=user_id, email=f"{user_id}@example.test"))
+            await session.flush()
+            old_at = cutoff - timedelta(days=2) + timedelta(hours=3)
+            session.add_all(
+                [
+                    UsageEvent(
+                        id=old_ids[0],
+                        user_id=user_id,
+                        kind="job",
+                        action="generate",
+                        model_id="sd-test",
+                        tier=None,
+                        category="art",
+                        category_score=0.8,
+                        gpu_ms=100,
+                        duration_ms=None,
+                        frames=1,
+                        created_at=old_at,
+                    ),
+                    UsageEvent(
+                        id=old_ids[1],
+                        user_id=user_id,
+                        kind="job",
+                        action="generate",
+                        model_id="sd-test",
+                        tier=None,
+                        category="art",
+                        category_score=None,
+                        gpu_ms=None,
+                        duration_ms=2_000,
+                        frames=2,
+                        created_at=old_at + timedelta(hours=1),
+                    ),
+                    UsageEvent(
+                        id=old_ids[2],
+                        user_id=user_id,
+                        kind="job",
+                        action="generate",
+                        model_id="sd-test",
+                        tier=None,
+                        category="design",
+                        category_score=0.5,
+                        gpu_ms=50,
+                        duration_ms=500,
+                        frames=1,
+                        created_at=old_at,
+                    ),
+                    UsageEvent(
+                        id=recent_id,
+                        user_id=user_id,
+                        kind="realtime",
+                        action="draw",
+                        model_id="sd-test",
+                        tier=None,
+                        category="other",
+                        category_score=None,
+                        gpu_ms=10,
+                        duration_ms=20,
+                        frames=3,
+                        created_at=cutoff,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        async with db.session_factory() as session:
+            await gpu_samples._rebuild_usage_rollups(session, cutoff)
+            await session.commit()
+        first_rebuild = (await snapshot())[1]
+        async with db.session_factory() as session:
+            await gpu_samples._rebuild_usage_rollups(session, cutoff)
+            await session.commit()
+        second_rebuild = (await snapshot())[1]
+
+        await gpu_samples.maintain_once()
+        first = await snapshot()
+        await gpu_samples.maintain_once()
+        second = await snapshot()
+        async with db.session_factory() as session:
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+        return first_rebuild, second_rebuild, first, second
+
+    with TestClient(app):
+        first_rebuild, second_rebuild, first, second = asyncio.run(exercise())
+
+    assert first_rebuild == second_rebuild
+    assert first == second
+    raw_ids, rollups = first
+    assert raw_ids == [recent_id]
+    assert rollups == [
+        (date(2026, 4, 27), "art", 2, 0.8, 1, 100, 2_000, 3),
+        (date(2026, 4, 27), "design", 1, 0.5, 1, 50, 500, 1),
+    ]
+
+
+@pytest.mark.db
+def test_usage_event_rollups_are_hard_deleted_with_user():
+    user_id = uuid.uuid4()
+    rollup_id = uuid.uuid4()
+
+    async def exercise() -> UsageEventRollup | None:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(User(id=user_id, email=f"{user_id}@example.test"))
+            await session.flush()
+            session.add(
+                UsageEventRollup(
+                    id=rollup_id,
+                    user_id=user_id,
+                    bucket_date=date(2026, 1, 1),
+                    kind="job",
+                    action="generate",
+                    model_id="sd-test",
+                    tier=None,
+                    category="art",
+                    event_count=1,
+                    category_score_sum=0.8,
+                    category_score_count=1,
+                    gpu_ms_sum=10,
+                    duration_ms_sum=20,
+                    frames_sum=1,
+                )
+            )
+            await session.commit()
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+        async with db.session_factory() as session:
+            return await session.get(UsageEventRollup, rollup_id)
+
+    with TestClient(app):
+        assert asyncio.run(exercise()) is None
 
 
 @pytest.mark.db
@@ -79,6 +326,17 @@ def test_heartbeat_persists_gpu_sample():
             assert row.worker_id == "w-metrics"
             assert row.util_pct == 42
             assert row.loaded_models == ["sd-metrics"]
+
+            async def read_worker() -> WorkerIdentity | None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return await session.get(WorkerIdentity, "w-metrics")
+
+            identity = asyncio.run(read_worker())
+            assert identity is not None
+            assert identity.device == "rocm"
+            assert identity.memory_mode == "model_offload"
+            assert identity.last_seen >= row.sampled_at
 
 
 @pytest.mark.db

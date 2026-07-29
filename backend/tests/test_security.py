@@ -144,6 +144,30 @@ def test_cloudflare_headers_byte_for_byte_aligned():
     assert block == SECURITY_HEADERS
 
 
+def test_cloudflare_entry_document_is_not_cached():
+    """Locate the root rule, then read its block.
+
+    Matching the file as one literal string would break on a comment edit, which
+    says nothing about whether the header is set.
+    """
+    lines = _HEADERS_FILE.read_text().splitlines()
+    directives: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip() != "/":
+            continue
+        for following in lines[index + 1:]:
+            if not following.startswith((" ", "\t")):
+                break
+            directives.append(following.strip())
+        break
+    else:
+        raise AssertionError("no rule for the root path in _headers")
+    assert any(
+        directive.lower().startswith("cache-control:") and "no-cache" in directive.lower()
+        for directive in directives
+    ), directives
+
+
 def test_csp_img_src_allows_http_object_store():
     """S3-compatible stores (MinIO on :9100) may be http on another origin.
 

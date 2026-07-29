@@ -49,11 +49,17 @@ CALIBRATION_SAMPLES = 20
 
 @dataclass
 class GeneratedImage:
-    data: bytes  # always WebP; storage keys and asset rows assume it
+    data: bytes  # PNG generation master
     width: int
     height: int
     gpu_ms: int
     load_ms: int = 0
+
+
+@dataclass
+class GeneratedFrame:
+    data: bytes
+    gpu_ms: int
 
 
 class Engine(Protocol):
@@ -62,7 +68,7 @@ class Engine(Protocol):
         *, input_image: bytes | None = None,
     ) -> GeneratedImage: ...
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame: ...
 
     def loaded_models(self) -> list[str]: ...
 
@@ -91,6 +97,12 @@ def decode_input_image(data: bytes) -> Image.Image:
 def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
+    return buffer.getvalue()
+
+
+def encode_png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
     return buffer.getvalue()
 
 
@@ -169,7 +181,7 @@ class SimulatedEngine:
             image = source.resize((width, height), Image.Resampling.LANCZOS)
             progress(1.0)
             gpu_ms = int((time.monotonic() - start) * 1000)
-            return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+            return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
         if input_image is not None and "image_to_image" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
         load_ms = 0
@@ -201,11 +213,12 @@ class SimulatedEngine:
             rgb = (color[0], color[1], color[2])
             image = Image.new("RGB", (width, height), rgb)
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        started = time.monotonic()
         await asyncio.sleep(self.inference_seconds)
-        return payload
+        return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
 
 
 class DiffusersEngine:
@@ -728,6 +741,189 @@ class DiffusersEngine:
                 pass
         return cls.from_pretrained(source, **kwargs)
 
+    def _encode_clip_chunks(
+        self,
+        tokenizer: Any,
+        text_encoder: Any,
+        token_ids: list[int],
+        window: int,
+        chunk_count: int,
+        *,
+        pooled: bool,
+    ) -> tuple[Any, Any | None]:
+        special_tokens = tokenizer.num_special_tokens_to_add(pair=False)
+        content_size = window - special_tokens
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = tokenizer.eos_token_id
+        chunk_embeddings = []
+        first_pooled = None
+        for chunk_index in range(chunk_count):
+            start = chunk_index * content_size
+            content = token_ids[start:start + content_size]
+            # Built explicitly rather than through the tokenizer: transformers 5
+            # dropped build_inputs_with_special_tokens from the CLIP tokenizers,
+            # and CLIP's framing is fixed anyway at one begin and one end token.
+            input_ids = [tokenizer.bos_token_id, *content, tokenizer.eos_token_id]
+            padding = window - len(input_ids)
+            attention_mask = [1] * len(input_ids) + [0] * padding
+            input_ids += [pad_token_id] * padding
+            input_tensor = self.torch.tensor([input_ids], device=self.device)
+            encoder_kwargs: dict[str, Any] = {}
+            if getattr(text_encoder.config, "use_attention_mask", False):
+                encoder_kwargs["attention_mask"] = self.torch.tensor(
+                    [attention_mask], device=self.device,
+                )
+            with self.torch.no_grad():
+                if pooled:
+                    encoder_output = text_encoder(
+                        input_tensor, output_hidden_states=True, **encoder_kwargs,
+                    )
+                    chunk_embeddings.append(encoder_output.hidden_states[-2])
+                    if chunk_index == 0:
+                        first_pooled = encoder_output[0]
+                else:
+                    encoder_output = text_encoder(input_tensor, **encoder_kwargs)
+                    chunk_embeddings.append(encoder_output[0])
+        return self.torch.cat(chunk_embeddings, dim=1), first_pooled
+
+    def _prompt_kwargs(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        prompt: str,
+        negative_prompt: str | None,
+    ) -> dict[str, Any]:
+        # A realtime session calls this for every frame with the same prompt, and
+        # chunked encoding is a full pass through each text encoder: measured at
+        # 322 ms on CPU for a two chunk prompt, against a frame budget of 250 ms.
+        # Only the encoded result is worth keeping, so the cache holds one entry
+        # and lives on the pipeline, which means a model switch drops it with the
+        # pipeline instead of pinning embeddings for weights no longer loaded.
+        cache_key = (manifest.id, prompt, negative_prompt)
+        cached = getattr(pipeline, "_potocolom_prompt_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
+        prompt_kwargs: dict[str, Any] = {"prompt": prompt}
+        if negative_prompt is not None:
+            prompt_kwargs["negative_prompt"] = negative_prompt
+        declared_window = manifest.prompt_token_limit
+        if declared_window <= 0:
+            return prompt_kwargs
+
+        if (
+            getattr(pipeline, "tokenizer_3", None) is not None
+            and getattr(pipeline, "text_encoder_3", None) is not None
+        ):
+            # SD3 requires joint CLIP+T5 prompt embeddings. This CLIP-only
+            # chunker cannot satisfy that contract, so let diffusers encode it.
+            return prompt_kwargs
+
+        tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
+        text_encoder_2 = getattr(pipeline, "text_encoder_2", None)
+        dual_encoder = tokenizer_2 is not None and text_encoder_2 is not None
+        tokenizers = [pipeline.tokenizer]
+        text_encoders = [pipeline.text_encoder]
+        if dual_encoder:
+            tokenizers.append(tokenizer_2)
+            text_encoders.append(text_encoder_2)
+        window = min(
+            [
+                declared_window,
+                *[
+                    int(getattr(tokenizer, "model_max_length", declared_window))
+                    for tokenizer in tokenizers
+                ],
+            ]
+        )
+
+        positive_ids = [
+            list(tokenizer(
+                prompt, add_special_tokens=False, truncation=False,
+            )["input_ids"])
+            for tokenizer in tokenizers
+        ]
+        negative_text = negative_prompt or ""
+        negative_ids = [
+            list(tokenizer(
+                negative_text, add_special_tokens=False, truncation=False,
+            )["input_ids"])
+            for tokenizer in tokenizers
+        ]
+        chunk_count = 1
+        for tokenizer, token_lists in zip(
+            tokenizers, zip(positive_ids, negative_ids), strict=True,
+        ):
+            content_size = window - tokenizer.num_special_tokens_to_add(pair=False)
+            if content_size <= 0:
+                raise ValueError(f"prompt token limit {window} leaves no content tokens")
+            for token_ids in token_lists:
+                chunk_count = max(chunk_count, math.ceil(len(token_ids) / content_size))
+        if chunk_count == 1:
+            return prompt_kwargs
+
+        positive_embeddings = []
+        positive_pooled = None
+        for index, (tokenizer, text_encoder, token_ids) in enumerate(zip(
+            tokenizers, text_encoders, positive_ids, strict=True,
+        )):
+            embeddings, pooled_embedding = self._encode_clip_chunks(
+                tokenizer,
+                text_encoder,
+                token_ids,
+                window,
+                chunk_count,
+                pooled=dual_encoder,
+            )
+            positive_embeddings.append(embeddings)
+            if index == 1:
+                positive_pooled = pooled_embedding
+        prompt_embeds = (
+            self.torch.cat(positive_embeddings, dim=-1)
+            if dual_encoder else positive_embeddings[0]
+        )
+
+        force_zero_negative = (
+            dual_encoder
+            and negative_prompt is None
+            and bool(getattr(pipeline.config, "force_zeros_for_empty_prompt", False))
+        )
+        if force_zero_negative:
+            negative_prompt_embeds = self.torch.zeros_like(prompt_embeds)
+            negative_pooled = self.torch.zeros_like(positive_pooled)
+        else:
+            negative_embeddings = []
+            negative_pooled = None
+            for index, (tokenizer, text_encoder, token_ids) in enumerate(zip(
+                tokenizers, text_encoders, negative_ids, strict=True,
+            )):
+                embeddings, pooled_embedding = self._encode_clip_chunks(
+                    tokenizer,
+                    text_encoder,
+                    token_ids,
+                    window,
+                    chunk_count,
+                    pooled=dual_encoder,
+                )
+                negative_embeddings.append(embeddings)
+                if index == 1:
+                    negative_pooled = pooled_embedding
+            negative_prompt_embeds = (
+                self.torch.cat(negative_embeddings, dim=-1)
+                if dual_encoder else negative_embeddings[0]
+            )
+
+        result = {
+            "prompt_embeds": prompt_embeds,
+            "negative_prompt_embeds": negative_prompt_embeds,
+        }
+        if dual_encoder:
+            result["pooled_prompt_embeds"] = positive_pooled
+            result["negative_pooled_prompt_embeds"] = negative_pooled
+        pipeline._potocolom_prompt_cache = (cache_key, result)
+        return result
+
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
@@ -797,9 +993,16 @@ class DiffusersEngine:
         # model's native size (512 for SD class, 1024 for SDXL base class).
         width = params.get("width")
         height = params.get("height")
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
         start = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             num_inference_steps=steps,
             guidance_scale=float(params.get("guidance", 0.0)),
             width=int(width) if width else None,
@@ -808,7 +1011,7 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
                       loop: asyncio.AbstractEventLoop,
@@ -837,9 +1040,16 @@ class DiffusersEngine:
             loop.call_soon_threadsafe(progress, (step + 1) / actual_steps)
             return kwargs
 
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
         start = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             image=source,
             num_inference_steps=steps,
             strength=strength,
@@ -849,7 +1059,7 @@ class DiffusersEngine:
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_upscale(self, manifest: Manifest, params: dict, progress: ProgressFn,
                           loop: asyncio.AbstractEventLoop,
@@ -882,12 +1092,14 @@ class DiffusersEngine:
         )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
         async with self._gpu:
             try:
-                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+                data, gpu_ms = await asyncio.to_thread(
+                    self._frame, manifest, dict(params), payload)
+                return GeneratedFrame(data, gpu_ms)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -896,9 +1108,11 @@ class DiffusersEngine:
                 self._evict_poisoned(manifest.id)
                 raise
             self._evict_except(manifest.id)
-            return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+            data, gpu_ms = await asyncio.to_thread(
+                self._frame, manifest, dict(params), payload)
+            return GeneratedFrame(data, gpu_ms)
 
-    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> tuple[bytes, int]:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
         if self._pick_rung(manifest) != "full":
@@ -907,8 +1121,16 @@ class DiffusersEngine:
         canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
         strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)
         pipeline = self._pipeline(manifest, "i2i")
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
+        started = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             image=canvas,
             # Few-step img2img: diffusers runs ceil(steps * strength) steps,
             # so keep the product at one or above.
@@ -916,4 +1138,5 @@ class DiffusersEngine:
             strength=strength,
             guidance_scale=0.0,
         ).images[0]
-        return encode_webp(image)
+        gpu_ms = int((time.monotonic() - started) * 1000)
+        return encode_webp(image), gpu_ms

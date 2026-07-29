@@ -5,6 +5,7 @@
     "text_to_image"
   ],
   "min_vram_gb": 8,
+  "prompt_token_limit": 77,
   "source": "segmind/SSD-1B",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "euler-trailing",
