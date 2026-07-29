@@ -229,6 +229,7 @@
 	"app.gen.result": "Generated image",
 	"app.gen.result_hint": "Your image appears here",
 	"app.gen.open_full": "Open full size",
+	"app.gen.download": "Download",
 	"app.gen.badge_failed": "failed",
 	"app.gen.badge_working": "working",
 	"app.gen.load_older": "Older",
