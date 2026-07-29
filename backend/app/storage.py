@@ -14,6 +14,7 @@ from typing import Protocol
 from app.settings import Settings, get_settings
 
 SIGNED_URL_TTL = 3600
+PNG_CONTENT_TYPE = "image/png"
 WEBP_CONTENT_TYPE = "image/webp"
 
 
@@ -48,7 +49,11 @@ class LocalStorage:
         return path
 
     async def upload_target(self, key: str) -> UploadTarget:
-        return UploadTarget(url=f"{self.worker_url}/api/v1/files/{key}")
+        content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
+        return UploadTarget(
+            url=f"{self.worker_url}/api/v1/files/{key}",
+            headers={"Content-Type": content_type},
+        )
 
     async def url(self, key: str) -> str:
         return f"{self.public_url}/api/v1/files/{key}"
@@ -79,16 +84,17 @@ class S3Storage:
 
     async def upload_target(self, key: str) -> UploadTarget:
         # Presigning is local computation, no network round trip.
+        content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
         url = self.client.generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": self.bucket,
                 "Key": key,
-                "ContentType": WEBP_CONTENT_TYPE,
+                "ContentType": content_type,
             },
             ExpiresIn=SIGNED_URL_TTL,
         )
-        return UploadTarget(url=url, headers={"Content-Type": WEBP_CONTENT_TYPE})
+        return UploadTarget(url=url, headers={"Content-Type": content_type})
 
     async def url(self, key: str) -> str:
         return self.client.generate_presigned_url(

@@ -308,15 +308,20 @@ Models registered by workers persist in PostgreSQL, and `GET /api/v1/models` ret
 
 Rejected alternatives: listing only live models (simpler response, but a worker restart makes models vanish from the UI and orphans old history); returning the stored registry with no signal (the user discovers unavailability by a failed generation).
 
-## Stored outputs: WebP today, PNG masters planned
+## Stored outputs: PNG masters, WebP thumbnails and frames
 
-<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code ships WebP -->
+<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code shipped WebP -->
+<!-- corrected 2026-07-29: issue #125 shipped, so the code matches the original decision again -->
 
-Shipped reality: generated images and their thumbnails are written as **lossy WebP quality 80** by the worker (a single code path, small files, no extra dependency). The realtime wire is WebP too.
+The stored master is **lossless PNG**, written by Pillow with no extra dependency: universal, no quality knobs, and the archival copy of the user's work. Cloud storage cost is bounded by the retention decision rather than by the format.
 
-The original decision (kept for the record) was to store PNG masters: lossless, universal, no quality knobs, written by Pillow with no extra dependency, with cloud storage cost bounded by the retention decision rather than the format. That PNG-master intent is now tracked as open issue **#125** ("Store generation masters as PNG per the stored-outputs decision"); until it lands, masters are the same lossy WebP as everything else, so this entry and the code disagree by design-not-yet-shipped.
+Everything that exists to be looked at rather than kept is **WebP**: the derived thumbnails the gallery displays, and the realtime frame stream, where bytes on the wire decide the frame rate.
 
-Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
+Masters written before this shipped are still WebP and stay that way. There is no backfill: history and share links serve whatever `mime` and `storage_key` the asset row records, so a mixed bucket is normal and nothing reading an asset may assume the extension.
+
+One consequence worth recording: the largest master the fleet can produce is a 4x upscale of a 1024 px image, which measures about 19 MB losslessly and reaches 50 MB on incompressible detail. The local upload route's ceiling exists to bound abuse and has to stay clear of that, so it moved from 20 MB to 64 MB with this change.
+
+Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for); JPEG for the master (lossy, and no alpha); keeping WebP for the master too, which is what shipped between 2026-07-23 and this change, and which left the archival copy quietly lossy.
 
 ## Model manifests: JSON
 

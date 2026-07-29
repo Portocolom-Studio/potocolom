@@ -96,9 +96,13 @@ def test_generation_end_to_end():
             assert dispatch["type"] == "dispatch_job"
             assert dispatch["job_id"] == job_id
             assert dispatch["params"] == {"prompt": "a lighthouse"}
+            assert dispatch["upload"]["url"].endswith(f"/{job_id}.png")
+            assert dispatch["upload"]["headers"] == {"Content-Type": "image/png"}
+            assert dispatch["thumb_upload"]["url"].endswith(f"/{job_id}-thumb.webp")
+            assert dispatch["thumb_upload"]["headers"] == {"Content-Type": "image/webp"}
 
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
             thumb_path = urlsplit(dispatch["thumb_upload"]["url"]).path
             assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
 
@@ -111,8 +115,10 @@ def test_generation_end_to_end():
             assert job["gpu_ms"] == 1234
             asset = job["assets"][0]
             assert asset["width"] == 512
+            assert asset["mime"] == "image/png"
+            assert asset["url"].endswith(f"/{job_id}.png")
             assert asset["thumbnail_url"] is not None
-            assert client.get(urlsplit(asset["url"]).path).content == b"webp-bytes"
+            assert client.get(urlsplit(asset["url"]).path).content == b"png-bytes"
             assert client.get(urlsplit(asset["thumbnail_url"]).path).content == b"thumb-bytes"
 
             history = client.get("/api/v1/generations").json()
@@ -309,7 +315,7 @@ def test_recover_requeues_running_and_dispatches_queued():
             first_id = first["job_id"]
 
             upload_path = urlsplit(first["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
             thumb_path = urlsplit(first["thumb_upload"]["url"]).path
             assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
             worker.send_json({"type": "job_done", "job_id": first_id,
@@ -337,7 +343,7 @@ def test_img2img_dispatch_includes_input_url():
 
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"source-webp").status_code == 200
+            assert client.put(upload_path, content=b"source-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 100, "width": 512, "height": 512})
             source_job = poll_until(client, source_job_id, "succeeded")
@@ -355,14 +361,14 @@ def test_img2img_dispatch_includes_input_url():
             assert i2i_dispatch["job_id"] == edit_job_id
             assert "input" in i2i_dispatch
             input_path = urlsplit(i2i_dispatch["input"]["url"]).path
-            assert client.get(input_path).content == b"source-webp"
+            assert client.get(input_path).content == b"source-png"
 
             assert client.put(urlsplit(i2i_dispatch["upload"]["url"]).path,
-                              content=b"edited-webp").status_code == 200
+                              content=b"edited-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": edit_job_id,
                               "gpu_ms": 200, "width": 512, "height": 512})
             edit_job = poll_until(client, edit_job_id, "succeeded")
-            assert edit_job["assets"][0]["url"].endswith(".webp")
+            assert edit_job["assets"][0]["url"].endswith(".png")
 
 
 @pytest.mark.db
@@ -414,7 +420,7 @@ def test_upscale_dispatch_includes_input_url():
             source_job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
             assert client.put(urlsplit(dispatch["upload"]["url"]).path,
-                              content=b"source-webp").status_code == 200
+                              content=b"source-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 50, "width": 512, "height": 512})
             source_asset_id = poll_until(client, source_job_id, "succeeded")["assets"][0]["id"]
@@ -441,10 +447,10 @@ def test_upscale_dispatch_includes_input_url():
             assert up_dispatch["job_id"] == upscale_job_id
             assert up_dispatch["params"] == {"factor": 2}
             assert "input" in up_dispatch
-            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == b"source-webp"
+            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == b"source-png"
 
             assert client.put(urlsplit(up_dispatch["upload"]["url"]).path,
-                              content=b"upscaled-webp").status_code == 200
+                              content=b"upscaled-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": upscale_job_id,
                               "gpu_ms": 400, "width": 1024, "height": 1024})
             done = poll_until(client, upscale_job_id, "succeeded")
@@ -544,7 +550,7 @@ def test_job_phase_timings_persisted():
             job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
 
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "gpu_ms": 900, "input_fetch_ms": 50,
@@ -614,7 +620,7 @@ def _wait_for_dispatch(worker, expected: set[str], timeout=5.0) -> dict:
 
 def _finish_job(client, worker, dispatch: dict) -> None:
     upload_path = urlsplit(dispatch["upload"]["url"]).path
-    assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+    assert client.put(upload_path, content=b"png-bytes").status_code == 200
     worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
                       "gpu_ms": 1, "width": 512, "height": 512})
     poll_until(client, dispatch["job_id"], "succeeded")

@@ -451,7 +451,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         worker = pick_job_worker(job.model_id)
         if worker is None:
             return False
-        storage_key = f"{job.user_id}/{job.id}.webp"
+        storage_key = f"{job.user_id}/{job.id}.png"
         thumb_storage_key = f"{job.user_id}/{job.id}-thumb.webp"
         target = await get_storage().upload_target(storage_key)
         thumb_target = await get_storage().upload_target(thumb_storage_key)
@@ -540,7 +540,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 job_id=job_id,
                 parent_asset_id=job.source_asset_id,
                 storage_key=entry.storage_key,
-                mime="image/webp",
+                mime="image/png",
                 width=width,
                 height=height,
             )

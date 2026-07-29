@@ -66,7 +66,7 @@ grouped (M2-M8) view of what is open.
   gated to full residency.
 - Survival on one card: OOM during a load or run evicts other resident models and
   retries once, so model switching works on 16 GB.
-- Outputs are lossy WebP quality 80 (PNG masters are planned, #125).
+- Generation masters are lossless PNG; realtime frames and thumbnails are WebP.
 - Models shipped: SDXL Base (default, 1024, DPM++ 2M Karras), SDXL Fast
   (Lightning 8-step), SSD-1B and SSD-1B-Lightning (fast batch tier), DreamShaper-LCM
   (smallest at ~6 GB), and VegaRT (Apache-2.0, the studio-shippable realtime model,
