@@ -528,3 +528,41 @@ def test_degenerate_run_flags_a_flat_field_but_not_a_textured_image(tmp_path) ->
 
     # No output at all counts as catastrophic.
     assert degenerate_run(tmp_path / "missing") is True
+
+
+def test_build_yield_sheets_groups_by_pair(tmp_path) -> None:
+    """Yield is read per pair across seeds, so the sheet must group that way."""
+    import json
+
+    from PIL import Image
+
+    from worker.illusion_experiment import build_yield_sheets
+
+    root = tmp_path / "runs"
+    for pair_id, seeds in (("pair_a", (11, 23)), ("pair_b", (11,))):
+        for seed in seeds:
+            run = root / pair_id / f"seed_{seed}"
+            run.mkdir(parents=True)
+            for view in (1, 2):
+                Image.new("RGB", (64, 64), (10 * view, 200, 30)).save(run / f"derived_{view}.png")
+            (run / "manifest.json").write_text(
+                json.dumps({"status": "completed", "pair_id": pair_id, "config": {"seed": seed}})
+            )
+    # An incomplete run must not appear at all.
+    skipped = root / "pair_a" / "seed_99"
+    skipped.mkdir(parents=True)
+    (skipped / "manifest.json").write_text(json.dumps({"status": "failed", "pair_id": "pair_a"}))
+
+    out = tmp_path / "sheets"
+    summary = build_yield_sheets(root, out)
+
+    assert set(summary["pairs"]) == {"pair_a", "pair_b"}
+    assert summary["pairs"]["pair_a"]["seeds"] == [11, 23]
+    assert summary["pairs"]["pair_b"]["runs"] == 1
+    # One sheet per pair, plus the index and the machine-readable summary.
+    assert (out / "pair_a.png").is_file()
+    assert (out / "pair_b.png").is_file()
+    assert (out / "index.html").is_file()
+    assert (out / "yield.json").is_file()
+    # pair_a has 2 seeds x 2 views = 4 cells at cols=4, so one row.
+    assert Image.open(out / "pair_a.png").size == (1024, 256)

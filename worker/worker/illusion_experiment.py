@@ -703,6 +703,73 @@ def make_contact_sheet(
     sheet.save(out_path)
 
 
+def build_yield_sheets(root: Path, out: Path) -> dict[str, Any]:
+    """One sheet per pair, all its seeds side by side, for reading yield.
+
+    The blind stage sheets are the acceptance path and stay that way, but they
+    shuffle every cell of every pair together. At 154 runs that is a 1024x19712
+    strip per stage, and it deliberately destroys the grouping that answers the
+    question this window asks: which PAIRS work, and how often across seeds.
+
+    Nothing is blinded here because there is nothing to blind against. The
+    window runs one recipe, so there is no A/B whose labels could bias a
+    rating. Use the blind sheets before promoting anything.
+    """
+    by_pair: dict[str, list[tuple[int, Path, dict[str, Any]]]] = {}
+    for manifest_path in sorted(root.rglob("manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("status") != "completed":
+            continue
+        pair_id = manifest.get("pair_id") or "unknown"
+        seed = manifest.get("config", {}).get("seed", -1)
+        by_pair.setdefault(pair_id, []).append((seed, manifest_path.parent, manifest))
+    if not by_pair:
+        raise ValueError(f"no completed runs under {root}")
+
+    out.mkdir(parents=True, exist_ok=True)
+    from PIL import Image
+
+    summary: dict[str, Any] = {"pairs": {}}
+    for pair_id, runs in sorted(by_pair.items()):
+        cells: list[tuple[Any, str]] = []
+        alive = 0
+        for seed, run_dir, _manifest in sorted(runs):
+            for view in (1, 2):
+                path = run_dir / f"derived_{view}.png"
+                if path.is_file():
+                    cells.append((Image.open(path).convert("RGB"), f"s{seed} v{view}"))
+            if not degenerate_run(run_dir):
+                alive += 1
+        if cells:
+            make_contact_sheet(cells, out / f"{pair_id}.png", cols=4)
+        summary["pairs"][pair_id] = {
+            "runs": len(runs),
+            "non_degenerate": alive,
+            "seeds": sorted(seed for seed, _dir, _m in runs),
+        }
+
+    rows = "\n".join(
+        f'<li><a href="{pair_id}.png">{pair_id}</a> '
+        f"<span>{info['non_degenerate']}/{info['runs']} produced an image</span></li>"
+        for pair_id, info in summary["pairs"].items()
+    )
+    (out / "index.html").write_text(
+        "<!doctype html><meta charset=utf-8>"
+        "<title>Illusion yield by pair</title>"
+        "<style>body{font:14px system-ui;background:#181818;color:#eee;margin:2rem}"
+        "a{color:#8cf}li{margin:.35rem 0}span{color:#999}</style>"
+        "<h1>Illusion yield by pair</h1>"
+        "<p>Counts are cells that emitted an image, which is not the same as a "
+        "readable illusion. Judge the sheets.</p>"
+        f"<ul>{rows}</ul>\n"
+    )
+    write_manifest_atomic(out / "yield.json", summary)
+    return summary
+
+
 def build_stage_blind_sheets(root: Path, out: Path, seed: int = 0) -> dict[str, Any]:
     """Build separate SDS-end, Dream-d1, and final sheets with a rating template."""
     runs: list[tuple[Path, dict[str, Any]]] = []
@@ -1892,6 +1959,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     stage_blind.add_argument("--out", type=Path, required=True)
     stage_blind.add_argument("--seed", type=int, default=0)
 
+    yield_cmd = sub.add_parser(
+        "build-yield",
+        help="one sheet per pair, all seeds together, for reading yield by pair",
+    )
+    yield_cmd.add_argument("--root", type=Path, required=True)
+    yield_cmd.add_argument("--out", type=Path, required=True)
+
     return parser
 
 
@@ -1922,6 +1996,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "build-stage-blind":
         print(json.dumps(build_stage_blind_sheets(args.root, args.out, args.seed), indent=2))
+        return
+
+    if args.cmd == "build-yield":
+        print(json.dumps(build_yield_sheets(args.root, args.out), indent=2))
         return
 
     if args.cmd == "blind-sheet":
