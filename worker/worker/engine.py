@@ -370,11 +370,12 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
+        use_group_offload_fast_path = not manifest.quantize
         offload_dir = None
-        # Safetensors cannot serialize torchao subclass tensors, so quantized
-        # models must keep offloaded components in host RAM instead of spilling
-        # them to disk. This requires enough host RAM for those components.
-        if self.models_dir and not manifest.quantize:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors
+        # or handle aten.is_pinned for stream prefetch. They must remain in host
+        # RAM without streaming, so this rung is slower and needs enough host RAM.
+        if self.models_dir and use_group_offload_fast_path:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -383,7 +384,7 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=True,
+            use_stream=use_group_offload_fast_path,
             offload_to_disk_path=offload_dir,
         )
         return pipeline

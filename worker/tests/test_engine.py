@@ -551,6 +551,7 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     engine._apply_rung(quantized_pipeline, quantized_manifest, "group_offload")
 
     quantized_kwargs = quantized_pipeline.enable_group_offload.call_args.kwargs
+    assert quantized_kwargs["use_stream"] is False
     assert quantized_kwargs["offload_to_disk_path"] is None
 
     pipeline = MagicMock()
@@ -562,6 +563,7 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     engine._apply_rung(pipeline, manifest, "group_offload")
 
     kwargs = pipeline.enable_group_offload.call_args.kwargs
+    assert kwargs["use_stream"] is True
     assert kwargs["offload_to_disk_path"] == str(
         tmp_path / ".offload" / "unquantized"
     )
