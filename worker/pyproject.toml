@@ -8,29 +8,29 @@ version = "0.0.1"
 description = "potocolom inference worker"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic-settings>=2.4",
-    "websockets>=12",
-    "httpx>=0.27",
-    "pillow>=10",
+    "pydantic-settings>=2.4,<3",
+    "websockets>=16,<17",
+    "httpx>=0.27,<1",
+    "pillow>=12,<13",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "pytest>=9,<10",
     "ruff>=0.6,<0.16",
-    "mypy>=1.11",
+    "mypy>=2,<3",
 ]
 # Install torch for your device first (CUDA wheels from PyPI; ROCm and CPU
 # wheels from the matching https://download.pytorch.org/whl/ index), then
 # install this extra. See docs/local-development.md for the ROCm notes.
 inference = [
-    "torch>=2.5",
-    "diffusers>=0.39",
-    "transformers>=4.44",
-    "accelerate>=0.33",
-    "torchao>=0.17",
-    "peft>=0.13",
-    "spandrel>=0.4",
+    "torch>=2.5,<3",
+    "diffusers>=0.39,<1",
+    "transformers>=5,<6",
+    "accelerate>=1,<2",
+    "torchao>=0.17,<1",
+    "peft>=0.13,<1",
+    "spandrel>=0.4,<1",
 ]
 
 [tool.hatch.build.targets.wheel]

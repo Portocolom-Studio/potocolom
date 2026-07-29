@@ -667,6 +667,12 @@ The text encoder window a prompt is measured against comes from the manifest fie
 
 Rejected alternatives: hardcoding 77 in the studio, which is correct only for the models shipped today and silently wrong for the first model with a larger encoder; defaulting the field to 77 so existing manifests need no edit, which turns a forgotten declaration into a confident false warning rather than silence; asking the worker for an exact count per keystroke, which spends a round trip on a hint; and bundling a real tokenizer, which costs more transfer than the feature is worth.
 
+## Python dependencies: bounded ranges without a lockfile
+
+Direct Python dependencies use bounded ranges from the supported floor to the next major version. This keeps contributor installs within tested release series while preserving the worker's device-specific installation path: CUDA wheels come from PyPI, while ROCm and CPU torch wheels come from the matching `download.pytorch.org` index.
+
+Rejected alternatives: a lockfile, `uv` or `pip-tools`. A single resolved dependency tree cannot express the worker's different torch indexes by device, so these options would fight the documented install path.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
