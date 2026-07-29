@@ -566,3 +566,45 @@ def test_build_yield_sheets_groups_by_pair(tmp_path) -> None:
     assert (out / "yield.json").is_file()
     # pair_a has 2 seeds x 2 views = 4 cells at cols=4, so one row.
     assert Image.open(out / "pair_a.png").size == (1024, 256)
+
+
+def test_build_yield_sheets_can_show_a_non_final_stage(tmp_path) -> None:
+    """dream_d1 beat the final on both pre-window pairs, so stage must be selectable."""
+    import json
+
+    import pytest
+    from PIL import Image
+
+    from worker.illusion_experiment import build_yield_sheets
+
+    run = tmp_path / "runs" / "pair_a" / "seed_1"
+    (run / "ckpt_dream_round_01").mkdir(parents=True)
+    (run / "ckpt_sds_2000").mkdir(parents=True)
+    (run / "ckpt_sds_0500").mkdir(parents=True)
+    # A distinct colour per stage so the sheets cannot be confused.
+    for target, colour in (
+        (run, (10, 10, 200)),
+        (run / "ckpt_dream_round_01", (10, 200, 10)),
+        (run / "ckpt_sds_2000", (200, 10, 10)),
+        (run / "ckpt_sds_0500", (90, 90, 90)),
+    ):
+        for view in (1, 2):
+            Image.new("RGB", (32, 32), colour).save(target / f"derived_{view}.png")
+    (run / "manifest.json").write_text(
+        json.dumps({"status": "completed", "pair_id": "pair_a", "config": {"seed": 1}})
+    )
+
+    sheets = {}
+    for stage in ("final", "dream_d1", "sds_end"):
+        out = tmp_path / stage
+        summary = build_yield_sheets(tmp_path / "runs", out, stage)
+        assert summary["stage"] == stage
+        sheets[stage] = (out / "pair_a.png").read_bytes()
+
+    # Each stage renders different pixels, and sds_end picks the LAST checkpoint.
+    assert len(set(sheets.values())) == 3
+    top_left = Image.open(tmp_path / "sds_end" / "pair_a.png").getpixel((10, 10))
+    assert top_left[0] > top_left[1], "sds_end should use ckpt_sds_2000, not 0500"
+
+    with pytest.raises(ValueError):
+        build_yield_sheets(tmp_path / "runs", tmp_path / "bad", "nonsense")

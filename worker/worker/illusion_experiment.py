@@ -703,7 +703,26 @@ def make_contact_sheet(
     sheet.save(out_path)
 
 
-def build_yield_sheets(root: Path, out: Path) -> dict[str, Any]:
+def _stage_dir(run_dir: Path, stage: str) -> Path | None:
+    """Resolve a stage name to the directory holding its derived images."""
+    if stage == "final":
+        return run_dir
+    if stage == "dream_d1":
+        candidate = run_dir / "ckpt_dream_round_01"
+        return candidate if candidate.is_dir() else None
+    if stage == "sds_end":
+        sds = sorted(
+            run_dir.glob("ckpt_sds_[0-9][0-9][0-9][0-9]*"),
+            key=lambda path: int(path.name.removeprefix("ckpt_sds_")),
+        )
+        return sds[-1] if sds else None
+    raise ValueError(f"unknown stage {stage!r}")
+
+
+YIELD_STAGES = ("final", "dream_d1", "sds_end")
+
+
+def build_yield_sheets(root: Path, out: Path, stage: str = "final") -> dict[str, Any]:
     """One sheet per pair, all its seeds side by side, for reading yield.
 
     The blind stage sheets are the acceptance path and stay that way, but they
@@ -711,10 +730,16 @@ def build_yield_sheets(root: Path, out: Path) -> dict[str, Any]:
     strip per stage, and it deliberately destroys the grouping that answers the
     question this window asks: which PAIRS work, and how often across seeds.
 
+    ``stage`` picks which images are shown, and it matters. On both pre-window
+    pairs inspected, ``dream_d1`` held more tonal detail than the final, which
+    round 8 flattened. Reading yield off finals alone would understate it.
+
     Nothing is blinded here because there is nothing to blind against. The
     window runs one recipe, so there is no A/B whose labels could bias a
     rating. Use the blind sheets before promoting anything.
     """
+    if stage not in YIELD_STAGES:
+        raise ValueError(f"unknown stage {stage!r}; choose from {list(YIELD_STAGES)}")
     by_pair: dict[str, list[tuple[int, Path, dict[str, Any]]]] = {}
     for manifest_path in sorted(root.rglob("manifest.json")):
         try:
@@ -732,15 +757,17 @@ def build_yield_sheets(root: Path, out: Path) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     from PIL import Image
 
-    summary: dict[str, Any] = {"pairs": {}}
+    summary: dict[str, Any] = {"stage": stage, "pairs": {}}
     for pair_id, runs in sorted(by_pair.items()):
         cells: list[tuple[Any, str]] = []
         alive = 0
         for seed, run_dir, _manifest in sorted(runs):
-            for view in (1, 2):
-                path = run_dir / f"derived_{view}.png"
-                if path.is_file():
-                    cells.append((Image.open(path).convert("RGB"), f"s{seed} v{view}"))
+            source = _stage_dir(run_dir, stage)
+            if source is not None:
+                for view in (1, 2):
+                    path = source / f"derived_{view}.png"
+                    if path.is_file():
+                        cells.append((Image.open(path).convert("RGB"), f"s{seed} v{view}"))
             if not degenerate_run(run_dir):
                 alive += 1
         if cells:
@@ -758,10 +785,10 @@ def build_yield_sheets(root: Path, out: Path) -> dict[str, Any]:
     )
     (out / "index.html").write_text(
         "<!doctype html><meta charset=utf-8>"
-        "<title>Illusion yield by pair</title>"
+        f"<title>Illusion yield by pair ({stage})</title>"
         "<style>body{font:14px system-ui;background:#181818;color:#eee;margin:2rem}"
         "a{color:#8cf}li{margin:.35rem 0}span{color:#999}</style>"
-        "<h1>Illusion yield by pair</h1>"
+        f"<h1>Illusion yield by pair: {stage}</h1>"
         "<p>Counts are cells that emitted an image, which is not the same as a "
         "readable illusion. Judge the sheets.</p>"
         f"<ul>{rows}</ul>\n"
@@ -1965,6 +1992,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     yield_cmd.add_argument("--root", type=Path, required=True)
     yield_cmd.add_argument("--out", type=Path, required=True)
+    yield_cmd.add_argument(
+        "--stage",
+        default="final",
+        choices=YIELD_STAGES,
+        help="which stage to show. dream_d1 held more detail than final on both "
+        "pre-window pairs inspected, so finals alone can understate yield.",
+    )
 
     return parser
 
@@ -1999,7 +2033,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd == "build-yield":
-        print(json.dumps(build_yield_sheets(args.root, args.out), indent=2))
+        print(json.dumps(build_yield_sheets(args.root, args.out, args.stage), indent=2))
         return
 
     if args.cmd == "blind-sheet":
