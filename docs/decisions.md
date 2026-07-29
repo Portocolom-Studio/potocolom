@@ -286,7 +286,7 @@ Rejected alternatives: CUDA only (the primary development machine could then nev
 
 ## Development loop: dependencies in containers, applications native
 
-PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
+PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. Only PostgreSQL starts by default, since the native loop keeps its queue and relay in process and stores assets locally; the other three are cloud-profile substitutes behind `--profile cloud-sim`. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
 
 Rejected alternatives: everything in containers (closest to what ships, but slower iteration and clumsier debugging every single day); everything native (host setups drift and version differences surface as mystery bugs).
 
@@ -308,15 +308,30 @@ Models registered by workers persist in PostgreSQL, and `GET /api/v1/models` ret
 
 Rejected alternatives: listing only live models (simpler response, but a worker restart makes models vanish from the UI and orphans old history); returning the stored registry with no signal (the user discovers unavailability by a failed generation).
 
-## Stored outputs: WebP today, PNG masters planned
+## Stored outputs: PNG masters, WebP thumbnails and frames
 
-<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code ships WebP -->
+<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code shipped WebP -->
+<!-- corrected 2026-07-29: issue #125 shipped, so the code matches the original decision again -->
 
-Shipped reality: generated images and their thumbnails are written as **lossy WebP quality 80** by the worker (a single code path, small files, no extra dependency). The realtime wire is WebP too.
+The stored master is **lossless PNG**, written by Pillow with no extra dependency: universal, no quality knobs, and the archival copy of the user's work. Cloud storage cost is bounded by the retention decision rather than by the format.
 
-The original decision (kept for the record) was to store PNG masters: lossless, universal, no quality knobs, written by Pillow with no extra dependency, with cloud storage cost bounded by the retention decision rather than the format. That PNG-master intent is now tracked as open issue **#125** ("Store generation masters as PNG per the stored-outputs decision"); until it lands, masters are the same lossy WebP as everything else, so this entry and the code disagree by design-not-yet-shipped.
+Everything that exists to be looked at rather than kept is **WebP**: the derived thumbnails the gallery displays, and the realtime frame stream, where bytes on the wire decide the frame rate.
 
-Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
+Masters written before this shipped are still WebP and stay that way. There is no backfill: history and share links serve whatever `mime` and `storage_key` the asset row records, so a mixed bucket is normal and nothing reading an asset may assume the extension.
+
+One consequence worth recording: the largest master the fleet can produce is a 4x upscale of a 1024 px image, which measures about 19 MB losslessly and reaches 50 MB on incompressible detail. The local upload route's ceiling exists to bound abuse and has to stay clear of that, so it moved from 20 MB to 64 MB with this change.
+
+Measured on a real 1024 px generation, so the next person reconsidering this does not have to re-derive it. At 1024 px, and at 4096 px for the largest upscale the fleet produces:
+
+| Format | 1024 px | 4096 px | Encode at 4096 | Pixels |
+|---|---|---|---|---|
+| PNG | 2.19 MB | 19.20 MB | 4.0 s | lossless |
+| WebP lossless | 1.58 MB | 12.64 MB | 7.0 s | identical to PNG, verified |
+| WebP lossy q80 | 0.26 MB | 1.17 MB | 0.8 s | lossy, permanent |
+
+Lossless WebP is therefore 28 to 34 percent smaller than PNG for byte-identical pixels, at roughly twice the encode time, and it would fit the original 20 MB upload ceiling. It is the obvious move if stored bytes ever cost real money, and it pairs with converting to PNG only on an explicit download, which is lossless from that source. It is not worth a format migration and a conversion path today, when retention already bounds the cost.
+
+Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for); JPEG for the master (lossy, and no alpha); keeping WebP for the master too, which is what shipped between 2026-07-23 and this change, and which left the archival copy quietly lossy; storing lossy WebP and converting to PNG on download, which sounds like a saving but hands the user PNG's size wrapping already-discarded detail, and compounds on every edit and upscale that re-encodes from the master.
 
 ## Model manifests: JSON
 
@@ -397,6 +412,52 @@ Rejected alternative: public Terraform under `deploy/terraform/` (as earlier dra
 Every completed job and closed realtime session writes one user-linked row (action, model, tier, output category, gpu_ms, duration) to a `usage_events` table in the deployment's own PostgreSQL, in both modes; the worker attaches a category from a CLIP zero-shot pass over the output image at generation time. Per-event user-linked rows are what retention, cohort and funnel analysis need, which is what investors ask; the CLIP pass is nearly free because SD-class pipelines already hold a CLIP encoder and the image is already in memory. No prompts, images, IPs or user agents are stored; rows die with the account purge and appear in the GDPR export. Specified in [metrics.md](metrics.md).
 
 Rejected alternatives: a third party analytics product (PostHog, Amplitude: client side trackers and data sharing contradict the no-cookies posture and add a dependency); daily aggregates only (privacy-trivial but cannot answer retention or cohort questions); classifying the prompt text instead of the output (prompts are short, misleading or absent in drawing and enhance flows); pseudonymous ids (loses the join to plan and cohort, which is the point of the exercise).
+
+## Usage event retention: 90-day raw rows plus daily user rollups
+
+Raw `usage_events` are retained from the UTC midnight 90 days before maintenance
+runs. Before older complete days are pruned, the existing five-minute maintenance
+loop replaces an idempotent `usage_event_rollups` row for each user, UTC day,
+kind, action, model, tier and category with the raw count and numeric sums. The
+rollup and prune commit in one transaction. Ninety days keeps a substantial
+recent window of event-level session and funnel detail while placing a direct
+bound on the table daily telemetry and the future admin view scan most often.
+The window is fixed because both profiles need the same metric semantics;
+event-rate differences change the bounded raw volume rather than the retention
+contract.
+
+The UTC alignment means 90 to 91 days of arrivals remain, or about 90 x `R` to
+91 x `R` raw rows at an average `R` completed events per day.
+
+The daily per-user grain preserves the question the table exists to answer: did
+this user return in a later period. Daily presence can be regrouped into DAU,
+WAU, calendar periods or signup-relative first-week cohorts; a coarser stored
+bucket cannot recover those boundaries. The dimensions preserve category, model,
+tier and action retention, while count, category-score count and sum, gpu_ms,
+duration and frames preserve the additive usage measures. Per-user annual row
+count is the sum of distinct dimension tuples used on each active day: 365 rows
+for a daily user with one tuple, or 365 x `D` when that user uses `D` tuples every
+day. The rollup is long-lived, but its growth is periodic and dimension-bounded
+rather than per completed event.
+
+`usage_event_rollups.user_id` uses the same `ON DELETE CASCADE` as raw events.
+The rollup is personal data, dies with the account purge, and belongs in the GDPR
+export when issue #10 implements it. This retains the existing privacy
+commitment; an aggregate-only rollup would not, because a later purge could not
+remove that user's contribution.
+
+The existing `usage_events_created_at` index remains: it serves both the
+maintenance rollup/prune range and telemetry's previous-day range. The unique
+rollup key serves the idempotent conflict update and user-scoped cohort/GDPR
+reads; its leading `user_id` also supports the cascade lookup. A separate
+`usage_event_rollups_bucket_date` index serves cross-user period scans for cohort
+and admin aggregation.
+
+Rejected alternatives: no retention, which leaves per-event growth unbounded;
+plain deletion after the raw window, which destroys returning-user and cohort
+history; aggregate-only rollups, which cannot identify a returning user and
+cannot remove one person's contribution on purge; weekly or monthly user
+rollups, which cannot reconstruct daily activity or signup-relative first weeks.
 
 ## Telemetry: opt-out anonymous aggregates from self-hosted installs
 
@@ -531,6 +592,52 @@ Issue #151. Stable Diffusion 3.5 Medium enters the roster as the quality text-to
 Measured on the reference RX 7600 (gfx1102, 15.98 GiB) on 2026-07-26: full residency OOMs in both fp16 and bf16, because the fp16 component set is about 15.15 GB of weights before a single activation, so the issue's "full encoders comfortable on 16 GB" is wrong. The model-offload rung is the shipped 16 GB configuration, peaking at 12.09 GB (fp16) and 10.21 GB (bf16). `min_vram_gb` is 24: it keeps its documented full-residency meaning, it cannot be measured exactly on a card that OOMs, and it is bounded below by the measurement that 16 GiB is insufficient. That value makes the existing 0.55 largest-component fraction select model offload with a 13.2 GB threshold against a 12.09 GB measured peak, which is why no ladder override field was needed. Timing is 56 s at 20 steps and 89 s at 40 at 1024 px, a 22.6 s offload floor plus about 1.67 s per step, so 20 is the default: the quality difference against 40 at a fixed seed did not justify 33 seconds. The studio picker already renders the estimated time beside the model name, so the cost is visible before selection. bf16 saves 1.9 GB and one second with visually identical output, which did not justify a per-manifest dtype field.
 
 Rejected alternatives: a `pipeline_family` manifest field or inferring the family from `source` (AutoPipeline already dispatches correctly, source inference breaks for mirrors and local paths, and the field would be a speculative seam maintained against upstream configuration); a `largest_component_vram_gb` override for the memory ladder's 0.55 largest-component fraction, whose UNet-dominant assumption T5-XXL breaks in principle (the measurement showed the heuristic picking the correct rung with margin, so the field would have been schema without a problem to solve); shipping `realtime` or `image_to_image` (realtime would need a distilled SD3 and would run a 21-frame calibration at every startup; i2i doubles the acceptance surface for no motivation in the issue); a site-wide attribution banner (it would credit Stability for output from Apache-licensed models too); teaching the engine to descend a rung after an OOM (a general failure-path state machine that changes every model's behavior, and a separate issue if measurement shows it is needed).
+
+## Prerendering: every known route is rendered at build time
+
+Supersedes the `ssr = false` client-rendered shell in "Frontend: SvelteKit as a static SPA" above, without changing what that decision settled: there is still no server rendering at request time, and the build is still one static artifact that the API serves when self-hosted and a CDN serves in the cloud. What changed is that the same artifact also serves the public marketing site, where a shell containing no title, description or heading is the whole product a crawler and a social card ever see. SvelteKit prerenders known routes into complete documents, the client hydrates them, and the studio behaves exactly as before.
+
+Two consequences are accepted deliberately. The prerendered language is English, so the locale preference is restored after hydration rather than during module initialization, which means a Spanish visitor sees English for one frame. Benchmark results load after hydration rather than being inlined into the prerendered document, keeping the page small at the cost of the results table not being crawlable; the surrounding explanation and the model specifications are.
+
+Rejected alternatives: leaving the marketing routes client-rendered and accepting an empty shell in search results and social cards (the reason this project has a landing page at all is discovery); a separate marketing site or branch (rejected earlier and still rejected, since one codebase serving both surfaces is the point); server-side rendering at request time (needs a running server in front of the CDN, which the cloud profile deliberately avoids).
+
+## Favorites: a timestamp on the job row
+
+Favorites are persisted as nullable `jobs.starred_at`. The timestamp is both membership and newest-first ordering, the existing job owner scopes every operation, and job retention remains authoritative. This gives the implicit self-hosted user and future account users the same endpoint and database path.
+
+Rejected alternatives: keeping UUIDs in browser localStorage, which strands favorites across browsers, reinstalls and regenerated rows; a separate favorites join table, which adds a join and lifecycle without buying many-to-many ownership because assets and their jobs have one owner.
+
+## Benchmark history: PostgreSQL sessions and measurements
+
+Supersedes issue #107's static-JSON-only position. Each completed suite run is one benchmark session with ordered per-model measurements in PostgreSQL, and reads are install-scoped because a benchmark measures the shared GPU rather than one person's work. The existing JSON artifacts remain a portable report and the public static page's fallback, while an installed studio can list and compare every retained run in either deployment profile.
+
+Rejected alternatives: keeping session history solely as committed static JSON, where each run overwrites the previous report, publishing runtime data requires a source-control operation, and the session picker can never show more than one run; scoping sessions to the account that ran them, which would hide an install's own hardware history from everyone but whoever happened to trigger the benchmark.
+
+## Roles: three tiers on the user row
+
+Access is a single `role` column on `users` with three values, checked by a dependency beside `current_user` rather than inside each endpoint: `admin` (everything, including install configuration), `user` (the member tier: generate, star, upload, manage their own work) and `viewer` (read-only, including the metrics section and benchmark history). The `AUTH_MODE=none` local user is an admin, and an existing local user is promoted on startup, so a single-user self-hosted install behaves exactly as before. This covers the requirement that a friend on someone's install may look without spending their GPU, and the cloud requirement that install-wide reads are not open to every customer.
+
+Rejected alternatives: a per-resource permission table, and admin-assignable per-tab grants, both of which add a matrix nobody has asked for and can be layered on these tiers later if a real need appears; no roles at all, which cannot express read-only access and leaves install-wide endpoints open to any authenticated account once the cloud has more than one.
+
+## Model timings: observed per-install medians supersede shipped constants
+
+A new install starts with the shipped reference-card GPU timings. Once a model has five eligible succeeded jobs, the median observed GPU speed from its latest 50 jobs supersedes that reference speed for the install. Five leaves four representative observations when one job is pathological without delaying convergence for a lightly used model; 50 smooths ordinary workload variance while allowing the cache to follow a hardware change, and only jobs finished within the last 30 days count, so the refresh reads a bounded slice rather than the whole of an install's history and a stale timing cannot outlive the hardware it described. Observations are normalized for each job's steps, dimensions or upscale factor before the median is taken, and the existing five-minute maintenance loop refreshes the derived in-memory cache. Jobs do not record their worker or memory mode, so the cache is keyed by model alone rather than inventing an unreliable join.
+
+Rejected alternatives: shipping one machine's constants forever, which is wrong on every other hardware profile; calibrating on every boot, which spends GPU time and measures idle synthetic conditions rather than the real workload.
+
+The refresh reads the newest succeeded jobs per model, which `jobs_user_created` cannot answer because it leads with `user_id`, so migration `0010` adds a partial index on `(model_id, finished_at DESC)` limited to the succeeded rows with a positive GPU time, which is the query's own filter.
+
+## SPA/API compatibility: N-1 through expand-contract
+
+Each API release tolerates the previous release's SPA. Response shapes follow the same expand-contract discipline as the worker protocol and database migrations: expand with new fields, move clients off old fields, then contract only after the N-1 window has passed. New-build polling offers the user a reload, but compatibility does not depend on taking it.
+
+Rejected alternative: breaking response changes plus a forced reload. That makes SPA and API deploys lockstep and can discard in-flight work.
+
+## Prompt token window: declared per manifest, silent when undeclared
+
+The text encoder window a prompt is measured against comes from the manifest field `prompt_token_limit`, not from a constant in the frontend. The shipped CLIP based models declare 77; a model whose encoder differs declares its own figure and the studio warning follows it without a frontend change. An absent or zero value means the window is unknown and no warning appears, so a manifest that forgets the field fails back to the behaviour before the warning existed instead of asserting a limit its encoder does not have. Upscale manifests take no prompt and leave it unset. The count itself is estimated in the browser from words and punctuation rather than tokenized exactly, because the real CLIP tokenizer means shipping roughly a megabyte of BPE vocabulary to phrase a warning that only needs to be right within a few tokens.
+
+Rejected alternatives: hardcoding 77 in the studio, which is correct only for the models shipped today and silently wrong for the first model with a larger encoder; defaulting the field to 77 so existing manifests need no edit, which turns a forgotten declaration into a confident false warning rather than silence; asking the worker for an exact count per keystroke, which spends a round trip on a hint; and bundling a real tokenizer, which costs more transfer than the feature is worth.
 
 ## Supporting defaults
 

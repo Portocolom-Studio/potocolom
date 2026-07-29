@@ -41,12 +41,16 @@ The NVIDIA variant (`:v0.x-cuda`) uses the `deploy.resources.reservations.device
 
 Dependencies run in containers; the three applications run natively for instant reload and debugger access:
 
+The `make api` target sets `TELEMETRY=false`, so the native development loop never reports telemetry.
+
 ```
-deploy/compose/dev.yml        # postgres, redis, minio, mailpit; nothing else
+deploy/compose/dev.yml        # postgres; redis, minio and mailpit behind --profile cloud-sim
 backend:  uvicorn app:app --reload          # against the dev containers
 frontend: npm run dev                        # Vite dev server, proxies /api to backend
 worker:   python -m worker --device rocm     # dials ws://localhost:8000/api/v1/fleet
 ```
+
+Default native loop (what `make deps` starts). Redis, MinIO and Mailpit only appear when you add `--profile cloud-sim` / `make deps-all`; see the cloud simulation section below.
 
 ```mermaid
 flowchart LR
@@ -55,19 +59,13 @@ flowchart LR
         BE["FastAPI<br>uvicorn --reload"]
         WK["Worker<br>--device rocm"]
     end
-    subgraph DEPS["Containers, deploy/compose/dev.yml"]
+    subgraph DEPS["Containers, make deps"]
         P[("PostgreSQL")]
-        R[("Redis")]
-        M[("MinIO")]
-        MP["Mailpit"]
     end
     B["Browser"] --> FE
     FE -->|"proxies /api"| BE
     WK -->|"dials the fleet endpoint"| BE
     BE --> P
-    BE --> R
-    BE --> M
-    BE -->|"SMTP"| MP
 ```
 
 The containerized applications are still exercised constantly: by the cloud simulation below, by CI image builds, and by running the shipped compose file before every release.
@@ -75,11 +73,16 @@ The containerized applications are still exercised constantly: by the cloud simu
 ### Running each component
 
 ```
-# dependencies (PostgreSQL, Redis, MinIO, Mailpit)
+# dependencies: PostgreSQL is the only one the native loop uses. Redis, MinIO
+# and Mailpit are cloud-profile substitutes; add --profile cloud-sim for them.
+# Host 5432 already taken? DEV_POSTGRES_PORT=5433 docker compose ... up -d, and
+# point DATABASE_URL at the same port for the backend and the tests.
 docker compose -f deploy/compose/dev.yml up -d
 
+# Prefer `make setup` (picks a 3.11+ interpreter, installs into .venv only).
+# Manual equivalent - the interpreter must be 3.11+, not a system python3 of 3.10:
 # backend, from backend/
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"
 .venv/bin/uvicorn app.main:app --reload          # http://localhost:8000/api/v1/health
 .venv/bin/ruff check . && .venv/bin/pytest       # lint and tests
 
@@ -89,7 +92,7 @@ npm run dev                                      # http://localhost:5173
 npm run lint && npm run check                    # format check and type check
 
 # worker, from worker/
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m worker                       # dials the API and retries until one
                                                  # is running; Ctrl+C to stop
 .venv/bin/ruff check . && .venv/bin/pytest
@@ -162,10 +165,12 @@ GitHub Actions runs lint and tests on every pull request (issue #13). By default
 
 Per component, no GPU:
 
-1. Lint and unit tests per component (frontend, backend, worker), on every pull request.
-2. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
-3. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
-4. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
+1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
+2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
+3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
+4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
+5. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
+6. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
 
 ```mermaid
 flowchart LR

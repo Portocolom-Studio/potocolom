@@ -28,12 +28,12 @@ Fleet connection, worker to API:
 
 | type | Fields | Notes |
 |---|---|---|
-| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers) |
-| `heartbeat` | `slots_in_use`, `loaded_models`, `gpu` (util, VRAM, temperature, power) | every 30 seconds. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample |
+| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
+| `heartbeat` | `slots_in_use`, `loaded_models`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
-| `session_closed` | `session_id`, `frames` | worker side accounting |
+| `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
 | `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
-| `job_done` | `job_id`, `gpu_ms`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
+| `job_done` | `job_id`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
 | `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
 
 Fleet connection, API to worker:
@@ -71,10 +71,10 @@ sequenceDiagram
     participant W as Worker
     participant A as API server
     W->>A: WS connect /api/v1/fleet
-    W->>A: hello (protocol_version, worker_id, models, realtime_slots)
+    W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
-        Note over W,A: worker is dispatchable; heartbeats begin
+        Note over W,A: worker is dispatchable and heartbeats begin
     else version too old
         A-->>W: rejected (min_supported_version)
         A->>W: close 4002

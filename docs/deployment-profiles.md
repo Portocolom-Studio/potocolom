@@ -87,6 +87,19 @@ flowchart TB
 
 The corresponding editable diagram is the Profile comparison page in [diagrams/](diagrams/).
 
+## Cloud-readiness ledger
+
+This table records local choices whose deferred consequences have a concrete
+scaling trigger. It is a status ledger, not a roadmap or a new decision record.
+
+| Local choice | Why it is safe today | Trigger that forces the change |
+|---|---|---|
+| **Database connection pooling.** `backend/app/db.py` uses `NullPool`, so each request and fire-and-forget write opens a connection. Tests currently drive requests and WebSockets on separate event loops, and asyncpg connections are loop-bound. | A single self-hosted API process has modest connection concurrency. | More than one API replica, or use of managed PostgreSQL with a connection ceiling. Move the tests to one event loop, then tune the pool per profile. |
+| **In-process queue and relay.** With `REDIS_URL` empty, dispatch uses an in-process heap and frame relay uses an in-process call. | One API process owns all workers and browser connections. | More than one API replica. Configure the Redis queue and frame bus described in [04 - Architecture seams](internals/04-architecture-seams.md). |
+| **Container log rotation.** Compose uses Docker's bounded `json-file` driver. | The self-hosted stack runs as Docker containers on one host. | The cloud deployment. ECS must use `awslogs`; the compose logging block does not apply there. |
+| **In-memory observed model timings.** Each API process learns per-model GPU speed from recent succeeded jobs, seeded by committed reference-card timings. | The existing maintenance loop refreshes the derived cache every five minutes, and a database failure safely restores the shipped seed. | More than one materially different GPU profile serving the same install. Record worker identity or memory mode on each job, then key observations by that hardware profile. |
+| **Usage rollup scale.** Worker identities are pruned after 30 days. Raw `usage_events` are retained for 90 days; older complete UTC days become daily per-user and per-dimension `usage_event_rollups`. | Per-event growth is bounded while daily user presence and additive measures remain available for cohorts and retention. | `usage_event_rollups` period scans slowing at measured fleet volume. Partition by `bucket_date` without changing the rollup contract. |
+
 ## Migration paths
 
 Every path below is possible because the schema, storage keys and API are identical everywhere. Paths that need a small tool name the issue that ships it; nothing here requires code the architecture does not already plan.

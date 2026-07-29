@@ -16,6 +16,7 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/potocolom_test")
+os.environ.setdefault("TELEMETRY", "false")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
@@ -44,9 +45,17 @@ def _prepare_database() -> bool:
                                      user=url.username, password=url.password,
                                      database=database, timeout=3)
         try:
-            await conn.execute("TRUNCATE gpu_samples, gpu_sample_rollups, assets, jobs")
-        except asyncpg.UndefinedTableError:
-            pass  # first run; migrations have not created the tables yet
+            candidates = (
+                "telemetry_state", "usage_event_rollups", "usage_events",
+                "benchmark_measurements", "benchmark_sessions", "workers",
+                "gpu_samples", "gpu_sample_rollups", "assets", "jobs",
+            )
+            existing = [
+                name for name in candidates
+                if await conn.fetchval("SELECT to_regclass($1)", f"public.{name}") is not None
+            ]
+            if existing:
+                await conn.execute(f"TRUNCATE {', '.join(existing)} CASCADE")
         finally:
             await conn.close()
 

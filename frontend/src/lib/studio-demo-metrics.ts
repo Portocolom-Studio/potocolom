@@ -58,6 +58,8 @@ export function demoHistory(now: number = Date.now()): Generation[] {
 			finished_at: finished
 				? new Date(createdMs + queueMs + gpuMs + postprocessMs).toISOString()
 				: null,
+			starred_at: null,
+			expired_favorite: false,
 			assets: []
 		});
 	}

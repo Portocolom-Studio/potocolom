@@ -31,21 +31,19 @@ NVIDIA (default images):
 
 AMD (ROCm):
 
-1. In `deploy/compose/compose.yml`, point the worker's `dockerfile` at
-   `deploy/docker/Dockerfile.worker-rocm`, set `DEVICE: rocm`, and replace the
-   NVIDIA device reservation with:
-
-   ```yaml
-   devices:
-     - /dev/kfd
-     - /dev/dri
-   group_add:
-     - video
-   ```
-
-2. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
+1. Install the ROCm kernel driver on the host so `/dev/kfd` and `/dev/dri`
+   exist, and add your user to the `video` (and on some distributions
+   `render`) group.
+2. `docker compose -f deploy/compose/compose.yml --profile rocm up -d --build`
+   builds `deploy/docker/Dockerfile.worker-rocm` and passes the devices
+   through; no editing of the compose file is needed.
+3. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
    natively by the torch ROCm 6.3+ wheels the image installs; do not set
    `HSA_OVERRIDE_GFX_VERSION`.
+4. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
+
+The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
+run one or the other, never both, since they share the model volumes.
 
 ## First run
 
@@ -85,6 +83,11 @@ the first job against it fails when the download is refused.
 Budget for it: roughly 15 GB of weights, well beyond the 2-7 GB the other
 models need, and the download is slow on a domestic connection.
 
+The bundled profile runs PostgreSQL 16. PostgreSQL 13 or newer is required if
+you point `DATABASE_URL` at an existing server. The API checks the server version
+before running migrations and starts in degraded mode with a clear warning when
+the server is too old.
+
 ## TLS and HSTS
 
 The API emits `Strict-Transport-Security: max-age=31536000` on every HTTP
@@ -113,7 +116,7 @@ upgrade an initial plain-HTTP connection.
 | Volume | Contents | Losing it means |
 |---|---|---|
 | `pgdata` | users, jobs (prompts, params, seeds), asset records | history and gallery are gone |
-| `assets` | generated images and thumbnails (WebP) | images are gone; rows point at nothing |
+| `assets` | generated PNG masters and WebP thumbnails | images are gone; rows point at nothing |
 | `models` | model manifests (JSON) | re-seeded from the image on next boot |
 | `hf-cache` | downloaded model weights | re-downloaded on next use (2-7 GB per model) |
 
@@ -121,11 +124,35 @@ Back up `pgdata` and `assets` together: jobs and asset rows reference files
 by storage key, so restoring one without the other leaves dangling
 references. `hf-cache` and `models` are reproducible.
 
+## Logs
+
+Every service in `deploy/compose/compose.yml` uses Docker's `json-file`
+logging driver with five 10 MB files per container. The files live in Docker's
+data directory on the host, survive container restarts, and are removed when
+the container is removed. Read them with:
+
+```bash
+docker compose -f deploy/compose/compose.yml logs
+docker compose -f deploy/compose/compose.yml logs -f api worker
+```
+
+To change the approximately 50 MB per-container limit, edit `max-size` or
+`max-file` in the `x-logging` block and recreate the services. Job state,
+`jobs.failure_reason`, phase timings, GPU sample history, and usage events are
+operational records in PostgreSQL; container logs retain the remaining process
+detail such as startup, protocol, driver, and traceback messages.
+
+The API sends the anonymous daily aggregate documented in
+[metrics.md](metrics.md) by default. Set `TELEMETRY=false` in
+`deploy/compose/.env` and recreate the API service to disable it. The exact
+next payload is available from `GET /api/v1/telemetry/preview`.
+
 ## Updating
 
 ```bash
 git pull
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+# AMD: --profile rocm, the same profile you first started with
 ```
 
 Database migrations run automatically at API startup (docs/decisions.md,

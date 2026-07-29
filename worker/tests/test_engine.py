@@ -1,11 +1,247 @@
 import asyncio
 import io
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
 from worker.engine import CALIBRATION_SAMPLES, DiffusersEngine, SimulatedEngine
 from worker.manifests import Manifest, SIMULATED_MANIFEST
+
+
+class _FakeTensor:
+    def __init__(self, shape, *, values=None, marker=None):
+        self.shape = tuple(shape)
+        self.values = values
+        self.marker = marker
+
+
+class _FakeTorch:
+    class _NoGrad:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    @staticmethod
+    def no_grad():
+        return _FakeTorch._NoGrad()
+
+    @staticmethod
+    def tensor(values, *, device):
+        assert device == "cpu"
+        return _FakeTensor((len(values), len(values[0])), values=values)
+
+    @staticmethod
+    def cat(tensors, dim):
+        shape = list(tensors[0].shape)
+        axis = dim if dim >= 0 else len(shape) + dim
+        shape[axis] = sum(tensor.shape[axis] for tensor in tensors)
+        return _FakeTensor(shape, marker=tensors[0].marker)
+
+    @staticmethod
+    def zeros_like(tensor):
+        return _FakeTensor(tensor.shape, marker=0)
+
+
+class _FakeTokenizer:
+    # Only the attributes a real CLIPTokenizer actually exposes. This fake must
+    # never offer a method the real one lacks: it previously had
+    # build_inputs_with_special_tokens, which transformers 5 removed, and these
+    # tests passed while every long prompt raised AttributeError on a real model.
+    pad_token_id = 0
+    bos_token_id = 1
+    eos_token_id = 2
+
+    def __call__(self, prompt, *, add_special_tokens, truncation):
+        assert add_special_tokens is False
+        assert truncation is False
+        return {"input_ids": [10 + int(word[1:]) for word in prompt.split()]}
+
+    @staticmethod
+    def num_special_tokens_to_add(*, pair):
+        assert pair is False
+        return 2
+
+
+class _FakeEncoderOutput:
+    def __init__(self, pooled, hidden):
+        self.pooled = pooled
+        self.hidden_states = [hidden, hidden]
+
+    def __getitem__(self, index):
+        assert index == 0
+        return self.pooled
+
+
+class _FakeTextEncoder:
+    def __init__(self, width):
+        self.config = SimpleNamespace(use_attention_mask=True)
+        self.width = width
+        self.calls = 0
+
+    def __call__(self, input_ids, *, attention_mask, output_hidden_states=False):
+        self.calls += 1
+        assert attention_mask.shape == input_ids.shape
+        hidden = _FakeTensor((1, input_ids.shape[1], self.width))
+        if output_hidden_states:
+            first_token = input_ids.values[0][1]
+            return _FakeEncoderOutput(
+                _FakeTensor((1, self.width), marker=first_token),
+                hidden,
+            )
+        return (hidden,)
+
+
+def _fake_prompt_engine():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    return engine
+
+
+def _fake_pipeline(*, dual=False):
+    pipeline = SimpleNamespace(
+        tokenizer=_FakeTokenizer(),
+        text_encoder=_FakeTextEncoder(4),
+        tokenizer_2=None,
+        text_encoder_2=None,
+        config=SimpleNamespace(force_zeros_for_empty_prompt=True),
+    )
+    if dual:
+        pipeline.tokenizer_2 = _FakeTokenizer()
+        pipeline.text_encoder_2 = _FakeTextEncoder(6)
+    return pipeline
+
+
+def _clip_manifest():
+    return Manifest(
+        id="clip",
+        name="CLIP",
+        capabilities=["text_to_image"],
+        prompt_token_limit=77,
+    )
+
+
+def test_long_prompt_embeddings_span_multiple_clip_windows():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+
+    kwargs = engine._prompt_kwargs(
+        pipeline,
+        _clip_manifest(),
+        " ".join(f"w{index}" for index in range(80)),
+        None,
+    )
+
+    assert kwargs["prompt_embeds"].shape == (1, 154, 4)
+    assert kwargs["prompt_embeds"].shape[1] > 77
+    assert kwargs["prompt_embeds"].shape[1] % 77 == 0
+
+
+def test_long_positive_and_short_negative_embeddings_have_matching_shapes():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+
+    kwargs = engine._prompt_kwargs(
+        pipeline,
+        _clip_manifest(),
+        " ".join(f"w{index}" for index in range(80)),
+        "w0",
+    )
+
+    assert kwargs["prompt_embeds"].shape == kwargs["negative_prompt_embeds"].shape
+    assert kwargs["negative_prompt_embeds"].shape == (1, 154, 4)
+
+
+def test_short_prompt_keeps_existing_pipeline_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+
+    kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), "w0 w1", None)
+
+    assert kwargs == {"prompt": "w0 w1"}
+    assert pipeline.text_encoder.calls == 0
+
+
+def test_third_text_encoder_keeps_pipeline_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline(dual=True)
+    pipeline.tokenizer_3 = object()
+    pipeline.text_encoder_3 = object()
+    prompt = " ".join(f"w{index}" for index in range(80))
+
+    kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), prompt, "w0")
+
+    assert kwargs == {"prompt": prompt, "negative_prompt": "w0"}
+    assert pipeline.text_encoder.calls == 0
+    assert pipeline.text_encoder_2.calls == 0
+
+
+def test_fake_tokenizer_only_offers_what_a_real_one_does():
+    """The chunking code is exercised above against a fake tokenizer, which can
+    drift from the library and hide a crash. It already did once: the fake
+    provided build_inputs_with_special_tokens, transformers 5 does not, and
+    every long prompt raised AttributeError on a real model while these tests
+    passed. Skips where transformers is absent, as the upscale tests do for torch.
+    """
+    pytest = __import__("pytest")
+    pytest.importorskip("transformers")
+    from transformers import CLIPTokenizer
+
+    try:
+        real = CLIPTokenizer.from_pretrained(
+            "stabilityai/sd-turbo", subfolder="tokenizer", local_files_only=True,
+        )
+    except Exception as error:  # not cached on this machine
+        pytest.skip(f"no cached CLIP tokenizer: {error}")
+
+    for attribute in ("bos_token_id", "eos_token_id", "pad_token_id",
+                      "num_special_tokens_to_add", "model_max_length"):
+        assert hasattr(real, attribute), f"engine uses tokenizer.{attribute}"
+    assert real.num_special_tokens_to_add(pair=False) == 2
+
+
+def test_repeated_frames_reuse_the_encoded_prompt():
+    """A realtime session encodes the same prompt for every frame, and chunked
+    encoding is a full pass through each text encoder, so the second frame must
+    not pay for it again. Measured at 322 ms on CPU for two chunks against a
+    250 ms frame budget.
+    """
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    manifest = _clip_manifest()
+    prompt = " ".join(f"w{index}" for index in range(80))
+
+    first = engine._prompt_kwargs(pipeline, manifest, prompt, None)
+    after_first = pipeline.text_encoder.calls
+    second = engine._prompt_kwargs(pipeline, manifest, prompt, None)
+
+    assert after_first > 0
+    assert pipeline.text_encoder.calls == after_first  # no re-encode
+    assert second is first
+
+    # A changed prompt has to be encoded again rather than served stale.
+    engine._prompt_kwargs(pipeline, manifest, prompt + " w99", None)
+    assert pipeline.text_encoder.calls > after_first
+
+
+def test_sdxl_pooled_embedding_comes_from_first_chunk():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline(dual=True)
+
+    kwargs = engine._prompt_kwargs(
+        pipeline,
+        _clip_manifest(),
+        " ".join(f"w{index}" for index in range(80)),
+        "w0",
+    )
+
+    assert kwargs["prompt_embeds"].shape == (1, 154, 10)
+    assert kwargs["prompt_embeds"].shape == kwargs["negative_prompt_embeds"].shape
+    assert kwargs["pooled_prompt_embeds"].shape == (1, 6)
+    assert kwargs["pooled_prompt_embeds"].marker == 10
 
 
 def test_simulated_gpu_lifecycle():
@@ -42,7 +278,7 @@ def test_simulated_generate_with_input_image():
     assert result.height == 128
     assert result.load_ms >= 0
     assert engine.loaded_models() == ["sd-sim"]
-    assert result.data[:4] == b"RIFF"
+    assert result.data[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_simulated_upscale_resizes_by_factor():
@@ -71,7 +307,7 @@ def test_simulated_upscale_resizes_by_factor():
     assert result.width == 256
     assert result.height == 192
     assert progress_values[-1] == 1.0
-    assert result.data[:4] == b"RIFF"
+    assert result.data[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_simulated_upscale_requires_input():
