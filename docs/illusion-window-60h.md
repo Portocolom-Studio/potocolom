@@ -54,7 +54,7 @@ is a measurable arm rather than a hidden variable.
 
 ## Pre-window measurements
 
-Four measurements were run before the window, under
+Five measurements were run before the window, under
 `.local/illusion-reliability/campaigns/prewindow/`. They set the budget,
 the wording, the prime resolution and the concurrency the window uses. Their
 outcomes are recorded in that directory and summarised in the runbook.
@@ -65,6 +65,40 @@ outcomes are recorded in that directory and summarised in the runbook.
 | A2 style | Which wording earned the smoke: the reviewed short one, the untested scaffolded one, or oil at identical scaffolding? |
 | A3 saturation | Does "readable by SDS-2000" hold on a pair nobody has run? |
 | A4 prime resolution | The prime is what gets printed. Is 512px native better than 256, or does the signal hide in high frequencies as the paper warns in Sec. 4.3? |
+| A5 joint Dream | The recipe pins `dream_joint` off, yet joint targets moved phase-2 loss 98 percent per round against 44-60, and independent per-view targets are the recorded mechanism behind subject collapse. Dream is about 15 percent of a cell, so asking is nearly free. |
+
+### A1: concurrency rejected
+
+| Slots | Aggregate | Per cell | Gain |
+|------:|----------:|---------:|-----:|
+| 1 | 3.11 steps/s | 3.11 | baseline |
+| 2 | 3.25 steps/s | 1.63 / 1.62 | +4.5% |
+| 3 | 3.12 steps/s | 1.04 / 1.04 / 1.46 | +0.3% |
+
+Aggregate throughput is flat, so the ceiling is compute rather than memory:
+peak VRAM stayed 4331 MB per cell at every slot count. The window therefore
+runs at one slot. K=3 also finished unevenly (342.5s against 480.6s), which
+would make cell duration unpredictable for the driver's deadline arithmetic.
+
+`POTOCOLOM_GPU_SLOTS` and `--shard` stay in the tree at their default of 1,
+tested and inert. The measurement is what makes 1 correct here, and a
+different card would deserve its own measurement rather than inheriting this
+conclusion.
+
+At one slot, K=1 measured 0.322 s/step against the calibration smoke's
+0.324, so the rig reproduces its own baseline.
+
+### The blocker A1 found first
+
+Every cell of the first attempt died in 11 seconds with
+`IncompleteSnapshotError`: `HF_HUB_OFFLINE` refuses this machine's SD 1.5
+snapshot, which is missing 23 files including the safety checker the code
+already works around. The 36-cell plan hardcoded absolute snapshot paths, so
+its smoke ran. A freshly built plan took the Hub-id defaults instead, so all
+154 window cells would have died at launch with nobody watching, and the
+window would have been spent before anyone looked. Model ids are now resolved
+to cached snapshot directories where plans are built and where the experiment
+CLI builds its config.
 
 ## The matrix
 
@@ -129,13 +163,22 @@ notes that have cost time before:
 
 ## Review
 
-Review is stage-separated, as before: `build-stage-blind` produces
+Read yield first, with `build-yield`: one 1024x768 sheet per pair, its seeds
+side by side, plus an index and a machine-readable `yield.json`. This is the
+readout for the question the window asks. The index counts cells that emitted
+an image, which is not the same as a readable illusion, so the sheets are
+still the evidence.
+
+`build-stage-blind` remains the acceptance path, and it is stage-separated:
 independent blinded sheets for the last SDS checkpoint, Dream round 1, and
-the final image. Rate the three stages separately and freeze
-`ratings.jsonl` before opening the answer key. The smoke result is the
-precedent for why this matters: SDS-end had the strongest raw dual-subject
-structure while final had the cleaner presentation, and a finals-only sheet
-would have hidden that.
+the final image. Rate the three stages separately and freeze `ratings.jsonl`
+before opening the answer key. The smoke is the precedent for why stages are
+split: SDS-end had the strongest raw dual-subject structure while final had
+the cleaner presentation, and a finals-only sheet would have hidden that.
+
+Do not use the blind sheets as the yield readout. At 154 runs they are a
+1024x19712 strip per stage, and the shuffle that makes them fair for an A/B
+is exactly what destroys per-pair grouping.
 
 CLIP pair scores are written as sidecars for post-hoc calibration against
 the human ratings (`calibrate`), and remain diagnostic until that calibration
