@@ -321,7 +321,17 @@ Masters written before this shipped are still WebP and stay that way. There is n
 
 One consequence worth recording: the largest master the fleet can produce is a 4x upscale of a 1024 px image, which measures about 19 MB losslessly and reaches 50 MB on incompressible detail. The local upload route's ceiling exists to bound abuse and has to stay clear of that, so it moved from 20 MB to 64 MB with this change.
 
-Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for); JPEG for the master (lossy, and no alpha); keeping WebP for the master too, which is what shipped between 2026-07-23 and this change, and which left the archival copy quietly lossy.
+Measured on a real 1024 px generation, so the next person reconsidering this does not have to re-derive it. At 1024 px, and at 4096 px for the largest upscale the fleet produces:
+
+| Format | 1024 px | 4096 px | Encode at 4096 | Pixels |
+|---|---|---|---|---|
+| PNG | 2.19 MB | 19.20 MB | 4.0 s | lossless |
+| WebP lossless | 1.58 MB | 12.64 MB | 7.0 s | identical to PNG, verified |
+| WebP lossy q80 | 0.26 MB | 1.17 MB | 0.8 s | lossy, permanent |
+
+Lossless WebP is therefore 28 to 34 percent smaller than PNG for byte-identical pixels, at roughly twice the encode time, and it would fit the original 20 MB upload ceiling. It is the obvious move if stored bytes ever cost real money, and it pairs with converting to PNG only on an explicit download, which is lossless from that source. It is not worth a format migration and a conversion path today, when retention already bounds the cost.
+
+Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for); JPEG for the master (lossy, and no alpha); keeping WebP for the master too, which is what shipped between 2026-07-23 and this change, and which left the archival copy quietly lossy; storing lossy WebP and converting to PNG on download, which sounds like a saving but hands the user PNG's size wrapping already-discarded detail, and compounds on every edit and upscale that re-encodes from the master.
 
 ## Model manifests: JSON
 
