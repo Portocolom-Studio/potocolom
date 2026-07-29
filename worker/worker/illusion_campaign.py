@@ -197,24 +197,42 @@ WINDOW_STYLE = "reference_sketch"
 # A4: 512px native primes cost 3.3x total (2665s against 810s, Dream alone
 # 6.8x) for no visible gain. The paper's 256px network stands.
 WINDOW_PRIME_RESOLUTION: int | None = None
-# A5: joint Dream Targets, which the recipe pinned off. From an identical neon
-# SDS state, joint targets returned a legible monochrome crown and octopus where
-# independent targets returned mush, for 807s against 810s. This is issue #134's
-# mechanism measured: independent per-view targets fight over shared pixels.
-WINDOW_DREAM_JOINT = True
-# Five seeds. Breadth-first by seed makes the seed count nearly free optionality:
-# the tail is what a short window loses, so sizing up costs nothing if the window
-# turns out smaller than promised. Yield rate resolution goes from 1/4 to 1/5.
-WINDOW_SEEDS = (11, 23, 37, 53, 71)
+# A5 and A6: joint Dream Targets are an AXIS, not a setting.
+#
+# A5 showed joint targets rescuing crown_octopus from a neon collapse at no cost,
+# which is issue #134's mechanism working as designed. A6 then ran the same
+# config on the calibration pair and lost the penguin entirely: at SDS-5000 view
+# 2 still held penguin structure, and Dream round 1 turned it into a second
+# giraffe. stag_oak, meanwhile, came out clean.
+#
+# Joint Dream reconciles both views into ONE consensus image. That amplifies a
+# pair whose two subjects can genuinely BE one image (crown/octopus are both
+# radial-with-arms, stag antlers read as oak branches) and destroys a pair whose
+# subjects cannot (a giraffe head and a penguin), by collapsing onto whichever
+# subject holds the stronger score field. It causes the very failure it was
+# built to prevent, on the pairs it does not suit.
+#
+# Which pairs those are is not knowable in advance, so the window measures both
+# modes on every pair and yield is read as the better of the two.
+#
+# Independent comes FIRST. It is the mode the calibration smoke was reviewed
+# under, so the first cell is a rig check that can actually fail informatively;
+# leading with joint would make cell 1 reproduce A6's known collapse and tell
+# nobody anything. It also means a window cut short keeps the validated mode.
+WINDOW_DREAM_MODES = (False, True)
+# Three seeds across two Dream modes. Adding the mode axis costs seed
+# resolution, and that is the right trade: a tight rate estimate for a mode that
+# is wrong for the pair answers nothing, while the better of two modes is the
+# answer a product would actually ship.
+WINDOW_SEEDS = (11, 23, 37)
 # A3 measured 1750s for a 5,000-step cell with eight Dream rounds; A5 showed
 # joint Dream adds nothing. Rounded up so the deadline reserve stays honest.
 WINDOW_CELL_ESTIMATE_S = 1_800.0
-# Controls are emitted after this many seed blocks rather than at the very end.
-# They are the science, so a window that runs short must lose sweep tail rather
-# than the comparisons the sweep is measured against. Three blocks puts them
-# near the 48-hour mark, so they survive even if "around 80 hours" turns out to
-# be sixty.
-WINDOW_CONTROLS_AFTER_SEED_BLOCKS = 3
+# Controls are emitted after this many seed blocks rather than at the very end,
+# so a window that runs short loses sweep tail rather than the comparison the
+# sweep is measured against. One block covers both Dream modes at seed 11, so
+# the controls land near 30h and survive almost any window.
+WINDOW_CONTROLS_AFTER_SEED_BLOCKS = 1
 # A budget control at the paper's full 10,000 steps, to show on this window's own
 # evidence whether 5,000 left anything on the table. Runs last: the pre-window
 # ladder already answered it once, on one pair.
@@ -222,10 +240,6 @@ WINDOW_CONTROL_SDS_STEPS = 10_000
 WINDOW_CONTROL_PAIRS = ("crown_octopus", "stag_oak")
 WINDOW_CONTROL_SEEDS = (11,)
 WINDOW_CONTROL_ESTIMATE_S = 3_450.0
-# A joint-Dream control: the same cells with joint targets off, so A5's n=1
-# result is refreshed at window scale instead of being taken on faith.
-WINDOW_JOINT_CONTROL_PAIRS = ("crown_octopus", "lighthouse_goblet")
-WINDOW_JOINT_CONTROL_SEEDS = (11,)
 # Pairs carried over from the legacy oil corpus because human review has already
 # ruled on them. Two of these are the acceptance gate's own control pairs and two
 # more were called out as the strongest of the 2026-07-19 curation, so running
@@ -262,7 +276,7 @@ def _window_pair_ids() -> tuple[str, ...]:
     )
 
 
-def _window_flags(sds_steps: int, *, dream_joint: bool = WINDOW_DREAM_JOINT) -> list[str]:
+def _window_flags(sds_steps: int, *, dream_joint: bool = True) -> list[str]:
     flags = [
         "--experimental-recipe",
         "author_reference",
@@ -281,24 +295,12 @@ def _window_flags(sds_steps: int, *, dream_joint: bool = WINDOW_DREAM_JOINT) -> 
 
 
 def _window_controls(priority: int) -> tuple[list[CampaignEntry], int]:
-    """The comparison arms. Each duplicates a sweep cell's pair and seed with a
-    single thing changed, so the comparison is direct rather than across-corpus."""
+    """The budget comparison. Duplicates a sweep cell's pair, seed and Dream mode
+    at the paper's full 10,000 steps, so the comparison is direct.
+
+    There is no separate joint-Dream control any more: both Dream modes are full
+    arms of the sweep, which is a stronger test than two extra cells."""
     entries: list[CampaignEntry] = []
-    for seed in WINDOW_JOINT_CONTROL_SEEDS:
-        for pair_id in WINDOW_JOINT_CONTROL_PAIRS:
-            entries.append(
-                _entry(
-                    tier="window",
-                    profile="independent_dream_control",
-                    pair_id=pair_id,
-                    seed=seed,
-                    flags=_window_flags(WINDOW_SDS_STEPS, dream_joint=False),
-                    priority=priority,
-                    style=WINDOW_STYLE,
-                    estimate_s=WINDOW_CELL_ESTIMATE_S,
-                )
-            )
-            priority += 1
     for seed in WINDOW_CONTROL_SEEDS:
         for pair_id in WINDOW_CONTROL_PAIRS:
             entries.append(
@@ -333,45 +335,36 @@ def build_window() -> list[CampaignEntry]:
     priority = 0
     pair_ids = _window_pair_ids()
 
-    # The rig check runs first: the known-good pair at the window's own
-    # settings. If the short budget or the chosen wording broke what already
-    # worked, it shows here in one cell rather than in fifty.
-    entries.append(
-        _entry(
-            tier="window",
-            profile="anchor",
-            pair_id=REFERENCE_CALIBRATION_PAIR_ID,
-            seed=WINDOW_SEEDS[0],
-            flags=_window_flags(WINDOW_SDS_STEPS),
-            priority=priority,
-            style=WINDOW_STYLE,
-            estimate_s=WINDOW_CELL_ESTIMATE_S,
-        )
-    )
-    priority += 1
-
     controls_emitted = False
     for block, seed in enumerate(WINDOW_SEEDS):
         if block == WINDOW_CONTROLS_AFTER_SEED_BLOCKS:
             control_entries, priority = _window_controls(priority)
             entries.extend(control_entries)
             controls_emitted = True
-        for pair_id in pair_ids:
-            if pair_id == REFERENCE_CALIBRATION_PAIR_ID and seed == WINDOW_SEEDS[0]:
-                continue  # already covered by the anchor cell
-            entries.append(
-                _entry(
-                    tier="window",
-                    profile="sweep",
-                    pair_id=pair_id,
-                    seed=seed,
-                    flags=_window_flags(WINDOW_SDS_STEPS),
-                    priority=priority,
-                    style=WINDOW_STYLE,
-                    estimate_s=WINDOW_CELL_ESTIMATE_S,
+        for joint in WINDOW_DREAM_MODES:
+            mode = "joint" if joint else "independent"
+            for pair_id in pair_ids:
+                # The very first cell is the rig check: the known-good pair, at
+                # the window's own settings. A6 is why this exists. It caught
+                # joint Dream destroying this exact pair, in one cell.
+                anchor = (
+                    pair_id == REFERENCE_CALIBRATION_PAIR_ID
+                    and seed == WINDOW_SEEDS[0]
+                    and joint == WINDOW_DREAM_MODES[0]
                 )
-            )
-            priority += 1
+                entries.append(
+                    _entry(
+                        tier="window",
+                        profile="anchor" if anchor else f"sweep_{mode}",
+                        pair_id=pair_id,
+                        seed=seed,
+                        flags=_window_flags(WINDOW_SDS_STEPS, dream_joint=joint),
+                        priority=priority,
+                        style=WINDOW_STYLE,
+                        estimate_s=WINDOW_CELL_ESTIMATE_S,
+                    )
+                )
+                priority += 1
     if not controls_emitted:
         control_entries, priority = _window_controls(priority)
         entries.extend(control_entries)

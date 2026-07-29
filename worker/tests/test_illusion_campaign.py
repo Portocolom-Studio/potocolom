@@ -175,17 +175,18 @@ def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
     assert entries[0].pair_id == "giraffe_penguin_calibration"
     assert entries[0].seed == WINDOW_SEEDS[0]
 
-    # Breadth-first: every pair gets its first seed before any gets its second,
-    # so a window that ends early still answers which pairs work at all.
-    sweep = [e for e in entries if e.profile in ("anchor", "sweep")]
+    # Breadth-first: every pair gets its first seed and mode before any gets a
+    # second, so a window that ends early still answers which pairs work at all.
+    sweep = [e for e in entries if e.profile.startswith(("anchor", "sweep"))]
     first_block = sweep[: len(pair_ids)]
     assert {e.pair_id for e in first_block} == set(pair_ids)
     assert {e.seed for e in first_block} == {WINDOW_SEEDS[0]}
+    assert all("--dream-joint" not in e.flags for e in first_block)
 
-    # No pair/seed is planned twice, and the anchor is not duplicated.
-    keys = [(e.pair_id, e.seed, e.profile) for e in entries]
+    # No (pair, seed, mode) is planned twice, and the anchor is not duplicated.
+    keys = [(e.pair_id, e.seed, e.profile, "--dream-joint" in e.flags) for e in entries]
     assert len(keys) == len(set(keys))
-    sweep_keys = [(e.pair_id, e.seed) for e in sweep]
+    sweep_keys = [(e.pair_id, e.seed, "--dream-joint" in e.flags) for e in sweep]
     assert len(sweep_keys) == len(set(sweep_keys))
 
     # The full-budget control exists at the paper's budget.
@@ -195,13 +196,10 @@ def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
     assert controls[0].flags[controls[0].flags.index("--sds-steps") + 1] == "10000"
 
     # Controls sit mid-sweep, not at the end: a short window must drop sweep
-    # tail rather than the comparisons the sweep is measured against.
+    # tail rather than the comparison the sweep is measured against.
     all_controls = [e for e in entries if "control" in e.profile]
     assert all_controls
-    last_control = max(e.priority for e in all_controls)
-    assert last_control < max(e.priority for e in entries)
-    spent = sum(e.estimate_s for e in entries if e.priority <= last_control)
-    assert spent < 50 * 3600, f"controls only complete at {spent / 3600:.1f}h"
+    assert max(e.priority for e in all_controls) < max(e.priority for e in entries)
 
     hashes = [e.spec_hash() for e in entries]
     assert len(hashes) == len(set(hashes))
@@ -282,16 +280,19 @@ def test_window_plan_reflects_the_pre_window_measurements() -> None:
 
     entries = build_window()
 
-    # A5: joint Dream rescued a failing cell at zero cost, so the sweep uses it.
-    sweep = [e for e in entries if e.profile in ("anchor", "sweep")]
-    assert all("--dream-joint" in e.flags for e in sweep)
-    # ...and a control keeps it off so that n=1 result gets refreshed at scale.
-    independent = [e for e in entries if e.profile == "independent_dream_control"]
-    assert independent
-    assert all("--dream-joint" not in e.flags for e in independent)
-    # Each control duplicates a sweep cell's pair and seed, so it is comparable.
-    sweep_keys = {(e.pair_id, e.seed) for e in sweep}
-    assert all((e.pair_id, e.seed) in sweep_keys for e in independent)
+    # A5 and A6: Dream mode is an axis, because joint rescued crown_octopus and
+    # destroyed the calibration pair. Every pair and seed must get BOTH modes,
+    # so yield can be read as the better of the two.
+    sweep = [e for e in entries if e.profile.startswith(("anchor", "sweep"))]
+    joint = {(e.pair_id, e.seed) for e in sweep if "--dream-joint" in e.flags}
+    independent = {(e.pair_id, e.seed) for e in sweep if "--dream-joint" not in e.flags}
+    assert joint == independent, "every pair/seed needs both Dream modes"
+    assert joint
+
+    # Cell 1 is the rig check and must use the mode the smoke was reviewed
+    # under. Leading with joint would reproduce A6's known collapse instead.
+    assert entries[0].profile == "anchor"
+    assert "--dream-joint" not in entries[0].flags
 
     # A3: quality still improved at 5000, so the budget is not cut below it.
     assert WINDOW_SDS_STEPS >= 5_000
@@ -303,9 +304,11 @@ def test_window_plan_reflects_the_pre_window_measurements() -> None:
     # A4: 512px primes cost 3.3x for no gain, so no cell asks for them.
     assert all("--prime-resolution" not in e.flags for e in entries)
 
-    # The matrix is sized for the stated ~80h window and must not overrun it.
-    # Overshooting is not fatal, because breadth-first ordering means the tail is
-    # what a short window drops, but it must not be planning work it cannot fit.
-    total = sum(e.estimate_s for e in entries)
-    assert total < 80 * 3600, f"{total / 3600:.1f}h does not fit the window"
+    # The matrix deliberately overshoots the window: breadth-first ordering means
+    # the tail is what a short window drops, so planning past the deadline buys
+    # optionality if the absence runs long. What must fit is everything up to and
+    # including the controls, comfortably.
     assert WINDOW_CELL_ESTIMATE_S >= 1_750, "must not undercut the measured cell time"
+    last_control = max(e.priority for e in entries if "control" in e.profile)
+    guaranteed = sum(e.estimate_s for e in entries if e.priority <= last_control)
+    assert guaranteed < 40 * 3600, f"controls only complete at {guaranteed / 3600:.1f}h"

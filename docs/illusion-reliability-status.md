@@ -62,7 +62,8 @@ freeze a base B. The author-reference campaign below supersedes that axis.
 
 ## Current direction (2026-07-29)
 
-The primary phase is now `window` (154 cells, 30 pairs x 5 seeds),
+The primary phase is now `window` (182 cells, 30 pairs x 3 seeds x 2 Dream
+modes),
 documented in
 [illusion-window.md](illusion-window.md). Its fallback remains
 `early-dream-backup` (48 short cells). Product defaults and PR #118 remain

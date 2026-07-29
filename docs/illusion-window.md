@@ -161,28 +161,65 @@ It rescued a failing cell for nothing. This is issue #134's mechanism measured
 rather than argued: independent per-view targets fight over the shared pixels
 and drive the collapse that has been the dominant failure mode all along.
 
-Because it is one comparison on one pair, the window carries an
-`independent_dream_control` arm that duplicates two sweep cells with joint
-targets off, so the result is refreshed at window scale instead of trusted.
+Because it was one comparison on one pair, it was validated before freezing.
+A6 then overturned it as a universal setting.
+
+### A6: the rig check earned its place
+
+The exact final config was run attended on two cells before freezing anything:
+the calibration pair, whose good outcome is known, and `stag_oak`, standing in
+for the sixteen scene-rich issue #138 pairs whose subjects had never met the
+pencil wording.
+
+`stag_oak` came out well: a stag whose antlers read as branches one way up, an
+ancient oak with spreading roots the other. That de-risked sixteen pairs.
+
+The calibration pair collapsed. Both views became giraffes; the penguin was
+gone. At SDS-5000 view 2 still held penguin structure, a dark head with a beak
+to the right, and Dream round 1 turned it into a second giraffe.
+
+The mechanism follows from what joint Dream does. It reconciles both views into
+ONE consensus image, which amplifies a pair whose subjects can genuinely BE one
+image and destroys a pair whose subjects cannot, by collapsing onto whichever
+subject holds the stronger score field:
+
+| Pair | Topology | Joint Dream |
+|---|---|---|
+| crown / octopus | compatible, both radial with arms | rescued a neon failure |
+| stag / oak | compatible, antlers read as branches | clean result |
+| giraffe head / penguin | dissimilar | collapsed to one subject |
+
+On the pairs it does not suit, joint Dream causes the exact failure it was
+built to prevent. Which pairs those are is not knowable in advance, so Dream
+mode became an axis of the window rather than a setting, and yield is read as
+the better of the two modes per pair. Had the config been frozen on A5 alone,
+half the corpus could have collapsed unattended.
 
 ## The matrix
 
-Phase `window`, 154 cells over 30 pairs and five seeds (11, 23, 37, 53, 71),
-at 5,000 SDS steps with joint Dream, `reference_sketch` wording and 256px
-primes. Estimated 77.9h.
+Phase `window`, 182 cells: 30 pairs x 3 seeds (11, 23, 37) x 2 Dream modes,
+plus two budget controls. 5,000 SDS steps, `reference_sketch` wording, 256px
+primes. Estimated 91.9h, which deliberately overshoots the window.
 
-The window's length is a launch parameter, not a property of the matrix, so the
-seed count is sized generously: breadth-first ordering means a short window
-drops the tail rather than losing pairs. Measured degradation, with the driver's
-own deadline reserve applied:
+Overshooting is deliberate. The window's length is a launch parameter, not a
+property of the matrix, and breadth-first ordering means a short window drops
+the tail rather than losing pairs. Planning past the deadline therefore costs
+nothing and buys coverage if the absence runs long. Measured degradation, with
+the driver's own deadline reserve applied:
 
-| Deadline | Cells | Controls | Full seed blocks |
+| Deadline | Cells | Controls | Complete (seed, mode) blocks |
 |---|---|---|---|
-| 48h | 93 | 3/4 | 3/5 |
-| 60h | 117 | 4/4 | 3/5 |
-| 72h | 141 | 4/4 | 4/5 |
-| 76h | 149 | 4/4 | 4/5 |
-| 80h | 154 | 4/4 | 5/5 |
+| 48h | 93 | 2/2 | 3/6 |
+| 60h | 117 | 2/2 | 3/6 |
+| 72h | 141 | 2/2 | 4/6 |
+| 76h | 149 | 2/2 | 4/6 |
+| 80h | 157 | 2/2 | 5/6 |
+
+At 76h that is both Dream modes complete at two seeds across all 30 pairs, plus
+a partial third seed. Independent Dream runs first in each seed block, because
+it is the mode the calibration smoke was reviewed under, so a window cut short
+keeps the validated mode and cell 1 remains a rig check that can fail
+informatively.
 
 The 30 pairs:
 
@@ -202,14 +239,13 @@ rather than "these three pairs work". Cell 1 is the rig check: the anchor
 pair at the window's own settings. If a shorter budget or a different wording
 broke what already worked, it shows in one cell rather than fifty.
 
-Four control cells run after the third seed block, near the 48-hour mark, each
-duplicating a sweep cell's pair and seed so the comparison is direct rather than
-across the corpus. They are deliberately not last: a window that runs short must
-lose sweep tail rather than the comparisons the sweep is measured against.
+Two budget-control cells run after the first seed block, near the 32-hour mark,
+duplicating a sweep cell's pair, seed and Dream mode at the paper's full 10,000
+steps. They are deliberately not last: a window that runs short must lose sweep
+tail rather than the comparison the sweep is measured against. There is no
+separate joint-Dream control any more, because both modes are full arms, which
+is a stronger test than two extra cells.
 
-- `independent_dream_control`, two cells with joint Dream off, refreshing A5;
-- `budget_control_10k`, two cells at the paper's 10,000 steps, testing on this
-  window's own evidence whether 5,000 left anything on the table.
 
 Every cell writes its own checkpoint ladder as fractions of its budget
 (250, 1000, 2500, 5000) plus Dream rounds 1, 4 and 8 and the final image. So
