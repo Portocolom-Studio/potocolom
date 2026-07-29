@@ -7,12 +7,14 @@ on:
     paths:
       - "backend/**"
       - "scripts/**"
+      - "Makefile"
       - ".github/workflows/backend.yml"
   push:
     branches: [main]
     paths:
       - "backend/**"
       - "scripts/**"
+      - "Makefile"
       - ".github/workflows/backend.yml"
 
 permissions:

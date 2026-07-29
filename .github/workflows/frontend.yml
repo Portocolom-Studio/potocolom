@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "Makefile"
       - ".github/workflows/frontend.yml"
   push:
     branches: [main]
     paths:
       - "frontend/**"
+      - "Makefile"
       - ".github/workflows/frontend.yml"
 
 permissions:
