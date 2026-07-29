@@ -49,7 +49,7 @@ CALIBRATION_SAMPLES = 20
 
 @dataclass
 class GeneratedImage:
-    data: bytes  # always WebP; storage keys and asset rows assume it
+    data: bytes  # PNG generation master
     width: int
     height: int
     gpu_ms: int
@@ -97,6 +97,12 @@ def decode_input_image(data: bytes) -> Image.Image:
 def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
+    return buffer.getvalue()
+
+
+def encode_png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
     return buffer.getvalue()
 
 
@@ -175,7 +181,7 @@ class SimulatedEngine:
             image = source.resize((width, height), Image.Resampling.LANCZOS)
             progress(1.0)
             gpu_ms = int((time.monotonic() - start) * 1000)
-            return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+            return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
         if input_image is not None and "image_to_image" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
         load_ms = 0
@@ -207,7 +213,7 @@ class SimulatedEngine:
             rgb = (color[0], color[1], color[2])
             image = Image.new("RGB", (width, height), rgb)
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
         started = time.monotonic()
@@ -767,7 +773,7 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
                       loop: asyncio.AbstractEventLoop,
@@ -808,7 +814,7 @@ class DiffusersEngine:
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_upscale(self, manifest: Manifest, params: dict, progress: ProgressFn,
                           loop: asyncio.AbstractEventLoop,
@@ -841,7 +847,7 @@ class DiffusersEngine:
         )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
         async with self._gpu:

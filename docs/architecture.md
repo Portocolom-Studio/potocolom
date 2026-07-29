@@ -496,11 +496,11 @@ Generated images land in object storage through the storage adapter (local files
 | `users/{user_id}/` | Paying subscribers | Indefinite retention |
 | `trial/{user_id}/` | Trial accounts | `expires_at` on the asset row plus an S3 lifecycle rule expiring the prefix after 30 days |
 
-Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp` thumbnail. History is the `assets` table, never a bucket listing.
+Object keys are `{prefix}{asset_id}.png` for PNG masters with a sibling `{asset_id}-thumb.webp` WebP thumbnail. History is the `assets` table, never a bucket listing.
 
 **Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
-**Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+**Self-hosted:** master keys are `{user_id}/{job_id}.png` with `{user_id}/{job_id}-thumb.webp` thumbnails under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
 
 How the pieces reference each other - bytes live once in object storage, every relationship (thumbnail, lineage, favorite per issue #124, category per issue #95) is a column or foreign key on the PostgreSQL rows, and the browser only ever reaches bytes through URLs the API minted from those rows:
 
@@ -529,7 +529,7 @@ flowchart LR
     CLEAN -.-> STORE
 ```
 
-**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.webp` key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
+**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.png` master key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
 **Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
 

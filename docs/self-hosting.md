@@ -97,7 +97,7 @@ upgrade an initial plain-HTTP connection.
 | Volume | Contents | Losing it means |
 |---|---|---|
 | `pgdata` | users, jobs (prompts, params, seeds), asset records | history and gallery are gone |
-| `assets` | generated images and thumbnails (WebP) | images are gone; rows point at nothing |
+| `assets` | generated PNG masters and WebP thumbnails | images are gone; rows point at nothing |
 | `models` | model manifests (JSON) | re-seeded from the image on next boot |
 | `hf-cache` | downloaded model weights | re-downloaded on next use (2-7 GB per model) |
 

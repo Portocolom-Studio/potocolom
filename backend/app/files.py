@@ -17,7 +17,12 @@ from app.storage import LocalStorage, get_storage
 
 router = APIRouter()
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Lossless masters are far larger than the WebP this route used to carry, and
+# the biggest one the fleet can produce is a 4x upscale of a 1024 px image. A
+# real 1024 px generation re-encoded to PNG at 4096 px measures about 19 MB,
+# and 4096 px of incompressible detail is 50 MB, so the old 20 MB ceiling
+# would have started refusing upscale uploads with a 413 (issue #125).
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
 def local_storage() -> LocalStorage:
