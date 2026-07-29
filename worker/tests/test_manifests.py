@@ -39,6 +39,14 @@ def test_malformed_quantize_is_loud(tmp_path):
         load_manifests(str(tmp_path))
 
 
+def test_unsupported_quantize_scheme_is_loud(tmp_path):
+    (tmp_path / "bad.json").write_text(
+        json.dumps({**SD_TURBO, "quantize": "text_encoder_3:int4"})
+    )
+    with pytest.raises(ValidationError):
+        load_manifests(str(tmp_path))
+
+
 def test_empty_models_dir_is_loud(tmp_path):
     with pytest.raises(ValueError, match="no manifests"):
         load_manifests(str(tmp_path))

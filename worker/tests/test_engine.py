@@ -778,6 +778,25 @@ def test_load_oom_does_not_demote_pinned_rung():
     assert engine.model_rung("m") == "full"
 
 
+def test_final_load_oom_drops_failed_attempt_traceback():
+    engine, attempts = _load_oom_engine({"full", "model_offload", "group_offload"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    try:
+        engine._load_model(manifest)
+    except engine.torch.OutOfMemoryError as error:
+        frame_names = []
+        traceback = error.__traceback__
+        while traceback is not None:
+            frame_names.append(traceback.tb_frame.f_code.co_name)
+            traceback = traceback.tb_next
+    else:
+        raise AssertionError("expected OutOfMemoryError")
+
+    assert attempts == ["full", "model_offload", "group_offload", "group_offload"]
+    assert "load" not in frame_names
+
+
 def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     from worker.engine import GeneratedImage
 
@@ -874,17 +893,22 @@ def test_generation_oom_demotes_once_and_retries_once():
     manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
 
     async def scenario():
-        with patch(
-            "asyncio.to_thread",
-            side_effect=engine.torch.OutOfMemoryError,
-        ) as run:
+        async def fake_to_thread(function, *args, **kwargs):
+            if function is engine._pipeline:
+                return function(*args, **kwargs)
+            raise engine.torch.OutOfMemoryError
+
+        with patch("asyncio.to_thread", side_effect=fake_to_thread) as run:
             try:
                 await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
             except engine.torch.OutOfMemoryError:
                 pass
             else:
                 raise AssertionError("expected OutOfMemoryError")
-        assert run.call_count == 3
+        assert run.call_count == 4
+        pipeline_call = run.call_args_list[2]
+        assert pipeline_call.args == (engine._pipeline, manifest, "t2i")
+        assert pipeline_call.kwargs == {"allow_demotion": False}
 
     asyncio.run(scenario())
     assert engine.model_rung("m") == "model_offload"

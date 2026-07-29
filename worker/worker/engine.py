@@ -321,7 +321,12 @@ class DiffusersEngine:
             if not allow_demotion:
                 raise load_error
             self._evict_cold(except_model_id=manifest.id)
-            self._pipelines[key] = self._load(manifest, mode)
+            try:
+                self._pipelines[key] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError as error:
+                load_error = error.with_traceback(None)
+            if key not in self._pipelines:
+                raise load_error
         self._touch(manifest.id)
         return self._pipelines[key]
 
@@ -972,7 +977,9 @@ class DiffusersEngine:
                 mode = f"upscale-{int(params.get('factor', 0))}"
             else:
                 mode = "i2i" if input_image is not None else "t2i"
-            self._pipeline(manifest, mode, allow_demotion=False)
+            await asyncio.to_thread(
+                self._pipeline, manifest, mode, allow_demotion=False,
+            )
             return await asyncio.to_thread(runner, manifest, dict(params),
                                            progress, loop, input_image)
 

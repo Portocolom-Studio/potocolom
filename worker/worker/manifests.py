@@ -32,7 +32,7 @@ class Manifest(BaseModel):
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
     quantize: str = Field(
         default="",
-        pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:[A-Za-z0-9_-]+)?$",
+        pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:int8)?$",
     )  # optional component:scheme, worker side only
     license_id: str = ""  # e.g. stability-ai-community, apache-2.0
     license_url: str = ""

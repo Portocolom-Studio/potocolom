@@ -462,7 +462,7 @@ Do not generalise the flat result above to other hardware.
 on ~11.3 TFLOPS fp32 / ~22.6 TFLOPS fp16 shader throughput, with no
 datacenter-class tensor cores. Faster silicon is the only answer.
 
-**Quantisation is limited by both hardware and stack.** `torchao`
+**Quantisation is limited by both hardware and stack.** `torchao`'s
 `Int8WeightOnlyConfig` works on the reference card through its pure PyTorch
 path. `bitsandbytes` does not: its int8 kernel is not built for gfx1102. RDNA 3
 still has no native fp8 matmul, so the upstream `t5xxl_fp8` file is upcast on
