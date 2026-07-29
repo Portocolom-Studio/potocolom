@@ -197,3 +197,25 @@ def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
 
     hashes = [e.spec_hash() for e in entries]
     assert len(hashes) == len(set(hashes))
+
+
+def test_shard_splits_a_plan_disjointly_and_covers_it() -> None:
+    from worker.illusion_campaign import _shard, build_window_60h
+
+    entries = build_window_60h()
+    assert _shard("0/2") == (0, 2)
+    assert _shard("2/3") == (2, 3)
+    for bad in ("1", "3/3", "-1/2", "0/0"):
+        with pytest.raises(Exception):
+            _shard(bad)
+
+    for count in (2, 3):
+        shards = [
+            [e for i, e in enumerate(entries) if i % count == index] for index in range(count)
+        ]
+        seen = [e.entry_id for shard in shards for e in shard]
+        # Every entry runs exactly once across the shards.
+        assert sorted(seen) == sorted(e.entry_id for e in entries)
+        assert len(seen) == len(set(seen))
+        # And the work is split about evenly.
+        assert max(len(s) for s in shards) - min(len(s) for s in shards) <= 1

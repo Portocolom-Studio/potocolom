@@ -825,6 +825,17 @@ def _blocked_rotated(entries: list[CampaignEntry]) -> list[CampaignEntry]:
     return ordered
 
 
+def _shard(text: str) -> tuple[int, int]:
+    """Parse ``I/K`` into a zero-based shard index and shard count."""
+    index_text, _, count_text = text.partition("/")
+    if not count_text:
+        raise argparse.ArgumentTypeError("expected I/K, e.g. 0/2")
+    index, count = int(index_text), int(count_text)
+    if count < 1 or not 0 <= index < count:
+        raise argparse.ArgumentTypeError(f"shard {text} out of range")
+    return index, count
+
+
 def build_phase_plan(
     *,
     phase: str,
@@ -950,6 +961,14 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--deadline-s", type=float, default=GENERATION_DEADLINE_S)
     run.add_argument("--cooldown-s", type=float, default=300.0)
     run.add_argument(
+        "--shard",
+        type=_shard,
+        default=None,
+        metavar="I/K",
+        help="run only entries at positions congruent to I modulo K, so K "
+        "drivers can share one immutable plan. Pair with POTOCOLOM_GPU_SLOTS=K.",
+    )
+    run.add_argument(
         "--abort-after-dead",
         type=int,
         default=4,
@@ -1042,6 +1061,13 @@ def main(argv: list[str] | None = None) -> int:
         n = 0
         dead_streak = 0
         pending = list(plan.entries)
+        if args.shard is not None:
+            index, count = args.shard
+            # Disjoint by position, so K drivers share one immutable plan
+            # instead of K forked plans. Each shard still walks the plan's
+            # breadth-first order.
+            pending = [e for i, e in enumerate(pending) if i % count == index]
+            print(f"shard {index}/{count}: {len(pending)} of {len(plan.entries)} entries")
         while pending:
             entry = pending.pop(0)
             if args.max_entries is not None and n >= args.max_entries:
