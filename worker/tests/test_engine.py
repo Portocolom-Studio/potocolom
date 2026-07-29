@@ -535,6 +535,38 @@ def test_load_quantizes_named_component_before_device_move():
     )
 
 
+def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = MagicMock()
+    engine.device = "cuda"
+    engine.models_dir = str(tmp_path)
+
+    quantized_pipeline = MagicMock()
+    quantized_manifest = Manifest(
+        id="quantized",
+        name="Quantized",
+        capabilities=["text_to_image"],
+        quantize="text_encoder_3:int8",
+    )
+    engine._apply_rung(quantized_pipeline, quantized_manifest, "group_offload")
+
+    quantized_kwargs = quantized_pipeline.enable_group_offload.call_args.kwargs
+    assert quantized_kwargs["offload_to_disk_path"] is None
+
+    pipeline = MagicMock()
+    manifest = Manifest(
+        id="unquantized",
+        name="Unquantized",
+        capabilities=["text_to_image"],
+    )
+    engine._apply_rung(pipeline, manifest, "group_offload")
+
+    kwargs = pipeline.enable_group_offload.call_args.kwargs
+    assert kwargs["offload_to_disk_path"] == str(
+        tmp_path / ".offload" / "unquantized"
+    )
+
+
 def test_calibrate_realtime_sets_slots_from_p95():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"

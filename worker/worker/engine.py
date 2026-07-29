@@ -371,7 +371,10 @@ class DiffusersEngine:
                 pipeline.enable_model_cpu_offload()
             return pipeline
         offload_dir = None
-        if self.models_dir:
+        # Safetensors cannot serialize torchao subclass tensors, so quantized
+        # models must keep offloaded components in host RAM instead of spilling
+        # them to disk. This requires enough host RAM for those components.
+        if self.models_dir and not manifest.quantize:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
