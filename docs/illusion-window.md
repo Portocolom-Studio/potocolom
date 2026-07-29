@@ -1,4 +1,4 @@
-# The 60-hour illusion yield window
+# The illusion yield window
 
 The question this window answers: how often does the optimizer produce a
 usable flip illusion, and what makes the difference between a pair that
@@ -167,16 +167,32 @@ targets off, so the result is refreshed at window scale instead of trusted.
 
 ## The matrix
 
-Phase `window60h`, 104 cells over 25 pairs and four seeds (11, 23, 37, 53),
+Phase `window`, 154 cells over 30 pairs and five seeds (11, 23, 37, 53, 71),
 at 5,000 SDS steps with joint Dream, `reference_sketch` wording and 256px
-primes. Estimated 52.9h against a 58h driver deadline.
+primes. Estimated 77.9h.
 
-The 25 pairs:
+The window's length is a launch parameter, not a property of the matrix, so the
+seed count is sized generously: breadth-first ordering means a short window
+drops the tail rather than losing pairs. Measured degradation, with the driver's
+own deadline reserve applied:
+
+| Deadline | Cells | Controls | Full seed blocks |
+|---|---|---|---|
+| 48h | 93 | 3/4 | 3/5 |
+| 60h | 117 | 4/4 | 3/5 |
+| 72h | 141 | 4/4 | 4/5 |
+| 76h | 149 | 4/4 | 4/5 |
+| 80h | 154 | 4/4 | 5/5 |
+
+The 30 pairs:
 
 - the 16 curated pairing-rule pairs from issue #138, never GPU-tested;
 - the five topology-compatible reference pairs the earlier plan would have run;
-- `dog_sloth` and `mountain_valley`, whose human verdicts are already known,
-  as positive controls;
+- seven pairs from the legacy oil corpus whose human verdicts already exist,
+  including the acceptance gate's own two control pairs and the two the
+  2026-07-19 curation called strongest. Running these under the new recipe is
+  the only way to say whether it beats what exists rather than merely producing
+  something. `walrus_ladybug` stays excluded by standing decision;
 - `locomotive_eye_control`, the deliberately incompatible negative control;
 - `giraffe_penguin_calibration`, the known-good anchor.
 
@@ -186,8 +202,10 @@ rather than "these three pairs work". Cell 1 is the rig check: the anchor
 pair at the window's own settings. If a shorter budget or a different wording
 broke what already worked, it shows in one cell rather than fifty.
 
-Four control cells run last, each duplicating a sweep cell's pair and seed so
-the comparison is direct rather than across the corpus:
+Four control cells run after the third seed block, near the 48-hour mark, each
+duplicating a sweep cell's pair and seed so the comparison is direct rather than
+across the corpus. They are deliberately not last: a window that runs short must
+lose sweep tail rather than the comparisons the sweep is measured against.
 
 - `independent_dream_control`, two cells with joint Dream off, refreshing A5;
 - `budget_control_10k`, two cells at the paper's 10,000 steps, testing on this
@@ -225,7 +243,7 @@ answers are already known so a broken rig is visible in review.
 ## Running it
 
 Preflight, launch and review are in the campaign runbook at
-`.local/illusion-reliability/campaigns/window60h/RUNBOOK.md`. Two operational
+`.local/illusion-reliability/campaigns/window/RUNBOOK.md`. Two operational
 notes that have cost time before:
 
 - Stop the self-hosted Actions runner. Any CI job makes `gpu-lock` refuse

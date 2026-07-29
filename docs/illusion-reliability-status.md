@@ -62,21 +62,26 @@ freeze a base B. The author-reference campaign below supersedes that axis.
 
 ## Current direction (2026-07-29)
 
-The primary phase is now `window60h` (154 cells), documented in
-[illusion-window-60h.md](illusion-window-60h.md). Its fallback remains
+The primary phase is now `window` (154 cells, 30 pairs x 5 seeds),
+documented in
+[illusion-window.md](illusion-window.md). Its fallback remains
 `early-dream-backup` (48 short cells). Product defaults and PR #118 remain
 unchanged.
 
-`reference60h` (36 cells) is superseded, for three reasons recorded in that
-document: its budget came from the paper rather than from the calibration
-smoke's own checkpoints, where quality had already saturated at a third of
-the cost; it varied six things at once against the failed runs, so no
-outcome would have been attributable; and it sampled five pairs on the axis
-docs/illusions.md calls the biggest lever, while the curated pairing-rule
-corpus in issue #138 had never been run at all.
+`reference60h` (36 cells) is superseded. It varied six things at once against
+the failed runs, so no outcome would have been attributable, and it sampled
+five pairs on the axis docs/illusions.md calls the biggest lever while the
+curated pairing-rule corpus in issue #138 had never been run at all. Five
+measured pre-window arms then changed three of its settings and found a bug
+that would have killed every cell at launch. See the window document.
 
-Its calibration smoke is retained as evidence and reused as the new
-window's rig check.
+Note the budget claim in the earlier version of this section was wrong: the
+calibration smoke saturated by 2,000 steps because it is the paper's own
+easiest pair. A3 measured monotone improvement to 5,000 on a pair nobody had
+run, so the window raises the budget rather than cutting it.
+
+Its calibration smoke is retained as evidence, and the window's first cell is
+a rig check on the same pair at the window's own settings.
 
 ### Superseded direction (2026-07-25)
 

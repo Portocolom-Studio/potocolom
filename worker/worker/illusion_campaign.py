@@ -202,10 +202,19 @@ WINDOW_PRIME_RESOLUTION: int | None = None
 # independent targets returned mush, for 807s against 810s. This is issue #134's
 # mechanism measured: independent per-view targets fight over shared pixels.
 WINDOW_DREAM_JOINT = True
-WINDOW_SEEDS = (11, 23, 37, 53)
+# Five seeds. Breadth-first by seed makes the seed count nearly free optionality:
+# the tail is what a short window loses, so sizing up costs nothing if the window
+# turns out smaller than promised. Yield rate resolution goes from 1/4 to 1/5.
+WINDOW_SEEDS = (11, 23, 37, 53, 71)
 # A3 measured 1750s for a 5,000-step cell with eight Dream rounds; A5 showed
 # joint Dream adds nothing. Rounded up so the deadline reserve stays honest.
 WINDOW_CELL_ESTIMATE_S = 1_800.0
+# Controls are emitted after this many seed blocks rather than at the very end.
+# They are the science, so a window that runs short must lose sweep tail rather
+# than the comparisons the sweep is measured against. Three blocks puts them
+# near the 48-hour mark, so they survive even if "around 80 hours" turns out to
+# be sixty.
+WINDOW_CONTROLS_AFTER_SEED_BLOCKS = 3
 # A budget control at the paper's full 10,000 steps, to show on this window's own
 # evidence whether 5,000 left anything on the table. Runs last: the pre-window
 # ladder already answered it once, on one pair.
@@ -217,9 +226,21 @@ WINDOW_CONTROL_ESTIMATE_S = 3_450.0
 # result is refreshed at window scale instead of being taken on faith.
 WINDOW_JOINT_CONTROL_PAIRS = ("crown_octopus", "lighthouse_goblet")
 WINDOW_JOINT_CONTROL_SEEDS = (11,)
-# Proven legacy keepers, carried in so the sweep has a pair whose outcome is
-# already known from human review, and the incompatible negative control.
-WINDOW_LEGACY_CONTROL_PAIR_IDS = ("dog_sloth", "mountain_valley")
+# Pairs carried over from the legacy oil corpus because human review has already
+# ruled on them. Two of these are the acceptance gate's own control pairs and two
+# more were called out as the strongest of the 2026-07-19 curation, so running
+# them under the new recipe is the only way to say whether it beats what exists
+# rather than merely producing something. walrus_ladybug stays excluded by
+# standing decision.
+WINDOW_KNOWN_VERDICT_PAIR_IDS = (
+    "dog_sloth",
+    "mountain_valley",
+    "elephant_swan",
+    "moose_butterfly",
+    "fox_rabbit",
+    "squirrel_pelican",
+    "gorilla_starfish",
+)
 
 
 def _window_pair_ids() -> tuple[str, ...]:
@@ -227,7 +248,8 @@ def _window_pair_ids() -> tuple[str, ...]:
 
     docs/illusions.md calls prompts "the biggest lever by far", and issue #138
     already curated a pairing-rule corpus that no GPU cell has ever run. The
-    earlier plan sampled five pairs; this samples the axis.
+    earlier plan sampled five pairs; this samples the axis, and carries enough
+    already-judged pairs to anchor the new recipe against the old one.
     """
     from worker.illusion_experiment import PAIRING_RULES_PAIRS
 
@@ -235,7 +257,7 @@ def _window_pair_ids() -> tuple[str, ...]:
         REFERENCE_CALIBRATION_PAIR_ID,
         *(pair.pair_id for pair in PAIRING_RULES_PAIRS),
         *REFERENCE_COMPATIBLE_PAIR_IDS,
-        *WINDOW_LEGACY_CONTROL_PAIR_IDS,
+        *WINDOW_KNOWN_VERDICT_PAIR_IDS,
         REFERENCE_CONTROL_PAIR_ID,
     )
 
@@ -258,12 +280,54 @@ def _window_flags(sds_steps: int, *, dream_joint: bool = WINDOW_DREAM_JOINT) -> 
     return flags
 
 
-def build_window_60h() -> list[CampaignEntry]:
-    """Breadth-first yield sweep for the unattended 60-hour window.
+def _window_controls(priority: int) -> tuple[list[CampaignEntry], int]:
+    """The comparison arms. Each duplicates a sweep cell's pair and seed with a
+    single thing changed, so the comparison is direct rather than across-corpus."""
+    entries: list[CampaignEntry] = []
+    for seed in WINDOW_JOINT_CONTROL_SEEDS:
+        for pair_id in WINDOW_JOINT_CONTROL_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window",
+                    profile="independent_dream_control",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window_flags(WINDOW_SDS_STEPS, dream_joint=False),
+                    priority=priority,
+                    style=WINDOW_STYLE,
+                    estimate_s=WINDOW_CELL_ESTIMATE_S,
+                )
+            )
+            priority += 1
+    for seed in WINDOW_CONTROL_SEEDS:
+        for pair_id in WINDOW_CONTROL_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window",
+                    profile="budget_control_10k",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window_flags(WINDOW_CONTROL_SDS_STEPS),
+                    priority=priority,
+                    style=WINDOW_STYLE,
+                    estimate_s=WINDOW_CONTROL_ESTIMATE_S,
+                )
+            )
+            priority += 1
+    return entries, priority
+
+
+def build_window() -> list[CampaignEntry]:
+    """Breadth-first yield sweep for the unattended window.
 
     Ordering is breadth-first by seed so the matrix degrades gracefully: every
     pair has one seed before any pair has two. A window that ends early still
     answers "which pairs work at all" rather than "these three pairs work".
+
+    The window's length is a launch parameter, not a property of this matrix.
+    Sizing the seed count generously is therefore close to free: the tail is
+    what a short window drops. Controls are emitted mid-sweep so that tail is
+    sweep cells rather than the comparisons the sweep is measured against.
     """
     entries: list[CampaignEntry] = []
     priority = 0
@@ -274,7 +338,7 @@ def build_window_60h() -> list[CampaignEntry]:
     # worked, it shows here in one cell rather than in fifty.
     entries.append(
         _entry(
-            tier="window60h",
+            tier="window",
             profile="anchor",
             pair_id=REFERENCE_CALIBRATION_PAIR_ID,
             seed=WINDOW_SEEDS[0],
@@ -286,13 +350,18 @@ def build_window_60h() -> list[CampaignEntry]:
     )
     priority += 1
 
-    for seed in WINDOW_SEEDS:
+    controls_emitted = False
+    for block, seed in enumerate(WINDOW_SEEDS):
+        if block == WINDOW_CONTROLS_AFTER_SEED_BLOCKS:
+            control_entries, priority = _window_controls(priority)
+            entries.extend(control_entries)
+            controls_emitted = True
         for pair_id in pair_ids:
             if pair_id == REFERENCE_CALIBRATION_PAIR_ID and seed == WINDOW_SEEDS[0]:
                 continue  # already covered by the anchor cell
             entries.append(
                 _entry(
-                    tier="window60h",
+                    tier="window",
                     profile="sweep",
                     pair_id=pair_id,
                     seed=seed,
@@ -303,40 +372,10 @@ def build_window_60h() -> list[CampaignEntry]:
                 )
             )
             priority += 1
+    if not controls_emitted:
+        control_entries, priority = _window_controls(priority)
+        entries.extend(control_entries)
 
-    # Controls run last. Each duplicates a sweep cell's pair and seed with one
-    # thing changed, so the comparison is direct rather than across-corpus.
-    for seed in WINDOW_JOINT_CONTROL_SEEDS:
-        for pair_id in WINDOW_JOINT_CONTROL_PAIRS:
-            entries.append(
-                _entry(
-                    tier="window60h",
-                    profile="independent_dream_control",
-                    pair_id=pair_id,
-                    seed=seed,
-                    flags=_window_flags(WINDOW_SDS_STEPS, dream_joint=False),
-                    priority=priority,
-                    style=WINDOW_STYLE,
-                    estimate_s=WINDOW_CELL_ESTIMATE_S,
-                )
-            )
-            priority += 1
-
-    for seed in WINDOW_CONTROL_SEEDS:
-        for pair_id in WINDOW_CONTROL_PAIRS:
-            entries.append(
-                _entry(
-                    tier="window60h",
-                    profile="budget_control_10k",
-                    pair_id=pair_id,
-                    seed=seed,
-                    flags=_window_flags(WINDOW_CONTROL_SDS_STEPS),
-                    priority=priority,
-                    style=WINDOW_STYLE,
-                    estimate_s=WINDOW_CONTROL_ESTIMATE_S,
-                )
-            )
-            priority += 1
     return entries
 
 
@@ -904,8 +943,8 @@ def build_phase_plan(
         entries = build_away_tiers(_finalists(finalists))
     elif phase == "reference60h":
         entries = build_reference_author_60h()
-    elif phase == "window60h":
-        entries = build_window_60h()
+    elif phase == "window":
+        entries = build_window()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -922,7 +961,7 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "window60h", "early-dream-backup")
+            if phase in ("reference60h", "window", "early-dream-backup")
             else _blocked_rotated(entries)
         ),
     )
@@ -993,7 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
     plan_cmd.add_argument(
         "--phase",
-        choices=("wave1", "wave2", "away", "reference60h", "window60h", "early-dream-backup"),
+        choices=("wave1", "wave2", "away", "reference60h", "window", "early-dream-backup"),
         required=True,
     )
     plan_cmd.add_argument("--base-selection", default="legacy")

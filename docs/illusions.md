@@ -177,7 +177,7 @@ A/B ratings, and the acceptance gate) are documented in
 until that gate passes. Failed experimental modes may stay behind flags for
 reproducibility; they do not become defaults merely because they exist.
 The 60-hour yield window that is the current primary axis is documented in
-[illusion-window-60h.md](illusion-window-60h.md); the author-reference
+[illusion-window.md](illusion-window.md); the author-reference
 campaign it replaced is in
 [illusion-reliability-60h.md](illusion-reliability-60h.md).
 

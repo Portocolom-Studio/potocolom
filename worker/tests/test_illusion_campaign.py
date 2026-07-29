@@ -157,11 +157,11 @@ def test_encode_latent_sample_ignores_sds_generator() -> None:
 def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
     from worker.illusion_campaign import (
         WINDOW_SEEDS,
-        build_window_60h,
+        build_window,
         _window_pair_ids,
     )
 
-    entries = build_window_60h()
+    entries = build_window()
     pair_ids = _window_pair_ids()
 
     # The curated issue #138 corpus is actually in the sweep, not just the five
@@ -188,21 +188,29 @@ def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
     sweep_keys = [(e.pair_id, e.seed) for e in sweep]
     assert len(sweep_keys) == len(set(sweep_keys))
 
-    # The full-budget control exists and is scheduled last.
+    # The full-budget control exists at the paper's budget.
     controls = [e for e in entries if e.profile == "budget_control_10k"]
     assert controls
-    assert [e.priority for e in controls] == sorted(e.priority for e in entries)[-len(controls) :]
     assert "--sds-steps" in controls[0].flags
     assert controls[0].flags[controls[0].flags.index("--sds-steps") + 1] == "10000"
+
+    # Controls sit mid-sweep, not at the end: a short window must drop sweep
+    # tail rather than the comparisons the sweep is measured against.
+    all_controls = [e for e in entries if "control" in e.profile]
+    assert all_controls
+    last_control = max(e.priority for e in all_controls)
+    assert last_control < max(e.priority for e in entries)
+    spent = sum(e.estimate_s for e in entries if e.priority <= last_control)
+    assert spent < 50 * 3600, f"controls only complete at {spent / 3600:.1f}h"
 
     hashes = [e.spec_hash() for e in entries]
     assert len(hashes) == len(set(hashes))
 
 
 def test_shard_splits_a_plan_disjointly_and_covers_it() -> None:
-    from worker.illusion_campaign import _shard, build_window_60h
+    from worker.illusion_campaign import _shard, build_window
 
-    entries = build_window_60h()
+    entries = build_window()
     assert _shard("0/2") == (0, 2)
     assert _shard("2/3") == (2, 3)
     for bad in ("1", "3/3", "-1/2", "0/0"):
@@ -253,7 +261,7 @@ def test_plan_pins_model_snapshots_so_offline_cells_can_load(tmp_path) -> None:
     from worker.illusion_campaign import build_phase_plan
 
     plan = build_phase_plan(
-        phase="window60h",
+        phase="window",
         evidence_root=tmp_path,
         model_id="stable-diffusion-v1-5/stable-diffusion-v1-5",
         dream_model_id="lykon/dreamshaper-8-lcm",
@@ -269,10 +277,10 @@ def test_window_plan_reflects_the_pre_window_measurements() -> None:
     from worker.illusion_campaign import (
         WINDOW_CELL_ESTIMATE_S,
         WINDOW_SDS_STEPS,
-        build_window_60h,
+        build_window,
     )
 
-    entries = build_window_60h()
+    entries = build_window()
 
     # A5: joint Dream rescued a failing cell at zero cost, so the sweep uses it.
     sweep = [e for e in entries if e.profile in ("anchor", "sweep")]
@@ -295,7 +303,9 @@ def test_window_plan_reflects_the_pre_window_measurements() -> None:
     # A4: 512px primes cost 3.3x for no gain, so no cell asks for them.
     assert all("--prime-resolution" not in e.flags for e in entries)
 
-    # The whole matrix must fit the 58h unattended deadline with real margin.
+    # The matrix is sized for the stated ~80h window and must not overrun it.
+    # Overshooting is not fatal, because breadth-first ordering means the tail is
+    # what a short window drops, but it must not be planning work it cannot fit.
     total = sum(e.estimate_s for e in entries)
-    assert total < 55 * 3600, f"{total / 3600:.1f}h leaves too little slack"
+    assert total < 80 * 3600, f"{total / 3600:.1f}h does not fit the window"
     assert WINDOW_CELL_ESTIMATE_S >= 1_750, "must not undercut the measured cell time"
