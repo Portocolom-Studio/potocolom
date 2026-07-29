@@ -134,8 +134,9 @@ def generation_download_name(
     _, separator, extension = filename.rpartition(".")
     if not separator or not extension:
         extension = asset.mime.rpartition("/")[2]
-        if re.fullmatch(r"[a-z0-9]+", extension) is None:
+        if re.fullmatch(r"[a-z0-9]+", extension.lower()) is None:
             extension = "bin"
+    extension = extension.lower()
     position_suffix = f"-{position}" if position is not None else ""
     return f"potocolom-{timestamp}-{slug}{position_suffix}.{extension}"
 
@@ -187,11 +188,21 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 thumbs_by_parent[asset.parent_asset_id] = asset
     storage = get_storage()
     now = datetime.now(timezone.utc)
-    masters = {
+    # Keep expired masters for expired_favorite, but number only the assets the
+    # client can see.
+    all_masters = {
         job.id: [
             asset
             for asset in assets.get(job.id, [])
             if not asset.storage_key.endswith("-thumb.webp")
+        ]
+        for job in jobs
+    }
+    visible_masters = {
+        job.id: [
+            asset
+            for asset in all_masters[job.id]
+            if asset.expires_at is None or asset.expires_at > now
         ]
         for job in jobs
     }
@@ -221,7 +232,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                         download_name=generation_download_name(
                             job,
                             asset,
-                            position if len(masters[job.id]) > 1 else None,
+                            position if len(visible_masters[job.id]) > 1 else None,
                         ),
                     ),
                     "thumbnail_url": await storage.url(thumb.storage_key)
@@ -230,15 +241,14 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                     "width": asset.width,
                     "height": asset.height,
                 }
-                for position, asset in enumerate(masters[job.id], start=1)
-                if asset.expires_at is None or asset.expires_at > now
+                for position, asset in enumerate(visible_masters[job.id], start=1)
             ],
             "expired_favorite": bool(
                 job.starred_at
-                and masters[job.id]
+                and all_masters[job.id]
                 and not any(
                     asset.expires_at is None or asset.expires_at > now
-                    for asset in masters[job.id]
+                    for asset in all_masters[job.id]
                 )
             ),
         }

@@ -78,6 +78,30 @@ def test_generation_download_name_uses_mime_for_extensionless_key():
     )
 
 
+@pytest.mark.parametrize(
+    ("storage_key", "mime", "expected_extension"),
+    [
+        ("user/generation.PNG", "image/png", "png"),
+        ("user/generation", "image/WEBP", "webp"),
+    ],
+)
+def test_generation_download_name_normalizes_extension(
+    storage_key,
+    mime,
+    expected_extension,
+):
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": "A lighthouse"},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key=storage_key, mime=mime)
+
+    assert generation_download_name(job, asset) == (
+        f"potocolom-20260729-142530-a-lighthouse.{expected_extension}"
+    )
+
+
 def test_generation_download_name_includes_batch_position():
     job = Job(
         model_id="sd-test",
@@ -107,7 +131,7 @@ def poll_until(client, job_id, state, timeout=5.0):
 
 
 @pytest.mark.db
-def test_generation_download_names_match_master_extensions_and_positions():
+def test_generation_download_names_count_only_visible_masters():
     created_at = datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc)
 
     async def seed_generation() -> uuid.UUID:
@@ -163,6 +187,50 @@ def test_generation_download_names_match_master_extensions_and_positions():
             ))
             await session.commit()
 
+    async def seed_generation_with_expired_first() -> uuid.UUID:
+        assert db.local_user_id is not None
+        assert db.session_factory is not None
+        job_id = uuid.uuid4()
+        async with db.session_factory() as session:
+            if await session.get(Model, "sd-test") is None:
+                session.add(Model(
+                    id="sd-test",
+                    name="SD Test",
+                    capabilities=["text_to_image"],
+                    parameters_schema=MANIFEST["parameters"],
+                    min_vram_gb=0,
+                ))
+            await session.flush()
+            session.add(Job(
+                id=job_id,
+                user_id=db.local_user_id,
+                model_id="sd-test",
+                params={"prompt": "A lighthouse"},
+                state="succeeded",
+                created_at=created_at,
+            ))
+            await session.flush()
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}-expired.png",
+                mime="image/png",
+                width=512,
+                height=512,
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            ))
+            await session.flush()
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}-survivor.webp",
+                mime="image/webp",
+                width=512,
+                height=512,
+            ))
+            await session.commit()
+        return job_id
+
     base_name = "potocolom-20260729-142530-a-lighthouse"
     with TestClient(app) as client:
         job_id = asyncio.run(seed_generation())
@@ -179,6 +247,15 @@ def test_generation_download_names_match_master_extensions_and_positions():
             assert parse_qs(urlsplit(asset["download_url"]).query) == {
                 "download": [f"{base_name}-{position}.{extension}"],
             }
+
+        expired_first_job_id = asyncio.run(seed_generation_with_expired_first())
+        surviving_assets = client.get(
+            f"/api/v1/generations/{expired_first_job_id}"
+        ).json()["assets"]
+        assert len(surviving_assets) == 1
+        assert parse_qs(urlsplit(surviving_assets[0]["download_url"]).query) == {
+            "download": [f"{base_name}.webp"],
+        }
 
 
 @pytest.mark.db
