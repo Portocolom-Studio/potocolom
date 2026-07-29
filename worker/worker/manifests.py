@@ -19,10 +19,11 @@ class Manifest(BaseModel):
     capabilities: list[str]  # text_to_image, image_to_image, realtime, upscale
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     min_vram_gb: int = 0
-    # Text encoder window in tokens; anything past it never conditions the image
-    # (issue #148). Left at 0 rather than 77 on purpose: a manifest that forgets
-    # to declare it stays silent instead of promising a CLIP limit a T5 based
-    # model does not have.
+    # Native text encoder window in tokens. The worker chunks declared CLIP
+    # prompts past this window, while the studio still warns that later chunks
+    # influence the image weakly. Left at 0 rather than 77 on purpose: a
+    # manifest that forgets to declare it stays silent instead of promising a
+    # CLIP limit a T5 based model does not have.
     prompt_token_limit: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only
