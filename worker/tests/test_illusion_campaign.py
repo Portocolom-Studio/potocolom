@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from pathlib import Path
+
+import pytest
 
 from worker.illusion_campaign import (
     build_early_dream_backup,
@@ -65,6 +69,52 @@ def test_gpu_lock_parse_rocm_format() -> None:
         text=True,
     ).strip()
     assert out == "42"
+
+
+def test_gpu_lock_hands_out_exactly_n_slots(tmp_path) -> None:
+    """SLOTS=N admits N concurrent holders and refuses the N+1th."""
+    if subprocess.run(["pgrep", "-x", "Runner.Worker"], capture_output=True).returncode == 0:
+        pytest.skip("self-hosted runner active; gpu-lock refuses by design")
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "gpu-lock.sh"
+    lock = tmp_path / "gpu.lock"
+    env = {
+        **os.environ,
+        "POTOCOLOM_GPU_LOCK": str(lock),
+        "POTOCOLOM_GPU_SLOTS": "2",
+        "POTOCOLOM_GPU_WAIT_S": "1",
+    }
+    held = [
+        subprocess.Popen(
+            ["bash", str(script), "--", "sleep", "20"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(2)
+    ]
+    try:
+        # Both slot files exist and are locked once the holders are up.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if lock.exists() and Path(f"{lock}.slot2").exists():
+                break
+            time.sleep(0.2)
+        # Slot 1 keeps the original path so single-slot callers stay exclusive.
+        assert lock.exists()
+        assert Path(f"{lock}.slot2").exists()
+        third = subprocess.run(
+            ["bash", str(script), "--", "true"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert third.returncode == 75, third.stderr
+        assert "busy" in third.stderr
+    finally:
+        for proc in held:
+            proc.kill()
+            proc.wait()
 
 
 def test_encode_latent_sample_ignores_sds_generator() -> None:

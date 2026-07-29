@@ -35,6 +35,13 @@ WAIT_S="${POTOCOLOM_GPU_WAIT_S:-300}"
 # Desktop residual on the reference RX 7600 often sits ~16-23% with empty KFD.
 # Override with POTOCOLOM_GPU_IDLE_PCT (predeparture uses 25).
 IDLE_PCT="${POTOCOLOM_GPU_IDLE_PCT:-15}"
+# How many cells may share the card. 1 keeps the original exclusive behaviour
+# byte for byte. Above 1 the utilisation and KFD checks are dropped, because
+# with intentional overlap a busy GPU and sibling KFD holders are the expected
+# state rather than a conflict. Raise this only from a measured throughput win:
+# the recipe's small batches leave the card underused, but that is a
+# measurement, not an assumption.
+SLOTS="${POTOCOLOM_GPU_SLOTS:-1}"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -61,21 +68,26 @@ preflight() {
 	local busy=0
 	local reason=""
 
-	if command -v rocm-smi >/dev/null 2>&1; then
-		local use
-		use="$(parse_rocm_gpu_use_pct "$(rocm-smi --showuse 2>/dev/null || true)")"
-		if [[ "${use:-0}" -gt "${IDLE_PCT}" ]]; then
-			busy=1
-			reason="rocm-smi GPU use ${use}% (idle threshold ${IDLE_PCT}%)"
+	# Sharing the card on purpose: a busy GPU and sibling KFD holders are the
+	# intended state, so only the checks that still mean "someone else owns
+	# this machine" apply.
+	if [[ "$SLOTS" -le 1 ]]; then
+		if command -v rocm-smi >/dev/null 2>&1; then
+			local use
+			use="$(parse_rocm_gpu_use_pct "$(rocm-smi --showuse 2>/dev/null || true)")"
+			if [[ "${use:-0}" -gt "${IDLE_PCT}" ]]; then
+				busy=1
+				reason="rocm-smi GPU use ${use}% (idle threshold ${IDLE_PCT}%)"
+			fi
 		fi
-	fi
 
-	if ls /dev/kfd >/dev/null 2>&1; then
-		local kfd
-		kfd="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $1}' | sort -u | tr '\n' ' ' || true)"
-		if [[ -n "${kfd// /}" ]]; then
-			busy=1
-			reason="${reason:+$reason; }KFD holders: $kfd"
+		if ls /dev/kfd >/dev/null 2>&1; then
+			local kfd
+			kfd="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $1}' | sort -u | tr '\n' ' ' || true)"
+			if [[ -n "${kfd// /}" ]]; then
+				busy=1
+				reason="${reason:+$reason; }KFD holders: $kfd"
+			fi
 		fi
 	fi
 
@@ -106,11 +118,36 @@ preflight() {
 	return 0
 }
 
-# Hold the lock for the whole critical section (preflight + command).
-exec 9>"$LOCK_FILE"
-if ! flock 9; then
-	echo "gpu-lock: failed to acquire $LOCK_FILE" >&2
-	exit 2
+# Hold a slot for the whole critical section (preflight + command). Slot 1 keeps
+# the original lock path, so a single-slot run is unchanged and still mutually
+# exclusive with any other single-slot caller.
+slot_path() {
+	if [[ "$1" -eq 1 ]]; then echo "$LOCK_FILE"; else echo "${LOCK_FILE}.slot$1"; fi
+}
+
+acquire_slot() {
+	local i
+	for ((i = 1; i <= SLOTS; i++)); do
+		exec 9>"$(slot_path "$i")"
+		if flock -n 9; then
+			SLOT="$i"
+			return 0
+		fi
+	done
+	return 1
+}
+
+waited=0
+until acquire_slot; do
+	if ((waited >= WAIT_S)); then
+		echo "gpu-lock: all $SLOTS slot(s) busy after ${waited}s" >&2
+		exit 75
+	fi
+	sleep 5
+	waited=$((waited + 5))
+done
+if [[ "$SLOTS" -gt 1 ]]; then
+	echo "gpu-lock: holding slot $SLOT of $SLOTS" >&2
 fi
 waited=0
 until preflight; do
