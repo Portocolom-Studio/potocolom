@@ -389,6 +389,8 @@ Rejected alternative: SIMD image libraries (pillow-simd, libvips) before a profi
 
 ## Job placement: offloaded workers first, micro-batching deferred
 
+<!-- corrected 2026-07-30: the single-region rejection is superseded by "Realtime fleet: regional, pool-partitioned, and warm" below; the offloaded-worker preference and scheduler-level micro-batching deferral stand -->
+
 When several workers can take a queued job, the scheduler prefers workers serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. One comparator in worker selection. Micro-batching same-model queued jobs is deliberately deferred until a real cloud fleet exists: it raises throughput but complicates slot accounting and preemption, and at a one or two GPU scale there is nothing to batch.
 
 Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
@@ -491,6 +493,8 @@ Rejected alternatives: failing open on reserve (an outage becomes a free GPU fau
 
 ## Realtime relay: planned extraction into a Go gateway at scale
 
+<!-- corrected 2026-07-30: superseded by "Realtime relay: Go gateway required for the 1000-active-session target" below; kept for the record because its ownership split and Go rationale still stand -->
+
 The Redis pub/sub relay between API replicas stands, and no gateway code exists today. This entry records the exit plan for the day profiling shows relay frame pacing threatening the 2 to 4 fps bar or relay work crowding API replicas: a stateless gateway service terminates the browser realtime socket and the worker fleet socket, relays binary frames in memory when both legs land on the same instance (affinity by session id) and over Redis pub/sub otherwise, and forwards JSON control traffic to the API, which keeps the scheduler and all authority. Browsers authenticate to it with short-lived tickets minted by the API; workers keep their fleet tokens. The ALB already routes by path, so `/api/v1/realtime` and `/api/v1/fleet` move to the gateway's target group without touching anything else; the FrameBus seam and the no-stickiness design are what make the split configuration plus one new service rather than a redesign. The gateway is written in Go: many sockets, small messages, no model code, a static binary, exactly the shape Go serves best. The API stays Python per its own decision; within this repository the gateway is the only planned Go component. The private repository's services choose their own stack behind the HTTP contracts.
 
 Rejected alternatives: building the gateway now (a deployment and a duplicated auth surface before any profile justifies it, the same reason the frame routing decision rejected it); a full Go port of the API (recreates the two-language backend the FastAPI decision exists to avoid, spending a rewrite on headroom the GPU-bound economics cannot use, since session count and therefore relay load track fleet size, which tracks revenue).
@@ -514,6 +518,8 @@ Deepens "Content safety: prompt screening and output checking in the cloud". The
 Rejected alternatives: storing flagged prompts for human review (creates exactly the sensitive archive the no-prompt posture exists to avoid, and GDPR-scopes it); LLM-based moderation per prompt (latency and cost in a path that must also gate 2 to 4 fps prompt updates); silent shadow-banning (a support nightmare that teaches abusers nothing and honest users less); detailed refusal messages for hard categories (an oracle for evasion testing).
 
 ## GPU session density: calibrated slots now, worker-internal batching later
+
+<!-- corrected 2026-07-30: the density-research deferral is superseded by "GPU session density: capacity-critical at 1000 active sessions" below; calibration and the scheduler slot abstraction stand -->
 
 Realtime slots per worker stop being a configured guess: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the 2 fps floor (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS. Sessions serialize on the worker GPU lock; a batch-size sweep waits on the deferred cross-session batching ladder below. This lands with the real inference issue and replaces the most expensive guess in the system with a measurement. The density ladder beyond that is designed and deliberately deferred: cross-session frame batching inside the worker (frames from concurrent same-model sessions collected in a ~30-50 ms window and run as one batch - invisible to the scheduler, because it lives below the slot abstraction, which is why this does not reopen the deferred scheduler-level micro-batching decision), then StreamDiffusion-class pipeline work (batched denoising steps across consecutive frames, dropping classifier-free guidance on turbo models, tiny-autoencoder decode for the live preview with full VAE on refine). Trigger: when fleet spend makes density the cheapest capacity, which is measurable from the machine-hour accounting.
 
@@ -672,6 +678,64 @@ Rejected alternatives: hardcoding 77 in the studio, which is correct only for th
 Direct Python dependencies use bounded ranges from the supported floor to the next major version. This keeps contributor installs within tested release series while preserving the worker's device-specific installation path: CUDA wheels come from PyPI, while ROCm and CPU torch wheels come from the matching `download.pytorch.org` index.
 
 Rejected alternatives: a lockfile, `uv` or `pip-tools`. A single resolved dependency tree cannot express the worker's different torch indexes by device, so these options would fight the documented install path.
+
+## Realtime relay: Go gateway required for the 1000-active-session target
+
+Supersedes "Realtime relay: planned extraction into a Go gateway at scale" above. The earlier entry's ownership split, FrameBus seam, no-stickiness design, and choice of Go stand; only the conditional timing is no longer in force.
+
+The accepted design target of 1000 or more concurrently active drawing sessions makes the Go realtime gateway a prerequisite for that capacity, rather than an extraction attempted only after the Python API relay is saturated. The stateless gateway terminates browser realtime sockets and worker fleet sockets, relays binary frames through bounded per-session writers in memory when both legs are local and over the FrameBus otherwise, and forwards ordered JSON control to the Python API. The API retains authentication authority, authorization, quota, admission, scheduling, and durable state. Browsers use short-lived API-minted tickets; workers retain fleet credentials; correctness never depends on load-balancer stickiness.
+
+At 1000 active sessions, 2 to 4 fps in each direction is a calculated 4000 to 8000 complete frames per second. Planning ranges of 10 to 40 KB for canvas inputs and 40 to 65 KB for generated outputs produce 100 to 420 MB/s of logical application payload, or 0.8 to 3.36 Gbps. If every frame crosses instances, the FrameBus receives and emits 200 to 840 MB/s, or 1.6 to 6.72 Gbps, before protocol and transport overhead. These figures are calculations from repository planning ranges, not load measurements.
+
+Profiling remains the capacity and release gate. The 1000-session, 2 and 4 fps load sweep sizes the gateway and FrameBus fleet and measures relay p95/p99, drops, socket backlog, CPU, memory, network, control latency, and slow-peer isolation. It no longer decides whether the gateway exists.
+
+Rejected alternatives: retaining the Python API relay until production saturation, which moves gateway extraction into the capacity ramp and leaves the accepted target without its required data plane; a full Go port of the API or gateway-owned authority, which would rewrite unrelated control-plane logic and break the recorded ownership boundary; load-balancer stickiness as a correctness mechanism, which cannot guarantee both socket legs remain together through reconnects and failures.
+
+## Realtime and queue Redis seam: optional, behaviorally equivalent
+
+Deepens "Realtime frame routing: Redis pub/sub between API replicas", "Redis topology: one instance, split-ready namespaces", and the Redis supporting default below. It defines the behavior shared by the existing in-process and Redis-backed paths without changing Redis as the cloud default.
+
+Queues and FrameBus have in-process and Redis-backed implementations selected only by configuration. Both preserve admission states, priority and fairness, channel names, at-most-once complete-frame delivery, destination-owner-only subscriptions, explicit cancellation, and one latest value per session and direction. Redis legitimately adds multi-process scope, leader election, cross-replica delivery, shared rate limits, and shared invalidation. Without Redis, exactly one socket-owning process is permitted and PostgreSQL remains the account-session source of truth. No wire or user-visible queue behavior changes when Redis is enabled.
+
+Rejected alternatives: requiring Redis in every deployment, which adds an unnecessary service to ordinary self-hosting; allowing more than one socket-owning process without Redis, which would silently partition queues, routes, and invalidation; weaker in-process ordering, fairness, or backpressure semantics, which would make deployment mode change user-visible behavior and leave the simple profile unable to exercise the distributed contract.
+
+## GPU session density: capacity-critical at 1000 active sessions
+
+Supersedes only the research deferral in "GPU session density: calibrated slots now, worker-internal batching later" above. Its calibration method and scheduler-facing slot abstraction remain in force.
+
+The accepted 500 to 1000 GPU-process design satisfies the recorded spend trigger for worker-internal density work. Cross-session batching and other preview-path density experiments enter the capacity-critical research path. A technique is adopted only when production end-to-end p95 stays within the realtime bar, quality is accepted, and dollars per calibrated slot-hour improve after warmup and headroom. The scheduler continues to consume calibrated slots; batching remains internal to the worker.
+
+The current formula admits one slot when complete-frame p95 is at most 500 ms and two slots when it is at most 250 ms. With a raised configured cap, the calculated thresholds are 166.67 ms for three slots and 125 ms for four. At 1000 active sessions, one slot requires 1000 GPU processes and two slots require 500. Using the repository planning range of $0.35 to $0.70 per process-hour, that projects to $0.005833 to $0.011667 per active session-minute at one slot and $0.002917 to $0.005833 at two, or $175 to $700 per fleet-hour. These are calculations from planning inputs, not measurements under concurrent load or current market prices.
+
+Rejected alternatives: continuing to defer worker-internal density research, because the projected 500 to 1000 process fleet satisfies the decision's spend trigger; scheduler-level frame batching, which reopens slot accounting and couples the scheduler to worker internals; adopting an optimization on isolated throughput or latency alone, which does not establish accepted quality, production p95, or lower dollars per calibrated slot-hour.
+
+## Realtime fleet: regional, pool-partitioned, and warm
+
+Supersedes the single-region rejection in "Job placement: offloaded workers first, micro-batching deferred" and the later-stage timing for regional and split pools. The offloaded-worker preference and scheduler-level micro-batching deferral still stand.
+
+At the 1000-active-session target, each active region has its own gateway, FrameBus, admission queue, scheduler lease, and worker pools. Realtime pools keep the realtime model fully resident; batch and other model families use separate pools. Admission assigns one region before one worker and compares browser locality, ready compatible slots, queue wait, measured ready lead time, failure headroom, and configured cost policy. Active sessions are not live-migrated for balancing. Regional failure reacquires capacity elsewhere and uses the browser's complete-canvas resend. Warm capacity is counted in ready calibrated slots, never running machines.
+
+This is the architecture required for the accepted target, not a claim that regional load, ready lead time, or failure recovery has been measured at that scale.
+
+Rejected alternatives: retaining one region and a shared realtime/batch pool until later scale stages, which leaves the accepted target without regional frame planes, model residency, or explicit realtime headroom; one global FrameBus or live migration for routine balancing, which puts cross-region traffic and movement into the per-frame path; counting booting or loading machines as warm capacity, which overstates capacity during the one-to-three-minute readiness interval.
+
+## Realtime authorization: bind once, invalidate explicitly
+
+Deepens "Sessions: opaque server-side tokens" and "Roles: three tiers on the user row" by applying their identity and role decisions to realtime connections.
+
+Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind user id, account-session id, role, and quota subject from the server-side opaque session. User and admin may create and control realtime sessions; viewer is read-only and cannot consume a slot. Image frames are authorized against the bound connection and session, not by repeating a session-store lookup per frame. Logout, revocation, user disable, deletion, or role change cancels queued work and closes indexed live connections. A gateway validates only short-lived API-minted tickets; the API remains the authority.
+
+At 1000 active sessions and 2 to 4 canvas fps, authenticating each input frame would create a calculated 2000 to 4000 cache or database decisions per second. This rate is derived from the target and cadence, not measured traffic.
+
+Rejected alternatives: accepting a socket before authentication or trusting identity fields in browser messages, which permits scarce work without a server-derived principal; repeating session-store authorization for every frame, which adds 2000 to 4000 decisions per second without improving the immutable connection binding; making gateway tickets carry durable quota or authorization authority, which would duplicate API policy and make revocation depend on ticket expiry.
+
+## Household fairness: only if bounded waiting is required
+
+Deepens "Full pool: admission queue with paid tier priority". Its default that active sessions are never preempted remains in force.
+
+Within each priority class, admission is fair by authenticated principal, with one active-or-waiting realtime request per principal by default. Duplicate tabs do not multiply queue share. This policy prevents queue amplification but does not guarantee bounded wait while an active user draws continuously. An operator who needs bounded household fairness may enable a session-turn lease that releases only at a session boundary while another principal waits; it never time-slices frames.
+
+Rejected alternatives: keying fairness by IP address, cookie, or browser tab, which lets duplicate tabs multiply queue share and conflates users behind one network; enabling bounded session turns by default, which would reverse the recorded no-active-preemption policy for every deployment; frame time slicing or mid-session preemption, which degrades the realtime bar and interrupts active drawing instead of applying fairness at a session boundary.
 
 ## Supporting defaults
 
