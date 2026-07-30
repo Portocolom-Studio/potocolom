@@ -43,9 +43,12 @@ tmux new-session -d -s "$session" -n heartbeat \
 
 for ((i = 0; i < slots; i++)); do
 	log="${plan%.json}.shard${i}.log"
+	# -u because the driver's stdout is redirected to a file, where Python
+	# block-buffers it: without this the top-level log stays empty for hours
+	# while the run is perfectly healthy, which reads exactly like a hang.
 	tmux new-window -t "$session" -n "shard$i" \
 		"cd '$root' && PYTHONPATH=worker POTOCOLOM_GPU_SLOTS='$slots' \
-		worker/.venv/bin/python -m worker.illusion_campaign run \
+		worker/.venv/bin/python -u -m worker.illusion_campaign run \
 		--plan '$plan' --shard '$i/$slots' --deadline-s '$deadline' \
 		>> '$log' 2>&1"
 	echo "shard $i -> $log"
