@@ -70,6 +70,8 @@ The browser's WebSocket and the worker's persistent connection usually terminate
 
 Rejected alternatives: a dedicated realtime gateway service (cleanest latency path, but one more deployment that duplicates auth); having the worker redial the specific replica holding the browser (breaks the workers-dial-one-endpoint rule and fights Fargate networking).
 
+> Shipped status (2026-07-30): **not yet implemented.** The current relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends; the backend has no Redis dependency or FrameBus. The target is governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts".
+
 The rejected gateway is pre-planned as a scale-stage extraction with an explicit trigger; see "Realtime relay: planned extraction into a Go gateway at scale" below.
 
 ## GPU pool: shared between jobs and realtime, realtime first
@@ -84,11 +86,15 @@ A session request with no free slot waits in a queue with live position and esti
 
 Rejected alternatives: hard rejection (worst experience, no demand signal); time slice sharing (everyone's frame rate collapses instead of anyone waiting).
 
+> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler hard-rejects a full pool with close code 4003. Queue admission remains the target under issue #19, "Real-Time Generation Protocol", and the issue "Redis-optional Queues and FrameBus contracts".
+
 ## Idle realtime sessions: release after 60 seconds, transparent resume
 
 An idle drawing session releases its slot and stops metering after about 60 seconds without input; the canvas stays intact and the next stroke reacquires a slot, usually instantly. Forgotten tabs therefore cost nothing and block nobody.
 
 Rejected alternative: pinning the slot while the tab is open. Zero resume friction, but forgotten tabs silently drain credits, which is a support complaint machine.
+
+> Shipped status (2026-07-30): **not yet implemented.** The current browser handler records no last-input time and pins a ready slot until the connection closes. Issue #19, "Real-Time Generation Protocol", owns idle release and resume controls; issue #20, "Multi-Worker Scheduling", owns reacquisition and priority.
 
 ## Model placement: hot set plus on-demand loading
 
@@ -260,6 +266,8 @@ One replica holds a short Redis lease and runs the single threaded scheduling lo
 
 Rejected alternatives: a dedicated scheduler service (cleanest isolation, one more deployment before launch); lock based scheduling in every replica (distributed race bugs concentrated exactly where GPU money is spent).
 
+> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, realtime admission queue, preemption, idle release, or cross-replica recovery. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
+
 ## Redis topology: one instance, split-ready namespaces
 
 A single instance at launch, but every key belongs to one concern (sessions, queue, rt, rate) and each concern's client reads its own endpoint setting, so moving pub/sub or the queues to dedicated instances later is configuration. Redis is never the source of truth, so its loss degrades features without losing data.
@@ -271,6 +279,8 @@ Rejected alternatives: a replica from day one (pays for failover on a component 
 The job queue and the realtime admission queue are Redis sorted sets scored by tier then enqueue time, popped atomically with a small Lua script. Priority is native, queue position for the waiting room is one ZRANK, and recovery is rebuilding the set from job and session rows.
 
 Rejected alternatives: Redis Streams (delivery tracking that duplicates what the PostgreSQL rows provide, and priority needs a stream per tier); Celery or RQ (assume queue consuming worker processes, but our workers hang off WebSocket connections).
+
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. Redis sorted sets, the realtime admission queue, cancellation, fairness, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
 
 ## Realtime wire format: binary frames, JSON control
 
@@ -341,9 +351,13 @@ Rejected alternatives: YAML (nicer to hand-edit, but a pyyaml dependency and JSO
 
 ## Drawing surface: bitmap canvas
 
-The drawing tool paints strokes directly onto one `<canvas>` element; frame capture for the realtime loop is a native `canvas.toBlob("image/webp")`. Undo is a snapshot stack, and eraser and fill are plain pixel operations. The wire protocol already fixed rasterized frames, so the cheapest path from stroke to encoded frame wins at 2 to 4 fps.
+<!-- corrected 2026-07-30: issue #54's operation-journal direction supersedes the earlier snapshot-stack undo choice; the live bitmap choice stands -->
 
-Rejected alternative: an SVG vector layer rasterized to a hidden canvas per frame (individually editable strokes, but every frame pays a serialize, draw and encode pipeline, plus hit-testing complexity, for editing semantics the realtime loop does not need).
+Use one 512 by 512 bitmap canvas for live interaction and encode complete WebP frames with native `canvas.toBlob()` for the realtime wire. The browser records the same canonical pointer samples as ordered, stable-ID operations and stores compressed raster checkpoints to bound replay time. Undo replays operations after the nearest checkpoint, and refine rerasterizes the journal at the requested target resolution. Vector paths are reserved for selections, masks, text, shapes, and authored objects that need later transforms; model-generated output remains raster.
+
+Rejected alternatives: a raw snapshot stack (1 MiB per 512 by 512 RGBA level before overhead, without target-resolution rerasterization); an SVG live surface (still requires rasterization before every model frame and does not give generated pixels semantic object identity); a pure vector document (cannot faithfully represent paint, eraser, smudge, imported rasters, and diffusion output).
+
+> Shipped status (2026-07-30): **not yet implemented.** Issue #3, "Drawing interface", owns the live bitmap tool and issue #54, "stroke-op replay log", owns the operation journal, checkpoints, replay, and undo.
 
 ## First public release: after the walking skeleton, API level
 
