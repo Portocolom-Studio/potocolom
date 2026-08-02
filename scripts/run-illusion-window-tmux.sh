@@ -20,6 +20,14 @@ plan="$(realpath "$1")"
 slots="${2:-1}"
 session="illusion-window"
 deadline="${POTOCOLOM_CAMPAIGN_DEADLINE_S:-208800}"
+# gpu-lock's utilisation check reads rocm-smi "GPU use", which on this box
+# includes GRAPHICS: Xorg, a browser and GNOME idle around 16-23% and have been
+# measured at 41-55% with Firefox busy. Against the 15% default every cell is
+# refused with exit 75 and the campaign silently stalls in a retry loop, which
+# is exactly what happened once. The real compute guards are the KFD-holder and
+# Runner.Worker checks, which stay active at any threshold, so this is set high
+# enough that the desktop cannot trip it.
+export POTOCOLOM_GPU_IDLE_PCT="${POTOCOLOM_GPU_IDLE_PCT:-90}"
 heartbeat="${plan%.json}.heartbeat"
 
 if tmux has-session -t "$session" 2>/dev/null; then
