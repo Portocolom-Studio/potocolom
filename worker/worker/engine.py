@@ -598,13 +598,15 @@ class DiffusersEngine:
             )
             return 0
         canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
-        payload = encode_webp(canvas)
-        params = {"prompt": "calibration", "strength": 0.7}
+        strength = 0.7
+        params = {"prompt": "calibration", "strength": strength}
         samples: list[float] = []
         # One discarded pass absorbs remaining compile/warmup cost.
         for index in range(CALIBRATION_SAMPLES + 1):
+            # Time exactly the region serialized by the GPU lock. That occupancy,
+            # rather than CPU work that can overlap it, is what the scheduler uses.
             start = time.monotonic()
-            self._frame(manifest, params, payload)
+            self._frame(manifest, params, canvas, strength)
             elapsed_ms = (time.monotonic() - start) * 1000.0
             if index > 0:
                 samples.append(elapsed_ms)
@@ -1106,11 +1108,25 @@ class DiffusersEngine:
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        if "realtime" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support realtime frames")
+        if self._pick_rung(manifest) != "full":
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+        frame_params = dict(params)
+
+        def prepare_canvas() -> Image.Image:
+            canvas = Image.open(io.BytesIO(payload)).convert("RGB")
+            return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
+
+        canvas = await asyncio.to_thread(prepare_canvas)
+        strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
+            # _pipeline can load or evict GPU weights, _prompt_kwargs can run
+            # GPU text encoders for long prompts, and diffusion uses the GPU.
+            frame_result: tuple[Image.Image, int] | None = None
             try:
-                data, gpu_ms = await asyncio.to_thread(
-                    self._frame, manifest, dict(params), payload)
-                return GeneratedFrame(data, gpu_ms)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -1118,19 +1134,22 @@ class DiffusersEngine:
             except Exception:
                 self._evict_poisoned(manifest.id)
                 raise
-            self._evict_except(manifest.id)
-            data, gpu_ms = await asyncio.to_thread(
-                self._frame, manifest, dict(params), payload)
-            return GeneratedFrame(data, gpu_ms)
+            if frame_result is None:
+                # The eviction mutates GPU residency, so it remains serialized.
+                self._evict_except(manifest.id)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
+            image, gpu_ms = frame_result
+        data = await asyncio.to_thread(encode_webp, image)
+        return GeneratedFrame(data, gpu_ms)
 
-    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> tuple[bytes, int]:
-        if "realtime" not in manifest.capabilities:
-            raise ValueError(f"model {manifest.id} does not support realtime frames")
-        if self._pick_rung(manifest) != "full":
-            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
-        canvas = Image.open(io.BytesIO(payload)).convert("RGB")
-        canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
-        strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)
+    def _frame(
+        self,
+        manifest: Manifest,
+        params: dict,
+        canvas: Image.Image,
+        strength: float,
+    ) -> tuple[Image.Image, int]:
         pipeline = self._pipeline(manifest, "i2i")
         negative_prompt = params.get("negative_prompt")
         prompt_kwargs = self._prompt_kwargs(
@@ -1150,4 +1169,4 @@ class DiffusersEngine:
             guidance_scale=0.0,
         ).images[0]
         gpu_ms = int((time.monotonic() - started) * 1000)
-        return encode_webp(image), gpu_ms
+        return image, gpu_ms

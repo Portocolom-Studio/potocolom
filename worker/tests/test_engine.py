@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from worker.engine import CALIBRATION_SAMPLES, DiffusersEngine, SimulatedEngine
+from worker.engine import (
+    CALIBRATION_SAMPLES,
+    DiffusersEngine,
+    SimulatedEngine,
+    encode_webp,
+)
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 
 
@@ -569,6 +574,127 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     )
 
 
+def test_frame_keeps_pillow_work_outside_gpu_lock():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    torch_stub = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine.torch = torch_stub
+    engine._gpu = asyncio.Lock()
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    expected = encode_webp(rendered)
+    events: list[tuple[str, bool]] = []
+
+    def run_pipeline(**kwargs):
+        events.append(("diffusion", engine._gpu.locked()))
+        assert kwargs["image"].size == (512, 512)
+        return SimpleNamespace(images=[rendered])
+
+    pipeline = MagicMock(side_effect=run_pipeline)
+
+    def load_pipeline(*_args):
+        events.append(("pipeline", engine._gpu.locked()))
+        return pipeline
+
+    def prompt_kwargs(*_args):
+        events.append(("prompt", engine._gpu.locked()))
+        return {"prompt": "frame"}
+
+    engine._pipeline = MagicMock(side_effect=load_pipeline)
+    engine._prompt_kwargs = MagicMock(side_effect=prompt_kwargs)
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+    open_image = Image.open
+
+    def track_open(*args, **kwargs):
+        events.append(("decode", engine._gpu.locked()))
+        return open_image(*args, **kwargs)
+
+    def track_encode(image):
+        events.append(("encode", engine._gpu.locked()))
+        return encode_webp(image)
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch("asyncio.to_thread", side_effect=run_inline) as run,
+        patch("worker.engine.Image.open", side_effect=track_open),
+        patch("worker.engine.encode_webp", side_effect=track_encode),
+    ):
+        result = asyncio.run(engine.frame(manifest, {"prompt": "frame"}, source.getvalue()))
+
+    assert events == [
+        ("decode", False),
+        ("pipeline", True),
+        ("prompt", True),
+        ("diffusion", True),
+        ("encode", False),
+    ]
+    assert result.data == expected
+    assert isinstance(result.gpu_ms, int)
+    assert result.gpu_ms >= 0
+    assert run.call_count == 3
+    engine._evict_except.assert_not_called()
+    engine._evict_poisoned.assert_not_called()
+
+
+def test_frame_oom_retries_once_without_decoding_twice():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    torch_stub = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine.torch = torch_stub
+    engine._gpu = asyncio.Lock()
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    canvases: list[Image.Image] = []
+
+    def run_frame(_manifest, _params, canvas, _strength):
+        canvases.append(canvas)
+        if len(canvases) == 1:
+            raise torch_stub.OutOfMemoryError
+        return rendered, 17
+
+    engine._frame = MagicMock(side_effect=run_frame)
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+    open_image = Image.open
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch("asyncio.to_thread", side_effect=run_inline) as run,
+        patch("worker.engine.Image.open", wraps=open_image) as decode,
+    ):
+        result = asyncio.run(engine.frame(manifest, {}, source.getvalue()))
+
+    assert decode.call_count == 1
+    assert run.call_count == 4
+    assert engine._frame.call_count == 2
+    assert canvases[0] is canvases[1]
+    engine._evict_except.assert_called_once_with(manifest.id)
+    engine._evict_poisoned.assert_not_called()
+    assert result.data == encode_webp(rendered)
+    assert result.gpu_ms == 17
+
+
 def test_calibrate_realtime_sets_slots_from_p95():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
@@ -580,7 +706,9 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._calibrated_slots = None
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
-    engine._frame = MagicMock(return_value=b"webp")
+    engine._frame = MagicMock(
+        return_value=(Image.new("RGB", (32, 32)), 200),
+    )
 
     manifest = Manifest(
         id="vega-rt",
@@ -595,12 +723,19 @@ def test_calibrate_realtime_sets_slots_from_p95():
     def fake_monotonic():
         return next(times)
 
-    with patch("worker.engine.time.monotonic", side_effect=fake_monotonic):
+    with (
+        patch("worker.engine.time.monotonic", side_effect=fake_monotonic),
+        patch("worker.engine.encode_webp") as encode,
+    ):
         slots = engine._calibrate_realtime(manifest, configured=4)
 
     assert slots == 2
     assert engine._calibrated_slots == 2
     assert engine._frame.call_count == CALIBRATION_SAMPLES + 1
+    encode.assert_not_called()
+    canvases = [call.args[2] for call in engine._frame.call_args_list]
+    assert all(canvas is canvases[0] for canvas in canvases)
+    assert all(call.args[3] == 0.7 for call in engine._frame.call_args_list)
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
