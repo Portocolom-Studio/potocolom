@@ -141,6 +141,9 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
                              (This is the real history endpoint. There is no /api/v1/assets.)
                              ?starred=true uses starred_at newest-first; false excludes favorites.
+                             ?roots_only=true returns source_asset_id IS NULL; false returns only
+                             derivatives. Omit it for the existing unfiltered history. Cursors must
+                             come from the same filtered result and retain created_at/id ordering.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 

@@ -821,6 +821,76 @@ async def _seed_lineage_generation(
 
 
 @pytest.mark.db
+def test_generation_history_roots_only_filter_pages_roots():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            future = datetime.now(timezone.utc) + timedelta(days=365)
+            async with db.session_factory() as session:
+                newest_root_id, newest_root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="roots-filter-generate",
+                    capabilities=["text_to_image"],
+                    prompt="newest root",
+                    created_at=future,
+                )
+                older_root_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="roots-filter-generate",
+                    capabilities=["text_to_image"],
+                    prompt="older root",
+                    created_at=future - timedelta(seconds=1),
+                )
+                child_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="roots-filter-edit",
+                    capabilities=["image_to_image"],
+                    prompt="child",
+                    created_at=future - timedelta(seconds=2),
+                    source_asset_id=newest_root_asset_id,
+                )
+                await session.commit()
+            return newest_root_id, older_root_id, child_id
+
+        newest_root_id, older_root_id, child_id = asyncio.run(seed())
+
+        first = client.get(
+            "/api/v1/generations",
+            params={"roots_only": "true", "limit": 1},
+        )
+        assert first.status_code == 200
+        assert [row["id"] for row in first.json()] == [str(newest_root_id)]
+
+        second = client.get(
+            "/api/v1/generations",
+            params={
+                "roots_only": "true",
+                "limit": 1,
+                "cursor": str(newest_root_id),
+            },
+        )
+        assert second.status_code == 200
+        assert [row["id"] for row in second.json()] == [str(older_root_id)]
+
+        derivatives = client.get(
+            "/api/v1/generations",
+            params={"roots_only": "false", "limit": 200},
+        )
+        assert derivatives.status_code == 200
+        assert str(child_id) in [row["id"] for row in derivatives.json()]
+
+        wrong_cursor = client.get(
+            "/api/v1/generations",
+            params={"roots_only": "true", "cursor": str(child_id)},
+        )
+        assert wrong_cursor.status_code == 404
+
+
+@pytest.mark.db
 def test_generation_lineage_chain_orders_ancestors_and_children():
     with TestClient(app) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:

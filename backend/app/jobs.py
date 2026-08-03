@@ -214,6 +214,7 @@ async def list_generations(
     cursor: uuid.UUID | None = None,
     state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
     starred: bool | None = Query(default=None),
+    roots_only: bool | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
@@ -222,9 +223,16 @@ async def list_generations(
         query = query.where(Job.state == state)
     if starred is not None:
         query = query.where(Job.starred_at.is_not(None) if starred else Job.starred_at.is_(None))
+    if roots_only is not None:
+        query = query.where(
+            Job.source_asset_id.is_(None)
+            if roots_only else Job.source_asset_id.is_not(None)
+        )
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        if roots_only is not None and (anchor.source_asset_id is None) != roots_only:
             raise HTTPException(status_code=404, detail="unknown cursor")
         if starred is True:
             if anchor.starred_at is None:
