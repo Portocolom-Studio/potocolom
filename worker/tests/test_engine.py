@@ -8,7 +8,10 @@ from PIL import Image
 
 from worker.engine import (
     CALIBRATION_SAMPLES,
+    CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
+    GeneratedFrame,
+    REALTIME_SIZE,
     SimulatedEngine,
     encode_webp,
 )
@@ -581,6 +584,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -647,6 +651,86 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
     engine._evict_poisoned.assert_not_called()
 
 
+def test_frame_bounds_codec_concurrency():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    engine._frame = MagicMock(return_value=(rendered, 17))
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    call_count = CODEC_CONCURRENCY_LIMIT + 1
+    first_wave_full = asyncio.Event()
+    release_first_wave = asyncio.Event()
+    second_wave_full = asyncio.Event()
+    release_second_wave = asyncio.Event()
+    active = 0
+    maximum = 0
+    started = 0
+    kinds_seen: set[str] = set()
+
+    async def fake_to_thread(function, *args, **kwargs):
+        nonlocal active, maximum, started
+        name = getattr(function, "__name__", "")
+        if name == "prepare_canvas":
+            kind = "decode"
+            result = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE))
+        elif function is encode_webp:
+            kind = "encode"
+            result = b"webp"
+        else:
+            return function(*args, **kwargs)
+
+        started += 1
+        wave = 1 if started <= CODEC_CONCURRENCY_LIMIT else 2
+        active += 1
+        maximum = max(maximum, active)
+        kinds_seen.add(kind)
+        if wave == 1 and active == CODEC_CONCURRENCY_LIMIT:
+            first_wave_full.set()
+        if wave == 2 and active == CODEC_CONCURRENCY_LIMIT:
+            second_wave_full.set()
+        try:
+            if wave == 1:
+                await release_first_wave.wait()
+            else:
+                await release_second_wave.wait()
+            return result
+        finally:
+            active -= 1
+
+    async def run_frames():
+        with patch("asyncio.to_thread", side_effect=fake_to_thread):
+            tasks = [
+                asyncio.create_task(engine.frame(manifest, {}, b"png"))
+                for _ in range(call_count)
+            ]
+            await first_wave_full.wait()
+            assert active == CODEC_CONCURRENCY_LIMIT
+            assert not any(task.done() for task in tasks)
+            release_first_wave.set()
+            await second_wave_full.wait()
+            assert active == CODEC_CONCURRENCY_LIMIT
+            release_second_wave.set()
+            return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run_frames())
+
+    assert maximum == CODEC_CONCURRENCY_LIMIT
+    assert kinds_seen == {"decode", "encode"}
+    assert len(results) == call_count
+    assert all(result == GeneratedFrame(b"webp", 17) for result in results)
+
+
 def test_frame_oom_retries_once_without_decoding_twice():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
@@ -654,6 +738,7 @@ def test_frame_oom_retries_once_without_decoding_twice():
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()

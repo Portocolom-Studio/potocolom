@@ -45,6 +45,11 @@ POISON_EVICT_COOLDOWN_S = 30.0
 # Timing samples after the discarded warmup pass; nearest-rank p95 over
 # these tolerates one outlier (19th of 20) instead of becoming the max.
 CALIBRATION_SAMPLES = 20
+# Pillow work was implicitly bounded to one operation by the GPU lock before
+# this change moved it outside that lock. Use half the logical CPUs so codec
+# work leaves room in the shared default executor, with a floor of one for
+# small hosts and a ceiling of four to limit CPU and memory pressure.
+CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
 
 
 @dataclass
@@ -250,6 +255,7 @@ class DiffusersEngine:
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
         self._gpu = asyncio.Lock()
+        self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
@@ -1118,7 +1124,8 @@ class DiffusersEngine:
             canvas = Image.open(io.BytesIO(payload)).convert("RGB")
             return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
 
-        canvas = await asyncio.to_thread(prepare_canvas)
+        async with self._codec:
+            canvas = await asyncio.to_thread(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
             # _pipeline can load or evict GPU weights, _prompt_kwargs can run
@@ -1140,7 +1147,8 @@ class DiffusersEngine:
                 frame_result = await asyncio.to_thread(
                     self._frame, manifest, frame_params, canvas, strength)
             image, gpu_ms = frame_result
-        data = await asyncio.to_thread(encode_webp, image)
+        async with self._codec:
+            data = await asyncio.to_thread(encode_webp, image)
         return GeneratedFrame(data, gpu_ms)
 
     def _frame(
