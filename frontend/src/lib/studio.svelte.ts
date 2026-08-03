@@ -150,6 +150,7 @@ export const studio = $state({
 		| 'edit_image'
 		| 'image_to_text'
 		| 'realtime_canvas'
+		| 'images'
 		| 'models'
 		| 'metrics',
 	metricsTab: 'usage' as 'usage' | 'benchmarks'
@@ -179,6 +180,7 @@ export function openService(
 		| 'edit_image'
 		| 'image_to_text'
 		| 'realtime_canvas'
+		| 'images'
 		| 'models'
 ): void {
 	studio.shellView = view;
