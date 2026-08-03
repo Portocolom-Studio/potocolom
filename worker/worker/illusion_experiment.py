@@ -798,7 +798,16 @@ def build_yield_sheets(root: Path, out: Path, stage: str = "final") -> dict[str,
     return summary
 
 
-def build_stage_blind_sheets(root: Path, out: Path, seed: int = 0) -> dict[str, Any]:
+# Cells per blind sheet page. One sheet per stage does not survive scale: 180
+# runs give 360 cells a stage, which at four columns is a 1024x23040 strip that
+# nobody can rate. Paginating keeps the shuffle, so the review stays blind, and
+# makes each page a screenful.
+BLIND_CELLS_PER_PAGE = 24
+
+
+def build_stage_blind_sheets(
+    root: Path, out: Path, seed: int = 0, per_page: int = BLIND_CELLS_PER_PAGE
+) -> dict[str, Any]:
     """Build separate SDS-end, Dream-d1, and final sheets with a rating template."""
     runs: list[tuple[Path, dict[str, Any]]] = []
     for manifest_path in sorted(root.rglob("manifest.json")):
@@ -843,6 +852,7 @@ def build_stage_blind_sheets(root: Path, out: Path, seed: int = 0) -> dict[str, 
     out.mkdir(parents=True, exist_ok=True)
     answer_rows: list[dict[str, Any]] = []
     ratings: list[dict[str, Any]] = []
+    page_counts: dict[str, int] = {}
     from PIL import Image
 
     for stage, rows in stage_rows.items():
@@ -862,16 +872,71 @@ def build_stage_blind_sheets(root: Path, out: Path, seed: int = 0) -> dict[str, 
                     "notes": "",
                 }
             )
-        if cells:
+        if not cells:
+            continue
+        if per_page and len(cells) > per_page:
+            pages = [cells[i : i + per_page] for i in range(0, len(cells), per_page)]
+            for number, page in enumerate(pages, start=1):
+                make_contact_sheet(page, out / f"{stage}-p{number:02d}.png", cols=4)
+            page_counts[stage] = len(pages)
+        else:
             make_contact_sheet(cells, out / f"{stage}.png", cols=4)
+            page_counts[stage] = 1
+    _write_blind_index(out, page_counts, stage_rows)
     write_manifest_atomic(out / "answer-key.json", {"seed": seed, "cases": answer_rows})
-    (out / "ratings.jsonl").write_text("".join(json.dumps(row) + "\n" for row in ratings))
+    # ratings.jsonl is edited BY HAND, so rebuilding must never silently destroy
+    # a partial review. Rebuilds are routine (more cells complete, a new stage,
+    # different pagination) and the cost of clobbering is a human's afternoon.
+    ratings_path = out / "ratings.jsonl"
+    if ratings_path.is_file():
+        existing = [
+            json.loads(line) for line in ratings_path.read_text().splitlines() if line.strip()
+        ]
+        if any(row.get("keep") is not None for row in existing):
+            backup = ratings_path.with_suffix(".jsonl.rated")
+            backup.write_text(ratings_path.read_text())
+            raise FileExistsError(
+                f"{ratings_path} already holds verdicts; copied to {backup.name} and "
+                "refusing to overwrite. Move or delete the original to rebuild."
+            )
+    ratings_path.write_text("".join(json.dumps(row) + "\n" for row in ratings))
     summary = {
         "runs": len(runs),
         "cells": {stage: len(rows) for stage, rows in stage_rows.items()},
+        "pages": page_counts,
     }
     write_manifest_atomic(out / "summary.json", summary)
     return summary
+
+
+def _write_blind_index(
+    out: Path, page_counts: dict[str, int], stage_rows: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Index the paginated blind sheets, without leaking what anything is."""
+    blocks = []
+    for stage, pages in page_counts.items():
+        names = (
+            [f"{stage}-p{n:02d}.png" for n in range(1, pages + 1)]
+            if pages > 1
+            else [f"{stage}.png"]
+        )
+        links = " ".join(f'<a href="{n}">{i + 1}</a>' for i, n in enumerate(names))
+        blocks.append(
+            f"<h2>{stage}</h2><p>{len(stage_rows[stage])} cells over {pages} page(s)</p>"
+            f"<p class=pages>{links}</p>"
+        )
+    (out / "index.html").write_text(
+        "<!doctype html><meta charset=utf-8><title>Blind stage review</title>"
+        "<style>body{font:14px system-ui;background:#181818;color:#eee;margin:2rem;max-width:52rem}"
+        "a{color:#8cf;margin-right:.5rem}h2{margin-top:1.5rem}code{color:#ffd}</style>"
+        "<h1>Blind stage review</h1>"
+        "<p>Rate each labelled cell in <code>ratings.jsonl</code>: set <code>keep</code> "
+        "true or false, and optionally <code>subject_read</code> and "
+        "<code>artifact</code>. Freeze the file before opening "
+        "<code>answer-key.json</code>, which is what makes this blind.</p>"
+        "<p>Rate the three stages separately. On this corpus no stage dominated: "
+        "sds_end was best in 38% of cells, dream_d1 32%, final 31%.</p>" + "".join(blocks) + "\n"
+    )
 
 
 def score_images_for_prompts(
@@ -1986,6 +2051,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     stage_blind.add_argument("--root", type=Path, required=True)
     stage_blind.add_argument("--out", type=Path, required=True)
     stage_blind.add_argument("--seed", type=int, default=0)
+    stage_blind.add_argument(
+        "--per-page",
+        type=int,
+        default=BLIND_CELLS_PER_PAGE,
+        help="cells per page; 0 for one sheet per stage. At 180 runs a single "
+        "sheet is a 1024x23040 strip nobody can rate.",
+    )
 
     yield_cmd = sub.add_parser(
         "build-yield",
@@ -2030,7 +2102,12 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd == "build-stage-blind":
-        print(json.dumps(build_stage_blind_sheets(args.root, args.out, args.seed), indent=2))
+        print(
+            json.dumps(
+                build_stage_blind_sheets(args.root, args.out, args.seed, args.per_page),
+                indent=2,
+            )
+        )
         return
 
     if args.cmd == "build-yield":

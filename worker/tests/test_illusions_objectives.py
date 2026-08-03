@@ -608,3 +608,45 @@ def test_build_yield_sheets_can_show_a_non_final_stage(tmp_path) -> None:
 
     with pytest.raises(ValueError):
         build_yield_sheets(tmp_path / "runs", tmp_path / "bad", "nonsense")
+
+
+def test_blind_sheets_refuse_to_clobber_a_partial_review(tmp_path) -> None:
+    """ratings.jsonl is hand-edited; a rebuild must not destroy verdicts."""
+    import json
+
+    import pytest
+    from PIL import Image
+
+    from worker.illusion_experiment import build_stage_blind_sheets
+
+    run = tmp_path / "runs" / "pair_a" / "seed_1"
+    (run / "ckpt_dream_round_01").mkdir(parents=True)
+    (run / "ckpt_sds_2000").mkdir(parents=True)
+    for target in (run, run / "ckpt_dream_round_01", run / "ckpt_sds_2000"):
+        for view in (1, 2):
+            Image.new("RGB", (32, 32), (120, 30, 30)).save(target / f"derived_{view}.png")
+    (run / "manifest.json").write_text(
+        json.dumps({"status": "completed", "pair_id": "pair_a", "config": {"seed": 1}})
+    )
+
+    out = tmp_path / "blind"
+    build_stage_blind_sheets(tmp_path / "runs", out, seed=1)
+    ratings = out / "ratings.jsonl"
+    rows = [json.loads(line) for line in ratings.read_text().splitlines()]
+    assert rows and all(r["keep"] is None for r in rows)
+
+    # A human rates one cell, then someone rebuilds.
+    rows[0]["keep"] = True
+    ratings.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(FileExistsError):
+        build_stage_blind_sheets(tmp_path / "runs", out, seed=1)
+
+    # The verdict survives, and is also copied aside.
+    assert json.loads(ratings.read_text().splitlines()[0])["keep"] is True
+    assert (out / "ratings.jsonl.rated").is_file()
+
+    # An untouched template is replaced without complaint.
+    for r in rows:
+        r["keep"] = None
+    ratings.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    build_stage_blind_sheets(tmp_path / "runs", out, seed=1)
