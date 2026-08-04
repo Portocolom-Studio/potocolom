@@ -10,7 +10,8 @@
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: preflight setup setup-rocm setup-cuda check-python check-worker-venv \
+.PHONY: preflight compose-up compose-down compose-logs \
+	setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-frontend verify-compose verify-guards verify-mermaid simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
@@ -32,6 +33,30 @@ PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 
 preflight: ## check this machine against the self-hosting requirements (read-only)
 	@bash "$(CURDIR)/scripts/preflight.sh"
+
+# Self-hosting convenience wrappers. The docker compose commands in the README
+# stay canonical: self-hosting requires Docker and nothing else, and make is
+# not on every container host. These are for people who already have it, and
+# must not become the documented path.
+COMPOSE_FILE := $(CURDIR)/deploy/compose/compose.yml
+# gpu on NVIDIA, rocm on AMD, smoke (simulated worker) without either. Detected
+# the same way scripts/preflight.sh reports it; override with PROFILE=.
+PROFILE ?= $(shell if [ -e /dev/kfd ]; then echo rocm; \
+	elif [ -r /proc/driver/nvidia/version ] || command -v nvidia-smi >/dev/null 2>&1; \
+	then echo gpu; else echo smoke; fi)
+
+compose-up: ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
+	@test -f deploy/compose/.env || { \
+		echo 'error: deploy/compose/.env is missing.' >&2; \
+		echo '  cp deploy/compose/.env.example deploy/compose/.env' >&2; \
+		echo '  then set POSTGRES_PASSWORD in it' >&2; exit 1; }
+	docker compose -f $(COMPOSE_FILE) --profile $(PROFILE) up -d --build
+
+compose-down: ## stop the self-hosted stack; named volumes are left intact
+	docker compose -f $(COMPOSE_FILE) --profile $(PROFILE) down
+
+compose-logs: ## follow the self-hosted stack's logs
+	docker compose -f $(COMPOSE_FILE) --profile $(PROFILE) logs -f
 
 check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 	@test -n "$(PYTHON)" || { \

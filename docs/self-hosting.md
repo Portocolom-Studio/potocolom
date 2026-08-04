@@ -43,6 +43,11 @@ A machine without a supported GPU can still run the full stack against the
 simulated worker (flat colored images, real protocol):
 `scripts/compose-smoke.sh`.
 
+Every command on this page is `docker compose`, because self-hosting requires
+Docker and nothing else. `make compose-up`, `make compose-down` and
+`make compose-logs` wrap the same commands and detect the profile, for hosts
+that already have `make`; they are a shortcut and never a requirement.
+
 ## Checking a machine before you start
 
 `scripts/preflight.sh` (or `make preflight`) checks everything on this page

@@ -36,6 +36,10 @@ No account, no API key and no telemetry endpoint are required. [docs/self-hostin
 
 ## Self-hosting
 
+Docker is the only thing this needs. Everything here is `docker compose` on
+purpose, so nothing beyond the table above has to be installed on the host -
+the `make` targets further down are for working *on* potocolom, not running it.
+
 ```bash
 scripts/preflight.sh          # what this machine has, what it is missing, which profile to use
 cp deploy/compose/.env.example deploy/compose/.env
@@ -47,6 +51,11 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 `scripts/preflight.sh` is read-only - it starts nothing and installs nothing. It
 checks the table above against the running machine, names the profile you can
 run, and prints the fix for anything missing.
+
+If you happen to have `make`, `make compose-up`, `make compose-down` and
+`make compose-logs` wrap exactly the commands above and pick the profile from
+the GPU they find. They are a shortcut, never a requirement: the `docker
+compose` lines are the supported path.
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
@@ -77,11 +86,15 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 ### Prerequisites
 
 - Docker with Compose v2, for the development dependencies.
-- Python 3.11 or newer, for the backend and the worker. `make setup` uses `python3` when it is new enough and otherwise falls back to `python3.13` / `python3.12` / `python3.11` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
+- Python 3.11 or newer, for the backend and the worker, with its `venv` module: Debian and Ubuntu ship that separately, as `python3.11-venv` or equivalent. `make setup` uses `python3` when it is new enough and otherwise falls back to `python3.13` / `python3.12` / `python3.11` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
 - Node.js 24 or newer, for the frontend. `frontend/package.json` declares it and `engine-strict` is on, so npm refuses to install on an older Node rather than failing later in the build.
 - A GPU is optional until inference lands (issue #15). Both NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets; machines without a supported GPU run the worker on CPU. Machine specific setup, including AMD desktops, is documented in [Local development and testing](docs/local-development.md).
 
 ### Common tasks
+
+Unlike self-hosting above, this is where `make` earns its place: these targets
+drive a native toolchain, not containers, so they need the prerequisites listed
+above rather than Docker alone.
 
 ```
 make setup      # create virtualenvs, install all dependencies
