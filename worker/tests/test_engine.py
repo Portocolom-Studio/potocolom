@@ -24,6 +24,17 @@ class _FakeTensor:
         self.values = values
         self.marker = marker
 
+    @property
+    def ndim(self):
+        return len(self.shape)
+
+    def __getitem__(self, index):
+        if type(index) is not int:
+            raise TypeError("fake tensor only implements integer indexing")
+        if not self.shape or not -self.shape[0] <= index < self.shape[0]:
+            raise IndexError("fake tensor index out of range")
+        return _FakeTensor(self.shape[1:], marker=self.marker)
+
 
 class _FakeTorch:
     class _NoGrad:
@@ -577,6 +588,158 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     )
 
 
+def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    inference_state = {"active": False, "entries": 0}
+
+    class InferenceContext:
+        def __enter__(self):
+            assert inference_state["active"] is False
+            inference_state["active"] = True
+            inference_state["entries"] += 1
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            inference_state["active"] = False
+
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        inference_mode=InferenceContext,
+    )
+    engine.device = "cpu"
+    dtype = object()
+    engine.dtype = dtype
+    engine._pipelines = {}
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
+
+    latents = _FakeTensor((1, 4, 64, 64), marker="pipeline-latents")
+    decoded = object()
+    preview_image = Image.new("RGB", (32, 32), (12, 34, 56))
+    stored_image = Image.new("RGB", (32, 32), (78, 90, 123))
+
+    def run_pipeline(**kwargs):
+        if kwargs.get("output_type") == "latent":
+            return SimpleNamespace(images=latents)
+        return SimpleNamespace(images=[stored_image])
+
+    pipeline = MagicMock(side_effect=run_pipeline)
+    pipeline.image_processor = SimpleNamespace(
+        postprocess=MagicMock(return_value=[preview_image]),
+    )
+    engine._pipeline = MagicMock(return_value=pipeline)
+
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    decode_inference_states = []
+
+    def decode_latents(received, *, return_dict):
+        decode_inference_states.append(inference_state["active"])
+        assert return_dict is False
+        assert received.ndim == 4, (
+            f"preview decoder requires 4D latents, got shape {received.shape}"
+        )
+        assert received.shape == (1, 4, 64, 64)
+        return (decoded,)
+
+    decoder.decode.side_effect = decode_latents
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        preview_vae="madebyollin/taesdxl",
+    )
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+
+    async def scenario():
+        frame = await engine.frame(
+            manifest, {"prompt": "frame"}, source.getvalue(),
+        )
+        stored = await engine.generate(
+            manifest, {"prompt": "stored"}, lambda _fraction: None,
+        )
+        stored_i2i = await engine.generate(
+            manifest,
+            {"prompt": "stored edit"},
+            lambda _fraction: None,
+            input_image=source.getvalue(),
+        )
+        return frame, stored, stored_i2i
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch.dict(sys.modules, {"diffusers": diffusers}),
+        patch("asyncio.to_thread", side_effect=run_inline),
+    ):
+        frame, stored, stored_i2i = asyncio.run(scenario())
+
+    autoencoder_tiny.from_pretrained.assert_called_once_with(
+        "madebyollin/taesdxl", torch_dtype=dtype,
+    )
+    decoder.to.assert_called_once_with("cpu")
+    # Identity proves the tiny decoder receives the pipeline latents directly,
+    # while the fake decoder enforces the real batched tensor shape.
+    decoder.decode.assert_called_once_with(latents, return_dict=False)
+    pipeline.image_processor.postprocess.assert_called_once_with(
+        decoded, output_type="pil",
+    )
+    assert pipeline.call_args_list[0].kwargs["output_type"] == "latent"
+    assert "output_type" not in pipeline.call_args_list[1].kwargs
+    assert "output_type" not in pipeline.call_args_list[2].kwargs
+    assert decoder.decode.call_count == 1
+    assert inference_state == {"active": False, "entries": 1}
+    assert decode_inference_states == [True]
+    with Image.open(io.BytesIO(frame.data)) as opened:
+        pixel = opened.resize((1, 1)).getpixel((0, 0))
+        assert all(abs(actual - expected) <= 3 for actual, expected in zip(pixel, (12, 34, 56)))
+    with Image.open(io.BytesIO(stored.data)) as opened:
+        assert opened.getpixel((0, 0)) == (78, 90, 123)
+    with Image.open(io.BytesIO(stored_i2i.data)) as opened:
+        assert opened.getpixel((0, 0)) == (78, 90, 123)
+    engine._evict_except.assert_not_called()
+    engine._evict_poisoned.assert_not_called()
+
+
+def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    pipeline = MagicMock(return_value=SimpleNamespace(images=[rendered]))
+    engine._pipeline = MagicMock(return_value=pipeline)
+
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.side_effect = OSError("weights unavailable")
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_vae="missing/preview-vae",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        first, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+        second, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+
+    assert first is rendered
+    assert second is rendered
+    assert autoencoder_tiny.from_pretrained.call_count == 1
+    assert all("output_type" not in call.kwargs for call in pipeline.call_args_list)
+
+
 def test_frame_keeps_pillow_work_outside_gpu_lock():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
@@ -600,6 +763,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
     def run_pipeline(**kwargs):
         events.append(("diffusion", engine._gpu.locked()))
         assert kwargs["image"].size == (512, 512)
+        assert "output_type" not in kwargs
         return SimpleNamespace(images=[rendered])
 
     pipeline = MagicMock(side_effect=run_pipeline)
@@ -929,6 +1093,26 @@ def test_evict_cold_removes_oldest_first():
     assert ("a", "t2i") in engine._pipelines
     assert ("b", "t2i") not in engine._pipelines
     assert "b" not in engine._rungs
+
+
+def test_evict_detaches_preview_decoders():
+    first = SimpleNamespace(_potocolom_preview_decoder=object())
+    second = SimpleNamespace(_potocolom_preview_decoder=object())
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("a", "i2i"): first, ("b", "i2i"): second}
+    engine._rungs = {"a": "full", "b": "full"}
+    engine._last_used = {"a": 1.0, "b": 2.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._evict_model("a")
+
+    assert not hasattr(first, "_potocolom_preview_decoder")
+    assert hasattr(second, "_potocolom_preview_decoder")
+
+    engine._evict_all()
+
+    assert not hasattr(second, "_potocolom_preview_decoder")
+    assert engine._pipelines == {}
 
 
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:

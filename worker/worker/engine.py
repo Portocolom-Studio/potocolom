@@ -50,6 +50,8 @@ CALIBRATION_SAMPLES = 20
 # work leaves room in the shared default executor, with a floor of one for
 # small hosts and a ceiling of four to limit CPU and memory pressure.
 CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
+_PREVIEW_DECODER_ATTR = "_potocolom_preview_decoder"
+_PREVIEW_DECODER_UNAVAILABLE = object()
 
 
 @dataclass
@@ -657,6 +659,43 @@ class DiffusersEngine:
             return LCMScheduler.from_config(config)
         raise ValueError(f"unknown scheduler override: {name}")
 
+    def _preview_decoder(self, pipeline: Any, manifest: Manifest) -> Any | None:
+        """Load and retain a realtime-only decoder on its owning pipeline."""
+        if not manifest.preview_vae:
+            return None
+        pipeline_state = vars(pipeline)
+        cached = pipeline_state.get(_PREVIEW_DECODER_ATTR)
+        if cached is _PREVIEW_DECODER_UNAVAILABLE:
+            return None
+        if cached is not None:
+            return cached
+        try:
+            from diffusers import AutoencoderTiny
+
+            decoder = AutoencoderTiny.from_pretrained(
+                manifest.preview_vae, torch_dtype=self.dtype,
+            ).to(self.device)
+        except Exception as error:
+            # Keep the normal VAE path available and avoid retrying a broken
+            # weights location on every frame for this pipeline lifetime.
+            pipeline_state[_PREVIEW_DECODER_ATTR] = _PREVIEW_DECODER_UNAVAILABLE
+            logger.warning(
+                "preview decoder %s failed to load for %s; using full VAE: %s",
+                manifest.preview_vae, manifest.id, error,
+            )
+            return None
+        pipeline_state[_PREVIEW_DECODER_ATTR] = decoder
+        logger.info("loaded preview decoder %s for %s", manifest.preview_vae, manifest.id)
+        return decoder
+
+    @staticmethod
+    def _detach_preview_decoder(pipeline: Any) -> None:
+        try:
+            vars(pipeline).pop(_PREVIEW_DECODER_ATTR, None)
+        except TypeError:
+            # Some test and upscale runtimes are opaque objects with no state.
+            pass
+
     def loaded_models(self) -> list[str]:
         return sorted({key[0] for key in self._pipelines})
 
@@ -681,7 +720,8 @@ class DiffusersEngine:
 
     def _evict_model(self, model_id: str) -> None:
         for key in [key for key in self._pipelines if key[0] == model_id]:
-            del self._pipelines[key]
+            pipeline = self._pipelines.pop(key)
+            self._detach_preview_decoder(pipeline)
         self._rungs.pop(model_id, None)
         self._last_used.pop(model_id, None)
         self._free_gpu_cache()
@@ -710,6 +750,8 @@ class DiffusersEngine:
         return True
 
     def _evict_all(self) -> None:
+        for pipeline in self._pipelines.values():
+            self._detach_preview_decoder(pipeline)
         self._pipelines.clear()
         self._rungs.clear()
         self._last_used.clear()
@@ -1166,15 +1208,26 @@ class DiffusersEngine:
             str(params.get("prompt", "")),
             str(negative_prompt) if negative_prompt is not None else None,
         )
+        preview_decoder = self._preview_decoder(pipeline, manifest)
         started = time.monotonic()
-        image = pipeline(
+        pipeline_kwargs = {
             **prompt_kwargs,
-            image=canvas,
+            "image": canvas,
             # Few-step img2img: diffusers runs ceil(steps * strength) steps,
             # so keep the product at one or above.
-            num_inference_steps=max(2, math.ceil(1 / strength)),
-            strength=strength,
-            guidance_scale=0.0,
-        ).images[0]
+            "num_inference_steps": max(2, math.ceil(1 / strength)),
+            "strength": strength,
+            "guidance_scale": 0.0,
+        }
+        if preview_decoder is None:
+            image = pipeline(**pipeline_kwargs).images[0]
+        else:
+            latents = pipeline(**pipeline_kwargs, output_type="latent").images
+            # AutoencoderTiny is trained to take the pipeline's SDXL latents
+            # directly. Unlike the full VAE path, dividing by
+            # pipeline.vae.config.scaling_factor here produces clipped noise.
+            with self.torch.inference_mode():
+                decoded = preview_decoder.decode(latents, return_dict=False)[0]
+            image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
         gpu_ms = int((time.monotonic() - started) * 1000)
         return image, gpu_ms
