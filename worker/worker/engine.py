@@ -675,10 +675,19 @@ class DiffusersEngine:
             decoder = AutoencoderTiny.from_pretrained(
                 manifest.preview_vae, torch_dtype=self.dtype,
             ).to(self.device)
+        except self.torch.OutOfMemoryError:
+            # OOM is recoverable: frame() evicts other models and retries, but
+            # caching absence here would prevent that retry from loading it.
+            raise
         except Exception as error:
-            # Keep the normal VAE path available and avoid retrying a broken
-            # weights location on every frame for this pipeline lifetime.
-            pipeline_state[_PREVIEW_DECODER_ATTR] = _PREVIEW_DECODER_UNAVAILABLE
+            if isinstance(error, (ImportError, OSError, RuntimeError, TypeError, ValueError)):
+                # Deterministic load failures will not improve on the next frame,
+                # so retain the full-VAE fallback for this pipeline lifetime.
+                pipeline_state[_PREVIEW_DECODER_ATTR] = _PREVIEW_DECODER_UNAVAILABLE
+            # Slots measured with the tiny decoder overstate full-VAE capacity.
+            # Clearing them makes the next advertisement recalibrate the path
+            # that this pipeline will actually use.
+            self._calibrated_slots = None
             logger.warning(
                 "preview decoder %s failed to load for %s; using full VAE: %s",
                 manifest.preview_vae, manifest.id, error,

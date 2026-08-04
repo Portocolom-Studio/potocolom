@@ -1,6 +1,7 @@
 import asyncio
 import io
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -712,8 +713,12 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
 
 def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
     engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
     engine.device = "cpu"
     engine.dtype = object()
+    engine._calibrated_slots = 3
     engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
     rendered = Image.new("RGB", (32, 32), (12, 34, 56))
     pipeline = MagicMock(return_value=SimpleNamespace(images=[rendered]))
@@ -732,12 +737,123 @@ def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
 
     with patch.dict(sys.modules, {"diffusers": diffusers}):
         first, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+        assert engine._calibrated_slots is None
+        # A later full-VAE calibration is valid and must survive cached fallback.
+        engine._calibrated_slots = 1
         second, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
 
     assert first is rendered
     assert second is rendered
+    assert engine._calibrated_slots == 1
     assert autoencoder_tiny.from_pretrained.call_count == 1
     assert all("output_type" not in call.kwargs for call in pipeline.call_args_list)
+
+
+def test_preview_decoder_oom_propagates_without_caching():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    oom = type("OutOfMemoryError", (Exception,), {})
+    engine.torch = SimpleNamespace(OutOfMemoryError=oom)
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._calibrated_slots = 3
+    pipeline = SimpleNamespace()
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.side_effect = [oom("no room"), decoder]
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_vae="madebyollin/taesdxl",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        pytest = __import__("pytest")
+        with pytest.raises(oom):
+            engine._preview_decoder(pipeline, manifest)
+        loaded = engine._preview_decoder(pipeline, manifest)
+
+    assert loaded is decoder
+    assert autoencoder_tiny.from_pretrained.call_count == 2
+    assert engine._calibrated_slots == 3
+
+
+def test_preview_decoder_transient_failure_falls_back_without_caching():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._calibrated_slots = 3
+    pipeline = SimpleNamespace()
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+
+    class TransientLoadError(Exception):
+        pass
+
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.side_effect = [
+        TransientLoadError("temporary failure"), decoder,
+    ]
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_vae="madebyollin/taesdxl",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        assert engine._preview_decoder(pipeline, manifest) is None
+        loaded = engine._preview_decoder(pipeline, manifest)
+
+    assert loaded is decoder
+    assert autoencoder_tiny.from_pretrained.call_count == 2
+    assert engine._calibrated_slots is None
+
+
+def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    model_id = "madebyollin/taesdxl"
+    cached_config = huggingface_hub.try_to_load_from_cache(model_id, "config.json")
+    if not isinstance(cached_config, str):
+        pytest.skip("madebyollin/taesdxl is not cached")
+    snapshot = Path(cached_config).parent
+    weight_names = (
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.bin",
+    )
+    if not any((snapshot / name).is_file() for name in weight_names):
+        pytest.skip("madebyollin/taesdxl weights are not cached")
+
+    decoder = diffusers.AutoencoderTiny.from_pretrained(
+        snapshot, torch_dtype=torch.float32, local_files_only=True,
+    ).to("cpu")
+    latents = torch.linspace(
+        -0.5, 0.5, steps=4 * 16 * 16, dtype=torch.float32, device="cpu",
+    ).reshape(1, 4, 16, 16)
+
+    with torch.inference_mode():
+        decoded = decoder.decode(latents, return_dict=False)[0]
+
+    assert decoded.shape == (1, 3, 128, 128)
+    assert decoded.device.type == "cpu"
+    assert decoded.dtype == torch.float32
+    assert torch.isfinite(decoded).all().item()
+    assert decoded.amin().item() >= -1.1
+    assert decoded.amax().item() <= 1.1
+    assert decoded.std().item() > 0.01
 
 
 def test_frame_keeps_pillow_work_outside_gpu_lock():
