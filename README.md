@@ -25,9 +25,9 @@ To run potocolom on your own machine. Contributing to it instead needs a differe
 | What | Needed | Notes |
 |---|---|---|
 | OS | Linux | What the project is developed, tested and released on. Docker Desktop hosts are untested. |
-| Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. |
+| Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. Your user must be in the `docker` group (`sudo usermod -aG docker $USER`, then log back in) or every command below needs `sudo`. |
 | GPU | NVIDIA or AMD, or none | NVIDIA needs the [Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html); AMD needs the ROCm kernel driver, so `/dev/kfd` and `/dev/dri` exist. Without a GPU the stack still runs against the simulated worker. |
-| VRAM | 6 GB minimum, 12-16 GB comfortable | 6 GB covers SD-class models at 512 px, 12-16 GB covers SDXL-class at 1024 px. Each model manifest declares its own floor. |
+| VRAM | 8 GB minimum, 12-16 GB comfortable | 8 GB is the floor of the lowest selectable model (`ssd-1b`, `vega-rt`); 12-16 GB covers the SDXL class at 1024 px, and `sd35-medium` wants 14 GB. Each manifest declares its own floor. Below it the worker still loads the model, offloaded, but drops the `realtime` capability: you get stills, not the live loop. |
 | RAM | 8 GB, 16 GB comfortable | |
 | Disk | 20 GB free, 50 GB+ comfortable | Model weights are 2-7 GB each, plus your generated images. |
 | Network | Port 8080 free, outbound HTTPS | The studio is served on 8080; weights download from Hugging Face on first use of each model. |
@@ -37,11 +37,16 @@ No account, no API key and no telemetry endpoint are required. [docs/self-hostin
 ## Self-hosting
 
 ```bash
+scripts/preflight.sh          # what this machine has, what it is missing, which profile to use
 cp deploy/compose/.env.example deploy/compose/.env
 # edit POSTGRES_PASSWORD
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
 ```
+
+`scripts/preflight.sh` is read-only - it starts nothing and installs nothing. It
+checks the table above against the running machine, names the profile you can
+run, and prints the fix for anything missing.
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) is unauthenticated in this profile - treat the host as a trusted LAN until fleet auth is implemented. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 

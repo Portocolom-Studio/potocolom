@@ -10,7 +10,7 @@
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
+.PHONY: preflight setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-frontend verify-compose verify-guards verify-mermaid simulate \
 	api worker-rocm worker-cuda worker-sim web web-landing \
@@ -29,6 +29,9 @@
 VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
 PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
+
+preflight: ## check this machine against the self-hosting requirements (read-only)
+	@bash "$(CURDIR)/scripts/preflight.sh"
 
 check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 	@test -n "$(PYTHON)" || { \
