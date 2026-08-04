@@ -6,6 +6,7 @@
 	} from '$lib/studio.svelte';
 
 	type CanvasNodeData = {
+		output_asset_ids: string[];
 		entry: CanvasLineageEntry;
 		generation: CanvasGeneration | null;
 	};
@@ -13,13 +14,17 @@
 	type CachedTree = {
 		status: 'loading' | 'loaded' | 'error';
 		layout: LineageTreeLayout<CanvasNodeData> | null;
+		dirty: boolean;
+		remainingCountLowerBound: number;
 	};
 
 	const sessionTreeCache = new Map<string, CachedTree>();
+	let canvasEpochSequence = 0;
 </script>
 
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import ImageOffIcon from '@lucide/svelte/icons/image-off';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import LocateFixedIcon from '@lucide/svelte/icons/locate-fixed';
@@ -33,6 +38,10 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import { getLocale, t } from '$lib/i18n.svelte';
+	import {
+		clampLineageCoordinate,
+		lineageTreeNeedsHistoryRefresh
+	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
 		LINEAGE_TILE_WIDTH,
@@ -59,7 +68,7 @@
 		selectGeneration,
 		studio,
 		type Generation,
-		type GenerationLineage,
+		type GenerationSubtree,
 		type LineageEntry
 	} from '$lib/studio.svelte';
 
@@ -81,6 +90,7 @@
 		y: number;
 		isRoot: boolean;
 		treeStatus: CachedTree['status'] | null;
+		remainingCountLowerBound: number;
 		node: PositionedLineageNode<CanvasNodeData>;
 	};
 
@@ -97,6 +107,7 @@
 	let treeOffsets = $state({ ...studio.lineageTreeOffsets });
 	let roots = $state<Generation[]>([]);
 	let rootsLoading = $state(false);
+	let rootsInitialized = $state(false);
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
 	let treeCache = $state(new Map(sessionTreeCache));
@@ -126,6 +137,9 @@
 	let dragStart = { x: 0, y: 0, offsetX: 0, offsetY: 0 };
 	let lastPageLoadWorld = { right: Number.NEGATIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
 	const pointers = new Map<number, { x: number; y: number }>();
+	const canvasEpoch = ++canvasEpochSequence;
+	let canvasActive = true;
+	const requestControllers = new Set<AbortController>();
 	const knownFinishedIds = new Set(
 		studio.history
 			.filter((generation) => generation.assets.length > 0)
@@ -177,6 +191,7 @@
 						y,
 						isRoot: node.id === packed.layout.rootId,
 						treeStatus: treeCache.get(packed.rootId)?.status ?? null,
+						remainingCountLowerBound: treeCache.get(packed.rootId)?.remainingCountLowerBound ?? 0,
 						node
 					});
 					if (shown.length === MAX_MOUNTED_TILES) return shown;
@@ -237,6 +252,7 @@
 			id: asset.id,
 			createdAt: root.created_at,
 			data: {
+				output_asset_ids: root.assets.map((item) => item.id),
 				entry: {
 					job_id: root.id,
 					asset_id: asset.id,
@@ -254,10 +270,27 @@
 	}
 
 	function setCachedTree(rootId: string, tree: CachedTree): void {
+		if (!canvasActive || canvasEpoch !== canvasEpochSequence) return;
 		const next = new Map(treeCache);
 		next.set(rootId, tree);
 		treeCache = next;
 		if (tree.status === 'loaded') sessionTreeCache.set(rootId, tree);
+	}
+
+	async function fetchCanvasJson<T>(url: string, failure: string): Promise<T> {
+		const controller = new AbortController();
+		requestControllers.add(controller);
+		try {
+			const response = await fetch(url, { signal: controller.signal });
+			if (!response.ok) throw new Error(failure);
+			const value = (await response.json()) as T;
+			if (!canvasActive || canvasEpoch !== canvasEpochSequence) {
+				throw new DOMException('stale canvas request', 'AbortError');
+			}
+			return value;
+		} finally {
+			requestControllers.delete(controller);
+		}
 	}
 
 	async function loadRoots(): Promise<void> {
@@ -266,81 +299,92 @@
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
 		const cursorQuery = cursor ? `&cursor=${cursor}` : '';
+		let loaded = false;
 		try {
-			const response = await fetch(
-				`/api/v1/generations?roots_only=true&limit=${ROOT_LIMIT}${cursorQuery}`
+			const page = await fetchCanvasJson<Generation[]>(
+				`/api/v1/generations?roots_only=true&limit=${ROOT_LIMIT}${cursorQuery}`,
+				'history request failed'
 			);
-			if (!response.ok) throw new Error('history request failed');
-			const page = (await response.json()) as Generation[];
 			const existing = new Set(roots.map((root) => root.id));
 			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
 			rootsHaveMore = page.length === ROOT_LIMIT;
-			if (!viewportReady) requestAnimationFrame(initializeViewport);
-		} catch {
+			rootsInitialized = true;
+			loaded = true;
+		} catch (error) {
+			if (error instanceof DOMException && error.name === 'AbortError') return;
 			rootsFailed = true;
 		} finally {
-			rootsLoading = false;
+			if (canvasActive && canvasEpoch === canvasEpochSequence) rootsLoading = false;
 		}
+		if (loaded && !viewportReady) requestAnimationFrame(initializeViewport);
 	}
 
 	async function loadTree(root: Generation, force = false): Promise<void> {
 		const existing = treeCache.get(root.id);
-		if (existing?.status === 'loading' || (existing?.status === 'loaded' && !force)) return;
-		setCachedTree(root.id, { status: 'loading', layout: existing?.layout ?? null });
-		const rootNode = rootLayoutNode(root);
-		const nodesByAsset = new Map<string, LineageLayoutNode<CanvasNodeData>>([
-			[rootNode.id, rootNode]
-		]);
-		const queue = [{ jobId: root.id, assetId: rootNode.id }];
-		const visitedJobs = new Set<string>();
+		if (existing?.status === 'loading') {
+			if (force && !existing.dirty) setCachedTree(root.id, { ...existing, dirty: true });
+			return;
+		}
+		if (existing?.status === 'loaded' && !force) return;
+		setCachedTree(root.id, {
+			status: 'loading',
+			layout: existing?.layout ?? null,
+			dirty: false,
+			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
+		});
 		try {
-			while (queue.length > 0) {
-				const target = queue.shift();
-				if (!target || visitedJobs.has(target.jobId)) continue;
-				visitedJobs.add(target.jobId);
-				const [lineageResponse, generationResponse] = await Promise.all([
-					fetch(`/api/v1/generations/${target.jobId}/lineage`),
-					target.jobId === root.id
-						? Promise.resolve(null)
-						: fetch(`/api/v1/generations/${target.jobId}`)
-				]);
-				if (!lineageResponse.ok) {
-					if (target.jobId === root.id) throw new Error('root lineage request failed');
-					continue;
-				}
-				const parent = nodesByAsset.get(target.assetId);
-				if (!parent) continue;
-				if (generationResponse?.ok) {
-					parent.data.generation = (await generationResponse.json()) as Generation;
-				}
-				const lineage = (await lineageResponse.json()) as GenerationLineage;
-				for (const entry of lineage.children) {
-					let child = nodesByAsset.get(entry.asset_id);
-					if (!child) {
-						child = {
-							id: entry.asset_id,
-							createdAt: entry.created_at,
-							data: { entry, generation: null },
-							children: []
-						};
-						nodesByAsset.set(entry.asset_id, child);
-					}
-					if (!parent.children.some((item) => item.id === child?.id)) parent.children.push(child);
-					if (entry.job_id !== null) queue.push({ jobId: entry.job_id, assetId: entry.asset_id });
-				}
+			const subtree = await fetchCanvasJson<GenerationSubtree>(
+				`/api/v1/generations/${root.id}/subtree`,
+				'root subtree request failed'
+			);
+			const nodesByAsset = new Map<string, LineageLayoutNode<CanvasNodeData>>();
+			const nodesByJob = new Map<string, LineageLayoutNode<CanvasNodeData>>();
+			for (const node of subtree.nodes) {
+				const layoutNode = {
+					id: node.entry.asset_id,
+					createdAt: node.entry.created_at,
+					data: node,
+					children: []
+				};
+				nodesByAsset.set(node.entry.asset_id, layoutNode);
+				if (node.entry.job_id !== null) nodesByJob.set(node.entry.job_id, layoutNode);
 			}
+			for (const node of subtree.nodes) {
+				if (node.parent_job_id === null) continue;
+				const parent = nodesByJob.get(node.parent_job_id);
+				const child = nodesByAsset.get(node.entry.asset_id);
+				if (parent && child && parent !== child) parent.children.push(child);
+			}
+			const responseRoot = subtree.nodes.find((node) => node.entry.job_id === root.id);
+			if (!responseRoot) throw new Error('root missing from subtree');
+			const rootNode = nodesByAsset.get(responseRoot.entry.asset_id);
+			if (!rootNode) throw new Error('root missing from subtree');
 			const layout = layoutLineageTree(rootNode);
 			const previousIds = new Set(existing?.layout?.nodes.map((node) => node.id) ?? []);
 			const added = layout.nodes.map((node) => node.id).filter((id) => !previousIds.has(id));
-			setCachedTree(root.id, { status: 'loaded', layout });
+			const rerun = treeCache.get(root.id)?.dirty === true;
+			setCachedTree(root.id, {
+				status: 'loaded',
+				layout,
+				dirty: false,
+				remainingCountLowerBound: subtree.remaining_count_lower_bound
+			});
+			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (!reducedMotion && previousIds.size > 0 && added.length > 0) {
 				newNodeIds = new Set([...newNodeIds, ...added]);
 				setTimeout(() => {
 					newNodeIds = new Set([...newNodeIds].filter((id) => !added.includes(id)));
 				}, 240);
 			}
-		} catch {
-			setCachedTree(root.id, { status: 'error', layout: existing?.layout ?? null });
+			if (rerun) void loadTree(responseRoot.generation, true);
+		} catch (error) {
+			if (error instanceof DOMException && error.name === 'AbortError') return;
+			setCachedTree(root.id, {
+				status: 'error',
+				layout: existing?.layout ?? null,
+				dirty: false,
+				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
+			});
 		}
 	}
 
@@ -395,7 +439,36 @@
 	});
 
 	$effect(() => {
-		const viewport = { translateX, translateY, scale };
+		for (const root of persistedRoots) {
+			const cached = treeCache.get(root.id);
+			const cachedRoot = cached?.layout?.nodes.find((node) => node.data.entry.job_id === root.id);
+			const derivativeFlagChanged =
+				root.has_derivatives === true && cachedRoot?.data.generation?.has_derivatives !== true;
+			if (
+				cached?.status === 'loaded' &&
+				cached.layout &&
+				(derivativeFlagChanged ||
+					lineageTreeNeedsHistoryRefresh(cached.layout.nodes, studio.history))
+			) {
+				void loadTree(root, true);
+			}
+		}
+	});
+
+	$effect(() => {
+		if (!rootsInitialized || rootsLoading || rootsHaveMore) return;
+		const rootIds = new Set(persistedRoots.map((root) => root.id));
+		const bounded = Object.fromEntries(
+			Object.entries(treeOffsets).filter(([rootId]) => rootIds.has(rootId))
+		);
+		if (Object.keys(bounded).length !== Object.keys(treeOffsets).length) {
+			treeOffsets = bounded;
+			saveLineageTreeOffsets(bounded);
+		}
+	});
+
+	$effect(() => {
+		const viewport = { translateX, translateY, scale, rootId: viewportAnchorRootId() };
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 		viewportSaveTimer = setTimeout(() => saveLineageViewport(viewport), VIEWPORT_SAVE_DELAY);
@@ -426,8 +499,8 @@
 				inertiaFrame = 0;
 				return;
 			}
-			translateX += panVelocity.x * elapsed;
-			translateY += panVelocity.y * elapsed;
+			translateX = clampLineageCoordinate(translateX + panVelocity.x * elapsed);
+			translateY = clampLineageCoordinate(translateY + panVelocity.y * elapsed);
 			inertiaFrame = requestAnimationFrame(step);
 		};
 		inertiaFrame = requestAnimationFrame(step);
@@ -437,8 +510,8 @@
 		const clamped = clampScale(nextScale);
 		const worldX = (cursorX - translateX) / scale;
 		const worldY = (cursorY - translateY) / scale;
-		translateX = cursorX - worldX * clamped;
-		translateY = cursorY - worldY * clamped;
+		translateX = clampLineageCoordinate(cursorX - worldX * clamped);
+		translateY = clampLineageCoordinate(cursorY - worldY * clamped);
 		scale = clamped;
 	}
 
@@ -456,6 +529,7 @@
 
 	function onPointerDown(event: PointerEvent): void {
 		if (event.button !== 0 || !viewportEl) return;
+		if (event.target instanceof Element && event.target.closest('button')) return;
 		stopInertia();
 		pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		if (pointers.size === 2) {
@@ -472,7 +546,6 @@
 			viewportEl.setPointerCapture(event.pointerId);
 			return;
 		}
-		if ((event.target as Element).closest('button')) return;
 		viewportEl.setPointerCapture(event.pointerId);
 		panPointerId = event.pointerId;
 		panStart = {
@@ -498,8 +571,8 @@
 		updatePointerWorld(event);
 		if (dragPointerId === event.pointerId && draggedRootId !== null) {
 			const offset = {
-				x: dragStart.offsetX + (event.clientX - dragStart.x) / scale,
-				y: dragStart.offsetY + (event.clientY - dragStart.y) / scale
+				x: clampLineageCoordinate(dragStart.offsetX + (event.clientX - dragStart.x) / scale),
+				y: clampLineageCoordinate(dragStart.offsetY + (event.clientY - dragStart.y) / scale)
 			};
 			dragMoved ||= Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) > 3;
 			treeOffsets = { ...treeOffsets, [draggedRootId]: offset };
@@ -515,15 +588,15 @@
 			const midpointX = (first.x + second.x) / 2 - rect.left;
 			const midpointY = (first.y + second.y) / 2 - rect.top;
 			const nextScale = clampScale(scale * (distance / Math.max(1, pinch.distance)));
-			translateX = midpointX - pinch.worldX * nextScale;
-			translateY = midpointY - pinch.worldY * nextScale;
+			translateX = clampLineageCoordinate(midpointX - pinch.worldX * nextScale);
+			translateY = clampLineageCoordinate(midpointY - pinch.worldY * nextScale);
 			scale = nextScale;
 			pinch = { distance, worldX: pinch.worldX, worldY: pinch.worldY };
 			return;
 		}
 		if (panPointerId !== event.pointerId) return;
-		translateX = panStart.translateX + event.clientX - panStart.x;
-		translateY = panStart.translateY + event.clientY - panStart.y;
+		translateX = clampLineageCoordinate(panStart.translateX + event.clientX - panStart.x);
+		translateY = clampLineageCoordinate(panStart.translateY + event.clientY - panStart.y);
 		if (lastPanSample) {
 			const elapsed = event.timeStamp - lastPanSample.time;
 			if (elapsed > 0) {
@@ -594,8 +667,8 @@
 		treeOffsets = {
 			...treeOffsets,
 			[rootId]: {
-				x: current.x + direction.x * step,
-				y: current.y + direction.y * step
+				x: clampLineageCoordinate(current.x + direction.x * step),
+				y: clampLineageCoordinate(current.y + direction.y * step)
 			}
 		};
 		saveLineageTreeOffsets(treeOffsets);
@@ -628,8 +701,8 @@
 			if (recenterTimer) clearTimeout(recenterTimer);
 			recenterTimer = setTimeout(() => (recentering = false), 260);
 		}
-		translateX = viewportWidth / 2 - (packed.x + rootNode.x) * scale;
-		translateY = viewportHeight / 2 - (packed.y + rootNode.y) * scale;
+		translateX = clampLineageCoordinate(viewportWidth / 2 - (packed.x + rootNode.x) * scale);
+		translateY = clampLineageCoordinate(viewportHeight / 2 - (packed.y + rootNode.y) * scale);
 	}
 
 	function restoredViewportIsUsable(): boolean {
@@ -640,6 +713,12 @@
 			!Number.isFinite(restoredViewport.scale) ||
 			restoredViewport.scale < MIN_SCALE ||
 			restoredViewport.scale > MAX_SCALE
+		) {
+			return false;
+		}
+		if (
+			restoredViewport.rootId !== null &&
+			!packedTrees.some((tree) => tree.rootId === restoredViewport.rootId)
 		) {
 			return false;
 		}
@@ -664,6 +743,14 @@
 
 	function initializeViewport(): void {
 		if (viewportReady) return;
+		if (
+			restoredViewport?.rootId &&
+			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
+			rootsHaveMore
+		) {
+			void loadRoots();
+			return;
+		}
 		if (!restoredViewportIsUsable()) {
 			scale = 1;
 			recenterNewest(false);
@@ -673,11 +760,15 @@
 
 	function onKeyDown(event: KeyboardEvent): void {
 		if ((event.target as Element).closest('.lineage-tile.is-root')) return;
-		if (event.key === 'ArrowLeft') translateX += PAN_STEP;
-		else if (event.key === 'ArrowRight') translateX -= PAN_STEP;
-		else if (event.key === 'ArrowUp') translateY += PAN_STEP;
-		else if (event.key === 'ArrowDown') translateY -= PAN_STEP;
-		else if (event.key === '+' || event.key === '=') {
+		if (event.key === 'ArrowLeft') {
+			translateX = clampLineageCoordinate(translateX + PAN_STEP);
+		} else if (event.key === 'ArrowRight') {
+			translateX = clampLineageCoordinate(translateX - PAN_STEP);
+		} else if (event.key === 'ArrowUp') {
+			translateY = clampLineageCoordinate(translateY + PAN_STEP);
+		} else if (event.key === 'ArrowDown') {
+			translateY = clampLineageCoordinate(translateY - PAN_STEP);
+		} else if (event.key === '+' || event.key === '=') {
 			zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2);
 		} else if (event.key === '-' || event.key === '_') {
 			zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2);
@@ -767,8 +858,24 @@
 		);
 	}
 
+	function viewportAnchorRootId(): string | null {
+		if (packedTrees.length === 0) return null;
+		const centerX = (viewportWidth / 2 - translateX) / scale;
+		const centerY = (viewportHeight / 2 - translateY) / scale;
+		let nearest: { id: string; distance: number } | null = null;
+		for (const tree of packedTrees) {
+			const rootNode = tree.layout.nodes.find((node) => node.id === tree.layout.rootId);
+			if (!rootNode) continue;
+			const distance = Math.hypot(tree.x + rootNode.x - centerX, tree.y + rootNode.y - centerY);
+			if (nearest === null || distance < nearest.distance) {
+				nearest = { id: tree.rootId, distance };
+			}
+		}
+		return nearest?.id ?? null;
+	}
+
 	function saveViewport(): void {
-		saveLineageViewport({ translateX, translateY, scale });
+		saveLineageViewport({ translateX, translateY, scale, rootId: viewportAnchorRootId() });
 	}
 
 	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {
@@ -833,6 +940,7 @@
 					? {
 							...node,
 							data: {
+								...node.data,
 								entry: {
 									...node.data.entry,
 									thumbnail_url: generation.assets[0]?.thumbnail_url ?? null,
@@ -858,12 +966,14 @@
 		refreshedImageIds.add(assetId);
 		refreshingImageIds = new Set([...refreshingImageIds, assetId]);
 		try {
-			const response = await fetch(`/api/v1/generations/${data.entry.job_id}`);
-			if (!response.ok) throw new Error('generation refresh failed');
-			const generation = (await response.json()) as Generation;
+			const generation = await fetchCanvasJson<Generation>(
+				`/api/v1/generations/${data.entry.job_id}`,
+				'generation refresh failed'
+			);
 			failedImageIds = new Set([...failedImageIds].filter((id) => id !== assetId));
 			replaceGeneration(assetId, generation);
-		} catch {
+		} catch (error) {
+			if (error instanceof DOMException && error.name === 'AbortError') return;
 			failedImageIds = new Set([...failedImageIds, assetId]);
 		} finally {
 			refreshingImageIds = new Set([...refreshingImageIds].filter((id) => id !== assetId));
@@ -885,6 +995,9 @@
 		node.addEventListener('pointermove', onPointerMove);
 		node.addEventListener('pointerup', onPointerEnd);
 		node.addEventListener('pointercancel', onPointerEnd);
+		node.addEventListener('lostpointercapture', onPointerEnd);
+		window.addEventListener('pointerup', onPointerEnd);
+		window.addEventListener('pointercancel', onPointerEnd);
 		const clearPointer = () => (pointerWorld = null);
 		node.addEventListener('pointerleave', clearPointer);
 		return () => {
@@ -894,6 +1007,9 @@
 			node.removeEventListener('pointermove', onPointerMove);
 			node.removeEventListener('pointerup', onPointerEnd);
 			node.removeEventListener('pointercancel', onPointerEnd);
+			node.removeEventListener('lostpointercapture', onPointerEnd);
+			window.removeEventListener('pointerup', onPointerEnd);
+			window.removeEventListener('pointercancel', onPointerEnd);
 			node.removeEventListener('pointerleave', clearPointer);
 		};
 	}
@@ -911,6 +1027,9 @@
 
 	onDestroy(() => {
 		if (viewportReady) saveViewport();
+		canvasActive = false;
+		for (const controller of requestControllers) controller.abort();
+		requestControllers.clear();
 		stopInertia();
 		if (recenterTimer) clearTimeout(recenterTimer);
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
@@ -1163,6 +1282,14 @@
 							<RotateCcwIcon />
 						</button>
 					{/if}
+					{#if item.isRoot && item.remainingCountLowerBound > 0}
+						<span class="truncated-count">
+							{t('app.images.truncated_more').replace(
+								'{count}',
+								String(item.remainingCountLowerBound)
+							)}
+						</span>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -1222,6 +1349,15 @@
 			{/if}
 
 			<div class="border-border mb-4 grid gap-2 border-b pb-4">
+				<Button
+					href={selectedAsset?.download_url}
+					variant="outline"
+					class="justify-start"
+					disabled={!selectedHasBytes}
+				>
+					<DownloadIcon />
+					{t('app.gen.download')}
+				</Button>
 				<Button
 					variant="outline"
 					class="justify-start"
@@ -1485,6 +1621,20 @@
 	.reset-tree-position :global(svg) {
 		width: 13px;
 		height: 13px;
+	}
+
+	.truncated-count {
+		position: absolute;
+		top: calc(50% + var(--visible-tile-half-height) + 6px);
+		left: 50%;
+		width: max-content;
+		max-width: 200px;
+		transform: translateX(-50%);
+		color: var(--muted-foreground);
+		font-size: 11px;
+		line-height: 1.2;
+		text-align: center;
+		pointer-events: none;
 	}
 
 	.lineage-tile:focus-visible {

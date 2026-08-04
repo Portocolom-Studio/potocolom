@@ -13,8 +13,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index("jobs_source_asset", "jobs", ["source_asset_id"])
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "jobs_source_asset",
+            "jobs",
+            ["source_asset_id"],
+            postgresql_concurrently=True,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("jobs_source_asset", table_name="jobs")
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "jobs_source_asset",
+            table_name="jobs",
+            postgresql_concurrently=True,
+        )

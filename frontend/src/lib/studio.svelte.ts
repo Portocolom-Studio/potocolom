@@ -2,6 +2,7 @@
 // panel look at the same registry and history.
 
 import { t } from '$lib/i18n.svelte';
+import { clampLineageCoordinate } from '$lib/lineage-canvas-state';
 
 export type Model = {
 	id: string;
@@ -75,6 +76,20 @@ export type GenerationLineage = {
 	ancestors: LineageEntry[];
 	children: LineageEntry[];
 	descendant_count: number;
+	descendants_truncated: boolean;
+};
+
+export type GenerationSubtree = {
+	nodes: Array<{
+		parent_job_id: string | null;
+		output_asset_ids: string[];
+		entry: LineageEntry;
+		generation: Generation;
+	}>;
+	truncated: boolean;
+	remaining_count_lower_bound: number;
+	max_depth: number;
+	max_nodes: number;
 };
 
 export type GenerationPrefill = {
@@ -89,6 +104,7 @@ export type LineageViewport = {
 	translateX: number;
 	translateY: number;
 	scale: number;
+	rootId: string | null;
 };
 
 export type LineageTreeOffset = {
@@ -103,6 +119,8 @@ const STARRED_STORAGE_KEY = 'potocolom-starred';
 const REMOVED_MODELS_STORAGE_KEY = 'potocolom-removed-models';
 const LINEAGE_VIEWPORT_STORAGE_KEY = 'potocolom-lineage-viewport';
 const LINEAGE_TREE_OFFSETS_STORAGE_KEY = 'potocolom-lineage-tree-offsets';
+const LINEAGE_ROOT_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function loadStarredIds(): string[] {
 	if (typeof localStorage === 'undefined') return [];
@@ -145,9 +163,13 @@ function loadLineageViewport(): LineageViewport | null {
 			return null;
 		}
 		return {
-			translateX: parsed.translateX as number,
-			translateY: parsed.translateY as number,
-			scale: parsed.scale as number
+			translateX: clampLineageCoordinate(parsed.translateX as number),
+			translateY: clampLineageCoordinate(parsed.translateY as number),
+			scale: parsed.scale as number,
+			rootId:
+				typeof parsed.rootId === 'string' && LINEAGE_ROOT_ID_PATTERN.test(parsed.rootId)
+					? parsed.rootId
+					: null
 		};
 	} catch {
 		return null;
@@ -161,13 +183,22 @@ function loadLineageTreeOffsets(): Record<string, LineageTreeOffset> {
 		const parsed = raw ? (JSON.parse(raw) as unknown) : {};
 		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
 		return Object.fromEntries(
-			Object.entries(parsed).filter(
-				(entry): entry is [string, LineageTreeOffset] =>
-					entry[1] !== null &&
-					typeof entry[1] === 'object' &&
-					Number.isFinite((entry[1] as Partial<LineageTreeOffset>).x) &&
-					Number.isFinite((entry[1] as Partial<LineageTreeOffset>).y)
-			)
+			Object.entries(parsed)
+				.filter(
+					(entry): entry is [string, LineageTreeOffset] =>
+						LINEAGE_ROOT_ID_PATTERN.test(entry[0]) &&
+						entry[1] !== null &&
+						typeof entry[1] === 'object' &&
+						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).x) &&
+						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).y)
+				)
+				.map(([id, offset]) => [
+					id,
+					{
+						x: clampLineageCoordinate(offset.x),
+						y: clampLineageCoordinate(offset.y)
+					}
+				])
 		);
 	} catch {
 		return {};
@@ -230,20 +261,36 @@ export const studio = $state({
 });
 
 export function saveLineageViewport(viewport: LineageViewport): void {
-	studio.lineageViewport = viewport;
+	const bounded = {
+		...viewport,
+		translateX: clampLineageCoordinate(viewport.translateX),
+		translateY: clampLineageCoordinate(viewport.translateY)
+	};
+	studio.lineageViewport = bounded;
 	if (typeof localStorage === 'undefined') return;
 	try {
-		localStorage.setItem(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(viewport));
+		localStorage.setItem(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(bounded));
 	} catch {
 		// The viewport remains active for this tab when storage is unavailable.
 	}
 }
 
 export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
-	studio.lineageTreeOffsets = offsets;
+	const bounded = Object.fromEntries(
+		Object.entries(offsets)
+			.filter(([id]) => LINEAGE_ROOT_ID_PATTERN.test(id))
+			.map(([id, offset]) => [
+				id,
+				{
+					x: clampLineageCoordinate(offset.x),
+					y: clampLineageCoordinate(offset.y)
+				}
+			])
+	);
+	studio.lineageTreeOffsets = bounded;
 	if (typeof localStorage === 'undefined') return;
 	try {
-		localStorage.setItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(offsets));
+		localStorage.setItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(bounded));
 	} catch {
 		// The positions remain active for this tab when storage is unavailable.
 	}

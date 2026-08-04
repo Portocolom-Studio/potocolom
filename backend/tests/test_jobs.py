@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, jobs
 from app.jobs import generation_download_name
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
@@ -1402,3 +1402,430 @@ def test_generation_lineage_foreign_job_is_not_found():
         response = client.get(f"/api/v1/generations/{job_id}/lineage")
         assert response.status_code == 404
         assert response.json() == {"detail": "no such generation"}
+
+
+@pytest.mark.db
+def test_generation_subtree_bounds_depth_and_reports_truncation(monkeypatch):
+    monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_DEPTH", 2)
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, list[uuid.UUID]]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, source_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-depth-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                ids = [root_id]
+                for depth in range(1, 4):
+                    child_id, source_id = await _seed_lineage_generation(
+                        session,
+                        user_id=db.local_user_id,
+                        model_id="subtree-depth-edit",
+                        capabilities=["image_to_image"],
+                        prompt=f"depth {depth}",
+                        created_at=now + timedelta(seconds=depth),
+                        source_asset_id=source_id,
+                    )
+                    ids.append(child_id)
+                await session.commit()
+            return root_id, ids
+
+        root_id, ids = asyncio.run(seed())
+        response = client.get(f"/api/v1/generations/{root_id}/subtree")
+        assert response.status_code == 200
+        body = response.json()
+        assert [node["generation"]["id"] for node in body["nodes"]] == [
+            str(job_id) for job_id in ids[:3]
+        ]
+        assert body["max_depth"] == 2
+        assert body["truncated"] is True
+        assert body["remaining_count_lower_bound"] >= 1
+
+
+@pytest.mark.db
+def test_generation_subtree_caps_nodes_and_reports_truncation(monkeypatch):
+    monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_NODES", 3)
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-cap-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                for offset in range(4):
+                    await _seed_lineage_generation(
+                        session,
+                        user_id=db.local_user_id,
+                        model_id="subtree-cap-edit",
+                        capabilities=["image_to_image"],
+                        prompt=f"child {offset}",
+                        created_at=now + timedelta(seconds=offset + 1),
+                        source_asset_id=root_asset_id,
+                    )
+                await session.commit()
+            return root_id
+
+        root_id = asyncio.run(seed())
+        response = client.get(f"/api/v1/generations/{root_id}/subtree")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["nodes"]) == 3
+        assert body["max_nodes"] == 3
+        assert body["truncated"] is True
+        assert body["remaining_count_lower_bound"] >= 1
+
+
+@pytest.mark.db
+def test_generation_subtree_is_owned_and_excludes_thumbnail_edges():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            foreign_user_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(User(
+                    id=foreign_user_id,
+                    email=f"{foreign_user_id}@example.com",
+                    role="user",
+                ))
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-thumb-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                thumbnail_id = await session.scalar(
+                    select(Asset.id).where(
+                        Asset.job_id == root_id,
+                        Asset.storage_key.like("%-thumb.webp"),
+                    )
+                )
+                assert thumbnail_id is not None
+                child_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-thumb-edit",
+                    capabilities=["image_to_image"],
+                    prompt="thumbnail child",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=thumbnail_id,
+                )
+                foreign_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=foreign_user_id,
+                    model_id="subtree-foreign-root",
+                    capabilities=["text_to_image"],
+                    prompt="foreign",
+                    created_at=now,
+                )
+                await session.commit()
+            return root_id, child_id, foreign_id
+
+        root_id, child_id, foreign_id = asyncio.run(seed())
+        subtree = client.get(f"/api/v1/generations/{root_id}/subtree")
+        assert subtree.status_code == 200
+        returned = [node["generation"]["id"] for node in subtree.json()["nodes"]]
+        assert returned == [str(root_id)]
+        assert str(child_id) not in returned
+        assert client.get(f"/api/v1/generations/{foreign_id}/subtree").status_code == 404
+
+
+@pytest.mark.db
+def test_generation_subtree_and_descendant_count_are_cycle_safe():
+    with TestClient(app) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-cycle-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                child_id, child_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="subtree-cycle-edit",
+                    capabilities=["image_to_image"],
+                    prompt="child",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=root_asset_id,
+                )
+                root = await session.get(Job, root_id)
+                assert root is not None
+                root.source_asset_id = child_asset_id
+                await session.commit()
+            return root_id, child_id
+
+        root_id, child_id = asyncio.run(seed())
+        subtree = client.get(f"/api/v1/generations/{root_id}/subtree")
+        assert subtree.status_code == 200
+        assert [node["generation"]["id"] for node in subtree.json()["nodes"]] == [
+            str(root_id),
+            str(child_id),
+        ]
+        assert subtree.json()["truncated"] is False
+
+        lineage = client.get(f"/api/v1/generations/{root_id}/lineage")
+        assert lineage.status_code == 200
+        assert lineage.json()["descendant_count"] == 1
+        assert lineage.json()["descendants_truncated"] is False
+
+
+@pytest.mark.db
+def test_generation_lineage_descendant_depth_is_bounded(monkeypatch):
+    monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_DEPTH", 1)
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                root_id, root_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-depth-root",
+                    capabilities=["text_to_image"],
+                    prompt="root",
+                    created_at=now,
+                )
+                _, child_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-depth-edit",
+                    capabilities=["image_to_image"],
+                    prompt="child",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=root_asset_id,
+                )
+                await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="lineage-depth-upscale",
+                    capabilities=["upscale"],
+                    prompt="grandchild",
+                    created_at=now + timedelta(seconds=2),
+                    source_asset_id=child_asset_id,
+                )
+                await session.commit()
+            return root_id
+
+        root_id = asyncio.run(seed())
+        lineage = client.get(f"/api/v1/generations/{root_id}/lineage")
+        assert lineage.status_code == 200
+        assert lineage.json()["descendant_count"] == 1
+        assert lineage.json()["descendants_truncated"] is True
+
+
+@pytest.mark.db
+def test_generation_serializer_never_signs_foreign_assets():
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            foreign_user_id = uuid.uuid4()
+            model_id = f"serializer-owner-{uuid.uuid4()}"
+            job_id = uuid.uuid4()
+            foreign_asset_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(User(
+                    id=foreign_user_id,
+                    email=f"{foreign_user_id}@example.com",
+                    role="user",
+                ))
+                session.add(Model(
+                    id=model_id,
+                    name=model_id,
+                    capabilities=["text_to_image"],
+                    parameters_schema={},
+                    min_vram_gb=0,
+                ))
+                await session.flush()
+                session.add(Job(
+                    id=job_id,
+                    user_id=db.local_user_id,
+                    model_id=model_id,
+                    params={"prompt": "local job"},
+                    state="succeeded",
+                    attempt=1,
+                ))
+                await session.flush()
+                session.add(Asset(
+                    id=foreign_asset_id,
+                    user_id=foreign_user_id,
+                    job_id=job_id,
+                    storage_key=f"{foreign_user_id}/foreign.png",
+                    mime="image/png",
+                    width=512,
+                    height=512,
+                ))
+                await session.flush()
+                session.add(Job(
+                    user_id=foreign_user_id,
+                    model_id=model_id,
+                    params={"prompt": "foreign child"},
+                    state="succeeded",
+                    attempt=1,
+                    source_asset_id=foreign_asset_id,
+                ))
+                await session.commit()
+            return job_id
+
+        job_id = asyncio.run(seed())
+        response = client.get(f"/api/v1/generations/{job_id}")
+        assert response.status_code == 200
+        assert response.json()["assets"] == []
+        assert response.json()["has_derivatives"] is False
+        assert "foreign.png" not in response.text
+
+
+@pytest.mark.db
+def test_generation_cursor_anchor_must_match_every_filter():
+    states = ("queued", "running", "succeeded", "failed")
+    with TestClient(app) as client:
+        async def seed() -> dict[tuple[str, bool, bool], uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            model_id = f"cursor-matrix-{uuid.uuid4()}"
+            source_id = uuid.uuid4()
+            ids = {}
+            async with db.session_factory() as session:
+                session.add(Model(
+                    id=model_id,
+                    name=model_id,
+                    capabilities=["image_to_image"],
+                    parameters_schema={},
+                    min_vram_gb=0,
+                ))
+                session.add(Asset(
+                    id=source_id,
+                    user_id=db.local_user_id,
+                    job_id=None,
+                    storage_key=f"{db.local_user_id}/cursor-source.png",
+                    mime="image/png",
+                    width=512,
+                    height=512,
+                ))
+                await session.flush()
+                offset = 0
+                for state in states:
+                    for starred in (False, True):
+                        for roots_only in (False, True):
+                            job_id = uuid.uuid4()
+                            session.add(Job(
+                                id=job_id,
+                                user_id=db.local_user_id,
+                                model_id=model_id,
+                                params={},
+                                state=state,
+                                attempt=1,
+                                source_asset_id=None if roots_only else source_id,
+                                starred_at=now if starred else None,
+                                created_at=now + timedelta(seconds=offset),
+                            ))
+                            ids[(state, starred, roots_only)] = job_id
+                            offset += 1
+                await session.commit()
+            return ids
+
+        ids = asyncio.run(seed())
+        for state in states:
+            for starred in (False, True):
+                for roots_only in (False, True):
+                    params = {
+                        "state": state,
+                        "starred": str(starred).lower(),
+                        "roots_only": str(roots_only).lower(),
+                    }
+                    matching = client.get(
+                        "/api/v1/generations",
+                        params={**params, "cursor": str(ids[(state, starred, roots_only)])},
+                    )
+                    assert matching.status_code == 200
+                    mismatches = (
+                        ids[("failed" if state != "failed" else "succeeded", starred, roots_only)],
+                        ids[(state, not starred, roots_only)],
+                        ids[(state, starred, not roots_only)],
+                    )
+                    for cursor in mismatches:
+                        response = client.get(
+                            "/api/v1/generations",
+                            params={**params, "cursor": str(cursor)},
+                        )
+                        assert response.status_code == 404
+
+
+@pytest.mark.db
+def test_thumbnail_source_is_rejected_and_not_counted_as_derivative():
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-thumbnail-source")
+
+            async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+                assert db.local_user_id is not None
+                assert db.session_factory is not None
+                now = datetime.now(timezone.utc)
+                async with db.session_factory() as session:
+                    root_id, _ = await _seed_lineage_generation(
+                        session,
+                        user_id=db.local_user_id,
+                        model_id="sd-test",
+                        capabilities=["text_to_image", "image_to_image"],
+                        prompt="root",
+                        created_at=now,
+                    )
+                    thumbnail_id = await session.scalar(
+                        select(Asset.id).where(
+                            Asset.job_id == root_id,
+                            Asset.storage_key.like("%-thumb.webp"),
+                        )
+                    )
+                    assert thumbnail_id is not None
+                    await _seed_lineage_generation(
+                        session,
+                        user_id=db.local_user_id,
+                        model_id="sd-test",
+                        capabilities=["text_to_image", "image_to_image"],
+                        prompt="corrupt child",
+                        created_at=now + timedelta(seconds=1),
+                        source_asset_id=thumbnail_id,
+                    )
+                    await session.commit()
+                return root_id, thumbnail_id
+
+            root_id, thumbnail_id = asyncio.run(seed())
+            detail = client.get(f"/api/v1/generations/{root_id}")
+            assert detail.status_code == 200
+            assert detail.json()["has_derivatives"] is False
+
+            response = client.post(
+                "/api/v1/generations",
+                json={
+                    "model_id": "sd-test",
+                    "params": {"prompt": "thumbnail source"},
+                    "source_asset_id": str(thumbnail_id),
+                },
+            )
+            assert response.status_code == 422
+            assert response.json()["detail"] == "source asset cannot be a thumbnail"

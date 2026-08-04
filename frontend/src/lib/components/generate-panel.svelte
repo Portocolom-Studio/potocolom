@@ -897,14 +897,14 @@
 						{#if shown.params.prompt}
 							{shown.params.prompt}
 						{:else}
-							{shown.model_id}{shownFactor != null ? ` · x${shownFactor}` : ''}
+							{shown.model_id}{shownFactor != null ? ` | x${shownFactor}` : ''}
 							{#if shown.assets.length > 0}
-								· {shown.assets[0].width}x{shown.assets[0].height}
+								| {shown.assets[0].width}x{shown.assets[0].height}
 							{/if}
 						{/if}
 						{#if shown.gpu_ms != null}
 							<span class="text-foreground/70">
-								· {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span
+								| {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span
 							>
 						{/if}
 					</p>
