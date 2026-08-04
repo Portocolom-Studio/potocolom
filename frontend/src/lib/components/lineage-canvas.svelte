@@ -15,6 +15,7 @@
 		status: 'loading' | 'loaded' | 'error';
 		layout: LineageTreeLayout<CanvasNodeData> | null;
 		dirty: boolean;
+		truncated: boolean;
 		remainingCountLowerBound: number;
 	};
 
@@ -40,7 +41,8 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
-		lineageTreeNeedsHistoryRefresh
+		lineageTreeNeedsHistoryRefresh,
+		rebaseLineageViewport
 	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
@@ -74,6 +76,7 @@
 
 	const ROOT_LIMIT = 50;
 	const MAX_MOUNTED_TILES = 600;
+	const MAX_CONCURRENT_TREE_LOADS = 4;
 	const MIN_SCALE = 0.12;
 	const MAX_SCALE = 1.6;
 	const PAN_STEP = 80;
@@ -140,6 +143,9 @@
 	const canvasEpoch = ++canvasEpochSequence;
 	let canvasActive = true;
 	const requestControllers = new Set<AbortController>();
+	const treeLoadQueue = new Map<string, { root: Generation; force: boolean }>();
+	const retriedTreeErrors = new Set<string>();
+	let treeLoadsInFlight = 0;
 	const knownFinishedIds = new Set(
 		studio.history
 			.filter((generation) => generation.assets.length > 0)
@@ -330,6 +336,7 @@
 			status: 'loading',
 			layout: existing?.layout ?? null,
 			dirty: false,
+			truncated: existing?.truncated ?? false,
 			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
 		});
 		try {
@@ -367,8 +374,10 @@
 				status: 'loaded',
 				layout,
 				dirty: false,
+				truncated: subtree.truncated,
 				remainingCountLowerBound: subtree.remaining_count_lower_bound
 			});
+			retriedTreeErrors.delete(root.id);
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (!reducedMotion && previousIds.size > 0 && added.length > 0) {
 				newNodeIds = new Set([...newNodeIds, ...added]);
@@ -376,14 +385,50 @@
 					newNodeIds = new Set([...newNodeIds].filter((id) => !added.includes(id)));
 				}, 240);
 			}
-			if (rerun) void loadTree(responseRoot.generation, true);
+			if (rerun) scheduleTreeLoad(responseRoot.generation, true);
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
+			const rerun = treeCache.get(root.id)?.dirty === true;
 			setCachedTree(root.id, {
 				status: 'error',
 				layout: existing?.layout ?? null,
 				dirty: false,
+				truncated: existing?.truncated ?? false,
 				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
+			});
+			if (rerun) {
+				retriedTreeErrors.add(root.id);
+				scheduleTreeLoad(root, true);
+			}
+		}
+	}
+
+	function scheduleTreeLoad(root: Generation, force = false): void {
+		const cached = treeCache.get(root.id);
+		if (cached?.status === 'loading') {
+			if (force && !cached.dirty) setCachedTree(root.id, { ...cached, dirty: true });
+			return;
+		}
+		const queued = treeLoadQueue.get(root.id);
+		if (queued) {
+			if (force && !queued.force) treeLoadQueue.set(root.id, { root, force: true });
+			return;
+		}
+		treeLoadQueue.set(root.id, { root, force });
+		drainTreeLoadQueue();
+	}
+
+	function drainTreeLoadQueue(): void {
+		while (canvasActive && treeLoadsInFlight < MAX_CONCURRENT_TREE_LOADS) {
+			const next = treeLoadQueue.entries().next().value as
+				[string, { root: Generation; force: boolean }] | undefined;
+			if (!next) return;
+			const [rootId, request] = next;
+			treeLoadQueue.delete(rootId);
+			treeLoadsInFlight += 1;
+			void loadTree(request.root, request.force).finally(() => {
+				treeLoadsInFlight -= 1;
+				drainTreeLoadQueue();
 			});
 		}
 	}
@@ -399,9 +444,28 @@
 
 	$effect(() => {
 		for (const tree of packedTrees) {
-			if (treeCache.has(tree.rootId) || !treeIsVisible(tree)) continue;
+			if (!treeIsVisible(tree)) continue;
 			const root = persistedRoots.find((item) => item.id === tree.rootId);
-			if (root) void loadTree(root);
+			if (!root) continue;
+			const cached = treeCache.get(tree.rootId);
+			if (!tree.hasDerivatives) {
+				if (!cached) {
+					setCachedTree(tree.rootId, {
+						status: 'loaded',
+						layout: tree.layout,
+						dirty: false,
+						truncated: false,
+						remainingCountLowerBound: 0
+					});
+				}
+				continue;
+			}
+			if (cached?.status === 'loading' || cached?.status === 'loaded') continue;
+			if (cached?.status === 'error') {
+				if (retriedTreeErrors.has(tree.rootId)) continue;
+				retriedTreeErrors.add(tree.rootId);
+			}
+			scheduleTreeLoad(root);
 		}
 		const reachedRight =
 			worldRect.right >= forestRight - 320 && worldRect.right >= lastPageLoadWorld.right + 320;
@@ -432,7 +496,7 @@
 					root.id === rootId ? { ...root, has_derivatives: true } : root
 				);
 				const root = roots.find((item) => item.id === rootId);
-				if (root) void loadTree(root, true);
+				if (root) scheduleTreeLoad(root, true);
 				break;
 			}
 		}
@@ -448,9 +512,9 @@
 				cached?.status === 'loaded' &&
 				cached.layout &&
 				(derivativeFlagChanged ||
-					lineageTreeNeedsHistoryRefresh(cached.layout.nodes, studio.history))
+					lineageTreeNeedsHistoryRefresh(cached.layout.nodes, studio.history, cached.truncated))
 			) {
-				void loadTree(root, true);
+				scheduleTreeLoad(root, true);
 			}
 		}
 	});
@@ -468,7 +532,7 @@
 	});
 
 	$effect(() => {
-		const viewport = { translateX, translateY, scale, rootId: viewportAnchorRootId() };
+		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 		viewportSaveTimer = setTimeout(() => saveLineageViewport(viewport), VIEWPORT_SAVE_DELAY);
@@ -726,9 +790,9 @@
 		const restoredRect = viewportWorldRect(
 			viewportWidth,
 			viewportHeight,
-			restoredViewport.translateX,
-			restoredViewport.translateY,
-			restoredViewport.scale,
+			translateX,
+			translateY,
+			scale,
 			nearbyPadding
 		);
 		return packedTrees.some((tree) =>
@@ -750,6 +814,22 @@
 		) {
 			void loadRoots();
 			return;
+		}
+		if (
+			restoredViewport?.rootId &&
+			restoredViewport.anchorX !== null &&
+			restoredViewport.anchorY !== null
+		) {
+			const currentAnchor = rootWorldPosition(restoredViewport.rootId);
+			if (currentAnchor) {
+				const rebased = rebaseLineageViewport(
+					{ translateX, translateY, scale },
+					{ x: restoredViewport.anchorX, y: restoredViewport.anchorY },
+					currentAnchor
+				);
+				translateX = rebased.translateX;
+				translateY = rebased.translateY;
+			}
 		}
 		if (!restoredViewportIsUsable()) {
 			scale = 1;
@@ -858,24 +938,41 @@
 		);
 	}
 
-	function viewportAnchorRootId(): string | null {
-		if (packedTrees.length === 0) return null;
+	function rootWorldPosition(rootId: string): { x: number; y: number } | null {
+		const tree = packedTrees.find((item) => item.rootId === rootId);
+		const rootNode = tree?.layout.nodes.find((node) => node.id === tree.layout.rootId);
+		return tree && rootNode ? { x: tree.x + rootNode.x, y: tree.y + rootNode.y } : null;
+	}
+
+	function lineageViewport() {
+		if (packedTrees.length === 0) {
+			return { translateX, translateY, scale, rootId: null, anchorX: null, anchorY: null };
+		}
 		const centerX = (viewportWidth / 2 - translateX) / scale;
 		const centerY = (viewportHeight / 2 - translateY) / scale;
-		let nearest: { id: string; distance: number } | null = null;
+		let nearest: { id: string; x: number; y: number; distance: number } | null = null;
 		for (const tree of packedTrees) {
 			const rootNode = tree.layout.nodes.find((node) => node.id === tree.layout.rootId);
 			if (!rootNode) continue;
-			const distance = Math.hypot(tree.x + rootNode.x - centerX, tree.y + rootNode.y - centerY);
+			const x = tree.x + rootNode.x;
+			const y = tree.y + rootNode.y;
+			const distance = Math.hypot(x - centerX, y - centerY);
 			if (nearest === null || distance < nearest.distance) {
-				nearest = { id: tree.rootId, distance };
+				nearest = { id: tree.rootId, x, y, distance };
 			}
 		}
-		return nearest?.id ?? null;
+		return {
+			translateX,
+			translateY,
+			scale,
+			rootId: nearest?.id ?? null,
+			anchorX: nearest?.x ?? null,
+			anchorY: nearest?.y ?? null
+		};
 	}
 
 	function saveViewport(): void {
-		saveLineageViewport({ translateX, translateY, scale, rootId: viewportAnchorRootId() });
+		saveLineageViewport(lineageViewport());
 	}
 
 	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {

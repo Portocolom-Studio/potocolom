@@ -105,6 +105,8 @@ export type LineageViewport = {
 	translateY: number;
 	scale: number;
 	rootId: string | null;
+	anchorX: number | null;
+	anchorY: number | null;
 };
 
 export type LineageTreeOffset = {
@@ -169,6 +171,14 @@ function loadLineageViewport(): LineageViewport | null {
 			rootId:
 				typeof parsed.rootId === 'string' && LINEAGE_ROOT_ID_PATTERN.test(parsed.rootId)
 					? parsed.rootId
+					: null,
+			anchorX:
+				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
+					? clampLineageCoordinate(parsed.anchorX as number)
+					: null,
+			anchorY:
+				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
+					? clampLineageCoordinate(parsed.anchorY as number)
 					: null
 		};
 	} catch {
@@ -264,7 +274,9 @@ export function saveLineageViewport(viewport: LineageViewport): void {
 	const bounded = {
 		...viewport,
 		translateX: clampLineageCoordinate(viewport.translateX),
-		translateY: clampLineageCoordinate(viewport.translateY)
+		translateY: clampLineageCoordinate(viewport.translateY),
+		anchorX: viewport.anchorX === null ? null : clampLineageCoordinate(viewport.anchorX),
+		anchorY: viewport.anchorY === null ? null : clampLineageCoordinate(viewport.anchorY)
 	};
 	studio.lineageViewport = bounded;
 	if (typeof localStorage === 'undefined') return;

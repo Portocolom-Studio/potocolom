@@ -15,9 +15,25 @@ export function clampLineageCoordinate(value: number): number {
 	return Math.min(LINEAGE_WORLD_LIMIT, Math.max(-LINEAGE_WORLD_LIMIT, value));
 }
 
+export function rebaseLineageViewport(
+	viewport: { translateX: number; translateY: number; scale: number },
+	storedAnchor: { x: number; y: number },
+	currentAnchor: { x: number; y: number }
+): { translateX: number; translateY: number } {
+	return {
+		translateX: clampLineageCoordinate(
+			viewport.translateX + (storedAnchor.x - currentAnchor.x) * viewport.scale
+		),
+		translateY: clampLineageCoordinate(
+			viewport.translateY + (storedAnchor.y - currentAnchor.y) * viewport.scale
+		)
+	};
+}
+
 export function lineageTreeNeedsHistoryRefresh(
 	nodes: CachedNode[],
-	history: Generation[]
+	history: Generation[],
+	truncated = false
 ): boolean {
 	const nodeByJob = new Map(
 		nodes
@@ -39,7 +55,7 @@ export function lineageTreeNeedsHistoryRefresh(
 		if (cached && !generation.assets.some((asset) => asset.id === cached.data.entry.asset_id)) {
 			return true;
 		}
-		if (!cached && generation.source_asset_id) {
+		if (!cached && generation.source_asset_id && !truncated) {
 			const parentJobId = historyAssetOwners.get(generation.source_asset_id);
 			if (assetIds.has(generation.source_asset_id) || (parentJobId && nodeByJob.has(parentJobId))) {
 				return true;

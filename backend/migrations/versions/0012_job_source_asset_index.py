@@ -14,6 +14,12 @@ depends_on = None
 
 def upgrade() -> None:
     with op.get_context().autocommit_block():
+        op.drop_index(
+            "jobs_source_asset",
+            table_name="jobs",
+            postgresql_concurrently=True,
+            if_exists=True,
+        )
         op.create_index(
             "jobs_source_asset",
             "jobs",
