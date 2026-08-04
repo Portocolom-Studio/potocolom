@@ -142,6 +142,35 @@ export function lineageLod(scale: number): 'constellation' | 'trees' | 'cards' {
 	return 'cards';
 }
 
+export function lineageEdgePath<T>(
+	source: PositionedLineageNode<T>,
+	target: PositionedLineageNode<T>,
+	offsetX = 0,
+	offsetY = 0
+): string {
+	const sourceX = offsetX + source.x + LINEAGE_TILE_WIDTH / 2;
+	const sourceY = offsetY + source.y;
+	const targetX = offsetX + target.x - LINEAGE_TILE_WIDTH / 2;
+	const targetY = offsetY + target.y;
+	const middleX = (sourceX + targetX) / 2;
+	return `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+}
+
+export function lineageAncestorEdgeIds<T>(
+	edges: PositionedLineageEdge<T>[],
+	nodeId: string
+): Set<string> {
+	const parentEdgeByNode = new Map(edges.map((edge) => [edge.target.id, edge]));
+	const ids = new Set<string>();
+	let currentId = nodeId;
+	while (parentEdgeByNode.has(currentId)) {
+		const edge = parentEdgeByNode.get(currentId) as PositionedLineageEdge<T>;
+		ids.add(edge.id);
+		currentId = edge.source.id;
+	}
+	return ids;
+}
+
 export function viewportWorldRect(
 	width: number,
 	height: number,

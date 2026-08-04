@@ -4,6 +4,8 @@ import {
 	LINEAGE_TILE_HEIGHT,
 	LINEAGE_TILE_WIDTH,
 	layoutLineageTree,
+	lineageAncestorEdgeIds,
+	lineageEdgePath,
 	lineageLod,
 	packLineageForest,
 	type LineageLayoutNode
@@ -45,6 +47,23 @@ test('LOD changes content band without changing node coordinates', () => {
 		layout.nodes.map(({ id, x, y }) => ({ id, x, y })),
 		coordinates
 	);
+});
+
+test('edges meet tile borders and ancestry follows parents to the root', () => {
+	const layout = layoutLineageTree(
+		node('root', '2026-01-01T00:00:00Z', [
+			node('child', '2026-01-02T00:00:00Z', [node('leaf', '2026-01-03T00:00:00Z')]),
+			node('sibling', '2026-01-04T00:00:00Z')
+		])
+	);
+	const rootEdge = layout.edges.find((edge) => edge.target.id === 'child');
+	assert.ok(rootEdge);
+
+	const sourceX = rootEdge.source.x + LINEAGE_TILE_WIDTH / 2;
+	const targetX = rootEdge.target.x - LINEAGE_TILE_WIDTH / 2;
+	assert.match(lineageEdgePath(rootEdge.source, rootEdge.target), new RegExp(`^M ${sourceX} `));
+	assert.match(lineageEdgePath(rootEdge.source, rootEdge.target), new RegExp(` ${targetX} `));
+	assert.deepEqual([...lineageAncestorEdgeIds(layout.edges, 'leaf')], ['child:leaf', 'root:child']);
 });
 
 test('forest packing puts branched trees first and single roots in a grid', () => {

@@ -70,6 +70,7 @@
 	let normsReady = $state(false);
 	let seed = $state('');
 	let sourceAssetId = $state<string | null>(null);
+	let branchParams = $state<Record<string, unknown>>({});
 	let upscaleFactor = $state(2);
 	let errorText = $state('');
 	let lineage = $state<GenerationLineage | null>(null);
@@ -142,11 +143,24 @@
 	);
 	const upscaleModel = $derived(upscaleModels.find((model) => model.id === upscaleModelId));
 	const selectedModel = $derived(diffusionModels.find((model) => model.id === activeModelId));
+	const sourceAsset = $derived(
+		sourceAssetId === null
+			? null
+			: ([
+					...studio.history,
+					...studio.starredExtras,
+					...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
+				]
+					.flatMap((generation) => generation.assets)
+					.find((asset) => asset.id === sourceAssetId) ?? null)
+	);
 	const canEdit = $derived(
 		shown !== null && shown.assets.length > 0 && imageToImageModels.length > 0
 	);
 	const canUpscale = $derived(
-		shown !== null && shown.assets.length > 0 && shown.state === 'succeeded' && upscaleModel != null
+		upscaleModel != null &&
+			(sourceAsset !== null ||
+				(shown !== null && shown.assets.length > 0 && shown.state === 'succeeded'))
 	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
@@ -176,9 +190,10 @@
 					.replace('{limit}', String(promptWindow))
 			: null
 	);
+	const upscaleSourceAsset = $derived(sourceAsset ?? shown?.assets[0] ?? null);
 	const upscaleSource = $derived(
-		shown !== null && shown.assets.length > 0
-			? { width: shown.assets[0].width, height: shown.assets[0].height }
+		upscaleSourceAsset !== null
+			? { width: upscaleSourceAsset.width, height: upscaleSourceAsset.height }
 			: undefined
 	);
 	const upscaleEstimateMs = $derived(
@@ -219,17 +234,52 @@
 				? t('app.image_to_image.sub')
 				: t('app.upscale.sub')
 	);
-	const sourceAsset = $derived(
-		sourceAssetId === null
-			? null
-			: ([
-					...studio.history,
-					...studio.starredExtras,
-					...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
-				]
-					.flatMap((generation) => generation.assets)
-					.find((asset) => asset.id === sourceAssetId) ?? null)
-	);
+	$effect(() => {
+		const prefill = studio.generationPrefill;
+		if (prefill === null || prefill.mode !== mode) return;
+		studio.generationPrefill = null;
+		studio.prompt = prefill.prompt;
+		sourceAssetId = prefill.sourceAssetId;
+		seed = '';
+		branchParams = { ...prefill.params };
+		delete branchParams.seed;
+		if (mode === 'upscale') {
+			studio.upscaleModelId = prefill.modelId;
+			const factor = Number(prefill.params.factor);
+			if (factor === 2 || factor === 4) upscaleFactor = factor;
+			return;
+		}
+
+		if (mode === 'image_to_image') {
+			studio.imageToImageModelId = prefill.modelId;
+		} else {
+			studio.modelId = prefill.modelId;
+		}
+		const model = studio.models.find((item) => item.id === prefill.modelId);
+		if (!model) return;
+		const steps = stepsSpec(model);
+		const guidance = guidanceSpec(model);
+		const strength = strengthSpec(model);
+		stepsNorm = valueToNorm(
+			typeof prefill.params.steps === 'number' ? prefill.params.steps : steps.default,
+			steps
+		);
+		guidanceNorm = valueToNorm(
+			typeof prefill.params.guidance === 'number' ? prefill.params.guidance : guidance.default,
+			guidance
+		);
+		strengthNorm = valueToNorm(
+			typeof prefill.params.strength === 'number' ? prefill.params.strength : strength.default,
+			strength
+		);
+		const options = modelSizeOptions(model);
+		const requestedSize =
+			prefill.params.width === prefill.params.height ? Number(prefill.params.width) : NaN;
+		const requestedIndex = options.indexOf(requestedSize);
+		sizeIndex = requestedIndex >= 0 ? requestedIndex : defaultSizeIndex(model, options);
+		sizeContext = { modelId: model.id, optionCount: options.length };
+		normsReady = true;
+	});
 
 	$effect(() => {
 		const jobId = shownId;
@@ -251,7 +301,7 @@
 	});
 
 	$effect(() => {
-		if (!selectedModel?.capabilities.includes('image_to_image')) {
+		if (mode === 'image_to_image' && !selectedModel?.capabilities.includes('image_to_image')) {
 			sourceAssetId = null;
 		}
 	});
@@ -295,6 +345,7 @@
 		const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
 		for (let index = 0; index < jobs; index += 1) {
 			const params: Record<string, unknown> = {
+				...branchParams,
 				prompt: studio.prompt,
 				steps: stepsValue,
 				guidance: guidanceValue,
@@ -323,11 +374,11 @@
 	}
 
 	async function upscaleShown(): Promise<void> {
-		if (!canUpscale || shown === null || upscaleModel == null) return;
+		if (!canUpscale || upscaleSourceAsset === null || upscaleModel == null) return;
 		// Capture before clearing the selection: `shown` is derived from
 		// selectedId, so reading it afterwards would target the newest
 		// generation instead of the one on screen.
-		const sourceId = shown.assets[0].id;
+		const sourceId = upscaleSourceAsset.id;
 		const modelId = upscaleModel.id;
 		errorText = '';
 		studio.selectedId = null;
@@ -336,7 +387,7 @@
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
 				model_id: modelId,
-				params: { factor: upscaleFactor },
+				params: { ...branchParams, factor: upscaleFactor },
 				source_asset_id: sourceId
 			})
 		});

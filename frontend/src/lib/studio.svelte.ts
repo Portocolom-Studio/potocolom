@@ -72,6 +72,20 @@ export type GenerationLineage = {
 	descendant_count: number;
 };
 
+export type GenerationPrefill = {
+	mode: 'generate' | 'image_to_image' | 'upscale';
+	sourceAssetId: string | null;
+	prompt: string;
+	modelId: string;
+	params: Record<string, unknown>;
+};
+
+export type LineageViewport = {
+	translateX: number;
+	translateY: number;
+	scale: number;
+};
+
 const HISTORY_LIMIT = 50;
 const MAX_GENERATION_STREAMS = 4;
 const STREAM_RECONCILE_MS = 15_000;
@@ -133,6 +147,8 @@ export const studio = $state({
 	upscaleModelId: '',
 	removedModelIds: [] as string[],
 	prompt: '',
+	generationPrefill: null as GenerationPrefill | null,
+	lineageViewport: null as LineageViewport | null,
 	selectedId: null as string | null, // generation pinned in the viewer
 	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
 	history: [] as Generation[],

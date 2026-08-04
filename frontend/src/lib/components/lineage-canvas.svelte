@@ -1,16 +1,22 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import ImageOffIcon from '@lucide/svelte/icons/image-off';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import LocateFixedIcon from '@lucide/svelte/icons/locate-fixed';
 	import MinusIcon from '@lucide/svelte/icons/minus';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		LINEAGE_TILE_HEIGHT,
 		LINEAGE_TILE_WIDTH,
 		layoutLineageTree,
+		lineageAncestorEdgeIds,
+		lineageEdgePath,
 		lineageLod,
 		packLineageForest,
 		rectsIntersect,
@@ -21,6 +27,12 @@
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
 	import {
+		defaultUpscaleModelId,
+		filterImageToImageModels,
+		filterTextToImageModels,
+		filterUpscaleModels,
+		generationById,
+		openService,
 		selectGeneration,
 		studio,
 		type Generation,
@@ -56,13 +68,15 @@
 	};
 
 	type PointerSample = { x: number; y: number; time: number };
+	const restoredViewport = studio.lineageViewport;
 
 	let viewportEl = $state<HTMLDivElement | null>(null);
+	let inspectorEl = $state<HTMLElement | null>(null);
 	let viewportWidth = $state(0);
 	let viewportHeight = $state(0);
-	let translateX = $state(72);
-	let translateY = $state(72);
-	let scale = $state(1);
+	let translateX = $state(restoredViewport?.translateX ?? 72);
+	let translateY = $state(restoredViewport?.translateY ?? 72);
+	let scale = $state(restoredViewport?.scale ?? 1);
 	let roots = $state<Generation[]>([]);
 	let rootsLoading = $state(false);
 	let rootsFailed = $state(false);
@@ -74,6 +88,8 @@
 	let refreshedImageIds = new Set<string>();
 	let pointerWorld = $state<{ x: number; y: number } | null>(null);
 	let focusedNodeId = $state<string | null>(null);
+	let selectedAssetId = $state<string | null>(null);
+	let selectionOrigin: HTMLButtonElement | null = null;
 	let reducedMotion = false;
 	let recentering = $state(false);
 	let recenterTimer: ReturnType<typeof setTimeout> | null = null;
@@ -130,6 +146,45 @@
 	const forestBottom = $derived(
 		Math.max(0, ...packedTrees.map((packed) => packed.y + packed.layout.height))
 	);
+	const selectedNode = $derived.by(() => {
+		if (selectedAssetId === null) return null;
+		for (const tree of packedTrees) {
+			const node = tree.layout.nodes.find((item) => item.id === selectedAssetId);
+			if (node) return node;
+		}
+		return null;
+	});
+	const selectedData = $derived(selectedNode?.data ?? null);
+	const selectedGeneration = $derived(
+		selectedData?.generation ??
+			(selectedData?.entry.job_id ? (generationById(selectedData.entry.job_id) ?? null) : null)
+	);
+	const selectedAsset = $derived(
+		selectedGeneration?.assets.find((asset) => asset.id === selectedAssetId) ?? null
+	);
+	const selectedImageUrl = $derived(
+		selectedData !== null && !selectedData.entry.missing ? (selectedAsset?.url ?? null) : null
+	);
+	const selectedPrompt = $derived((selectedGeneration?.params.prompt ?? '').trim());
+	const selectedParams = $derived(
+		Object.entries(selectedGeneration?.params ?? {}).filter(([key]) => key !== 'prompt')
+	);
+	const textToImageModels = $derived(filterTextToImageModels(studio.models));
+	const imageToImageModels = $derived(filterImageToImageModels(studio.models));
+	const upscaleModels = $derived(filterUpscaleModels(studio.models));
+	const selectedHasBytes = $derived(
+		selectedData !== null && !selectedData.entry.missing && selectedAsset !== null
+	);
+	const canGenerateFromPrompt = $derived(selectedPrompt !== '' && textToImageModels.length > 0);
+	const canEditSelected = $derived(selectedHasBytes && imageToImageModels.length > 0);
+	const canUpscaleSelected = $derived(selectedHasBytes && upscaleModels.length > 0);
+	const selectedPathEdgeIds = $derived.by(() => {
+		if (selectedAssetId === null) return new Set<string>();
+		const tree = packedTrees.find((item) =>
+			item.layout.nodes.some((node) => node.id === selectedAssetId)
+		);
+		return tree ? lineageAncestorEdgeIds(tree.layout.edges, selectedAssetId) : new Set<string>();
+	});
 
 	function rootLayoutNode(root: Generation): LineageLayoutNode<CanvasNodeData> {
 		const asset = root.assets[0];
@@ -446,19 +501,6 @@
 		event.preventDefault();
 	}
 
-	function edgePath(
-		tree: PackedLineageTree<CanvasNodeData>,
-		source: PositionedLineageNode<CanvasNodeData>,
-		target: PositionedLineageNode<CanvasNodeData>
-	): string {
-		const sourceX = tree.x + source.x;
-		const sourceY = tree.y + source.y;
-		const targetX = tree.x + target.x;
-		const targetY = tree.y + target.y;
-		const middleX = (sourceX + targetX) / 2;
-		return `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
-	}
-
 	function actionLabel(action: LineageEntry['action']): string {
 		return t(`app.lineage.${action}`);
 	}
@@ -481,6 +523,97 @@
 			hour: '2-digit',
 			minute: '2-digit'
 		}).format(new Date(createdAt));
+	}
+
+	function paramValue(value: unknown): string {
+		if (typeof value === 'string') return value;
+		if (value === null || typeof value !== 'object') return String(value);
+		return JSON.stringify(value);
+	}
+
+	async function selectNode(data: CanvasNodeData, origin: HTMLButtonElement): Promise<void> {
+		selectionOrigin = origin;
+		selectedAssetId = data.entry.asset_id;
+		if (data.generation && generationById(data.generation.id) === undefined) {
+			studio.selectedExtra = data.generation;
+		}
+		if (data.entry.job_id !== null) {
+			void selectGeneration(data.entry.job_id);
+		} else {
+			studio.selectedId = null;
+		}
+		await tick();
+		inspectorEl?.focus();
+	}
+
+	function closeInspector(): void {
+		if (selectedAssetId === null) return;
+		selectedAssetId = null;
+		studio.selectedId = null;
+		const target = selectionOrigin?.isConnected ? selectionOrigin : viewportEl;
+		selectionOrigin = null;
+		void tick().then(() => target?.focus());
+	}
+
+	function onWindowKeyDown(event: KeyboardEvent): void {
+		if (event.key !== 'Escape' || selectedAssetId === null) return;
+		event.preventDefault();
+		closeInspector();
+	}
+
+	function preferredModelId(models: typeof studio.models, selectedModelId: string | null): string {
+		return (
+			models.find((model) => model.id === selectedModelId)?.id ??
+			(models.find((model) => model.default) ?? models[0])?.id ??
+			''
+		);
+	}
+
+	function saveViewport(): void {
+		studio.lineageViewport = { translateX, translateY, scale };
+	}
+
+	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {
+		if (selectedData === null) return;
+		const modelId = selectedGeneration?.model_id ?? selectedData.entry.model_id;
+		const params = { ...(selectedGeneration?.params ?? {}) };
+		delete params.seed;
+		if (mode === 'generate') {
+			if (!canGenerateFromPrompt) return;
+			studio.modelId = preferredModelId(textToImageModels, modelId);
+			studio.generationPrefill = {
+				mode,
+				sourceAssetId: null,
+				prompt: selectedPrompt,
+				modelId: studio.modelId,
+				params: {}
+			};
+		} else if (mode === 'image_to_image') {
+			if (!canEditSelected || selectedAsset === null) return;
+			studio.imageToImageModelId = preferredModelId(imageToImageModels, modelId);
+			studio.generationPrefill = {
+				mode,
+				sourceAssetId: selectedAsset.id,
+				prompt: selectedPrompt,
+				modelId: studio.imageToImageModelId,
+				params
+			};
+		} else {
+			if (!canUpscaleSelected || selectedAsset === null) return;
+			studio.upscaleModelId =
+				upscaleModels.find((model) => model.id === modelId)?.id ??
+				defaultUpscaleModelId(studio.models);
+			studio.generationPrefill = {
+				mode,
+				sourceAssetId: selectedAsset.id,
+				prompt: selectedPrompt,
+				modelId: studio.upscaleModelId,
+				params
+			};
+		}
+		studio.prompt = selectedPrompt;
+		saveViewport();
+		openService(mode);
 	}
 
 	function imageUrl(data: CanvasNodeData, band: typeof lod): string | null {
@@ -574,7 +707,9 @@
 			viewportHeight = entry.contentRect.height;
 		});
 		if (viewportEl) resize.observe(viewportEl);
-		void loadRoots().then(() => requestAnimationFrame(() => recenterNewest(false)));
+		void loadRoots().then(() => {
+			if (restoredViewport === null) requestAnimationFrame(() => recenterNewest(false));
+		});
 		return () => resize.disconnect();
 	});
 
@@ -584,8 +719,12 @@
 	});
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-3">
-	<header class="shrink-0">
+<svelte:window onkeydown={onWindowKeyDown} />
+
+<div
+	class="lineage-section relative grid h-full min-h-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-[auto_minmax(0,1fr)] gap-3"
+>
+	<header class="col-span-2 shrink-0">
 		<h1 class="text-xl font-semibold">{t('app.images.title')}</h1>
 		<p class="text-muted-foreground mt-1 text-sm">{t('app.images.sub')}</p>
 	</header>
@@ -594,7 +733,7 @@
 	<div
 		bind:this={viewportEl}
 		{@attach canvasInteractions}
-		class="lineage-viewport border-border bg-card/20 relative min-h-0 flex-1 overflow-hidden rounded-lg border"
+		class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 min-h-0 min-w-0 overflow-hidden rounded-lg border"
 		class:is-panning={panPointerId !== null || pinch !== null}
 		role="application"
 		aria-label={t('app.images.canvas')}
@@ -653,6 +792,20 @@
 			style={`transform: translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`}
 		>
 			<svg class="lineage-edges" aria-hidden="true">
+				<defs>
+					<marker
+						id="lineage-arrow"
+						viewBox="0 0 8 8"
+						refX="7"
+						refY="4"
+						markerWidth="8"
+						markerHeight="8"
+						markerUnits="userSpaceOnUse"
+						orient="auto"
+					>
+						<path d="M 0 0 L 8 4 L 0 8 z" />
+					</marker>
+				</defs>
 				{#each packedTrees as tree (tree.rootId)}
 					{#each tree.layout.edges as edge (edge.id)}
 						{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
@@ -660,13 +813,22 @@
 						{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
 						{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
 						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
-							<path d={edgePath(tree, edge.source, edge.target)} />
-							<text
-								x={tree.x + (edge.source.x + edge.target.x) / 2}
-								y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
+							<g
+								class:is-active={selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={selectedAssetId !== null && !selectedPathEdgeIds.has(edge.id)}
 							>
-								{actionLabel(edge.target.data.entry.action)}
-							</text>
+								<path
+									class="lineage-edge"
+									d={lineageEdgePath(edge.source, edge.target, tree.x, tree.y)}
+									marker-end="url(#lineage-arrow)"
+								/>
+								<text
+									x={tree.x + (edge.source.x + edge.target.x) / 2}
+									y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
+								>
+									{actionLabel(edge.target.data.entry.action)}
+								</text>
+							</g>
 						{/if}
 					{/each}
 				{/each}
@@ -689,15 +851,14 @@
 					<button
 						type="button"
 						class="lineage-tile"
-						class:is-selected={studio.selectedId === data.entry.job_id}
+						class:is-selected={selectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}`}
-						aria-disabled={data.entry.job_id === null}
 						title={promptLabel(data)}
 						onfocus={() => (focusedNodeId = item.node.id)}
 						onblur={() => (focusedNodeId = null)}
-						onclick={() => data.entry.job_id !== null && void selectGeneration(data.entry.job_id)}
+						onclick={(event) => void selectNode(data, event.currentTarget)}
 					>
 						<span class="micro-content">
 							{#if shownImage !== null}
@@ -755,6 +916,129 @@
 			{/each}
 		</div>
 	</div>
+
+	{#if selectedData !== null}
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+		<aside
+			bind:this={inspectorEl}
+			class="selection-inspector border-border bg-card absolute inset-y-0 end-0 z-40 row-start-2 flex w-[min(22rem,calc(100%-1rem))] flex-col overflow-y-auto rounded-lg border p-4 shadow-xl md:relative md:inset-auto md:z-auto md:col-start-2 md:w-80 md:shadow-none xl:w-96"
+			aria-labelledby="selection-inspector-title"
+			tabindex="-1"
+		>
+			<div class="mb-4 flex items-start justify-between gap-3">
+				<div>
+					<h2 id="selection-inspector-title" class="font-semibold">
+						{t('app.images.inspector_title')}
+					</h2>
+					<p class="text-muted-foreground mt-1 text-xs">
+						{actionLabel(selectedData.entry.action)}
+					</p>
+				</div>
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					title={t('app.images.close_inspector')}
+					aria-label={t('app.images.close_inspector')}
+					onclick={closeInspector}
+				>
+					<XIcon />
+				</Button>
+			</div>
+
+			{#if selectedImageUrl !== null}
+				<a
+					href={selectedImageUrl}
+					target="_blank"
+					rel="noopener"
+					class="bg-muted mb-4 block aspect-square shrink-0 overflow-hidden rounded-lg"
+					title={t('app.gen.open_full')}
+				>
+					<img
+						src={selectedImageUrl}
+						alt={selectedPrompt || t('app.gen.result')}
+						class="h-full w-full object-contain"
+					/>
+				</a>
+			{:else}
+				<div
+					class="border-border text-muted-foreground mb-4 grid aspect-square shrink-0 place-items-center rounded-lg border border-dashed"
+				>
+					<span class="flex flex-col items-center gap-2 text-sm">
+						<ImageOffIcon class="size-8" />
+						{t('app.lineage.missing')}
+					</span>
+				</div>
+			{/if}
+
+			<div class="border-border mb-4 grid gap-2 border-b pb-4">
+				<Button
+					variant="outline"
+					class="justify-start"
+					disabled={!canUpscaleSelected}
+					onclick={() => openFromSelection('upscale')}
+				>
+					<ScanLineIcon />
+					{t('app.images.action_upscale')}
+				</Button>
+				<Button
+					variant="outline"
+					class="justify-start"
+					disabled={!canEditSelected}
+					onclick={() => openFromSelection('image_to_image')}
+				>
+					<PencilIcon />
+					{t('app.images.action_edit')}
+				</Button>
+				<Button
+					variant="outline"
+					class="justify-start"
+					disabled={!canGenerateFromPrompt}
+					onclick={() => openFromSelection('generate')}
+				>
+					<WandSparklesIcon />
+					{t('app.images.action_generate_prompt')}
+				</Button>
+			</div>
+
+			<dl class="grid gap-3 text-sm">
+				<div>
+					<dt class="text-muted-foreground text-xs">{t('app.gen.prompt')}</dt>
+					<dd class="mt-1 whitespace-pre-wrap">{selectedPrompt || t('app.images.no_prompt')}</dd>
+				</div>
+				<div class="grid grid-cols-2 gap-3">
+					<div>
+						<dt class="text-muted-foreground text-xs">{t('app.gen.model')}</dt>
+						<dd class="mt-1">{modelLabel(selectedData)}</dd>
+					</div>
+					<div>
+						<dt class="text-muted-foreground text-xs">{t('app.images.action')}</dt>
+						<dd class="mt-1">{actionLabel(selectedData.entry.action)}</dd>
+					</div>
+				</div>
+				<div>
+					<dt class="text-muted-foreground text-xs">{t('app.images.created')}</dt>
+					<dd class="mt-1">
+						<time datetime={selectedData.entry.created_at}>
+							{timeLabel(selectedData.entry.created_at)}
+						</time>
+					</dd>
+				</div>
+				{#if selectedParams.length > 0}
+					<div>
+						<dt class="text-muted-foreground text-xs">{t('app.images.parameters')}</dt>
+						<dd class="mt-2 grid grid-cols-2 gap-x-4 gap-y-2">
+							{#each selectedParams as [key, value] (key)}
+								<span class="text-muted-foreground">{key}</span>
+								<span class="min-w-0 break-words text-end font-mono text-xs">
+									{paramValue(value)}
+								</span>
+							{/each}
+						</dd>
+					</div>
+				{/if}
+			</dl>
+		</aside>
+	{/if}
 </div>
 
 <style>
@@ -806,11 +1090,33 @@
 		pointer-events: none;
 	}
 
-	.lineage-edges path {
+	.lineage-edge {
 		fill: none;
-		stroke: var(--border);
+		stroke: color-mix(in oklch, var(--muted-foreground) 55%, var(--border));
 		stroke-width: 2;
 		vector-effect: non-scaling-stroke;
+	}
+
+	#lineage-arrow path {
+		fill: context-stroke;
+	}
+
+	.lineage-edges g {
+		opacity: 0.8;
+		transition: opacity 160ms ease;
+	}
+
+	.lineage-edges g.is-active {
+		opacity: 1;
+	}
+
+	.lineage-edges g.is-active .lineage-edge {
+		stroke: var(--primary);
+		stroke-width: 3;
+	}
+
+	.lineage-edges g.is-dimmed {
+		opacity: 0.16;
 	}
 
 	.lineage-edges text {
@@ -878,9 +1184,8 @@
 		border-color: var(--primary);
 	}
 
-	.lineage-tile[aria-disabled='true'] {
-		cursor: default;
-		opacity: 0.65;
+	.selection-inspector:focus {
+		outline: none;
 	}
 
 	.micro-content,
@@ -1011,7 +1316,8 @@
 
 	@media (prefers-reduced-motion: reduce) {
 		.lineage-world.recentering,
-		.lineage-tile {
+		.lineage-tile,
+		.lineage-edges g {
 			transition: none;
 		}
 
