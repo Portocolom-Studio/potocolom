@@ -381,12 +381,11 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
-        use_group_offload_fast_path = not manifest.quantize
+        can_offload_to_disk = not manifest.quantize
         offload_dir = None
-        # Quantized torchao subclass tensors cannot be serialized by safetensors
-        # or handle aten.is_pinned for stream prefetch. They must remain in host
-        # RAM without streaming, so this rung is slower and needs enough host RAM.
-        if self.models_dir and use_group_offload_fast_path:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors,
+        # so they must stay in host RAM: this rung needs enough of it.
+        if self.models_dir and can_offload_to_disk:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -395,7 +394,13 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=use_group_offload_fast_path,
+            # use_stream=True silently produces wrong output on this rung:
+            # diffusers' lazy prefetch fails to onload every leaf ("some layers
+            # were not executed during the forward pass"), latents come back at
+            # roughly 20x their normal range (-56..56 against -2.7..2.4) and
+            # decode to a solid black image while the job still reports
+            # succeeded. Correctness first; this rung is already the slow one.
+            use_stream=False,
             offload_to_disk_path=offload_dir,
         )
         return pipeline

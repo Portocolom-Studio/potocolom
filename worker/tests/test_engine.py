@@ -571,7 +571,10 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     engine._apply_rung(pipeline, manifest, "group_offload")
 
     kwargs = pipeline.enable_group_offload.call_args.kwargs
-    assert kwargs["use_stream"] is True
+    # Streaming stays off for every model on this rung: diffusers' lazy
+    # prefetch skips leaves and the run decodes to solid black. Only the
+    # disk offload path is conditional on quantization.
+    assert kwargs["use_stream"] is False
     assert kwargs["offload_to_disk_path"] == str(
         tmp_path / ".offload" / "unquantized"
     )
