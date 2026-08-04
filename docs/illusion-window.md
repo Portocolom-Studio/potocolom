@@ -276,6 +276,74 @@ shape, not a threshold: breadth-first ordering, a rig check first, a wide
 corpus so no single unvalidated choice consumes 50 hours, and controls whose
 answers are already known so a broken rig is visible in review.
 
+## Results
+
+182 cells completed, all six blocks at 30/30, zero degenerate. Then all 546
+(run, stage) items were scored 0-5 by the human reviewer, both views shown
+together with their target subjects, mode and seed hidden.
+
+### Yield
+
+| Measure | Result |
+|---|---|
+| cell-stages scoring >= 3 (both subjects readable) | 93/546, 17.0% |
+| cell-stages scoring >= 4 | 35/546, 6.4% |
+| runs producing something usable at their best stage | 62/180, 34.4% |
+| pairs reaching a 5 at least once | 15/30 |
+| pairs never producing anything usable | 3/30 |
+
+### The Dream phase's later rounds hurt
+
+| Stage | keep rate | score >= 4 | mean score |
+|---|---|---|---|
+| sds_end | 35/182, 19.2% | 15 | 0.93 |
+| dream_d1 | 33/182, 18.1% | 11 | 0.93 |
+| final | 25/182, 13.7% | 9 | 0.68 |
+
+The final image is the WORST of the three stages on every measure. Raw SDS-end
+is the most likely to be a keeper, Dream round 1 ties it, and rounds 2-8 lose
+about a quarter of the keepers and a third of the mean score. The 8-round
+schedule is not paying for itself.
+
+A mid-window claim to this effect was retracted because it rested on a
+best-of-three selection effect. The direction now stands on human ratings
+rather than on a metric artifact, though the magnitude is smaller than that
+retracted claim.
+
+### Dream mode is parity, measured three independent ways
+
+| Evidence | independent | joint |
+|---|---|---|
+| CLIP head-to-head, 90 comparisons | 40 | 50 |
+| human keep rate | 43/270, 15.9% | 50/276, 18.1% |
+| human head-to-head, 270 comparisons | 48 | 58 (164 tied) |
+| human keepers scoring >= 4 | 19 | 16 |
+
+Neither mode is a default. Per-pair divergence is large and goes both ways, so
+the yield above is only reachable by choosing mode per pair, which is what
+running both as an axis bought.
+
+### CLIP is not usable as a screen
+
+Calibrated against the 546 human ratings, `clip_pair_score` gives ROC-AUC
+0.706 against a required 0.75, and hit-rate 0.538 against a required 0.75. It
+fails both gates in docs/illusion-reliability.md. Better than chance, not good
+enough to screen on, so human review stays the gate and no automated
+style/seed selection or in-loop balancing may be enabled.
+
+### What this means for the product
+
+Reliability here comes from SELECTION, not from a single correct recipe. A run
+yields something usable 34% of the time; the best output for a pair comes from
+varying seed, mode and stage. Every keeper the human named is one specific
+(pair, seed, mode, stage) cell rather than a pair that can be trusted. The
+engineering target is therefore cheap candidate generation plus good ranking,
+and ranking currently means a human, because CLIP failed calibration.
+
+Keepers scoring 4 or 5 are exported to
+`.local/illusion-reliability/keepers/window-2026-08/` as copies with both
+orientations and the printable prime.
+
 ## Running it
 
 Preflight, launch and review are in the campaign runbook at
