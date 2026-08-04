@@ -59,10 +59,15 @@ test('edges meet tile borders and ancestry follows parents to the root', () => {
 	const rootEdge = layout.edges.find((edge) => edge.target.id === 'child');
 	assert.ok(rootEdge);
 
-	const sourceX = rootEdge.source.x + LINEAGE_TILE_WIDTH / 2;
-	const targetX = rootEdge.target.x - LINEAGE_TILE_WIDTH / 2;
-	assert.match(lineageEdgePath(rootEdge.source, rootEdge.target), new RegExp(`^M ${sourceX} `));
-	assert.match(lineageEdgePath(rootEdge.source, rootEdge.target), new RegExp(` ${targetX} `));
+	// Trees grow downward, so an edge leaves the parent's bottom and meets the
+	// child's top; the child also sits strictly below its parent.
+	const sourceY = rootEdge.source.y + LINEAGE_TILE_HEIGHT / 2;
+	const targetY = rootEdge.target.y - LINEAGE_TILE_HEIGHT / 2;
+	const path = lineageEdgePath(rootEdge.source, rootEdge.target);
+	assert.match(path, new RegExp(`^M ${rootEdge.source.x} ${sourceY} `));
+	assert.match(path, new RegExp(` ${targetY}$`));
+	assert.ok(rootEdge.target.y > rootEdge.source.y);
+	assert.equal(rootEdge.target.y - rootEdge.source.y, LINEAGE_TILE_HEIGHT + 96);
 	assert.deepEqual([...lineageAncestorEdgeIds(layout.edges, 'leaf')], ['child:leaf', 'root:child']);
 });
 

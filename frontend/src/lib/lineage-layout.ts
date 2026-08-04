@@ -60,16 +60,19 @@ function orderedChildren<T>(node: LineageLayoutNode<T>): LineageLayoutNode<T>[] 
 
 export function layoutLineageTree<T>(root: LineageLayoutNode<T>): LineageTreeLayout<T> {
 	const rootHierarchy = hierarchy(root, orderedChildren);
+	// Trees grow downward: d3's first axis is breadth (siblings side by side, so
+	// it is spaced by tile width) and its second is depth (generations stacked,
+	// spaced by tile height). Coordinates are used unswapped for that reason.
 	const tidy = tree<LineageLayoutNode<T>>().nodeSize([
-		LINEAGE_TILE_HEIGHT + SIBLING_GAP,
-		LINEAGE_TILE_WIDTH + DEPTH_GAP
+		LINEAGE_TILE_WIDTH + SIBLING_GAP,
+		LINEAGE_TILE_HEIGHT + DEPTH_GAP
 	]);
 	tidy(rootHierarchy);
 
 	const raw = rootHierarchy.descendants().map((node) => ({
 		id: node.data.id,
-		x: node.y ?? 0,
-		y: node.x ?? 0,
+		x: node.x ?? 0,
+		y: node.y ?? 0,
 		data: node.data.data
 	}));
 	const minX = Math.min(...raw.map((node) => node.x - LINEAGE_TILE_WIDTH / 2));
@@ -148,12 +151,14 @@ export function lineageEdgePath<T>(
 	offsetX = 0,
 	offsetY = 0
 ): string {
-	const sourceX = offsetX + source.x + LINEAGE_TILE_WIDTH / 2;
-	const sourceY = offsetY + source.y;
-	const targetX = offsetX + target.x - LINEAGE_TILE_WIDTH / 2;
-	const targetY = offsetY + target.y;
-	const middleX = (sourceX + targetX) / 2;
-	return `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+	// Leaves the parent's bottom edge and arrives at the child's top edge, so the
+	// curve never runs underneath either tile.
+	const sourceX = offsetX + source.x;
+	const sourceY = offsetY + source.y + LINEAGE_TILE_HEIGHT / 2;
+	const targetX = offsetX + target.x;
+	const targetY = offsetY + target.y - LINEAGE_TILE_HEIGHT / 2;
+	const middleY = (sourceY + targetY) / 2;
+	return `M ${sourceX} ${sourceY} C ${sourceX} ${middleY}, ${targetX} ${middleY}, ${targetX} ${targetY}`;
 }
 
 export function lineageAncestorEdgeIds<T>(
