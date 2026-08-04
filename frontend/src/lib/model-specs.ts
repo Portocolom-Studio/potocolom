@@ -141,6 +141,20 @@ export const MODEL_SPECS: ModelSpec[] = [
 		commercial: 'RAIL use policy applies',
 		studio: true,
 		source: 'segmind/SSD-1B'
+	},
+	{
+		id: 'sd35-medium',
+		name: 'Stable Diffusion 3.5 Medium',
+		architecture: 'MMDiT + CLIP-L + OpenCLIP-G + T5-XXL',
+		parameters: '~2.5B',
+		min_vram_gb: 14,
+		resolutions: '768, 1024',
+		step_range: '20-50',
+		capabilities: ['text_to_image'],
+		license: 'Stability AI Community',
+		commercial: '<= $1M revenue / year',
+		studio: true,
+		source: 'stabilityai/stable-diffusion-3.5-medium'
 	}
 ];
 

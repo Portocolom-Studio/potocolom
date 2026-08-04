@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -495,6 +496,9 @@
 									</Select.Group>
 								</Select.Content>
 							</Select.Root>
+							{#if selectedModel?.requires_attribution}
+								<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
+							{/if}
 						</div>
 						{#if mode === 'image_to_image'}
 							<div class="flex flex-col gap-2">
@@ -858,19 +862,30 @@
 						</div>
 					{/if}
 					{#if shown.assets.length > 0}
-						<a
-							href={shown.assets[0].url}
-							target="_blank"
-							rel="noopener"
-							class="block min-h-0 flex-1"
-							title={t('app.gen.open_full')}
-						>
-							<img
-								src={shown.assets[0].url}
-								alt={shown.params.prompt ?? t('app.gen.result')}
-								class="h-full w-full rounded-lg object-contain"
-							/>
-						</a>
+						<div class="relative min-h-0 flex-1">
+							<a
+								href={shown.assets[0].url}
+								target="_blank"
+								rel="noopener"
+								class="block h-full"
+								title={t('app.gen.open_full')}
+							>
+								<img
+									src={shown.assets[0].url}
+									alt={shown.params.prompt ?? t('app.gen.result')}
+									class="h-full w-full rounded-lg object-contain"
+								/>
+							</a>
+							<Button
+								href={shown.assets[0].download_url}
+								variant="secondary"
+								size="sm"
+								class="absolute top-2 right-2"
+							>
+								<DownloadIcon />
+								{t('app.gen.download')}
+							</Button>
+						</div>
 					{:else}
 						<div
 							class="border-border text-muted-foreground grid min-h-0 flex-1 place-items-center rounded-lg border border-dashed text-sm"

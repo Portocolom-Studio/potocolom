@@ -44,6 +44,8 @@ async def config():
 
 One instance at launch. Every key belongs to exactly one concern, every concern gets its client from its own `REDIS_URL_*` setting, so splitting into multiple servers later is a configuration change. PostgreSQL is always the source of truth; every structure below can be rebuilt from it.
 
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use `InProcessQueues`, but the backend has no Redis dependency, Redis adapters, realtime admission queue, FrameBus, scheduler lease, shared session state, or invalidation channel. This section is the target governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+
 | Key or channel | Type | TTL | Purpose |
 |---|---|---|---|
 | `sessions:{token_hash}` | hash | 300 s | cache of the session row; miss falls back to PostgreSQL |
@@ -52,10 +54,32 @@ One instance at launch. Every key belongs to exactly one concern, every concern 
 | `queue:admission` | sorted set | none | waiting realtime session requests, same scoring |
 | `rt:{session_id}:to_worker` | pub/sub | n/a | browser to worker leg of the frame relay |
 | `rt:{session_id}:to_browser` | pub/sub | n/a | worker to browser leg |
-| `worker:{worker_id}` | hash | 90 s | connected worker: models, slots, slots_in_use, protocol_version, api_replica |
-| `session:{session_id}` | hash | none | realtime session state: user, worker, state, last_input_ms |
+| `worker:{worker_id}` | hash | 90 s | connected worker: incarnation, transport_owner_id, region, pool, lifecycle, models, loaded_models, calibrated_slots, slots_in_use, frame_p95_ms, protocol_version, last_seen |
+| `session:{session_id}` | hash | none | authorized realtime state: user_id, auth_session_id, role, quota_subject, model_id, state, tier, region, browser_transport_owner_id, worker_id, worker_incarnation, last_input_ms, enqueued_at_ms, control_generation |
 | `sched:leader` | string | 10 s | scheduler leader lease, value is the replica id |
 | `invalidate:sessions` | pub/sub | n/a | replicas drop cached sessions on logout or revocation |
+
+`transport_owner_id` identifies the socket-owning API replica before gateway extraction and the socket-owning gateway afterward. This naming follows "Realtime relay: Go gateway required for the 1000-active-session target"; region and pool fields follow "Realtime fleet: regional, pool-partitioned, and warm" and issue #20, "Multi-Worker Scheduling".
+
+Exact FrameBus ownership:
+
+| Channel | Publisher | Subscriber |
+|---|---|---|
+| `rt:{session_id}:to_worker` | browser transport owner | worker transport owner |
+| `rt:{session_id}:to_browser` | worker transport owner | browser transport owner |
+
+When both socket legs have the same transport owner, it uses the bounded in-memory fast path and creates no Redis subscription. Otherwise only the destination owner subscribes, never every process through a pattern subscription. The destination subscription must exist before the source is authorized to publish or the worker session is opened.
+
+The FrameBus contract is normative:
+
+- A payload is one complete protocol-versioned binary frame, including its header.
+- Payload bytes stay opaque to the bus and must pass the negotiated size limit before publish.
+- Delivery is at most once and not durable. Publish completion means the transport accepted the publication, not that a destination socket consumed it.
+- Reconnect does not replay frames. Handover may briefly drop or duplicate a frame; issue #19, "Real-Time Generation Protocol", owns sequence checks that reject stale or duplicate revisions.
+- A newer self-contained frame supersedes an older frame in the same session direction.
+- Subscription cancellation promptly removes the destination route.
+- Each subscription feeds one latest-value slot, never an unbounded application queue.
+- Session lifecycle, quota, prompt version, queue position, ownership, authorization, and revocation use ordered control state, not this discardable frame contract.
 
 Scoring for both queues, lower pops first:
 
@@ -95,15 +119,21 @@ class Queues(Protocol):
 class RedisQueues(Queues): ...      # sorted sets + pop_best.lua
 class InProcessQueues(Queues): ...  # a heap in the single API process
 
+class FrameSubscription(Protocol):
+    async def next(self) -> bytes
+    async def cancel(self) -> None
+
 class FrameBus(Protocol):
     async def publish(self, channel: str, payload: bytes) -> None
-    def subscribe(self, channel: str) -> AsyncIterator[bytes]
+    async def subscribe(self, channel: str) -> FrameSubscription
 
 class RedisFrameBus(FrameBus): ...      # pub/sub between replicas
 class InProcessFrameBus(FrameBus): ...  # asyncio queues in one process
 ```
 
 When load justifies it, the split path is: move `REDIS_URL_PUBSUB` first (frame relay is the latency and throughput hot spot), then `REDIS_URL_QUEUE`; the cache and rate keys can share an instance indefinitely.
+
+An availability replica is not a frame-throughput plan. The cloud-sim profile runs Redis 7, whose [sharded Pub/Sub](https://redis.io/docs/latest/develop/pubsub/#sharded-pubsub) in cluster mode provides `SSUBSCRIBE` and `SPUBLISH` so a publication stays within one cluster shard instead of propagating across the whole cluster bus. Endpoint isolation and any later sharding remain measurement-driven under issue #48, "Gateway load harness: 1000 active sessions at 2 and 4 fps", and the issue "Split FrameBus pub/sub onto its own endpoint".
 
 ## Load balancer
 
@@ -238,6 +268,8 @@ OAuthAuth  # methods() = ["local", *providers]; LocalAuth plus redirect and call
 
 One logical scheduler, leader elected among API replicas with a Redis lease. Self-hosted there is one process, so it is simply always the leader.
 
+> Shipped status (2026-07-30): **partially implemented.** The current in-process loop dispatches generation jobs. Realtime sessions bypass it, select a process-local worker directly, and close with 4003 when the pool is full. Redis leadership, admission, idle release, resume priority, preemption, and cross-replica recovery are not implemented. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern this designed loop.
+
 ```python
 async def scheduler_task():                    # runs in every replica
     while True:
@@ -292,6 +324,8 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 | worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
+
+> Shipped status (2026-07-30): **partially implemented.** The current 17-byte frame header is exactly the binary row above and has no revision or sequence field. `pause_job`, `drain`, `queued`, `prompt_update`, `idle`, `resuming`, and `credits_tick` are not implemented. Issue #19, "Real-Time Generation Protocol", owns frame revisions, output correlation, queue and resume controls, keepalive, and limits; issue #20, "Multi-Worker Scheduling", owns worker drain and scheduling controls.
 
 Version gate at registration, implementing the N-1 promise:
 
@@ -393,6 +427,8 @@ A reservation is a one-way state machine: `reserved -> committed | refunded | ex
 Outage posture ([decisions.md](decisions.md), "Billing outage posture"): `reserve` fails closed and surfaces the 503 to the user; `commit` and `refund` enqueue in an outbox table in the API's PostgreSQL and a background task retries them until acknowledged. The ledger's unique source keys make redelivery a no-op, so settlement is effectively exactly-once.
 
 Realtime sessions meter through the same contract in chunks:
+
+> Shipped status (2026-07-30): **not yet implemented.** The current handler has no idle-release transition or chunked quota client. The pseudocode below is the designed policy under "Quota contract: caller-supplied reservation ids with expiry" and issue #19, "Real-Time Generation Protocol".
 
 ```python
 CHUNK_GPU_MS = 60_000

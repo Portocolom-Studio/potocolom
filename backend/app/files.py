@@ -13,7 +13,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.storage import LocalStorage, get_storage
+from app.storage import LocalStorage, get_storage, validate_download_name
 
 router = APIRouter()
 
@@ -65,12 +65,18 @@ async def upload(key: str, request: Request) -> dict:
 
 
 @router.get("/api/v1/files/{key:path}")
-async def serve(key: str) -> FileResponse:
+async def serve(key: str, download: str | None = None) -> FileResponse:
     storage = local_storage()
+    try:
+        download_name = validate_download_name(download) if download is not None else None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     try:
         path = storage.path(key)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if not path.is_file():
         raise HTTPException(status_code=404, detail="no such file")
+    if download_name is not None:
+        return FileResponse(path, filename=download_name)
     return FileResponse(path)

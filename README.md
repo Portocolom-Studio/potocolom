@@ -60,6 +60,7 @@ The design is documentation-first: every load-bearing decision is recorded with 
 - [Cloud delivery and access model](docs/cloud-delivery.md)
 - [Repository boundary, licensing and delivery pipeline](docs/repository-boundary.md)
 - [Usage metrics and telemetry](docs/metrics.md)
+- [GPU performance reference](docs/gpu-performance.md)
 - [Design decisions](docs/decisions.md)
 
 Editable diagram sources (draw.io, with AWS service icons) live in [docs/diagrams/](docs/diagrams/).

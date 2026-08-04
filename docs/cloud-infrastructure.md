@@ -87,6 +87,8 @@ One Application Load Balancer carries every request from browsers, workers and S
 - No sticky sessions. The API is stateless and realtime frames cross replicas through Redis pub/sub, so round robin over healthy targets is correct and nothing depends on connection placement.
 - Deploys: ECS takes a task out of the target group (deregistration delay 120 seconds), the app closes its WebSockets cleanly, browsers reconnect through the session recovery flow and workers redial, landing on a new task.
 
+> Shipped status (2026-07-30): **partially implemented.** Worker heartbeats ship, but the browser application ping, Redis FrameBus, cross-replica recovery, and clean realtime drain do not. Issue #19, "Real-Time Generation Protocol", governs browser keepalive and resume; "Redis-optional Queues and FrameBus contracts" governs cross-replica routing; "Go realtime gateway and API control bridge" governs the accepted target socket tier.
+
 ### How a request flows
 
 - Static assets never touch the ALB: the SPA and images come from CloudFront.
@@ -205,5 +207,6 @@ GPU economics dominate everything above. A single RTX 4090 class machine on RunP
 ## Scaling stages
 
 - Stage 1, launch, hundreds of users: everything above in one region, one or two always-on workers plus demand scaling.
-- Stage 2, thousands of users: API task count scales on load, RDS goes Multi-AZ with a read replica if needed, Redis gains a replica, and the worker pool splits by model family so heavy models do not starve real time capacity.
-- Stage 3, far beyond: CloudFront is already global; the change is regional worker pools close to users to cut real time latency, which touches the session scheduler and nothing else.
+- Stage 2, the accepted 1000-active-session target: each active region has its own gateway, FrameBus, admission queue, scheduler lease, ready warm capacity, and pool partitioning for realtime and other model families. RDS may move to Multi-AZ with a read replica for measured database needs. This stage is governed by "Realtime fleet: regional, pool-partitioned, and warm", "Realtime relay: Go gateway required for the 1000-active-session target", and "Regional scheduler and ready-slot warm pools".
+- Redis availability replication is independent of frame throughput. An added replica does not split publish ingress. The compose profile's Redis 7 image supports [sharded Pub/Sub](https://redis.io/docs/latest/develop/pubsub/#sharded-pubsub) in cluster mode through `SSUBSCRIBE` and `SPUBLISH`, but endpoint isolation or sharding is adopted only from issue #48, "Gateway load harness: 1000 active sessions at 2 and 4 fps", and "Split FrameBus pub/sub onto its own endpoint".
+- Stage 3, beyond the accepted target: add capacity within the regional design and introduce new regions only from measured locality, headroom, and failure data; do not reintroduce a global live FrameBus.

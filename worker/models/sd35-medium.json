@@ -1,0 +1,26 @@
+{
+  "id": "sd35-medium",
+  "name": "Stable Diffusion 3.5 Medium",
+  "capabilities": ["text_to_image"],
+  "min_vram_gb": 14,
+  "prompt_token_limit": 256,
+  "source": "stabilityai/stable-diffusion-3.5-medium",
+  "quantize": "text_encoder_3:int8",
+  "license_id": "stability-ai-community",
+  "license_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium/blob/main/LICENSE.md",
+  "commercial_max_revenue_usd": 1000000,
+  "license_registration_url": "https://stability.ai/community-license",
+  "requires_attribution": "Powered by Stability AI",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "steps": { "type": "integer", "minimum": 20, "maximum": 50, "default": 20 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 7, "default": 4.5 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [768, 1024], "default": 1024 },
+      "height": { "type": "integer", "enum": [768, 1024], "default": 1024 }
+    },
+    "required": ["prompt"]
+  }
+}

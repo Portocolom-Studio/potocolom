@@ -103,7 +103,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud topology with generic containers, which the pluggable seams make cheap: the code cannot tell nginx from an ALB or MinIO from S3, and that is the point of the seams.
 
 ```
-deploy/compose/cloud-sim.yml
+deploy/compose/dev.yml (profile: cloud-sim)
 ```
 
 ```mermaid

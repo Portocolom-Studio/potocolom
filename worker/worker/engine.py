@@ -45,6 +45,11 @@ POISON_EVICT_COOLDOWN_S = 30.0
 # Timing samples after the discarded warmup pass; nearest-rank p95 over
 # these tolerates one outlier (19th of 20) instead of becoming the max.
 CALIBRATION_SAMPLES = 20
+# Pillow work was implicitly bounded to one operation by the GPU lock before
+# this change moved it outside that lock. Use half the logical CPUs so codec
+# work leaves room in the shared default executor, with a floor of one for
+# small hosts and a ceiling of four to limit CPU and memory pressure.
+CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
 
 
 @dataclass
@@ -250,6 +255,7 @@ class DiffusersEngine:
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
         self._gpu = asyncio.Lock()
+        self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
@@ -301,20 +307,32 @@ class DiffusersEngine:
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
 
-    def _pipeline(self, manifest: Manifest, mode: str) -> Any:
+    def _pipeline(
+        self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
+    ) -> Any:
         key = (manifest.id, mode)
-        if key not in self._pipelines:
+        while key not in self._pipelines:
             self._ensure_vram(manifest)
             try:
                 self._pipelines[key] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
+            except self.torch.OutOfMemoryError as error:
                 # Retry OUTSIDE this block: while the except frame is alive,
                 # its traceback pins the half-moved weights of the failed
                 # attempt and the eviction below could not reclaim them.
-                pass
-            if key not in self._pipelines:
-                self._evict_cold(except_model_id=manifest.id)
+                load_error = error.with_traceback(None)
+            if key in self._pipelines:
+                break
+            if allow_demotion and self._demote_rung(manifest, phase="load"):
+                continue
+            if not allow_demotion:
+                raise load_error
+            self._evict_cold(except_model_id=manifest.id)
+            try:
                 self._pipelines[key] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError as error:
+                load_error = error.with_traceback(None)
+            if key not in self._pipelines:
+                raise load_error
         self._touch(manifest.id)
         return self._pipelines[key]
 
@@ -324,6 +342,25 @@ class DiffusersEngine:
         rung = self._select_rung(manifest)
         self._rungs[manifest.id] = rung
         return rung
+
+    def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
+        if self.memory_mode != "auto":
+            return False
+        rung = self._pick_rung(manifest)
+        lower: dict[MemoryRung, MemoryRung] = {
+            "full": "model_offload",
+            "model_offload": "group_offload",
+        }
+        demoted = lower.get(rung)
+        if demoted is None:
+            return False
+        self._evict_model(manifest.id)
+        self._rungs[manifest.id] = demoted
+        logger.error(
+            "out of memory during %s for %s; demoting from %s to %s",
+            phase, manifest.id, rung, demoted,
+        )
+        return True
 
     def _select_rung(self, manifest: Manifest) -> MemoryRung:
         # Upscalers are plain nn.Modules run tiled; the offload rungs are
@@ -344,8 +381,12 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
+        use_group_offload_fast_path = not manifest.quantize
         offload_dir = None
-        if self.models_dir:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors
+        # or handle aten.is_pinned for stream prefetch. They must remain in host
+        # RAM without streaming, so this rung is slower and needs enough host RAM.
+        if self.models_dir and use_group_offload_fast_path:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -354,7 +395,7 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=True,
+            use_stream=use_group_offload_fast_path,
             offload_to_disk_path=offload_dir,
         )
         return pipeline
@@ -420,7 +461,9 @@ class DiffusersEngine:
             logger.warning("torch.compile failed for %s: %s", name, error)
             return None
 
-    def _optimize_resident(self, pipeline: Any, mode: str) -> None:
+    def _optimize_resident(
+        self, pipeline: Any, mode: str, *, force_compile: bool = False,
+    ) -> None:
         """Attention backend + torch.compile for full-resident GPU pipelines.
 
         Offload rungs skip compile: accelerate hooks fight Inductor. Failures
@@ -433,7 +476,7 @@ class DiffusersEngine:
             return
         applied = self._set_attention_backend(pipeline)
         originals: list[tuple[str, Any]] = []
-        if self.torch_compile:
+        if self.torch_compile or force_compile:
             for name, module in self._denoise_modules(pipeline):
                 original = self._compile_module(pipeline, name, module)
                 if original is not None:
@@ -486,6 +529,21 @@ class DiffusersEngine:
             pipeline = cls.from_pipe(loaded)  # shares weights already on the device
         else:
             pipeline = self._from_pretrained(cls, manifest)
+            if manifest.quantize:
+                component_name, scheme = manifest.quantize.split(":", 1)
+                if scheme != "int8":
+                    raise ValueError(
+                        f"unknown quantization scheme for {manifest.id}: {scheme}"
+                    )
+                component = getattr(pipeline, component_name, None)
+                if component is None:
+                    raise ValueError(
+                        f"unknown quantization component for {manifest.id}: {component_name}"
+                    )
+                from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+                quantize_(component, Int8WeightOnlyConfig())
+                logger.info("quantized %s on %s with int8", component_name, manifest.id)
             if manifest.lora:
                 # "org/repo/file.safetensors": a distillation LoRA (Lightning,
                 # Hyper-SD class) fused into the weights while still on the
@@ -506,7 +564,9 @@ class DiffusersEngine:
                         module.to(memory_format=self.torch.channels_last)
             pipeline = self._apply_rung(pipeline, manifest, rung)
             if rung == "full":
-                self._optimize_resident(pipeline, mode)
+                self._optimize_resident(
+                    pipeline, mode, force_compile=bool(manifest.quantize),
+                )
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
@@ -544,13 +604,15 @@ class DiffusersEngine:
             )
             return 0
         canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
-        payload = encode_webp(canvas)
-        params = {"prompt": "calibration", "strength": 0.7}
+        strength = 0.7
+        params = {"prompt": "calibration", "strength": strength}
         samples: list[float] = []
         # One discarded pass absorbs remaining compile/warmup cost.
         for index in range(CALIBRATION_SAMPLES + 1):
+            # Time exactly the region serialized by the GPU lock. That occupancy,
+            # rather than CPU work that can overlap it, is what the scheduler uses.
             start = time.monotonic()
-            self._frame(manifest, params, payload)
+            self._frame(manifest, params, canvas, strength)
             elapsed_ms = (time.monotonic() - start) * 1000.0
             if index > 0:
                 samples.append(elapsed_ms)
@@ -664,18 +726,9 @@ class DiffusersEngine:
         if "upscale" in manifest.capabilities:
             factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
             mode = f"upscale-{int(factor_spec.get('default', 2))}"
-            try:
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
         else:
-            try:
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-        self._touch(manifest.id)
+            mode = "t2i"
+        self._pipeline(manifest, mode)
         return int((time.monotonic() - start) * 1000)
 
     async def unload_model(self, model_id: str) -> None:
@@ -774,6 +827,14 @@ class DiffusersEngine:
             prompt_kwargs["negative_prompt"] = negative_prompt
         declared_window = manifest.prompt_token_limit
         if declared_window <= 0:
+            return prompt_kwargs
+
+        if (
+            getattr(pipeline, "tokenizer_3", None) is not None
+            and getattr(pipeline, "text_encoder_3", None) is not None
+        ):
+            # SD3 requires joint CLIP+T5 prompt embeddings. This CLIP-only
+            # chunker cannot satisfy that contract, so let diffusers encode it.
             return prompt_kwargs
 
         tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
@@ -913,6 +974,20 @@ class DiffusersEngine:
             # Two resident models plus activations can exceed a 16 GB card
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
+            try:
+                return await asyncio.to_thread(runner, manifest, dict(params),
+                                               progress, loop, input_image)
+            except self.torch.OutOfMemoryError as error:
+                retry_error = error.with_traceback(None)
+            if not self._demote_rung(manifest, phase="generation retry"):
+                raise retry_error
+            if "upscale" in manifest.capabilities:
+                mode = f"upscale-{int(params.get('factor', 0))}"
+            else:
+                mode = "i2i" if input_image is not None else "t2i"
+            await asyncio.to_thread(
+                self._pipeline, manifest, mode, allow_demotion=False,
+            )
             return await asyncio.to_thread(runner, manifest, dict(params),
                                            progress, loop, input_image)
 
@@ -1039,11 +1114,26 @@ class DiffusersEngine:
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        if "realtime" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support realtime frames")
+        if self._pick_rung(manifest) != "full":
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+        frame_params = dict(params)
+
+        def prepare_canvas() -> Image.Image:
+            canvas = Image.open(io.BytesIO(payload)).convert("RGB")
+            return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
+
+        async with self._codec:
+            canvas = await asyncio.to_thread(prepare_canvas)
+        strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
+            # _pipeline can load or evict GPU weights, _prompt_kwargs can run
+            # GPU text encoders for long prompts, and diffusion uses the GPU.
+            frame_result: tuple[Image.Image, int] | None = None
             try:
-                data, gpu_ms = await asyncio.to_thread(
-                    self._frame, manifest, dict(params), payload)
-                return GeneratedFrame(data, gpu_ms)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -1051,19 +1141,23 @@ class DiffusersEngine:
             except Exception:
                 self._evict_poisoned(manifest.id)
                 raise
-            self._evict_except(manifest.id)
-            data, gpu_ms = await asyncio.to_thread(
-                self._frame, manifest, dict(params), payload)
-            return GeneratedFrame(data, gpu_ms)
+            if frame_result is None:
+                # The eviction mutates GPU residency, so it remains serialized.
+                self._evict_except(manifest.id)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
+            image, gpu_ms = frame_result
+        async with self._codec:
+            data = await asyncio.to_thread(encode_webp, image)
+        return GeneratedFrame(data, gpu_ms)
 
-    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> tuple[bytes, int]:
-        if "realtime" not in manifest.capabilities:
-            raise ValueError(f"model {manifest.id} does not support realtime frames")
-        if self._pick_rung(manifest) != "full":
-            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
-        canvas = Image.open(io.BytesIO(payload)).convert("RGB")
-        canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
-        strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)
+    def _frame(
+        self,
+        manifest: Manifest,
+        params: dict,
+        canvas: Image.Image,
+        strength: float,
+    ) -> tuple[Image.Image, int]:
         pipeline = self._pipeline(manifest, "i2i")
         negative_prompt = params.get("negative_prompt")
         prompt_kwargs = self._prompt_kwargs(
@@ -1083,4 +1177,4 @@ class DiffusersEngine:
             guidance_scale=0.0,
         ).images[0]
         gpu_ms = int((time.monotonic() - started) * 1000)
-        return encode_webp(image), gpu_ms
+        return image, gpu_ms

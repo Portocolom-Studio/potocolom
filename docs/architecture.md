@@ -165,6 +165,8 @@ flowchart TB
 
 Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
 
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap, while the realtime relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, realtime admission queue, FrameBus, or cross-replica control state. The target boxes are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+
 ## Pluggable seams
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
@@ -176,7 +178,7 @@ The differences between the two modes are concentrated in four interfaces. Every
 
 ## GPU scheduling
 
-GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. Self-hosted installs are the degenerate case of every rule below: one worker, one user, no queue.
+GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. A Redis-free, `AUTH_MODE=none` self-hosted install is the simplest profile, not the definition of self-hosting: issue #9, "Authentication", adds local accounts, and "Realtime and queue Redis seam: optional, behaviorally equivalent" permits a self-hosted operator to enable Redis and multiple socket-owning processes without changing queue behavior.
 
 ### Capacity and the real time bar
 
@@ -218,9 +220,19 @@ flowchart TD
 
 The rung is per model, not per worker: an 8 GB card can hold sd-turbo fully resident for drawing sessions while running a much larger generation model on group offload beside it. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
 
+An automatically selected rung is also corrected after an out-of-memory error.
+At load time the worker descends from full residency to model offload, then
+from model offload to group offload. Generation can need more memory than
+loading: if the existing eviction and retry still runs out of memory, the
+worker descends one rung, reloads the pipeline and retries the job once.
+The one-rung and one-retry limit keeps a bad job from walking the whole ladder.
+An operator-selected `MEMORY_MODE` rung never descends.
+
 ### When the pool is full
 
 A session request that finds no free slot waits in an admission queue. The user sees their position and an estimated wait; the autoscaler treats queue length as a scale up signal, so waits shrink as new machines boot (one to two minutes on rented GPU providers). Once billing exists, paid tiers move ahead in the queue; nothing ever preempts an active session. There is no time slice sharing and no hard reject.
+
+> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler closes a browser with code 4003 when no compatible slot is free. The queue described here remains the accepted design under "Full pool: admission queue with paid tier priority", issue #19, "Real-Time Generation Protocol", and "Redis-optional Queues and FrameBus contracts".
 
 ### Idle sessions
 
@@ -242,6 +254,8 @@ stateDiagram-v2
 
 Credits are metered only in the Active state.
 
+> Shipped status (2026-07-30): **not yet implemented.** The browser handler does not track input idle time, release a slot after 60 seconds, or implement `idle` and `resuming` controls. Issue #19, "Real-Time Generation Protocol", owns the wire behavior and issue #20, "Multi-Worker Scheduling", owns release and reacquisition. The state diagram above is the designed policy.
+
 ### Frame relay across API replicas
 
 In the cloud the browser's WebSocket and the assigned worker's persistent connection usually terminate on different API replicas, because the load balancer spreads connections. Frames hop between replicas through Redis pub/sub channels keyed by session id: whichever replica holds each socket publishes inbound traffic and subscribes to the other direction. The hop is sub millisecond inside the VPC and removes any need for sticky sessions. Self-hosted, one process holds both sockets and the relay is an in-process call through the same interface.
@@ -252,6 +266,8 @@ flowchart LR
     A1 <-->|"Redis pub/sub<br>session channels"| A2["API replica 2"]
     A2 <-->|"WS, persistent"| W["Worker"]
 ```
+
+> Shipped status (2026-07-30): **not yet implemented.** The current relay works only inside one API process and has no FrameBus abstraction or Redis package. "Realtime and queue Redis seam: optional, behaviorally equivalent" and "Redis-optional Queues and FrameBus contracts" govern this designed path; "Realtime relay: Go gateway required for the 1000-active-session target" governs the eventual socket owner. The diagram above remains the pre-gateway form of the design.
 
 ## Workflows
 
@@ -288,6 +304,23 @@ Native generation stays at model training resolution (typically 512 or 1024). 2K
 - **Refine upscale**: not a second engine path. It is the existing `image_to_image` job with `width`/`height` set to the scaled size and a low `strength` (about 0.2-0.35). Do not invent a parallel refine-upscale capability.
 
 Operators can run a second worker whose `MODELS_DIR` holds only the upscaler manifest. Least-loaded job picking then routes upscales there automatically (zero downtime for the diffusion worker; the same pattern is a dedicated cheap upscale pool in the cloud). No scheduler changes are required.
+
+### Browsing history as a derivation forest
+
+Issues #129 through #132. The Images section is the gallery: one infinite pannable canvas that lays a user's history out as lineage trees, so alternative takes on the same base read as visible structure instead of adjacent squares in a grid. The in-flow history strip is unchanged.
+
+How the images are pulled, and why it holds at scale:
+
+- Two queries, never a whole-history fetch. Roots page from `GET /api/v1/generations?roots_only=true` using the existing cursor paging, and each root's subtree comes from `GET /api/v1/generations/{job_id}/lineage` only when that tree first enters the viewport. Subtrees are cached per root id for the session, so panning back over a tree costs nothing.
+- The lineage query is one recursive CTE upward and one child lookup downward, bounded at depth 100 and cycle safe on visited asset ids, served by the `jobs_source_asset` index. Cost scales with the size of the chain on screen, not with the size of the account.
+- Bandwidth follows the zoom band. The constellation and tree bands render the WebP thumbnail rendition; the full master loads only at the card band, and never below it. Tiles outside the viewport unmount on a world coordinate test, keeping the mounted count bounded rather than growing with history.
+- Layout is deterministic from root ids and `created_at`, so positions are reproducible across visits with nothing persisted server side. Nothing about the canvas is per-install state.
+
+The same code path serves every deployment profile:
+
+- **Isolation.** Every generations route sits behind `current_user` and filters by `user_id`, so a multi-user self-host behaves exactly like the cloud: each user sees only their own forest. There is no shared or public canvas.
+- **Storage.** Asset URLs come from the storage seam (local files self-hosted, S3 with short lived signed URLs in the cloud), so the canvas never knows which profile it is running under. An image that errors after loading once refetches its generation to mint fresh URLs, once, and then shows a placeholder rather than retrying forever.
+- **Retention.** A purged or expired ancestor keeps its place in the tree as a ghost placeholder, which is why purging an asset drops its bytes and marks the row instead of deleting it (see decisions.md). Deleting the row would sever every descendant's lineage.
 
 ### Real time drawing session
 
@@ -478,6 +511,11 @@ Every model the worker can serve is described by a manifest. Example:
 `prompt_token_limit` is the model's native text encoder window in tokens, so the studio warns when a prompt runs past it (issue #148). The shipped CLIP based manifests declare 77. For those models, the worker encodes longer prompts in successive native-size chunks and concatenates their embeddings instead of letting diffusers truncate the prompt. Positive and negative embeddings are padded to the same number of chunks; SDXL applies the same strategy to both text encoders and takes its pooled embedding from the first chunk. This does not make the weights native to a larger window: text in later chunks influences the image more weakly. A model with a different encoder declares its own figure, which is why the field is not a constant in the frontend. Omitting it means the window is unknown and the studio says nothing, so a manifest that forgets the field stays quiet rather than claiming a limit its encoder does not have. Upscale manifests take no prompt and leave it unset.
 
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
+
+Loading fields such as `source`, `vae`, `scheduler`, `lora` and `quantize`
+stay inside the worker and never cross the wire. `quantize` names exactly one
+pipeline component and scheme as `component:scheme`; the only shipped use is
+`text_encoder_3:int8` on `sd35-medium`.
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
 
@@ -744,7 +782,7 @@ erDiagram
 
 ## UI structure
 
-Illustrative sketches only, to anchor issues #1, #3, #4 and #10. The final design happens inside those issues.
+Illustrative sketches only, to anchor issues #1, #3, #4 and #10. The drawing sketch follows "Drawing surface: bitmap canvas" in [decisions.md](decisions.md); issue #54, "stroke-op replay log", owns its replayable operation journal. The final design happens inside those issues.
 
 App shell with the drawing tool active (issues #3, #4):
 
@@ -754,7 +792,7 @@ App shell with the drawing tool active (issues #3, #4):
 +----------------+--------------------------+-------------------------------+
 | tools          |                          |                               |
 |  pen           |                          |                               |
-|  shapes        |     SVG drawing          |     live result               |
+|  shapes        |     bitmap drawing       |     live result               |
 |  eraser        |     canvas               |     (frames stream in         |
 |  color         |                          |      while you draw)          |
 |                |                          |                               |
@@ -792,10 +830,10 @@ Account view (issue #10):
 
 ## Scaling
 
-- The API server is stateless; capacity grows by adding replicas behind the load balancer. No sticky sessions are needed: WebSocket legs that land on different replicas exchange frames through Redis pub/sub (see GPU scheduling).
+- REST capacity is designed to grow by adding API replicas. Realtime socket ownership cannot scale that way today: the shipped relay is process-local, and the accepted 1000-active-session design moves sockets to the gateway under "Realtime relay: Go gateway required for the 1000-active-session target".
 - Job throughput grows with the number of workers. Queue depth drives the fleet autoscaler.
-- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU carries one or two sessions at the 2 to 4 fps, 512 px bar; the admission queue, tier priority and idle release in GPU scheduling keep those slots from being wasted, and the credit system bounds their cost.
-- PostgreSQL and Redis comfortably cover the target scale. Object storage plus a CDN carry the image traffic.
+- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU currently carries one or two sessions at the 2 to 4 fps, 512 px bar. Admission queueing, tier priority, and idle release are designed but not shipped; issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern them.
+- No Redis topology is predeclared sufficient for the target. Adding an availability replica does not split frame publication ingress. The cloud-sim profile already runs Redis 7, whose [sharded Pub/Sub](https://redis.io/docs/latest/develop/pubsub/#sharded-pubsub) in cluster mode uses `SSUBSCRIBE` and `SPUBLISH` to confine propagation to one cluster shard. Whether the FrameBus needs a dedicated endpoint or sharding remains measurement-driven under issue #48, "Gateway load harness: 1000 active sessions at 2 and 4 fps", and "Split FrameBus pub/sub onto its own endpoint".
 - The practical scaling constraint is GPU fleet cost, not the web tier.
 
 ## Open source and commercial boundary

@@ -6,16 +6,32 @@ URL in the cloud, an internal API route (app/files.py) when local.
 """
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlencode
 
 from app.settings import Settings, get_settings
 
 SIGNED_URL_TTL = 3600
 PNG_CONTENT_TYPE = "image/png"
 WEBP_CONTENT_TYPE = "image/webp"
+DOWNLOAD_NAME_MAX_LENGTH = 96
+DOWNLOAD_NAME_PATTERN = re.compile(
+    r"[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+",
+)
+
+
+def validate_download_name(name: str) -> str:
+    if len(name) > DOWNLOAD_NAME_MAX_LENGTH or DOWNLOAD_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("unsafe download filename")
+    return name
+
+
+def download_content_disposition(name: str) -> str:
+    return f'attachment; filename="{validate_download_name(name)}"'
 
 
 @dataclass
@@ -27,7 +43,7 @@ class UploadTarget:
 class Storage(Protocol):
     async def upload_target(self, key: str) -> UploadTarget: ...
 
-    async def url(self, key: str) -> str: ...
+    async def url(self, key: str, download_name: str | None = None) -> str: ...
 
     async def worker_fetch_url(self, key: str) -> str: ...
 
@@ -55,8 +71,11 @@ class LocalStorage:
             headers={"Content-Type": content_type},
         )
 
-    async def url(self, key: str) -> str:
-        return f"{self.public_url}/api/v1/files/{key}"
+    async def url(self, key: str, download_name: str | None = None) -> str:
+        url = f"{self.public_url}/api/v1/files/{key}"
+        if download_name is None:
+            return url
+        return f"{url}?{urlencode({'download': validate_download_name(download_name)})}"
 
     async def worker_fetch_url(self, key: str) -> str:
         return f"{self.worker_url}/api/v1/files/{key}"
@@ -96,10 +115,13 @@ class S3Storage:
         )
         return UploadTarget(url=url, headers={"Content-Type": content_type})
 
-    async def url(self, key: str) -> str:
+    async def url(self, key: str, download_name: str | None = None) -> str:
+        params = {"Bucket": self.bucket, "Key": key}
+        if download_name is not None:
+            params["ResponseContentDisposition"] = download_content_disposition(download_name)
         return self.client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": self.bucket, "Key": key},
+            Params=params,
             ExpiresIn=SIGNED_URL_TTL,
         )
 

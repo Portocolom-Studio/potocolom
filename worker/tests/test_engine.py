@@ -1,11 +1,20 @@
 import asyncio
 import io
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from worker.engine import CALIBRATION_SAMPLES, DiffusersEngine, SimulatedEngine
+from worker.engine import (
+    CALIBRATION_SAMPLES,
+    CODEC_CONCURRENCY_LIMIT,
+    DiffusersEngine,
+    GeneratedFrame,
+    REALTIME_SIZE,
+    SimulatedEngine,
+    encode_webp,
+)
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 
 
@@ -163,6 +172,20 @@ def test_short_prompt_keeps_existing_pipeline_prompt_path():
 
     assert kwargs == {"prompt": "w0 w1"}
     assert pipeline.text_encoder.calls == 0
+
+
+def test_third_text_encoder_keeps_pipeline_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline(dual=True)
+    pipeline.tokenizer_3 = object()
+    pipeline.text_encoder_3 = object()
+    prompt = " ".join(f"w{index}" for index in range(80))
+
+    kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), prompt, "w0")
+
+    assert kwargs == {"prompt": prompt, "negative_prompt": "w0"}
+    assert pipeline.text_encoder.calls == 0
+    assert pipeline.text_encoder_2.calls == 0
 
 
 def test_fake_tokenizer_only_offers_what_a_real_one_does():
@@ -471,6 +494,292 @@ def test_optimize_resident_skipped_when_compile_disabled():
     engine._warmup_pipeline.assert_not_called()
 
 
+def test_load_quantizes_named_component_before_device_move():
+    pipeline = MagicMock()
+    component = object()
+    pipeline.text_encoder_3 = component
+    events: list[str] = []
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cpu"
+    engine._pipelines = {}
+    engine._from_pretrained = MagicMock(return_value=pipeline)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._apply_rung = MagicMock(
+        side_effect=lambda *_args: events.append("apply_rung") or pipeline,
+    )
+    engine._optimize_resident = MagicMock()
+
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = object()
+    diffusers.AutoPipelineForImage2Image = object()
+    quantization = ModuleType("torchao.quantization")
+    quantization.quantize_ = MagicMock(
+        side_effect=lambda *_args: events.append("quantize"),
+    )
+    config = object()
+    quantization.Int8WeightOnlyConfig = MagicMock(return_value=config)
+    torchao = ModuleType("torchao")
+    torchao.quantization = quantization
+    manifest = Manifest(
+        id="m",
+        name="M",
+        capabilities=["text_to_image"],
+        quantize="text_encoder_3:int8",
+    )
+
+    with patch.dict(
+        sys.modules,
+        {"diffusers": diffusers, "torchao": torchao, "torchao.quantization": quantization},
+    ):
+        loaded = engine._load(manifest, "t2i")
+
+    assert loaded is pipeline
+    quantization.quantize_.assert_called_once_with(component, config)
+    engine._apply_rung.assert_called_once_with(pipeline, manifest, "full")
+    assert events == ["quantize", "apply_rung"]
+    engine._optimize_resident.assert_called_once_with(
+        pipeline, "t2i", force_compile=True,
+    )
+
+
+def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = MagicMock()
+    engine.device = "cuda"
+    engine.models_dir = str(tmp_path)
+
+    quantized_pipeline = MagicMock()
+    quantized_manifest = Manifest(
+        id="quantized",
+        name="Quantized",
+        capabilities=["text_to_image"],
+        quantize="text_encoder_3:int8",
+    )
+    engine._apply_rung(quantized_pipeline, quantized_manifest, "group_offload")
+
+    quantized_kwargs = quantized_pipeline.enable_group_offload.call_args.kwargs
+    assert quantized_kwargs["use_stream"] is False
+    assert quantized_kwargs["offload_to_disk_path"] is None
+
+    pipeline = MagicMock()
+    manifest = Manifest(
+        id="unquantized",
+        name="Unquantized",
+        capabilities=["text_to_image"],
+    )
+    engine._apply_rung(pipeline, manifest, "group_offload")
+
+    kwargs = pipeline.enable_group_offload.call_args.kwargs
+    assert kwargs["use_stream"] is True
+    assert kwargs["offload_to_disk_path"] == str(
+        tmp_path / ".offload" / "unquantized"
+    )
+
+
+def test_frame_keeps_pillow_work_outside_gpu_lock():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    torch_stub = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine.torch = torch_stub
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    expected = encode_webp(rendered)
+    events: list[tuple[str, bool]] = []
+
+    def run_pipeline(**kwargs):
+        events.append(("diffusion", engine._gpu.locked()))
+        assert kwargs["image"].size == (512, 512)
+        return SimpleNamespace(images=[rendered])
+
+    pipeline = MagicMock(side_effect=run_pipeline)
+
+    def load_pipeline(*_args):
+        events.append(("pipeline", engine._gpu.locked()))
+        return pipeline
+
+    def prompt_kwargs(*_args):
+        events.append(("prompt", engine._gpu.locked()))
+        return {"prompt": "frame"}
+
+    engine._pipeline = MagicMock(side_effect=load_pipeline)
+    engine._prompt_kwargs = MagicMock(side_effect=prompt_kwargs)
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+    open_image = Image.open
+
+    def track_open(*args, **kwargs):
+        events.append(("decode", engine._gpu.locked()))
+        return open_image(*args, **kwargs)
+
+    def track_encode(image):
+        events.append(("encode", engine._gpu.locked()))
+        return encode_webp(image)
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch("asyncio.to_thread", side_effect=run_inline) as run,
+        patch("worker.engine.Image.open", side_effect=track_open),
+        patch("worker.engine.encode_webp", side_effect=track_encode),
+    ):
+        result = asyncio.run(engine.frame(manifest, {"prompt": "frame"}, source.getvalue()))
+
+    assert events == [
+        ("decode", False),
+        ("pipeline", True),
+        ("prompt", True),
+        ("diffusion", True),
+        ("encode", False),
+    ]
+    assert result.data == expected
+    assert isinstance(result.gpu_ms, int)
+    assert result.gpu_ms >= 0
+    assert run.call_count == 3
+    engine._evict_except.assert_not_called()
+    engine._evict_poisoned.assert_not_called()
+
+
+def test_frame_bounds_codec_concurrency():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    engine._frame = MagicMock(return_value=(rendered, 17))
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    call_count = CODEC_CONCURRENCY_LIMIT + 1
+    first_wave_full = asyncio.Event()
+    release_first_wave = asyncio.Event()
+    second_wave_full = asyncio.Event()
+    release_second_wave = asyncio.Event()
+    active = 0
+    maximum = 0
+    started = 0
+    kinds_seen: set[str] = set()
+
+    async def fake_to_thread(function, *args, **kwargs):
+        nonlocal active, maximum, started
+        name = getattr(function, "__name__", "")
+        if name == "prepare_canvas":
+            kind = "decode"
+            result = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE))
+        elif function is encode_webp:
+            kind = "encode"
+            result = b"webp"
+        else:
+            return function(*args, **kwargs)
+
+        started += 1
+        wave = 1 if started <= CODEC_CONCURRENCY_LIMIT else 2
+        active += 1
+        maximum = max(maximum, active)
+        kinds_seen.add(kind)
+        if wave == 1 and active == CODEC_CONCURRENCY_LIMIT:
+            first_wave_full.set()
+        if wave == 2 and active == CODEC_CONCURRENCY_LIMIT:
+            second_wave_full.set()
+        try:
+            if wave == 1:
+                await release_first_wave.wait()
+            else:
+                await release_second_wave.wait()
+            return result
+        finally:
+            active -= 1
+
+    async def run_frames():
+        with patch("asyncio.to_thread", side_effect=fake_to_thread):
+            tasks = [
+                asyncio.create_task(engine.frame(manifest, {}, b"png"))
+                for _ in range(call_count)
+            ]
+            await first_wave_full.wait()
+            assert active == CODEC_CONCURRENCY_LIMIT
+            assert not any(task.done() for task in tasks)
+            release_first_wave.set()
+            await second_wave_full.wait()
+            assert active == CODEC_CONCURRENCY_LIMIT
+            release_second_wave.set()
+            return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run_frames())
+
+    assert maximum == CODEC_CONCURRENCY_LIMIT
+    assert kinds_seen == {"decode", "encode"}
+    assert len(results) == call_count
+    assert all(result == GeneratedFrame(b"webp", 17) for result in results)
+
+
+def test_frame_oom_retries_once_without_decoding_twice():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    torch_stub = SimpleNamespace(
+        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+    )
+    engine.torch = torch_stub
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    canvases: list[Image.Image] = []
+
+    def run_frame(_manifest, _params, canvas, _strength):
+        canvases.append(canvas)
+        if len(canvases) == 1:
+            raise torch_stub.OutOfMemoryError
+        return rendered, 17
+
+    engine._frame = MagicMock(side_effect=run_frame)
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+    open_image = Image.open
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch("asyncio.to_thread", side_effect=run_inline) as run,
+        patch("worker.engine.Image.open", wraps=open_image) as decode,
+    ):
+        result = asyncio.run(engine.frame(manifest, {}, source.getvalue()))
+
+    assert decode.call_count == 1
+    assert run.call_count == 4
+    assert engine._frame.call_count == 2
+    assert canvases[0] is canvases[1]
+    engine._evict_except.assert_called_once_with(manifest.id)
+    engine._evict_poisoned.assert_not_called()
+    assert result.data == encode_webp(rendered)
+    assert result.gpu_ms == 17
+
+
 def test_calibrate_realtime_sets_slots_from_p95():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
@@ -482,7 +791,9 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._calibrated_slots = None
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
-    engine._frame = MagicMock(return_value=b"webp")
+    engine._frame = MagicMock(
+        return_value=(Image.new("RGB", (32, 32)), 200),
+    )
 
     manifest = Manifest(
         id="vega-rt",
@@ -497,12 +808,19 @@ def test_calibrate_realtime_sets_slots_from_p95():
     def fake_monotonic():
         return next(times)
 
-    with patch("worker.engine.time.monotonic", side_effect=fake_monotonic):
+    with (
+        patch("worker.engine.time.monotonic", side_effect=fake_monotonic),
+        patch("worker.engine.encode_webp") as encode,
+    ):
         slots = engine._calibrate_realtime(manifest, configured=4)
 
     assert slots == 2
     assert engine._calibrated_slots == 2
     assert engine._frame.call_count == CALIBRATION_SAMPLES + 1
+    encode.assert_not_called()
+    canvases = [call.args[2] for call in engine._frame.call_args_list]
+    assert all(canvas is canvases[0] for canvas in canvases)
+    assert all(call.args[3] == 0.7 for call in engine._frame.call_args_list)
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
@@ -613,6 +931,92 @@ def test_evict_cold_removes_oldest_first():
     assert "b" not in engine._rungs
 
 
+def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
+    torch_stub = MagicMock()
+    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._free_gpu_cache = MagicMock()
+    engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
+    engine._select_rung = MagicMock(return_value="full")
+    attempts: list[str] = []
+
+    def load(manifest, _mode):
+        rung = engine._pick_rung(manifest)
+        attempts.append(rung)
+        if rung in failing_rungs:
+            raise torch_stub.OutOfMemoryError
+        return object()
+
+    engine._load = load
+    return engine, attempts
+
+
+def test_load_oom_demotes_full_to_model_offload():
+    engine, attempts = _load_oom_engine({"full"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "model_offload"]
+    assert engine.model_rung("m") == "model_offload"
+
+
+def test_load_second_oom_demotes_model_to_group_offload():
+    engine, attempts = _load_oom_engine({"full", "model_offload"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "model_offload", "group_offload"]
+    assert engine.model_rung("m") == "group_offload"
+
+
+def test_load_oom_does_not_demote_pinned_rung():
+    engine, attempts = _load_oom_engine(set())
+    engine.memory_mode = "full"
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    def load(current_manifest, _mode):
+        rung = engine._pick_rung(current_manifest)
+        attempts.append(rung)
+        if len(attempts) == 1:
+            raise engine.torch.OutOfMemoryError
+        return object()
+
+    engine._load = load
+    engine._load_model(manifest)
+
+    assert attempts == ["full", "full"]
+    assert engine.model_rung("m") == "full"
+
+
+def test_final_load_oom_drops_failed_attempt_traceback():
+    engine, attempts = _load_oom_engine({"full", "model_offload", "group_offload"})
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    try:
+        engine._load_model(manifest)
+    except engine.torch.OutOfMemoryError as error:
+        frame_names = []
+        traceback = error.__traceback__
+        while traceback is not None:
+            frame_names.append(traceback.tb_frame.f_code.co_name)
+            traceback = traceback.tb_next
+    else:
+        raise AssertionError("expected OutOfMemoryError")
+
+    assert attempts == ["full", "model_offload", "group_offload", "group_offload"]
+    assert "load" not in frame_names
+
+
 def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     from worker.engine import GeneratedImage
 
@@ -700,3 +1104,34 @@ def test_generate_value_error_does_not_evict():
     asyncio.run(scenario())
     assert ("m", "t2i") in engine._pipelines
     assert engine._poison_evict_count == {}
+
+
+def test_generation_oom_demotes_once_and_retries_once():
+    engine = _poison_engine()
+    engine.memory_mode = "auto"
+    engine._pipeline = MagicMock()
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+
+    async def scenario():
+        async def fake_to_thread(function, *args, **kwargs):
+            if function is engine._pipeline:
+                return function(*args, **kwargs)
+            raise engine.torch.OutOfMemoryError
+
+        with patch("asyncio.to_thread", side_effect=fake_to_thread) as run:
+            try:
+                await engine.generate(manifest, {"prompt": "x"}, lambda _: None)
+            except engine.torch.OutOfMemoryError:
+                pass
+            else:
+                raise AssertionError("expected OutOfMemoryError")
+        assert run.call_count == 4
+        pipeline_call = run.call_args_list[2]
+        assert pipeline_call.args == (engine._pipeline, manifest, "t2i")
+        assert pipeline_call.kwargs == {"allow_demotion": False}
+
+    asyncio.run(scenario())
+    assert engine.model_rung("m") == "model_offload"
+    engine._pipeline.assert_called_once_with(
+        manifest, "t2i", allow_demotion=False,
+    )

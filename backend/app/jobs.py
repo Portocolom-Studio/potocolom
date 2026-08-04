@@ -12,7 +12,9 @@ import asyncio
 import heapq
 import json
 import logging
+import re
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -45,6 +47,8 @@ JOB_DISPATCH_DEPTH = 2  # queued jobs per worker; overlap encode/upload with den
 
 TERMINAL_STATES = ("succeeded", "failed")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
+DOWNLOAD_SLUG_MAX_LENGTH = 48
+DOWNLOAD_SLUG_MAX_WORDS = 6
 
 
 class Queues(Protocol):
@@ -112,6 +116,32 @@ class GenerationRequest(BaseModel):
     source_asset_id: uuid.UUID | None = None
 
 
+def generation_download_name(
+    job: Job,
+    asset: Asset,
+    position: int | None = None,
+) -> str:
+    prompt = job.params.get("prompt")
+    source = prompt if isinstance(prompt, str) and prompt.strip() else job.model_id
+    ascii_source = (
+        unicodedata.normalize("NFKD", source).encode("ascii", "ignore").decode("ascii").lower()
+    )
+    words = re.findall(r"[a-z0-9]+", ascii_source)[:DOWNLOAD_SLUG_MAX_WORDS]
+    slug = "-".join(words)[:DOWNLOAD_SLUG_MAX_LENGTH].strip("-")
+    if not slug:
+        slug = "generation"
+    timestamp = job.created_at.strftime("%Y%m%d-%H%M%S")
+    filename = asset.storage_key.rsplit("/", 1)[-1]
+    _, separator, extension = filename.rpartition(".")
+    if not separator or not extension:
+        extension = asset.mime.rpartition("/")[2]
+        if re.fullmatch(r"[a-z0-9]+", extension.lower()) is None:
+            extension = "bin"
+    extension = extension.lower()
+    position_suffix = f"-{position}" if position is not None else ""
+    return f"potocolom-{timestamp}-{slug}{position_suffix}.{extension}"
+
+
 @router.post("/api/v1/generations", status_code=202)
 async def create_generation(
     request: GenerationRequest,
@@ -159,6 +189,24 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 thumbs_by_parent[asset.parent_asset_id] = asset
     storage = get_storage()
     now = datetime.now(timezone.utc)
+    # Keep expired masters for expired_favorite, but number only the assets the
+    # client can see.
+    all_masters = {
+        job.id: [
+            asset
+            for asset in assets.get(job.id, [])
+            if not asset.storage_key.endswith("-thumb.webp")
+        ]
+        for job in jobs
+    }
+    visible_masters = {
+        job.id: [
+            asset
+            for asset in all_masters[job.id]
+            if asset.expires_at is None or asset.expires_at > now
+        ]
+        for job in jobs
+    }
     return [
         {
             "id": str(job.id),
@@ -181,26 +229,28 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 {
                     "id": str(asset.id),
                     "url": await storage.url(asset.storage_key),
+                    "download_url": await storage.url(
+                        asset.storage_key,
+                        download_name=generation_download_name(
+                            job,
+                            asset,
+                            position if len(visible_masters[job.id]) > 1 else None,
+                        ),
+                    ),
                     "thumbnail_url": await storage.url(thumb.storage_key)
                     if (thumb := thumbs_by_parent.get(asset.id)) is not None else None,
                     "mime": asset.mime,
                     "width": asset.width,
                     "height": asset.height,
                 }
-                for asset in assets.get(job.id, [])
-                if not asset.storage_key.endswith("-thumb.webp")
-                and (asset.expires_at is None or asset.expires_at > now)
+                for position, asset in enumerate(visible_masters[job.id], start=1)
             ],
             "expired_favorite": bool(
                 job.starred_at
-                and any(
-                    not asset.storage_key.endswith("-thumb.webp")
-                    for asset in assets.get(job.id, [])
-                )
+                and all_masters[job.id]
                 and not any(
-                    not asset.storage_key.endswith("-thumb.webp")
-                    and (asset.expires_at is None or asset.expires_at > now)
-                    for asset in assets.get(job.id, [])
+                    asset.expires_at is None or asset.expires_at > now
+                    for asset in all_masters[job.id]
                 )
             ),
         }

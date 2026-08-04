@@ -9,6 +9,9 @@ export type Model = {
 	capabilities: string[];
 	min_vram_gb: number;
 	default: boolean;
+	// Non-empty when the model's license demands visible credit, e.g. the
+	// Stability Community License "Powered by Stability AI".
+	requires_attribution?: string;
 	/** Text encoder window; absent or 0 means the model never declared one. */
 	prompt_token_limit?: number;
 	estimated_gpu_ms_default: number | null;
@@ -31,6 +34,7 @@ export type Asset = {
 	id: string;
 	url: string;
 	thumbnail_url: string | null;
+	download_url: string;
 	width: number;
 	height: number;
 };
