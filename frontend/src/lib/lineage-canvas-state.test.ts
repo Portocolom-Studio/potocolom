@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
 	LINEAGE_WORLD_LIMIT,
 	clampLineageCoordinate,
+	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
 	rebaseLineageViewport
 } from './lineage-canvas-state.ts';
@@ -68,11 +69,21 @@ test('truncated tree ignores omitted children but refreshes changed retained nod
 		}
 	];
 	const omittedChild = generation('omitted-job', 'omitted-asset', 'root-asset');
+	const knownOmissions = lineageTreeOmittedHistoryJobIds(cachedNodes, [omittedChild, root]);
 
-	assert.equal(lineageTreeNeedsHistoryRefresh(cachedNodes, [omittedChild, root], true), false);
+	assert.equal(
+		lineageTreeNeedsHistoryRefresh(cachedNodes, [omittedChild, root], knownOmissions),
+		false
+	);
+
+	const newChild = generation('new-job', 'new-asset', 'root-asset');
+	assert.equal(
+		lineageTreeNeedsHistoryRefresh(cachedNodes, [newChild, omittedChild, root], knownOmissions),
+		true
+	);
 
 	const changedRoot = generation('root-job', 'replacement-root-asset', null);
-	assert.equal(lineageTreeNeedsHistoryRefresh(cachedNodes, [changedRoot], true), true);
+	assert.equal(lineageTreeNeedsHistoryRefresh(cachedNodes, [changedRoot], knownOmissions), true);
 });
 
 test('persisted canvas coordinates stay inside the documented world range', () => {

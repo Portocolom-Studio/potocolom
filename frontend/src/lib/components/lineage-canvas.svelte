@@ -16,6 +16,7 @@
 		layout: LineageTreeLayout<CanvasNodeData> | null;
 		dirty: boolean;
 		truncated: boolean;
+		omittedHistoryJobIds: ReadonlySet<string>;
 		remainingCountLowerBound: number;
 	};
 
@@ -41,6 +42,7 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport
 	} from '$lib/lineage-canvas-state';
@@ -337,6 +339,7 @@
 			layout: existing?.layout ?? null,
 			dirty: false,
 			truncated: existing?.truncated ?? false,
+			omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
 			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
 		});
 		try {
@@ -375,6 +378,9 @@
 				layout,
 				dirty: false,
 				truncated: subtree.truncated,
+				omittedHistoryJobIds: subtree.truncated
+					? lineageTreeOmittedHistoryJobIds(layout.nodes, studio.history)
+					: new Set(),
 				remainingCountLowerBound: subtree.remaining_count_lower_bound
 			});
 			retriedTreeErrors.delete(root.id);
@@ -394,6 +400,7 @@
 				layout: existing?.layout ?? null,
 				dirty: false,
 				truncated: existing?.truncated ?? false,
+				omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
 				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
 			});
 			if (rerun) {
@@ -455,6 +462,7 @@
 						layout: tree.layout,
 						dirty: false,
 						truncated: false,
+						omittedHistoryJobIds: new Set(),
 						remainingCountLowerBound: 0
 					});
 				}
@@ -512,7 +520,11 @@
 				cached?.status === 'loaded' &&
 				cached.layout &&
 				(derivativeFlagChanged ||
-					lineageTreeNeedsHistoryRefresh(cached.layout.nodes, studio.history, cached.truncated))
+					lineageTreeNeedsHistoryRefresh(
+						cached.layout.nodes,
+						studio.history,
+						cached.omittedHistoryJobIds
+					))
 			) {
 				scheduleTreeLoad(root, true);
 			}

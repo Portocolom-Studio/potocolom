@@ -33,7 +33,7 @@ export function rebaseLineageViewport(
 export function lineageTreeNeedsHistoryRefresh(
 	nodes: CachedNode[],
 	history: Generation[],
-	truncated = false
+	knownOmittedJobIds: ReadonlySet<string> = new Set()
 ): boolean {
 	const nodeByJob = new Map(
 		nodes
@@ -55,7 +55,7 @@ export function lineageTreeNeedsHistoryRefresh(
 		if (cached && !generation.assets.some((asset) => asset.id === cached.data.entry.asset_id)) {
 			return true;
 		}
-		if (!cached && generation.source_asset_id && !truncated) {
+		if (!cached && generation.source_asset_id && !knownOmittedJobIds.has(generation.id)) {
 			const parentJobId = historyAssetOwners.get(generation.source_asset_id);
 			if (assetIds.has(generation.source_asset_id) || (parentJobId && nodeByJob.has(parentJobId))) {
 				return true;
@@ -63,4 +63,30 @@ export function lineageTreeNeedsHistoryRefresh(
 		}
 	}
 	return false;
+}
+
+export function lineageTreeOmittedHistoryJobIds(
+	nodes: CachedNode[],
+	history: Generation[]
+): Set<string> {
+	const jobIds = new Set(
+		nodes.map((node) => node.data.entry.job_id).filter((jobId): jobId is string => jobId !== null)
+	);
+	const assetIds = new Set(nodes.map((node) => node.id));
+	const historyAssetOwners = new Map<string, string>();
+	for (const generation of history) {
+		for (const asset of generation.assets) historyAssetOwners.set(asset.id, generation.id);
+	}
+	return new Set(
+		history
+			.filter((generation) => {
+				if (jobIds.has(generation.id) || generation.source_asset_id === null) return false;
+				const parentJobId = historyAssetOwners.get(generation.source_asset_id);
+				return (
+					assetIds.has(generation.source_asset_id) ||
+					Boolean(parentJobId && jobIds.has(parentJobId))
+				);
+			})
+			.map((generation) => generation.id)
+	);
 }
