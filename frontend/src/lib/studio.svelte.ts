@@ -43,6 +43,7 @@ export type Generation = {
 	id: string;
 	model_id: string;
 	source_asset_id: string | null;
+	has_derivatives?: boolean;
 	params: { prompt?: string } & Record<string, unknown>;
 	state: string;
 	progress: number | null; // denoising fraction while running, else null
@@ -90,11 +91,18 @@ export type LineageViewport = {
 	scale: number;
 };
 
+export type LineageTreeOffset = {
+	x: number;
+	y: number;
+};
+
 const HISTORY_LIMIT = 50;
 const MAX_GENERATION_STREAMS = 4;
 const STREAM_RECONCILE_MS = 15_000;
 const STARRED_STORAGE_KEY = 'potocolom-starred';
 const REMOVED_MODELS_STORAGE_KEY = 'potocolom-removed-models';
+const LINEAGE_VIEWPORT_STORAGE_KEY = 'potocolom-lineage-viewport';
+const LINEAGE_TREE_OFFSETS_STORAGE_KEY = 'potocolom-lineage-tree-offsets';
 
 function loadStarredIds(): string[] {
 	if (typeof localStorage === 'undefined') return [];
@@ -119,6 +127,50 @@ function loadRemovedModelIds(): string[] {
 			: [];
 	} catch {
 		return [];
+	}
+}
+
+function loadLineageViewport(): LineageViewport | null {
+	if (typeof localStorage === 'undefined') return null;
+	try {
+		const raw = localStorage.getItem(LINEAGE_VIEWPORT_STORAGE_KEY);
+		const parsed = raw ? (JSON.parse(raw) as Partial<LineageViewport>) : null;
+		if (
+			parsed === null ||
+			!Number.isFinite(parsed.translateX) ||
+			!Number.isFinite(parsed.translateY) ||
+			!Number.isFinite(parsed.scale) ||
+			(parsed.scale ?? 0) <= 0
+		) {
+			return null;
+		}
+		return {
+			translateX: parsed.translateX as number,
+			translateY: parsed.translateY as number,
+			scale: parsed.scale as number
+		};
+	} catch {
+		return null;
+	}
+}
+
+function loadLineageTreeOffsets(): Record<string, LineageTreeOffset> {
+	if (typeof localStorage === 'undefined') return {};
+	try {
+		const raw = localStorage.getItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY);
+		const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+		return Object.fromEntries(
+			Object.entries(parsed).filter(
+				(entry): entry is [string, LineageTreeOffset] =>
+					entry[1] !== null &&
+					typeof entry[1] === 'object' &&
+					Number.isFinite((entry[1] as Partial<LineageTreeOffset>).x) &&
+					Number.isFinite((entry[1] as Partial<LineageTreeOffset>).y)
+			)
+		);
+	} catch {
+		return {};
 	}
 }
 
@@ -152,7 +204,8 @@ export const studio = $state({
 	removedModelIds: [] as string[],
 	prompt: '',
 	generationPrefill: null as GenerationPrefill | null,
-	lineageViewport: null as LineageViewport | null,
+	lineageViewport: loadLineageViewport(),
+	lineageTreeOffsets: loadLineageTreeOffsets(),
 	selectedId: null as string | null, // generation pinned in the viewer
 	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
 	history: [] as Generation[],
@@ -175,6 +228,26 @@ export const studio = $state({
 		| 'metrics',
 	metricsTab: 'usage' as 'usage' | 'benchmarks'
 });
+
+export function saveLineageViewport(viewport: LineageViewport): void {
+	studio.lineageViewport = viewport;
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(viewport));
+	} catch {
+		// The viewport remains active for this tab when storage is unavailable.
+	}
+}
+
+export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
+	studio.lineageTreeOffsets = offsets;
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(offsets));
+	} catch {
+		// The positions remain active for this tab when storage is unavailable.
+	}
+}
 
 type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
 const favoriteNotices = new Map<FavoriteNoticeKind, string>();

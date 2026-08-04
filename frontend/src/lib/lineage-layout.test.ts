@@ -78,15 +78,70 @@ test('forest packing puts branched trees first and single roots in a grid', () =
 	);
 	const oldestSingle = layoutLineageTree(node('oldest', '2026-01-01T00:00:00Z'));
 	const packed = packLineageForest([
-		{ rootId: 'oldest', createdAt: '2026-01-01T00:00:00Z', layout: oldestSingle },
-		{ rootId: 'tree', createdAt: '2026-01-02T00:00:00Z', layout: olderTree },
-		{ rootId: 'newest', createdAt: '2026-01-03T00:00:00Z', layout: newestSingle }
+		{
+			rootId: 'oldest',
+			createdAt: '2026-01-01T00:00:00Z',
+			hasDerivatives: false,
+			layout: oldestSingle
+		},
+		{
+			rootId: 'tree',
+			createdAt: '2026-01-02T00:00:00Z',
+			hasDerivatives: true,
+			layout: olderTree
+		},
+		{
+			rootId: 'newest',
+			createdAt: '2026-01-03T00:00:00Z',
+			hasDerivatives: false,
+			layout: newestSingle
+		}
 	]);
 
 	assert.equal(packed[0].rootId, 'tree');
 	assert.equal(packed[1].rootId, 'newest');
 	assert.equal(packed[2].rootId, 'oldest');
-	assert.equal(packed[2].x - packed[1].x, LINEAGE_TILE_WIDTH + 48);
-	assert.ok(packed[1].y >= olderTree.height + 240);
+	assert.equal(packed[2].x, packed[1].x);
+	assert.equal(packed[2].y - packed[1].y, LINEAGE_TILE_HEIGHT + 48);
+	assert.ok(packed[0].y > packed[2].y);
 	assert.ok(oldestSingle.height >= LINEAGE_TILE_HEIGHT);
+});
+
+test('forest packing is stable while a declared tree loads', () => {
+	const rootOnly = layoutLineageTree(node('tree', '2026-01-03T00:00:00Z'));
+	const loadedTree = layoutLineageTree(
+		node('tree', '2026-01-03T00:00:00Z', [
+			node('left', '2026-01-04T00:00:00Z'),
+			node('right', '2026-01-05T00:00:00Z')
+		])
+	);
+	const single = layoutLineageTree(node('single', '2026-01-02T00:00:00Z'));
+	const pack = (layout: typeof rootOnly) =>
+		packLineageForest([
+			{
+				rootId: 'tree',
+				createdAt: '2026-01-03T00:00:00Z',
+				hasDerivatives: true,
+				layout
+			},
+			{
+				rootId: 'single',
+				createdAt: '2026-01-02T00:00:00Z',
+				hasDerivatives: false,
+				layout: single
+			}
+		]);
+	const loading = pack(rootOnly);
+	const loaded = pack(loadedTree);
+	const rootPosition = (trees: typeof loading) => {
+		const tree = trees.find((item) => item.rootId === 'tree');
+		const root = tree?.layout.nodes.find((item) => item.id === 'tree');
+		return { x: (tree?.x ?? 0) + (root?.x ?? 0), y: (tree?.y ?? 0) + (root?.y ?? 0) };
+	};
+
+	assert.deepEqual(rootPosition(loading), rootPosition(loaded));
+	assert.deepEqual(
+		loading.filter((item) => item.rootId === 'single').map(({ x, y }) => ({ x, y })),
+		loaded.filter((item) => item.rootId === 'single').map(({ x, y }) => ({ x, y }))
+	);
 });

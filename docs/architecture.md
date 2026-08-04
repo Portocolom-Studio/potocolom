@@ -311,10 +311,10 @@ Issues #129 through #132. The Images section is the gallery: one infinite pannab
 
 How the images are pulled, and why it holds at scale:
 
-- Two queries, never a whole-history fetch. Roots page from `GET /api/v1/generations?roots_only=true` using the existing cursor paging, and each root's subtree comes from `GET /api/v1/generations/{job_id}/lineage` only when that tree first enters the viewport. Subtrees are cached per root id for the session, so panning back over a tree costs nothing.
+- Two queries, never a whole-history fetch. Roots page from `GET /api/v1/generations?roots_only=true` using the existing cursor paging, and each root's subtree comes from `GET /api/v1/generations/{job_id}/lineage` only when that tree first enters the viewport. Each root includes `has_derivatives`, so the client reserves a tree row or a chain-free grid cell before that subtree loads. Subtrees are cached per root id for the session, so panning back over a tree or returning from another studio section costs nothing.
 - The lineage query is one recursive CTE upward and one child lookup downward, bounded at depth 100 and cycle safe on visited asset ids, served by the `jobs_source_asset` index. Cost scales with the size of the chain on screen, not with the size of the account.
 - Bandwidth follows the zoom band. The constellation and tree bands render the WebP thumbnail rendition; the full master loads only at the card band, and never below it. Tiles outside the viewport unmount on a world coordinate test, keeping the mounted count bounded rather than growing with history.
-- Layout is deterministic from root ids and `created_at`, so positions are reproducible across visits with nothing persisted server side. Nothing about the canvas is per-install state.
+- Layout is deterministic from root ids, `created_at`, and `has_derivatives`. Derived trees receive separate rows and the chain-free grid occupies an independent fixed-height region, so loading a subtree cannot move a root between regions or re-index the grid. Older grid pages extend to the right. A loaded tree can increase its row height and push only later tree rows down. The viewport and additive per-root drag offsets are kept in browser local storage; default positions remain reproducible and nothing about the canvas is persisted server side. Root tiles are the drag handles, focused root tiles move with the arrow keys, and both one-tree and all-tree reset controls remove offsets.
 
 The same code path serves every deployment profile:
 

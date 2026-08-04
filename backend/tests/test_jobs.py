@@ -1076,6 +1076,11 @@ def test_generation_history_roots_only_filter_pages_roots():
         )
         assert first.status_code == 200
         assert [row["id"] for row in first.json()] == [str(newest_root_id)]
+        assert first.json()[0]["has_derivatives"] is True
+
+        detail = client.get(f"/api/v1/generations/{newest_root_id}")
+        assert detail.status_code == 200
+        assert detail.json()["has_derivatives"] is True
 
         second = client.get(
             "/api/v1/generations",
@@ -1087,6 +1092,7 @@ def test_generation_history_roots_only_filter_pages_roots():
         )
         assert second.status_code == 200
         assert [row["id"] for row in second.json()] == [str(older_root_id)]
+        assert second.json()[0]["has_derivatives"] is False
 
         derivatives = client.get(
             "/api/v1/generations",
@@ -1094,6 +1100,8 @@ def test_generation_history_roots_only_filter_pages_roots():
         )
         assert derivatives.status_code == 200
         assert str(child_id) in [row["id"] for row in derivatives.json()]
+        child = next(row for row in derivatives.json() if row["id"] == str(child_id))
+        assert child["has_derivatives"] is False
 
         wrong_cursor = client.get(
             "/api/v1/generations",

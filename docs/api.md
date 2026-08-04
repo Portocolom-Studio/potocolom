@@ -134,11 +134,13 @@ POST /api/v1/generations     user or admin; viewer receives 403
 GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
                               "asset": {...} when succeeded, "thumbnail_url": "...",
                               "source_asset_id": "..." (img2img/upscale),
+                              "has_derivatives": true when any job uses one of its assets,
                               phase timings "input_fetch_ms"/"load_ms"/"postprocess_ms",
                               "dispatched_at"/"finished_at", "failure_reason" on failure}
 
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
-                             carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
+                             carrying short-lived signed URLs and "thumbnail_url", plus
+                             "has_derivatives" for stable client layout; cursor paging.
                              (This is the real history endpoint. There is no /api/v1/assets.)
                              ?starred=true uses starred_at newest-first; false excludes favorites.
                              ?roots_only=true returns source_asset_id IS NULL; false returns only

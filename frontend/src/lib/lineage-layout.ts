@@ -4,9 +4,10 @@ export const LINEAGE_TILE_WIDTH = 216;
 export const LINEAGE_TILE_HEIGHT = 176;
 const DEPTH_GAP = 96;
 const SIBLING_GAP = 56;
-const TREE_GAP = 192;
 const ROW_GAP = 240;
 const GRID_GAP = 48;
+// Older root pages extend the grid to the right without moving the tree band.
+const GRID_ROWS = 6;
 
 export type LineageLayoutNode<T> = {
 	id: string;
@@ -39,6 +40,7 @@ export type LineageTreeLayout<T> = {
 export type PackedLineageTree<T> = {
 	rootId: string;
 	createdAt: string;
+	hasDerivatives: boolean;
 	x: number;
 	y: number;
 	layout: LineageTreeLayout<T>;
@@ -99,41 +101,35 @@ export function layoutLineageTree<T>(root: LineageLayoutNode<T>): LineageTreeLay
 }
 
 export function packLineageForest<T>(
-	trees: { rootId: string; createdAt: string; layout: LineageTreeLayout<T> }[],
-	shelfWidth = 2400
+	trees: {
+		rootId: string;
+		createdAt: string;
+		hasDerivatives: boolean;
+		layout: LineageTreeLayout<T>;
+	}[]
 ): PackedLineageTree<T>[] {
 	const ordered = [...trees].sort(
 		(left, right) =>
 			right.createdAt.localeCompare(left.createdAt) || left.rootId.localeCompare(right.rootId)
 	);
-	const branched = ordered.filter((item) => item.layout.nodes.length > 1);
-	const singles = ordered.filter((item) => item.layout.nodes.length === 1);
+	const branched = ordered.filter((item) => item.hasDerivatives);
+	const singles = ordered.filter((item) => !item.hasDerivatives);
 	const packed: PackedLineageTree<T>[] = [];
-	let x = 0;
-	let y = 0;
-	let rowHeight = 0;
-
-	for (const item of branched) {
-		if (x > 0 && x + item.layout.width > shelfWidth) {
-			x = 0;
-			y += rowHeight + ROW_GAP;
-			rowHeight = 0;
-		}
-		packed.push({ ...item, x, y });
-		x += item.layout.width + TREE_GAP;
-		rowHeight = Math.max(rowHeight, item.layout.height);
-	}
-
-	if (branched.length > 0) y += rowHeight + ROW_GAP;
-	x = 0;
 	const cellWidth = LINEAGE_TILE_WIDTH + GRID_GAP;
 	const cellHeight = LINEAGE_TILE_HEIGHT + GRID_GAP;
-	const columns = Math.max(1, Math.floor(shelfWidth / cellWidth));
+	let y = GRID_ROWS * cellHeight + ROW_GAP;
+
+	for (const item of branched) {
+		const root = item.layout.nodes.find((node) => node.id === item.layout.rootId);
+		packed.push({ ...item, x: LINEAGE_TILE_WIDTH / 2 - (root?.x ?? 0), y });
+		y += item.layout.height + ROW_GAP;
+	}
+
 	for (const [index, item] of singles.entries()) {
 		packed.push({
 			...item,
-			x: (index % columns) * cellWidth,
-			y: y + Math.floor(index / columns) * cellHeight
+			x: Math.floor(index / GRID_ROWS) * cellWidth,
+			y: (index % GRID_ROWS) * cellHeight
 		});
 	}
 	return packed;

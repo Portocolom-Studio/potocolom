@@ -1,11 +1,33 @@
+<script module lang="ts">
+	import type { LineageTreeLayout } from '$lib/lineage-layout';
+	import type {
+		Generation as CanvasGeneration,
+		LineageEntry as CanvasLineageEntry
+	} from '$lib/studio.svelte';
+
+	type CanvasNodeData = {
+		entry: CanvasLineageEntry;
+		generation: CanvasGeneration | null;
+	};
+
+	type CachedTree = {
+		status: 'loading' | 'loaded' | 'error';
+		layout: LineageTreeLayout<CanvasNodeData> | null;
+	};
+
+	const sessionTreeCache = new Map<string, CachedTree>();
+</script>
+
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
 	import ImageOffIcon from '@lucide/svelte/icons/image-off';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import LocateFixedIcon from '@lucide/svelte/icons/locate-fixed';
 	import MinusIcon from '@lucide/svelte/icons/minus';
+	import MoveIcon from '@lucide/svelte/icons/move';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -22,7 +44,6 @@
 		rectsIntersect,
 		viewportWorldRect,
 		type LineageLayoutNode,
-		type LineageTreeLayout,
 		type PackedLineageTree,
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
@@ -33,6 +54,8 @@
 		filterUpscaleModels,
 		generationById,
 		openService,
+		saveLineageTreeOffsets,
+		saveLineageViewport,
 		selectGeneration,
 		studio,
 		type Generation,
@@ -45,25 +68,19 @@
 	const MIN_SCALE = 0.12;
 	const MAX_SCALE = 1.6;
 	const PAN_STEP = 80;
+	const TREE_KEYBOARD_STEP = 24;
+	const VIEWPORT_SAVE_DELAY = 300;
 	const HOVER_RADIUS = 150;
 	const HOVER_PULL = 0.08;
 	const INERTIA_MIN = 0.04;
 	const INERTIA_FRICTION = 0.004;
 
-	type CanvasNodeData = {
-		entry: LineageEntry;
-		generation: Generation | null;
-	};
-
-	type CachedTree = {
-		status: 'loading' | 'loaded' | 'error';
-		layout: LineageTreeLayout<CanvasNodeData> | null;
-	};
-
 	type VisibleNode = {
 		rootId: string;
 		x: number;
 		y: number;
+		isRoot: boolean;
+		treeStatus: CachedTree['status'] | null;
 		node: PositionedLineageNode<CanvasNodeData>;
 	};
 
@@ -77,11 +94,12 @@
 	let translateX = $state(restoredViewport?.translateX ?? 72);
 	let translateY = $state(restoredViewport?.translateY ?? 72);
 	let scale = $state(restoredViewport?.scale ?? 1);
+	let treeOffsets = $state({ ...studio.lineageTreeOffsets });
 	let roots = $state<Generation[]>([]);
 	let rootsLoading = $state(false);
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
-	let treeCache = $state(new Map<string, CachedTree>());
+	let treeCache = $state(new Map(sessionTreeCache));
 	let newNodeIds = $state(new Set<string>());
 	let failedImageIds = $state(new Set<string>());
 	let refreshingImageIds = $state(new Set<string>());
@@ -93,12 +111,20 @@
 	let reducedMotion = false;
 	let recentering = $state(false);
 	let recenterTimer: ReturnType<typeof setTimeout> | null = null;
+	let viewportSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	let viewportReady = $state(false);
 	let inertiaFrame = 0;
 	let panPointerId = $state<number | null>(null);
 	let panStart = { x: 0, y: 0, translateX: 0, translateY: 0 };
 	let lastPanSample: PointerSample | null = null;
 	let panVelocity = { x: 0, y: 0 };
 	let pinch = $state<{ distance: number; worldX: number; worldY: number } | null>(null);
+	let dragPointerId = $state<number | null>(null);
+	let draggedRootId = $state<string | null>(null);
+	let dragMoved = false;
+	let suppressTreeClick: string | null = null;
+	let dragStart = { x: 0, y: 0, offsetX: 0, offsetY: 0 };
+	let lastPageLoadWorld = { right: Number.NEGATIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
 	const pointers = new Map<number, { x: number; y: number }>();
 	const knownFinishedIds = new Set(
 		studio.history
@@ -111,17 +137,26 @@
 	const worldRect = $derived(
 		viewportWorldRect(viewportWidth, viewportHeight, translateX, translateY, scale)
 	);
-	const packedTrees = $derived.by(() => {
+	const basePackedTrees = $derived.by(() => {
 		const layouts = persistedRoots.map((root) => {
 			const cached = treeCache.get(root.id)?.layout;
 			return {
 				rootId: root.id,
 				createdAt: root.created_at,
+				hasDerivatives: root.has_derivatives === true,
 				layout: cached ?? layoutLineageTree(rootLayoutNode(root))
 			};
 		});
 		return packLineageForest(layouts);
 	});
+	const packedTrees = $derived(
+		basePackedTrees.map((tree) => ({
+			...tree,
+			x: tree.x + (treeOffsets[tree.rootId]?.x ?? 0),
+			y: tree.y + (treeOffsets[tree.rootId]?.y ?? 0)
+		}))
+	);
+	const hasTreeOffsets = $derived(Object.keys(treeOffsets).length > 0);
 	const visibleNodes = $derived.by(() => {
 		const shown: VisibleNode[] = [];
 		for (const packed of packedTrees) {
@@ -136,7 +171,14 @@
 						bottom: y + LINEAGE_TILE_HEIGHT / 2
 					})
 				) {
-					shown.push({ rootId: packed.rootId, x, y, node });
+					shown.push({
+						rootId: packed.rootId,
+						x,
+						y,
+						isRoot: node.id === packed.layout.rootId,
+						treeStatus: treeCache.get(packed.rootId)?.status ?? null,
+						node
+					});
 					if (shown.length === MAX_MOUNTED_TILES) return shown;
 				}
 			}
@@ -145,6 +187,9 @@
 	});
 	const forestBottom = $derived(
 		Math.max(0, ...packedTrees.map((packed) => packed.y + packed.layout.height))
+	);
+	const forestRight = $derived(
+		Math.max(0, ...packedTrees.map((packed) => packed.x + packed.layout.width))
 	);
 	const selectedNode = $derived.by(() => {
 		if (selectedAssetId === null) return null;
@@ -212,6 +257,7 @@
 		const next = new Map(treeCache);
 		next.set(rootId, tree);
 		treeCache = next;
+		if (tree.status === 'loaded') sessionTreeCache.set(rootId, tree);
 	}
 
 	async function loadRoots(): Promise<void> {
@@ -229,8 +275,9 @@
 			const existing = new Set(roots.map((root) => root.id));
 			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
 			rootsHaveMore = page.length === ROOT_LIMIT;
+			if (!viewportReady) requestAnimationFrame(initializeViewport);
 		} catch {
-			rootsFailed = roots.length === 0;
+			rootsFailed = true;
 		} finally {
 			rootsLoading = false;
 		}
@@ -312,7 +359,14 @@
 			const root = persistedRoots.find((item) => item.id === tree.rootId);
 			if (root) void loadTree(root);
 		}
-		if (rootsHaveMore && worldRect.bottom >= forestBottom - 320) void loadRoots();
+		const reachedRight =
+			worldRect.right >= forestRight - 320 && worldRect.right >= lastPageLoadWorld.right + 320;
+		const reachedBottom =
+			worldRect.bottom >= forestBottom - 320 && worldRect.bottom >= lastPageLoadWorld.bottom + 320;
+		if (rootsHaveMore && (reachedRight || reachedBottom)) {
+			lastPageLoadWorld = { right: worldRect.right, bottom: worldRect.bottom };
+			void loadRoots();
+		}
 	});
 
 	$effect(() => {
@@ -321,17 +375,33 @@
 			if (knownFinishedIds.has(generation.id)) continue;
 			knownFinishedIds.add(generation.id);
 			if (generation.source_asset_id === null) {
-				roots = [generation, ...roots.filter((root) => root.id !== generation.id)];
+				roots = [
+					{ ...generation, has_derivatives: generation.has_derivatives ?? false },
+					...roots.filter((root) => root.id !== generation.id)
+				];
 				if (!reducedMotion) newNodeIds = new Set([...newNodeIds, generation.assets[0].id]);
 				continue;
 			}
 			for (const [rootId, cached] of treeCache) {
 				if (!cached.layout?.nodes.some((node) => node.id === generation.source_asset_id)) continue;
+				roots = roots.map((root) =>
+					root.id === rootId ? { ...root, has_derivatives: true } : root
+				);
 				const root = roots.find((item) => item.id === rootId);
 				if (root) void loadTree(root, true);
 				break;
 			}
 		}
+	});
+
+	$effect(() => {
+		const viewport = { translateX, translateY, scale };
+		if (!viewportReady) return;
+		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
+		viewportSaveTimer = setTimeout(() => saveLineageViewport(viewport), VIEWPORT_SAVE_DELAY);
+		return () => {
+			if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
+		};
 	});
 
 	function clampScale(value: number): number {
@@ -426,6 +496,15 @@
 
 	function onPointerMove(event: PointerEvent): void {
 		updatePointerWorld(event);
+		if (dragPointerId === event.pointerId && draggedRootId !== null) {
+			const offset = {
+				x: dragStart.offsetX + (event.clientX - dragStart.x) / scale,
+				y: dragStart.offsetY + (event.clientY - dragStart.y) / scale
+			};
+			dragMoved ||= Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) > 3;
+			treeOffsets = { ...treeOffsets, [draggedRootId]: offset };
+			return;
+		}
 		if (pointers.has(event.pointerId)) {
 			pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		}
@@ -458,6 +537,20 @@
 	}
 
 	function onPointerEnd(event: PointerEvent): void {
+		if (dragPointerId === event.pointerId && draggedRootId !== null) {
+			const rootId = draggedRootId;
+			dragPointerId = null;
+			draggedRootId = null;
+			if (dragMoved) {
+				suppressTreeClick = rootId;
+				setTimeout(() => {
+					if (suppressTreeClick === rootId) suppressTreeClick = null;
+				});
+				saveLineageTreeOffsets(treeOffsets);
+			}
+			dragMoved = false;
+			return;
+		}
 		pointers.delete(event.pointerId);
 		if (viewportEl?.hasPointerCapture(event.pointerId))
 			viewportEl.releasePointerCapture(event.pointerId);
@@ -466,6 +559,58 @@
 		panPointerId = null;
 		lastPanSample = null;
 		startInertia();
+	}
+
+	function startTreeDrag(event: PointerEvent, rootId: string): void {
+		if (event.button !== 0) return;
+		event.stopPropagation();
+		stopInertia();
+		const offset = treeOffsets[rootId] ?? { x: 0, y: 0 };
+		dragPointerId = event.pointerId;
+		draggedRootId = rootId;
+		dragMoved = false;
+		dragStart = {
+			x: event.clientX,
+			y: event.clientY,
+			offsetX: offset.x,
+			offsetY: offset.y
+		};
+		(event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+	}
+
+	function moveTreeFromKeyboard(event: KeyboardEvent, rootId: string): void {
+		const directions: Record<string, { x: number; y: number }> = {
+			ArrowLeft: { x: -1, y: 0 },
+			ArrowRight: { x: 1, y: 0 },
+			ArrowUp: { x: 0, y: -1 },
+			ArrowDown: { x: 0, y: 1 }
+		};
+		const direction = directions[event.key];
+		if (!direction) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const current = treeOffsets[rootId] ?? { x: 0, y: 0 };
+		const step = event.shiftKey ? PAN_STEP : TREE_KEYBOARD_STEP;
+		treeOffsets = {
+			...treeOffsets,
+			[rootId]: {
+				x: current.x + direction.x * step,
+				y: current.y + direction.y * step
+			}
+		};
+		saveLineageTreeOffsets(treeOffsets);
+	}
+
+	function resetTreePosition(rootId: string): void {
+		const { [rootId]: removed, ...remaining } = treeOffsets;
+		void removed;
+		treeOffsets = remaining;
+		saveLineageTreeOffsets(treeOffsets);
+	}
+
+	function resetAllTreePositions(): void {
+		treeOffsets = {};
+		saveLineageTreeOffsets(treeOffsets);
 	}
 
 	function recenterNewest(animate = true): void {
@@ -487,7 +632,47 @@
 		translateY = viewportHeight / 2 - (packed.y + rootNode.y) * scale;
 	}
 
+	function restoredViewportIsUsable(): boolean {
+		if (
+			restoredViewport === null ||
+			!Number.isFinite(restoredViewport.translateX) ||
+			!Number.isFinite(restoredViewport.translateY) ||
+			!Number.isFinite(restoredViewport.scale) ||
+			restoredViewport.scale < MIN_SCALE ||
+			restoredViewport.scale > MAX_SCALE
+		) {
+			return false;
+		}
+		const nearbyPadding = (2 * Math.max(viewportWidth, viewportHeight)) / restoredViewport.scale;
+		const restoredRect = viewportWorldRect(
+			viewportWidth,
+			viewportHeight,
+			restoredViewport.translateX,
+			restoredViewport.translateY,
+			restoredViewport.scale,
+			nearbyPadding
+		);
+		return packedTrees.some((tree) =>
+			rectsIntersect(restoredRect, {
+				left: tree.x,
+				top: tree.y,
+				right: tree.x + tree.layout.width,
+				bottom: tree.y + tree.layout.height
+			})
+		);
+	}
+
+	function initializeViewport(): void {
+		if (viewportReady) return;
+		if (!restoredViewportIsUsable()) {
+			scale = 1;
+			recenterNewest(false);
+		}
+		viewportReady = true;
+	}
+
 	function onKeyDown(event: KeyboardEvent): void {
+		if ((event.target as Element).closest('.lineage-tile.is-root')) return;
 		if (event.key === 'ArrowLeft') translateX += PAN_STEP;
 		else if (event.key === 'ArrowRight') translateX -= PAN_STEP;
 		else if (event.key === 'ArrowUp') translateY += PAN_STEP;
@@ -546,6 +731,19 @@
 		inspectorEl?.focus();
 	}
 
+	function onTileClick(
+		event: MouseEvent & { currentTarget: HTMLButtonElement },
+		data: CanvasNodeData,
+		rootId: string,
+		isRoot: boolean
+	): void {
+		if (isRoot && suppressTreeClick === rootId) {
+			suppressTreeClick = null;
+			return;
+		}
+		void selectNode(data, event.currentTarget);
+	}
+
 	function closeInspector(): void {
 		if (selectedAssetId === null) return;
 		selectedAssetId = null;
@@ -570,7 +768,7 @@
 	}
 
 	function saveViewport(): void {
-		studio.lineageViewport = { translateX, translateY, scale };
+		saveLineageViewport({ translateX, translateY, scale });
 	}
 
 	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {
@@ -707,15 +905,15 @@
 			viewportHeight = entry.contentRect.height;
 		});
 		if (viewportEl) resize.observe(viewportEl);
-		void loadRoots().then(() => {
-			if (restoredViewport === null) requestAnimationFrame(() => recenterNewest(false));
-		});
+		void loadRoots();
 		return () => resize.disconnect();
 	});
 
 	onDestroy(() => {
+		if (viewportReady) saveViewport();
 		stopInertia();
 		if (recenterTimer) clearTimeout(recenterTimer);
+		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 	});
 </script>
 
@@ -734,12 +932,22 @@
 		bind:this={viewportEl}
 		{@attach canvasInteractions}
 		class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 min-h-0 min-w-0 overflow-hidden rounded-lg border"
-		class:is-panning={panPointerId !== null || pinch !== null}
+		class:is-panning={panPointerId !== null || pinch !== null || dragPointerId !== null}
 		role="application"
 		aria-label={t('app.images.canvas')}
 		tabindex="0"
 	>
 		<div class="absolute end-3 top-3 z-30 flex gap-1">
+			<Button
+				variant="secondary"
+				size="icon-sm"
+				disabled={!hasTreeOffsets}
+				title={t('app.images.reset_all_positions')}
+				aria-label={t('app.images.reset_all_positions')}
+				onclick={resetAllTreePositions}
+			>
+				<RotateCcwIcon />
+			</Button>
 			<Button
 				variant="secondary"
 				size="icon-sm"
@@ -777,8 +985,13 @@
 				</span>
 			</div>
 		{:else if rootsFailed}
-			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
-				{t('app.images.load_failed')}
+			<div class="absolute inset-0 z-20 grid place-items-center text-sm">
+				<div class="flex flex-col items-center gap-3">
+					<span class="text-muted-foreground">{t('app.images.load_failed')}</span>
+					<Button variant="secondary" size="sm" onclick={() => void loadRoots()}>
+						{t('app.images.retry')}
+					</Button>
+				</div>
 			</div>
 		{:else if persistedRoots.length === 0}
 			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
@@ -851,15 +1064,38 @@
 					<button
 						type="button"
 						class="lineage-tile"
+						class:is-root={item.isRoot}
+						class:is-dragging={draggedRootId === item.rootId}
 						class:is-selected={selectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
 						style={`--tile-pull: ${proximityScale(item)}`}
-						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}`}
+						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
 						title={promptLabel(data)}
 						onfocus={() => (focusedNodeId = item.node.id)}
 						onblur={() => (focusedNodeId = null)}
-						onclick={(event) => void selectNode(data, event.currentTarget)}
+						onpointerdown={(event) => {
+							if (item.isRoot) startTreeDrag(event, item.rootId);
+						}}
+						onkeydown={(event) => {
+							if (item.isRoot) moveTreeFromKeyboard(event, item.rootId);
+						}}
+						onclick={(event) => onTileClick(event, data, item.rootId, item.isRoot)}
 					>
+						{#if item.isRoot}
+							<span
+								class="root-affordance"
+								title={item.treeStatus === 'loading'
+									? t('app.images.tree_loading')
+									: t('app.images.drag_tree')}
+								aria-hidden="true"
+							>
+								{#if item.treeStatus === 'loading'}
+									<LoaderCircleIcon class="animate-spin motion-reduce:animate-none" />
+								{:else}
+									<MoveIcon />
+								{/if}
+							</span>
+						{/if}
 						<span class="micro-content">
 							{#if shownImage !== null}
 								{#key shownImage}
@@ -912,6 +1148,21 @@
 							</span>
 						</span>
 					</button>
+					{#if item.isRoot && treeOffsets[item.rootId] !== undefined}
+						<button
+							type="button"
+							class="reset-tree-position"
+							title={t('app.images.reset_tree_position')}
+							aria-label={t('app.images.reset_tree_position')}
+							onpointerdown={(event) => event.stopPropagation()}
+							onclick={(event) => {
+								event.stopPropagation();
+								resetTreePosition(item.rootId);
+							}}
+						>
+							<RotateCcwIcon />
+						</button>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -1148,6 +1399,8 @@
 	}
 
 	.tile-shell {
+		--visible-tile-half-width: 108px;
+		--visible-tile-half-height: 88px;
 		position: absolute;
 		width: 216px;
 		height: 176px;
@@ -1172,6 +1425,66 @@
 
 	.lineage-tile:active {
 		transform: scale(calc(var(--tile-pull) * 0.98));
+	}
+
+	.lineage-tile.is-root {
+		cursor: move;
+	}
+
+	.lineage-tile.is-root.is-dragging {
+		cursor: grabbing;
+	}
+
+	.root-affordance {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		z-index: 1;
+		display: grid;
+		width: 20px;
+		height: 20px;
+		place-items: center;
+		border-radius: 4px;
+		color: var(--muted-foreground);
+		background: color-mix(in oklch, var(--card) 82%, transparent);
+		pointer-events: none;
+	}
+
+	.root-affordance :global(svg) {
+		width: 12px;
+		height: 12px;
+	}
+
+	.reset-tree-position {
+		position: absolute;
+		top: calc(50% - var(--visible-tile-half-height) - 10px);
+		left: calc(50% + var(--visible-tile-half-width) - 10px);
+		z-index: 2;
+		display: grid;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		place-items: center;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--foreground);
+		background: var(--card);
+		box-shadow: 0 2px 8px color-mix(in oklch, var(--foreground) 14%, transparent);
+		pointer-events: auto;
+	}
+
+	.reset-tree-position:hover {
+		background: var(--accent);
+	}
+
+	.reset-tree-position:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: 2px;
+	}
+
+	.reset-tree-position :global(svg) {
+		width: 13px;
+		height: 13px;
 	}
 
 	.lineage-tile:focus-visible {
@@ -1199,6 +1512,11 @@
 		height: 36px;
 	}
 
+	.lod-constellation .tile-shell {
+		--visible-tile-half-width: 18px;
+		--visible-tile-half-height: 18px;
+	}
+
 	.lod-constellation .micro-content {
 		display: grid;
 		width: 100%;
@@ -1223,6 +1541,11 @@
 	.lod-trees .lineage-tile {
 		width: 104px;
 		height: 104px;
+	}
+
+	.lod-trees .tile-shell {
+		--visible-tile-half-width: 52px;
+		--visible-tile-half-height: 52px;
 	}
 
 	.lod-trees .tree-content {

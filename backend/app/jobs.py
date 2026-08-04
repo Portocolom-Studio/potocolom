@@ -180,13 +180,28 @@ async def create_generation(
 async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
     assets: dict[uuid.UUID, list[Asset]] = {}
     thumbs_by_parent: dict[uuid.UUID, Asset] = {}
+    jobs_with_derivatives: set[uuid.UUID] = set()
     if jobs:
-        rows = await session.execute(select(Asset).where(Asset.job_id.in_([j.id for j in jobs])))
+        job_ids = [job.id for job in jobs]
+        rows = await session.execute(select(Asset).where(Asset.job_id.in_(job_ids)))
         for asset in rows.scalars():
             if asset.job_id is not None:
                 assets.setdefault(asset.job_id, []).append(asset)
             if asset.parent_asset_id is not None and asset.storage_key.endswith("-thumb.webp"):
                 thumbs_by_parent[asset.parent_asset_id] = asset
+        derivative_rows = await session.execute(
+            select(Asset.job_id)
+            .where(
+                Asset.job_id.in_(job_ids),
+                select(Job.id)
+                .where(Job.source_asset_id == Asset.id, Job.user_id == Asset.user_id)
+                .exists(),
+            )
+            .distinct()
+        )
+        jobs_with_derivatives = {
+            job_id for job_id in derivative_rows.scalars() if job_id is not None
+        }
     storage = get_storage()
     now = datetime.now(timezone.utc)
     # Keep expired masters for expired_favorite, but number only the assets the
@@ -212,6 +227,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "id": str(job.id),
             "model_id": job.model_id,
             "source_asset_id": str(job.source_asset_id) if job.source_asset_id else None,
+            "has_derivatives": job.id in jobs_with_derivatives,
             "params": job.params,
             "state": job.state,
             "attempt": job.attempt,
