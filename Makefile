@@ -1,11 +1,11 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
-#   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
+#   make worker-cuda           # terminal 2 (worker-rocm on AMD, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on :5173
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
 #     make dev-status          # pid files, ports, workers, model list
-#     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
+#     WORKER=rocm|cuda|sim|off (detected from the GPU present; set to override)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
@@ -41,6 +41,15 @@ check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 		exit 1; }
 	@$(PYTHON) $(VENV_OK) 2>/dev/null || { \
 		echo 'error: $(PYTHON) is missing or older than Python 3.11.' >&2; exit 1; }
+	@# Debian and Ubuntu ship venv separately, so a new enough interpreter can
+	@# still fail to create one. Without this the failure arrives as a raw
+	@# ensurepip traceback from inside python -m venv, several lines from the
+	@# fix, rather than as the package to install.
+	@$(PYTHON) -c 'import ensurepip' 2>/dev/null || { \
+		echo 'error: $(PYTHON) cannot create virtualenvs: ensurepip is missing.' >&2; \
+		echo 'Debian/Ubuntu ship it separately, for example' >&2; \
+		echo '  sudo apt install $(shell $(PYTHON) -c "import sys; print(\"python%d.%d-venv\" % sys.version_info[:2])" 2>/dev/null || echo python3-venv)' >&2; \
+		exit 1; }
 	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
 		% ((sys.executable,) + sys.version_info[:3]))'
 
@@ -126,7 +135,9 @@ PROMPT ?= a castle on a hill at sunset, oil painting
 DEV_DIR := $(CURDIR)/data/dev
 API_PORT ?= 8000
 WEB_PORT ?= 5173
-WORKER ?= rocm
+# Empty by default so scripts/dev-stack.sh detects the GPU this machine has.
+# Set it explicitly (WORKER=sim, WORKER=off, ...) to override the detection.
+WORKER ?=
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
