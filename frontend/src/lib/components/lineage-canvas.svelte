@@ -18,6 +18,10 @@
 		truncated: boolean;
 		omittedHistoryJobIds: ReadonlySet<string>;
 		remainingCountLowerBound: number;
+		// One automatic retry per failure, tracked on the entry rather than per
+		// root: every load replaces the entry, so a later failure gets its own
+		// retry instead of inheriting an exhausted budget from an earlier one.
+		retried?: boolean;
 	};
 
 	const sessionTreeCache = new Map<string, CachedTree>();
@@ -146,7 +150,6 @@
 	let canvasActive = true;
 	const requestControllers = new Set<AbortController>();
 	const treeLoadQueue = new Map<string, { root: Generation; force: boolean }>();
-	const retriedTreeErrors = new Set<string>();
 	let treeLoadsInFlight = 0;
 	const knownFinishedIds = new Set(
 		studio.history
@@ -383,7 +386,6 @@
 					: new Set(),
 				remainingCountLowerBound: subtree.remaining_count_lower_bound
 			});
-			retriedTreeErrors.delete(root.id);
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (!reducedMotion && previousIds.size > 0 && added.length > 0) {
 				newNodeIds = new Set([...newNodeIds, ...added]);
@@ -403,10 +405,9 @@
 				omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
 				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
 			});
-			if (rerun) {
-				retriedTreeErrors.add(root.id);
-				scheduleTreeLoad(root, true);
-			}
+			// A coalesced force is a fresh request, not the automatic retry, so it
+			// leaves this failure's retry budget intact.
+			if (rerun) scheduleTreeLoad(root, true);
 		}
 	}
 
@@ -470,8 +471,8 @@
 			}
 			if (cached?.status === 'loading' || cached?.status === 'loaded') continue;
 			if (cached?.status === 'error') {
-				if (retriedTreeErrors.has(tree.rootId)) continue;
-				retriedTreeErrors.add(tree.rootId);
+				if (cached.retried === true) continue;
+				setCachedTree(tree.rootId, { ...cached, retried: true });
 			}
 			scheduleTreeLoad(root);
 		}
