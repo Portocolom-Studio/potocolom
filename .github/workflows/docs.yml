@@ -25,7 +25,7 @@ jobs:
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # The Makefile target is the single definition of what the job checks.
       # Bounded because it drives headless Chrome, and a hung browser would
       # hold the single self-hosted runner against every other job. The real
