@@ -843,6 +843,10 @@
 
 	function initializeViewport(): void {
 		if (viewportReady) return;
+		// The roots can arrive before the ResizeObserver has reported a size.
+		// Centring against 0x0 puts the newest tree in the corner and nothing
+		// revisits it, so wait: the observer calls back here once it has one.
+		if (viewportWidth === 0 || viewportHeight === 0) return;
 		if (
 			restoredViewport?.rootId &&
 			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
@@ -1154,6 +1158,9 @@
 		const resize = new ResizeObserver(([entry]) => {
 			viewportWidth = entry.contentRect.width;
 			viewportHeight = entry.contentRect.height;
+			if (!viewportReady && rootsInitialized && viewportWidth > 0 && viewportHeight > 0) {
+				initializeViewport();
+			}
 		});
 		if (viewportEl) resize.observe(viewportEl);
 		void loadRoots();
