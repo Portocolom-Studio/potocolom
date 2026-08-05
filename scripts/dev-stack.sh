@@ -113,6 +113,7 @@ cmd_start() {
 	echo "Starting API on :$API_PORT..."
 	start_one api "$DEV_DIR/api.pid" \
 		"cd \"$REPO/backend\" && STORAGE_LOCAL_PATH=\"$REPO/data\" \
+		ALLOWED_ORIGINS=\"http://localhost:$WEB_PORT\" \
 		exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $API_PORT"
 
 	echo "Starting frontend on :$WEB_PORT..."
