@@ -8,13 +8,14 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.auth import current_user, require_role
 from app.settings import get_settings
+from app.manifests import json_finite
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
 
 router = APIRouter()
@@ -35,6 +36,15 @@ class MeasurementInput(BaseModel):
     variant: str
     cell_key: str
     params: dict = Field(default_factory=dict)
+
+    @field_validator("params")
+    @classmethod
+    def _params_are_storable(cls, value: dict) -> dict:
+        # This dict goes to a JSONB column unvalidated otherwise, and jsonb
+        # rejects the NaN and Infinity json.loads accepts.
+        if not json_finite(value):
+            raise ValueError("params contain a value JSON storage cannot hold")
+        return value
     model_load_ms: int | None = Int4
     state: Literal["succeeded", "failed"]
     gpu_ms: int | None = Int4

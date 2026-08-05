@@ -6,6 +6,7 @@ persists them and GET /api/v1/models exposes them to the frontend.
 
 import json
 import logging
+import math
 from functools import lru_cache
 
 import jsonschema
@@ -57,8 +58,26 @@ def _params_validator(schema_json: str) -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
+def json_finite(value: object) -> bool:
+    """jsonb has no NaN or Infinity, and json.loads produces both by default.
+
+    Anything reaching a JSONB column has to be checked at the edge: rejecting
+    them in the engine's serializer only turns the DataError into a ValueError,
+    and both are a 500.
+    """
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(json_finite(item) for item in value.values())
+    if isinstance(value, list):
+        return all(json_finite(item) for item in value)
+    return True
+
+
 def validate_params(manifest: Manifest, params: dict) -> str | None:
     """Return a validation error message, or None when params are acceptable."""
+    if not json_finite(params):
+        return "params contain a value JSON storage cannot hold"
     try:
         # dumps walks the schema too, so it raises before check_schema can.
         schema_json = json.dumps(manifest.parameters, sort_keys=True)
@@ -100,4 +119,10 @@ def parse_manifests(raw: object) -> list[Manifest]:
         raise ValueError(f"invalid manifest: {error}") from error
     for manifest in manifests:
         validate_capability_exclusivity(manifest)
+        # parameters is persisted to a JSONB column, which has no NaN or
+        # Infinity; without this the upsert kills the socket on every reconnect.
+        if not json_finite(manifest.parameters):
+            raise ValueError(
+                f"manifest {manifest.id}: parameters contain a value JSON storage cannot hold"
+            )
     return manifests

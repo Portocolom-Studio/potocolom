@@ -1896,3 +1896,27 @@ def test_job_done_with_unusable_numbers_leaves_the_job_recoverable():
             raise AssertionError(f"gpu_ms={unusable!r} escaped as {type(error).__name__}")
         finally:
             jobs.inflight.pop(job_id, None)
+
+
+def test_generation_params_must_be_json_storable():
+    # jobs.params is JSONB, which has no NaN or Infinity; the shipped schemas
+    # do not set additionalProperties: false, so an unconstrained property
+    # carried one straight to the insert (issue #232).
+    from app.manifests import json_finite
+
+    assert json_finite({"prompt": "x", "steps": 4})
+    assert not json_finite({"prompt": "x", "extra": float("inf")})
+    assert not json_finite({"nested": [{"deep": float("nan")}]})
+
+
+def test_peer_uuid_rejects_a_non_string_id():
+    # uuid.UUID raises AttributeError on an int and TypeError on null. Widening
+    # the fleet handler's except tuple to catch those would relabel an internal
+    # bug as a protocol violation, so the parse is guarded instead (issue #232).
+    assert realtime.peer_uuid(str(uuid.uuid4()))
+    for bad in (5, None, [1], {"a": 1}):
+        try:
+            realtime.peer_uuid(bad)
+        except realtime.ProtocolError:
+            continue
+        raise AssertionError(f"{bad!r} was accepted as an id")

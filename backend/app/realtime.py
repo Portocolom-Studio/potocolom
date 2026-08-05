@@ -102,6 +102,18 @@ def parse_control(text: str) -> dict:
     return control
 
 
+def peer_uuid(value: object) -> uuid.UUID:
+    """Parse an id a peer sent.
+
+    uuid.UUID raises AttributeError on an int and TypeError on null, neither of
+    which belongs in the handler's except tuple: widening it would relabel an
+    internal bug as a protocol violation and close 4000 with no traceback.
+    """
+    if not isinstance(value, str):
+        raise ProtocolError("id must be a string")
+    return uuid.UUID(value)
+
+
 def frame_session_id(data: bytes) -> uuid.UUID:
     if len(data) < FRAME_HEADER_BYTES:
         raise ProtocolError("binary frame shorter than the header")
@@ -300,7 +312,11 @@ async def fleet(ws: WebSocket) -> None:
                 and (worker.device is None or isinstance(worker.device, str))
                 and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
-    except (ProtocolError, KeyError):
+    except (ProtocolError, KeyError) as error:
+        # Logged: a rejected hello is otherwise silent on both sides, so an
+        # operator with a bad manifest sees a worker that starts and never
+        # registers, with nothing explaining why.
+        logger.warning("fleet hello refused: %s", error)
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
     if version < MIN_SUPPORTED_VERSION:
@@ -335,14 +351,14 @@ async def fleet(ws: WebSocket) -> None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
-                        session = sessions.get(uuid.UUID(control["session_id"]))
+                        session = sessions.get(peer_uuid(control["session_id"]))
                         if session is not None:
                             session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
-                        session_id = uuid.UUID(control["session_id"])
+                        session_id = peer_uuid(control["session_id"])
                         owner = closing_sessions.pop(session_id, None)
                         if owner is not None:
                             from app import usage_events
@@ -366,9 +382,7 @@ async def fleet(ws: WebSocket) -> None:
                     # Heartbeats refresh last_seen only; slot accounting has
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.
-            # uuid.UUID raises AttributeError on an int and TypeError on null,
-            # not just ValueError; all three are the peer sending nonsense.
-            except (ProtocolError, KeyError, ValueError, TypeError, AttributeError):
+            except (ProtocolError, KeyError, ValueError):
                 logger.warning("worker %s violated the protocol, closing", worker.id)
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break

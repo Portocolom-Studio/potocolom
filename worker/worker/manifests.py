@@ -18,7 +18,9 @@ class Manifest(BaseModel):
     name: str
     capabilities: list[str]  # text_to_image, image_to_image, realtime, upscale
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
-    min_vram_gb: int = 0
+    # Matches the API's bound, so a bad value fails here where the operator
+    # can see it rather than silently at registration.
+    min_vram_gb: int = Field(default=0, ge=0, lt=2**31)
     # Native text encoder window in tokens. The worker chunks declared CLIP
     # prompts past this window, while the studio still warns that later chunks
     # influence the image weakly. Left at 0 rather than 77 on purpose: a

@@ -472,7 +472,8 @@ def test_non_finite_telemetry_is_dropped_by_both_coercions():
 
 
 def test_gpu_history_rejects_unusable_timestamps():
-    # "²".isdigit() is True but int() rejects it; a far-future epoch overflows
+    # A superscript two passes isdigit() but int() rejects it; a far-future
+    # epoch overflows
     # the year, and a 25-digit one overflows the float division. All three were
     # 500s from an ordinary authenticated GET (issue #232).
     with TestClient(app) as client:
@@ -484,3 +485,63 @@ def test_gpu_history_rejects_unusable_timestamps():
         ok = client.get("/api/v1/metrics/gpu/history",
                         params={"from": good, "to": "1700000600000"})
         assert ok.status_code == 200
+
+
+def test_vram_percentage_cannot_overflow_the_rollup_column():
+    # The rollup columns are SmallInteger, and maintain_once is one
+    # transaction: an overflow there stops rollups, pruning and worker cleanup
+    # until the sample ages out 48 hours later (issue #232).
+    from app.gpu_samples import _vram_used_pct
+
+    assert _vram_used_pct(4, 8) == 50
+    assert _vram_used_pct(2**62, 1) == 2**15 - 1
+    assert _vram_used_pct(None, 8) is None
+    assert _vram_used_pct(4, 0) is None
+
+
+def test_usage_event_floats_are_bounded_like_the_ints():
+    # _numeric bounded its int branch but not its float branch, so 1e30
+    # reached an int4 column and the whole usage event was dropped.
+    from app.usage_events import _optional_float, _optional_int
+
+    assert _optional_int(1500.0) == 1500
+    assert _optional_int(1e30) is None
+    assert _optional_float(1e30) is None
+    assert _optional_float(float("nan")) is None
+
+
+def test_benchmark_input_bounds_its_int4_columns():
+    # Tested at the model rather than the route because the route is gated
+    # behind BENCHMARK_API; the model is the validation boundary either way.
+    # Every int below lands in an int4 column (issue #232).
+    import pydantic
+
+    from app.benchmark_sessions import BenchmarkInput, MeasurementInput
+
+    base = {"created_at": "2026-01-01T00:00:00Z", "models": ["m"], "results": [],
+            "prompt_count": 1, "variants_per_prompt": 1, "total_jobs": 1,
+            "succeeded": 1, "failed": 0}
+    assert BenchmarkInput.model_validate(base).prompt_count == 1
+    for field in ("prompt_count", "variants_per_prompt", "total_jobs", "succeeded", "failed"):
+        try:
+            BenchmarkInput.model_validate({**base, field: 3_000_000_000})
+        except pydantic.ValidationError:
+            continue
+        raise AssertionError(f"{field} accepted a value past int4")
+
+    measurement = {"prompt_id": 1, "title": "t", "category": "c", "model_id": "m",
+                   "variant": "v", "cell_key": "k", "state": "succeeded"}
+    assert MeasurementInput.model_validate(measurement).prompt_id == 1
+    for field in ("prompt_id", "model_load_ms", "gpu_ms", "width", "height"):
+        try:
+            MeasurementInput.model_validate({**measurement, field: 3_000_000_000})
+        except pydantic.ValidationError:
+            continue
+        raise AssertionError(f"{field} accepted a value past int4")
+    # The params dict reaches JSONB unvalidated otherwise.
+    try:
+        MeasurementInput.model_validate({**measurement, "params": {"x": float("inf")}})
+    except pydantic.ValidationError:
+        pass
+    else:
+        raise AssertionError("a non-finite benchmark param was accepted")

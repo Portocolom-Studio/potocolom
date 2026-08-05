@@ -38,7 +38,11 @@ def _utcnow() -> datetime:
 def _vram_used_pct(used: int | None, total: int | None) -> int | None:
     if used is None or total is None or total <= 0:
         return None
-    return round(used * 100 / total)
+    # The rollup columns are SmallInteger. A worker reporting used >> total
+    # would overflow one and fail maintain_once, which is a single
+    # transaction: rollups, pruning and worker cleanup would all stop until
+    # the sample aged out 48 hours later.
+    return min(round(used * 100 / total), 2**15 - 1)
 
 
 def _parse_gpu(gpu: Any) -> dict[str, Any]:

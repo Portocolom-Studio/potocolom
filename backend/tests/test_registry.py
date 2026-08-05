@@ -61,3 +61,63 @@ def test_models_endpoint_survives_a_malformed_upscale_manifest():
         assert TestClient(app).get("/api/v1/models").status_code == 200
     finally:
         realtime.workers.pop(worker.id, None)
+
+
+def test_models_endpoint_survives_manifest_numbers_that_overflow_the_estimate():
+    # The overflow is in the scaling arithmetic, not the int() calls: an
+    # arbitrary-precision int divides to a float that cannot hold it, and a
+    # merely huge one reaches round() as infinity (issue #232).
+    from app import realtime
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    for steps in (10 ** 400, 10 ** 308):
+        worker = realtime.Worker(
+            id="w-est", ws=None, realtime_slots=0,
+            manifests=[Manifest(id="sdxl-base", name="sdxl-base",
+                                capabilities=["text_to_image"],
+                                parameters={"properties": {
+                                    "steps": {"default": steps},
+                                    "width": {"default": 1024},
+                                    "height": {"default": 1024}}})],
+        )
+        realtime.workers[worker.id] = worker
+        try:
+            assert TestClient(app).get("/api/v1/models").status_code == 200, steps
+        finally:
+            realtime.workers.pop(worker.id, None)
+
+
+def test_manifest_parameters_must_be_json_storable():
+    # parameters is persisted to JSONB, which has no NaN or Infinity, while
+    # json.loads produces both. Without this the upsert killed the fleet
+    # socket on every reconnect (issue #232).
+    from app.manifests import parse_manifests
+
+    good = [{"id": "m", "name": "m", "capabilities": ["text_to_image"],
+             "parameters": {"properties": {"steps": {"default": 4}}}}]
+    assert parse_manifests(good)[0].id == "m"
+
+    bad = [{"id": "m", "name": "m", "capabilities": ["text_to_image"],
+            "parameters": {"properties": {"steps": {"default": float("inf")}}}}]
+    try:
+        parse_manifests(bad)
+    except ValueError as error:
+        assert "JSON storage" in str(error)
+    else:
+        raise AssertionError("a non-finite manifest parameter was accepted")
+
+
+def test_min_vram_gb_is_bounded_at_the_manifest():
+    # models.min_vram_gb is int4; an unbounded value failed the upsert, which
+    # ran before the fleet handler's cleanup could see the worker.
+    from app.manifests import parse_manifests
+
+    entry = {"id": "m", "name": "m", "capabilities": ["text_to_image"],
+             "min_vram_gb": 3_000_000_000}
+    try:
+        parse_manifests([entry])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an out-of-range min_vram_gb was accepted")
