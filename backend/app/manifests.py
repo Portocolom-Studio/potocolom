@@ -10,6 +10,7 @@ from functools import lru_cache
 
 import jsonschema
 from jsonschema import Draft202012Validator
+from referencing.exceptions import Unresolvable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger("potocolom.manifests")
@@ -67,6 +68,14 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
         validator.validate(params)
     except jsonschema.ValidationError as error:
         return error.message
+    except Unresolvable:
+        # A $ref naming something the schema does not define raises past
+        # ValidationError, so it would reach the request handler as a 500.
+        # A manifest is worker-supplied, not user-supplied, so treat it like
+        # the invalid-schema case above and blame the log, not the caller.
+        logger.warning("model %s has an unresolvable schema reference; "
+                       "accepting params unchecked", manifest.id)
+        return None
     return None
 
 

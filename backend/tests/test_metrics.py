@@ -433,3 +433,15 @@ def test_job_dispatch_and_finish_timestamps():
                     break
                 time.sleep(0.05)
             assert job.finished_at is not None
+
+
+def test_non_finite_telemetry_is_dropped():
+    # NaN and infinities round-trip through json.loads and PostgreSQL, but
+    # Starlette refuses to serialize them: one sample would 500 every history
+    # range that contains it (issue #203).
+    from app.gpu_samples import _float_or_none
+
+    assert _float_or_none(42) == 42.0
+    assert _float_or_none(float("nan")) is None
+    assert _float_or_none(float("inf")) is None
+    assert _float_or_none(float("-inf")) is None

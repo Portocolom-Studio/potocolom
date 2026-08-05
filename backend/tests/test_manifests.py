@@ -72,3 +72,14 @@ def test_parse_manifests_rejects_upscale_mixed_with_diffusion():
         assert "upscale cannot combine" in str(error)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_unresolvable_schema_reference_does_not_escape():
+    # jsonschema raises Unresolvable past ValidationError, so an unhandled one
+    # would reach the request handler as a 500 (issue #203).
+    manifest = Manifest(
+        id="broken", name="broken", capabilities=["text_to_image"],
+        parameters={"type": "object",
+                    "properties": {"prompt": {"$ref": "https://example.com/a.json"}}},
+    )
+    assert validate_params(manifest, {"prompt": "x"}) is None
