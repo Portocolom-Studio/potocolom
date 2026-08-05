@@ -595,11 +595,12 @@ class DiffusersEngine:
             while not task.done():
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.wait([task])
-            if not task.cancelled():
-                # Retrieve it, or a thread that failed while we were cancelled
-                # is reported as a bare "Task exception was never retrieved"
-                # at GC, with no surrounding context.
-                task.exception()
+            if not task.cancelled() and (failure := task.exception()) is not None:
+                # Retrieving it without logging replaces a bare "Task exception
+                # was never retrieved" at GC with total silence. Report it here,
+                # where the model and phase are still known.
+                logger.warning("GPU work failed while cancelled: %s", failure,
+                               exc_info=failure)
             raise
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:

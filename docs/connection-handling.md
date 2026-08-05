@@ -101,7 +101,9 @@ Ctrl-C therefore waits for the current operation rather than abandoning it.
 The wait is a full generation in the worst queued case, one frame for a realtime session, and
 on a cold start a model download plus calibration, which can be minutes for multi-gigabyte
 weights. Under compose the stop grace period will SIGKILL before a cold-start download
-finishes; that is safe, because nothing has been dispatched yet.
+finishes. That is safe when nothing has been dispatched; a model load inside a
+dispatched job can be killed with work outstanding, and the API's stall sweep
+recovers it.
 
 The alternative is worse: releasing the lock while the thread is still on the device lets the
 next entrant run concurrently on a GPU the scheduler treats as serialized, which is what the
