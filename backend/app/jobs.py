@@ -119,9 +119,15 @@ def _worker_int(value: object, default: int = 0) -> int:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
-    if not math.isfinite(value):
+    # isfinite() converts an int to float first, so it raises OverflowError on a
+    # big one. json.loads produces arbitrary-precision ints from ordinary JSON,
+    # which makes that more reachable than the NaN this guard was written for.
+    if isinstance(value, float) and not math.isfinite(value):
         return default
-    return int(value)
+    number = int(value)
+    # gpu_ms and the asset dimensions are int4; a unit mixup in a worker is
+    # enough to overflow one, and the commit below is not inside a try.
+    return number if -2**31 <= number < 2**31 else default
 
 
 def publish(job_id: uuid.UUID, event: dict) -> None:
@@ -1145,7 +1151,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     if current is None or current.worker is not worker:
         return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        progress = float(control.get("progress") or 0.0)
+        raw = control.get("progress") or 0.0
+        # float() raises TypeError on a list or dict, which json.loads accepts.
+        progress = float(raw) if isinstance(raw, (int, float)) else float("nan")
         if not math.isfinite(progress):
             # Stored, it breaks every generation list and detail response that
             # carries it; published, it emits the non-standard NaN token into

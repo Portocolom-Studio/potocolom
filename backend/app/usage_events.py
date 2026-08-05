@@ -91,6 +91,10 @@ def _numeric(value: Any) -> bool:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
+    if isinstance(value, int):
+        # isfinite() would raise OverflowError on a big int, and this is a
+        # predicate: callers do not expect it to raise.
+        return -2**31 <= value < 2**31
     return math.isfinite(value)
 
 

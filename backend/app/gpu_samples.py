@@ -49,7 +49,8 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        # The columns are int4; a value past that raises DataError on insert.
+        return value if -2**31 <= value < 2**31 else None
     if isinstance(value, float):
         # int(NaN) raises ValueError and int(inf) raises OverflowError, and the
         # GpuSample is built outside record_heartbeat's try, so either escapes
@@ -62,6 +63,10 @@ def _float_or_none(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
+        # float() on a big int raises OverflowError, and GpuSample is built
+        # outside record_heartbeat's try, so it escapes into an untracked task.
+        if isinstance(value, int) and not (-2**53 < value < 2**53):
+            return None
         number = float(value)
         # NaN and infinities survive json.loads and persist in PostgreSQL, but
         # Starlette refuses to serialize them: one poisoned sample would 500

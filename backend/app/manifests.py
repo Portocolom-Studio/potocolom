@@ -64,14 +64,21 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
         logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
                        manifest.id)
         return None
+    except RecursionError:
+        # check_schema walks the schema, so it raises this before validate can.
+        return "schema nests too deeply to validate"
     try:
         validator.validate(params)
     except jsonschema.ValidationError as error:
         return error.message
-    except (Unresolvable, RecursionError):
-        # A $ref naming something the schema does not define, or a self-referential
-        # one, raises past ValidationError, so it would reach the request handler
-        # as a 500.
+    except RecursionError:
+        # Returning None here would mean "params acceptable", so a schema too
+        # deep to walk would silently skip the only validation gate the API
+        # has. Fail closed: not validated is not the same as valid.
+        return "params or schema nest too deeply to validate"
+    except Unresolvable:
+        # A $ref naming something the schema does not define raises past
+        # ValidationError, so it would reach the request handler as a 500.
         # A manifest is worker-supplied, not user-supplied, so treat it like
         # the invalid-schema case above and blame the log, not the caller.
         logger.warning("model %s has an unusable schema reference; "
