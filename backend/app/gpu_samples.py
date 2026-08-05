@@ -45,24 +45,40 @@ def _parse_gpu(gpu: Any) -> dict[str, Any]:
     return gpu if isinstance(gpu, dict) else {}
 
 
-def _int_or_none(value: Any) -> int | None:
+def _int_or_none(value: Any, bits: int = 31) -> int | None:
+    """Coerce to an int the target column can hold, or None.
+
+    `bits` is the column's signed width: util_pct is SmallInteger and the VRAM
+    byte counts are BigInteger, so one blanket bound is wrong in both
+    directions. A value past the column raises DataError on insert; int(NaN)
+    raises ValueError and int(inf) raises OverflowError. GpuSample is built
+    outside record_heartbeat's try, so any of those escapes into an untracked
+    task and surfaces only at GC (issue #203).
+    """
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return value
     if isinstance(value, float):
-        return int(value)
-    return None
+        if not math.isfinite(value):
+            return None
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    limit = 1 << bits
+    return value if -limit <= value < limit else None
 
 
 def _float_or_none(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
+        # float() on a big int raises OverflowError, and GpuSample is built
+        # outside record_heartbeat's try, so it escapes into an untracked task.
+        if isinstance(value, int) and not (-2**53 < value < 2**53):
+            return None
         number = float(value)
-        # NaN and infinities survive json.loads and persist in PostgreSQL, but
-        # Starlette refuses to serialize them: one poisoned sample would 500
-        # every history range that contains it, rollups included (issue #203).
+        # NaN and infinities survive json.loads and persist in PostgreSQL.
+        # Pydantic nulls them on the way out rather than 500ing, so this is
+        # about not storing junk rather than about serialization (issue #203).
         return number if math.isfinite(number) else None
     return None
 
@@ -140,9 +156,9 @@ async def record_heartbeat(
     row = GpuSample(
         worker_id=worker_id,
         sampled_at=sampled_at,
-        util_pct=_int_or_none(gpu.get("util_pct")),
-        vram_used_bytes=_int_or_none(gpu.get("vram_used_bytes")),
-        vram_total_bytes=_int_or_none(gpu.get("vram_total_bytes")),
+        util_pct=_int_or_none(gpu.get("util_pct"), bits=15),
+        vram_used_bytes=_int_or_none(gpu.get("vram_used_bytes"), bits=63),
+        vram_total_bytes=_int_or_none(gpu.get("vram_total_bytes"), bits=63),
         temperature_c=_float_or_none(gpu.get("temperature_c")),
         power_w=_float_or_none(gpu.get("power_w")),
         loaded_models=_loaded_models(control),

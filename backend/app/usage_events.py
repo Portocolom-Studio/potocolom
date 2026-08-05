@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import uuid
 from typing import Any
 
@@ -82,8 +83,19 @@ async def record_realtime(
 
 
 def _numeric(value: Any) -> bool:
-    """bool is a subclass of int, and these values arrive from the worker."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """bool is a subclass of int, and these values arrive from the worker.
+
+    Non-finite floats are not numeric for our purposes: they survive json.loads,
+    persist in PostgreSQL, and then break serialization and SUM rollups
+    downstream (issue #203).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        # isfinite() would raise OverflowError on a big int, and this is a
+        # predicate: callers do not expect it to raise.
+        return -2**31 <= value < 2**31
+    return math.isfinite(value)
 
 
 def _optional_int(value: Any) -> int | None:

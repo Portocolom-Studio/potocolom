@@ -325,6 +325,10 @@ def test_heartbeat_persists_gpu_sample():
             row = rows[0]
             assert row.worker_id == "w-metrics"
             assert row.util_pct == 42
+            # These are BigInteger; asserting only util_pct is what let an
+            # int4 bound blank every real card's VRAM series unnoticed.
+            assert row.vram_used_bytes == 4_000_000_000
+            assert row.vram_total_bytes == 8_000_000_000
             assert row.loaded_models == ["sd-metrics"]
 
             async def read_worker() -> WorkerIdentity | None:
@@ -445,3 +449,23 @@ def test_non_finite_telemetry_is_dropped():
     assert _float_or_none(float("nan")) is None
     assert _float_or_none(float("inf")) is None
     assert _float_or_none(float("-inf")) is None
+
+
+def test_non_finite_telemetry_is_dropped_by_both_coercions():
+    # _float_or_none was guarded first; _int_or_none four lines above it was
+    # not, and it feeds util_pct and the VRAM fields from the same heartbeat.
+    # The GpuSample is built outside record_heartbeat's try, so a raise there
+    # escapes into an untracked task (issue #203).
+    from app.gpu_samples import _float_or_none, _int_or_none
+
+    for coerce in (_float_or_none, _int_or_none):
+        assert coerce(42) is not None
+        assert coerce(float("nan")) is None
+        assert coerce(float("inf")) is None
+        assert coerce(float("-inf")) is None
+    # The bound is per column, not one blanket width: util_pct is SmallInteger
+    # and the VRAM counters are BigInteger, so any card above 2 GiB would be
+    # silently blanked by an int4 bound.
+    assert _int_or_none(8 * 1024**3, bits=63) == 8 * 1024**3
+    assert _int_or_none(100_000, bits=15) is None
+    assert _int_or_none(42, bits=15) == 42

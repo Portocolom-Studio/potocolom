@@ -83,3 +83,31 @@ def test_unresolvable_schema_reference_does_not_escape():
                     "properties": {"prompt": {"$ref": "https://example.com/a.json"}}},
     )
     assert validate_params(manifest, {"prompt": "x"}) is None
+
+
+def test_schema_too_deep_to_walk_fails_closed():
+    """RecursionError must not read as "params acceptable".
+
+    validate_params is the only input-validation gate on generations, upscale
+    and the realtime open. Returning None when it could not walk the schema
+    would skip that gate entirely, which is worse than the 500 it replaced.
+    """
+    schema: dict = {"type": "string"}
+    for _ in range(600):
+        schema = {"type": "array", "items": schema}
+    manifest = Manifest(id="deep", name="deep", capabilities=["text_to_image"],
+                        parameters={"type": "object", "properties": {"prompt": schema}})
+    assert "too deeply" in (validate_params(manifest, {"prompt": "x"}) or "")
+
+
+def test_self_referential_schema_reference_does_not_escape():
+    # A cyclic $ref with no base case raises RecursionError, not
+    # ValidationError, so an unhandled one reaches the handler as a 500. It
+    # fails closed rather than accepting unchecked: nothing can be validated
+    # against a schema that cannot be walked (issue #203).
+    manifest = Manifest(
+        id="cyclic", name="cyclic", capabilities=["text_to_image"],
+        parameters={"$defs": {"a": {"$ref": "#/$defs/a"}},
+                    "properties": {"prompt": {"$ref": "#/$defs/a"}}},
+    )
+    assert "too deeply" in (validate_params(manifest, {"prompt": "x"}) or "")

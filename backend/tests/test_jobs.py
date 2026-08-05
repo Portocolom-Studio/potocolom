@@ -1839,10 +1839,11 @@ def test_non_finite_progress_is_ignored():
         worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
     )
     try:
-        asyncio.run(jobs.on_worker_message(worker, {
-            "type": "job_progress", "job_id": str(job_id), "progress": float("nan"),
-        }))
-        assert job_id not in jobs.live_progress
+        for unusable in (float("nan"), float("inf"), 10 ** 400, [1], {"a": 1}, None):
+            asyncio.run(jobs.on_worker_message(worker, {
+                "type": "job_progress", "job_id": str(job_id), "progress": unusable,
+            }))
+            assert job_id not in jobs.live_progress, f"{unusable!r} was stored"
         asyncio.run(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
         }))
@@ -1851,3 +1852,47 @@ def test_non_finite_progress_is_ignored():
         jobs.inflight.pop(job_id, None)
         jobs.live_progress.pop(job_id, None)
         jobs.last_progress_at.pop(job_id, None)
+
+
+def test_job_done_survives_unusable_worker_numbers():
+    # json.loads admits NaN and Infinity, and a bare int() raises three ways on
+    # what a worker can send: ValueError, OverflowError, TypeError. Only the
+    # first was in the fleet handler's except tuple (issue #203).
+    from app.jobs import _worker_int
+
+    assert _worker_int(1500) == 1500
+    assert _worker_int(1500.7) == 1500
+    for unusable in (float("nan"), float("inf"), float("-inf"), None, "12", True, {}):
+        assert _worker_int(unusable) == 0
+    # json.loads yields arbitrary-precision ints from ordinary JSON, and
+    # math.isfinite() raises OverflowError on one. The columns are int4, so a
+    # value merely past that range fails the insert instead.
+    assert _worker_int(10 ** 400) == 0
+    assert _worker_int(3_000_000_000) == 0
+    assert _worker_int(2 ** 31 - 1) == 2 ** 31 - 1
+    assert _worker_int(None, default=7) == 7
+
+
+def test_job_done_with_unusable_numbers_leaves_the_job_recoverable():
+    """Drive the real control path, not just the helper.
+
+    on_worker_message de-tracks the job before converting these fields, so a
+    raise here escapes the fleet handler's except tuple and strands the row in
+    `running`: on_worker_lost and sweep_stalled_jobs both only walk inflight.
+    Unit tests on the helper missed exactly this (issue #203).
+    """
+    worker = realtime.Worker(id="w-huge", ws=None, manifests=[], realtime_slots=1)
+    for unusable in (10 ** 400, 3_000_000_000, float("inf"), None, [1]):
+        job_id = uuid.uuid4()
+        jobs.inflight[job_id] = jobs.InFlight(
+            worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+        )
+        try:
+            asyncio.run(jobs.on_worker_message(worker, {
+                "type": "job_done", "job_id": str(job_id), "gpu_ms": unusable,
+                "width": unusable, "height": unusable,
+            }))
+        except Exception as error:  # noqa: BLE001 - the point is that none escape
+            raise AssertionError(f"gpu_ms={unusable!r} escaped as {type(error).__name__}")
+        finally:
+            jobs.inflight.pop(job_id, None)
