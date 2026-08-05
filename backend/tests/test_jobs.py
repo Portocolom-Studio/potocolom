@@ -1851,3 +1851,16 @@ def test_non_finite_progress_is_ignored():
         jobs.inflight.pop(job_id, None)
         jobs.live_progress.pop(job_id, None)
         jobs.last_progress_at.pop(job_id, None)
+
+
+def test_job_done_survives_unusable_worker_numbers():
+    # json.loads admits NaN and Infinity, and a bare int() raises three ways on
+    # what a worker can send: ValueError, OverflowError, TypeError. Only the
+    # first was in the fleet handler's except tuple (issue #203).
+    from app.jobs import _worker_int
+
+    assert _worker_int(1500) == 1500
+    assert _worker_int(1500.7) == 1500
+    for unusable in (float("nan"), float("inf"), float("-inf"), None, "12", True, {}):
+        assert _worker_int(unusable) == 0
+    assert _worker_int(None, default=7) == 7

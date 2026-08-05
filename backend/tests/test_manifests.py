@@ -83,3 +83,14 @@ def test_unresolvable_schema_reference_does_not_escape():
                     "properties": {"prompt": {"$ref": "https://example.com/a.json"}}},
     )
     assert validate_params(manifest, {"prompt": "x"}) is None
+
+
+def test_self_referential_schema_reference_does_not_escape():
+    # A recursive $ref raises RecursionError, not ValidationError, so an
+    # unhandled one reaches the request handler as a 500 (issue #203).
+    manifest = Manifest(
+        id="cyclic", name="cyclic", capabilities=["text_to_image"],
+        parameters={"$defs": {"a": {"$ref": "#/$defs/a"}},
+                    "properties": {"prompt": {"$ref": "#/$defs/a"}}},
+    )
+    assert validate_params(manifest, {"prompt": "x"}) is None

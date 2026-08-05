@@ -445,3 +445,17 @@ def test_non_finite_telemetry_is_dropped():
     assert _float_or_none(float("nan")) is None
     assert _float_or_none(float("inf")) is None
     assert _float_or_none(float("-inf")) is None
+
+
+def test_non_finite_telemetry_is_dropped_by_both_coercions():
+    # _float_or_none was guarded first; _int_or_none four lines above it was
+    # not, and it feeds util_pct and the VRAM fields from the same heartbeat.
+    # The GpuSample is built outside record_heartbeat's try, so a raise there
+    # escapes into an untracked task (issue #203).
+    from app.gpu_samples import _float_or_none, _int_or_none
+
+    for coerce in (_float_or_none, _int_or_none):
+        assert coerce(42) is not None
+        assert coerce(float("nan")) is None
+        assert coerce(float("inf")) is None
+        assert coerce(float("-inf")) is None

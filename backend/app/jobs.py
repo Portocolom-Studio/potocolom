@@ -108,6 +108,22 @@ last_progress_at: dict[uuid.UUID, float] = {}
 subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}
 
 
+def _worker_int(value: object, default: int = 0) -> int:
+    """Coerce a worker-supplied number, treating anything unusable as absent.
+
+    A bare int() raises three different ways on values json.loads accepts:
+    ValueError on NaN, OverflowError on Infinity, TypeError on null. Only the
+    first is in the fleet handler's except tuple, so the other two escaped the
+    WebSocket endpoint, and the first stranded the job in `running` because
+    on_worker_message had already de-tracked it (issue #203).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    if not math.isfinite(value):
+        return default
+    return int(value)
+
+
 def publish(job_id: uuid.UUID, event: dict) -> None:
     event = {"job_id": str(job_id), **event}
     for queue in subscribers.get(job_id, []):
@@ -1157,13 +1173,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             if job is None:
                 return
             job.state = "succeeded"
-            job.gpu_ms = int(control.get("gpu_ms", 0))
+            job.gpu_ms = _worker_int(control.get("gpu_ms"))
             for field in ("input_fetch_ms", "load_ms", "postprocess_ms"):
                 if control.get(field) is not None:
-                    setattr(job, field, int(control[field]))
+                    setattr(job, field, _worker_int(control[field]))
             job.finished_at = datetime.now(timezone.utc)
-            width = int(control.get("width", 0))
-            height = int(control.get("height", 0))
+            width = _worker_int(control.get("width"))
+            height = _worker_int(control.get("height"))
             full = Asset(
                 user_id=entry.user_id,
                 job_id=job_id,

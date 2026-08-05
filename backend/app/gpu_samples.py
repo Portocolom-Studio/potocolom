@@ -51,7 +51,10 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        # int(NaN) raises ValueError and int(inf) raises OverflowError, and the
+        # GpuSample is built outside record_heartbeat's try, so either escapes
+        # into an untracked task and is only reported at GC (issue #203).
+        return int(value) if math.isfinite(value) else None
     return None
 
 
