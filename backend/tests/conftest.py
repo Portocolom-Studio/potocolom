@@ -9,6 +9,12 @@ resolve and every db test then fails for a reason that looks like broken
 application code. A database each removes the contention rather than arbitrating
 it. Set DATABASE_URL to override.
 
+Switching branches in one checkout hits the same problem without any worktree
+involved, so the stamp check stays: if this database is stamped at a revision
+this tree cannot resolve, rebuild it. Dropping is safe now that the database is
+nobody else's - the objection to it was that it terminated another worktree's
+connections mid-run.
+
 Tests marked db skip when PostgreSQL is unreachable; `make deps` starts it.
 """
 
@@ -24,6 +30,7 @@ from urllib.parse import urlsplit
 import pytest
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
+_VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
 _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
 
 os.environ.setdefault("DATABASE_URL",
@@ -35,11 +42,33 @@ os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
 
 
+def _local_revisions() -> set[str]:
+    """Revision ids this tree can migrate through. Every migration names its
+    revision after its filename prefix: 0011_usage_event_rollups.py declares
+    revision = "0011". test_migrations.py keeps that assumption honest."""
+    return {path.name.split("_", 1)[0] for path in _VERSIONS.glob("[0-9]*.py")}
+
+
 def _prepare_database() -> bool:
     import asyncpg
 
     url = urlsplit(os.environ["DATABASE_URL"])
     database = url.path.lstrip("/")
+
+    async def stamped_ahead() -> bool:
+        conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
+                                     user=url.username, password=url.password,
+                                     database=database, timeout=3)
+        try:
+            if await conn.fetchval("SELECT to_regclass($1)",
+                                   "public.alembic_version") is None:
+                return False
+            stamped = await conn.fetchval("SELECT version_num FROM alembic_version")
+            local = _local_revisions()
+            # An empty set would call every stamp ahead and drop unconditionally.
+            return bool(local) and stamped is not None and stamped not in local
+        finally:
+            await conn.close()
 
     async def prepare() -> None:
         conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
@@ -48,6 +77,12 @@ def _prepare_database() -> bool:
         try:
             exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1",
                                          database)
+            # Switching branches leaves this stamped at a revision the tree
+            # cannot resolve; alembic then refuses to start and every db test
+            # fails for a reason that looks like broken application code.
+            if exists and await stamped_ahead():
+                await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
+                exists = None
             if not exists:
                 await conn.execute(f'CREATE DATABASE "{database}"')
         finally:

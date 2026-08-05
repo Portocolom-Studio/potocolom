@@ -12,7 +12,7 @@
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards verify-mermaid simulate \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -87,6 +87,12 @@ verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test && npm run build
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+
+test-db-clean: ## drop every potocolom_test_* database (one per checkout, they accumulate)
+	@docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+		"SELECT datname FROM pg_database WHERE datname LIKE 'potocolom\\_test%'" \
+		| xargs -r -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
+			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
 
 dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
 	git config core.hooksPath .githooks
