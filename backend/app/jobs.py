@@ -12,6 +12,7 @@ import asyncio
 import heapq
 import json
 import logging
+import math
 import re
 import time
 import unicodedata
@@ -558,9 +559,17 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     if current is None or current.worker is not worker:
         return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        live_progress[job_id] = float(control.get("progress") or 0.0)
+        progress = float(control.get("progress") or 0.0)
+        if not math.isfinite(progress):
+            # Stored, it breaks every generation list and detail response that
+            # carries it; published, it emits the non-standard NaN token into
+            # the SSE stream (issue #203). Progress is display only, so drop it.
+            logger.warning("worker %s sent non-finite progress for job %s; ignored",
+                           worker.id, job_id)
+            return
+        live_progress[job_id] = progress
         last_progress_at[job_id] = time.monotonic()
-        publish(job_id, {"state": "running", "progress": control.get("progress")})
+        publish(job_id, {"state": "running", "progress": progress})
         return
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)

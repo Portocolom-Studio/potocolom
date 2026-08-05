@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, jobs, realtime
 from app.jobs import generation_download_name
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
@@ -971,3 +971,27 @@ def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
                 first = _wait_for_dispatch(worker, {first_id})
                 assert client.get(f"/api/v1/generations/{second_id}").json()["state"] == "queued"
                 _finish_job(client, worker, first)
+
+
+
+def test_non_finite_progress_is_ignored():
+    # A stored NaN breaks every generation response that carries it, and
+    # publish() would emit the non-standard NaN token into SSE (issue #203).
+    worker = realtime.Worker(id="w-nan", ws=None, manifests=[], realtime_slots=1)
+    job_id = uuid.uuid4()
+    jobs.inflight[job_id] = jobs.InFlight(
+        worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+    )
+    try:
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": float("nan"),
+        }))
+        assert job_id not in jobs.live_progress
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
+        }))
+        assert jobs.live_progress[job_id] == 0.5
+    finally:
+        jobs.inflight.pop(job_id, None)
+        jobs.live_progress.pop(job_id, None)
+        jobs.last_progress_at.pop(job_id, None)
