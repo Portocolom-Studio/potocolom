@@ -30,6 +30,28 @@ export function rebaseLineageViewport(
 	};
 }
 
+export type LineageTreeLoadState = {
+	status: 'loading' | 'loaded' | 'error';
+	retried?: boolean;
+};
+
+/** What the visibility pass should do with one packed tree.
+ *
+ * `synthesize` means cache the single-node layout locally: a root the history
+ * page already reported as having no derivatives has nothing to fetch.
+ * `retry` means spend this failure's one retry and load again. The budget lives
+ * on the entry, and every load replaces the entry, so a later failure gets its
+ * own retry rather than inheriting an exhausted one. */
+export function decideLineageTreeLoad(
+	hasDerivatives: boolean,
+	cached: LineageTreeLoadState | undefined
+): 'skip' | 'synthesize' | 'load' | 'retry' {
+	if (!hasDerivatives) return cached === undefined ? 'synthesize' : 'skip';
+	if (cached === undefined) return 'load';
+	if (cached.status === 'loading' || cached.status === 'loaded') return 'skip';
+	return cached.retried === true ? 'skip' : 'retry';
+}
+
 export function lineageTreeNeedsHistoryRefresh(
 	nodes: CachedNode[],
 	history: Generation[],

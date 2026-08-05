@@ -46,6 +46,7 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		decideLineageTreeLoad,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport
@@ -456,22 +457,20 @@
 			const root = persistedRoots.find((item) => item.id === tree.rootId);
 			if (!root) continue;
 			const cached = treeCache.get(tree.rootId);
-			if (!tree.hasDerivatives) {
-				if (!cached) {
-					setCachedTree(tree.rootId, {
-						status: 'loaded',
-						layout: tree.layout,
-						dirty: false,
-						truncated: false,
-						omittedHistoryJobIds: new Set(),
-						remainingCountLowerBound: 0
-					});
-				}
+			const decision = decideLineageTreeLoad(tree.hasDerivatives, cached);
+			if (decision === 'skip') continue;
+			if (decision === 'synthesize') {
+				setCachedTree(tree.rootId, {
+					status: 'loaded',
+					layout: tree.layout,
+					dirty: false,
+					truncated: false,
+					omittedHistoryJobIds: new Set(),
+					remainingCountLowerBound: 0
+				});
 				continue;
 			}
-			if (cached?.status === 'loading' || cached?.status === 'loaded') continue;
-			if (cached?.status === 'error') {
-				if (cached.retried === true) continue;
+			if (decision === 'retry' && cached) {
 				setCachedTree(tree.rootId, { ...cached, retried: true });
 			}
 			scheduleTreeLoad(root);

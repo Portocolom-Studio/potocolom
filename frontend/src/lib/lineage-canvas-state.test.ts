@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
 	LINEAGE_WORLD_LIMIT,
 	clampLineageCoordinate,
+	decideLineageTreeLoad,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
 	rebaseLineageViewport
@@ -100,4 +101,28 @@ test('restored viewport keeps its anchor at the saved screen position', () => {
 		),
 		{ translateX: 30, translateY: 140 }
 	);
+});
+
+test('a chain-free root is synthesised once and never fetched', () => {
+	assert.equal(decideLineageTreeLoad(false, undefined), 'synthesize');
+	assert.equal(decideLineageTreeLoad(false, { status: 'loaded' }), 'skip');
+});
+
+test('an in-flight or settled tree is left alone', () => {
+	assert.equal(decideLineageTreeLoad(true, undefined), 'load');
+	assert.equal(decideLineageTreeLoad(true, { status: 'loading' }), 'skip');
+	assert.equal(decideLineageTreeLoad(true, { status: 'loaded' }), 'skip');
+});
+
+test('each failure carries its own retry, and a later failure is not starved', () => {
+	// A load fails: the entry has no spent budget, so it earns one retry.
+	assert.equal(decideLineageTreeLoad(true, { status: 'error' }), 'retry');
+	// That retry is spent, so the same failure is not retried forever.
+	assert.equal(decideLineageTreeLoad(true, { status: 'error', retried: true }), 'skip');
+	// A later forced load (a derivative completing, or the user returning) replaces
+	// the entry. When that one fails it is a fresh failure and earns its own retry:
+	// the previous exhausted budget must not carry over.
+	assert.equal(decideLineageTreeLoad(true, { status: 'loading' }), 'skip');
+	assert.equal(decideLineageTreeLoad(true, { status: 'error' }), 'retry');
+	assert.equal(decideLineageTreeLoad(true, { status: 'error', retried: true }), 'skip');
 });
