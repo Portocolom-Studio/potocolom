@@ -9,6 +9,7 @@ inference thread directly.
 """
 
 import asyncio
+import contextlib
 import io
 import math
 import os
@@ -18,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from PIL import Image
 
@@ -37,6 +38,7 @@ from worker.memory_ladder import (
 logger = logging.getLogger("potocolom.worker")
 
 ProgressFn = Callable[[float], None]
+T = TypeVar("T")
 
 REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
 # After a non-OOM generation error, drop the resident model at most this often
@@ -572,7 +574,7 @@ class DiffusersEngine:
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
 
-    async def _run_to_completion(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def _run_to_completion(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """`to_thread` that cannot be abandoned while its thread still runs.
 
         Cancellation cannot stop a thread. Awaiting `to_thread` directly means a
@@ -587,7 +589,18 @@ class DiffusersEngine:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            await asyncio.wait([task])
+            # asyncio.wait is itself an await point: a second cancellation
+            # arriving here would skip the raise, unwind the lock, and leak it
+            # exactly as before. Shutdown gathers can deliver one.
+            while not task.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait([task])
+            if not task.cancelled() and (failure := task.exception()) is not None:
+                # Retrieving it without logging replaces a bare "Task exception
+                # was never retrieved" at GC with total silence. Report it here,
+                # where the model and phase are still known.
+                logger.warning("GPU work failed while cancelled: %s", failure,
+                               exc_info=failure)
             raise
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
