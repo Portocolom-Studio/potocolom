@@ -72,6 +72,12 @@
 	let seed = $state('');
 	let sourceAssetId = $state<string | null>(null);
 	let branchParams = $state<Record<string, unknown>>({});
+	// Which mode raised the branch that set the two above. One panel instance
+	// serves all three modes - the sidebar only swaps the prop - so without
+	// this the source asset and params from a canvas branch outlive the mode
+	// they belong to: Upscale would submit an asset it is not showing, and the
+	// params would ride along into every later job of the session.
+	let branchMode = $state<'generate' | 'image_to_image' | 'upscale' | null>(null);
 	let upscaleFactor = $state(2);
 	let errorText = $state('');
 	let lineage = $state<GenerationLineage | null>(null);
@@ -244,6 +250,7 @@
 		seed = '';
 		branchParams = { ...prefill.params };
 		delete branchParams.seed;
+		branchMode = mode;
 		if (mode === 'upscale') {
 			studio.upscaleModelId = prefill.modelId;
 			const factor = Number(prefill.params.factor);
@@ -305,6 +312,15 @@
 		if (mode === 'image_to_image' && !selectedModel?.capabilities.includes('image_to_image')) {
 			sourceAssetId = null;
 		}
+	});
+
+	// Leaving the mode a branch was raised for ends that branch. A source the
+	// user picked here by hand leaves branchMode null and is left alone.
+	$effect(() => {
+		if (branchMode === null || branchMode === mode) return;
+		sourceAssetId = null;
+		branchParams = {};
+		branchMode = null;
 	});
 
 	$effect(() => {
