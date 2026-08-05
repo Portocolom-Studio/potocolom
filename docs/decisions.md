@@ -765,7 +765,7 @@ Rejected alternatives: a flat grid with a per-image lineage popover (hides the d
 
 ## Fleet token verification: static shared secret first, signed tokens with the cloud
 
-Applies "The unauthenticated fleet WebSocket is acceptable-by-disclosure on a trusted LAN" to the shipped code, and fixes the order the two halves land in.
+Fixes the order the two halves of `FLEET_TOKEN_KEY` land in. The unauthenticated fleet socket is disclosed in [README.md](../README.md) and [self-hosting.md](self-hosting.md) and mitigated by deployment posture; this entry covers authenticating it.
 
 `FLEET_TOKEN_KEY` verifies worker tokens on `/api/v1/fleet`. It ships as a static shared secret compared in constant time, which is the whole of what a self-hosted deployment needs: one value in the compose file, present on both the API and the worker. Signed short-lived tokens are the cloud shape, and their minting side lives in the private repository's fleet autoscaler, so the open repository would be verifying signatures no producer creates yet. Verification lands with the autoscaler, not before it.
 
