@@ -19,6 +19,14 @@ from worker.engine import (
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 
 
+def _fake_oom() -> type[BaseException]:
+    """torch.OutOfMemoryError subclasses RuntimeError, and the preview decoder's
+    failure handling treats RuntimeError as recoverable. A fake based on Exception
+    would hide that interaction, so these tests must mirror the real hierarchy.
+    """
+    return type("OutOfMemoryError", (RuntimeError,), {})
+
+
 class _FakeTensor:
     def __init__(self, shape, *, values=None, marker=None):
         self.shape = tuple(shape)
@@ -603,7 +611,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
             inference_state["active"] = False
 
     engine.torch = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
         inference_mode=InferenceContext,
     )
     engine.device = "cpu"
@@ -655,7 +663,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
         id="vega-rt",
         name="VegaRT",
         capabilities=["text_to_image", "image_to_image", "realtime"],
-        preview_vae="madebyollin/taesdxl",
+        preview_decoder="madebyollin/taesdxl",
     )
     source = io.BytesIO()
     Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
@@ -714,7 +722,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
 def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine.device = "cpu"
     engine.dtype = object()
@@ -732,7 +740,7 @@ def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
         id="vega-rt",
         name="VegaRT",
         capabilities=["image_to_image", "realtime"],
-        preview_vae="missing/preview-vae",
+        preview_decoder="missing/preview-vae",
     )
 
     with patch.dict(sys.modules, {"diffusers": diffusers}):
@@ -749,74 +757,119 @@ def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
     assert all("output_type" not in call.kwargs for call in pipeline.call_args_list)
 
 
-def test_preview_decoder_oom_propagates_without_caching():
+def test_preview_decoder_failure_falls_back_and_retries_after_cooldown():
+    """No decoder failure may stop a frame rendering.
+
+    frame() cannot recover an out-of-memory decoder load by evicting: it evicts
+    other models, and a realtime worker usually holds only this one. So the load
+    falls back to the full VAE for this frame and retries after a pause, rather
+    than propagating or disabling the fast path for the pipeline's lifetime.
+    """
+    import worker.engine as engine_module
+
+    for failure in (
+        _fake_oom()("no room"),
+        OSError("registry unreachable"),
+        RuntimeError("HIP error: out of memory"),
+    ):
+        engine = DiffusersEngine.__new__(DiffusersEngine)
+        engine.torch = SimpleNamespace(OutOfMemoryError=type(failure))
+        engine.device = "cpu"
+        engine.dtype = object()
+        engine._calibrated_slots = 3
+        pipeline = SimpleNamespace()
+        decoder = MagicMock()
+        decoder.to.return_value = decoder
+        autoencoder_tiny = MagicMock()
+        autoencoder_tiny.from_pretrained.side_effect = [failure, decoder]
+        diffusers = ModuleType("diffusers")
+        diffusers.AutoencoderTiny = autoencoder_tiny
+        manifest = Manifest(
+            id="vega-rt",
+            name="VegaRT",
+            capabilities=["image_to_image", "realtime"],
+            preview_decoder="madebyollin/taesdxl",
+        )
+
+        with patch.dict(sys.modules, {"diffusers": diffusers}):
+            assert engine._preview_decoder(pipeline, manifest) is None, failure
+            # Capacity measured with the fast decoder no longer describes this path.
+            assert engine._calibrated_slots is None
+            # Within the cooldown it does not hammer the loader every frame.
+            assert engine._preview_decoder(pipeline, manifest) is None
+            assert autoencoder_tiny.from_pretrained.call_count == 1
+            # After the cooldown the failure is treated as transient.
+            vars(pipeline)[engine_module._PREVIEW_DECODER_RETRY_ATTR] = 0.0
+            assert engine._preview_decoder(pipeline, manifest) is decoder
+            assert autoencoder_tiny.from_pretrained.call_count == 2
+
+
+def test_preview_decoder_loads_once_across_frames():
+    """Constraint: load once, not per frame. A mutant that drops the cache passes
+    a single-frame test, so this one runs two."""
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    oom = type("OutOfMemoryError", (Exception,), {})
-    engine.torch = SimpleNamespace(OutOfMemoryError=oom)
+    engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
     engine.device = "cpu"
     engine.dtype = object()
     engine._calibrated_slots = 3
     pipeline = SimpleNamespace()
     decoder = MagicMock()
     decoder.to.return_value = decoder
-
     autoencoder_tiny = MagicMock()
-    autoencoder_tiny.from_pretrained.side_effect = [oom("no room"), decoder]
+    autoencoder_tiny.from_pretrained.return_value = decoder
     diffusers = ModuleType("diffusers")
     diffusers.AutoencoderTiny = autoencoder_tiny
     manifest = Manifest(
         id="vega-rt",
         name="VegaRT",
         capabilities=["image_to_image", "realtime"],
-        preview_vae="madebyollin/taesdxl",
+        preview_decoder="madebyollin/taesdxl",
     )
 
     with patch.dict(sys.modules, {"diffusers": diffusers}):
-        pytest = __import__("pytest")
-        with pytest.raises(oom):
-            engine._preview_decoder(pipeline, manifest)
-        loaded = engine._preview_decoder(pipeline, manifest)
+        first = engine._preview_decoder(pipeline, manifest)
+        second = engine._preview_decoder(pipeline, manifest)
 
-    assert loaded is decoder
-    assert autoencoder_tiny.from_pretrained.call_count == 2
-    assert engine._calibrated_slots == 3
+    assert first is decoder and second is decoder
+    assert autoencoder_tiny.from_pretrained.call_count == 1
 
 
-def test_preview_decoder_transient_failure_falls_back_without_caching():
+def test_preview_decoder_does_not_outlive_its_pipeline():
+    """Constraint: the decoder must not survive eviction. A mutant that stores it
+    on the engine instead of the pipeline passes if the test plants the attribute
+    itself, so this one loads it through the real path first."""
+    import worker.engine as engine_module
+
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.torch = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
-    )
+    engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
     engine.device = "cpu"
     engine.dtype = object()
     engine._calibrated_slots = 3
     pipeline = SimpleNamespace()
     decoder = MagicMock()
     decoder.to.return_value = decoder
-
-    class TransientLoadError(Exception):
-        pass
-
     autoencoder_tiny = MagicMock()
-    autoencoder_tiny.from_pretrained.side_effect = [
-        TransientLoadError("temporary failure"), decoder,
-    ]
+    autoencoder_tiny.from_pretrained.return_value = decoder
     diffusers = ModuleType("diffusers")
     diffusers.AutoencoderTiny = autoencoder_tiny
     manifest = Manifest(
         id="vega-rt",
         name="VegaRT",
         capabilities=["image_to_image", "realtime"],
-        preview_vae="madebyollin/taesdxl",
+        preview_decoder="madebyollin/taesdxl",
     )
 
     with patch.dict(sys.modules, {"diffusers": diffusers}):
-        assert engine._preview_decoder(pipeline, manifest) is None
-        loaded = engine._preview_decoder(pipeline, manifest)
+        assert engine._preview_decoder(pipeline, manifest) is decoder
+    assert engine_module._PREVIEW_DECODER_ATTR in vars(pipeline)
 
-    assert loaded is decoder
+    engine._detach_preview_decoder(pipeline)
+    assert engine_module._PREVIEW_DECODER_ATTR not in vars(pipeline)
+
+    # And nothing kept a second reference that would resurrect it.
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        engine._preview_decoder(pipeline, manifest)
     assert autoencoder_tiny.from_pretrained.call_count == 2
-    assert engine._calibrated_slots is None
 
 
 def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
@@ -859,7 +912,7 @@ def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
 def test_frame_keeps_pillow_work_outside_gpu_lock():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
@@ -934,7 +987,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
 def test_frame_bounds_codec_concurrency():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine._gpu = asyncio.Lock()
     engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
@@ -1014,7 +1067,7 @@ def test_frame_bounds_codec_concurrency():
 def test_frame_oom_retries_once_without_decoding_twice():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
@@ -1233,7 +1286,7 @@ def test_evict_detaches_preview_decoders():
 
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
-    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+    torch_stub.OutOfMemoryError = _fake_oom()
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch_stub
@@ -1323,7 +1376,7 @@ def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     # CI worker venv has no torch; only OutOfMemoryError must be a real type
     # so `except self.torch.OutOfMemoryError` stays valid.
     torch_stub = MagicMock()
-    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+    torch_stub.OutOfMemoryError = _fake_oom()
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch_stub

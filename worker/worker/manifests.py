@@ -28,7 +28,7 @@ class Manifest(BaseModel):
     default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
-    preview_vae: str = ""  # optional distilled frame decoder, worker side only
+    preview_decoder: str = ""  # optional distilled frame decoder, worker side only
     scheduler: str = ""  # optional scheduler override, worker side only
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
     quantize: str = Field(
@@ -44,7 +44,7 @@ class Manifest(BaseModel):
 
     def wire(self) -> dict:
         return self.model_dump(
-            exclude={"source", "vae", "preview_vae", "scheduler", "lora", "quantize"}
+            exclude={"source", "vae", "preview_decoder", "scheduler", "lora", "quantize"}
         )
 
     def with_defaults(self, params: dict) -> dict:

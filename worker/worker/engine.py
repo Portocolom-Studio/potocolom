@@ -51,7 +51,12 @@ CALIBRATION_SAMPLES = 20
 # small hosts and a ceiling of four to limit CPU and memory pressure.
 CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
 _PREVIEW_DECODER_ATTR = "_potocolom_preview_decoder"
-_PREVIEW_DECODER_UNAVAILABLE = object()
+_PREVIEW_DECODER_RETRY_ATTR = "_potocolom_preview_decoder_retry_after"
+# A failed preview decoder never disables the fast path permanently. Loads fail
+# for transient reasons: an out-of-memory card that later frees, a cold cache
+# behind a network blip, a rate-limited registry. Falling back for this frame and
+# retrying after a pause keeps frames rendering without reloading every frame.
+PREVIEW_DECODER_RETRY_S = 60.0
 
 
 @dataclass
@@ -660,42 +665,57 @@ class DiffusersEngine:
         raise ValueError(f"unknown scheduler override: {name}")
 
     def _preview_decoder(self, pipeline: Any, manifest: Manifest) -> Any | None:
-        """Load and retain a realtime-only decoder on its owning pipeline."""
-        if not manifest.preview_vae:
+        """Load and retain a realtime-only decoder on its owning pipeline.
+
+        Returning None means this frame decodes with the model's full VAE. That is
+        slower but correct, so no failure here may stop a frame rendering.
+        """
+        if not manifest.preview_decoder:
             return None
         pipeline_state = vars(pipeline)
         cached = pipeline_state.get(_PREVIEW_DECODER_ATTR)
-        if cached is _PREVIEW_DECODER_UNAVAILABLE:
-            return None
         if cached is not None:
             return cached
+        retry_after = pipeline_state.get(_PREVIEW_DECODER_RETRY_ATTR)
+        if retry_after is not None and time.monotonic() < retry_after:
+            return None
         try:
             from diffusers import AutoencoderTiny
 
             decoder = AutoencoderTiny.from_pretrained(
-                manifest.preview_vae, torch_dtype=self.dtype,
+                manifest.preview_decoder, torch_dtype=self.dtype,
             ).to(self.device)
-        except self.torch.OutOfMemoryError:
-            # OOM is recoverable: frame() evicts other models and retries, but
-            # caching absence here would prevent that retry from loading it.
-            raise
         except Exception as error:
-            if isinstance(error, (ImportError, OSError, RuntimeError, TypeError, ValueError)):
-                # Deterministic load failures will not improve on the next frame,
-                # so retain the full-VAE fallback for this pipeline lifetime.
-                pipeline_state[_PREVIEW_DECODER_ATTR] = _PREVIEW_DECODER_UNAVAILABLE
-            # Slots measured with the tiny decoder overstate full-VAE capacity.
-            # Clearing them makes the next advertisement recalibrate the path
-            # that this pipeline will actually use.
-            self._calibrated_slots = None
-            logger.warning(
-                "preview decoder %s failed to load for %s; using full VAE: %s",
-                manifest.preview_vae, manifest.id, error,
-            )
+            # Every failure is treated as transient. frame()'s evict-and-retry
+            # cannot help here: it evicts other models, and a realtime worker
+            # usually holds only this one, so there is nothing to evict.
+            self._defer_preview_decoder(pipeline, manifest, "load", error)
             return None
         pipeline_state[_PREVIEW_DECODER_ATTR] = decoder
-        logger.info("loaded preview decoder %s for %s", manifest.preview_vae, manifest.id)
+        pipeline_state.pop(_PREVIEW_DECODER_RETRY_ATTR, None)
+        logger.info("loaded preview decoder %s for %s", manifest.preview_decoder, manifest.id)
         return decoder
+
+    def _defer_preview_decoder(
+        self, pipeline: Any, manifest: Manifest, phase: str, error: BaseException,
+    ) -> None:
+        """Fall back to the full VAE and try the decoder again after a pause."""
+        try:
+            state = vars(pipeline)
+        except TypeError:
+            state = None
+        if state is not None:
+            state.pop(_PREVIEW_DECODER_ATTR, None)
+            state[_PREVIEW_DECODER_RETRY_ATTR] = time.monotonic() + PREVIEW_DECODER_RETRY_S
+        # Slots were measured with the distilled decoder and overstate full-VAE
+        # capacity. Clearing them recalibrates at the next registration, which is
+        # when realtime_slots is next sent; a live connection keeps the old number
+        # until it reconnects, because heartbeats do not carry slot counts.
+        self._calibrated_slots = None
+        logger.warning(
+            "preview decoder %s %s failed for %s; using full VAE, retrying in %.0fs: %s",
+            manifest.preview_decoder, phase, manifest.id, PREVIEW_DECODER_RETRY_S, error,
+        )
 
     @staticmethod
     def _detach_preview_decoder(pipeline: Any) -> None:
@@ -1228,15 +1248,22 @@ class DiffusersEngine:
             "strength": strength,
             "guidance_scale": 0.0,
         }
-        if preview_decoder is None:
-            image = pipeline(**pipeline_kwargs).images[0]
-        else:
+        image = None
+        if preview_decoder is not None:
             latents = pipeline(**pipeline_kwargs, output_type="latent").images
-            # AutoencoderTiny is trained to take the pipeline's SDXL latents
-            # directly. Unlike the full VAE path, dividing by
-            # pipeline.vae.config.scaling_factor here produces clipped noise.
-            with self.torch.inference_mode():
-                decoded = preview_decoder.decode(latents, return_dict=False)[0]
-            image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
+            try:
+                # AutoencoderTiny is trained to take the pipeline's SDXL latents
+                # directly. Unlike the full VAE path, dividing by
+                # pipeline.vae.config.scaling_factor here produces clipped noise.
+                with self.torch.inference_mode():
+                    decoded = preview_decoder.decode(latents, return_dict=False)[0]
+                image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
+            except Exception as error:
+                # A bad decoder is not a poisoned pipeline. Letting this reach
+                # frame()'s handler would evict and reload the whole model on every
+                # frame while the decoder failed identically each time.
+                self._defer_preview_decoder(pipeline, manifest, "decode", error)
+        if image is None:
+            image = pipeline(**pipeline_kwargs).images[0]
         gpu_ms = int((time.monotonic() - started) * 1000)
         return image, gpu_ms

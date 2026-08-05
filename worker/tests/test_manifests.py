@@ -21,19 +21,19 @@ def test_load_manifests_and_wire_shape(tmp_path):
     (tmp_path / "sd-turbo.json").write_text(
         json.dumps({
             **SD_TURBO,
-            "preview_vae": "madebyollin/taesd",
+            "preview_decoder": "madebyollin/taesd",
             "quantize": "text_encoder_3:int8",
         })
     )
     manifests = load_manifests(str(tmp_path))
     assert [m.id for m in manifests] == ["sd-turbo"]
-    assert manifests[0].preview_vae == "madebyollin/taesd"
+    assert manifests[0].preview_decoder == "madebyollin/taesd"
     assert manifests[0].quantize == "text_encoder_3:int8"
     wire = manifests[0].wire()
     assert wire["capabilities"] == ["text_to_image", "realtime"]
     assert wire["prompt_token_limit"] == 77  # the studio warning reads this
     assert "source" not in wire  # weight locations stay worker side
-    assert "preview_vae" not in wire
+    assert "preview_decoder" not in wire
     assert "quantize" not in wire
 
 
@@ -86,7 +86,7 @@ def test_shipped_manifests_load():
     vega = next(m for m in manifests if m.id == "vega-rt")
     assert not vega.benchmark_only
     assert vega.scheduler == "lcm"
-    assert vega.preview_vae == "madebyollin/taesdxl"
+    assert vega.preview_decoder == "madebyollin/taesdxl"
     assert vega.license_id == "apache-2.0"
     assert "realtime" in vega.capabilities
     assert "image_to_image" in vega.capabilities
