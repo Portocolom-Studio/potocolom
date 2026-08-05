@@ -52,6 +52,20 @@ export function decideLineageTreeLoad(
 	return cached.retried === true ? 'skip' : 'retry';
 }
 
+/** The retry budget a new load attempt inherits.
+ *
+ * Every load replaces the cache entry, so the budget has to be carried across
+ * the loading and error transitions or an automatic retry would hand itself a
+ * fresh budget on failure and loop forever. A forced load is a new request
+ * rather than a continuation, so it starts with its own budget, and a
+ * successful load stores no budget at all, which resets it. */
+export function retainedRetryBudget(
+	force: boolean,
+	existing: { retried?: boolean } | undefined
+): boolean | undefined {
+	return force ? undefined : existing?.retried;
+}
+
 export function lineageTreeNeedsHistoryRefresh(
 	nodes: CachedNode[],
 	history: Generation[],

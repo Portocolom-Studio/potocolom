@@ -6,6 +6,7 @@ import {
 	decideLineageTreeLoad,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
+	retainedRetryBudget,
 	rebaseLineageViewport
 } from './lineage-canvas-state.ts';
 import type { Generation } from './studio.svelte.ts';
@@ -125,4 +126,37 @@ test('each failure carries its own retry, and a later failure is not starved', (
 	assert.equal(decideLineageTreeLoad(true, { status: 'loading' }), 'skip');
 	assert.equal(decideLineageTreeLoad(true, { status: 'error' }), 'retry');
 	assert.equal(decideLineageTreeLoad(true, { status: 'error', retried: true }), 'skip');
+});
+
+test('a persistently failing subtree retries once, not forever', () => {
+	// Walks the real transitions: every load rebuilds the entry, so the budget has
+	// to survive them or the automatic retry keeps re-earning one.
+	type Entry = { status: 'loading' | 'loaded' | 'error'; retried?: boolean };
+	let entry: Entry | undefined;
+	const attempts: string[] = [];
+
+	const attemptLoad = (force: boolean) => {
+		const retained = retainedRetryBudget(force, entry);
+		entry = { status: 'loading', retried: retained };
+		attempts.push(force ? 'forced' : 'plain');
+		entry = { status: 'error', retried: retained }; // the request fails
+	};
+
+	attemptLoad(false);
+	for (let guard = 0; guard < 10; guard += 1) {
+		const decision = decideLineageTreeLoad(true, entry);
+		if (decision === 'skip') break;
+		assert.equal(decision, 'retry');
+		entry = { ...(entry as Entry), retried: true };
+		attemptLoad(false);
+	}
+
+	// One initial attempt plus exactly one automatic retry.
+	assert.deepEqual(attempts, ['plain', 'plain']);
+	assert.equal(decideLineageTreeLoad(true, entry), 'skip');
+
+	// A later forced load - a derivative completing, or the user returning - is a
+	// new request and earns its own single retry.
+	attemptLoad(true);
+	assert.equal(decideLineageTreeLoad(true, entry), 'retry');
 });

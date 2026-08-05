@@ -49,7 +49,8 @@
 		decideLineageTreeLoad,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
-		rebaseLineageViewport
+		rebaseLineageViewport,
+		retainedRetryBudget
 	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
@@ -338,13 +339,15 @@
 			return;
 		}
 		if (existing?.status === 'loaded' && !force) return;
+		const retained = retainedRetryBudget(force, existing);
 		setCachedTree(root.id, {
 			status: 'loading',
 			layout: existing?.layout ?? null,
 			dirty: false,
 			truncated: existing?.truncated ?? false,
 			omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
-			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
+			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0,
+			retried: retained
 		});
 		try {
 			const subtree = await fetchCanvasJson<GenerationSubtree>(
@@ -404,7 +407,8 @@
 				dirty: false,
 				truncated: existing?.truncated ?? false,
 				omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
-				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0
+				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0,
+				retried: retained
 			});
 			// A coalesced force is a fresh request, not the automatic retry, so it
 			// leaves this failure's retry budget intact.
