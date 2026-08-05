@@ -18,7 +18,7 @@ Read the list below before reporting. Several open surfaces here are recorded de
 
 Known and deliberate, so not vulnerabilities:
 
-- **The fleet WebSocket (`/api/v1/fleet`) is unauthenticated.** Documented in [README.md](README.md) and mitigated by deployment posture: treat the host as a trusted LAN. Tracked in #206.
+- **The fleet WebSocket (`/api/v1/fleet`) is unauthenticated.** Documented in [README.md](README.md) and mitigated by deployment posture: treat the host as a trusted LAN. Both WebSocket endpoints reject a browser `Origin` that is not allowlisted, so a page you merely visit cannot reach them; a process on that LAN still can, which is what worker authentication is for. Tracked in #206.
 - **`AUTH_MODE=none` is the shipped default** and resolves every request to one local user. Only that mode exists; `local` and `oauth` are seams, not implementations. Tracked in #5 and #9.
 - **There is no rate limiting.** Deferred by recorded decision, see [docs/decisions.md](docs/decisions.md).
 - **Pull requests execute contributor code on a self-hosted runner.** Accepted for a solo org and documented in [docs/self-hosted-runner.md](docs/self-hosted-runner.md).
@@ -26,7 +26,7 @@ Known and deliberate, so not vulnerabilities:
 In scope, and worth reporting:
 
 - Anything that crosses a boundary the documentation claims holds. If a document says a check is enforced and it is not, that is a finding regardless of how small it looks.
-- Anything reachable by a client that is not on the trusted LAN, including a web page the operator merely visits.
+- Anything reachable by a client that is not on the trusted LAN. A web page the operator merely visits counts: report any way one reaches an endpoint despite the `Origin` check.
 - Anything that lets one user reach another user's jobs, assets or sessions.
 - Anything that lets a worker corrupt or forge state the API treats as authoritative.
 - Anything in the shipped container images, compose stack or release artifacts.

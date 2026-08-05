@@ -5,12 +5,19 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from starlette.datastructures import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
 from app.main import app
 from app.manifests import Manifest
-from app.realtime import CANVAS_FRAME, origin_allowed, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
+from app.realtime import (
+    CANVAS_FRAME,
+    GENERATED_FRAME,
+    MIN_SUPPORTED_VERSION,
+    PROTOCOL_VERSION,
+    origin_allowed,
+)
 from app.settings import get_settings
 from app.tables import UsageEvent
 
@@ -22,10 +29,16 @@ def manifest(model_id="sd-sim") -> dict:
 
 
 class FakeHeaders:
-    """Stands in for a WebSocket when only the Origin header matters."""
+    """Stands in for a WebSocket when only the Origin header matters.
+
+    Uses the real Headers type so the fixture matches what the endpoint passes.
+    Note this is less strict than a dict, not more: Headers.get is
+    case-insensitive, so it would tolerate a lookup a dict would catch.
+    """
 
     def __init__(self, origin):
-        self.headers = {} if origin is None else {"origin": origin}
+        raw = [] if origin is None else [(b"origin", origin.encode())]
+        self.headers = Headers(raw=raw)
 
 
 class FakeSocket:
@@ -302,7 +315,6 @@ def test_reaper_closes_silent_workers():
     finally:
         realtime.workers.pop("w-stale", None)
         realtime.workers.pop("w-fresh", None)
-
 
 
 def test_origin_allowed_only_for_no_origin_and_configured_origins():
