@@ -316,8 +316,11 @@ async def fleet(ws: WebSocket) -> None:
     await ws.send_json({"type": "registered"})
     from app import gpu_samples, registry  # late import; registry reads this module's state
     gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
-    await registry.persist_manifests(worker.manifests)
     try:
+        # Inside the try: this awaits a database write, and a failure before
+        # the try left the worker in `workers` with no cleanup path, so it kept
+        # being advertised until the 90 second reaper noticed.
+        await registry.persist_manifests(worker.manifests)
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
@@ -363,7 +366,9 @@ async def fleet(ws: WebSocket) -> None:
                     # Heartbeats refresh last_seen only; slot accounting has
                     # one writer (assign/release), so self-reported counts
                     # are deliberately not written back.
-            except (ProtocolError, KeyError, ValueError):
+            # uuid.UUID raises AttributeError on an int and TypeError on null,
+            # not just ValueError; all three are the peer sending nonsense.
+            except (ProtocolError, KeyError, ValueError, TypeError, AttributeError):
                 logger.warning("worker %s violated the protocol, closing", worker.id)
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break

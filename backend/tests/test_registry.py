@@ -39,3 +39,25 @@ def test_available_prefers_studio_visible_over_stale_benchmark_only():
     finally:
         realtime.workers.clear()
         realtime.workers.update(saved)
+
+
+def test_models_endpoint_survives_a_malformed_upscale_manifest():
+    # A manifest is worker-supplied, so neither `properties` nor the factor
+    # `enum` is guaranteed to be the shape it should be. A bare `for` over a
+    # non-list 500s this endpoint for every caller (issue #232).
+    from app import realtime
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    worker = realtime.Worker(
+        id="w-bad", ws=None, realtime_slots=0,
+        manifests=[Manifest(id="up-bad", name="up-bad", capabilities=["upscale"],
+                            parameters={"properties": {"factor": {"enum": 4}}}),
+                   Manifest(id="up-worse", name="up-worse", capabilities=["upscale"],
+                            parameters={"properties": "not-a-dict"})],
+    )
+    realtime.workers[worker.id] = worker
+    try:
+        assert TestClient(app).get("/api/v1/models").status_code == 200
+    finally:
+        realtime.workers.pop(worker.id, None)

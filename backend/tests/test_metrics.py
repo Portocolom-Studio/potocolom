@@ -469,3 +469,18 @@ def test_non_finite_telemetry_is_dropped_by_both_coercions():
     assert _int_or_none(8 * 1024**3, bits=63) == 8 * 1024**3
     assert _int_or_none(100_000, bits=15) is None
     assert _int_or_none(42, bits=15) == 42
+
+
+def test_gpu_history_rejects_unusable_timestamps():
+    # "²".isdigit() is True but int() rejects it; a far-future epoch overflows
+    # the year, and a 25-digit one overflows the float division. All three were
+    # 500s from an ordinary authenticated GET (issue #232).
+    with TestClient(app) as client:
+        good = "1700000000000"
+        for value in ("99999999999999999", "9" * 25, "\u00b2", "not-a-date"):
+            response = client.get("/api/v1/metrics/gpu/history",
+                                  params={"from": value, "to": good})
+            assert response.status_code == 422, f"{value!r} gave {response.status_code}"
+        ok = client.get("/api/v1/metrics/gpu/history",
+                        params={"from": good, "to": "1700000600000"})
+        assert ok.status_code == 200

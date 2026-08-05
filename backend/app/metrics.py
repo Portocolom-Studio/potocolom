@@ -14,12 +14,14 @@ router = APIRouter()
 
 def _parse_ts(value: str, name: str) -> datetime:
     text = value.strip()
-    if text.isdigit():
-        ms = int(text)
-        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     try:
+        if text.isdigit():
+            # isdigit() is true for superscripts and other numeric characters
+            # int() rejects, and an epoch far enough out overflows the year or
+            # the float division; all three are a bad timestamp, not a 500.
+            return datetime.fromtimestamp(int(text) / 1000, tz=timezone.utc)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as error:
+    except (ValueError, OverflowError, OSError) as error:
         raise HTTPException(status_code=422, detail=f"invalid {name} timestamp") from error
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)

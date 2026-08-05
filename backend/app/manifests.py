@@ -27,7 +27,9 @@ class Manifest(BaseModel):
     name: str
     capabilities: list[str]
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
-    min_vram_gb: int = 0
+    # int4 in the models table; a worker-supplied value past it fails the
+    # upsert, and that runs before the fleet handler's cleanup can see it.
+    min_vram_gb: int = Field(default=0, ge=0, lt=2**31)
     prompt_token_limit: int = 0  # text encoder window; 0 means the studio stays quiet
     default: bool = False  # preselected by clients when nothing is pinned
     license_id: str = ""
@@ -57,8 +59,9 @@ def _params_validator(schema_json: str) -> Draft202012Validator:
 
 def validate_params(manifest: Manifest, params: dict) -> str | None:
     """Return a validation error message, or None when params are acceptable."""
-    schema_json = json.dumps(manifest.parameters, sort_keys=True)
     try:
+        # dumps walks the schema too, so it raises before check_schema can.
+        schema_json = json.dumps(manifest.parameters, sort_keys=True)
         validator = _params_validator(schema_json)
     except jsonschema.SchemaError:
         logger.warning("model %s has an invalid parameter schema; accepting params unchecked",

@@ -48,7 +48,7 @@ def _load_timings() -> dict[str, dict[str, Any]]:
             for key, value in factors_raw.items():
                 try:
                     factor, ms = int(key), int(value)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if factor > 0 and ms > 0:
                     factors[factor] = ms
@@ -97,7 +97,7 @@ def _estimate_from_baseline(
             return max(1, factors[min(factors)])
         try:
             factor = int(params["factor"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         known = factors.get(factor)
         return max(1, known) if known is not None else None
@@ -109,7 +109,7 @@ def _estimate_from_baseline(
         steps = int(params["steps"])
         width = int(params["width"])
         height = int(params["height"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
     if steps <= 0 or width <= 0 or height <= 0:
