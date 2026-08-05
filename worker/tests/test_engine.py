@@ -1135,3 +1135,43 @@ def test_generation_oom_demotes_once_and_retries_once():
     engine._pipeline.assert_called_once_with(
         manifest, "t2i", allow_demotion=False,
     )
+
+
+def test_gpu_lock_is_held_until_the_thread_finishes():
+    """Cancelling mid-inference must not free the GPU for the next entrant.
+
+    asyncio cancellation cannot stop a thread, so awaiting to_thread directly
+    would unwind the `async with self._gpu` and release the lock while the
+    thread is still on the device (issue #202).
+    """
+    import threading
+    import time
+
+    running, finished = threading.Event(), threading.Event()
+
+    def native_work():
+        running.set()
+        time.sleep(0.3)
+        finished.set()
+
+    async def scenario():
+        gpu = asyncio.Lock()
+        engine = SimpleNamespace(_run_to_completion=DiffusersEngine._run_to_completion)
+
+        async def held():
+            async with gpu:
+                await engine._run_to_completion(engine, native_work)
+
+        task = asyncio.create_task(held())
+        await asyncio.get_running_loop().run_in_executor(None, running.wait)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # The lock may be free by now, but only because the thread is done.
+        return gpu.locked(), finished.is_set()
+
+    locked, thread_finished = asyncio.run(scenario())
+    assert thread_finished, "lock was released while the thread was still running"
+    assert not locked
