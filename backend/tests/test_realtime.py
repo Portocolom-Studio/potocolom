@@ -4,18 +4,28 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
-from app import realtime
+from app import db, realtime
 from app.main import app
 from app.manifests import Manifest
-from app.realtime import CANVAS_FRAME, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
+from app.realtime import CANVAS_FRAME, origin_allowed, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
+from app.settings import get_settings
+from app.tables import UsageEvent
 
 client = TestClient(app)
 
 
 def manifest(model_id="sd-sim") -> dict:
     return {"id": model_id, "name": model_id, "capabilities": ["realtime"], "parameters": {}}
+
+
+class FakeHeaders:
+    """Stands in for a WebSocket when only the Origin header matters."""
+
+    def __init__(self, origin):
+        self.headers = {} if origin is None else {"origin": origin}
 
 
 class FakeSocket:
@@ -87,6 +97,73 @@ def test_session_and_frame_relay_both_directions():
             generated = bytes([GENERATED_FRAME]) + session.bytes + b"generated-payload"
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
+
+
+@pytest.mark.db
+def test_closed_session_persists_usage_event():
+    with TestClient(app) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-usage"))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = worker_ws.receive_json()
+                worker_ws.send_json({
+                    "type": "session_ready",
+                    "session_id": opened["session_id"],
+                })
+                assert browser_ws.receive_json()["type"] == "ready"
+                browser_ws.send_json({"type": "close"})
+            closed = worker_ws.receive_json()
+            assert closed["type"] == "close_session"
+            worker_ws.send_json({
+                "type": "session_closed",
+                "session_id": opened["session_id"],
+                "frames": 3,
+                "gpu_ms": 90,
+                "duration_ms": 2000,
+                "category": "other",
+            })
+
+            async def persisted() -> bool:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = (
+                        await session.execute(
+                            select(UsageEvent).where(
+                                UsageEvent.kind == "realtime",
+                                UsageEvent.model_id == "sd-sim",
+                            ).order_by(UsageEvent.created_at.desc()).limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    return row is not None and row.frames == 3 and row.action == "draw"
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not asyncio.run(persisted()):
+                time.sleep(0.05)
+            assert asyncio.run(persisted())
+
+
+@pytest.mark.db
+def test_closing_session_is_removed_when_worker_is_lost():
+    with TestClient(app) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-closing"))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = worker_ws.receive_json()
+                worker_ws.send_json({
+                    "type": "session_ready",
+                    "session_id": opened["session_id"],
+                })
+                assert browser_ws.receive_json()["type"] == "ready"
+                browser_ws.send_json({"type": "close"})
+            assert worker_ws.receive_json()["type"] == "close_session"
+            session_id = uuid.UUID(opened["session_id"])
+            assert session_id in realtime.closing_sessions
+
+        assert session_id not in realtime.closing_sessions
 
 
 def test_malformed_hello_closes_with_protocol_violation():
@@ -225,3 +302,32 @@ def test_reaper_closes_silent_workers():
     finally:
         realtime.workers.pop("w-stale", None)
         realtime.workers.pop("w-fresh", None)
+
+
+
+def test_origin_allowed_only_for_no_origin_and_configured_origins():
+    # Browsers always send Origin and cannot forge it; workers send none.
+    settings = get_settings()
+    assert origin_allowed(FakeHeaders(None))
+    assert origin_allowed(FakeHeaders(settings.public_url))
+    assert origin_allowed(FakeHeaders(settings.public_url + "/"))
+    assert not origin_allowed(FakeHeaders("https://evil.example"))
+    assert not origin_allowed(FakeHeaders("http://localhost:5173"))
+
+
+def test_origin_allowed_honours_the_configured_extra_origins(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "allowed_origins", "http://localhost:5173, https://ok.example")
+    assert origin_allowed(FakeHeaders("http://localhost:5173"))
+    assert origin_allowed(FakeHeaders("https://ok.example"))
+    assert not origin_allowed(FakeHeaders("https://evil.example"))
+
+
+def test_foreign_origin_cannot_register_a_worker():
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/api/v1/fleet", headers={"origin": "https://evil.example"},
+        ) as ws:
+            ws.send_json(hello(worker_id="w-evil"))
+            ws.receive_json()
+    assert "w-evil" not in realtime.workers

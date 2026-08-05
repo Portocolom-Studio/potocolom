@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     # Defaults to PUBLIC_URL for native dev (docs/blueprint.md).
     internal_url: str = ""
 
+    # Extra browser origins allowed to open the WebSocket endpoints, comma
+    # separated. PUBLIC_URL is always allowed; this is for the dev loop, where
+    # the vite server proxies /api/v1 and the browser's origin is its own
+    # (issue #201).
+    allowed_origins: str = ""
+
     # Defaults match deploy/compose/dev.yml for the native dev loop.
     database_url: str = "postgresql://potocolom:potocolom@localhost:5432/potocolom"
 
@@ -32,6 +38,7 @@ class Settings(BaseSettings):
     storage_s3_secret_key: str = ""
 
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
+    telemetry: bool = True
 
     # When set, the API serves the built SPA from this directory (self-hosted
     # profile; docs/blueprint.md).

@@ -35,3 +35,9 @@ def test_auth_methods_by_mode():
         "google",
         "github",
     ]
+
+
+def test_telemetry_setting():
+    assert Settings.model_fields["telemetry"].default is True
+    assert Settings(telemetry=True).telemetry is True
+    assert Settings(telemetry=False).telemetry is False

@@ -61,13 +61,14 @@ def parse_csv(raw: str | None) -> list[str] | None:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def load_prompts(ids: list[int]) -> list[dict]:
-    by_id = {entry["id"]: entry for entry in json.loads(PROMPTS_PATH.read_text())}
+def load_prompts(ids: list[int], prompts_path: Path = PROMPTS_PATH) -> list[dict]:
+    by_id = {entry["id"]: entry for entry in json.loads(prompts_path.read_text())}
     return [by_id[i] for i in ids]
 
 
-def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: bool) -> dict:
-    matrix = json.loads(MATRIX_PATH.read_text())
+def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: bool,
+                matrix_path: Path = MATRIX_PATH) -> dict:
+    matrix = json.loads(matrix_path.read_text())
     capped = matrix.get("capped_commercial", [])
     if model_filter:
         wanted = set(model_filter)
@@ -338,10 +339,14 @@ def main() -> None:
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="default: data/benchmark/<utc timestamp>")
+    parser.add_argument("--prompts", type=Path, default=PROMPTS_PATH,
+                        help="prompt catalog JSON (default: benchmark-prompts.json)")
     parser.add_argument("--ids", default=None,
                         help="comma-separated prompt ids and/or ranges, e.g. 1,5,10-12")
     parser.add_argument("--models", default=None,
                         help="comma-separated model ids from benchmark-matrix.json")
+    parser.add_argument("--matrix", type=Path, default=MATRIX_PATH,
+                        help="model/variant matrix JSON (default: benchmark-matrix.json)")
     parser.add_argument("--quick", action="store_true",
                         help="one variant per model (smoke test)")
     parser.add_argument("--continue-on-error", action="store_true",
@@ -352,13 +357,14 @@ def main() -> None:
                         help="include capped_commercial models (Stability)")
     args = parser.parse_args()
 
-    all_prompts = json.loads(PROMPTS_PATH.read_text())
+    prompts_path = args.prompts
+    all_prompts = json.loads(prompts_path.read_text())
     available_ids = {entry["id"] for entry in all_prompts}
     ids = parse_ids(args.ids, available_ids)
-    prompts = load_prompts(ids)
+    prompts = load_prompts(ids, prompts_path)
 
     model_filter = parse_csv(args.models)
-    matrix = load_matrix(model_filter, args.quick, args.include_capped)
+    matrix = load_matrix(model_filter, args.quick, args.include_capped, args.matrix)
     matrix_models = matrix["models"]
     variants_per_prompt = len(matrix_models[0]["variants"]) if matrix_models else 0
 
@@ -517,6 +523,20 @@ def main() -> None:
     print(f"\nresults.json -> {results_path}")
     print(f"report.md    -> {md_path}")
     print(f"report.html  -> {html_path}")
+    # A one-off request, not the shared client above: that context manager closed
+    # with the run, and reopening it just to publish would outlive its purpose.
+    try:
+        response = httpx.post(
+            f"{args.api.rstrip('/')}/api/v1/benchmark/sessions",
+            json=summary,
+            timeout=30,
+        )
+        response.raise_for_status()
+        print(f"session       -> {response.json()['id']}")
+    except (httpx.HTTPError, KeyError, ValueError) as error:
+        # Artifacts are already durable. History ingest is best effort and
+        # must not turn a completed benchmark into a failed run.
+        print(f"warning: benchmark session ingest failed: {error}", file=sys.stderr)
 
     if failures:
         sys.exit(1)

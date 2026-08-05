@@ -1,14 +1,19 @@
 import asyncio
+import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from app import db, jobs
 from app.benchmark import router as benchmark_router
+from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
 from app.gpu_samples import maintain_loop
 from app.jobs import router as jobs_router
@@ -17,19 +22,34 @@ from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.registry import router as registry_router
+from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.studio import router as studio_router
+from app.telemetry import DESTINATION, telemetry_loop
+from app.telemetry import router as telemetry_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    setup_logging(get_settings().log_format)
+    settings = get_settings()
+    setup_logging(settings.log_format)
+    if settings.telemetry:
+        logging.getLogger("potocolom.telemetry").info(
+            "anonymous daily telemetry destination=%s payload=aggregate usage counts and "
+            "worker device/memory mode; set TELEMETRY=false to disable",
+            DESTINATION,
+        )
+    else:
+        logging.getLogger("potocolom.telemetry").info(
+            "anonymous daily telemetry disabled by TELEMETRY=false"
+        )
     if await db.connect():
         await jobs.recover()
     tasks = [
         asyncio.create_task(reap_dead_workers()),
         asyncio.create_task(jobs.dispatch_loop()),
         asyncio.create_task(maintain_loop()),
+        asyncio.create_task(telemetry_loop()),
     ]
     yield
     for task in tasks:
@@ -39,15 +59,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await db.dispose()
 
 
-app = FastAPI(title="potocolom", lifespan=lifespan)
+app = FastAPI(
+    title="potocolom",
+    lifespan=lifespan,
+    # Swagger UI / ReDoc load JS and CSS from cdn.jsdelivr.net; that violates
+    # script-src/style-src 'self'. Interactive docs are not a supported
+    # production endpoint - keep /openapi.json for tooling.
+    docs_url=None,
+    redoc_url=None,
+)
+# User middleware covers API, static, SPA fallbacks, and handled HTTP errors.
+# Unhandled 500s are emitted by ServerErrorMiddleware outside that stack, so
+# they get headers from the Exception handler below instead.
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
 if get_settings().benchmark_api:
     app.include_router(benchmark_router)
+app.include_router(benchmark_sessions_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)
 app.include_router(studio_router)
 app.include_router(metrics_router)
+app.include_router(telemetry_router)
 
 
 @app.get("/api/v1/health")
@@ -70,15 +105,35 @@ async def config() -> dict:
 class SPAStaticFiles(StaticFiles):
     """Serve a built SPA: unknown GET paths fall back to index.html."""
 
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if Path(full_path).name == "index.html":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    def _may_fall_back(self, path: str, scope) -> bool:
+        # Unknown API paths must stay 404s; only page routes fall back.
+        return scope["method"] == "GET" and path != "api" and not path.startswith("api/")
+
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            # Unknown API paths must stay 404s; only page routes fall back.
-            is_api = path == "api" or path.startswith("api/")
-            if exc.status_code == 404 and scope["method"] == "GET" and not is_api:
+            if exc.status_code == 404 and self._may_fall_back(path, scope):
                 return await super().get_response("index.html", scope)
             raise
+        # With html=True, StaticFiles answers a miss with 404.html when the build
+        # ships one instead of raising, which would leave every client-side route
+        # (/app, /benchmark) serving the error page in the self-hosted container.
+        if response.status_code == 404 and self._may_fall_back(path, scope):
+            return await super().get_response("index.html", scope)
+        return response
 
 
 _settings = get_settings()

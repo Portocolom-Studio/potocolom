@@ -4,20 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+import math
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Date, cast, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db
-from app.tables import GpuSample, GpuSampleRollup
+from app import db, estimates
+from app.tables import (
+    GpuSample,
+    GpuSampleRollup,
+    UsageEvent,
+    UsageEventRollup,
+    WorkerIdentity,
+)
 
 logger = logging.getLogger("potocolom.gpu_samples")
 
 RAW_RETENTION = timedelta(hours=48)
 ROLLUP_RETENTION = timedelta(days=30)
+WORKER_RETENTION = timedelta(days=30)
+USAGE_RAW_RETENTION = timedelta(days=90)
 ROLLUP_BUCKET = timedelta(minutes=5)
 MAINTAIN_INTERVAL = 300.0  # seconds
 
@@ -50,7 +59,11 @@ def _float_or_none(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        # NaN and infinities survive json.loads and persist in PostgreSQL, but
+        # Starlette refuses to serialize them: one poisoned sample would 500
+        # every history range that contains it, rollups included (issue #203).
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -61,7 +74,64 @@ def _loaded_models(control: dict) -> list[str] | None:
     return [str(model) for model in models]
 
 
-async def record_heartbeat(worker_id: str, control: dict) -> None:
+def _worker_upsert(
+    worker_id: str,
+    device: str | None,
+    memory_mode: str | None,
+    last_seen: datetime,
+):
+    statement = insert(WorkerIdentity).values(
+        worker_id=worker_id,
+        device=device,
+        memory_mode=memory_mode,
+        last_seen=last_seen,
+    )
+    return statement.on_conflict_do_update(
+        index_elements=[WorkerIdentity.worker_id],
+        set_={
+            "device": func.coalesce(statement.excluded.device, WorkerIdentity.device),
+            "memory_mode": func.coalesce(
+                statement.excluded.memory_mode, WorkerIdentity.memory_mode
+            ),
+            "last_seen": func.greatest(
+                statement.excluded.last_seen, WorkerIdentity.last_seen
+            ),
+        },
+    )
+
+
+async def record_worker_identity(
+    worker_id: str,
+    device: str | None,
+    memory_mode: str | None,
+) -> None:
+    """Upsert static worker facts without delaying the fleet registration path."""
+    if db.session_factory is None:
+        return
+    try:
+        async with db.session_factory() as session:
+            await session.execute(
+                _worker_upsert(worker_id, device, memory_mode, _utcnow())
+            )
+            await session.commit()
+    except Exception as error:
+        logger.warning("worker identity persistence skipped: %s", error)
+
+
+def schedule_worker_identity(
+    worker_id: str,
+    device: str | None,
+    memory_mode: str | None,
+) -> None:
+    asyncio.create_task(record_worker_identity(worker_id, device, memory_mode))
+
+
+async def record_heartbeat(
+    worker_id: str,
+    control: dict,
+    device: str | None = None,
+    memory_mode: str | None = None,
+) -> None:
     """Insert one row from a worker heartbeat; no-op when the database is down."""
     if db.session_factory is None:
         return
@@ -77,16 +147,27 @@ async def record_heartbeat(worker_id: str, control: dict) -> None:
         power_w=_float_or_none(gpu.get("power_w")),
         loaded_models=_loaded_models(control),
     )
-    async with db.session_factory() as session:
-        session.add(row)
-        await session.commit()
+    try:
+        async with db.session_factory() as session:
+            session.add(row)
+            await session.execute(
+                _worker_upsert(worker_id, device, memory_mode, sampled_at)
+            )
+            await session.commit()
+    except Exception as error:
+        logger.warning("GPU heartbeat persistence skipped: %s", error)
 
 
-def schedule_heartbeat_sample(worker_id: str, control: dict) -> None:
+def schedule_heartbeat_sample(
+    worker_id: str,
+    control: dict,
+    device: str | None = None,
+    memory_mode: str | None = None,
+) -> None:
     """Fire-and-forget persistence so the fleet socket loop stays responsive."""
     if control.get("type") != "heartbeat":
         return
-    asyncio.create_task(record_heartbeat(worker_id, control))
+    asyncio.create_task(record_heartbeat(worker_id, control, device, memory_mode))
 
 
 RollupMode = Literal["auto", "raw", "5m"]
@@ -184,17 +265,27 @@ def _serialize_rollup(row: GpuSampleRollup) -> dict:
 
 
 async def maintain_once() -> None:
-    """Roll raw samples into five-minute buckets, then prune old rows."""
+    """Refresh estimates, rebuild rollups, then prune raw and stale rows."""
+    await estimates.refresh_observed_timings()
     if db.session_factory is None:
         return
     now = _utcnow()
     raw_cutoff = now - RAW_RETENTION
     rollup_cutoff = now - ROLLUP_RETENTION
+    worker_cutoff = now - WORKER_RETENTION
+    usage_raw_cutoff = _usage_raw_cutoff(now)
     async with db.session_factory() as session:
         await _rebuild_rollups(session, raw_cutoff, now)
+        await _rebuild_usage_rollups(session, usage_raw_cutoff)
         await session.execute(delete(GpuSample).where(GpuSample.sampled_at < raw_cutoff))
         await session.execute(
             delete(GpuSampleRollup).where(GpuSampleRollup.bucket_start < rollup_cutoff)
+        )
+        await session.execute(
+            delete(WorkerIdentity).where(WorkerIdentity.last_seen < worker_cutoff)
+        )
+        await session.execute(
+            delete(UsageEvent).where(UsageEvent.created_at < usage_raw_cutoff)
         )
         await session.commit()
 
@@ -256,13 +347,91 @@ async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: date
         await session.execute(stmt)
 
 
+def _usage_raw_cutoff(now: datetime) -> datetime:
+    cutoff_date = (now - USAGE_RAW_RETENTION).date()
+    return datetime.combine(cutoff_date, time.min, tzinfo=timezone.utc)
+
+
+async def _rebuild_usage_rollups(session: AsyncSession, before_ts: datetime) -> None:
+    bucket_date = cast(
+        UsageEvent.created_at.op("AT TIME ZONE")("UTC"), Date
+    ).label("bucket_date")
+    dimensions = (
+        UsageEvent.user_id,
+        bucket_date,
+        UsageEvent.kind,
+        UsageEvent.action,
+        UsageEvent.model_id,
+        UsageEvent.tier,
+        UsageEvent.category,
+    )
+    aggregate = (
+        select(
+            # Selected explicitly: a Python-side uuid default is evaluated once for
+            # the whole INSERT ... FROM SELECT, so every row would share one id.
+            func.gen_random_uuid().label("id"),
+            *dimensions,
+            func.count().label("event_count"),
+            func.sum(UsageEvent.category_score).label("category_score_sum"),
+            func.count(UsageEvent.category_score).label("category_score_count"),
+            func.sum(UsageEvent.gpu_ms).label("gpu_ms_sum"),
+            func.sum(UsageEvent.duration_ms).label("duration_ms_sum"),
+            func.sum(UsageEvent.frames).label("frames_sum"),
+        )
+        .where(UsageEvent.created_at < before_ts)
+        .group_by(*dimensions)
+    )
+    # One server-side statement: the aggregate never lands in Python, and the
+    # first run after an upgrade does not become a round trip per rollup row.
+    stmt = insert(UsageEventRollup).from_select(
+        [
+            "id",
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            "tier",
+            "category",
+            "event_count",
+            "category_score_sum",
+            "category_score_count",
+            "gpu_ms_sum",
+            "duration_ms_sum",
+            "frames_sum",
+        ],
+        aggregate,
+    )
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            "user_id",
+            "bucket_date",
+            "kind",
+            "action",
+            "model_id",
+            text("COALESCE(tier, '')"),
+            "category",
+        ],
+        set_={
+            "event_count": excluded.event_count,
+            "category_score_sum": excluded.category_score_sum,
+            "category_score_count": excluded.category_score_count,
+            "gpu_ms_sum": excluded.gpu_ms_sum,
+            "duration_ms_sum": excluded.duration_ms_sum,
+            "frames_sum": excluded.frames_sum,
+        },
+    )
+    await session.execute(stmt)
+
+
 async def maintain_loop() -> None:
     while True:
-        await asyncio.sleep(MAINTAIN_INTERVAL)
         try:
             await maintain_once()
         except Exception:
             logger.exception("gpu sample maintenance failed")
+        await asyncio.sleep(MAINTAIN_INTERVAL)
 
 
 async def latest_sample_at(session: AsyncSession) -> datetime | None:

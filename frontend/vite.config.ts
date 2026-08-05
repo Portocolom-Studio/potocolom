@@ -23,9 +23,41 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			// Static SPA build: one artifact for every deployment, served by the API
-			// when self-hosted and by a CDN in the cloud (docs/architecture.md).
-			adapter: adapter({ fallback: 'index.html' })
+			// Bound stale-shell detection without polling an idle tab aggressively.
+			version: {
+				pollInterval: 5 * 60 * 1000
+			},
+
+			// Static build: every known route is prerendered. The fallback document
+			// is the error page, so a CDN answers an unknown path with a real 404
+			// carrying this project's page rather than a 200 app shell that a
+			// crawler reads as a soft 404. The API server still falls back to
+			// index.html for unknown GET paths in self-hosted mode.
+			adapter: adapter({ fallback: '404.html' }),
+
+			// Hash-mode CSP for prerendered pages: SvelteKit injects a SHA-256
+			// script-src hash for its inline bootstrap. HTTP responses still
+			// emit a looser script-src (with 'unsafe-inline') as a compatibility
+			// envelope; the meta policy is the effective script restriction.
+			// style-src keeps 'unsafe-inline' for inline style attributes and
+			// runtime chart styles. Source lists match backend/app/security.py
+			// except script-src, which stays 'self' here so hashes can be added.
+			csp: {
+				mode: 'hash',
+				directives: {
+					'default-src': ['self'],
+					'base-uri': ['self'],
+					'object-src': ['none'],
+					'frame-ancestors': ['none'],
+					'form-action': ['self'],
+					'frame-src': ['self'],
+					'connect-src': ['self'],
+					'font-src': ['self'],
+					'img-src': ['self', 'https:', 'http:'],
+					'script-src': ['self'],
+					'style-src': ['self', 'unsafe-inline']
+				}
+			}
 		})
 	]
 });

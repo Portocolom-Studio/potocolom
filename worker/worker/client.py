@@ -18,6 +18,7 @@ import httpx
 import websockets
 
 from worker.engine import Engine, SimulatedEngine, make_thumbnail_webp
+from worker.categorize import categorize_output
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
@@ -25,7 +26,7 @@ from worker.settings import Settings, get_settings
 logger = logging.getLogger("potocolom.worker")
 
 # Wire constants; keep in sync with backend/app/realtime.py.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
 CLOSE_PROTOCOL_VIOLATION = 4000
@@ -70,8 +71,34 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
             settings.device,
             memory_mode=settings.memory_mode,
             models_dir=settings.models_dir,
+            torch_compile=settings.torch_compile,
+            attention_backend=settings.attention_backend,
         )
     return [SIMULATED_MANIFEST], SimulatedEngine(settings.inference_seconds)
+
+
+async def warmup_realtime(engine: Engine, manifests: list[Manifest],
+                          configured_slots: int) -> None:
+    """Load and time a full-resident realtime model before hello.
+
+    Reconnects reuse a warm engine, so calibration is a no-op once slots are set.
+    DiffusersEngine only: the simulated engine has nothing to time.
+    """
+    if configured_slots <= 0 or not hasattr(engine, "torch_compile"):
+        return
+    if getattr(engine, "_calibrated_slots", None) is not None:
+        return
+    wire = engine.measured_manifests(manifests)
+    live_ids = {
+        item["id"] for item in wire if "realtime" in item.get("capabilities", [])
+    }
+    candidates = [manifest for manifest in manifests if manifest.id in live_ids]
+    if not candidates:
+        return
+    # Prefer the dedicated realtime draft model when present.
+    pick = next((m for m in candidates if m.id == "vega-rt"), candidates[0])
+    slots = await engine.calibrate_realtime(pick, configured_slots)
+    logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 
 
 class SessionRunner:
@@ -84,6 +111,8 @@ class SessionRunner:
         self.arrived = asyncio.Event()
         self.dropped = 0
         self.frames = 0
+        self.gpu_ms = 0
+        self.started_at = time.monotonic()
         self._task = asyncio.create_task(self._run(ws, engine, manifest, params))
 
     def submit(self, payload: bytes) -> None:
@@ -108,8 +137,10 @@ class SessionRunner:
                                  self.session_id)
                 continue
             self.frames += 1
+            self.gpu_ms += generated.gpu_ms
             try:
-                await ws.send(bytes([GENERATED_FRAME]) + self.session_id.bytes + generated)
+                await ws.send(
+                    bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)
             except websockets.WebSocketException:
                 logger.warning("session %s lost the connection while sending a frame",
                                self.session_id)
@@ -123,6 +154,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     """One queued job: generate, upload to the given target, report the result.
     Failures are reported, never raised: the connection outlives the job."""
     job_id = control["job_id"]
+    job_started = time.monotonic()
     progress_tasks: list[asyncio.Task[None]] = []
     last_fraction = 0.0
 
@@ -193,8 +225,15 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                           "load_ms": result.load_ms,
                           "postprocess_ms": postprocess_ms,
                           "width": result.width, "height": result.height}
+        category, score = categorize_output(result.data)
+        done_msg["category"] = category
+        if score is not None:
+            done_msg["category_score"] = score
         if has_thumbnail:
             done_msg["has_thumbnail"] = True
+        # Stamped last so it covers every step the user waits through, including
+        # categorization once that stops being a stub.
+        done_msg["duration_ms"] = int((time.monotonic() - job_started) * 1000)
         await ws.send(json.dumps(done_msg))
         logger.info("job %s done in %d gpu_ms", job_id, result.gpu_ms)
     except asyncio.CancelledError:
@@ -259,6 +298,7 @@ async def _gpu_unload(ws, engine: Engine, control: dict) -> None:
 
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
+    await warmup_realtime(engine, manifests, settings.realtime_slots)
     wire_manifests = engine.measured_manifests(manifests)
     await ws.send(json.dumps({
         "type": "hello",
@@ -267,6 +307,8 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         "models": wire_manifests,
         "realtime_slots": engine.effective_realtime_slots(wire_manifests,
                                                            settings.realtime_slots),
+        "device": settings.device,
+        "memory_mode": settings.memory_mode,
     }))
     try:
         response = json.loads(await ws.recv())
@@ -292,11 +334,12 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
+            gpu = await asyncio.to_thread(sample_gpu, settings.device)
             await ws.send(json.dumps({
                 "type": "heartbeat",
                 "slots_in_use": len(runners),
                 "loaded_models": engine.loaded_models(),
-                "gpu": sample_gpu(settings.device),
+                "gpu": gpu,
             }))
 
     heartbeat_task = asyncio.create_task(heartbeats())
@@ -323,20 +366,31 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
                         if runner is not None:
                             runner.close()
-                            await ws.send(json.dumps({"type": "session_closed",
-                                                      "session_id": control["session_id"],
-                                                      "frames": runner.frames}))
+                            category, score = categorize_output(None)
+                            closed = {
+                                "type": "session_closed",
+                                "session_id": control["session_id"],
+                                "frames": runner.frames,
+                                "gpu_ms": runner.gpu_ms,
+                                "duration_ms": int(
+                                    (time.monotonic() - runner.started_at) * 1000),
+                                "category": category,
+                            }
+                            if score is not None:
+                                closed["category_score"] = score
+                            await ws.send(json.dumps(closed))
                     elif control["type"] == "dispatch_job":
                         task = asyncio.create_task(run_job(
                             ws, engine, by_id[control["model_id"]], control))
                         jobs.add(task)
                         task.add_done_callback(jobs.discard)
                     elif control["type"] == "gpu_status":
+                        gpu = await asyncio.to_thread(sample_gpu, settings.device)
                         await ws.send(json.dumps({
                             "type": "gpu_status",
                             "request_id": control["request_id"],
                             "loaded_models": engine.loaded_models(),
-                            "gpu": sample_gpu(settings.device),
+                            "gpu": gpu,
                         }))
                     elif control["type"] == "load_model":
                         await _gpu_load(ws, engine, by_id, control)

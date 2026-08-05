@@ -5,10 +5,12 @@ with warm-cache state from earlier jobs. Commands are forwarded to a connected
 worker over the fleet socket (docs/connection-handling.md).
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.auth import current_user, require_role
 from app.realtime import gpu_command, pick_any_worker, pick_worker_for_model
+from app.tables import User
 
 router = APIRouter()
 
@@ -17,7 +19,7 @@ GPU_TIMEOUT = 120.0
 
 
 @router.get("/api/v1/benchmark/models")
-async def benchmark_models() -> list[dict]:
+async def benchmark_models(_user: User = Depends(current_user)) -> list[dict]:
     """All worker manifests, including benchmark_only (hidden from the studio UI)."""
     from app import registry
 
@@ -25,7 +27,7 @@ async def benchmark_models() -> list[dict]:
 
 
 @router.get("/api/v1/benchmark/gpu")
-async def gpu_status() -> dict:
+async def gpu_status(_user: User = Depends(current_user)) -> dict:
     worker = pick_any_worker()
     if worker is None:
         raise HTTPException(status_code=503, detail="no worker connected")
@@ -37,7 +39,10 @@ class LoadRequest(BaseModel):
 
 
 @router.post("/api/v1/benchmark/gpu/load")
-async def gpu_load(request: LoadRequest) -> dict:
+async def gpu_load(
+    request: LoadRequest,
+    _user: User = Depends(require_role("member")),
+) -> dict:
     worker = pick_worker_for_model(request.model_id)
     if worker is None:
         raise HTTPException(status_code=503,
@@ -55,7 +60,10 @@ class UnloadRequest(BaseModel):
 
 
 @router.post("/api/v1/benchmark/gpu/unload")
-async def gpu_unload(request: UnloadRequest = UnloadRequest()) -> dict:
+async def gpu_unload(
+    request: UnloadRequest = UnloadRequest(),
+    _user: User = Depends(require_role("member")),
+) -> dict:
     worker = pick_any_worker()
     if worker is None:
         raise HTTPException(status_code=503, detail="no worker connected")

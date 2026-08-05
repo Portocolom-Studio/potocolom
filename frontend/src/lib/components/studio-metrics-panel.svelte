@@ -4,7 +4,11 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { t } from '$lib/i18n.svelte';
 	import { formatMs, leaderboardRows } from '$lib/benchmark';
-	import { loadBenchmarkSessions, type BenchmarkSession } from '$lib/studio-benchmark-sessions';
+	import {
+		loadBenchmarkSessionReport,
+		loadBenchmarkSessions,
+		type BenchmarkSession
+	} from '$lib/studio-benchmark-sessions';
 	import {
 		fetchGpuHistory,
 		historyRollupForRange,
@@ -24,7 +28,7 @@
 	import { computePipelineMetrics } from '$lib/studio-session-pipeline-metrics';
 	import { computeSessionMetrics } from '$lib/studio-session-metrics';
 	import { demoGpuHistory, demoGpuSamples, demoHistory } from '$lib/studio-demo-metrics';
-	import { studio } from '$lib/studio.svelte';
+	import { studio, type Generation } from '$lib/studio.svelte';
 	import StudioBenchmarkChart from '$lib/components/studio-benchmark-chart.svelte';
 	import StudioBenchmarkRunTimeline from '$lib/components/studio-benchmark-run-timeline.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
@@ -35,13 +39,22 @@
 	import * as Card from '$lib/components/ui/card';
 	import * as Select from '$lib/components/ui/select';
 
+	const FAILURES_LIMIT = 20;
+
 	let liveTick = $state(0);
 	let sessions = $state<BenchmarkSession[]>([]);
 	let sessionsLoading = $state(false);
 	let sessionsError = $state(false);
 	let selectedSessionId = $state<string | null>(null);
+	let reportLoadingId = $state<string | null>(null);
+	let reportErrorId = $state<string | null>(null);
 	let metricsRange = $state<MetricsRange>('5m');
 	let persistedHistory = $state<GpuHistoryPoint[]>([]);
+	let recentFailures = $state<Generation[]>([]);
+	let failuresLoading = $state(false);
+	let fetchedFailedCount = $state<number | null>(null);
+	let failuresInFlight = false;
+	const loadingReports = new Set<string>();
 
 	const demoMode = $derived.by(() => {
 		void liveTick;
@@ -111,13 +124,54 @@
 		sessions.find((entry) => entry.id === selectedSessionId) ?? sessions[0] ?? null
 	);
 	const benchmarkRows = $derived(
-		selectedSession ? leaderboardRows(selectedSession.report.model_stats) : []
+		selectedSession?.report ? leaderboardRows(selectedSession.report.model_stats) : []
 	);
 	const latestSample = $derived.by(() => {
 		void liveTick;
 		const samples = demoMode ? demoGpuSamples() : gpuSamples();
 		return samples.length > 0 ? samples[samples.length - 1] : null;
 	});
+
+	const displayedFailures = $derived.by(() => {
+		void liveTick;
+		if (demoMode) {
+			return demoHistory()
+				.filter((generation) => generation.state === 'failed')
+				.slice(0, FAILURES_LIMIT);
+		}
+		return recentFailures;
+	});
+	const failedHistoryCount = $derived(
+		studio.history.filter((generation) => generation.state === 'failed').length
+	);
+
+	function formatFailureWhen(iso: string | null): string {
+		if (!iso) return '-';
+		const parsed = Date.parse(iso);
+		if (Number.isNaN(parsed)) return iso;
+		return new Date(parsed).toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
+		});
+	}
+
+	async function loadRecentFailures(): Promise<void> {
+		failuresLoading = true;
+		try {
+			const response = await fetch(`/api/v1/generations?state=failed&limit=${FAILURES_LIMIT}`);
+			if (!response.ok) {
+				recentFailures = [];
+				return;
+			}
+			recentFailures = (await response.json()) as Generation[];
+		} catch {
+			recentFailures = [];
+		} finally {
+			failuresLoading = false;
+		}
+	}
 
 	onMount(() => {
 		const unsubscribe = subscribeGpuSamples(() => {
@@ -136,6 +190,21 @@
 	});
 
 	$effect(() => {
+		if (studio.metricsTab !== 'usage') {
+			fetchedFailedCount = null;
+			return;
+		}
+		if (demoMode) return;
+		const count = failedHistoryCount;
+		if (failuresInFlight || fetchedFailedCount === count) return;
+		fetchedFailedCount = count;
+		failuresInFlight = true;
+		void loadRecentFailures().finally(() => {
+			failuresInFlight = false;
+		});
+	});
+
+	$effect(() => {
 		if (studio.metricsTab !== 'benchmarks' || sessions.length > 0 || sessionsLoading) return;
 		sessionsLoading = true;
 		void loadBenchmarkSessions()
@@ -148,6 +217,37 @@
 			})
 			.finally(() => {
 				sessionsLoading = false;
+			});
+	});
+
+	$effect(() => {
+		if (studio.metricsTab !== 'benchmarks') return;
+		const selected = selectedSession;
+		if (
+			!selected ||
+			selected.report ||
+			loadingReports.has(selected.id) ||
+			reportErrorId === selected.id
+		) {
+			return;
+		}
+		const id = selected.id;
+		loadingReports.add(id);
+		reportLoadingId = id;
+		void loadBenchmarkSessionReport(id)
+			.then((report) => {
+				if (report === null) {
+					reportErrorId = id;
+					return;
+				}
+				sessions = sessions.map((entry) => (entry.id === id ? { ...entry, report } : entry));
+			})
+			.catch(() => {
+				reportErrorId = id;
+			})
+			.finally(() => {
+				loadingReports.delete(id);
+				if (reportLoadingId === id) reportLoadingId = null;
 			});
 	});
 </script>
@@ -292,6 +392,40 @@
 				</div>
 			{/if}
 		</section>
+
+		<section class="flex flex-col gap-2">
+			<h3 class="text-sm font-medium">{t('app.metrics.failures')}</h3>
+			{#if failuresLoading && displayedFailures.length === 0}
+				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_loading')}</p>
+			{:else if displayedFailures.length === 0}
+				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_empty')}</p>
+			{:else}
+				<div class="border-border overflow-hidden rounded-lg border">
+					<table class="w-full min-w-[32rem] text-sm">
+						<thead class="bg-muted/30 text-muted-foreground text-left text-xs">
+							<tr>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_when')}</th>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_model')}</th>
+								<th class="px-4 py-2.5 font-medium">{t('app.metrics.col_reason')}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each displayedFailures as row (row.id)}
+								<tr class="border-border/60 border-t align-top">
+									<td class="text-muted-foreground px-4 py-2.5 font-mono text-xs whitespace-nowrap">
+										{formatFailureWhen(row.finished_at ?? row.created_at)}
+									</td>
+									<td class="px-4 py-2.5 font-mono text-xs">{row.model_id}</td>
+									<td class="px-4 py-2.5 font-mono text-xs wrap-break-word whitespace-pre-wrap">
+										{row.failure_reason ?? '-'}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
+		</section>
 	{:else if sessionsLoading}
 		<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
 	{:else if sessionsError || sessions.length === 0}
@@ -305,7 +439,10 @@
 				type="single"
 				value={selectedSessionId ?? undefined}
 				onValueChange={(next) => {
-					if (next) selectedSessionId = next;
+					if (next) {
+						selectedSessionId = next;
+						reportErrorId = null;
+					}
 				}}
 			>
 				<Select.Trigger class="w-full">
@@ -321,7 +458,7 @@
 			</Select.Root>
 		</div>
 
-		{#if selectedSession}
+		{#if selectedSession?.report}
 			<div class="flex flex-wrap items-center gap-2">
 				{#if selectedSession.report.target_vram_gb}
 					<Badge variant="secondary">{selectedSession.report.target_vram_gb} GB VRAM</Badge>
@@ -362,6 +499,17 @@
 					</tbody>
 				</table>
 			</div>
+		{:else if reportLoadingId === selectedSession?.id}
+			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
+		{:else if reportErrorId === selectedSession?.id}
+			<div class="flex items-center gap-3">
+				<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_error')}</p>
+				<Button variant="outline" size="sm" onclick={() => (reportErrorId = null)}>
+					{t('app.metrics.benchmark_retry')}
+				</Button>
+			</div>
+		{:else}
+			<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_empty')}</p>
 		{/if}
 	{/if}
 </div>

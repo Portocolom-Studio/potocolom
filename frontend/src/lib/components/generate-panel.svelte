@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -25,6 +26,7 @@
 	} from '$lib/model-params';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
+	import { estimatePromptTokens, exceedsWindow } from '$lib/prompt-tokens';
 	import {
 		defaultUpscaleModelId,
 		filterDiffusionModels,
@@ -48,6 +50,10 @@
 		'placeholder:text-muted-foreground w-full min-w-0 rounded-lg border bg-transparent ' +
 		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
+	// Default toggle `data-[state=on]:bg-muted` is nearly invisible on the card;
+	// match LanguageToggle so Fast/Quality/factor picks read clearly.
+	const toggleOnClass =
+		'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:hover:bg-primary/90';
 
 	let panelMode = $state<'generate' | 'upscale'>('generate');
 	let stepsNorm = $state(0);
@@ -126,9 +132,45 @@
 		})
 	);
 	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
-	const upscaleEstimateMs = $derived(estimateUpscaleGpuMs(upscaleModel, upscaleFactor));
+	// Diffusers truncates at the text encoder window and only logs it worker
+	// side, so the prompt tail silently stops affecting the image (issue #148).
+	const promptWindow = $derived(selectedModel?.prompt_token_limit ?? 0);
+	const promptTokens = $derived(estimatePromptTokens(studio.prompt));
+	const promptTokenNotice = $derived(
+		exceedsWindow(promptTokens, promptWindow)
+			? t('app.gen.prompt_too_long')
+					.replace('{tokens}', String(promptTokens))
+					.replace('{limit}', String(promptWindow))
+			: null
+	);
+	const upscaleSource = $derived(
+		shown !== null && shown.assets.length > 0
+			? { width: shown.assets[0].width, height: shown.assets[0].height }
+			: undefined
+	);
+	const upscaleEstimateMs = $derived(
+		estimateUpscaleGpuMs(upscaleModel, upscaleFactor, upscaleSource)
+	);
 	const upscaleEstimateLabel = $derived(
 		upscaleEstimateMs != null ? `~${formatMs(upscaleEstimateMs)}` : null
+	);
+	const upscaleOutLabel = $derived(
+		upscaleSource != null
+			? `${upscaleSource.width * upscaleFactor}x${upscaleSource.height * upscaleFactor}`
+			: null
+	);
+	const upscaleChoiceLabel = $derived(
+		upscaleModel != null
+			? `${upscaleModel.name} · x${upscaleFactor}` +
+					(upscaleSource != null
+						? ` · ${upscaleSource.width}x${upscaleSource.height}` +
+							(upscaleOutLabel != null ? ` -> ${upscaleOutLabel}` : '')
+						: '') +
+					(upscaleEstimateLabel != null ? ` · ${upscaleEstimateLabel}` : '')
+			: null
+	);
+	const shownFactor = $derived(
+		typeof shown?.params.factor === 'number' ? shown.params.factor : null
 	);
 	const panelTitle = $derived(
 		panelMode === 'generate' ? t('app.gen.title') : t('app.upscale.title')
@@ -292,10 +334,10 @@
 				value={panelMode}
 				onValueChange={(value) => value && onPanelModeChange(value)}
 			>
-				<ToggleGroup.Item value="generate" class="min-w-0 flex-1 text-xs">
+				<ToggleGroup.Item value="generate" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 					{t('app.gen.mode_generate')}
 				</ToggleGroup.Item>
-				<ToggleGroup.Item value="upscale" class="min-w-0 flex-1 text-xs">
+				<ToggleGroup.Item value="upscale" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 					{t('app.gen.mode_upscale')}
 				</ToggleGroup.Item>
 			</ToggleGroup.Root>
@@ -327,6 +369,9 @@
 									</Select.Group>
 								</Select.Content>
 							</Select.Root>
+							{#if selectedModel?.requires_attribution}
+								<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
+							{/if}
 						</div>
 						<div class="flex flex-col gap-2">
 							<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
@@ -334,7 +379,16 @@
 								id="gen-prompt"
 								class={fieldClass + ' no-scrollbar h-44 resize-none overflow-y-auto py-2'}
 								placeholder={t('app.gen.prompt_placeholder')}
+								aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
 								bind:value={studio.prompt}></textarea>
+							{#if promptTokenNotice}
+								<!-- Described by the field rather than announced from a live region:
+								the count changes on every keystroke, which a polite region would
+								read out again and again while the user is still typing. -->
+								<p id="gen-prompt-window" class="text-muted-foreground text-sm leading-relaxed">
+									{promptTokenNotice}
+								</p>
+							{/if}
 						</div>
 						<div class="grid grid-cols-2 gap-3">
 							<div class="flex flex-col gap-2">
@@ -362,7 +416,10 @@
 								onValueChange={(value) => value && onSizeChange(value)}
 							>
 								{#each sizeOptions as option (option)}
-									<ToggleGroup.Item value={String(option)} class="min-w-0 flex-1 text-xs">
+									<ToggleGroup.Item
+										value={String(option)}
+										class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
+									>
 										{option} x {option}
 									</ToggleGroup.Item>
 								{/each}
@@ -491,14 +548,14 @@
 							>
 								<ToggleGroup.Item
 									value={UPSCALE_FAST_ID}
-									class="min-w-0 flex-1 text-xs"
+									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
 									disabled={!hasUpscaleFast}
 								>
 									{t('app.gen.upscale_fast')}
 								</ToggleGroup.Item>
 								<ToggleGroup.Item
 									value={UPSCALE_QUALITY_ID}
-									class="min-w-0 flex-1 text-xs"
+									class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
 									disabled={!hasUpscaleQuality}
 								>
 									{t('app.gen.upscale_quality')}
@@ -506,6 +563,9 @@
 							</ToggleGroup.Root>
 						{:else}
 							<p class="text-sm">{upscaleModel?.name ?? upscaleModelId}</p>
+						{/if}
+						{#if upscaleChoiceLabel != null}
+							<p class="text-muted-foreground text-xs leading-relaxed">{upscaleChoiceLabel}</p>
 						{/if}
 					</div>
 					<div class="flex flex-col gap-2">
@@ -518,10 +578,10 @@
 							value={String(upscaleFactor)}
 							onValueChange={(value) => value && onUpscaleFactorChange(value)}
 						>
-							<ToggleGroup.Item value="2" class="min-w-0 flex-1 text-xs">
+							<ToggleGroup.Item value="2" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 								{t('app.gen.upscale_x2')}
 							</ToggleGroup.Item>
-							<ToggleGroup.Item value="4" class="min-w-0 flex-1 text-xs">
+							<ToggleGroup.Item value="4" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 								{t('app.gen.upscale_x4')}
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
@@ -564,21 +624,37 @@
 		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
 			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
 				{#if shown !== null}
-					<a
-						href={shown.assets[0].url}
-						target="_blank"
-						rel="noopener"
-						class="block min-h-0 flex-1"
-						title={t('app.gen.open_full')}
-					>
-						<img
-							src={shown.assets[0].url}
-							alt={shown.params.prompt ?? t('app.gen.result')}
-							class="h-full w-full rounded-lg object-contain"
-						/>
-					</a>
+					<div class="relative min-h-0 flex-1">
+						<a
+							href={shown.assets[0].url}
+							target="_blank"
+							rel="noopener"
+							class="block h-full"
+							title={t('app.gen.open_full')}
+						>
+							<img
+								src={shown.assets[0].url}
+								alt={shown.params.prompt ?? t('app.gen.result')}
+								class="h-full w-full rounded-lg object-contain"
+							/>
+						</a>
+						<Button
+							href={shown.assets[0].download_url}
+							variant="secondary"
+							size="sm"
+							class="absolute top-2 right-2"
+						>
+							<DownloadIcon />
+							{t('app.gen.download')}
+						</Button>
+					</div>
 					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
-						{shown.params.prompt}
+						{#if shown.params.prompt}
+							{shown.params.prompt}
+						{:else}
+							{shown.model_id}{shownFactor != null ? ` · x${shownFactor}` : ''}
+							· {shown.assets[0].width}x{shown.assets[0].height}
+						{/if}
 						{#if shown.gpu_ms != null}
 							<span class="text-foreground/70">
 								· {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span

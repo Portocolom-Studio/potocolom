@@ -22,18 +22,20 @@ bytes 17-    image payload (WebP in production; the simulation carries opaque by
 
 Frames never contain JSON and control messages never contain image bytes; the two kinds are routable without parsing payloads.
 
+> Shipped status (2026-07-30): the 17-byte header above is the current wire and contains no sequence number or revision: one kind byte plus one 16-byte session UUID. Issue #19, "Real-Time Generation Protocol", owns monotonic input revisions and generated-output correlation, so its protocol-versioned result will supersede this header description when implemented.
+
 ## Message catalogue
 
 Fleet connection, worker to API:
 
 | type | Fields | Notes |
 |---|---|---|
-| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers) |
-| `heartbeat` | `slots_in_use` | every 30 seconds |
+| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
+| `heartbeat` | `slots_in_use`, `loaded_models`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
-| `session_closed` | `session_id`, `frames` | worker side accounting |
+| `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
 | `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
-| `job_done` | `job_id`, `gpu_ms`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
+| `job_done` | `job_id`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
 | `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
 
 Fleet connection, API to worker:
@@ -71,10 +73,10 @@ sequenceDiagram
     participant W as Worker
     participant A as API server
     W->>A: WS connect /api/v1/fleet
-    W->>A: hello (protocol_version, worker_id, models, realtime_slots)
+    W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
-        Note over W,A: worker is dispatchable; heartbeats begin
+        Note over W,A: worker is dispatchable and heartbeats begin
     else version too old
         A-->>W: rejected (min_supported_version)
         A->>W: close 4002
@@ -82,6 +84,12 @@ sequenceDiagram
 ```
 
 The version gate implements the N-1 promise: with current protocol version N, versions N and N-1 register, anything older is rejected. The browser side is symmetric but simpler: connect, `open`, then either `ready` or `error`.
+
+### Browser authentication and authorization
+
+Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized; a viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal, create no admission or worker state, and send an error before closing. Logout, revocation, disable, deletion, or role change cancels queued work or closes indexed live connections. After gateway extraction, the browser presents a short-lived API-minted ticket and the gateway validates transport admission without taking API authority.
+
+> Shipped status (2026-07-30): **not yet implemented.** The current endpoint accepts the WebSocket before `open`, binds only the implicit local user, and has no ticket, connection index, invalidation path, or unauthorized/forbidden close semantics. The governing decision is "Realtime authorization: bind once, invalidate explicitly"; issue #19, "Real-Time Generation Protocol", owns direct-socket behavior and "Gateway realtime tickets and revocation" owns the gateway path.
 
 ## Timeouts and intervals
 
@@ -93,7 +101,9 @@ The version gate implements the N-1 promise: with current protocol version N, ve
 | Idle slot release | 60 s without canvas input | credit metering stops; canvas stays in the browser |
 | Simulated inference time | configurable | the prototype sleeps instead of denoising |
 
-TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. Two rows ship with the realtime protocol issue (#19) rather than the prototype: the idle slot release (until then a slot stays pinned from `ready` to close) and the browser keepalive, which will be an application level control message because browser WebSocket APIs cannot send protocol pings. Everything else in the table is implemented.
+> Shipped status (2026-07-30): **partially implemented.** Worker heartbeats and the 90-second reap path ship. The browser handler implements neither an application keepalive nor 60-second idle release; a ready slot stays pinned until close. Issue #19, "Real-Time Generation Protocol", governs both missing rows.
+
+TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. Browser keepalive is an application-level control message because browser WebSocket APIs cannot send protocol pings.
 
 ## Reconnection and resume
 
@@ -103,6 +113,8 @@ Session recovery is asymmetric by design:
 
 - Worker lost: the API keeps the browser connection, sends `interrupted`, picks another worker with a free slot, sends it `open_session`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost.
 - Browser lost: the API closes the worker side of the session (`close_session`) and releases the slot. The canvas lives in the browser, so there is nothing to recover server side; a returning browser opens a new session.
+
+> Shipped status (2026-07-30): **partially implemented.** Worker reconnect backoff and process-local worker-loss reassignment ship; browser reconnect remains design. Recovery cannot cross replicas, survive loss of the owning API process, or queue when no replacement slot is free; that last case closes with 4003. "Redis-optional Queues and FrameBus contracts", issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern cross-owner recovery and resume priority. The diagram below shows the designed successful path.
 
 ```mermaid
 sequenceDiagram
@@ -135,6 +147,14 @@ stateDiagram-v2
     Holding --> [*]: close_session
 ```
 
+## Origin check
+
+Both endpoints refuse a handshake whose `Origin` header is present and not allowed, before the socket is accepted. The connection fails as HTTP 403, so no close code applies. A request with no `Origin` is accepted: worker processes and other non-browser clients send none, while browsers always send one and cannot forge it.
+
+Allowed origins are `PUBLIC_URL` plus anything in `ALLOWED_ORIGINS`. The dev loop needs the latter, because the vite server proxies `/api/v1` and the browser's origin is its own.
+
+This is a boundary control, not authentication. WebSocket handshakes ignore the same-origin policy and send no preflight, so without it any page the operator visits can reach both sockets and the trusted-LAN posture in [README.md](../README.md) does not hold. Worker authentication is separate and still deferred (`FLEET_TOKEN_KEY`).
+
 ## Close codes
 
 | Code | Meaning | Sent to |
@@ -145,7 +165,7 @@ stateDiagram-v2
 | 4003 | no worker capacity for the requested model | browser |
 | 4004 | unknown model | browser |
 
-Codes 4005 and up are reserved for the messages later issues add (unauthorized, drained, quota exhausted).
+> Shipped status (2026-07-30): code 4003 is currently an immediate full-pool rejection. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers.
 
 ## Delivery semantics
 

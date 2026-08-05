@@ -12,19 +12,26 @@ select them. Reference timings may still appear on `/benchmark`.
 
 | Model | License | Product status |
 | --- | --- | --- |
-| sd-turbo, sdxl-turbo | Stability AI Community | Benchmark reference |
 | sdxl-hypersd | Open RAIL++-M base + Hyper-SD LoRA with NO declared license | Benchmark reference (issue #75); not promotable until ByteDance declares terms |
+| sd-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
+| sdxl-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
+| dreamshaper-lcm | CreativeML Open RAIL-M | Benchmark / self-host reference; hidden from studio for quality |
 
-If you later offer any of these in the product, the obligations below apply.
+## Stability Community License product models
 
-## Stability AI Community License (sd-turbo, sdxl-turbo)
+| Model | License | Product status |
+| --- | --- | --- |
+| sd35-medium | Stability AI Community | Studio quality tier (issue #151). Gated weights, `HF_TOKEN` required; runs on the model-offload rung on a 16 GB card at roughly 56 s per 1024 px image |
+
+## Stability AI Community License (sd-turbo, sdxl-turbo, sd35-medium)
 
 Applies while **you or your affiliates** generate **≤ USD $1,000,000** in
 annual revenue (aggregate, from any source). Above that threshold the Community
 License terminates and you must stop using these models or obtain an Enterprise
 license from Stability AI.
 
-**Before commercial use** (including offering these models in the hosted cloud):
+**Before commercial use** (including offering these models from a commercial
+benchmark or product surface):
 
 1. Register at [stability.ai/community-license](https://stability.ai/community-license).
 2. Comply with the [Stability AI Acceptable Use Policy](https://stability.ai/use-policy).
@@ -37,7 +44,17 @@ requires:
 - **Prominent display** of **"Powered by Stability AI"** on the website, user
   interface, or product documentation.
 
-## Unrestricted product models
+The studio satisfies the display obligation per model: the generate panel
+renders a manifest's `requires_attribution` string beneath the model picker
+whenever it is non-empty, so the credit appears exactly when a Stability model
+is selected and never implies Stability powers an Apache-licensed model.
+
+Hub access is a separate gate from commercial registration. `sd35-medium`
+additionally requires accepting the model license on Hugging Face before the
+weights can be downloaded at all; see
+[self-hosting.md](self-hosting.md) for the `HF_TOKEN` procedure.
+
+## Unrestricted product models (no Stability revenue cap)
 
 | Model | License |
 | --- | --- |
@@ -46,7 +63,6 @@ requires:
 | ssd-1b | Apache 2.0 |
 | vega-rt (base + VegaRT LCM LoRA) | Apache 2.0 |
 | ssd-1b-lightning (SSD-1B + SDXL Lightning LoRA) | Apache 2.0 base + CreativeML Open RAIL++-M LoRA |
-| dreamshaper-lcm | CreativeML Open RAIL-M |
 | realesrgan (RealESRGAN_x2plus / x4plus weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
 | realesrgan-fast (realesr-general-x4v3 weights) | BSD-3-Clause (xinntao/Real-ESRGAN) |
 

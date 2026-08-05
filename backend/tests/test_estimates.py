@@ -1,4 +1,16 @@
+import asyncio
+
+import pytest
+
+from app import db, estimates
 from app.estimates import estimate_gpu_ms, schema_defaults
+
+
+@pytest.fixture(autouse=True)
+def clear_observed_timings():
+    estimates._observed_scales = {}
+    yield
+    estimates._observed_scales = {}
 
 
 def test_schema_defaults_reads_property_defaults():
@@ -37,14 +49,16 @@ def test_estimate_gpu_ms_scales_with_pixel_count():
 
 
 def test_estimate_gpu_ms_uses_schema_defaults_when_params_omitted():
+    # 15 steps is sdxl-base's recorded baseline, so this asserts the stored
+    # timing rather than an extrapolation off it.
     defaults = schema_defaults({
         "properties": {
-            "steps": {"default": 20},
+            "steps": {"default": 15},
             "width": {"default": 1024},
             "height": {"default": 1024},
         },
     })
-    assert estimate_gpu_ms("sdxl-base", defaults) == 15274
+    assert estimate_gpu_ms("sdxl-base", defaults) == 11960
 
 
 def test_estimate_gpu_ms_unknown_model_returns_none():
@@ -59,13 +73,70 @@ def test_estimate_gpu_ms_requires_explicit_params():
 def test_estimate_gpu_ms_upscale_uses_measured_factor_map():
     # Measured per factor: quadratic scaling overestimated x4 by ~2x, and the
     # compact net's cost is nearly flat (native x4 run plus Lanczos down).
-    assert estimate_gpu_ms("realesrgan", {"factor": 2}) == 17931
-    assert estimate_gpu_ms("realesrgan", {"factor": 4}) == 37853
-    assert estimate_gpu_ms("realesrgan", {}) == 17931
-    assert estimate_gpu_ms("realesrgan-fast", {"factor": 2}) == 759
-    assert estimate_gpu_ms("realesrgan-fast", {"factor": 4}) == 555
-    assert estimate_gpu_ms("realesrgan-fast", {}) == 759
+    assert estimate_gpu_ms("realesrgan", {"factor": 2}) == 1477
+    assert estimate_gpu_ms("realesrgan", {"factor": 4}) == 6134
+    assert estimate_gpu_ms("realesrgan", {}) == 1477
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 2}) == 711
+    assert estimate_gpu_ms("realesrgan-fast", {"factor": 4}) == 532
+    assert estimate_gpu_ms("realesrgan-fast", {}) == 711
     assert estimate_gpu_ms("realesrgan", {"factor": 3}) is None
+
+
+def test_observed_timing_below_threshold_keeps_shipped_constant():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3736
+
+
+def test_observed_timing_at_threshold_uses_median():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300, 3400)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3200
+
+
+def test_observed_timing_median_resists_outlier():
+    rows = [
+        ("sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}, gpu_ms)
+        for gpu_ms in (3000, 3100, 3200, 3300, 999_999)
+    ]
+
+    estimates._observed_scales = estimates._derive_observed_scales(rows)
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3200
+
+
+def test_observed_timing_database_failure_uses_shipped_constant(monkeypatch):
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("database unavailable")
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    estimates._observed_scales = {"sdxl-fast": 0.5}
+    monkeypatch.setattr(db, "session_factory", BrokenSession)
+
+    asyncio.run(estimates.refresh_observed_timings())
+
+    assert estimate_gpu_ms(
+        "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}
+    ) == 3736
 
 
 def test_load_timings_survives_bad_json(tmp_path, monkeypatch):

@@ -99,22 +99,90 @@ flowchart TB
     FLEET -->|"start and stop machines"| POOL
 ```
 
+### The cloud profile in detail
+
+The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: the session-cookie path inside `current_user` (issue #5), the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95).
+
+```mermaid
+flowchart TB
+    subgraph SPA["Browser: SvelteKit SPA, one build for every mode"]
+        UI["Studio: realtime canvas,<br>generate panel"]
+        GAL["Gallery and history"]
+        MET["Metrics panel"]
+        CFG["Login screen built from<br>GET /api/v1/config"]
+    end
+    subgraph EDGE["Edge"]
+        CF["CloudFront<br>SPA assets, signed image URLs"]
+        ALB["ALB: TLS and routing"]
+    end
+    subgraph API["API replica: FastAPI, stateless, N copies behind the ALB"]
+        AUTH["current_user dependency and role check<br>accounts modes: session cookie to<br>Redis cache, PostgreSQL on miss"]
+        REST["REST routers: auth, models,<br>generations, metrics, studio"]
+        RELAY["Realtime relay<br>browser WS to worker WS"]
+        SCHED["Scheduler leader, Redis lease<br>admission, dispatch, preemption"]
+        SAMP["gpu_samples writer and<br>5-minute rollup maintenance"]
+        STOR["Storage adapter<br>presigned PUT, signed GET"]
+        QC["Quota client: reserve, commit,<br>refund, outbox retries"]
+    end
+    subgraph DATA["Data plane"]
+        PG[("RDS PostgreSQL, source of truth:<br>users, sessions, jobs, assets,<br>models, usage_events, gpu_samples")]
+        RED[("ElastiCache Valkey, namespaced:<br>session cache, job and admission<br>queues, rt pub/sub, rate limits")]
+        S3[("S3 private assets bucket<br>users/ and trial/ prefixes")]
+    end
+    subgraph POOL["GPU pool: rented machines, RunPod and vast.ai"]
+        W["One worker per GPU<br>heartbeat every 30 s with GPU sample<br>CLIP category at job_done"]
+        R2[("Cloudflare R2<br>model weights")]
+    end
+    subgraph PRIV["Private repo services, HTTP boundaries"]
+        BILL["Billing: Stripe, credit ledger,<br>QuotaService contract"]
+        FLEET["Fleet autoscaler<br>queue depth to machines rented"]
+        TEL["Telemetry ingest<br>daily aggregates, self-hosted installs"]
+    end
+    OBS["CloudWatch and Sentry"]
+    SES["SES: verification and<br>sign-in notification email"]
+
+    SPA -->|"static assets, then<br>signed URLs for images"| CF
+    CF -->|"origin fetch under origin access control:<br>the bucket accepts no public requests"| S3
+    SPA <-->|"REST and WS, session cookie"| ALB
+    ALB --> API
+    AUTH --> RED
+    AUTH --> PG
+    REST --> PG
+    REST --> SES
+    RELAY <--> RED
+    SCHED <--> RED
+    SCHED --> PG
+    SAMP --> PG
+    STOR --> S3
+    QC <-->|"HTTP"| BILL
+    W -->|"dials out, one WSS"| RELAY
+    W -->|"weights at boot"| R2
+    RED -.->|"queue depth"| FLEET
+    FLEET -->|"start and stop"| POOL
+    API -.->|"logs, metrics, alarms"| OBS
+    INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate;<br>this deployment sends nothing"| TEL
+```
+
+Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
+
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap, while the realtime relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, realtime admission queue, FrameBus, or cross-replica control state. The target boxes are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+
 ## Pluggable seams
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an httpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
+- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
 
 ## GPU scheduling
 
-GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. Self-hosted installs are the degenerate case of every rule below: one worker, one user, no queue.
+GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. A Redis-free, `AUTH_MODE=none` self-hosted install is the simplest profile, not the definition of self-hosting: issue #9, "Authentication", adds local accounts, and "Realtime and queue Redis seam: optional, behaviorally equivalent" permits a self-hosted operator to enable Redis and multiple socket-owning processes without changing queue behavior.
 
 ### Capacity and the real time bar
 
-The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Each worker advertises its real time slots in its registration, and the count is measured, not configured: at model warmup the worker benchmarks frame time at increasing batch sizes and advertises the largest session count that holds p95 frame time under the bar. The scheduler admits sessions against slots, never against hope: it does not oversubscribe. Density beyond calibration - batching frames from concurrent sessions inside the worker, StreamDiffusion-class pipeline optimizations - is designed and deferred with an explicit trigger in [decisions.md](decisions.md) ("GPU session density"); it all lives below the slot abstraction, so the scheduler never changes.
+The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Each worker advertises its real time slots in its registration, and the count is measured, not configured: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the bar (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS; sessions serialize on the worker GPU lock until cross-session batching lands. The scheduler admits sessions against slots, never against hope: it does not oversubscribe. Density beyond calibration - batching frames from concurrent sessions inside the worker, StreamDiffusion-class pipeline optimizations - is designed and deferred with an explicit trigger in [decisions.md](decisions.md) ("GPU session density"); it all lives below the slot abstraction, so the scheduler never changes.
 
 ### One pool, real time first
 
@@ -130,6 +198,8 @@ A worker's VRAM holds roughly one or two models, so balancing users onto models 
 ### Model routing
 
 A request that pins a `model_id` gets that model. A request that does not is resolved by the API to the cheapest registered model whose `tier` (`draft`, `standard`, `premium`, from the manifest), capabilities and parameter schema satisfy it. Difficulty needs no classifier because the interface states it: drawing strokes are realtime work on a draft-tier turbo model, a refine action is a queued job routed to a heavier tier. This is a selection function inside dispatch, not a service; the draft-then-refine loop it enables is frontend composition of the two workflows below.
+
+> Shipped status (2026-07-23): **not yet implemented.** `model_id` is required on `POST /api/v1/generations`, and the manifest has no `tier` field, so there is no routing path today. This section describes a designed policy.
 
 ### Low VRAM operation: the memory ladder
 
@@ -150,9 +220,19 @@ flowchart TD
 
 The rung is per model, not per worker: an 8 GB card can hold sd-turbo fully resident for drawing sessions while running a much larger generation model on group offload beside it. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
 
+An automatically selected rung is also corrected after an out-of-memory error.
+At load time the worker descends from full residency to model offload, then
+from model offload to group offload. Generation can need more memory than
+loading: if the existing eviction and retry still runs out of memory, the
+worker descends one rung, reloads the pipeline and retries the job once.
+The one-rung and one-retry limit keeps a bad job from walking the whole ladder.
+An operator-selected `MEMORY_MODE` rung never descends.
+
 ### When the pool is full
 
 A session request that finds no free slot waits in an admission queue. The user sees their position and an estimated wait; the autoscaler treats queue length as a scale up signal, so waits shrink as new machines boot (one to two minutes on rented GPU providers). Once billing exists, paid tiers move ahead in the queue; nothing ever preempts an active session. There is no time slice sharing and no hard reject.
+
+> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler closes a browser with code 4003 when no compatible slot is free. The queue described here remains the accepted design under "Full pool: admission queue with paid tier priority", issue #19, "Real-Time Generation Protocol", and "Redis-optional Queues and FrameBus contracts".
 
 ### Idle sessions
 
@@ -174,6 +254,8 @@ stateDiagram-v2
 
 Credits are metered only in the Active state.
 
+> Shipped status (2026-07-30): **not yet implemented.** The browser handler does not track input idle time, release a slot after 60 seconds, or implement `idle` and `resuming` controls. Issue #19, "Real-Time Generation Protocol", owns the wire behavior and issue #20, "Multi-Worker Scheduling", owns release and reacquisition. The state diagram above is the designed policy.
+
 ### Frame relay across API replicas
 
 In the cloud the browser's WebSocket and the assigned worker's persistent connection usually terminate on different API replicas, because the load balancer spreads connections. Frames hop between replicas through Redis pub/sub channels keyed by session id: whichever replica holds each socket publishes inbound traffic and subscribes to the other direction. The hop is sub millisecond inside the VPC and removes any need for sticky sessions. Self-hosted, one process holds both sockets and the relay is an in-process call through the same interface.
@@ -184,6 +266,8 @@ flowchart LR
     A1 <-->|"Redis pub/sub<br>session channels"| A2["API replica 2"]
     A2 <-->|"WS, persistent"| W["Worker"]
 ```
+
+> Shipped status (2026-07-30): **not yet implemented.** The current relay works only inside one API process and has no FrameBus abstraction or Redis package. "Realtime and queue Redis seam: optional, behaviorally equivalent" and "Redis-optional Queues and FrameBus contracts" govern this designed path; "Realtime relay: Go gateway required for the 1000-active-session target" governs the eventual socket owner. The diagram above remains the pre-gateway form of the design.
 
 ## Workflows
 
@@ -198,7 +282,7 @@ sequenceDiagram
     participant W as Worker
     participant S as Storage
     B->>A: POST /api/v1/generations
-    A->>A: resolve model, tier routing when model_id absent
+    A->>A: resolve model by model_id (tier routing is designed, not shipped)
     A->>A: quota reserve, create job row
     A-->>B: job id
     A->>W: dispatch, direct self-hosted or Redis queue in cloud
@@ -315,6 +399,36 @@ sequenceDiagram
     end
 ```
 
+### Every request after login
+
+There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
+
+> Shipped status (2026-07-28): the dependency and the endpoint are real, and starring writes `jobs.starred_at` as drawn. What the diagram describes ahead of the code is the session half: `AUTH_MODE=none` is the only mode implemented (backend/app/auth.py), so there is no cookie, no session row and no Redis lookup yet, and the per-user rate limit counter arrives with accounts (issue #5). Roles already exist on the user row and are checked beside `current_user`.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant LB as Load balancer
+    participant A as API replica, any of N
+    participant R as Redis
+    participant P as PostgreSQL
+    B->>LB: POST /api/v1/generations/{id}/star<br>HttpOnly session cookie
+    LB->>A: route to any replica, no sticky sessions
+    A->>R: rate limit counter, per user<br>(with accounts, issue #5)
+    A->>R: session token lookup
+    alt cache hit
+        R-->>A: user id
+    else cache miss
+        A->>P: SELECT session row
+        P-->>A: user id
+        A->>R: re-cache session
+    end
+    A->>P: single row update of jobs.starred_at
+    P-->>A: ok
+    A-->>B: 204
+    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In the accounts modes, an install without Redis<br>reads the session row from PostgreSQL every time.
+```
+
 ### Adding a new model
 
 The issue #11 goal: no frontend release needed.
@@ -363,6 +477,7 @@ Every model the worker can serve is described by a manifest. Example:
   "capabilities": ["image_to_image", "realtime"],
   "tier": "draft",
   "min_vram_gb": 8,
+  "prompt_token_limit": 77,
   "parameters": {
     "type": "object",
     "properties": {
@@ -376,13 +491,20 @@ Every model the worker can serve is described by a manifest. Example:
 
 `min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. `tier` feeds model routing: requests that do not pin a model resolve to the cheapest tier that satisfies them.
 
+`prompt_token_limit` is the model's native text encoder window in tokens, so the studio warns when a prompt runs past it (issue #148). The shipped CLIP based manifests declare 77. For those models, the worker encodes longer prompts in successive native-size chunks and concatenates their embeddings instead of letting diffusers truncate the prompt. Positive and negative embeddings are padded to the same number of chunks; SDXL applies the same strategy to both text encoders and takes its pooled embedding from the first chunk. This does not make the weights native to a larger window: text in later chunks influences the image more weakly. A model with a different encoder declares its own figure, which is why the field is not a constant in the frontend. Omitting it means the window is unknown and the studio says nothing, so a manifest that forgets the field stays quiet rather than claiming a limit its encoder does not have. Upscale manifests take no prompt and leave it unset.
+
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
+
+Loading fields such as `source`, `vae`, `scheduler`, `lora` and `quantize`
+stay inside the worker and never cross the wire. `quantize` names exactly one
+pipeline component and scheme as `component:scheme`; the only shipped use is
+`text_encoder_3:int8` on `sd35-medium`.
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
 
 ### Per-model time estimates
 
-`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, derived from measured baselines in `backend/app/model_timings.json` and scaled linearly with the request's steps and pixel count (issue #47). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. The shipped baselines are measured on the reference card (RX 7600 XT); per-install measurement so self-hosted installs surface their own hardware's numbers is the open half of issue #47. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time.
+`GET /api/v1/models` includes `estimated_gpu_ms_default` per model, scaled linearly with the request's steps and pixel count (issue #47). Upscale models additionally expose an `estimated_gpu_ms_by_factor` map (one estimate per scale factor). The studio shows the estimate in the model picker and updates it as the user changes width, height and steps. A new install starts with the measured baselines in `backend/app/model_timings.json`; once five recent succeeded jobs provide valid GPU timings for a model, the per-install median observed speed supersedes the reference-card speed. The latest 50 jobs per model form the rolling window, and the existing maintenance loop refreshes the in-memory cache. `load_ms` remains separate pipeline telemetry and is not added to the API's GPU-time estimate. Credit estimates are a cloud concern and arrive with billing (issue #11); the open source side only exposes GPU time. <!-- corrected 2026-07-23: #47 is closed (was "the open half of #47"); added estimated_gpu_ms_by_factor. -->
 
 ## Asset storage and access
 
@@ -395,13 +517,40 @@ Generated images land in object storage through the storage adapter (local files
 | `users/{user_id}/` | Paying subscribers | Indefinite retention |
 | `trial/{user_id}/` | Trial accounts | `expires_at` on the asset row plus an S3 lifecycle rule expiring the prefix after 30 days |
 
-Object keys are `{prefix}{asset_id}.webp` with a sibling `{asset_id}-thumb.webp` thumbnail. History is the `assets` table, never a bucket listing.
+Object keys are `{prefix}{asset_id}.png` for PNG masters with a sibling `{asset_id}-thumb.webp` WebP thumbnail. History is the `assets` table, never a bucket listing.
 
 **Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
-**Self-hosted:** keys are `{user_id}/{job_id}.webp` under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+**Self-hosted:** master keys are `{user_id}/{job_id}.png` with `{user_id}/{job_id}-thumb.webp` thumbnails under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
 
-**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.webp` key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
+How the pieces reference each other - bytes live once in object storage, every relationship (thumbnail, lineage, favorite per issue #124, category per issue #95) is a column or foreign key on the PostgreSQL rows, and the browser only ever reaches bytes through URLs the API minted from those rows:
+
+```mermaid
+flowchart LR
+    W["Worker<br>finished generation"]
+    subgraph STORE["Object storage, one adapter"]
+        LD[("Self-hosted: local disk<br>STORAGE_LOCAL_PATH")]
+        S3[("Cloud: private S3 bucket<br>users/ and trial/ prefixes")]
+    end
+    subgraph PG["PostgreSQL, source of truth"]
+        J[("jobs<br>params incl. prompt, timings,<br>category, starred_at")]
+        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
+    end
+    B["Browser<br>history, gallery, favorites,<br>share links"]
+    API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
+    CLEAN["Retention: expires_at cleanup job,<br>S3 lifecycle rule on trial/ as backstop"]
+    W -->|"PUT master and thumbnail to the dispatched<br>upload target: a presigned URL in the cloud,<br>an API route on a local install"| STORE
+    W -->|"job_done"| J
+    J --- AS
+    B -->|"session cookie"| API
+    API -->|"owned rows only"| PG
+    API -->|"URLs it minted for owned rows<br>never ListBucket"| B
+    B -->|"fetch bytes: straight to the CDN or bucket<br>in the cloud, back through the API file<br>route on a local install"| STORE
+    CLEAN -.-> AS
+    CLEAN -.-> STORE
+```
+
+**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.png` master key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
 **Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
 
@@ -422,11 +571,25 @@ Account deletion and data export are self serve, since GDPR makes both obligatio
 
 ## Usage metrics and telemetry
 
-Two streams, specified in [metrics.md](metrics.md). Usage events: every completed job and closed realtime session writes one user-linked row (action, model, tier, output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the deployment's own `usage_events` table - the same code in both modes, never crosses the network, dies with the account purge, and stores no prompts or images. Telemetry: self-hosted installs additionally send anonymous daily aggregates to project infrastructure, on by default with `TELEMETRY=false` to disable; the payload is documented, previewable and contains nothing joinable to a person. There are no cookies beyond the session cookie and no client side analytics anywhere.
+Two streams, specified in [metrics.md](metrics.md). Usage events: every completed
+job and closed realtime session writes one user-linked row (action, model, tier,
+output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to the
+deployment's own `usage_events` table. Raw rows are kept for 90 days, then become
+daily per-user and per-dimension `usage_event_rollups` before pruning. Both
+tables run in both modes, never cross the network, die with the account purge,
+and store no prompts or images. Telemetry: self-hosted installs additionally
+send anonymous daily aggregates to project infrastructure, on by default with
+`TELEMETRY=false` to disable; the payload is documented, previewable and contains
+nothing joinable to a person. There are no cookies beyond the session cookie and
+no client side analytics anywhere.
 
 ## Data model
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
+
+Twelve of these tables exist at migration head 0011. Four are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` with the drawing loop's own history, and `metering_events` with billing.
+
+Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
 
 ```mermaid
 erDiagram
@@ -437,15 +600,21 @@ erDiagram
     users ||--o{ realtime_sessions : opens
     users ||--o{ metering_events : accrues
     users ||--o{ usage_events : generates
+    users ||--o{ usage_event_rollups : aggregates
+    users ||--o{ benchmark_sessions : runs
+    benchmark_sessions ||--o{ benchmark_measurements : contains
     models ||--o{ jobs : runs
     models ||--o{ realtime_sessions : powers
     workers ||--o{ realtime_sessions : hosts
+    workers ||--o{ gpu_samples : reports
+    workers ||--o{ gpu_sample_rollups : summarized_by
+    gpu_sample_rollups ||--o{ gpu_samples : condenses
     jobs |o--o{ assets : produces
 
     users {
         uuid id PK
         text email
-        text role "user or admin"
+        text role "viewer, user (member), or admin"
         timestamptz deleted_at "starts 30 day purge"
         timestamptz created_at
     }
@@ -472,11 +641,30 @@ erDiagram
         int min_vram_gb
     }
     workers {
-        text id PK
-        jsonb model_ids
-        int realtime_slots
-        int protocol_version
+        text worker_id PK
+        text device
+        text memory_mode
         timestamptz last_seen
+    }
+    gpu_samples {
+        uuid id PK
+        text worker_id "matches workers, deliberately no FK"
+        timestamptz sampled_at
+        smallint util_pct
+        bigint vram_used_bytes
+        bigint vram_total_bytes
+        float temperature_c
+        float power_w
+        jsonb loaded_models
+    }
+    gpu_sample_rollups {
+        text worker_id PK "matches workers, deliberately no FK"
+        timestamptz bucket_start PK "five-minute bucket"
+        int sample_count
+        float util_mean "with min and max"
+        float vram_used_pct_mean "with min and max"
+        float temperature_mean
+        float power_mean
     }
     jobs {
         uuid id PK
@@ -485,6 +673,7 @@ erDiagram
         jsonb params
         text state "queued, running, succeeded, failed"
         int gpu_ms
+        timestamptz starred_at "null unless favorited"
         timestamptz created_at
     }
     assets {
@@ -524,15 +713,59 @@ erDiagram
         text model_id
         text tier
         text category "CLIP zero-shot on the output"
+        float category_score
         int gpu_ms
         int duration_ms
+        int frames
         timestamptz created_at
+    }
+    usage_event_rollups {
+        uuid id PK
+        uuid user_id FK "deleted with the account"
+        date bucket_date "UTC day"
+        text kind
+        text action
+        text model_id
+        text tier
+        text category
+        bigint event_count
+        float category_score_sum
+        bigint category_score_count
+        bigint gpu_ms_sum
+        bigint duration_ms_sum
+        bigint frames_sum
+    }
+    benchmark_sessions {
+        uuid id PK
+        uuid user_id FK
+        timestamptz created_at
+        jsonb models
+        int total_jobs
+        int succeeded
+        int failed
+    }
+    benchmark_measurements {
+        uuid session_id PK,FK
+        int position PK
+        int prompt_id
+        text model_id
+        text variant
+        jsonb params
+        int model_load_ms
+        int gpu_ms
+        float wall_s
+        text state
+    }
+    telemetry_state {
+        int id PK
+        uuid install_id
+        date last_report_day
     }
 ```
 
 ## UI structure
 
-Illustrative sketches only, to anchor issues #1, #3, #4 and #10. The final design happens inside those issues.
+Illustrative sketches only, to anchor issues #1, #3, #4 and #10. The drawing sketch follows "Drawing surface: bitmap canvas" in [decisions.md](decisions.md); issue #54, "stroke-op replay log", owns its replayable operation journal. The final design happens inside those issues.
 
 App shell with the drawing tool active (issues #3, #4):
 
@@ -542,7 +775,7 @@ App shell with the drawing tool active (issues #3, #4):
 +----------------+--------------------------+-------------------------------+
 | tools          |                          |                               |
 |  pen           |                          |                               |
-|  shapes        |     SVG drawing          |     live result               |
+|  shapes        |     bitmap drawing       |     live result               |
 |  eraser        |     canvas               |     (frames stream in         |
 |  color         |                          |      while you draw)          |
 |                |                          |                               |
@@ -580,10 +813,10 @@ Account view (issue #10):
 
 ## Scaling
 
-- The API server is stateless; capacity grows by adding replicas behind the load balancer. No sticky sessions are needed: WebSocket legs that land on different replicas exchange frames through Redis pub/sub (see GPU scheduling).
+- REST capacity is designed to grow by adding API replicas. Realtime socket ownership cannot scale that way today: the shipped relay is process-local, and the accepted 1000-active-session design moves sockets to the gateway under "Realtime relay: Go gateway required for the 1000-active-session target".
 - Job throughput grows with the number of workers. Queue depth drives the fleet autoscaler.
-- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU carries one or two sessions at the 2 to 4 fps, 512 px bar; the admission queue, tier priority and idle release in GPU scheduling keep those slots from being wasted, and the credit system bounds their cost.
-- PostgreSQL and Redis comfortably cover the target scale. Object storage plus a CDN carry the image traffic.
+- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU currently carries one or two sessions at the 2 to 4 fps, 512 px bar. Admission queueing, tier priority, and idle release are designed but not shipped; issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern them.
+- No Redis topology is predeclared sufficient for the target. Adding an availability replica does not split frame publication ingress. The cloud-sim profile already runs Redis 7, whose [sharded Pub/Sub](https://redis.io/docs/latest/develop/pubsub/#sharded-pubsub) in cluster mode uses `SSUBSCRIBE` and `SPUBLISH` to confine propagation to one cluster shard. Whether the FrameBus needs a dedicated endpoint or sharding remains measurement-driven under issue #48, "Gateway load harness: 1000 active sessions at 2 and 4 fps", and "Split FrameBus pub/sub onto its own endpoint".
 - The practical scaling constraint is GPU fleet cost, not the web tier.
 
 ## Open source and commercial boundary

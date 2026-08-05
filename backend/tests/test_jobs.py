@@ -4,15 +4,18 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 import asyncio
 import time
 import uuid
-from urllib.parse import urlsplit
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, jobs, realtime
+from app.jobs import generation_download_name
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Job, Model
+from app.tables import Asset, Job, Model, UsageEvent
 
 MANIFEST = {
     "id": "sd-test",
@@ -24,6 +27,7 @@ MANIFEST = {
         "required": ["prompt"],
     },
     "min_vram_gb": 0,
+    "prompt_token_limit": 77,
 }
 
 MANIFEST_T2I_ONLY = {
@@ -36,6 +40,78 @@ MANIFEST_WITH_RT = {
     **MANIFEST,
     "capabilities": ["text_to_image", "image_to_image", "realtime"],
 }
+
+HOSTILE_PROMPT = 'A "lighthouse"\n; ../../ caf\u00e9'
+
+
+def test_generation_download_name_falls_back_to_model():
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": " \n "},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key="user/generation.png", mime="image/png")
+    assert generation_download_name(job, asset) == "potocolom-20260729-142530-sd-test.png"
+
+
+def test_generation_download_name_uses_webp_master_extension():
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": "A lighthouse"},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key="user/generation.webp", mime="image/webp")
+    assert generation_download_name(job, asset) == (
+        "potocolom-20260729-142530-a-lighthouse.webp"
+    )
+
+
+def test_generation_download_name_uses_mime_for_extensionless_key():
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": "A lighthouse"},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key="user/generation", mime="image/webp")
+    assert generation_download_name(job, asset) == (
+        "potocolom-20260729-142530-a-lighthouse.webp"
+    )
+
+
+@pytest.mark.parametrize(
+    ("storage_key", "mime", "expected_extension"),
+    [
+        ("user/generation.PNG", "image/png", "png"),
+        ("user/generation", "image/WEBP", "webp"),
+    ],
+)
+def test_generation_download_name_normalizes_extension(
+    storage_key,
+    mime,
+    expected_extension,
+):
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": "A lighthouse"},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key=storage_key, mime=mime)
+
+    assert generation_download_name(job, asset) == (
+        f"potocolom-20260729-142530-a-lighthouse.{expected_extension}"
+    )
+
+
+def test_generation_download_name_includes_batch_position():
+    job = Job(
+        model_id="sd-test",
+        params={"prompt": "A lighthouse"},
+        created_at=datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc),
+    )
+    asset = Asset(storage_key="user/generation.webp", mime="image/webp")
+    assert generation_download_name(job, asset, position=2) == (
+        "potocolom-20260729-142530-a-lighthouse-2.webp"
+    )
 
 
 def fleet_hello(ws, worker_id, manifest=MANIFEST):
@@ -55,6 +131,134 @@ def poll_until(client, job_id, state, timeout=5.0):
 
 
 @pytest.mark.db
+def test_generation_download_names_count_only_visible_masters():
+    created_at = datetime(2026, 7, 29, 14, 25, 30, tzinfo=timezone.utc)
+
+    async def seed_generation() -> uuid.UUID:
+        assert db.local_user_id is not None
+        assert db.session_factory is not None
+        job_id = uuid.uuid4()
+        async with db.session_factory() as session:
+            if await session.get(Model, "sd-test") is None:
+                session.add(Model(
+                    id="sd-test",
+                    name="SD Test",
+                    capabilities=["text_to_image"],
+                    parameters_schema=MANIFEST["parameters"],
+                    min_vram_gb=0,
+                ))
+            # The models table is deliberately not truncated, so an existing row
+            # can hide this model-to-job ordering requirement. Flush the model
+            # before the job on a pristine database, then flush the job before its
+            # asset because jobs.source_asset_id and assets.job_id form a cycle
+            # that SQLAlchemy cannot order.
+            await session.flush()
+            session.add(Job(
+                id=job_id,
+                user_id=db.local_user_id,
+                model_id="sd-test",
+                params={"prompt": "A lighthouse"},
+                state="succeeded",
+                created_at=created_at,
+            ))
+            await session.flush()
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}.webp",
+                mime="image/webp",
+                width=512,
+                height=512,
+            ))
+            await session.commit()
+        return job_id
+
+    async def add_second_asset(job_id: uuid.UUID) -> None:
+        assert db.local_user_id is not None
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}-second.png",
+                mime="image/png",
+                width=512,
+                height=512,
+            ))
+            await session.commit()
+
+    async def seed_generation_with_expired_first() -> uuid.UUID:
+        assert db.local_user_id is not None
+        assert db.session_factory is not None
+        job_id = uuid.uuid4()
+        async with db.session_factory() as session:
+            if await session.get(Model, "sd-test") is None:
+                session.add(Model(
+                    id="sd-test",
+                    name="SD Test",
+                    capabilities=["text_to_image"],
+                    parameters_schema=MANIFEST["parameters"],
+                    min_vram_gb=0,
+                ))
+            await session.flush()
+            session.add(Job(
+                id=job_id,
+                user_id=db.local_user_id,
+                model_id="sd-test",
+                params={"prompt": "A lighthouse"},
+                state="succeeded",
+                created_at=created_at,
+            ))
+            await session.flush()
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}-expired.png",
+                mime="image/png",
+                width=512,
+                height=512,
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            ))
+            await session.flush()
+            session.add(Asset(
+                user_id=db.local_user_id,
+                job_id=job_id,
+                storage_key=f"{db.local_user_id}/{job_id}-survivor.webp",
+                mime="image/webp",
+                width=512,
+                height=512,
+            ))
+            await session.commit()
+        return job_id
+
+    base_name = "potocolom-20260729-142530-a-lighthouse"
+    with TestClient(app) as client:
+        job_id = asyncio.run(seed_generation())
+        single_asset = client.get(f"/api/v1/generations/{job_id}").json()["assets"][0]
+        assert parse_qs(urlsplit(single_asset["download_url"]).query) == {
+            "download": [f"{base_name}.webp"],
+        }
+
+        asyncio.run(add_second_asset(job_id))
+        batch_assets = client.get(f"/api/v1/generations/{job_id}").json()["assets"]
+        assert len(batch_assets) == 2
+        for position, asset in enumerate(batch_assets, start=1):
+            extension = asset["url"].rsplit(".", 1)[-1]
+            assert parse_qs(urlsplit(asset["download_url"]).query) == {
+                "download": [f"{base_name}-{position}.{extension}"],
+            }
+
+        expired_first_job_id = asyncio.run(seed_generation_with_expired_first())
+        surviving_assets = client.get(
+            f"/api/v1/generations/{expired_first_job_id}"
+        ).json()["assets"]
+        assert len(surviving_assets) == 1
+        assert parse_qs(urlsplit(surviving_assets[0]["download_url"]).query) == {
+            "download": [f"{base_name}.webp"],
+        }
+
+
+@pytest.mark.db
 def test_generation_end_to_end():
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
@@ -62,20 +266,44 @@ def test_generation_end_to_end():
 
             models = client.get("/api/v1/models").json()
             assert any(m["id"] == "sd-test" for m in models)
+            # The studio's prompt warning (issue #148) reads the window here,
+            # so it has to survive the worker hello and reach the browser.
+            listed = next(m for m in models if m["id"] == "sd-test")
+            assert listed["prompt_token_limit"] == 77
+
+            async def job_events() -> int:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return int(await session.scalar(
+                        select(func.count()).select_from(UsageEvent).where(
+                            UsageEvent.model_id == "sd-test",
+                            UsageEvent.kind == "job",
+                            UsageEvent.action == "generate",
+                        )
+                    ) or 0)
+
+            # usage_events carries no job id, and the database is truncated once
+            # per session, so this job's row is identified by the count rising
+            # rather than by any matching row existing.
+            events_before = asyncio.run(job_events())
 
             created = client.post("/api/v1/generations",
                                   json={"model_id": "sd-test",
-                                        "params": {"prompt": "a lighthouse"}})
+                                        "params": {"prompt": HOSTILE_PROMPT}})
             assert created.status_code == 202
             job_id = created.json()["job_id"]
 
             dispatch = worker.receive_json()
             assert dispatch["type"] == "dispatch_job"
             assert dispatch["job_id"] == job_id
-            assert dispatch["params"] == {"prompt": "a lighthouse"}
+            assert dispatch["params"] == {"prompt": HOSTILE_PROMPT}
+            assert dispatch["upload"]["url"].endswith(f"/{job_id}.png")
+            assert dispatch["upload"]["headers"] == {"Content-Type": "image/png"}
+            assert dispatch["thumb_upload"]["url"].endswith(f"/{job_id}-thumb.webp")
+            assert dispatch["thumb_upload"]["headers"] == {"Content-Type": "image/webp"}
 
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
             thumb_path = urlsplit(dispatch["thumb_upload"]["url"]).path
             assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
 
@@ -88,16 +316,59 @@ def test_generation_end_to_end():
             assert job["gpu_ms"] == 1234
             asset = job["assets"][0]
             assert asset["width"] == 512
+            assert asset["mime"] == "image/png"
+            assert asset["url"].endswith(f"/{job_id}.png")
+            created_stamp = datetime.fromisoformat(job["created_at"]).strftime("%Y%m%d-%H%M%S")
+            expected_name = f"potocolom-{created_stamp}-a-lighthouse-cafe.png"
+            download_url = urlsplit(asset["download_url"])
+            assert parse_qs(download_url.query) == {"download": [expected_name]}
+            download_response = client.get(f"{download_url.path}?{download_url.query}")
+            assert download_response.content == b"png-bytes"
+            assert download_response.headers["content-disposition"] == (
+                f'attachment; filename="{expected_name}"'
+            )
             assert asset["thumbnail_url"] is not None
-            assert client.get(urlsplit(asset["url"]).path).content == b"webp-bytes"
+            assert client.get(urlsplit(asset["url"]).path).content == b"png-bytes"
             assert client.get(urlsplit(asset["thumbnail_url"]).path).content == b"thumb-bytes"
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
 
+            assert client.post(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.post(f"/api/v1/generations/{job_id}/star").status_code == 204
+            favorites = client.get("/api/v1/generations?starred=true").json()
+            assert [entry["id"] for entry in favorites] == [job_id]
+            assert favorites[0]["starred_at"] is not None
+
+            async def expire_asset() -> None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = await session.get(Asset, uuid.UUID(asset["id"]))
+                    assert row is not None
+                    row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                    await session.commit()
+
+            asyncio.run(expire_asset())
+            expired = client.get("/api/v1/generations?starred=true").json()[0]
+            assert expired["assets"] == []
+            assert expired["expired_favorite"] is True
+
+            assert client.delete(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.delete(f"/api/v1/generations/{job_id}/star").status_code == 204
+            assert client.get("/api/v1/generations?starred=true").json() == []
+            assert client.post(f"/api/v1/generations/{uuid.uuid4()}/star").status_code == 404
+
             # The event stream replays the terminal state and ends.
             events = client.get(f"/api/v1/generations/{job_id}/events")
             assert "succeeded" in events.text
+
+            def usage_written() -> bool:
+                return asyncio.run(job_events()) > events_before
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not usage_written():
+                time.sleep(0.05)
+            assert usage_written()
 
 
 @pytest.mark.db
@@ -164,6 +435,11 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     queued_id = uuid.uuid4()
     running_id = uuid.uuid4()
     async with db.session_factory() as session:
+        # recover() dispatches everything queued or running, so a leftover job
+        # from an earlier case in this session would arrive at the worker here
+        # and break the assertion about which two were dispatched. The database
+        # is truncated once per session, not per test.
+        await session.execute(delete(Job).where(Job.state.in_(("queued", "running"))))
         if await session.get(Model, "sd-test") is None:
             session.add(Model(
                 id="sd-test",
@@ -172,6 +448,8 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
                 parameters_schema=MANIFEST["parameters"],
                 min_vram_gb=0,
             ))
+        # Keep the model-to-job foreign key order explicit on a pristine database.
+        await session.flush()
         session.add(Job(
             id=queued_id,
             user_id=db.local_user_id,
@@ -249,7 +527,7 @@ def test_recover_requeues_running_and_dispatches_queued():
             first_id = first["job_id"]
 
             upload_path = urlsplit(first["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
             thumb_path = urlsplit(first["thumb_upload"]["url"]).path
             assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
             worker.send_json({"type": "job_done", "job_id": first_id,
@@ -277,7 +555,7 @@ def test_img2img_dispatch_includes_input_url():
 
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"source-webp").status_code == 200
+            assert client.put(upload_path, content=b"source-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 100, "width": 512, "height": 512})
             source_job = poll_until(client, source_job_id, "succeeded")
@@ -295,14 +573,14 @@ def test_img2img_dispatch_includes_input_url():
             assert i2i_dispatch["job_id"] == edit_job_id
             assert "input" in i2i_dispatch
             input_path = urlsplit(i2i_dispatch["input"]["url"]).path
-            assert client.get(input_path).content == b"source-webp"
+            assert client.get(input_path).content == b"source-png"
 
             assert client.put(urlsplit(i2i_dispatch["upload"]["url"]).path,
-                              content=b"edited-webp").status_code == 200
+                              content=b"edited-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": edit_job_id,
                               "gpu_ms": 200, "width": 512, "height": 512})
             edit_job = poll_until(client, edit_job_id, "succeeded")
-            assert edit_job["assets"][0]["url"].endswith(".webp")
+            assert edit_job["assets"][0]["url"].endswith(".png")
 
 
 @pytest.mark.db
@@ -354,7 +632,7 @@ def test_upscale_dispatch_includes_input_url():
             source_job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
             assert client.put(urlsplit(dispatch["upload"]["url"]).path,
-                              content=b"source-webp").status_code == 200
+                              content=b"source-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 50, "width": 512, "height": 512})
             source_asset_id = poll_until(client, source_job_id, "succeeded")["assets"][0]["id"]
@@ -381,10 +659,10 @@ def test_upscale_dispatch_includes_input_url():
             assert up_dispatch["job_id"] == upscale_job_id
             assert up_dispatch["params"] == {"factor": 2}
             assert "input" in up_dispatch
-            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == b"source-webp"
+            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == b"source-png"
 
             assert client.put(urlsplit(up_dispatch["upload"]["url"]).path,
-                              content=b"upscaled-webp").status_code == 200
+                              content=b"upscaled-png").status_code == 200
             worker.send_json({"type": "job_done", "job_id": upscale_job_id,
                               "gpu_ms": 400, "width": 1024, "height": 1024})
             done = poll_until(client, upscale_job_id, "succeeded")
@@ -418,8 +696,8 @@ def test_models_expose_measured_upscale_estimates():
 
             models = client.get("/api/v1/models").json()
             fast = next(m for m in models if m["id"] == "realesrgan-fast")
-            assert fast["estimated_gpu_ms_by_factor"] == {"2": 759, "4": 555}
-            assert fast["estimated_gpu_ms_default"] == 759
+            assert fast["estimated_gpu_ms_by_factor"] == {"2": 711, "4": 532}
+            assert fast["estimated_gpu_ms_default"] == 711
             diffusion = next(m for m in models if m["id"] == "sd-test")
             assert "estimated_gpu_ms_by_factor" not in diffusion
 
@@ -484,7 +762,7 @@ def test_job_phase_timings_persisted():
             job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+            assert client.put(upload_path, content=b"png-bytes").status_code == 200
 
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "gpu_ms": 900, "input_fetch_ms": 50,
@@ -518,6 +796,16 @@ def test_job_failure_reason_persisted():
             assert job["failure_reason"] == "CUDA OOM"
             assert job["finished_at"] is not None
 
+            failed = client.get("/api/v1/generations", params={"state": "failed", "limit": 20})
+            assert failed.status_code == 200
+            rows = failed.json()
+            assert any(row["id"] == job_id for row in rows)
+            assert all(row["state"] == "failed" for row in rows)
+            assert next(row for row in rows if row["id"] == job_id)["failure_reason"] == "CUDA OOM"
+
+            bad = client.get("/api/v1/generations", params={"state": "nope"})
+            assert bad.status_code == 422
+
 
 def _post_generation(client, prompt: str) -> str:
     created = client.post("/api/v1/generations",
@@ -544,7 +832,7 @@ def _wait_for_dispatch(worker, expected: set[str], timeout=5.0) -> dict:
 
 def _finish_job(client, worker, dispatch: dict) -> None:
     upload_path = urlsplit(dispatch["upload"]["url"]).path
-    assert client.put(upload_path, content=b"webp-bytes").status_code == 200
+    assert client.put(upload_path, content=b"png-bytes").status_code == 200
     worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
                       "gpu_ms": 1, "width": 512, "height": 512})
     poll_until(client, dispatch["job_id"], "succeeded")
@@ -683,3 +971,27 @@ def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
                 first = _wait_for_dispatch(worker, {first_id})
                 assert client.get(f"/api/v1/generations/{second_id}").json()["state"] == "queued"
                 _finish_job(client, worker, first)
+
+
+
+def test_non_finite_progress_is_ignored():
+    # A stored NaN breaks every generation response that carries it, and
+    # publish() would emit the non-standard NaN token into SSE (issue #203).
+    worker = realtime.Worker(id="w-nan", ws=None, manifests=[], realtime_slots=1)
+    job_id = uuid.uuid4()
+    jobs.inflight[job_id] = jobs.InFlight(
+        worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+    )
+    try:
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": float("nan"),
+        }))
+        assert job_id not in jobs.live_progress
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
+        }))
+        assert jobs.live_progress[job_id] == 0.5
+    finally:
+        jobs.inflight.pop(job_id, None)
+        jobs.live_progress.pop(job_id, None)
+        jobs.last_progress_at.pop(job_id, None)

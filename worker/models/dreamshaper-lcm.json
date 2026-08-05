@@ -3,7 +3,9 @@
   "name": "DreamShaper 8 LCM",
   "capabilities": ["text_to_image"],
   "min_vram_gb": 6,
+  "prompt_token_limit": 77,
   "source": "lykon/dreamshaper-8-lcm",
+  "benchmark_only": true,
   "parameters": {
     "type": "object",
     "properties": {

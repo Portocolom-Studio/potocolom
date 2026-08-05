@@ -26,10 +26,12 @@ from worker.manifests import Manifest
 from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
+    REALTIME_BAR_MS,
     measured_wire_manifest,
     measured_wire_manifests,
     rung_vram_bytes,
     select_rung,
+    slots_from_frame_ms,
 )
 
 logger = logging.getLogger("potocolom.worker")
@@ -40,15 +42,29 @@ REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
 # After a non-OOM generation error, drop the resident model at most this often
 # so a permanently broken weight set cannot thrash load/unload (issue #103).
 POISON_EVICT_COOLDOWN_S = 30.0
+# Timing samples after the discarded warmup pass; nearest-rank p95 over
+# these tolerates one outlier (19th of 20) instead of becoming the max.
+CALIBRATION_SAMPLES = 20
+# Pillow work was implicitly bounded to one operation by the GPU lock before
+# this change moved it outside that lock. Use half the logical CPUs so codec
+# work leaves room in the shared default executor, with a floor of one for
+# small hosts and a ceiling of four to limit CPU and memory pressure.
+CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
 
 
 @dataclass
 class GeneratedImage:
-    data: bytes  # always WebP; storage keys and asset rows assume it
+    data: bytes  # PNG generation master
     width: int
     height: int
     gpu_ms: int
     load_ms: int = 0
+
+
+@dataclass
+class GeneratedFrame:
+    data: bytes
+    gpu_ms: int
 
 
 class Engine(Protocol):
@@ -57,13 +73,15 @@ class Engine(Protocol):
         *, input_image: bytes | None = None,
     ) -> GeneratedImage: ...
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes: ...
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame: ...
 
     def loaded_models(self) -> list[str]: ...
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]: ...
 
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
+
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int: ...
 
     async def load_model(self, manifest: Manifest) -> int: ...
 
@@ -85,6 +103,20 @@ def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
     return buffer.getvalue()
+
+
+def encode_png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _percentile_nearest(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(1, math.ceil(pct / 100.0 * len(ordered)))
+    return ordered[min(len(ordered), rank) - 1]
 
 
 def make_thumbnail_webp(data: bytes, max_edge: int = 384) -> bytes:
@@ -112,6 +144,12 @@ class SimulatedEngine:
         from worker.memory_ladder import effective_realtime_slots
 
         return effective_realtime_slots(wire_manifests, configured)
+
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        # Simulated engine has no GPU timings; keep the configured upper bound.
+        return self.effective_realtime_slots(
+            self.measured_manifests([manifest]), configured,
+        )
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -148,7 +186,7 @@ class SimulatedEngine:
             image = source.resize((width, height), Image.Resampling.LANCZOS)
             progress(1.0)
             gpu_ms = int((time.monotonic() - start) * 1000)
-            return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+            return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
         if input_image is not None and "image_to_image" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support image_to_image jobs")
         load_ms = 0
@@ -180,18 +218,20 @@ class SimulatedEngine:
             rgb = (color[0], color[1], color[2])
             image = Image.new("RGB", (width, height), rgb)
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), width, height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        started = time.monotonic()
         await asyncio.sleep(self.inference_seconds)
-        return payload
+        return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
 
 
 class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
-                 models_dir: str = ""):
+                 models_dir: str = "", torch_compile: bool = False,
+                 attention_backend: str = ""):
         if device == "rocm":
             # RDNA3 consumer cards gate their fused attention kernels behind
             # this flag; the fallback is math attention, several times slower.
@@ -206,12 +246,16 @@ class DiffusersEngine:
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.memory_mode = memory_mode
         self.models_dir = models_dir
+        self.torch_compile = torch_compile
+        self.attention_backend = attention_backend
         self._pipelines: dict[tuple[str, str], Any] = {}
         self._rungs: dict[str, MemoryRung] = {}
         self._last_used: dict[str, float] = {}
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
+        self._calibrated_slots: int | None = None
         self._gpu = asyncio.Lock()
+        self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
@@ -238,7 +282,12 @@ class DiffusersEngine:
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int:
         from worker.memory_ladder import effective_realtime_slots
 
-        return effective_realtime_slots(wire_manifests, configured)
+        base = effective_realtime_slots(wire_manifests, configured)
+        if base == 0:
+            return 0
+        if self._calibrated_slots is not None:
+            return self._calibrated_slots
+        return base
 
     def model_rung(self, model_id: str) -> MemoryRung | None:
         return self._rungs.get(model_id)
@@ -258,20 +307,32 @@ class DiffusersEngine:
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
 
-    def _pipeline(self, manifest: Manifest, mode: str) -> Any:
+    def _pipeline(
+        self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
+    ) -> Any:
         key = (manifest.id, mode)
-        if key not in self._pipelines:
+        while key not in self._pipelines:
             self._ensure_vram(manifest)
             try:
                 self._pipelines[key] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
+            except self.torch.OutOfMemoryError as error:
                 # Retry OUTSIDE this block: while the except frame is alive,
                 # its traceback pins the half-moved weights of the failed
                 # attempt and the eviction below could not reclaim them.
-                pass
-            if key not in self._pipelines:
-                self._evict_cold(except_model_id=manifest.id)
+                load_error = error.with_traceback(None)
+            if key in self._pipelines:
+                break
+            if allow_demotion and self._demote_rung(manifest, phase="load"):
+                continue
+            if not allow_demotion:
+                raise load_error
+            self._evict_cold(except_model_id=manifest.id)
+            try:
                 self._pipelines[key] = self._load(manifest, mode)
+            except self.torch.OutOfMemoryError as error:
+                load_error = error.with_traceback(None)
+            if key not in self._pipelines:
+                raise load_error
         self._touch(manifest.id)
         return self._pipelines[key]
 
@@ -281,6 +342,25 @@ class DiffusersEngine:
         rung = self._select_rung(manifest)
         self._rungs[manifest.id] = rung
         return rung
+
+    def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
+        if self.memory_mode != "auto":
+            return False
+        rung = self._pick_rung(manifest)
+        lower: dict[MemoryRung, MemoryRung] = {
+            "full": "model_offload",
+            "model_offload": "group_offload",
+        }
+        demoted = lower.get(rung)
+        if demoted is None:
+            return False
+        self._evict_model(manifest.id)
+        self._rungs[manifest.id] = demoted
+        logger.error(
+            "out of memory during %s for %s; demoting from %s to %s",
+            phase, manifest.id, rung, demoted,
+        )
+        return True
 
     def _select_rung(self, manifest: Manifest) -> MemoryRung:
         # Upscalers are plain nn.Modules run tiled; the offload rungs are
@@ -301,8 +381,12 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
+        use_group_offload_fast_path = not manifest.quantize
         offload_dir = None
-        if self.models_dir:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors
+        # or handle aten.is_pinned for stream prefetch. They must remain in host
+        # RAM without streaming, so this rung is slower and needs enough host RAM.
+        if self.models_dir and use_group_offload_fast_path:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -311,10 +395,128 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=True,
+            use_stream=use_group_offload_fast_path,
             offload_to_disk_path=offload_dir,
         )
         return pipeline
+
+    def _denoise_modules(self, pipeline: Any) -> list[tuple[str, Any]]:
+        modules: list[tuple[str, Any]] = []
+        for name in ("unet", "transformer"):
+            module = getattr(pipeline, name, None)
+            if module is not None:
+                modules.append((name, module))
+        return modules
+
+    def _set_attention_backend(self, pipeline: Any) -> list[Any]:
+        """Apply the configured attention backend; return modules that took it."""
+        backend = self.attention_backend.strip()
+        if not backend:
+            return []
+        applied: list[Any] = []
+        for name, module in self._denoise_modules(pipeline):
+            setter = getattr(module, "set_attention_backend", None)
+            if setter is None:
+                continue
+            try:
+                setter(backend)
+                applied.append(module)
+                logger.info("attention backend %s on %s", backend, name)
+            except Exception as error:
+                logger.warning(
+                    "set_attention_backend(%s) failed on %s: %s", backend, name, error,
+                )
+        return applied
+
+    def _reset_attention_backend(self, module: Any) -> None:
+        """Undo a set_attention_backend without raising out of the revert path."""
+        try:
+            reset = getattr(module, "reset_attention_backend", None)
+            if reset is not None:
+                reset()
+                return
+            setter = getattr(module, "set_attention_backend", None)
+            if setter is not None:
+                setter("native")
+        except Exception as error:
+            logger.warning("reset_attention_backend failed: %s", error)
+
+    def _compile_module(self, pipeline: Any, name: str, module: Any) -> Any | None:
+        """Compile one denoise module; return the original module on success.
+
+        Always wraps with torch.compile (not in-place regional compile) so a
+        failed warmup can restore the eager module.
+        """
+        try:
+            # reduce-overhead enables CUDAGraphs, which overwrite intermediate
+            # activations on this ROCm + Diffusers UNet path. default still
+            # fuses kernels without graph capture.
+            compiled = self.torch.compile(
+                module, mode="default", fullgraph=False, dynamic=True,
+            )
+            setattr(pipeline, name, compiled)
+            logger.info("torch.compile applied to %s", name)
+            return module
+        except Exception as error:
+            logger.warning("torch.compile failed for %s: %s", name, error)
+            return None
+
+    def _optimize_resident(
+        self, pipeline: Any, mode: str, *, force_compile: bool = False,
+    ) -> None:
+        """Attention backend + torch.compile for full-resident GPU pipelines.
+
+        Offload rungs skip compile: accelerate hooks fight Inductor. Failures
+        keep the uncompiled module so load still succeeds (ROCm Inductor is
+        not guaranteed for every UNet shape). Warmup runs when either compile
+        or an attention backend was applied, so a bad backend is not first
+        discovered by a user frame.
+        """
+        if self.device != "cuda":
+            return
+        applied = self._set_attention_backend(pipeline)
+        originals: list[tuple[str, Any]] = []
+        if self.torch_compile or force_compile:
+            for name, module in self._denoise_modules(pipeline):
+                original = self._compile_module(pipeline, name, module)
+                if original is not None:
+                    originals.append((name, original))
+        if not originals and not applied:
+            return
+        try:
+            self._warmup_pipeline(pipeline, mode)
+        except Exception:
+            for name, original in originals:
+                setattr(pipeline, name, original)
+            for module in applied:
+                self._reset_attention_backend(module)
+            logger.warning("reverted warmup optimizations after failure")
+            return
+
+    def _warmup_pipeline(self, pipeline: Any, mode: str) -> None:
+        """One cheap forward so the first user job does not pay compile cost.
+
+        Raises on failure so the caller can revert a broken compiled module.
+        """
+        if mode == "t2i":
+            pipeline(
+                prompt="",
+                num_inference_steps=1,
+                guidance_scale=0.0,
+                width=REALTIME_SIZE,
+                height=REALTIME_SIZE,
+            )
+            return
+        if mode == "i2i":
+            canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+            pipeline(
+                prompt="",
+                image=canvas,
+                num_inference_steps=2,
+                strength=0.5,
+                guidance_scale=0.0,
+            )
+            return
 
     def _load(self, manifest: Manifest, mode: str) -> Any:
         if mode.startswith("upscale-"):
@@ -327,6 +529,21 @@ class DiffusersEngine:
             pipeline = cls.from_pipe(loaded)  # shares weights already on the device
         else:
             pipeline = self._from_pretrained(cls, manifest)
+            if manifest.quantize:
+                component_name, scheme = manifest.quantize.split(":", 1)
+                if scheme != "int8":
+                    raise ValueError(
+                        f"unknown quantization scheme for {manifest.id}: {scheme}"
+                    )
+                component = getattr(pipeline, component_name, None)
+                if component is None:
+                    raise ValueError(
+                        f"unknown quantization component for {manifest.id}: {component_name}"
+                    )
+                from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+                quantize_(component, Int8WeightOnlyConfig())
+                logger.info("quantized %s on %s with int8", component_name, manifest.id)
             if manifest.lora:
                 # "org/repo/file.safetensors": a distillation LoRA (Lightning,
                 # Hyper-SD class) fused into the weights while still on the
@@ -334,19 +551,79 @@ class DiffusersEngine:
                 repo, _, weight = manifest.lora.rpartition("/")
                 pipeline.load_lora_weights(repo, weight_name=weight)
                 pipeline.fuse_lora()
-            if self.device == "cuda":
-                # Conv-heavy UNets run measurably faster in NHWC; converted
-                # while still on the CPU so the move needs no VRAM transient.
+            rung = self._pick_rung(manifest)
+            # NHWC helps full-resident GPU UNets. self.device is "cuda" for both
+            # NVIDIA and ROCm (mapped in __init__); channels_last makes tensors
+            # non-contiguous in the NCHW sense. Group-offload may write them
+            # through safetensors, which refuses non-contiguous params
+            # ("You are trying to save a non contiguous tensor").
+            if self.device == "cuda" and rung == "full":
                 for name in ("unet", "vae"):
                     module = getattr(pipeline, name, None)
                     if module is not None:
                         module.to(memory_format=self.torch.channels_last)
-            rung = self._pick_rung(manifest)
             pipeline = self._apply_rung(pipeline, manifest, rung)
+            if rung == "full":
+                self._optimize_resident(
+                    pipeline, mode, force_compile=bool(manifest.quantize),
+                )
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
+
+    async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        async with self._gpu:
+            try:
+                return await asyncio.to_thread(self._calibrate_realtime,
+                                               manifest, configured)
+            except Exception:
+                # Could not measure; advertise nothing rather than a guess,
+                # and never let a boot-time inference error kill the worker.
+                logger.exception("realtime calibration failed for %s", manifest.id)
+                self._calibrated_slots = 0
+                return 0
+
+    def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        """Measure single-frame p95 and advertise slots that still meet the bar.
+
+        Multi-image batch calibration waits on deferred cross-session batching;
+        until then N sessions share the GPU lock, so capacity is bar_ms / p95.
+        """
+        if self.device != "cuda":
+            # CPU diffusion cannot hold the bar; skip the frames, advertise nothing.
+            self._calibrated_slots = 0
+            return 0
+        if configured <= 0 or "realtime" not in manifest.capabilities:
+            self._calibrated_slots = 0
+            return 0
+        if self._select_rung(manifest) != "full":
+            self._calibrated_slots = 0
+            logger.info(
+                "realtime calibration skipped for %s (not full-resident)", manifest.id,
+            )
+            return 0
+        canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+        strength = 0.7
+        params = {"prompt": "calibration", "strength": strength}
+        samples: list[float] = []
+        # One discarded pass absorbs remaining compile/warmup cost.
+        for index in range(CALIBRATION_SAMPLES + 1):
+            # Time exactly the region serialized by the GPU lock. That occupancy,
+            # rather than CPU work that can overlap it, is what the scheduler uses.
+            start = time.monotonic()
+            self._frame(manifest, params, canvas, strength)
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            if index > 0:
+                samples.append(elapsed_ms)
+        p95 = _percentile_nearest(samples, 95.0)
+        slots = slots_from_frame_ms(p95, configured, bar_ms=REALTIME_BAR_MS)
+        self._calibrated_slots = slots
+        logger.info(
+            "realtime calibration model=%s p95_ms=%.1f slots=%d (cap=%d)",
+            manifest.id, p95, slots, configured,
+        )
+        return slots
 
     def _load_upscale(self, manifest: Manifest, factor: int) -> Any:
         from worker.upscale import ensure_weights, load_upscale_model
@@ -449,18 +726,9 @@ class DiffusersEngine:
         if "upscale" in manifest.capabilities:
             factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
             mode = f"upscale-{int(factor_spec.get('default', 2))}"
-            try:
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, mode)] = self._load(manifest, mode)
         else:
-            try:
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-            except self.torch.OutOfMemoryError:
-                self._evict_all()
-                self._pipelines[(manifest.id, "t2i")] = self._load(manifest, "t2i")
-        self._touch(manifest.id)
+            mode = "t2i"
+        self._pipeline(manifest, mode)
         return int((time.monotonic() - start) * 1000)
 
     async def unload_model(self, model_id: str) -> None:
@@ -489,6 +757,192 @@ class DiffusersEngine:
             except Exception:
                 pass
         return cls.from_pretrained(source, **kwargs)
+
+    def _encode_clip_chunks(
+        self,
+        tokenizer: Any,
+        text_encoder: Any,
+        token_ids: list[int],
+        window: int,
+        chunk_count: int,
+        *,
+        pooled: bool,
+    ) -> tuple[Any, Any | None]:
+        special_tokens = tokenizer.num_special_tokens_to_add(pair=False)
+        content_size = window - special_tokens
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = tokenizer.eos_token_id
+        chunk_embeddings = []
+        first_pooled = None
+        for chunk_index in range(chunk_count):
+            start = chunk_index * content_size
+            content = token_ids[start:start + content_size]
+            # Built explicitly rather than through the tokenizer: transformers 5
+            # dropped build_inputs_with_special_tokens from the CLIP tokenizers,
+            # and CLIP's framing is fixed anyway at one begin and one end token.
+            input_ids = [tokenizer.bos_token_id, *content, tokenizer.eos_token_id]
+            padding = window - len(input_ids)
+            attention_mask = [1] * len(input_ids) + [0] * padding
+            input_ids += [pad_token_id] * padding
+            input_tensor = self.torch.tensor([input_ids], device=self.device)
+            encoder_kwargs: dict[str, Any] = {}
+            if getattr(text_encoder.config, "use_attention_mask", False):
+                encoder_kwargs["attention_mask"] = self.torch.tensor(
+                    [attention_mask], device=self.device,
+                )
+            with self.torch.no_grad():
+                if pooled:
+                    encoder_output = text_encoder(
+                        input_tensor, output_hidden_states=True, **encoder_kwargs,
+                    )
+                    chunk_embeddings.append(encoder_output.hidden_states[-2])
+                    if chunk_index == 0:
+                        first_pooled = encoder_output[0]
+                else:
+                    encoder_output = text_encoder(input_tensor, **encoder_kwargs)
+                    chunk_embeddings.append(encoder_output[0])
+        return self.torch.cat(chunk_embeddings, dim=1), first_pooled
+
+    def _prompt_kwargs(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        prompt: str,
+        negative_prompt: str | None,
+    ) -> dict[str, Any]:
+        # A realtime session calls this for every frame with the same prompt, and
+        # chunked encoding is a full pass through each text encoder: measured at
+        # 322 ms on CPU for a two chunk prompt, against a frame budget of 250 ms.
+        # Only the encoded result is worth keeping, so the cache holds one entry
+        # and lives on the pipeline, which means a model switch drops it with the
+        # pipeline instead of pinning embeddings for weights no longer loaded.
+        cache_key = (manifest.id, prompt, negative_prompt)
+        cached = getattr(pipeline, "_potocolom_prompt_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
+        prompt_kwargs: dict[str, Any] = {"prompt": prompt}
+        if negative_prompt is not None:
+            prompt_kwargs["negative_prompt"] = negative_prompt
+        declared_window = manifest.prompt_token_limit
+        if declared_window <= 0:
+            return prompt_kwargs
+
+        if (
+            getattr(pipeline, "tokenizer_3", None) is not None
+            and getattr(pipeline, "text_encoder_3", None) is not None
+        ):
+            # SD3 requires joint CLIP+T5 prompt embeddings. This CLIP-only
+            # chunker cannot satisfy that contract, so let diffusers encode it.
+            return prompt_kwargs
+
+        tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
+        text_encoder_2 = getattr(pipeline, "text_encoder_2", None)
+        dual_encoder = tokenizer_2 is not None and text_encoder_2 is not None
+        tokenizers = [pipeline.tokenizer]
+        text_encoders = [pipeline.text_encoder]
+        if dual_encoder:
+            tokenizers.append(tokenizer_2)
+            text_encoders.append(text_encoder_2)
+        window = min(
+            [
+                declared_window,
+                *[
+                    int(getattr(tokenizer, "model_max_length", declared_window))
+                    for tokenizer in tokenizers
+                ],
+            ]
+        )
+
+        positive_ids = [
+            list(tokenizer(
+                prompt, add_special_tokens=False, truncation=False,
+            )["input_ids"])
+            for tokenizer in tokenizers
+        ]
+        negative_text = negative_prompt or ""
+        negative_ids = [
+            list(tokenizer(
+                negative_text, add_special_tokens=False, truncation=False,
+            )["input_ids"])
+            for tokenizer in tokenizers
+        ]
+        chunk_count = 1
+        for tokenizer, token_lists in zip(
+            tokenizers, zip(positive_ids, negative_ids), strict=True,
+        ):
+            content_size = window - tokenizer.num_special_tokens_to_add(pair=False)
+            if content_size <= 0:
+                raise ValueError(f"prompt token limit {window} leaves no content tokens")
+            for token_ids in token_lists:
+                chunk_count = max(chunk_count, math.ceil(len(token_ids) / content_size))
+        if chunk_count == 1:
+            return prompt_kwargs
+
+        positive_embeddings = []
+        positive_pooled = None
+        for index, (tokenizer, text_encoder, token_ids) in enumerate(zip(
+            tokenizers, text_encoders, positive_ids, strict=True,
+        )):
+            embeddings, pooled_embedding = self._encode_clip_chunks(
+                tokenizer,
+                text_encoder,
+                token_ids,
+                window,
+                chunk_count,
+                pooled=dual_encoder,
+            )
+            positive_embeddings.append(embeddings)
+            if index == 1:
+                positive_pooled = pooled_embedding
+        prompt_embeds = (
+            self.torch.cat(positive_embeddings, dim=-1)
+            if dual_encoder else positive_embeddings[0]
+        )
+
+        force_zero_negative = (
+            dual_encoder
+            and negative_prompt is None
+            and bool(getattr(pipeline.config, "force_zeros_for_empty_prompt", False))
+        )
+        if force_zero_negative:
+            # It implies dual_encoder, so the index-1 pass above ran with
+            # pooled=True and positive_pooled holds that encoder's embedding.
+            assert positive_pooled is not None
+            negative_prompt_embeds = self.torch.zeros_like(prompt_embeds)
+            negative_pooled = self.torch.zeros_like(positive_pooled)
+        else:
+            negative_embeddings = []
+            negative_pooled = None
+            for index, (tokenizer, text_encoder, token_ids) in enumerate(zip(
+                tokenizers, text_encoders, negative_ids, strict=True,
+            )):
+                embeddings, pooled_embedding = self._encode_clip_chunks(
+                    tokenizer,
+                    text_encoder,
+                    token_ids,
+                    window,
+                    chunk_count,
+                    pooled=dual_encoder,
+                )
+                negative_embeddings.append(embeddings)
+                if index == 1:
+                    negative_pooled = pooled_embedding
+            negative_prompt_embeds = (
+                self.torch.cat(negative_embeddings, dim=-1)
+                if dual_encoder else negative_embeddings[0]
+            )
+
+        result = {
+            "prompt_embeds": prompt_embeds,
+            "negative_prompt_embeds": negative_prompt_embeds,
+        }
+        if dual_encoder:
+            result["pooled_prompt_embeds"] = positive_pooled
+            result["negative_pooled_prompt_embeds"] = negative_pooled
+        pipeline._potocolom_prompt_cache = (cache_key, result)
+        return result
 
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
@@ -523,6 +977,20 @@ class DiffusersEngine:
             # Two resident models plus activations can exceed a 16 GB card
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
+            try:
+                return await asyncio.to_thread(runner, manifest, dict(params),
+                                               progress, loop, input_image)
+            except self.torch.OutOfMemoryError as error:
+                retry_error = error.with_traceback(None)
+            if not self._demote_rung(manifest, phase="generation retry"):
+                raise retry_error
+            if "upscale" in manifest.capabilities:
+                mode = f"upscale-{int(params.get('factor', 0))}"
+            else:
+                mode = "i2i" if input_image is not None else "t2i"
+            await asyncio.to_thread(
+                self._pipeline, manifest, mode, allow_demotion=False,
+            )
             return await asyncio.to_thread(runner, manifest, dict(params),
                                            progress, loop, input_image)
 
@@ -547,9 +1015,16 @@ class DiffusersEngine:
         # model's native size (512 for SD class, 1024 for SDXL base class).
         width = params.get("width")
         height = params.get("height")
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
         start = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             num_inference_steps=steps,
             guidance_scale=float(params.get("guidance", 0.0)),
             width=int(width) if width else None,
@@ -558,7 +1033,7 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
                       loop: asyncio.AbstractEventLoop,
@@ -587,9 +1062,16 @@ class DiffusersEngine:
             loop.call_soon_threadsafe(progress, (step + 1) / actual_steps)
             return kwargs
 
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
         start = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             image=source,
             num_inference_steps=steps,
             strength=strength,
@@ -599,7 +1081,7 @@ class DiffusersEngine:
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_upscale(self, manifest: Manifest, params: dict, progress: ProgressFn,
                           loop: asyncio.AbstractEventLoop,
@@ -632,12 +1114,29 @@ class DiffusersEngine:
         )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)
-        return GeneratedImage(encode_webp(image), image.width, image.height, gpu_ms, load_ms)
+        return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
+    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+        if "realtime" not in manifest.capabilities:
+            raise ValueError(f"model {manifest.id} does not support realtime frames")
+        if self._pick_rung(manifest) != "full":
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+        frame_params = dict(params)
+
+        def prepare_canvas() -> Image.Image:
+            canvas = Image.open(io.BytesIO(payload)).convert("RGB")
+            return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
+
+        async with self._codec:
+            canvas = await asyncio.to_thread(prepare_canvas)
+        strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
+            # _pipeline can load or evict GPU weights, _prompt_kwargs can run
+            # GPU text encoders for long prompts, and diffusion uses the GPU.
+            frame_result: tuple[Image.Image, int] | None = None
             try:
-                return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -645,20 +1144,34 @@ class DiffusersEngine:
             except Exception:
                 self._evict_poisoned(manifest.id)
                 raise
-            self._evict_except(manifest.id)
-            return await asyncio.to_thread(self._frame, manifest, dict(params), payload)
+            if frame_result is None:
+                # The eviction mutates GPU residency, so it remains serialized.
+                self._evict_except(manifest.id)
+                frame_result = await asyncio.to_thread(
+                    self._frame, manifest, frame_params, canvas, strength)
+            image, gpu_ms = frame_result
+        async with self._codec:
+            data = await asyncio.to_thread(encode_webp, image)
+        return GeneratedFrame(data, gpu_ms)
 
-    def _frame(self, manifest: Manifest, params: dict, payload: bytes) -> bytes:
-        if "realtime" not in manifest.capabilities:
-            raise ValueError(f"model {manifest.id} does not support realtime frames")
-        if self._pick_rung(manifest) != "full":
-            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
-        canvas = Image.open(io.BytesIO(payload)).convert("RGB")
-        canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
-        strength = min(max(float(params.get("strength", 0.7)), 0.05), 1.0)
+    def _frame(
+        self,
+        manifest: Manifest,
+        params: dict,
+        canvas: Image.Image,
+        strength: float,
+    ) -> tuple[Image.Image, int]:
         pipeline = self._pipeline(manifest, "i2i")
+        negative_prompt = params.get("negative_prompt")
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+        )
+        started = time.monotonic()
         image = pipeline(
-            prompt=str(params.get("prompt", "")),
+            **prompt_kwargs,
             image=canvas,
             # Few-step img2img: diffusers runs ceil(steps * strength) steps,
             # so keep the product at one or above.
@@ -666,4 +1179,5 @@ class DiffusersEngine:
             strength=strength,
             guidance_scale=0.0,
         ).images[0]
-        return encode_webp(image)
+        gpu_ms = int((time.monotonic() - started) * 1000)
+        return image, gpu_ms

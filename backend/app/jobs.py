@@ -12,22 +12,25 @@ import asyncio
 import heapq
 import json
 import logging
+import math
+import re
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import count
-from typing import Protocol
+from typing import Literal, Protocol
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, realtime, registry
-from app.auth import current_user
+from app.auth import current_user, require_role
 from app.manifests import validate_params
 from app.settings import get_settings
 from app.storage import get_storage
@@ -44,6 +47,8 @@ JOB_DISPATCH_DEPTH = 2  # queued jobs per worker; overlap encode/upload with den
 
 TERMINAL_STATES = ("succeeded", "failed")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
+DOWNLOAD_SLUG_MAX_LENGTH = 48
+DOWNLOAD_SLUG_MAX_WORDS = 6
 
 
 class Queues(Protocol):
@@ -111,10 +116,36 @@ class GenerationRequest(BaseModel):
     source_asset_id: uuid.UUID | None = None
 
 
+def generation_download_name(
+    job: Job,
+    asset: Asset,
+    position: int | None = None,
+) -> str:
+    prompt = job.params.get("prompt")
+    source = prompt if isinstance(prompt, str) and prompt.strip() else job.model_id
+    ascii_source = (
+        unicodedata.normalize("NFKD", source).encode("ascii", "ignore").decode("ascii").lower()
+    )
+    words = re.findall(r"[a-z0-9]+", ascii_source)[:DOWNLOAD_SLUG_MAX_WORDS]
+    slug = "-".join(words)[:DOWNLOAD_SLUG_MAX_LENGTH].strip("-")
+    if not slug:
+        slug = "generation"
+    timestamp = job.created_at.strftime("%Y%m%d-%H%M%S")
+    filename = asset.storage_key.rsplit("/", 1)[-1]
+    _, separator, extension = filename.rpartition(".")
+    if not separator or not extension:
+        extension = asset.mime.rpartition("/")[2]
+        if re.fullmatch(r"[a-z0-9]+", extension.lower()) is None:
+            extension = "bin"
+    extension = extension.lower()
+    position_suffix = f"-{position}" if position is not None else ""
+    return f"potocolom-{timestamp}-{slug}{position_suffix}.{extension}"
+
+
 @router.post("/api/v1/generations", status_code=202)
 async def create_generation(
     request: GenerationRequest,
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     manifest = registry.for_jobs().get(request.model_id)
@@ -157,6 +188,25 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             if asset.parent_asset_id is not None and asset.storage_key.endswith("-thumb.webp"):
                 thumbs_by_parent[asset.parent_asset_id] = asset
     storage = get_storage()
+    now = datetime.now(timezone.utc)
+    # Keep expired masters for expired_favorite, but number only the assets the
+    # client can see.
+    all_masters = {
+        job.id: [
+            asset
+            for asset in assets.get(job.id, [])
+            if not asset.storage_key.endswith("-thumb.webp")
+        ]
+        for job in jobs
+    }
+    visible_masters = {
+        job.id: [
+            asset
+            for asset in all_masters[job.id]
+            if asset.expires_at is None or asset.expires_at > now
+        ]
+        for job in jobs
+    }
     return [
         {
             "id": str(job.id),
@@ -170,6 +220,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "load_ms": job.load_ms,
             "postprocess_ms": job.postprocess_ms,
             "failure_reason": job.failure_reason,
+            "starred_at": job.starred_at.isoformat() if job.starred_at else None,
             "created_at": job.created_at.isoformat(),
             "dispatched_at": job.dispatched_at.isoformat() if job.dispatched_at else None,
             "finished_at": job.finished_at.isoformat() if job.finished_at else None,
@@ -177,15 +228,30 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 {
                     "id": str(asset.id),
                     "url": await storage.url(asset.storage_key),
+                    "download_url": await storage.url(
+                        asset.storage_key,
+                        download_name=generation_download_name(
+                            job,
+                            asset,
+                            position if len(visible_masters[job.id]) > 1 else None,
+                        ),
+                    ),
                     "thumbnail_url": await storage.url(thumb.storage_key)
                     if (thumb := thumbs_by_parent.get(asset.id)) is not None else None,
                     "mime": asset.mime,
                     "width": asset.width,
                     "height": asset.height,
                 }
-                for asset in assets.get(job.id, [])
-                if not asset.storage_key.endswith("-thumb.webp")
+                for position, asset in enumerate(visible_masters[job.id], start=1)
             ],
+            "expired_favorite": bool(
+                job.starred_at
+                and all_masters[job.id]
+                and not any(
+                    asset.expires_at is None or asset.expires_at > now
+                    for asset in all_masters[job.id]
+                )
+            ),
         }
         for job in jobs
     ]
@@ -195,23 +261,43 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
 async def list_generations(
     limit: int = 50,
     cursor: uuid.UUID | None = None,
+    state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
+    starred: bool | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     query = select(Job).where(Job.user_id == user.id)
+    if state is not None:
+        query = query.where(Job.state == state)
+    if starred is not None:
+        query = query.where(Job.starred_at.is_not(None) if starred else Job.starred_at.is_(None))
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown cursor")
-        query = query.where(
-            or_(
-                Job.created_at < anchor.created_at,
-                and_(Job.created_at == anchor.created_at, Job.id < anchor.id),
+        if starred is True:
+            if anchor.starred_at is None:
+                raise HTTPException(status_code=404, detail="unknown cursor")
+            query = query.where(
+                or_(
+                    Job.starred_at < anchor.starred_at,
+                    and_(Job.starred_at == anchor.starred_at, Job.id < anchor.id),
+                )
             )
-        )
+        else:
+            query = query.where(
+                or_(
+                    Job.created_at < anchor.created_at,
+                    and_(Job.created_at == anchor.created_at, Job.id < anchor.id),
+                )
+            )
+    order = (
+        (Job.starred_at.desc(), Job.id.desc())
+        if starred is True else
+        (Job.created_at.desc(), Job.id.desc())
+    )
     rows = await session.execute(
-        query.order_by(Job.created_at.desc(), Job.id.desc())
-        .limit(min(max(limit, 1), 200))
+        query.order_by(*order).limit(min(max(limit, 1), 200))
     )
     return await serialize_jobs(session, list(rows.scalars()))
 
@@ -231,6 +317,41 @@ async def get_generation(
 ) -> dict:
     job = await owned_job(session, job_id, user)
     return (await serialize_jobs(session, [job]))[0]
+
+
+async def _set_star(
+    session: AsyncSession, job_id: uuid.UUID, user: User, value,
+) -> None:
+    # Ownership through the shared helper, so the 404 matches every other
+    # generations route; the UPDATE then stays a single idempotent statement
+    # with the timestamp decided server side.
+    await owned_job(session, job_id, user)
+    await session.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.user_id == user.id)
+        .values(starred_at=value)
+    )
+    await session.commit()
+
+
+@router.post("/api/v1/generations/{job_id}/star", status_code=204)
+async def star_generation(
+    job_id: uuid.UUID,
+    user: User = Depends(require_role("member")),
+    session: AsyncSession = Depends(db.get_session),
+) -> Response:
+    await _set_star(session, job_id, user, func.coalesce(Job.starred_at, func.now()))
+    return Response(status_code=204)
+
+
+@router.delete("/api/v1/generations/{job_id}/star", status_code=204)
+async def unstar_generation(
+    job_id: uuid.UUID,
+    user: User = Depends(require_role("member")),
+    session: AsyncSession = Depends(db.get_session),
+) -> Response:
+    await _set_star(session, job_id, user, None)
+    return Response(status_code=204)
 
 
 @router.get("/api/v1/generations/{job_id}/events")
@@ -381,7 +502,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         worker = pick_job_worker(job.model_id)
         if worker is None:
             return False
-        storage_key = f"{job.user_id}/{job.id}.webp"
+        storage_key = f"{job.user_id}/{job.id}.png"
         thumb_storage_key = f"{job.user_id}/{job.id}-thumb.webp"
         target = await get_storage().upload_target(storage_key)
         thumb_target = await get_storage().upload_target(thumb_storage_key)
@@ -438,9 +559,17 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     if current is None or current.worker is not worker:
         return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        live_progress[job_id] = float(control.get("progress") or 0.0)
+        progress = float(control.get("progress") or 0.0)
+        if not math.isfinite(progress):
+            # Stored, it breaks every generation list and detail response that
+            # carries it; published, it emits the non-standard NaN token into
+            # the SSE stream (issue #203). Progress is display only, so drop it.
+            logger.warning("worker %s sent non-finite progress for job %s; ignored",
+                           worker.id, job_id)
+            return
+        live_progress[job_id] = progress
         last_progress_at[job_id] = time.monotonic()
-        publish(job_id, {"state": "running", "progress": control.get("progress")})
+        publish(job_id, {"state": "running", "progress": progress})
         return
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
@@ -470,7 +599,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 job_id=job_id,
                 parent_asset_id=job.source_asset_id,
                 storage_key=entry.storage_key,
-                mime="image/webp",
+                mime="image/png",
                 width=width,
                 height=height,
             )
@@ -504,6 +633,8 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
+        from app import usage_events
+        usage_events.schedule_job(job_id, control)
     else:
         reason = str(control.get("reason", "worker reported failure"))
         await mark_failed(job_id, reason)

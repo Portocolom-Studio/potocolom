@@ -12,21 +12,9 @@ Signed-off-by: Your Name <you@example.com>
 
 `git commit -s` adds it for you. The sign-off asserts the [Developer Certificate of Origin](https://developercertificate.org/): you wrote the change or otherwise have the right to submit it under the project license.
 
-To sign off automatically in your clone, add a `prepare-commit-msg` hook:
+To sign off automatically in your clone, run `make dco-hook` once. It points `core.hooksPath` at the versioned [`.githooks/`](.githooks/) directory, whose `prepare-commit-msg` appends the trailer from your `git config user.name` and `user.email` when a message does not already have one. Plain `git commit` is then enough. Undo it with `git config --unset core.hooksPath`.
 
-```sh
-cat > .git/hooks/prepare-commit-msg <<'HOOK'
-#!/bin/sh
-NAME=$(git config user.name)
-EMAIL=$(git config user.email)
-if [ -z "$NAME" ] || [ -z "$EMAIL" ]; then
-	echo "prepare-commit-msg: set git config user.name and user.email for the DCO sign-off" >&2
-	exit 1
-fi
-grep -qs "^Signed-off-by: " "$1" || printf "\nSigned-off-by: %s <%s>\n" "$NAME" "$EMAIL" >> "$1"
-HOOK
-chmod +x .git/hooks/prepare-commit-msg
-```
+Hooks installed this way stay current when you pull, and they do not replace your author identity: set `user.name` and `user.email` correctly first, since the hook only adds the trailer.
 
 Forgot on an existing branch? `git rebase --signoff main` retrofits every commit on it.
 
@@ -37,4 +25,4 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 - No emojis or decorative characters in code, comments, commits, issues or PRs.
 - Match the existing style of the file you are editing.
 - Run `make verify` locally before opening or updating a PR; it runs exactly what CI runs.
-- Mermaid diagrams must render; validate them before pushing.
+- Mermaid diagrams must render; run `make verify-mermaid` before pushing.

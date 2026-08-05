@@ -69,7 +69,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'CreativeML Open RAIL-M',
 		commercial: 'Unrestricted (RAIL use policy)',
-		studio: true,
+		studio: false,
 		source: 'lykon/dreamshaper-8-lcm'
 	},
 	{
@@ -83,7 +83,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image', 'image_to_image', 'realtime'],
 		license: 'Stability AI Community',
 		commercial: '≤ $1M revenue / year',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/sd-turbo'
 	},
 	{
@@ -97,7 +97,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image', 'image_to_image', 'realtime'],
 		license: 'Stability AI Community',
 		commercial: '≤ $1M revenue / year',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/sdxl-turbo'
 	},
 	{
@@ -111,7 +111,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 		capabilities: ['text_to_image'],
 		license: 'RAIL++-M base; LoRA: no declared license',
 		commercial: 'Unclear - LoRA license undeclared',
-		studio: false,
+		studio: true,
 		source: 'stabilityai/stable-diffusion-xl-base-1.0'
 	},
 	{
@@ -141,6 +141,20 @@ export const MODEL_SPECS: ModelSpec[] = [
 		commercial: 'RAIL use policy applies',
 		studio: true,
 		source: 'segmind/SSD-1B'
+	},
+	{
+		id: 'sd35-medium',
+		name: 'Stable Diffusion 3.5 Medium',
+		architecture: 'MMDiT + CLIP-L + OpenCLIP-G + T5-XXL',
+		parameters: '~2.5B',
+		min_vram_gb: 14,
+		resolutions: '768, 1024',
+		step_range: '20-50',
+		capabilities: ['text_to_image'],
+		license: 'Stability AI Community',
+		commercial: '<= $1M revenue / year',
+		studio: true,
+		source: 'stabilityai/stable-diffusion-3.5-medium'
 	}
 ];
 

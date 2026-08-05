@@ -38,6 +38,9 @@ data/
 # Local scratch and private notes, never committed
 prompt.md
 CLAUDE.md
+AGENTS.md
+docs/guide/
+docs/internals/
 .local/
 
 # Local agent/editor tooling

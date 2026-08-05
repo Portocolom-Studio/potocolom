@@ -1,28 +1,26 @@
 <script lang="ts">
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 
 	const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
 	const width = Number(params?.get('w') ?? 1200);
 	const height = Number(params?.get('h') ?? 630);
 	const seed = Number(params?.get('seed') ?? 42);
 
-	function markReady() {
+	function setReady() {
 		(window as Window & { __heroPreviewReady?: boolean }).__heroPreviewReady = true;
 	}
 </script>
 
-<svelte:head>
-	<title>hero preview</title>
-</svelte:head>
+<Seo
+	title="Hero Development Preview | potocolom"
+	description="Internal hero image preview for potocolom development."
+	path="/hero-preview"
+	noindex
+/>
 
 <div class="frame" style:width="{width}px" style:height="{height}px">
-	<LatentCanvas
-		class="frame-canvas"
-		{seed}
-		warmupFrames={400}
-		animate={false}
-		onReady={markReady}
-	/>
+	<LatentCanvas class="frame-canvas" {seed} warmupFrames={400} animate={false} onReady={setReady} />
 </div>
 
 <style>

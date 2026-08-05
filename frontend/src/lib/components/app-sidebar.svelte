@@ -3,7 +3,6 @@
 	import LifeBuoyIcon from '@lucide/svelte/icons/life-buoy';
 	import SendIcon from '@lucide/svelte/icons/send';
 	import FrameIcon from '@lucide/svelte/icons/frame';
-	import favicon from '$lib/assets/favicon.svg';
 	import { resolve } from '$app/paths';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
@@ -40,7 +39,7 @@
 				<Sidebar.MenuButton size="lg">
 					{#snippet child({ props })}
 						<a href={resolve('/')} title={t('app.back')} {...props}>
-							<img src={favicon} alt="" class="size-8 shrink-0 rounded-lg" />
+							<img src="/favicon.svg" alt="" class="size-8 shrink-0 rounded-lg" />
 							<div class="grid flex-1 text-start text-sm leading-tight">
 								<span class="truncate font-medium">
 									potocolom<span class="text-foreground">_</span>

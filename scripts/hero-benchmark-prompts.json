@@ -1,0 +1,142 @@
+[
+  {
+    "id": 1,
+    "source_id": 1,
+    "title": "Glass greenhouse at dusk",
+    "category": "photorealistic",
+    "prompt": "Glass greenhouse filled with tropical plants at dusk, condensation on panes, warm interior lamps glowing against a cool blue twilight sky, wet cobblestones outside, photorealistic architecture photography, shallow depth of field on a fern in the foreground, cinematic color grade."
+  },
+  {
+    "id": 2,
+    "source_id": 5,
+    "title": "Owl in snowfall",
+    "category": "photorealistic",
+    "prompt": "Snowy owl perched on a bare birch branch during heavy snowfall, soft diffuse overcast light, flakes frozen mid-air, sharp focus on golden eyes and feather barbules, creamy bokeh of white forest, wildlife photography, serene winter atmosphere."
+  },
+  {
+    "id": 3,
+    "source_id": 8,
+    "title": "Rainy cafe window",
+    "category": "photorealistic",
+    "prompt": "View through a rain-streaked cafe window at night, blurred neon signs outside, warm interior bokeh of string lights, condensation and drip trails on glass, cozy solitude, cinematic shallow depth of field, muted reds and ambers."
+  },
+  {
+    "id": 4,
+    "source_id": 10,
+    "title": "Botanical fern plate",
+    "category": "illustration",
+    "prompt": "Scientific botanical illustration of a fern frond unfurling, labeled in elegant copperplate script, cream parchment background, precise linework with soft watercolor washes of sage and olive, Victorian natural history plate aesthetic, museum print quality."
+  },
+  {
+    "id": 5,
+    "source_id": 14,
+    "title": "Linocut whale",
+    "category": "illustration",
+    "prompt": "Linocut print of a whale diving through stylized waves, heavy carved black ink on warm cream paper, bold simplified shapes, visible gouge texture, folk maritime poster energy, high contrast graphic storytelling."
+  },
+  {
+    "id": 6,
+    "source_id": 17,
+    "title": "Floating library islands",
+    "category": "surreal",
+    "prompt": "Surreal floating islands made entirely of stacked books drifting above a calm ocean, ladders connecting them, soft sunset light, Magritte-like stillness, hyperreal paper textures, dreamlike and quiet, no people, vast sky."
+  },
+  {
+    "id": 7,
+    "source_id": 20,
+    "title": "Mirror maze forest",
+    "category": "surreal",
+    "prompt": "Forest of freestanding antique mirrors reflecting infinite trees and a single red balloon, soft fog, twilight blue hour, surreal installation art mood, sharp reflections with soft atmosphere, quiet unease."
+  },
+  {
+    "id": 8,
+    "source_id": 23,
+    "title": "Origami dragons flock",
+    "category": "surreal",
+    "prompt": "Flock of origami paper dragons soaring over a quiet rice terrace at dawn, folded crisp paper catching peach light, soft mist in valleys, magical realism, delicate paper crease detail, peaceful scale contrast."
+  },
+  {
+    "id": 9,
+    "source_id": 26,
+    "title": "Sky pirate airship",
+    "category": "anime",
+    "prompt": "Anime sky pirate airship sailing through cotton-candy clouds at sunset, wooden hull with brass fittings, crew of chibi characters on deck, vivid orange and violet sky, Studio Ghibli inspired warmth without copying characters, adventurous mood."
+  },
+  {
+    "id": 10,
+    "source_id": 29,
+    "title": "Train station cat",
+    "category": "anime",
+    "prompt": "Anime-style calico cat sitting on a wooden bench in a rural Japanese train station at dusk, soft rain, warm platform lights, empty tracks, cozy slice-of-life mood, gentle watercolor-like backgrounds, quiet nostalgia."
+  },
+  {
+    "id": 11,
+    "source_id": 32,
+    "title": "Tea spirit portrait",
+    "category": "anime",
+    "prompt": "Portrait of an anthropomorphic tea-spirit girl with steam hair and porcelain skin, soft studio lighting, pastel kimono patterns, gentle smile, anime character sheet quality, delicate linework, calming aesthetic."
+  },
+  {
+    "id": 12,
+    "source_id": 35,
+    "title": "Smoke ribbon sculpture",
+    "category": "abstract",
+    "prompt": "Abstract ribbons of colored smoke forming a floating sculpture against pure black, cyan magenta and gold intertwining, soft volumetric lighting, elegant slow-motion freeze frame, gallery installation photography feel."
+  },
+  {
+    "id": 13,
+    "source_id": 38,
+    "title": "Woven light threads",
+    "category": "abstract",
+    "prompt": "Abstract woven tapestry of glowing fiber-optic threads in emerald and amber, dark indigo warp, soft bloom on bright intersections, textile and tech hybrid, rich tactile depth, no figurative content."
+  },
+  {
+    "id": 14,
+    "source_id": 41,
+    "title": "Bauhaus dance poster",
+    "category": "graphic",
+    "prompt": "Bauhaus dance poster with geometric dancers made of circles triangles and bars, primary colors plus black, strong diagonal composition, letterpress texture, 1920s modernist graphic design, bold and playful."
+  },
+  {
+    "id": 15,
+    "source_id": 44,
+    "title": "Jazz club matchbox",
+    "category": "graphic",
+    "prompt": "Vintage matchbox art for a fictional jazz club, gold foil saxophone silhouette on deep burgundy, elegant 1940s lettering style, small format graphic charm, slight paper wear, collectible ephemera aesthetic."
+  },
+  {
+    "id": 16,
+    "source_id": 47,
+    "title": "Ski resort brochure",
+    "category": "graphic",
+    "prompt": "Mid-century modern ski resort brochure illustration, simplified snowy peaks, flat color blocks of teal coral and cream, cheerful skier silhouettes, 1960s travel poster style, clean and inviting."
+  },
+  {
+    "id": 17,
+    "source_id": 50,
+    "title": "Oil harbor nocturne",
+    "category": "traditional",
+    "prompt": "Oil painting of a quiet harbor at night, warm lamp reflections on dark water, loose impressionist brushwork, deep ultramarine and amber, Whistler nocturne mood with original composition, tactile impasto highlights."
+  },
+  {
+    "id": 18,
+    "source_id": 55,
+    "title": "Bronze sculpture garden",
+    "category": "traditional",
+    "prompt": "Classical bronze sculpture of intertwined dancers in a mossy garden, verdigris patina, soft overcast daylight, shallow depth of field, museum photography, tactile metal surface, contemplative quiet."
+  },
+  {
+    "id": 19,
+    "source_id": 58,
+    "title": "Bioluminescent mangrove",
+    "category": "environment",
+    "prompt": "Night kayak view through a bioluminescent mangrove tunnel, glowing blue water trails, tangled roots, stars reflected between canopy gaps, magical natural history scene, long exposure feel, quiet wonder."
+  },
+  {
+    "id": 20,
+    "source_id": 65,
+    "title": "Robot and bonsai",
+    "category": "mixed",
+    "prompt": "Gentle service robot carefully pruning a bonsai on a tatami mat, soft morning light through shoji screens, mix of high-tech and tradition, photoreal materials with quiet narrative, hopeful near-future mood."
+  }
+]

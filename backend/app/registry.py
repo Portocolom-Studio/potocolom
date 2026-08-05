@@ -24,7 +24,11 @@ def available() -> dict[str, Manifest]:
     manifests: dict[str, Manifest] = {}
     for worker in realtime.workers.values():
         for manifest in worker.manifests:
-            manifests.setdefault(manifest.id, manifest)
+            # Prefer a studio-visible copy when stale workers still advertise
+            # benchmark_only=true for the same id (first-connect used to win).
+            existing = manifests.get(manifest.id)
+            if existing is None or (existing.benchmark_only and not manifest.benchmark_only):
+                manifests[manifest.id] = manifest
     return manifests
 
 

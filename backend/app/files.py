@@ -13,11 +13,16 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.storage import LocalStorage, get_storage
+from app.storage import LocalStorage, get_storage, validate_download_name
 
 router = APIRouter()
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Lossless masters are far larger than the WebP this route used to carry, and
+# the biggest one the fleet can produce is a 4x upscale of a 1024 px image. A
+# real 1024 px generation re-encoded to PNG at 4096 px measures about 19 MB,
+# and 4096 px of incompressible detail is 50 MB, so the old 20 MB ceiling
+# would have started refusing upscale uploads with a 413 (issue #125).
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
 def local_storage() -> LocalStorage:
@@ -60,12 +65,18 @@ async def upload(key: str, request: Request) -> dict:
 
 
 @router.get("/api/v1/files/{key:path}")
-async def serve(key: str) -> FileResponse:
+async def serve(key: str, download: str | None = None) -> FileResponse:
     storage = local_storage()
+    try:
+        download_name = validate_download_name(download) if download is not None else None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     try:
         path = storage.path(key)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if not path.is_file():
         raise HTTPException(status_code=404, detail="no such file")
+    if download_name is not None:
+        return FileResponse(path, filename=download_name)
     return FileResponse(path)

@@ -1,13 +1,16 @@
 <script lang="ts">
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import Seo from '$lib/components/Seo.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 </script>
 
-<svelte:head>
-	<title>potocolom - {t('legal.title')}</title>
-	<meta name="robots" content="noindex" />
-</svelte:head>
+<Seo
+	title="Legal Notice | potocolom"
+	description="Legal information for the potocolom pre-alpha marketing site."
+	path="/legal"
+	noindex
+/>
 
 <header class="border-b">
 	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">

@@ -1,0 +1,39 @@
+# The shipped API image contains backend/ and built frontend/ files, so both
+# path filters include them with deploy/. Otherwise route or static asset changes
+# could bypass the compose smoke test.
+# The simulated worker means no GPU is needed (issue #13 keeps one workflow per area).
+name: deploy
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
+      - "scripts/compose-smoke.sh"
+      - "Makefile"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
+      - "scripts/compose-smoke.sh"
+      - "Makefile"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: make verify-compose
+      # Builds the api and worker-sim images and drives a real generation
+      # through them; the script cleans up its containers and volumes.
+      - run: scripts/compose-smoke.sh
+        timeout-minutes: 20

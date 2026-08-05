@@ -3,6 +3,7 @@
   "name": "SD Turbo",
   "capabilities": ["text_to_image", "image_to_image", "realtime"],
   "min_vram_gb": 8,
+  "prompt_token_limit": 77,
   "source": "stabilityai/sd-turbo",
   "license_id": "stability-ai-community",
   "license_url": "https://huggingface.co/stabilityai/sd-turbo/blob/main/LICENSE.md",

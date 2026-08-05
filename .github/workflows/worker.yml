@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - "worker/**"
+      - "Makefile"
       - ".github/workflows/worker.yml"
   push:
     branches: [main]
     paths:
       - "worker/**"
+      - "Makefile"
       - ".github/workflows/worker.yml"
 
 permissions:
@@ -23,9 +25,9 @@ jobs:
       run:
         working-directory: worker
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: python3.11 -m venv .venv
       - run: .venv/bin/pip install -e ".[dev]"
-      - run: .venv/bin/ruff check .
-      - run: .venv/bin/mypy
-      - run: .venv/bin/pytest
+      # The Makefile target is the single definition of what the job checks.
+      - run: make verify-worker
+        working-directory: .

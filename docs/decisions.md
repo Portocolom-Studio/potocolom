@@ -42,7 +42,7 @@ Rejected alternative: flat subscriptions without metering. Simplest experience, 
 
 ## Open source boundary: commercial parts in a private repository
 
-This repository stays fully self-hostable under GPL 3.0. Billing, the credit ledger and the GPU fleet orchestrator live in a private repository and integrate over HTTP service boundaries (QuotaService, metering events). The process boundary avoids GPL derivative work questions and keeps the public project complete on its own.
+This repository stays fully self-hostable under AGPL-3.0 (originally GPL-3.0; relicensed by issue #109 / PR #110, see "License: AGPL-3.0 with commercial dual licensing" below). Billing, the credit ledger and the GPU fleet orchestrator live in a private repository and integrate over HTTP service boundaries (QuotaService, metering events). The process boundary avoids copyleft derivative work questions and keeps the public project complete on its own. <!-- corrected 2026-07-23: was "under GPL 3.0" -->
 
 Rejected alternative: everything public. Maximum transparency, but anyone could clone the entire commercial service.
 
@@ -70,6 +70,8 @@ The browser's WebSocket and the worker's persistent connection usually terminate
 
 Rejected alternatives: a dedicated realtime gateway service (cleanest latency path, but one more deployment that duplicates auth); having the worker redial the specific replica holding the browser (breaks the workers-dial-one-endpoint rule and fights Fargate networking).
 
+> Shipped status (2026-07-30): **not yet implemented.** The current relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends; the backend has no Redis dependency or FrameBus. The target is governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts".
+
 The rejected gateway is pre-planned as a scale-stage extraction with an explicit trigger; see "Realtime relay: planned extraction into a Go gateway at scale" below.
 
 ## GPU pool: shared between jobs and realtime, realtime first
@@ -84,11 +86,15 @@ A session request with no free slot waits in a queue with live position and esti
 
 Rejected alternatives: hard rejection (worst experience, no demand signal); time slice sharing (everyone's frame rate collapses instead of anyone waiting).
 
+> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler hard-rejects a full pool with close code 4003. Queue admission remains the target under issue #19, "Real-Time Generation Protocol", and the issue "Redis-optional Queues and FrameBus contracts".
+
 ## Idle realtime sessions: release after 60 seconds, transparent resume
 
 An idle drawing session releases its slot and stops metering after about 60 seconds without input; the canvas stays intact and the next stroke reacquires a slot, usually instantly. Forgotten tabs therefore cost nothing and block nobody.
 
 Rejected alternative: pinning the slot while the tab is open. Zero resume friction, but forgotten tabs silently drain credits, which is a support complaint machine.
+
+> Shipped status (2026-07-30): **not yet implemented.** The current browser handler records no last-input time and pins a ready slot until the connection closes. Issue #19, "Real-Time Generation Protocol", owns idle release and resume controls; issue #20, "Multi-Worker Scheduling", owns reacquisition and priority.
 
 ## Model placement: hot set plus on-demand loading
 
@@ -260,6 +266,8 @@ One replica holds a short Redis lease and runs the single threaded scheduling lo
 
 Rejected alternatives: a dedicated scheduler service (cleanest isolation, one more deployment before launch); lock based scheduling in every replica (distributed race bugs concentrated exactly where GPU money is spent).
 
+> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, realtime admission queue, preemption, idle release, or cross-replica recovery. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
+
 ## Redis topology: one instance, split-ready namespaces
 
 A single instance at launch, but every key belongs to one concern (sessions, queue, rt, rate) and each concern's client reads its own endpoint setting, so moving pub/sub or the queues to dedicated instances later is configuration. Redis is never the source of truth, so its loss degrades features without losing data.
@@ -271,6 +279,8 @@ Rejected alternatives: a replica from day one (pays for failover on a component 
 The job queue and the realtime admission queue are Redis sorted sets scored by tier then enqueue time, popped atomically with a small Lua script. Priority is native, queue position for the waiting room is one ZRANK, and recovery is rebuilding the set from job and session rows.
 
 Rejected alternatives: Redis Streams (delivery tracking that duplicates what the PostgreSQL rows provide, and priority needs a stream per tier); Celery or RQ (assume queue consuming worker processes, but our workers hang off WebSocket connections).
+
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. Redis sorted sets, the realtime admission queue, cancellation, fairness, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
 
 ## Realtime wire format: binary frames, JSON control
 
@@ -286,7 +296,7 @@ Rejected alternatives: CUDA only (the primary development machine could then nev
 
 ## Development loop: dependencies in containers, applications native
 
-PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
+PostgreSQL, Redis, MinIO and Mailpit run from a dev compose file; the API server, frontend dev server and worker run natively with hot reload and debugger access. Only PostgreSQL starts by default, since the native loop keeps its queue and relay in process and stores assets locally; the other three are cloud-profile substitutes behind `--profile cloud-sim`. The containerized applications are still exercised by the cloud simulation, CI image builds and pre-release runs of the shipped compose file.
 
 Rejected alternatives: everything in containers (closest to what ships, but slower iteration and clumsier debugging every single day); everything native (host setups drift and version differences surface as mystery bugs).
 
@@ -308,11 +318,30 @@ Models registered by workers persist in PostgreSQL, and `GET /api/v1/models` ret
 
 Rejected alternatives: listing only live models (simpler response, but a worker restart makes models vanish from the UI and orphans old history); returning the stored registry with no signal (the user discovers unavailability by a failed generation).
 
-## Stored outputs: PNG
+## Stored outputs: PNG masters, WebP thumbnails and frames
 
-Generated images are stored as PNG: lossless, universal, no quality knobs to decide, written by Pillow with no extra dependency. Cloud storage cost is bounded by the retention decision rather than the format. The realtime wire keeps WebP; transport and storage are different concerns with different constraints.
+<!-- corrected 2026-07-23: header was "Stored outputs: PNG" but the code shipped WebP -->
+<!-- corrected 2026-07-29: issue #125 shipped, so the code matches the original decision again -->
 
-Rejected alternatives: WebP lossless storage (a quarter to a third smaller, worth revisiting when egress bills exist, not before); format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for).
+The stored master is **lossless PNG**, written by Pillow with no extra dependency: universal, no quality knobs, and the archival copy of the user's work. Cloud storage cost is bounded by the retention decision rather than by the format.
+
+Everything that exists to be looked at rather than kept is **WebP**: the derived thumbnails the gallery displays, and the realtime frame stream, where bytes on the wire decide the frame rate.
+
+Masters written before this shipped are still WebP and stay that way. There is no backfill: history and share links serve whatever `mime` and `storage_key` the asset row records, so a mixed bucket is normal and nothing reading an asset may assume the extension.
+
+One consequence worth recording: the largest master the fleet can produce is a 4x upscale of a 1024 px image, which measures about 19 MB losslessly and reaches 50 MB on incompressible detail. The local upload route's ceiling exists to bound abuse and has to stay clear of that, so it moved from 20 MB to 64 MB with this change.
+
+Measured on a real 1024 px generation, so the next person reconsidering this does not have to re-derive it. At 1024 px, and at 4096 px for the largest upscale the fleet produces:
+
+| Format | 1024 px | 4096 px | Encode at 4096 | Pixels |
+|---|---|---|---|---|
+| PNG | 2.19 MB | 19.20 MB | 4.0 s | lossless |
+| WebP lossless | 1.58 MB | 12.64 MB | 7.0 s | identical to PNG, verified |
+| WebP lossy q80 | 0.26 MB | 1.17 MB | 0.8 s | lossy, permanent |
+
+Lossless WebP is therefore 28 to 34 percent smaller than PNG for byte-identical pixels, at roughly twice the encode time, and it would fit the original 20 MB upload ceiling. It is the obvious move if stored bytes ever cost real money, and it pairs with converting to PNG only on an explicit download, which is lossless from that source. It is not worth a format migration and a conversion path today, when retention already bounds the cost.
+
+Rejected alternatives: format as a request parameter (two code paths and a decision pushed onto every caller, for flexibility nobody asked for); JPEG for the master (lossy, and no alpha); keeping WebP for the master too, which is what shipped between 2026-07-23 and this change, and which left the archival copy quietly lossy; storing lossy WebP and converting to PNG on download, which sounds like a saving but hands the user PNG's size wrapping already-discarded detail, and compounds on every edit and upscale that re-encodes from the master.
 
 ## Model manifests: JSON
 
@@ -322,9 +351,13 @@ Rejected alternatives: YAML (nicer to hand-edit, but a pyyaml dependency and JSO
 
 ## Drawing surface: bitmap canvas
 
-The drawing tool paints strokes directly onto one `<canvas>` element; frame capture for the realtime loop is a native `canvas.toBlob("image/webp")`. Undo is a snapshot stack, and eraser and fill are plain pixel operations. The wire protocol already fixed rasterized frames, so the cheapest path from stroke to encoded frame wins at 2 to 4 fps.
+<!-- corrected 2026-07-30: issue #54's operation-journal direction supersedes the earlier snapshot-stack undo choice; the live bitmap choice stands -->
 
-Rejected alternative: an SVG vector layer rasterized to a hidden canvas per frame (individually editable strokes, but every frame pays a serialize, draw and encode pipeline, plus hit-testing complexity, for editing semantics the realtime loop does not need).
+Use one 512 by 512 bitmap canvas for live interaction and encode complete WebP frames with native `canvas.toBlob()` for the realtime wire. The browser records the same canonical pointer samples as ordered, stable-ID operations and stores compressed raster checkpoints to bound replay time. Undo replays operations after the nearest checkpoint, and refine rerasterizes the journal at the requested target resolution. Vector paths are reserved for selections, masks, text, shapes, and authored objects that need later transforms; model-generated output remains raster.
+
+Rejected alternatives: a raw snapshot stack (1 MiB per 512 by 512 RGBA level before overhead, without target-resolution rerasterization); an SVG live surface (still requires rasterization before every model frame and does not give generated pixels semantic object identity); a pure vector document (cannot faithfully represent paint, eraser, smudge, imported rasters, and diffusion output).
+
+> Shipped status (2026-07-30): **not yet implemented.** Issue #3, "Drawing interface", owns the live bitmap tool and issue #54, "stroke-op replay log", owns the operation journal, checkpoints, replay, and undo.
 
 ## First public release: after the walking skeleton, API level
 
@@ -350,13 +383,17 @@ Rejected alternatives: adopting airLLM itself (it targets transformer LLMs throu
 
 When a generation request does not pin a `model_id`, the API resolves the cheapest registered model whose tier, capabilities and parameters satisfy the request; manifests carry a `tier` field (`draft`, `standard`, `premium`). Our workloads announce their own difficulty through the interface: a drawing stroke is realtime and lands on a turbo-class model, a refine click is a queued job and routes to a heavier one. The router is a small selection policy inside the existing dispatch path.
 
+> Shipped status (2026-07-23): **not yet implemented.** The wire `Manifest` has no `tier` field, and `POST /api/v1/generations` requires an explicit `model_id`; there is no routing path. This entry describes a designed policy, not current behavior.
+
 Rejected alternatives: an ML difficulty classifier in front of the models (burns GPU time to guess what the UI action already states, and misclassification is user-visible); a separate routing proxy service (a deployment and a failure mode for what is one function in the API).
 
 ## Worker performance: compile and channels_last at warmup
 
-Hot-set models are warmed with `torch.compile` and `channels_last` memory format when loaded, worth roughly a fifth to a third off denoising time on diffusion pipelines for zero new dependencies. The extra compile minute hides inside the existing model loading state. The attention backend is configuration through diffusers' `set_attention_backend`.
+Hot-set models use `channels_last` memory format when loaded. `torch.compile` and diffusers' `set_attention_backend` are implemented behind worker settings (`TORCH_COMPILE`, `ATTENTION_BACKEND`) and stay off by default: on the reference ROCm card they measured only ~0-7% warm denoise gain against multi-minute cold loads (PR #141), so the earlier "fifth to a third" expectation is CUDA-oriented and not the self-host default. Operators may opt in; a CUDA fleet bake-off can flip the default if the priced GPU seconds justify the cold-start tax.
 
-Rejected alternatives: skipping compilation (leaves the single largest free speedup on the table, and GPU seconds are the priced resource); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
+> Shipped status (2026-07-23): `channels_last` is applied at load. `torch.compile` and `set_attention_backend` exist behind env settings and default off after the ROCm A/B (PR #141; tracking #60). The default path stays PyTorch SDPA plus the ROCm AOTriton env flag.
+
+Rejected alternatives: forcing compile on for all devices after the ROCm measurement (pays startup cost for noise-level realtime wins); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
 ## Image codecs off the event loop
 
@@ -366,11 +403,15 @@ Rejected alternative: SIMD image libraries (pillow-simd, libvips) before a profi
 
 ## Job placement: offloaded workers first, micro-batching deferred
 
+<!-- corrected 2026-07-30: the single-region rejection is superseded by "Realtime fleet: regional, pool-partitioned, and warm" below; the offloaded-worker preference and scheduler-level micro-batching deferral stand -->
+
 When several workers can take a queued job, the scheduler prefers workers serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. One comparator in worker selection. Micro-batching same-model queued jobs is deliberately deferred until a real cloud fleet exists: it raises throughput but complicates slot accounting and preemption, and at a one or two GPU scale there is nothing to batch.
 
 Rejected alternative: latency or geography aware placement (a single-region fleet at launch scale has nothing to optimize).
 
 ## License: GPL-3.0 stays, AGPL rejected
+
+> **Superseded** by "License: AGPL-3.0 with commercial dual licensing" below (issue #109, PR #110, 2026-07-17). Kept for the record; the present-tense claims in this entry are no longer in force.
 
 The public repository remains GPL-3.0. The cloud runs the same unmodified GPL images, so GPL's lack of a network clause costs the project nothing; the closed layer (billing, autoscaler, infrastructure) is protected by being separate processes in a private repository behind HTTP boundaries, not by the license. Full analysis in [repository-boundary.md](repository-boundary.md).
 
@@ -387,6 +428,52 @@ Rejected alternative: public Terraform under `deploy/terraform/` (as earlier dra
 Every completed job and closed realtime session writes one user-linked row (action, model, tier, output category, gpu_ms, duration) to a `usage_events` table in the deployment's own PostgreSQL, in both modes; the worker attaches a category from a CLIP zero-shot pass over the output image at generation time. Per-event user-linked rows are what retention, cohort and funnel analysis need, which is what investors ask; the CLIP pass is nearly free because SD-class pipelines already hold a CLIP encoder and the image is already in memory. No prompts, images, IPs or user agents are stored; rows die with the account purge and appear in the GDPR export. Specified in [metrics.md](metrics.md).
 
 Rejected alternatives: a third party analytics product (PostHog, Amplitude: client side trackers and data sharing contradict the no-cookies posture and add a dependency); daily aggregates only (privacy-trivial but cannot answer retention or cohort questions); classifying the prompt text instead of the output (prompts are short, misleading or absent in drawing and enhance flows); pseudonymous ids (loses the join to plan and cohort, which is the point of the exercise).
+
+## Usage event retention: 90-day raw rows plus daily user rollups
+
+Raw `usage_events` are retained from the UTC midnight 90 days before maintenance
+runs. Before older complete days are pruned, the existing five-minute maintenance
+loop replaces an idempotent `usage_event_rollups` row for each user, UTC day,
+kind, action, model, tier and category with the raw count and numeric sums. The
+rollup and prune commit in one transaction. Ninety days keeps a substantial
+recent window of event-level session and funnel detail while placing a direct
+bound on the table daily telemetry and the future admin view scan most often.
+The window is fixed because both profiles need the same metric semantics;
+event-rate differences change the bounded raw volume rather than the retention
+contract.
+
+The UTC alignment means 90 to 91 days of arrivals remain, or about 90 x `R` to
+91 x `R` raw rows at an average `R` completed events per day.
+
+The daily per-user grain preserves the question the table exists to answer: did
+this user return in a later period. Daily presence can be regrouped into DAU,
+WAU, calendar periods or signup-relative first-week cohorts; a coarser stored
+bucket cannot recover those boundaries. The dimensions preserve category, model,
+tier and action retention, while count, category-score count and sum, gpu_ms,
+duration and frames preserve the additive usage measures. Per-user annual row
+count is the sum of distinct dimension tuples used on each active day: 365 rows
+for a daily user with one tuple, or 365 x `D` when that user uses `D` tuples every
+day. The rollup is long-lived, but its growth is periodic and dimension-bounded
+rather than per completed event.
+
+`usage_event_rollups.user_id` uses the same `ON DELETE CASCADE` as raw events.
+The rollup is personal data, dies with the account purge, and belongs in the GDPR
+export when issue #10 implements it. This retains the existing privacy
+commitment; an aggregate-only rollup would not, because a later purge could not
+remove that user's contribution.
+
+The existing `usage_events_created_at` index remains: it serves both the
+maintenance rollup/prune range and telemetry's previous-day range. The unique
+rollup key serves the idempotent conflict update and user-scoped cohort/GDPR
+reads; its leading `user_id` also supports the cascade lookup. A separate
+`usage_event_rollups_bucket_date` index serves cross-user period scans for cohort
+and admin aggregation.
+
+Rejected alternatives: no retention, which leaves per-event growth unbounded;
+plain deletion after the raw window, which destroys returning-user and cohort
+history; aggregate-only rollups, which cannot identify a returning user and
+cannot remove one person's contribution on purge; weekly or monthly user
+rollups, which cannot reconstruct daily activity or signup-relative first weeks.
 
 ## Telemetry: opt-out anonymous aggregates from self-hosted installs
 
@@ -420,6 +507,8 @@ Rejected alternatives: failing open on reserve (an outage becomes a free GPU fau
 
 ## Realtime relay: planned extraction into a Go gateway at scale
 
+<!-- corrected 2026-07-30: superseded by "Realtime relay: Go gateway required for the 1000-active-session target" below; kept for the record because its ownership split and Go rationale still stand -->
+
 The Redis pub/sub relay between API replicas stands, and no gateway code exists today. This entry records the exit plan for the day profiling shows relay frame pacing threatening the 2 to 4 fps bar or relay work crowding API replicas: a stateless gateway service terminates the browser realtime socket and the worker fleet socket, relays binary frames in memory when both legs land on the same instance (affinity by session id) and over Redis pub/sub otherwise, and forwards JSON control traffic to the API, which keeps the scheduler and all authority. Browsers authenticate to it with short-lived tickets minted by the API; workers keep their fleet tokens. The ALB already routes by path, so `/api/v1/realtime` and `/api/v1/fleet` move to the gateway's target group without touching anything else; the FrameBus seam and the no-stickiness design are what make the split configuration plus one new service rather than a redesign. The gateway is written in Go: many sockets, small messages, no model code, a static binary, exactly the shape Go serves best. The API stays Python per its own decision; within this repository the gateway is the only planned Go component. The private repository's services choose their own stack behind the HTTP contracts.
 
 Rejected alternatives: building the gateway now (a deployment and a duplicated auth surface before any profile justifies it, the same reason the frame routing decision rejected it); a full Go port of the API (recreates the two-language backend the FastAPI decision exists to avoid, spending a rewrite on headroom the GPU-bound economics cannot use, since session count and therefore relay load track fleet size, which tracks revenue).
@@ -444,7 +533,9 @@ Rejected alternatives: storing flagged prompts for human review (creates exactly
 
 ## GPU session density: calibrated slots now, worker-internal batching later
 
-Realtime slots per worker stop being a configured guess: at model warmup the worker benchmarks ms/frame at batch sizes 1..N and advertises the largest session count that holds p95 frame time under the 2 to 4 fps bar. This lands with the real inference issue and replaces the most expensive guess in the system with a measurement. The density ladder beyond that is designed and deliberately deferred: cross-session frame batching inside the worker (frames from concurrent same-model sessions collected in a ~30-50 ms window and run as one batch - invisible to the scheduler, because it lives below the slot abstraction, which is why this does not reopen the deferred scheduler-level micro-batching decision), then StreamDiffusion-class pipeline work (batched denoising steps across consecutive frames, dropping classifier-free guidance on turbo models, tiny-autoencoder decode for the live preview with full VAE on refine). Trigger: when fleet spend makes density the cheapest capacity, which is measurable from the machine-hour accounting.
+<!-- corrected 2026-07-30: the density-research deferral is superseded by "GPU session density: capacity-critical at 1000 active sessions" below; calibration and the scheduler slot abstraction stand -->
+
+Realtime slots per worker stop being a configured guess: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the 2 fps floor (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS. Sessions serialize on the worker GPU lock; a batch-size sweep waits on the deferred cross-session batching ladder below. This lands with the real inference issue and replaces the most expensive guess in the system with a measurement. The density ladder beyond that is designed and deliberately deferred: cross-session frame batching inside the worker (frames from concurrent same-model sessions collected in a ~30-50 ms window and run as one batch - invisible to the scheduler, because it lives below the slot abstraction, which is why this does not reopen the deferred scheduler-level micro-batching decision), then StreamDiffusion-class pipeline work (batched denoising steps across consecutive frames, dropping classifier-free guidance on turbo models, tiny-autoencoder decode for the live preview with full VAE on refine). Trigger: when fleet spend makes density the cheapest capacity, which is measurable from the machine-hour accounting.
 
 Rejected alternatives: implementing batching in the launch scope (worker complexity before concurrent users exist to batch, on a one or two GPU fleet); keeping static guessed slots (leaves per-GPU economics unmeasured through exactly the period when pricing is being validated).
 
@@ -480,11 +571,11 @@ Rejected alternatives: keeping everything hand-rolled (every new surface repays 
 
 ## Stability Community License models in the product
 
-sd-turbo and sdxl-turbo ship in the worker manifests with `benchmark_only: true`. They are available to the benchmark harness and hidden from `GET /api/v1/models`, so end users cannot select them in the studio. Timings may still appear on the public `/benchmark` page as reference hardware metrics.
+Updated 2026-07-25: the operator holds Stability AI Community License registration, but `sd-turbo` and `sdxl-turbo` both ship with `benchmark_only: true`. Quality at the shipped resolutions is not good enough for the studio picker; they remain loadable as benchmark speed anchors (issue #60). Revisit only if a higher default resolution (e.g. 1024 for SDXL Turbo) is measured and accepted.
 
-If these models are ever offered in the product, the same $1M annual revenue cap applies (Stability AI Community License); above that threshold the community license terminates and an enterprise license is required. Stability commercial use also requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
+The same $1M annual revenue cap still applies (Stability AI Community License); above that threshold the community license terminates and an enterprise license is required. Commercial use still requires registration at stability.ai/community-license and prominent "Powered by Stability AI" attribution. Manifest fields (`license_id`, `commercial_max_revenue_usd`, `requires_attribution`) cross the wire for future cloud-side gating. Details in [third-party-models.md](third-party-models.md).
 
-Rejected alternative: removing capped models entirely. They anchor the realtime speed bar (issue #60) and give honest comparison points on `/benchmark` without taking on product licensing obligations today.
+Earlier shipping briefly set both to studio-visible after registration. Rejected alternative: deleting the manifests. They still give honest comparison points on `/benchmark`.
 
 ## Cloud asset storage: one bucket, prefix per tier
 
@@ -506,13 +597,165 @@ Rejected alternative: keep `ssd-1b-lightning` benchmark-only after the successfu
 
 `vega-rt` is the studio-shippable realtime model. Issue #75 measured median 381 ms gpu_ms at 512/2 t2i on the RX 7600 XT (clean GPU), within turbo-class range of the Stability benchmark anchors, under Apache 2.0 with no revenue cap. Issue #84 verified the realtime img2i frame path at warm median 452 ms (~2.2 fps) @ 512 with strength 0.7 on the same hardware. The manifest exposes `text_to_image`, `image_to_image`, and `realtime` with an LCM scheduler and fused VegaRT LoRA.
 
-Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75); sd-turbo and sdxl-turbo as product models - Stability Community License caps commercial use at USD $1M annual revenue (see "Stability Community License models in the product" above).
+Rejected alternatives: Hyper-SD (sdxl-hypersd) as the fast SDXL path - the Hyper-SD LoRA has no declared license on the card (issue #75). sd-turbo / sdxl-turbo stay benchmark-only for quality (see "Stability Community License models in the product"). VegaRT is the license-clean realtime default without a revenue cap.
 
 ## License: AGPL-3.0 with commercial dual licensing
 
 Supersedes "License: GPL-3.0 stays, AGPL rejected". The public repository moves to AGPL-3.0 and the project sells commercial exceptions (COMMERCIAL.md). The earlier entry rejected AGPL as a competitive moat, and that reasoning still holds: AGPL does not stop a competitor hosting unmodified code, and the moat remains the closed business layer. The license changes anyway because the goal changed: companies that modify and operate the platform as a service must now either publish their changes or engage us commercially, turning the license into a funnel rather than a wall. Self-hosting, private use, internal use and contribution are unaffected, and the project's own cloud is unaffected because it runs unmodified images and the project holds the copyright. Dual licensing depends on retaining relicensing rights, so contributions require DCO sign-off from this point on (CONTRIBUTING.md).
 
 Rejected alternatives: staying GPL-3.0 (leaves the modified-network-service path entirely open, and relicensing only gets harder as outside contributions accumulate); BUSL-1.1 with a revenue-threshold use grant or PolyForm Noncommercial (closest to a Stability-style community license, but both are source-available rather than open source, and the project's positioning spends that credibility everywhere from the hero badge to the whitepaper).
+
+## SD 3.5 Medium: the quality tier, loaded through AutoPipeline
+
+Issue #151. Stable Diffusion 3.5 Medium enters the roster as the quality text-to-image model, and it needs no new loader machinery: diffusers maps the repository's `model_index.json` to `StableDiffusion3Pipeline` through the `AutoPipelineForText2Image` the worker already calls, so the manifest declares nothing about its architecture. It is the first gated repository the project ships; the Hugging Face client reads `HF_TOKEN` from the environment, so the whole credential path is one compose variable and a self-hosting section, with no code in the worker. It ships `text_to_image` only. The Community License attribution obligation is met per model, rendering a manifest's `requires_attribution` beneath the studio model picker, which credits Stability exactly when a Stability model is selected. This does not reopen "Stability Community License models in the product": the turbo models stay benchmark-only for quality, and this entry adds a Community License model that earns its place on quality instead of speed.
+
+Measured on the reference RX 7600 (gfx1102, 15.98 GiB) on 2026-07-26: full residency OOMs in both fp16 and bf16, because the fp16 component set is about 15.15 GB of weights before a single activation, so the issue's "full encoders comfortable on 16 GB" is wrong. The model-offload rung is the shipped 16 GB configuration, peaking at 12.09 GB (fp16) and 10.21 GB (bf16). `min_vram_gb` is 24: it keeps its documented full-residency meaning, it cannot be measured exactly on a card that OOMs, and it is bounded below by the measurement that 16 GiB is insufficient. That value makes the existing 0.55 largest-component fraction select model offload with a 13.2 GB threshold against a 12.09 GB measured peak, which is why no ladder override field was needed. Timing is 56 s at 20 steps and 89 s at 40 at 1024 px, a 22.6 s offload floor plus about 1.67 s per step, so 20 is the default: the quality difference against 40 at a fixed seed did not justify 33 seconds. The studio picker already renders the estimated time beside the model name, so the cost is visible before selection. bf16 saves 1.9 GB and one second with visually identical output, which did not justify a per-manifest dtype field.
+
+Rejected alternatives: a `pipeline_family` manifest field or inferring the family from `source` (AutoPipeline already dispatches correctly, source inference breaks for mirrors and local paths, and the field would be a speculative seam maintained against upstream configuration); a `largest_component_vram_gb` override for the memory ladder's 0.55 largest-component fraction, whose UNet-dominant assumption T5-XXL breaks in principle (the measurement showed the heuristic picking the correct rung with margin, so the field would have been schema without a problem to solve); shipping `realtime` or `image_to_image` (realtime would need a distilled SD3 and would run a 21-frame calibration at every startup; i2i doubles the acceptance surface for no motivation in the issue); a site-wide attribution banner (it would credit Stability for output from Apache-licensed models too); teaching the engine to descend a rung after an OOM (a general failure-path state machine that changes every model's behavior, and a separate issue if measurement shows it is needed).
+
+## SD 3.5 Medium: int8 T5 with bounded memory rung demotion
+
+Issue #155 supplies the measurement that the earlier SD 3.5 decision required
+before changing the failure path. The worker quantizes only the manifest-named
+`text_encoder_3` with torchao weight-only int8, before moving the pipeline to
+the device. T5-XXL falls from 9.12 GB to 4.57 GB, the resident pipeline is
+10.93 GB, and generation peaks at 13.44 GB. `min_vram_gb` is therefore 14,
+rounded up from the measured generation peak rather than from resident weights.
+Full residency also makes `torch.compile` safe from accelerate offload hooks,
+so a quantized full-resident manifest requires compile even when the global
+opt-in is off. The measured reference path is 28.0 s at 1024 px and 20 steps,
+against 49.5 s for the previous fp16 model-offload path.
+
+The 13.44 GB peak leaves little room for a desktop session to vary. Under
+`MEMORY_MODE=auto`, an out-of-memory error while loading descends from `full`
+to `model_offload`, then to `group_offload`. A generation out-of-memory error
+first keeps the existing behavior of evicting other residents and retrying. If
+that retry also fails, the worker descends exactly one rung, reloads and tries
+the job once more. Operator-pinned memory modes never descend, because a pin
+is an explicit choice rather than a heuristic to correct.
+
+Rejected alternatives: bitsandbytes (its gfx1102 kernel fails with
+`Error invalid device function at line 432 in file /src/csrc/ops.cu`);
+quantizing the other models (they already fit and measured 1.1 to 3.6 percent
+slower); unbounded generation descent or retry (one bad job could repeatedly
+reload a large pipeline); demoting an operator-pinned rung (silently ignores
+explicit configuration).
+
+## Prerendering: every known route is rendered at build time
+
+Supersedes the `ssr = false` client-rendered shell in "Frontend: SvelteKit as a static SPA" above, without changing what that decision settled: there is still no server rendering at request time, and the build is still one static artifact that the API serves when self-hosted and a CDN serves in the cloud. What changed is that the same artifact also serves the public marketing site, where a shell containing no title, description or heading is the whole product a crawler and a social card ever see. SvelteKit prerenders known routes into complete documents, the client hydrates them, and the studio behaves exactly as before.
+
+Two consequences are accepted deliberately. The prerendered language is English, so the locale preference is restored after hydration rather than during module initialization, which means a Spanish visitor sees English for one frame. Benchmark results load after hydration rather than being inlined into the prerendered document, keeping the page small at the cost of the results table not being crawlable; the surrounding explanation and the model specifications are.
+
+Rejected alternatives: leaving the marketing routes client-rendered and accepting an empty shell in search results and social cards (the reason this project has a landing page at all is discovery); a separate marketing site or branch (rejected earlier and still rejected, since one codebase serving both surfaces is the point); server-side rendering at request time (needs a running server in front of the CDN, which the cloud profile deliberately avoids).
+
+## Favorites: a timestamp on the job row
+
+Favorites are persisted as nullable `jobs.starred_at`. The timestamp is both membership and newest-first ordering, the existing job owner scopes every operation, and job retention remains authoritative. This gives the implicit self-hosted user and future account users the same endpoint and database path.
+
+Rejected alternatives: keeping UUIDs in browser localStorage, which strands favorites across browsers, reinstalls and regenerated rows; a separate favorites join table, which adds a join and lifecycle without buying many-to-many ownership because assets and their jobs have one owner.
+
+## Benchmark history: PostgreSQL sessions and measurements
+
+Supersedes issue #107's static-JSON-only position. Each completed suite run is one benchmark session with ordered per-model measurements in PostgreSQL, and reads are install-scoped because a benchmark measures the shared GPU rather than one person's work. The existing JSON artifacts remain a portable report and the public static page's fallback, while an installed studio can list and compare every retained run in either deployment profile.
+
+Rejected alternatives: keeping session history solely as committed static JSON, where each run overwrites the previous report, publishing runtime data requires a source-control operation, and the session picker can never show more than one run; scoping sessions to the account that ran them, which would hide an install's own hardware history from everyone but whoever happened to trigger the benchmark.
+
+## Roles: three tiers on the user row
+
+Access is a single `role` column on `users` with three values, checked by a dependency beside `current_user` rather than inside each endpoint: `admin` (everything, including install configuration), `user` (the member tier: generate, star, upload, manage their own work) and `viewer` (read-only, including the metrics section and benchmark history). The `AUTH_MODE=none` local user is an admin, and an existing local user is promoted on startup, so a single-user self-hosted install behaves exactly as before. This covers the requirement that a friend on someone's install may look without spending their GPU, and the cloud requirement that install-wide reads are not open to every customer.
+
+Rejected alternatives: a per-resource permission table, and admin-assignable per-tab grants, both of which add a matrix nobody has asked for and can be layered on these tiers later if a real need appears; no roles at all, which cannot express read-only access and leaves install-wide endpoints open to any authenticated account once the cloud has more than one.
+
+## Model timings: observed per-install medians supersede shipped constants
+
+A new install starts with the shipped reference-card GPU timings. Once a model has five eligible succeeded jobs, the median observed GPU speed from its latest 50 jobs supersedes that reference speed for the install. Five leaves four representative observations when one job is pathological without delaying convergence for a lightly used model; 50 smooths ordinary workload variance while allowing the cache to follow a hardware change, and only jobs finished within the last 30 days count, so the refresh reads a bounded slice rather than the whole of an install's history and a stale timing cannot outlive the hardware it described. Observations are normalized for each job's steps, dimensions or upscale factor before the median is taken, and the existing five-minute maintenance loop refreshes the derived in-memory cache. Jobs do not record their worker or memory mode, so the cache is keyed by model alone rather than inventing an unreliable join.
+
+Rejected alternatives: shipping one machine's constants forever, which is wrong on every other hardware profile; calibrating on every boot, which spends GPU time and measures idle synthetic conditions rather than the real workload.
+
+The refresh reads the newest succeeded jobs per model, which `jobs_user_created` cannot answer because it leads with `user_id`, so migration `0010` adds a partial index on `(model_id, finished_at DESC)` limited to the succeeded rows with a positive GPU time, which is the query's own filter.
+
+## SPA/API compatibility: N-1 through expand-contract
+
+Each API release tolerates the previous release's SPA. Response shapes follow the same expand-contract discipline as the worker protocol and database migrations: expand with new fields, move clients off old fields, then contract only after the N-1 window has passed. New-build polling offers the user a reload, but compatibility does not depend on taking it.
+
+Rejected alternative: breaking response changes plus a forced reload. That makes SPA and API deploys lockstep and can discard in-flight work.
+
+## Prompt token window: declared per manifest, silent when undeclared
+
+The text encoder window a prompt is measured against comes from the manifest field `prompt_token_limit`, not from a constant in the frontend. The shipped CLIP based models declare 77; a model whose encoder differs declares its own figure and the studio warning follows it without a frontend change. An absent or zero value means the window is unknown and no warning appears, so a manifest that forgets the field fails back to the behaviour before the warning existed instead of asserting a limit its encoder does not have. Upscale manifests take no prompt and leave it unset. The count itself is estimated in the browser from words and punctuation rather than tokenized exactly, because the real CLIP tokenizer means shipping roughly a megabyte of BPE vocabulary to phrase a warning that only needs to be right within a few tokens.
+
+Rejected alternatives: hardcoding 77 in the studio, which is correct only for the models shipped today and silently wrong for the first model with a larger encoder; defaulting the field to 77 so existing manifests need no edit, which turns a forgotten declaration into a confident false warning rather than silence; asking the worker for an exact count per keystroke, which spends a round trip on a hint; and bundling a real tokenizer, which costs more transfer than the feature is worth.
+
+## Python dependencies: bounded ranges without a lockfile
+
+Direct Python dependencies use bounded ranges from the supported floor to the next major version. This keeps contributor installs within tested release series while preserving the worker's device-specific installation path: CUDA wheels come from PyPI, while ROCm and CPU torch wheels come from the matching `download.pytorch.org` index.
+
+Rejected alternatives: a lockfile, `uv` or `pip-tools`. A single resolved dependency tree cannot express the worker's different torch indexes by device, so these options would fight the documented install path.
+
+## Realtime relay: Go gateway required for the 1000-active-session target
+
+Supersedes "Realtime relay: planned extraction into a Go gateway at scale" above. The earlier entry's ownership split, FrameBus seam, no-stickiness design, and choice of Go stand; only the conditional timing is no longer in force.
+
+The accepted design target of 1000 or more concurrently active drawing sessions makes the Go realtime gateway a prerequisite for that capacity, rather than an extraction attempted only after the Python API relay is saturated. The stateless gateway terminates browser realtime sockets and worker fleet sockets, relays binary frames through bounded per-session writers in memory when both legs are local and over the FrameBus otherwise, and forwards ordered JSON control to the Python API. The API retains authentication authority, authorization, quota, admission, scheduling, and durable state. Browsers use short-lived API-minted tickets; workers retain fleet credentials; correctness never depends on load-balancer stickiness.
+
+At 1000 active sessions, 2 to 4 fps in each direction is a calculated 4000 to 8000 complete frames per second. Planning ranges of 10 to 40 KB for canvas inputs and 40 to 65 KB for generated outputs produce 100 to 420 MB/s of logical application payload, or 0.8 to 3.36 Gbps. If every frame crosses instances, the FrameBus receives and emits 200 to 840 MB/s, or 1.6 to 6.72 Gbps, before protocol and transport overhead. These figures are calculations from repository planning ranges, not load measurements.
+
+Profiling remains the capacity and release gate. The 1000-session, 2 and 4 fps load sweep sizes the gateway and FrameBus fleet and measures relay p95/p99, drops, socket backlog, CPU, memory, network, control latency, and slow-peer isolation. It no longer decides whether the gateway exists.
+
+Rejected alternatives: retaining the Python API relay until production saturation, which moves gateway extraction into the capacity ramp and leaves the accepted target without its required data plane; a full Go port of the API or gateway-owned authority, which would rewrite unrelated control-plane logic and break the recorded ownership boundary; load-balancer stickiness as a correctness mechanism, which cannot guarantee both socket legs remain together through reconnects and failures.
+
+## Realtime and queue Redis seam: optional, behaviorally equivalent
+
+Deepens "Realtime frame routing: Redis pub/sub between API replicas", "Redis topology: one instance, split-ready namespaces", and the Redis supporting default below. It defines the behavior shared by the existing in-process and Redis-backed paths without changing Redis as the cloud default.
+
+Queues and FrameBus have in-process and Redis-backed implementations selected only by configuration. Both preserve admission states, priority and fairness, channel names, at-most-once complete-frame delivery, destination-owner-only subscriptions, explicit cancellation, and one latest value per session and direction. Redis legitimately adds multi-process scope, leader election, cross-replica delivery, shared rate limits, and shared invalidation. Without Redis, exactly one socket-owning process is permitted and PostgreSQL remains the account-session source of truth. No wire or user-visible queue behavior changes when Redis is enabled.
+
+Rejected alternatives: requiring Redis in every deployment, which adds an unnecessary service to ordinary self-hosting; allowing more than one socket-owning process without Redis, which would silently partition queues, routes, and invalidation; weaker in-process ordering, fairness, or backpressure semantics, which would make deployment mode change user-visible behavior and leave the simple profile unable to exercise the distributed contract.
+
+## GPU session density: capacity-critical at 1000 active sessions
+
+Supersedes only the research deferral in "GPU session density: calibrated slots now, worker-internal batching later" above. Its calibration method and scheduler-facing slot abstraction remain in force.
+
+The accepted 500 to 1000 GPU-process design satisfies the recorded spend trigger for worker-internal density work. Cross-session batching and other preview-path density experiments enter the capacity-critical research path. A technique is adopted only when production end-to-end p95 stays within the realtime bar, quality is accepted, and dollars per calibrated slot-hour improve after warmup and headroom. The scheduler continues to consume calibrated slots; batching remains internal to the worker.
+
+The current formula admits one slot when complete-frame p95 is at most 500 ms and two slots when it is at most 250 ms. With a raised configured cap, the calculated thresholds are 166.67 ms for three slots and 125 ms for four. At 1000 active sessions, one slot requires 1000 GPU processes and two slots require 500. Using the repository planning range of $0.35 to $0.70 per process-hour, that projects to $0.005833 to $0.011667 per active session-minute at one slot and $0.002917 to $0.005833 at two, or $175 to $700 per fleet-hour. These are calculations from planning inputs, not measurements under concurrent load or current market prices.
+
+StreamDiffusion (arXiv:2312.12491) reports 91.07 fps image-to-image on an RTX 4090 and 59.56x the throughput of its Diffusers `AutoPipeline` baseline, the same abstraction this worker calls today (`worker/worker/engine.py:518-525`). Its reported components include about 1.5x from Stream Batch, which batches a stream's denoising steps instead of running them sequentially; up to 2.05x from residual classifier-free guidance, which reduces negative conditional denoising to one step or zero; and an input-output queue that absorbs mismatched input and model rates. These are paper results on other hardware, not project measurements, and have not been reproduced here. Even after heavy discounting for a consumer card, 512 px production conditions, and the shared GPU lock, headroom of that order could cross several integer slot boundaries: the recorded formula requires p95 at or below 250 ms for two slots and 125 ms for four, while cost is process-hour price times ceil(active sessions / calibrated slots). At 1000 sessions, four slots mean 250 processes and $87.50 to $175.00 per fleet-hour, eight mean 125 and $43.75 to $87.50, and sixteen mean ceil(1000 / 16) = 63 and $22.05 to $44.10, compared with the existing $175 to $700 one-to-two-slot range. The paper also reports that its stochastic similarity filter reduces energy by 2.39x on an RTX 3060 and 1.99x on an RTX 4090; presenting that as a power optimization independently agrees with this repository's arithmetic that skipping unchanged frames saves energy and duty cycle, but not reserved-slot cost.
+
+Measured on the reference development card (Radeon RX 7600 XT, gfx1102), with a clear GPU and 13.4 GB free after model load, using the worker's own calibration path so the numbers mean what the scheduler means by them: before issue #195, on 2026-08-02, `vega-rt` at full residency returned a single-frame p95 of 285.9 ms and 278.8 ms across two passes, with a mean of 282.4 ms. After issue #195 moved WebP decode and encode out of the GPU critical section, eight passes in one process on 2026-08-04 produced a p95 mean of **274.2 ms**, a standard deviation of **3.3 ms**, and a range of 271.9 to 281.8 ms; per-pass medians stayed near 270 ms. The result still earns **one** slot, not two. Raising the configured cap from 2 to 8 changes nothing, because p95 binds and the cap does not. Two consequences follow. The cost range in this entry should be read at its pessimistic end for hardware of this class, since `ceil(1000 / 1)` is 1000 processes rather than 500. And the next density boundary remains close: the original 285.9 ms figure needed a 13 percent reduction to reach the 250 ms two-slot threshold, the predicted issue #195 result implied about 6 percent would remain, and the measured 274.2 ms mean leaves 24.2 ms, or **8.8 percent** of the serialized region. Reaching four slots from the measured mean would require a 2.19x latency reduction. This is one consumer card and not the fleet card, so the absolute figures do not transfer; the structure does.
+
+The consequence is that a worker-side pipeline change remains the highest-value cost lever, ahead of relay, gateway, and transport work. Issue #195 delivered about 8 ms against a prediction of 19.3 ms. That prediction timed `encode_webp` on a 512 px crop of a photograph with more high-frequency detail than this model produces; a smoother two-step LCM output encodes in roughly half the time. Codec cost must therefore be estimated on representative model output, not stock imagery. The first post-change pair, 291.3 ms and 271.4 ms, appeared to show no improvement, but the eight-pass standard deviation of 3.3 ms shows that a two-sample comparison cannot resolve an effect of this size. Future density claims should quote a distribution rather than a pair, and every density and quality claim still needs measurement on the selected fleet card.
+
+Rejected alternatives: continuing to defer worker-internal density research, because the projected 500 to 1000 process fleet satisfies the decision's spend trigger; scheduler-level frame batching, which reopens slot accounting and couples the scheduler to worker internals; adopting an optimization on isolated throughput or latency alone, which does not establish accepted quality, production p95, or lower dollars per calibrated slot-hour; spot or preemptible capacity for realtime slots. Secondary-source market reports describe nominal discounts of 40 to 70 percent but also 2026 convergence between on-demand and spot prices, interruption rates below 5 percent for H100-class capacity and 15 to 20 percent for A100-class capacity, and notice of 30 seconds to 2 minutes; their consensus is that spot fits batch and asynchronous inference rather than latency-sensitive synchronous serving such as a person watching a canvas at 2 to 4 fps. The resilience decision makes preemption survivable through transparent resume, but the user still pays a resume and queue wait, so spot remains defensible for queued generation capacity and poor for realtime slots.
+
+## Realtime fleet: regional, pool-partitioned, and warm
+
+Supersedes the single-region rejection in "Job placement: offloaded workers first, micro-batching deferred" and the later-stage timing for regional and split pools. The offloaded-worker preference and scheduler-level micro-batching deferral still stand.
+
+At the 1000-active-session target, each active region has its own gateway, FrameBus, admission queue, scheduler lease, and worker pools. Realtime pools keep the realtime model fully resident; batch and other model families use separate pools. Admission assigns one region before one worker and compares browser locality, ready compatible slots, queue wait, measured ready lead time, failure headroom, and configured cost policy. Active sessions are not live-migrated for balancing. Regional failure reacquires capacity elsewhere and uses the browser's complete-canvas resend. Warm capacity is counted in ready calibrated slots, never running machines.
+
+This is the architecture required for the accepted target, not a claim that regional load, ready lead time, or failure recovery has been measured at that scale.
+
+Rejected alternatives: retaining one region and a shared realtime/batch pool until later scale stages, which leaves the accepted target without regional frame planes, model residency, or explicit realtime headroom; one global FrameBus or live migration for routine balancing, which puts cross-region traffic and movement into the per-frame path; counting booting or loading machines as warm capacity, which overstates capacity during the one-to-three-minute readiness interval.
+
+## Realtime authorization: bind once, invalidate explicitly
+
+Deepens "Sessions: opaque server-side tokens" and "Roles: three tiers on the user row" by applying their identity and role decisions to realtime connections.
+
+Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind user id, account-session id, role, and quota subject from the server-side opaque session. User and admin may create and control realtime sessions; viewer is read-only and cannot consume a slot. Image frames are authorized against the bound connection and session, not by repeating a session-store lookup per frame. Logout, revocation, user disable, deletion, or role change cancels queued work and closes indexed live connections. A gateway validates only short-lived API-minted tickets; the API remains the authority.
+
+At 1000 active sessions and 2 to 4 canvas fps, authenticating each input frame would create a calculated 2000 to 4000 cache or database decisions per second. This rate is derived from the target and cadence, not measured traffic.
+
+Rejected alternatives: accepting a socket before authentication or trusting identity fields in browser messages, which permits scarce work without a server-derived principal; repeating session-store authorization for every frame, which adds 2000 to 4000 decisions per second without improving the immutable connection binding; making gateway tickets carry durable quota or authorization authority, which would duplicate API policy and make revocation depend on ticket expiry.
+
+## Household fairness: only if bounded waiting is required
+
+Deepens "Full pool: admission queue with paid tier priority". Its default that active sessions are never preempted remains in force.
+
+Within each priority class, admission is fair by authenticated principal, with one active-or-waiting realtime request per principal by default. Duplicate tabs do not multiply queue share. This policy prevents queue amplification but does not guarantee bounded wait while an active user draws continuously. An operator who needs bounded household fairness may enable a session-turn lease that releases only at a session boundary while another principal waits; it never time-slices frames.
+
+Rejected alternatives: keying fairness by IP address, cookie, or browser tab, which lets duplicate tabs multiply queue share and conflates users behind one network; enabling bounded session turns by default, which would reverse the recorded no-active-preemption policy for every deployment; frame time slicing or mid-session preemption, which degrades the realtime bar and interrupts active drawing instead of applying fairness at a session boundary.
 
 ## Gallery: the derivation forest is the gallery
 

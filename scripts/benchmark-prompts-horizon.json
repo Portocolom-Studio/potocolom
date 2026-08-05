@@ -1,0 +1,362 @@
+[
+  {
+    "id": 121,
+    "category": "sci-fi",
+    "title": "Magnetar quake",
+    "prompt": "Magnetar crust cracking in a starquake, magnetic field lines visible as shimmering arcs, nearby satellites shearing apart, false-color x-ray palette, violent cosmic documentary style."
+  },
+  {
+    "id": 122,
+    "category": "sci-fi",
+    "title": "Subsurface ocean probe",
+    "prompt": "Robotic probe melting through Europa ice crust, bioluminescent streaks in the dark ocean below, sonar cone cutting through black water, claustrophobic hard sci-fi, single work light."
+  },
+  {
+    "id": 123,
+    "category": "sci-fi",
+    "title": "Asteroid cathedral mine",
+    "prompt": "Hollowed asteroid converted into a zero-g cathedral mine, stained glass made from fused silica panels, ore carts drifting along rails, miners in patched suits, industrial sacred mood."
+  },
+  {
+    "id": 124,
+    "category": "sci-fi",
+    "title": "Heliopause boundary",
+    "prompt": "Probe crossing the heliopause, solar wind colliding with interstellar medium as a faint glowing bow shock, Sun reduced to a bright star, loneliness of deep space, photorealistic astro art."
+  },
+  {
+    "id": 125,
+    "category": "sci-fi",
+    "title": "Orbital shipyard night",
+    "prompt": "Massive orbital shipyard at local midnight, half-built cruiser skeleton lit by welding sparks, Earth crescent below, cranes on mag-tethers, gritty blue-collar space opera realism."
+  },
+  {
+    "id": 126,
+    "category": "sci-fi",
+    "title": "Time-dilated rescue",
+    "prompt": "Rescue shuttle approaching a station near a black hole where clocks run slow, exterior hull aged decades more than interior, red-shifted emergency beacons, tense hard sci-fi, asymmetric lighting."
+  },
+  {
+    "id": 127,
+    "category": "sci-fi",
+    "title": "Barnard star twilight",
+    "prompt": "Colony town under the dim red sun of Barnard's Star, perpetual twilight, greenhouse domes glowing, frost on respirator masks, muted maroon sky, frontier survival sci-fi."
+  },
+  {
+    "id": 128,
+    "category": "sci-fi",
+    "title": "Solar sail regatta",
+    "prompt": "Regatta of solar sail yachts racing between Venus and Mercury, sails iridescent under brutal sunlight, pilots in reflective suits, sleek competition sci-fi, dynamic wide angle."
+  },
+  {
+    "id": 129,
+    "category": "sci-fi",
+    "title": "Memory backup vault",
+    "prompt": "Orbital memory backup vault storing human consciousness shards as light in crystal arrays, technician walking a catwalk through infinite glowing stacks, sterile and melancholic near-future."
+  },
+  {
+    "id": 130,
+    "category": "sci-fi",
+    "title": "Kuiper belt relay",
+    "prompt": "Automated relay station on a Kuiper belt object, dish aimed into the void, Pluto and Charon tiny in the distance, frost on every surface, long-exposure star trails, quiet isolation."
+  },
+  {
+    "id": 131,
+    "category": "sci-fi",
+    "title": "Plasma sail storm",
+    "prompt": "Cargo hauler riding a manufactured plasma storm between Jupiter and Io, lightning chains along tether lines, auroral greens on hull plating, kinetic concept art, extreme weather in space."
+  },
+  {
+    "id": 132,
+    "category": "sci-fi",
+    "title": "Dead astronaut garden",
+    "prompt": "Abandoned hydroponics module where plants have overgrown a space suit propped in a corner, roots through visor, Earth visible through a cracked viewport, post-human sci-fi still life."
+  },
+  {
+    "id": 133,
+    "category": "sci-fi",
+    "title": "Binary sunset dock",
+    "prompt": "Spaceport dock during a binary star sunset, two overlapping solar disks on the horizon, silhouetted freighters and loading cranes, warm orange and violet gradients, cinematic western-in-space."
+  },
+  {
+    "id": 134,
+    "category": "sci-fi",
+    "title": "Gravitational slingshot burn",
+    "prompt": "Probe performing a gravity assist around a gas giant, atmosphere glowing on the limb, trajectory map hologram in foreground cockpit, high-g vibration blur on controls, pilot POV hard sci-fi."
+  },
+  {
+    "id": 135,
+    "category": "sci-fi",
+    "title": "Lunar lava tube city",
+    "prompt": "City built inside a lunar lava tube, pressurized transparent roof showing starfield, tram lines along the curved floor, brutalist concrete mixed with biophilic gardens, plausible near-future."
+  },
+  {
+    "id": 136,
+    "category": "fantasy",
+    "title": "Nebula whale graveyard",
+    "prompt": "Graveyard of sky whales drifting through a nebula, barnacle-like star clusters on their backs, mourners on a floating pier lighting paper boats, poetic cosmic fantasy, soft pastels."
+  },
+  {
+    "id": 137,
+    "category": "fantasy",
+    "title": "Rune-powered observatory",
+    "prompt": "Mountain observatory where runes power a telescope that sees possible futures, lens projecting ghostly cityscapes on the wall, snow outside, candlelit fantasy steampunk fusion."
+  },
+  {
+    "id": 138,
+    "category": "fantasy",
+    "title": "Sandship dune kraken",
+    "prompt": "Sandship fleeing a kraken made of dunes and dust, sails full of enchanted wind, crew braced on deck, golden storm light, high adventure fantasy, dynamic diagonal composition."
+  },
+  {
+    "id": 139,
+    "category": "fantasy",
+    "title": "Frozen time marketplace",
+    "prompt": "Marketplace where one stall exists in frozen time, shoppers blurred around a still vendor mid-laugh, magical frost on hanging herbs, bustling fantasy street scene with one impossible pocket."
+  },
+  {
+    "id": 140,
+    "category": "fantasy",
+    "title": "Starseed greenhouse",
+    "prompt": "Greenhouse growing stars in glass terrariums on a cloud citadel, gardener pruning miniature novas with silver shears, twilight sky, whimsical high fantasy, detailed botanical focus."
+  },
+  {
+    "id": 141,
+    "category": "fantasy",
+    "title": "Obsidian dragon glacier",
+    "prompt": "Obsidian dragon coiled around a glacier heart, breath crystallizing the air, climbers tiny on an ice bridge, volcanic black against blue ice, epic scale fantasy realism."
+  },
+  {
+    "id": 142,
+    "category": "fantasy",
+    "title": "Lich astronomer tower",
+    "prompt": "Lich astronomer in a tower full of orreries and bone telescopes, phylactery orbiting like a moon, star charts written in blood that fades, gothic fantasy, scholarly horror restraint."
+  },
+  {
+    "id": 143,
+    "category": "fantasy",
+    "title": "Moss golem bridge",
+    "prompt": "Moss golem forming itself into a bridge over a chasm, travelers crossing on its back, flowers blooming in its footsteps, gentle guardian fantasy, earthy greens and morning mist."
+  },
+  {
+    "id": 144,
+    "category": "fantasy",
+    "title": "Eclipse duel arena",
+    "prompt": "Arena built for wizard duels during eclipses, corona light rimming two spellcasters, crowd as silhouettes, arcane sigils burning in the sand, dramatic fantasy action tableau."
+  },
+  {
+    "id": 145,
+    "category": "fantasy",
+    "title": "Sunken sky temple",
+    "prompt": "Temple that sank into the ocean but still opens onto open sky inside, waterfalls falling up and out, fish swimming through cloud columns, impossible architecture fantasy, serene wonder."
+  },
+  {
+    "id": 146,
+    "category": "fantasy",
+    "title": "Comet silk weaver",
+    "prompt": "Weaver spinning thread from comet tails at a cliff loom, fabric shimmering with embedded star maps, night village below, cozy magical craft fantasy, indigo and silver palette."
+  },
+  {
+    "id": 147,
+    "category": "fantasy",
+    "title": "Bone ship fleet",
+    "prompt": "Fleet of ships built from leviathan bones sailing a mist sea, ribcage masts and vertebrae keels, bioluminescent rigging, dark nautical fantasy, moonlit teal atmosphere."
+  },
+  {
+    "id": 148,
+    "category": "fantasy",
+    "title": "Gravity inverted forest",
+    "prompt": "Forest where gravity inverts every midnight, trees growing downward from soil that becomes sky, deer walking on canopy undersides, surreal fantasy ecology, painterly detail."
+  },
+  {
+    "id": 149,
+    "category": "fantasy",
+    "title": "Phoenix ash garden",
+    "prompt": "Garden where phoenix ashes grow into temporary flowers that ignite at dusk, gardener with ash-stained gloves, cycle of burn and bloom, warm ember palette, lyrical fantasy."
+  },
+  {
+    "id": 150,
+    "category": "fantasy",
+    "title": "Void whale rider",
+    "prompt": "Ranger riding a void whale between floating archipelagos, harpoon replaced by a bonding staff, starlit ocean below the islands, wind in cloak, adventurous cosmic fantasy."
+  },
+  {
+    "id": 151,
+    "category": "abstract",
+    "title": "Lensing grid warp",
+    "prompt": "Square grid warped around an invisible mass, lines bending and color fringing at the edges, black center, mathematical lensing study, clean vector precision on matte black."
+  },
+  {
+    "id": 152,
+    "category": "abstract",
+    "title": "Supernova shockwave rings",
+    "prompt": "Concentric shockwave rings expanding from a central white flash, thin neon lines on charcoal, motion implied without blur, minimalist astrophysics poster, no objects."
+  },
+  {
+    "id": 153,
+    "category": "abstract",
+    "title": "Entropy gradient field",
+    "prompt": "Smooth entropy gradient from ordered lattice on the left to chaotic scatter on the right, muted purple to orange transition, fullscreen generative art, meditative and scientific."
+  },
+  {
+    "id": 154,
+    "category": "abstract",
+    "title": "Binary merge chirp",
+    "prompt": "Audio waveform of a binary merger rising in frequency toward merger chirp, rendered as glowing 3D ribbon on black, gold to white gradient, data-as-sculpture aesthetic."
+  },
+  {
+    "id": 155,
+    "category": "abstract",
+    "title": "Cosmic string scratch",
+    "prompt": "Single razor-thin luminous scratch across a starfield suggesting a cosmic string, background slightly displaced on either side, subtle glitch, ultra-minimal cosmic horror abstraction."
+  },
+  {
+    "id": 156,
+    "category": "abstract",
+    "title": "Holographic interference",
+    "prompt": "Interference pattern of two coherent light sources forming moire rings, iridescent oil-slick colors on black, macro photography of a physics demo, no text or labels."
+  },
+  {
+    "id": 157,
+    "category": "abstract",
+    "title": "Fractal coastline orbit",
+    "prompt": "Fractal coastline traced by a single continuous orbit line, one color ink on cream paper, mathematical beauty, printmaking texture, no land features beyond the edge."
+  },
+  {
+    "id": 158,
+    "category": "abstract",
+    "title": "Phase transition bloom",
+    "prompt": "Crystallization front blooming through a liquid field, sharp geometric facets meeting fluid curves, monochrome with one cyan accent edge, abstract materials science art."
+  },
+  {
+    "id": 159,
+    "category": "abstract",
+    "title": "Null geodesic trails",
+    "prompt": "Dozens of null geodesic paths spiraling toward a central point, hairline white curves on deep blue, physics diagram elegance, museum exhibition print."
+  },
+  {
+    "id": 160,
+    "category": "abstract",
+    "title": "Vacuum fluctuation speckle",
+    "prompt": "Speckle field suggesting vacuum fluctuations, random bright points with subtle pair correlations, mostly void, scientific texture study, fullscreen wallpaper."
+  },
+  {
+    "id": 161,
+    "category": "sci-fi",
+    "title": "Sagittarius A horizon",
+    "prompt": "View toward Sagittarius A star from a safe observation distance, dense star clouds, dark central silhouette with faint accretion glow, realistic Milky Way core astrophotography style."
+  },
+  {
+    "id": 162,
+    "category": "sci-fi",
+    "title": "Black hole binary dance",
+    "prompt": "Two black holes orbiting each other, dual accretion disks twisting together, gravitational lensing doubling the background galaxy field, scientific visualization with cinematic color grading."
+  },
+  {
+    "id": 163,
+    "category": "sci-fi",
+    "title": "Photon ring tourist deck",
+    "prompt": "Observation deck positioned at the photon sphere of a black hole for tourism, safety railing and warning holos, guests in pressure suits photographing the light ring, dark tourism sci-fi satire played straight."
+  },
+  {
+    "id": 164,
+    "category": "sci-fi",
+    "title": "Spaghettification probe feed",
+    "prompt": "Last camera frame from a probe falling into a stellar-mass black hole, hull stretching in lens distortion, telemetry overlay glitching, horror-adjacent hard sci-fi, no gore."
+  },
+  {
+    "id": 165,
+    "category": "sci-fi",
+    "title": "Ergosphere energy skim",
+    "prompt": "Space station skimming rotational energy from a Kerr black hole ergosphere, frame-dragging visible as skewed star trails, engineering cables into the void, ambitious hard sci-fi."
+  },
+  {
+    "id": 166,
+    "category": "fantasy",
+    "title": "Horizon witch duel",
+    "prompt": "Two witches dueling at the edge of a magical event horizon, spells bending inward, cloaks pulled toward the void, fantasy metaphor for black holes, dramatic rim lighting."
+  },
+  {
+    "id": 167,
+    "category": "fantasy",
+    "title": "Star swallowing titan",
+    "prompt": "Ancient titan swallowing a dying star to birth a new moon, rivers of light pouring from its mouth, mountain-sized scale, mythic cosmology fantasy, oil painting epic."
+  },
+  {
+    "id": 168,
+    "category": "abstract",
+    "title": "Ergosphere drag lines",
+    "prompt": "Parallel lines dragged into a spiral by frame-dragging around a black circle, graphite on textured paper, physics metaphor, stark black and white abstraction."
+  },
+  {
+    "id": 169,
+    "category": "abstract",
+    "title": "Light cone diagram sculpture",
+    "prompt": "Sculptural light cone diagram in frosted glass, past and future cones meeting at a point, single LED source, gallery installation photography, minimalist spacetime art."
+  },
+  {
+    "id": 170,
+    "category": "sci-fi",
+    "title": "Intergalactic void crossing",
+    "prompt": "Generation ship crossing an intergalactic void with almost no stars, crew lounge viewport showing absolute darkness except one distant galaxy smudge, existential sci-fi interior scene."
+  },
+  {
+    "id": 171,
+    "category": "sci-fi",
+    "title": "Red giant expansion evacuation",
+    "prompt": "Evacuation of an inner-system colony as the Sun swells into red giant, sky orange and oppressive, solar sails carrying refugees, urgent but orderly hard sci-fi panorama."
+  },
+  {
+    "id": 172,
+    "category": "fantasy",
+    "title": "Constellation blacksmith",
+    "prompt": "Blacksmith forging new constellations on an anvil, each hammer strike sending stars into the sky, forge in a crater, night landscape filling with fresh patterns, mythic craft fantasy."
+  },
+  {
+    "id": 173,
+    "category": "abstract",
+    "title": "CMB dipole flow",
+    "prompt": "Abstract representation of cosmic dipole flow as a subtle temperature gradient across a speckle sphere, warm hemisphere vs cool hemisphere, scientific art object on black pedestal, studio product shot."
+  },
+  {
+    "id": 174,
+    "category": "sci-fi",
+    "title": "Titan methane surf",
+    "prompt": "Surfer on a hydrocarbon wave on Titan, orange haze sky, slow-motion splash of liquid methane, insulated suit, surreal sports sci-fi, wide cinematic frame."
+  },
+  {
+    "id": 175,
+    "category": "fantasy",
+    "title": "Moon eating serpent",
+    "prompt": "World-serpent coiled around a moon mid-eclipse, scales reflecting craters, astronomers on a tower taking notes, folklore astronomy fantasy, silver and indigo night palette."
+  },
+  {
+    "id": 176,
+    "category": "abstract",
+    "title": "Topology donut universe",
+    "prompt": "Abstract torus universe topology diagram, paths looping without edge, soft gradient mesh in blues and magentas, educational poster without labels, clean 3D render."
+  },
+  {
+    "id": 177,
+    "category": "sci-fi",
+    "title": "Quasar jet alignment",
+    "prompt": "Alignment of three quasar jets visible from an observatory on a rogue planet, jets like laser pillars through dust, research team in cold suits, awe and precision."
+  },
+  {
+    "id": 178,
+    "category": "fantasy",
+    "title": "Astral black hole seed",
+    "prompt": "Druid planting a seed that grows into a tiny black hole contained by roots, orchard at dusk, roots glowing, balance of life and void, symbolic fantasy illustration."
+  },
+  {
+    "id": 179,
+    "category": "abstract",
+    "title": "Information paradox braid",
+    "prompt": "Braided strands entering a black disk and re-emerging as scrambled noise on the other side, information paradox as textile art, black white and one red thread, conceptual physics poster."
+  },
+  {
+    "id": 180,
+    "category": "sci-fi",
+    "title": "Oort cloud lighthouse",
+    "prompt": "Lighthouse beacon on an Oort cloud object marking the edge of human space, beam cutting through cometary haze, tiny sun almost lost among stars, frontier navigation sci-fi."
+  }
+]

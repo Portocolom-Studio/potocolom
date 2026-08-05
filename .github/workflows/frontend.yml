@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "Makefile"
       - ".github/workflows/frontend.yml"
   push:
     branches: [main]
     paths:
       - "frontend/**"
+      - "Makefile"
       - ".github/workflows/frontend.yml"
 
 permissions:
@@ -23,8 +25,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: npm ci
-      - run: npm run lint
-      - run: npm run check
-      - run: npm run build
+      # The Makefile target is the single definition of what the job checks.
+      - run: make verify-frontend
+        working-directory: .

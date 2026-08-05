@@ -150,26 +150,56 @@ export function buildGpuTimeline(
 	);
 	let vramBands: { ts: number; min: number; max: number; mean: number }[] = [];
 
-	if (range !== '5m' && persistedHistory.length > 0) {
-		const compute = historyMetricPoints(
-			persistedHistory,
-			(point) => point.util_pct,
-			(point) => point.util_min,
-			(point) => point.util_max,
-			windowStartMs
-		);
-		computePoints = compute.points;
-		computeBands = compute.bands;
+	if (persistedHistory.length > 0) {
+		if (range !== '5m') {
+			const compute = historyMetricPoints(
+				persistedHistory,
+				(point) => point.util_pct,
+				(point) => point.util_min,
+				(point) => point.util_max,
+				windowStartMs
+			);
+			computePoints = compute.points;
+			computeBands = compute.bands;
 
-		const vram = historyMetricPoints(
-			persistedHistory,
-			(point) => point.vram_used_pct,
-			(point) => point.vram_min,
-			(point) => point.vram_max,
-			windowStartMs
-		);
-		vramPoints = forwardFillPoints(vram.points);
-		vramBands = vram.bands;
+			const vram = historyMetricPoints(
+				persistedHistory,
+				(point) => point.vram_used_pct,
+				(point) => point.vram_min,
+				(point) => point.vram_max,
+				windowStartMs
+			);
+			vramPoints = forwardFillPoints(vram.points);
+			vramBands = vram.bands;
+		} else {
+			// 5m: persisted samples fill the window before the live sampler's
+			// first point, so the lane has data the moment the panel opens.
+			const liveStartMs = liveSamples.length > 0 ? liveSamples[0].ts : windowEndMs;
+			const seed = persistedHistory.filter((point) => point.ts < liveStartMs);
+
+			const compute = historyMetricPoints(
+				seed,
+				(point) => point.util_pct,
+				(point) => point.util_min,
+				(point) => point.util_max,
+				windowStartMs
+			);
+			computePoints = [...compute.points, ...computePoints];
+			computeBands = compute.bands;
+
+			const vram = historyMetricPoints(
+				seed,
+				(point) => point.vram_used_pct,
+				(point) => point.vram_min,
+				(point) => point.vram_max,
+				windowStartMs
+			);
+			vramPoints = forwardFillPoints([
+				...vram.points,
+				...windowedPoints(liveSamples, windowStartMs, (sample) => sample.vramUsedPct)
+			]);
+			vramBands = vram.bands;
+		}
 	}
 
 	if (vramPoints.length === 0 && hardwareVramPct != null) {

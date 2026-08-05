@@ -8,22 +8,22 @@ version = "0.0.1"
 description = "potocolom API server"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "pydantic-settings>=2.4",
-    "sqlalchemy[asyncio]>=2.0",
-    "asyncpg>=0.29",
-    "alembic>=1.13",
-    "boto3>=1.34",
-    "jsonschema>=4.21",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic-settings>=2.4,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "asyncpg>=0.29,<1",
+    "alembic>=1.13,<2",
+    "boto3>=1.34,<2",
+    "jsonschema>=4.21,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
-    "httpx>=0.27",
-    "ruff>=0.6",
-    "mypy>=1.11",
+    "pytest>=9,<10",
+    "httpx>=0.27,<1",
+    "ruff>=0.6,<0.16",
+    "mypy>=2,<3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -31,6 +31,11 @@ packages = ["app"]
 
 [tool.ruff]
 line-length = 100
+
+# Keep the pre-0.16 default set until we deliberately adopt the expanded rules.
+# ruff 0.16 enables B008 (breaks FastAPI Depends) and many others by default.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.11"

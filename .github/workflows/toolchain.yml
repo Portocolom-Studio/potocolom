@@ -1,0 +1,35 @@
+# The contributor onboarding path. Nothing else in CI runs `make setup`, so
+# without this a broken setup only shows up on someone else's machine (issue
+# #13 keeps one workflow per area).
+name: toolchain
+
+on:
+  pull_request:
+    paths:
+      - "Makefile"
+      - "**/pyproject.toml"
+      - "frontend/package.json"
+      - "frontend/.npmrc"
+      - ".github/workflows/toolchain.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Makefile"
+      - "**/pyproject.toml"
+      - "frontend/package.json"
+      - "frontend/.npmrc"
+      - ".github/workflows/toolchain.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  toolchain:
+    # Self-hosted: docs/self-hosted-runner.md
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Fails if a too-old toolchain would be accepted instead of refused.
+      - run: make verify-guards
+      # The documented onboarding path, run as a contributor would run it.
+      - run: make setup

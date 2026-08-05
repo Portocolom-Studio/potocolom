@@ -7,6 +7,7 @@
     "realtime"
   ],
   "min_vram_gb": 8,
+  "prompt_token_limit": 77,
   "source": "segmind/Segmind-Vega",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "lcm",

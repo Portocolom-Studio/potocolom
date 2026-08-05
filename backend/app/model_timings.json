@@ -1,10 +1,10 @@
 {
-  "_source": "RX 7600 XT; vega-rt #102; upscalers measured per factor on a 1024px source 2026-07-17 (fast x2 includes the native-x4 run plus Lanczos down, issue #108)",
+  "_source": "RX 7600 XT; vega-rt #102; upscalers warm per factor on a 1024px source 2026-07-22 (fast x2 is native-x4 plus Lanczos down, issue #108); sd35-medium on the model_offload rung 2026-07-26 (issue #151); sdxl-base and ssd-1b re-measured at the new 15-step default 2026-07-27 (issue #151)",
   "sdxl-base": {
-    "gpu_ms": 15274,
+    "gpu_ms": 11960,
     "width": 1024,
     "height": 1024,
-    "steps": 20
+    "steps": 15
   },
   "sdxl-fast": {
     "gpu_ms": 3736,
@@ -13,10 +13,10 @@
     "steps": 8
   },
   "ssd-1b": {
-    "gpu_ms": 9753,
+    "gpu_ms": 7580,
     "width": 1024,
     "height": 1024,
-    "steps": 20
+    "steps": 15
   },
   "dreamshaper-lcm": {
     "gpu_ms": 578,
@@ -48,10 +48,22 @@
     "height": 1024,
     "steps": 8
   },
+  "sd35-medium": {
+    "gpu_ms": 56031,
+    "width": 1024,
+    "height": 1024,
+    "steps": 20
+  },
   "realesrgan": {
-    "factors": { "2": 17931, "4": 37853 }
+    "factors": {
+      "2": 1477,
+      "4": 6134
+    }
   },
   "realesrgan-fast": {
-    "factors": { "2": 759, "4": 555 }
+    "factors": {
+      "2": 711,
+      "4": 532
+    }
   }
 }
