@@ -14,13 +14,13 @@ No release is tagged yet. `main` is the only supported ref, and fixes land there
 
 ## Scope
 
-The project documents its security posture in [docs/internals/08-security-production.md](docs/internals/08-security-production.md), which separates what is shipped from what is designed and deferred. Read the deferred list before reporting: several open surfaces are recorded decisions rather than oversights, and reports about them cost you time without producing a fix.
+Read the list below before reporting. Several open surfaces here are recorded decisions rather than oversights, and reports about them cost you time without producing a fix. [docs/decisions.md](docs/decisions.md) carries the reasoning and the rejected alternatives for each.
 
 Known and deliberate, so not vulnerabilities:
 
 - **The fleet WebSocket (`/api/v1/fleet`) is unauthenticated.** Documented in [README.md](README.md) and mitigated by deployment posture: treat the host as a trusted LAN. Tracked in #206.
 - **`AUTH_MODE=none` is the shipped default** and resolves every request to one local user. Only that mode exists; `local` and `oauth` are seams, not implementations. Tracked in #5 and #9.
-- **There is no rate limiting.** Deferred by recorded decision.
+- **There is no rate limiting.** Deferred by recorded decision, see [docs/decisions.md](docs/decisions.md).
 - **Pull requests execute contributor code on a self-hosted runner.** Accepted for a solo org and documented in [docs/self-hosted-runner.md](docs/self-hosted-runner.md).
 
 In scope, and worth reporting:
