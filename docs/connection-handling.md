@@ -91,6 +91,22 @@ Authenticate and authorize a browser realtime connection before queueing, reserv
 
 > Shipped status (2026-07-30): **not yet implemented.** The current endpoint accepts the WebSocket before `open`, binds only the implicit local user, and has no ticket, connection index, invalidation path, or unauthorized/forbidden close semantics. The governing decision is "Realtime authorization: bind once, invalidate explicitly"; issue #19, "Real-Time Generation Protocol", owns direct-socket behavior and "Gateway realtime tickets and revocation" owns the gateway path.
 
+## GPU work is not interruptible
+
+In-flight GPU work bounds how fast a worker can shut down or reconnect. The worker holds one
+GPU lock around work that runs in a thread, and cancelling an `await` cannot stop a thread, so
+the lock is only released once that thread finishes. A disconnect, a `close_session`, or a
+Ctrl-C therefore waits for the current operation rather than abandoning it.
+
+The wait is a full generation in the worst queued case, one frame for a realtime session, and
+on a cold start a model download plus calibration, which can be minutes for multi-gigabyte
+weights. Under compose the stop grace period will SIGKILL before a cold-start download
+finishes; that is safe, because nothing has been dispatched yet.
+
+The alternative is worse: releasing the lock while the thread is still on the device lets the
+next entrant run concurrently on a GPU the scheduler treats as serialized, which is what the
+slot calibration in [decisions.md](decisions.md) is measured against.
+
 ## Timeouts and intervals
 
 | What | Value | Why |
