@@ -5,12 +5,20 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from starlette.datastructures import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
 from app.main import app
 from app.manifests import Manifest
-from app.realtime import CANVAS_FRAME, GENERATED_FRAME, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION
+from app.realtime import (
+    CANVAS_FRAME,
+    GENERATED_FRAME,
+    MIN_SUPPORTED_VERSION,
+    PROTOCOL_VERSION,
+    origin_allowed,
+)
+from app.settings import get_settings
 from app.tables import UsageEvent
 
 client = TestClient(app)
@@ -18,6 +26,19 @@ client = TestClient(app)
 
 def manifest(model_id="sd-sim") -> dict:
     return {"id": model_id, "name": model_id, "capabilities": ["realtime"], "parameters": {}}
+
+
+class FakeHeaders:
+    """Stands in for a WebSocket when only the Origin header matters.
+
+    Uses the real Headers type so the fixture matches what the endpoint passes.
+    Note this is less strict than a dict, not more: Headers.get is
+    case-insensitive, so it would tolerate a lookup a dict would catch.
+    """
+
+    def __init__(self, origin):
+        raw = [] if origin is None else [(b"origin", origin.encode())]
+        self.headers = Headers(raw=raw)
 
 
 class FakeSocket:
@@ -294,3 +315,31 @@ def test_reaper_closes_silent_workers():
     finally:
         realtime.workers.pop("w-stale", None)
         realtime.workers.pop("w-fresh", None)
+
+
+def test_origin_allowed_only_for_no_origin_and_configured_origins():
+    # Browsers always send Origin and cannot forge it; workers send none.
+    settings = get_settings()
+    assert origin_allowed(FakeHeaders(None))
+    assert origin_allowed(FakeHeaders(settings.public_url))
+    assert origin_allowed(FakeHeaders(settings.public_url + "/"))
+    assert not origin_allowed(FakeHeaders("https://evil.example"))
+    assert not origin_allowed(FakeHeaders("http://localhost:5173"))
+
+
+def test_origin_allowed_honours_the_configured_extra_origins(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "allowed_origins", "http://localhost:5173, https://ok.example")
+    assert origin_allowed(FakeHeaders("http://localhost:5173"))
+    assert origin_allowed(FakeHeaders("https://ok.example"))
+    assert not origin_allowed(FakeHeaders("https://evil.example"))
+
+
+def test_foreign_origin_cannot_register_a_worker():
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/api/v1/fleet", headers={"origin": "https://evil.example"},
+        ) as ws:
+            ws.send_json(hello(worker_id="w-evil"))
+            ws.receive_json()
+    assert "w-evil" not in realtime.workers

@@ -12,7 +12,7 @@
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards verify-mermaid simulate \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -88,6 +88,12 @@ verify-frontend:
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
 
+test-db-clean: ## drop every potocolom_test_* database (one per checkout, they accumulate)
+	@docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+		"SELECT datname FROM pg_database WHERE datname LIKE 'potocolom\\_test%'" \
+		| xargs -r -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
+			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
+
 dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
 	git config core.hooksPath .githooks
 	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
@@ -127,6 +133,7 @@ WORKER ?= rocm
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
+		ALLOWED_ORIGINS=http://localhost:5173 \
 		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port 8000
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)

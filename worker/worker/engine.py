@@ -9,6 +9,7 @@ inference thread directly.
 """
 
 import asyncio
+import contextlib
 import io
 import math
 import os
@@ -18,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from PIL import Image
 
@@ -37,6 +38,7 @@ from worker.memory_ladder import (
 logger = logging.getLogger("potocolom.worker")
 
 ProgressFn = Callable[[float], None]
+T = TypeVar("T")
 
 REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
 # After a non-OOM generation error, drop the resident model at most this often
@@ -579,11 +581,40 @@ class DiffusersEngine:
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
 
+    async def _run_to_completion(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """`to_thread` that cannot be abandoned while its thread still runs.
+
+        Cancellation cannot stop a thread. Awaiting `to_thread` directly means a
+        cancelled await unwinds the enclosing `async with self._gpu` and frees
+        the lock while the thread is still on the device, so the next entrant
+        runs concurrently on a GPU the rest of the system treats as serialized
+        (issue #202). Shielding alone does not help: the outer await still
+        raises and still unwinds, so the thread has to be awaited before the
+        cancellation propagates.
+        """
+        task = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # asyncio.wait is itself an await point: a second cancellation
+            # arriving here would skip the raise, unwind the lock, and leak it
+            # exactly as before. Shutdown gathers can deliver one.
+            while not task.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait([task])
+            if not task.cancelled() and (failure := task.exception()) is not None:
+                # Retrieving it without logging replaces a bare "Task exception
+                # was never retrieved" at GC with total silence. Report it here,
+                # where the model and phase are still known.
+                logger.warning("GPU work failed while cancelled: %s", failure,
+                               exc_info=failure)
+            raise
+
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         async with self._gpu:
             try:
-                return await asyncio.to_thread(self._calibrate_realtime,
-                                               manifest, configured)
+                return await self._run_to_completion(self._calibrate_realtime,
+                                                     manifest, configured)
             except Exception:
                 # Could not measure; advertise nothing rather than a guess,
                 # and never let a boot-time inference error kill the worker.
@@ -788,7 +819,7 @@ class DiffusersEngine:
 
     async def load_model(self, manifest: Manifest) -> int:
         async with self._gpu:
-            return await asyncio.to_thread(self._load_model, manifest)
+            return await self._run_to_completion(self._load_model, manifest)
 
     def _load_model(self, manifest: Manifest) -> int:
         self._evict_all()
@@ -804,11 +835,11 @@ class DiffusersEngine:
 
     async def unload_model(self, model_id: str) -> None:
         async with self._gpu:
-            await asyncio.to_thread(self._evict_model, model_id)
+            await self._run_to_completion(self._evict_model, model_id)
 
     async def unload_all(self) -> None:
         async with self._gpu:
-            await asyncio.to_thread(self._evict_all)
+            await self._run_to_completion(self._evict_all)
 
     def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
         source = manifest.source or manifest.id
@@ -978,6 +1009,9 @@ class DiffusersEngine:
             and bool(getattr(pipeline.config, "force_zeros_for_empty_prompt", False))
         )
         if force_zero_negative:
+            # It implies dual_encoder, so the index-1 pass above ran with
+            # pooled=True and positive_pooled holds that encoder's embedding.
+            assert positive_pooled is not None
             negative_prompt_embeds = self.torch.zeros_like(prompt_embeds)
             negative_pooled = self.torch.zeros_like(positive_pooled)
         else:
@@ -1031,8 +1065,8 @@ class DiffusersEngine:
         loop = asyncio.get_running_loop()
         async with self._gpu:
             try:
-                return await asyncio.to_thread(runner, manifest, dict(params),
-                                               progress, loop, input_image)
+                return await self._run_to_completion(runner, manifest, dict(params),
+                                                     progress, loop, input_image)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -1046,8 +1080,8 @@ class DiffusersEngine:
             # mid-denoise; free the others and run once more.
             self._evict_except(manifest.id)
             try:
-                return await asyncio.to_thread(runner, manifest, dict(params),
-                                               progress, loop, input_image)
+                return await self._run_to_completion(runner, manifest, dict(params),
+                                                     progress, loop, input_image)
             except self.torch.OutOfMemoryError as error:
                 retry_error = error.with_traceback(None)
             if not self._demote_rung(manifest, phase="generation retry"):
@@ -1056,11 +1090,11 @@ class DiffusersEngine:
                 mode = f"upscale-{int(params.get('factor', 0))}"
             else:
                 mode = "i2i" if input_image is not None else "t2i"
-            await asyncio.to_thread(
+            await self._run_to_completion(
                 self._pipeline, manifest, mode, allow_demotion=False,
             )
-            return await asyncio.to_thread(runner, manifest, dict(params),
-                                           progress, loop, input_image)
+            return await self._run_to_completion(runner, manifest, dict(params),
+                                                 progress, loop, input_image)
 
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop,
@@ -1196,14 +1230,17 @@ class DiffusersEngine:
             return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
 
         async with self._codec:
-            canvas = await asyncio.to_thread(prepare_canvas)
+            # Same reason the GPU lock uses this: a cancelled await would release
+            # the codec slot while its thread still ran, so the bound would be
+            # exceeded by exactly the frames being torn down (issue #202).
+            canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
             # _pipeline can load or evict GPU weights, _prompt_kwargs can run
             # GPU text encoders for long prompts, and diffusion uses the GPU.
             frame_result: tuple[Image.Image, int] | None = None
             try:
-                frame_result = await asyncio.to_thread(
+                frame_result = await self._run_to_completion(
                     self._frame, manifest, frame_params, canvas, strength)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
@@ -1215,11 +1252,11 @@ class DiffusersEngine:
             if frame_result is None:
                 # The eviction mutates GPU residency, so it remains serialized.
                 self._evict_except(manifest.id)
-                frame_result = await asyncio.to_thread(
+                frame_result = await self._run_to_completion(
                     self._frame, manifest, frame_params, canvas, strength)
             image, gpu_ms = frame_result
         async with self._codec:
-            data = await asyncio.to_thread(encode_webp, image)
+            data = await self._run_to_completion(encode_webp, image)
         return GeneratedFrame(data, gpu_ms)
 
     def _frame(

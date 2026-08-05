@@ -9,6 +9,7 @@
 	import NavGallery from './nav-gallery.svelte';
 	import NavPlayground from './nav-playground.svelte';
 	import NavProjects from './nav-projects.svelte';
+	import NavServices from './nav-services.svelte';
 	import NavSecondary from './nav-secondary.svelte';
 	import NavUser from './nav-user.svelte';
 
@@ -53,6 +54,7 @@
 		</Sidebar.Menu>
 	</Sidebar.Header>
 	<Sidebar.Content>
+		<NavServices />
 		<NavPlayground />
 		<NavGallery />
 		<NavProjects {projects} />

@@ -79,6 +79,16 @@ export function guidanceSpec(model: Model | undefined): ParamRange {
 	});
 }
 
+export function strengthSpec(model: Model | undefined): ParamRange {
+	return numberSpec(modelProperty(model, 'strength'), {
+		min: 0,
+		max: 1,
+		default: 0.7,
+		step: 0.1,
+		integer: false
+	});
+}
+
 export function countSpec(): ParamRange {
 	return COUNT_RANGE;
 }

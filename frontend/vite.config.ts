@@ -11,7 +11,10 @@ const apiProxy = {
 };
 
 export default defineConfig({
-	server: { proxy: apiProxy },
+	// strictPort: the API allowlists this exact origin for the WebSocket
+	// endpoints (ALLOWED_ORIGINS in the Makefile), so a silent fallback to
+	// 5174 when 5173 is taken would produce an opaque 403 instead.
+	server: { port: 5173, strictPort: true, proxy: apiProxy },
 	preview: { proxy: apiProxy },
 	plugins: [
 		waitlistProxy(),

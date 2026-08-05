@@ -2,11 +2,13 @@
 // panel look at the same registry and history.
 
 import { t } from '$lib/i18n.svelte';
+import { clampLineageCoordinate } from '$lib/lineage-canvas-state';
 
 export type Model = {
 	id: string;
 	name: string;
 	capabilities: string[];
+	min_vram_gb: number;
 	default: boolean;
 	// Non-empty when the model's license demands visible credit, e.g. the
 	// Stability Community License "Powered by Stability AI".
@@ -32,6 +34,7 @@ export type Model = {
 export type Asset = {
 	id: string;
 	url: string;
+	thumbnail_url: string | null;
 	download_url: string;
 	width: number;
 	height: number;
@@ -40,6 +43,8 @@ export type Asset = {
 export type Generation = {
 	id: string;
 	model_id: string;
+	source_asset_id: string | null;
+	has_derivatives?: boolean;
 	params: { prompt?: string } & Record<string, unknown>;
 	state: string;
 	progress: number | null; // denoising fraction while running, else null
@@ -56,10 +61,68 @@ export type Generation = {
 	assets: Asset[];
 };
 
+export type LineageEntry = {
+	job_id: string | null;
+	asset_id: string;
+	action: 'generate' | 'image_to_image' | 'upscale' | 'upload';
+	model_id: string | null;
+	created_at: string;
+	state: string | null;
+	thumbnail_url: string | null;
+	missing: boolean;
+};
+
+export type GenerationLineage = {
+	ancestors: LineageEntry[];
+	children: LineageEntry[];
+	descendant_count: number;
+	descendants_truncated: boolean;
+};
+
+export type GenerationSubtree = {
+	nodes: Array<{
+		parent_job_id: string | null;
+		output_asset_ids: string[];
+		entry: LineageEntry;
+		generation: Generation;
+	}>;
+	truncated: boolean;
+	remaining_count_lower_bound: number;
+	max_depth: number;
+	max_nodes: number;
+};
+
+export type GenerationPrefill = {
+	mode: 'generate' | 'image_to_image' | 'upscale';
+	sourceAssetId: string | null;
+	prompt: string;
+	modelId: string;
+	params: Record<string, unknown>;
+};
+
+export type LineageViewport = {
+	translateX: number;
+	translateY: number;
+	scale: number;
+	rootId: string | null;
+	anchorX: number | null;
+	anchorY: number | null;
+};
+
+export type LineageTreeOffset = {
+	x: number;
+	y: number;
+};
+
 const HISTORY_LIMIT = 50;
 const MAX_GENERATION_STREAMS = 4;
 const STREAM_RECONCILE_MS = 15_000;
 const STARRED_STORAGE_KEY = 'potocolom-starred';
+const REMOVED_MODELS_STORAGE_KEY = 'potocolom-removed-models';
+const LINEAGE_VIEWPORT_STORAGE_KEY = 'potocolom-lineage-viewport';
+const LINEAGE_TREE_OFFSETS_STORAGE_KEY = 'potocolom-lineage-tree-offsets';
+const LINEAGE_ROOT_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function loadStarredIds(): string[] {
 	if (typeof localStorage === 'undefined') return [];
@@ -74,17 +137,101 @@ function loadStarredIds(): string[] {
 	}
 }
 
+function loadRemovedModelIds(): string[] {
+	if (typeof localStorage === 'undefined') return [];
+	try {
+		const raw = localStorage.getItem(REMOVED_MODELS_STORAGE_KEY);
+		const parsed = raw ? JSON.parse(raw) : [];
+		return Array.isArray(parsed)
+			? parsed.filter((value): value is string => typeof value === 'string')
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function loadLineageViewport(): LineageViewport | null {
+	if (typeof localStorage === 'undefined') return null;
+	try {
+		const raw = localStorage.getItem(LINEAGE_VIEWPORT_STORAGE_KEY);
+		const parsed = raw ? (JSON.parse(raw) as Partial<LineageViewport>) : null;
+		if (
+			parsed === null ||
+			!Number.isFinite(parsed.translateX) ||
+			!Number.isFinite(parsed.translateY) ||
+			!Number.isFinite(parsed.scale) ||
+			(parsed.scale ?? 0) <= 0
+		) {
+			return null;
+		}
+		return {
+			translateX: clampLineageCoordinate(parsed.translateX as number),
+			translateY: clampLineageCoordinate(parsed.translateY as number),
+			scale: parsed.scale as number,
+			rootId:
+				typeof parsed.rootId === 'string' && LINEAGE_ROOT_ID_PATTERN.test(parsed.rootId)
+					? parsed.rootId
+					: null,
+			anchorX:
+				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
+					? clampLineageCoordinate(parsed.anchorX as number)
+					: null,
+			anchorY:
+				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
+					? clampLineageCoordinate(parsed.anchorY as number)
+					: null
+		};
+	} catch {
+		return null;
+	}
+}
+
+function loadLineageTreeOffsets(): Record<string, LineageTreeOffset> {
+	if (typeof localStorage === 'undefined') return {};
+	try {
+		const raw = localStorage.getItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY);
+		const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+		return Object.fromEntries(
+			Object.entries(parsed)
+				.filter(
+					(entry): entry is [string, LineageTreeOffset] =>
+						LINEAGE_ROOT_ID_PATTERN.test(entry[0]) &&
+						entry[1] !== null &&
+						typeof entry[1] === 'object' &&
+						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).x) &&
+						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).y)
+				)
+				.map(([id, offset]) => [
+					id,
+					{
+						x: clampLineageCoordinate(offset.x),
+						y: clampLineageCoordinate(offset.y)
+					}
+				])
+		);
+	} catch {
+		return {};
+	}
+}
+
 function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Generation[] {
 	const byId = new Map(existing.map((generation) => [generation.id, generation]));
 	return incoming.map((generation) => {
 		const previous = byId.get(generation.id);
 		if (!previous || generation.state !== previous.state) return generation;
-		const urlByAssetId = new Map(previous.assets.map((asset) => [asset.id, asset.url]));
+		const previousByAssetId = new Map(previous.assets.map((asset) => [asset.id, asset]));
 		return {
 			...generation,
 			assets: generation.assets.map((asset) => {
-				const url = urlByAssetId.get(asset.id);
-				return url ? { ...asset, url } : asset;
+				const previousAsset = previousByAssetId.get(asset.id);
+				return previousAsset
+					? {
+							...asset,
+							url: previousAsset.url,
+							thumbnail_url: previousAsset.thumbnail_url ?? asset.thumbnail_url
+						}
+					: asset;
 			})
 		};
 	});
@@ -93,8 +240,21 @@ function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Gene
 export const studio = $state({
 	models: [] as Model[],
 	modelId: '',
+	imageToImageModelId: '',
+	upscaleModelId: '',
+	removedModelIds: [] as string[],
 	prompt: '',
+	generationPrefill: null as GenerationPrefill | null,
+	lineageViewport: loadLineageViewport(),
+	lineageTreeOffsets: loadLineageTreeOffsets(),
+	// Canvas node selection. It lives here rather than in the canvas component
+	// because leaving the Images section destroys that component, and a node
+	// selected before an Upscale should still be selected on the way back.
+	// Deliberately not written to storage: a reload should open a clean canvas
+	// rather than an inspector pinned to whatever was picked days ago.
+	lineageSelectedAssetId: null as string | null,
 	selectedId: null as string | null, // generation pinned in the viewer
+	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
 	history: [] as Generation[],
 	historyRecent: [] as Generation[], // newest page; restored by "back to recent"
 	historyRecentFull: false, // true when the latest API page hit the limit
@@ -103,9 +263,56 @@ export const studio = $state({
 	starredIds: [] as string[],
 	starredExtras: [] as Generation[], // starred jobs fetched outside the history pages
 	favoriteNotice: '',
-	shellView: 'playground' as 'playground' | 'metrics',
+	shellView: 'generate' as
+		| 'generate'
+		| 'image_to_image'
+		| 'upscale'
+		| 'edit_image'
+		| 'image_to_text'
+		| 'realtime_canvas'
+		| 'images'
+		| 'models'
+		| 'metrics',
 	metricsTab: 'usage' as 'usage' | 'benchmarks'
 });
+
+export function saveLineageViewport(viewport: LineageViewport): void {
+	const bounded = {
+		...viewport,
+		translateX: clampLineageCoordinate(viewport.translateX),
+		translateY: clampLineageCoordinate(viewport.translateY),
+		anchorX: viewport.anchorX === null ? null : clampLineageCoordinate(viewport.anchorX),
+		anchorY: viewport.anchorY === null ? null : clampLineageCoordinate(viewport.anchorY)
+	};
+	studio.lineageViewport = bounded;
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(bounded));
+	} catch {
+		// The viewport remains active for this tab when storage is unavailable.
+	}
+}
+
+export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
+	const bounded = Object.fromEntries(
+		Object.entries(offsets)
+			.filter(([id]) => LINEAGE_ROOT_ID_PATTERN.test(id))
+			.map(([id, offset]) => [
+				id,
+				{
+					x: clampLineageCoordinate(offset.x),
+					y: clampLineageCoordinate(offset.y)
+				}
+			])
+	);
+	studio.lineageTreeOffsets = bounded;
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(bounded));
+	} catch {
+		// The positions remain active for this tab when storage is unavailable.
+	}
+}
 
 type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
 const favoriteNotices = new Map<FavoriteNoticeKind, string>();
@@ -120,7 +327,21 @@ function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): vo
 }
 
 export function openPlayground(): void {
-	studio.shellView = 'playground';
+	studio.shellView = 'generate';
+}
+
+export function openService(
+	view:
+		| 'generate'
+		| 'image_to_image'
+		| 'upscale'
+		| 'edit_image'
+		| 'image_to_text'
+		| 'realtime_canvas'
+		| 'images'
+		| 'models'
+): void {
+	studio.shellView = view;
 }
 
 export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
@@ -149,18 +370,29 @@ const generationRefreshesInFlight = new Set<string>();
 const terminalRefreshAttempts = new Map<string, number>();
 const MAX_TERMINAL_REFRESH_ATTEMPTS = 3;
 
-// Diffusion models drive the generate form and the sidebar picker; upscalers
-// are reached only through the Upscale action (issue #91). Every model list
-// the user can select from must go through this filter.
-export function filterDiffusionModels(models: Model[]): Model[] {
-	return models.filter((model) => !model.capabilities.includes('upscale'));
+export function modelIsRemoved(modelId: string): boolean {
+	return studio.removedModelIds.includes(modelId);
+}
+
+export function filterTextToImageModels(models: Model[]): Model[] {
+	return models.filter(
+		(model) => model.capabilities.includes('text_to_image') && !modelIsRemoved(model.id)
+	);
+}
+
+export function filterImageToImageModels(models: Model[]): Model[] {
+	return models.filter(
+		(model) => model.capabilities.includes('image_to_image') && !modelIsRemoved(model.id)
+	);
 }
 
 export const UPSCALE_FAST_ID = 'realesrgan-fast';
 export const UPSCALE_QUALITY_ID = 'realesrgan';
 
 export function filterUpscaleModels(models: Model[]): Model[] {
-	return models.filter((model) => model.capabilities.includes('upscale'));
+	return models.filter(
+		(model) => model.capabilities.includes('upscale') && !modelIsRemoved(model.id)
+	);
 }
 
 /** Prefer fast when registered; else quality; else first sorted id. */
@@ -174,17 +406,55 @@ export function defaultUpscaleModelId(models: Model[]): string {
 
 function applyModels(models: Model[]): void {
 	studio.models = models;
-	const selectable = filterDiffusionModels(models);
-	if (!studio.modelId || !selectable.some((model) => model.id === studio.modelId)) {
-		studio.modelId =
-			selectable.length > 0 ? (selectable.find((model) => model.default) ?? selectable[0]).id : '';
+	applyModelSelections();
+}
+
+function fallbackModelId(models: Model[]): string {
+	return models.length > 0 ? (models.find((model) => model.default) ?? models[0]).id : '';
+}
+
+function applyModelSelections(): void {
+	const textToImage = filterTextToImageModels(studio.models);
+	if (!textToImage.some((model) => model.id === studio.modelId)) {
+		studio.modelId = fallbackModelId(textToImage);
 	}
+	const imageToImage = filterImageToImageModels(studio.models);
+	if (!imageToImage.some((model) => model.id === studio.imageToImageModelId)) {
+		studio.imageToImageModelId = fallbackModelId(imageToImage);
+	}
+	const upscalers = filterUpscaleModels(studio.models);
+	if (!upscalers.some((model) => model.id === studio.upscaleModelId)) {
+		studio.upscaleModelId = defaultUpscaleModelId(studio.models);
+	}
+}
+
+function saveRemovedModelIds(): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(REMOVED_MODELS_STORAGE_KEY, JSON.stringify(studio.removedModelIds));
+	} catch {
+		// The preference remains active for this tab when storage is unavailable.
+	}
+}
+
+export function removeModel(modelId: string): void {
+	if (modelIsRemoved(modelId)) return;
+	studio.removedModelIds = [...studio.removedModelIds, modelId];
+	saveRemovedModelIds();
+	applyModelSelections();
+}
+
+export function addModel(modelId: string): void {
+	studio.removedModelIds = studio.removedModelIds.filter((id) => id !== modelId);
+	saveRemovedModelIds();
+	applyModelSelections();
 }
 
 export async function loadModels(): Promise<void> {
 	try {
 		const response = await fetch('/api/v1/models');
 		if (!response.ok) return;
+		studio.removedModelIds = loadRemovedModelIds();
 		applyModels((await response.json()) as Model[]);
 	} catch {
 		// API unreachable; studio shows the empty-model state.
@@ -280,8 +550,22 @@ export async function loadOlderHistory(): Promise<boolean> {
 export function generationById(id: string): Generation | undefined {
 	return (
 		studio.history.find((generation) => generation.id === id) ??
-		studio.starredExtras.find((generation) => generation.id === id)
+		studio.starredExtras.find((generation) => generation.id === id) ??
+		(studio.selectedExtra?.id === id ? studio.selectedExtra : undefined)
 	);
+}
+
+export async function selectGeneration(id: string): Promise<void> {
+	studio.selectedId = id;
+	if (generationById(id) !== undefined) return;
+	try {
+		const response = await fetch(`/api/v1/generations/${id}`);
+		if (!response.ok) return;
+		const generation = (await response.json()) as Generation;
+		if (studio.selectedId === id) studio.selectedExtra = generation;
+	} catch {
+		// Keep the current detail visible when an older lineage node cannot load.
+	}
 }
 
 function replaceGeneration(incoming: Generation): void {

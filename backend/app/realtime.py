@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.manifests import Manifest, parse_manifests, validate_params
+from app.settings import get_settings
 from app import db
 
 logger = logging.getLogger("potocolom.realtime")
@@ -42,6 +43,25 @@ SESSION_READY_TIMEOUT = 10.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
 
 router = APIRouter()
+
+
+def origin_allowed(ws: WebSocket) -> bool:
+    """Neither socket authenticates its peer; the documented mitigation is a
+    trusted LAN (README.md). WebSocket handshakes ignore the same-origin policy
+    and send no preflight, so without this a page the operator merely visits
+    reaches both sockets from outside that LAN. Browsers always send Origin and
+    cannot forge it; worker processes send none (issue #201)."""
+    origin = ws.headers.get("origin")
+    if origin is None:
+        return True
+    settings = get_settings()
+    allowed = {settings.public_url.rstrip("/")}
+    allowed.update(
+        candidate.strip().rstrip("/")
+        for candidate in settings.allowed_origins.split(",")
+        if candidate.strip()
+    )
+    return origin.rstrip("/") in allowed
 
 
 class ProtocolError(Exception):
@@ -257,6 +277,10 @@ async def reap_dead_workers() -> None:
 
 @router.websocket("/api/v1/fleet")
 async def fleet(ws: WebSocket) -> None:
+    if not origin_allowed(ws):
+        logger.warning("fleet handshake refused from origin %s", ws.headers.get("origin"))
+        await ws.close()  # before accept: the handshake fails with HTTP 403
+        return
     await ws.accept()
     try:
         hello = parse_control(await ws.receive_text())
@@ -361,6 +385,10 @@ async def fleet(ws: WebSocket) -> None:
 
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
+    if not origin_allowed(ws):
+        logger.warning("realtime handshake refused from origin %s", ws.headers.get("origin"))
+        await ws.close()  # before accept: the handshake fails with HTTP 403
+        return
     await ws.accept()
     try:
         opening = parse_control(await ws.receive_text())

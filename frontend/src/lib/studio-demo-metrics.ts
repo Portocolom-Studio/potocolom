@@ -45,6 +45,7 @@ export function demoHistory(now: number = Date.now()): Generation[] {
 		jobs.push({
 			id: `demo-${index}`,
 			model_id: model.id,
+			source_asset_id: null,
 			params: { prompt: 'demo' },
 			state,
 			progress: state === 'running' ? rand() : null,

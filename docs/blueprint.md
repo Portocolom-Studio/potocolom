@@ -25,6 +25,7 @@ QUOTA_SERVICE_URL    = ""                        # empty: unlimited default impl
 FLEET_TOKEN_KEY      = ...                       # verifies worker tokens; self-host uses a static shared secret
 EMAIL_BACKEND        = none | smtp | ses
 PUBLIC_URL           = https://app.potocolom.com
+ALLOWED_ORIGINS      = ""                      # extra browser origins for the WebSocket endpoints; PUBLIC_URL is always allowed
 JOB_STALL_SECONDS    = 600                      # requeue or fail running jobs with no progress
 ```
 

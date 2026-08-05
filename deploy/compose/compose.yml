@@ -18,7 +18,8 @@ services:
       AUTH_MODE: none
       DATABASE_URL: postgresql://potocolom:${POSTGRES_PASSWORD}@postgres/potocolom
       STORAGE_BACKEND: local
-      PUBLIC_URL: http://localhost:8080
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       INTERNAL_URL: http://api:8080
       TELEMETRY: ${TELEMETRY:-true}
     volumes:
