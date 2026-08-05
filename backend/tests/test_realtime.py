@@ -4,8 +4,8 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.datastructures import Headers
 from sqlalchemy import select
+from starlette.datastructures import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
@@ -31,8 +31,9 @@ def manifest(model_id="sd-sim") -> dict:
 class FakeHeaders:
     """Stands in for a WebSocket when only the Origin header matters.
 
-    Uses the real Headers type: case-insensitive lookup is its behaviour and a
-    plain dict would not prove origin_allowed relies on it correctly.
+    Uses the real Headers type so the fixture matches what the endpoint passes.
+    Note this is less strict than a dict, not more: Headers.get is
+    case-insensitive, so it would tolerate a lookup a dict would catch.
     """
 
     def __init__(self, origin):
