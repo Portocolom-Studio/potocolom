@@ -10,6 +10,16 @@
 	import { studio } from '$lib/studio.svelte';
 
 	const sidebar = Sidebar.useSidebar();
+
+	const sectionTitle = $derived(
+		studio.shellView === 'metrics'
+			? t('app.metrics.title')
+			: studio.shellView === 'images'
+				? t('app.images.title')
+				: studio.shellView === 'models'
+					? t('app.models.title')
+					: t(`app.service.${studio.shellView}`)
+	);
 </script>
 
 <header class="bg-background sticky top-0 z-50 flex w-full items-center border-b">
@@ -26,7 +36,7 @@
 				<Breadcrumb.Separator />
 				<Breadcrumb.Item>
 					<Breadcrumb.Page>
-						{studio.shellView === 'metrics' ? t('app.metrics.title') : t('app.tab_draw')}
+						{sectionTitle}
 					</Breadcrumb.Page>
 				</Breadcrumb.Item>
 			</Breadcrumb.List>

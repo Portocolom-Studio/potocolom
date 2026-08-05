@@ -225,7 +225,7 @@
 						onclick={(event) => onThumbClick(event, generation)}
 					>
 						<img
-							src={generation.assets[0].url}
+							src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
 							alt={generation.params.prompt ?? generation.id}
 							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
 								(shownId === generation.id ? 'border-primary' : 'border-border')}

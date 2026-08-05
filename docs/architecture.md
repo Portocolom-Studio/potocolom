@@ -305,6 +305,23 @@ Native generation stays at model training resolution (typically 512 or 1024). 2K
 
 Operators can run a second worker whose `MODELS_DIR` holds only the upscaler manifest. Least-loaded job picking then routes upscales there automatically (zero downtime for the diffusion worker; the same pattern is a dedicated cheap upscale pool in the cloud). No scheduler changes are required.
 
+### Browsing history as a derivation forest
+
+Issues #129 through #132. The Images section is the gallery: one infinite pannable canvas that lays a user's history out as lineage trees, so alternative takes on the same base read as visible structure instead of adjacent squares in a grid. The in-flow history strip is unchanged.
+
+How the images are pulled, and why it holds at scale:
+
+- History is never fetched as one account-wide response. Roots come from cursor-paged `GET /api/v1/generations?roots_only=true`. A chain-free root is laid out from that response without another request. When a branched root first enters the viewport, one `GET /api/v1/generations/{job_id}/subtree` request returns its renderable nodes and generation data; at most four subtree requests run concurrently, and the browser does not request lineage and generation detail per node. Each root includes `has_derivatives`, so the client reserves a tree row or a chain-free grid cell before that subtree loads. Subtrees are cached per root id for the session. A derivative that completes during the session prompts one revalidation; cached retained nodes and newly observed derivatives still revalidate when they change; and a capped cache remembers known omitted history so it does not repeatedly request the same omitted frontier.
+- The subtree endpoint executes one recursive database query. Its queue is bounded to 600 nodes, descendants stop at depth 100, visited job ids make it cycle safe, and all asset edges are user-owned non-thumbnail masters. A truncated response includes a conservative lower bound for omitted branches. The separate detail-view lineage endpoint remains: it uses a recursive ancestor query, a direct-child query, and a depth-100 recursive descendant count with an explicit truncation flag. The `jobs_source_asset` index serves both downward walks.
+- Bandwidth follows the zoom band. The constellation and tree bands render the WebP thumbnail rendition; the full master loads only at the card band, and never below it. Tiles outside the viewport unmount on a world coordinate test, keeping the mounted count bounded rather than growing with history.
+- Layout is deterministic from root ids, `created_at`, and `has_derivatives`. Derived trees receive separate rows and the chain-free grid occupies an independent fixed-height region, so loading a subtree cannot move a root between regions or re-index the grid. Older grid pages extend to the right. A loaded tree can increase its row height and push only later tree rows down. The viewport, its nearest root anchor and that anchor's world position, and additive per-root drag offsets are kept in browser local storage. On restore, the saved transform is translated by any change in the anchor's world position. Coordinates are clamped to plus or minus 1,000,000 world pixels, and offsets that do not match any root are discarded after root paging is exhausted. Default positions remain reproducible and nothing about the canvas is persisted server side. Root tiles are the drag handles, focused root tiles move with the arrow keys, and both one-tree and all-tree reset controls remove offsets.
+
+The same code path serves every deployment profile:
+
+- **Isolation.** Every generations route sits behind `current_user` and filters by `user_id`, so a multi-user self-host behaves exactly like the cloud: each user sees only their own forest. There is no shared or public canvas.
+- **Storage.** Asset URLs come from the storage seam (local files self-hosted, S3 with short lived signed URLs in the cloud), so the canvas never knows which profile it is running under. An image that errors after loading once refetches its generation to mint fresh URLs, once, and then shows a placeholder rather than retrying forever.
+- **Retention.** A purged or expired ancestor keeps its place in the tree as a ghost placeholder, which is why purging an asset drops its bytes and marks the row instead of deleting it (see decisions.md). Deleting the row would sever every descendant's lineage.
+
 ### Real time drawing session
 
 Issues #3 and #11. The API relays frames so workers are never exposed publicly and authentication stays centralized. The worker always processes the latest input and drops stale frames.

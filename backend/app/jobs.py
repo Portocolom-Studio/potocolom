@@ -26,8 +26,10 @@ from typing import Literal, Protocol
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app import db, realtime, registry
 from app.auth import current_user, require_role
@@ -49,6 +51,10 @@ TERMINAL_STATES = ("succeeded", "failed")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
 DOWNLOAD_SLUG_MAX_LENGTH = 48
 DOWNLOAD_SLUG_MAX_WORDS = 6
+# One hundred generations exceeds a practical edit chain but bounds corrupt cycles.
+LINEAGE_SUBTREE_MAX_DEPTH = 100
+# Six hundred matches the canvas tile ceiling and bounds unusually broad trees.
+LINEAGE_SUBTREE_MAX_NODES = 600
 
 
 class Queues(Protocol):
@@ -121,8 +127,26 @@ def generation_download_name(
     asset: Asset,
     position: int | None = None,
 ) -> str:
-    prompt = job.params.get("prompt")
-    source = prompt if isinstance(prompt, str) and prompt.strip() else job.model_id
+    return _generation_download_name(
+        job.model_id,
+        job.params,
+        job.created_at,
+        asset.storage_key,
+        asset.mime,
+        position,
+    )
+
+
+def _generation_download_name(
+    model_id: str,
+    params: dict,
+    created_at: datetime,
+    storage_key: str,
+    mime: str,
+    position: int | None = None,
+) -> str:
+    prompt = params.get("prompt")
+    source = prompt if isinstance(prompt, str) and prompt.strip() else model_id
     ascii_source = (
         unicodedata.normalize("NFKD", source).encode("ascii", "ignore").decode("ascii").lower()
     )
@@ -130,11 +154,11 @@ def generation_download_name(
     slug = "-".join(words)[:DOWNLOAD_SLUG_MAX_LENGTH].strip("-")
     if not slug:
         slug = "generation"
-    timestamp = job.created_at.strftime("%Y%m%d-%H%M%S")
-    filename = asset.storage_key.rsplit("/", 1)[-1]
+    timestamp = created_at.strftime("%Y%m%d-%H%M%S")
+    filename = storage_key.rsplit("/", 1)[-1]
     _, separator, extension = filename.rpartition(".")
     if not separator or not extension:
-        extension = asset.mime.rpartition("/")[2]
+        extension = mime.rpartition("/")[2]
         if re.fullmatch(r"[a-z0-9]+", extension.lower()) is None:
             extension = "bin"
     extension = extension.lower()
@@ -161,6 +185,8 @@ async def create_generation(
         source = await session.get(Asset, source_asset_id)
         if source is None or source.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown source asset")
+        if source.storage_key.endswith("-thumb.webp"):
+            raise HTTPException(status_code=422, detail="source asset cannot be a thumbnail")
         if "image_to_image" not in caps and "upscale" not in caps:
             raise HTTPException(
                 status_code=422,
@@ -180,13 +206,40 @@ async def create_generation(
 async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
     assets: dict[uuid.UUID, list[Asset]] = {}
     thumbs_by_parent: dict[uuid.UUID, Asset] = {}
+    jobs_with_derivatives: set[uuid.UUID] = set()
     if jobs:
-        rows = await session.execute(select(Asset).where(Asset.job_id.in_([j.id for j in jobs])))
+        job_ids = [job.id for job in jobs]
+        owner_job = aliased(Job)
+        rows = await session.execute(
+            select(Asset)
+            .join(owner_job, owner_job.id == Asset.job_id)
+            .where(Asset.job_id.in_(job_ids), Asset.user_id == owner_job.user_id)
+        )
         for asset in rows.scalars():
             if asset.job_id is not None:
                 assets.setdefault(asset.job_id, []).append(asset)
             if asset.parent_asset_id is not None and asset.storage_key.endswith("-thumb.webp"):
                 thumbs_by_parent[asset.parent_asset_id] = asset
+        child_job = aliased(Job)
+        derivative_rows = await session.execute(
+            select(Asset.job_id)
+            .join(owner_job, owner_job.id == Asset.job_id)
+            .where(
+                Asset.job_id.in_(job_ids),
+                Asset.user_id == owner_job.user_id,
+                Asset.storage_key.not_like("%-thumb.webp"),
+                select(child_job.id)
+                .where(
+                    child_job.source_asset_id == Asset.id,
+                    child_job.user_id == owner_job.user_id,
+                )
+                .exists(),
+            )
+            .distinct()
+        )
+        jobs_with_derivatives = {
+            job_id for job_id in derivative_rows.scalars() if job_id is not None
+        }
     storage = get_storage()
     now = datetime.now(timezone.utc)
     # Keep expired masters for expired_favorite, but number only the assets the
@@ -211,6 +264,8 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
         {
             "id": str(job.id),
             "model_id": job.model_id,
+            "source_asset_id": str(job.source_asset_id) if job.source_asset_id else None,
+            "has_derivatives": job.id in jobs_with_derivatives,
             "params": job.params,
             "state": job.state,
             "attempt": job.attempt,
@@ -263,6 +318,7 @@ async def list_generations(
     cursor: uuid.UUID | None = None,
     state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
     starred: bool | None = Query(default=None),
+    roots_only: bool | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
@@ -271,13 +327,22 @@ async def list_generations(
         query = query.where(Job.state == state)
     if starred is not None:
         query = query.where(Job.starred_at.is_not(None) if starred else Job.starred_at.is_(None))
+    if roots_only is not None:
+        query = query.where(
+            Job.source_asset_id.is_(None)
+            if roots_only else Job.source_asset_id.is_not(None)
+        )
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown cursor")
+        if state is not None and anchor.state != state:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        if roots_only is not None and (anchor.source_asset_id is None) != roots_only:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        if starred is not None and (anchor.starred_at is not None) != starred:
+            raise HTTPException(status_code=404, detail="unknown cursor")
         if starred is True:
-            if anchor.starred_at is None:
-                raise HTTPException(status_code=404, detail="unknown cursor")
             query = query.where(
                 or_(
                     Job.starred_at < anchor.starred_at,
@@ -307,6 +372,511 @@ async def owned_job(session: AsyncSession, job_id: uuid.UUID, user: User) -> Job
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="no such generation")
     return job
+
+
+async def serialize_lineage_entry(row: RowMapping, now: datetime) -> dict:
+    missing = row["expires_at"] is not None and row["expires_at"] <= now
+    thumbnail_missing = (
+        row["thumbnail_expires_at"] is not None
+        and row["thumbnail_expires_at"] <= now
+    )
+    thumbnail_url = None
+    if not missing and not thumbnail_missing and row["thumbnail_storage_key"] is not None:
+        thumbnail_url = await get_storage().url(row["thumbnail_storage_key"])
+    capabilities = set(row["capabilities"] or [])
+    action = (
+        "upload" if row["job_id"] is None else
+        "generate" if row["source_asset_id"] is None else
+        "upscale" if "upscale" in capabilities else
+        "image_to_image"
+    )
+    return {
+        "job_id": str(row["job_id"]) if row["job_id"] is not None else None,
+        "asset_id": str(row["asset_id"]),
+        "action": action,
+        "model_id": row["model_id"],
+        "created_at": row["created_at"].isoformat(),
+        "state": row["state"],
+        "thumbnail_url": thumbnail_url,
+        "missing": missing,
+    }
+
+
+@router.get("/api/v1/generations/{job_id}/subtree")
+async def generation_subtree(
+    job_id: uuid.UUID,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+) -> dict:
+    params = {
+        "job_id": job_id,
+        "user_id": user.id,
+        "max_depth": LINEAGE_SUBTREE_MAX_DEPTH,
+        "max_nodes": LINEAGE_SUBTREE_MAX_NODES,
+    }
+    result = await session.execute(text("""
+        WITH RECURSIVE walk AS (
+            SELECT
+                ARRAY[root.id]::uuid[] AS pending_job_ids,
+                ARRAY[0]::integer[] AS pending_depths,
+                ARRAY[]::uuid[] AS result_job_ids,
+                ARRAY[]::integer[] AS result_depths,
+                FALSE AS truncated,
+                0::integer AS hidden_count_lower_bound
+            FROM jobs AS root
+            WHERE root.id = :job_id
+                AND root.user_id = :user_id
+                AND EXISTS (
+                    SELECT 1
+                    FROM assets AS root_asset
+                    WHERE root_asset.job_id = root.id
+                        AND root_asset.user_id = :user_id
+                        AND root_asset.storage_key NOT LIKE '%-thumb.webp'
+                )
+
+            UNION ALL
+
+            SELECT
+                current.rest_job_ids || accepted.job_ids,
+                current.rest_depths || accepted.depths,
+                walk.result_job_ids || ARRAY[current.job_id],
+                walk.result_depths || ARRAY[current.depth],
+                walk.truncated OR cardinality(candidates.job_ids) > slots.capacity,
+                walk.hidden_count_lower_bound + CASE
+                    WHEN cardinality(candidates.job_ids) > slots.capacity THEN 1
+                    ELSE 0
+                END
+            FROM walk
+            CROSS JOIN LATERAL (
+                SELECT
+                    walk.pending_job_ids[1] AS job_id,
+                    walk.pending_depths[1] AS depth,
+                    walk.pending_job_ids[2:cardinality(walk.pending_job_ids)] AS rest_job_ids,
+                    walk.pending_depths[2:cardinality(walk.pending_depths)] AS rest_depths
+            ) AS current
+            CROSS JOIN LATERAL (
+                SELECT CASE
+                    WHEN current.depth < :max_depth THEN greatest(
+                        0,
+                        :max_nodes
+                            - cardinality(walk.result_job_ids)
+                            - cardinality(walk.pending_job_ids)
+                    )
+                    ELSE 0
+                END AS capacity
+            ) AS slots
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(
+                    array_agg(candidate.id ORDER BY candidate.created_at, candidate.id),
+                    ARRAY[]::uuid[]
+                ) AS job_ids
+                FROM (
+                    SELECT child.id, child.created_at
+                    FROM assets AS output
+                    JOIN jobs AS child
+                        ON child.source_asset_id = output.id
+                        AND child.user_id = :user_id
+                    WHERE output.job_id = current.job_id
+                        AND output.user_id = :user_id
+                        AND output.storage_key NOT LIKE '%-thumb.webp'
+                        AND NOT (
+                            child.id = ANY(
+                                walk.result_job_ids || walk.pending_job_ids
+                            )
+                        )
+                        AND EXISTS (
+                            SELECT 1
+                            FROM assets AS child_asset
+                            WHERE child_asset.job_id = child.id
+                                AND child_asset.user_id = :user_id
+                                AND child_asset.storage_key NOT LIKE '%-thumb.webp'
+                        )
+                    ORDER BY child.created_at, child.id
+                    LIMIT slots.capacity + 1
+                ) AS candidate
+            ) AS candidates
+            CROSS JOIN LATERAL (
+                SELECT
+                    candidates.job_ids[1:slots.capacity] AS job_ids,
+                    array_fill(
+                        current.depth + 1,
+                        ARRAY[least(cardinality(candidates.job_ids), slots.capacity)]
+                    ) AS depths
+            ) AS accepted
+            WHERE cardinality(walk.pending_job_ids) > 0
+        ), final_state AS (
+            SELECT *
+            FROM walk
+            WHERE cardinality(pending_job_ids) = 0
+            ORDER BY cardinality(result_job_ids) DESC
+            LIMIT 1
+        ), ordered_jobs AS (
+            SELECT expanded.job_id, expanded.depth, expanded.position
+            FROM final_state
+            CROSS JOIN LATERAL unnest(
+                final_state.result_job_ids,
+                final_state.result_depths
+            ) WITH ORDINALITY AS expanded(job_id, depth, position)
+        )
+        SELECT
+            job.id AS job_id,
+            master.id AS asset_id,
+            job.model_id,
+            job.source_asset_id,
+            source.job_id AS parent_job_id,
+            job.params,
+            job.state,
+            job.attempt,
+            job.gpu_ms,
+            job.input_fetch_ms,
+            job.load_ms,
+            job.postprocess_ms,
+            job.failure_reason,
+            job.starred_at,
+            job.created_at,
+            job.dispatched_at,
+            job.finished_at,
+            model.capabilities,
+            master.storage_key,
+            master.mime,
+            master.width,
+            master.height,
+            master.expires_at,
+            ARRAY(
+                SELECT output.id
+                FROM assets AS output
+                WHERE output.job_id = job.id
+                    AND output.user_id = :user_id
+                    AND output.storage_key NOT LIKE '%-thumb.webp'
+                ORDER BY output.id
+            ) AS output_asset_ids,
+            thumbnail.storage_key AS thumbnail_storage_key,
+            thumbnail.expires_at AS thumbnail_expires_at,
+            EXISTS (
+                SELECT 1
+                FROM assets AS derivative_source
+                JOIN jobs AS derivative
+                    ON derivative.source_asset_id = derivative_source.id
+                    AND derivative.user_id = :user_id
+                WHERE derivative_source.job_id = job.id
+                    AND derivative_source.user_id = :user_id
+                    AND derivative_source.storage_key NOT LIKE '%-thumb.webp'
+            ) AS has_derivatives,
+            final_state.truncated,
+            final_state.hidden_count_lower_bound
+        FROM ordered_jobs
+        JOIN final_state ON TRUE
+        JOIN jobs AS job
+            ON job.id = ordered_jobs.job_id
+            AND job.user_id = :user_id
+        LEFT JOIN models AS model ON model.id = job.model_id
+        LEFT JOIN assets AS source
+            ON source.id = job.source_asset_id
+            AND source.user_id = :user_id
+        JOIN LATERAL (
+            SELECT asset.*
+            FROM assets AS asset
+            WHERE asset.job_id = job.id
+                AND asset.user_id = :user_id
+                AND asset.storage_key NOT LIKE '%-thumb.webp'
+            ORDER BY asset.id
+            LIMIT 1
+        ) AS master ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT thumb.storage_key, thumb.expires_at
+            FROM assets AS thumb
+            WHERE thumb.parent_asset_id = master.id
+                AND thumb.user_id = :user_id
+                AND thumb.storage_key LIKE '%-thumb.webp'
+            ORDER BY thumb.id
+            LIMIT 1
+        ) AS thumbnail ON TRUE
+        ORDER BY ordered_jobs.position
+    """), params)
+    rows = list(result.mappings())
+    if not rows:
+        raise HTTPException(status_code=404, detail="no such generation")
+
+    now = datetime.now(timezone.utc)
+    storage = get_storage()
+    nodes = []
+    for row in rows:
+        expired = row["expires_at"] is not None and row["expires_at"] <= now
+        asset = None
+        if not expired:
+            asset = {
+                "id": str(row["asset_id"]),
+                "url": await storage.url(row["storage_key"]),
+                "download_url": await storage.url(
+                    row["storage_key"],
+                    download_name=_generation_download_name(
+                        row["model_id"],
+                        row["params"],
+                        row["created_at"],
+                        row["storage_key"],
+                        row["mime"],
+                    ),
+                ),
+                "thumbnail_url": (
+                    await storage.url(row["thumbnail_storage_key"])
+                    if row["thumbnail_storage_key"] is not None
+                    and (
+                        row["thumbnail_expires_at"] is None
+                        or row["thumbnail_expires_at"] > now
+                    )
+                    else None
+                ),
+                "mime": row["mime"],
+                "width": row["width"],
+                "height": row["height"],
+            }
+        nodes.append({
+            "parent_job_id": (
+                str(row["parent_job_id"])
+                if row["parent_job_id"] is not None else None
+            ),
+            "output_asset_ids": [str(asset_id) for asset_id in row["output_asset_ids"]],
+            "entry": await serialize_lineage_entry(row, now),
+            "generation": {
+                "id": str(row["job_id"]),
+                "model_id": row["model_id"],
+                "source_asset_id": (
+                    str(row["source_asset_id"])
+                    if row["source_asset_id"] is not None else None
+                ),
+                "has_derivatives": row["has_derivatives"],
+                "params": row["params"],
+                "state": row["state"],
+                "attempt": row["attempt"],
+                "progress": (
+                    live_progress.get(row["job_id"])
+                    if row["state"] == "running" else None
+                ),
+                "gpu_ms": row["gpu_ms"],
+                "input_fetch_ms": row["input_fetch_ms"],
+                "load_ms": row["load_ms"],
+                "postprocess_ms": row["postprocess_ms"],
+                "failure_reason": row["failure_reason"],
+                "starred_at": (
+                    row["starred_at"].isoformat()
+                    if row["starred_at"] is not None else None
+                ),
+                "created_at": row["created_at"].isoformat(),
+                "dispatched_at": (
+                    row["dispatched_at"].isoformat()
+                    if row["dispatched_at"] is not None else None
+                ),
+                "finished_at": (
+                    row["finished_at"].isoformat()
+                    if row["finished_at"] is not None else None
+                ),
+                "assets": [asset] if asset is not None else [],
+                "expired_favorite": bool(row["starred_at"] and expired),
+            },
+        })
+    return {
+        "nodes": nodes,
+        "truncated": rows[0]["truncated"],
+        "remaining_count_lower_bound": rows[0]["hidden_count_lower_bound"],
+        "max_depth": LINEAGE_SUBTREE_MAX_DEPTH,
+        "max_nodes": LINEAGE_SUBTREE_MAX_NODES,
+    }
+
+
+@router.get("/api/v1/generations/{job_id}/lineage")
+async def generation_lineage(
+    job_id: uuid.UUID,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+) -> dict:
+    await owned_job(session, job_id, user)
+    params = {
+        "job_id": job_id,
+        "user_id": user.id,
+        "max_depth": LINEAGE_SUBTREE_MAX_DEPTH,
+    }
+    ancestor_result = await session.execute(text("""
+        WITH RECURSIVE ancestor_walk AS (
+            SELECT
+                source.id AS asset_id,
+                source.job_id,
+                parent.model_id,
+                parent.source_asset_id,
+                parent.created_at AS job_created_at,
+                current.created_at AS reference_created_at,
+                parent.state,
+                model.capabilities,
+                source.expires_at,
+                1 AS depth,
+                ARRAY[source.id]::uuid[] AS visited
+            FROM jobs AS current
+            JOIN assets AS source ON source.id = current.source_asset_id
+            LEFT JOIN jobs AS parent
+                ON parent.id = source.job_id
+                AND parent.user_id = :user_id
+            LEFT JOIN models AS model ON model.id = parent.model_id
+            WHERE current.id = :job_id
+                AND current.user_id = :user_id
+                AND source.user_id = :user_id
+                AND source.storage_key NOT LIKE '%-thumb.webp'
+
+            UNION ALL
+
+            SELECT
+                source.id,
+                source.job_id,
+                parent.model_id,
+                parent.source_asset_id,
+                parent.created_at,
+                ancestor_walk.job_created_at,
+                parent.state,
+                model.capabilities,
+                source.expires_at,
+                ancestor_walk.depth + 1,
+                ancestor_walk.visited || ARRAY[source.id]
+            FROM ancestor_walk
+            JOIN assets AS source ON source.id = ancestor_walk.source_asset_id
+            LEFT JOIN jobs AS parent
+                ON parent.id = source.job_id
+                AND parent.user_id = :user_id
+            LEFT JOIN models AS model ON model.id = parent.model_id
+            WHERE ancestor_walk.depth < :max_depth
+                AND source.user_id = :user_id
+                AND source.storage_key NOT LIKE '%-thumb.webp'
+                AND NOT (source.id = ANY(ancestor_walk.visited))
+        )
+        SELECT
+            ancestor_walk.asset_id,
+            ancestor_walk.job_id,
+            ancestor_walk.model_id,
+            ancestor_walk.source_asset_id,
+            COALESCE(
+                ancestor_walk.job_created_at,
+                ancestor_walk.reference_created_at
+            ) AS created_at,
+            ancestor_walk.state,
+            ancestor_walk.capabilities,
+            ancestor_walk.expires_at,
+            thumbnail.storage_key AS thumbnail_storage_key,
+            thumbnail.expires_at AS thumbnail_expires_at
+        FROM ancestor_walk
+        LEFT JOIN LATERAL (
+            SELECT storage_key, expires_at
+            FROM assets
+            WHERE parent_asset_id = ancestor_walk.asset_id
+                AND user_id = :user_id
+                AND storage_key LIKE '%-thumb.webp'
+            ORDER BY id
+            LIMIT 1
+        ) AS thumbnail ON TRUE
+        ORDER BY ancestor_walk.depth DESC
+    """), params)
+
+    child_result = await session.execute(text("""
+        SELECT
+            child.id AS job_id,
+            master.id AS asset_id,
+            child.model_id,
+            child.source_asset_id,
+            child.created_at,
+            child.state,
+            model.capabilities,
+            master.expires_at,
+            thumbnail.storage_key AS thumbnail_storage_key,
+            thumbnail.expires_at AS thumbnail_expires_at
+        FROM jobs AS current
+        JOIN assets AS current_asset
+            ON current_asset.job_id = current.id
+            AND current_asset.user_id = :user_id
+            AND current_asset.storage_key NOT LIKE '%-thumb.webp'
+        JOIN jobs AS child
+            ON child.source_asset_id = current_asset.id
+            AND child.user_id = :user_id
+        JOIN assets AS master
+            ON master.job_id = child.id
+            AND master.user_id = :user_id
+            AND master.storage_key NOT LIKE '%-thumb.webp'
+        JOIN models AS model ON model.id = child.model_id
+        LEFT JOIN LATERAL (
+            SELECT storage_key, expires_at
+            FROM assets
+            WHERE parent_asset_id = master.id
+                AND user_id = :user_id
+                AND storage_key LIKE '%-thumb.webp'
+            ORDER BY id
+            LIMIT 1
+        ) AS thumbnail ON TRUE
+        WHERE current.id = :job_id
+            AND current.user_id = :user_id
+        ORDER BY child.created_at, child.id
+    """), params)
+
+    descendant_result = await session.execute(text("""
+        WITH RECURSIVE descendants AS (
+            SELECT
+                child.id AS job_id,
+                1 AS depth,
+                ARRAY[current.id, child.id]::uuid[] AS visited
+            FROM jobs AS current
+            JOIN assets AS current_asset
+                ON current_asset.job_id = current.id
+                AND current_asset.user_id = :user_id
+                AND current_asset.storage_key NOT LIKE '%-thumb.webp'
+            JOIN jobs AS child
+                ON child.source_asset_id = current_asset.id
+                AND child.user_id = :user_id
+            WHERE current.id = :job_id
+                AND current.user_id = :user_id
+                AND child.id != current.id
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                descendants.depth + 1,
+                descendants.visited || ARRAY[child.id]
+            FROM descendants
+            JOIN assets AS output
+                ON output.job_id = descendants.job_id
+                AND output.user_id = :user_id
+                AND output.storage_key NOT LIKE '%-thumb.webp'
+            JOIN jobs AS child
+                ON child.source_asset_id = output.id
+                AND child.user_id = :user_id
+            WHERE descendants.depth < :max_depth
+                AND NOT (child.id = ANY(descendants.visited))
+        )
+        SELECT
+            count(DISTINCT job_id) AS descendant_count,
+            EXISTS (
+                SELECT 1
+                FROM descendants
+                JOIN assets AS output
+                    ON output.job_id = descendants.job_id
+                    AND output.user_id = :user_id
+                    AND output.storage_key NOT LIKE '%-thumb.webp'
+                JOIN jobs AS child
+                    ON child.source_asset_id = output.id
+                    AND child.user_id = :user_id
+                WHERE descendants.depth = :max_depth
+                    AND NOT (child.id = ANY(descendants.visited))
+            ) AS descendants_truncated
+        FROM descendants
+    """), params)
+    descendant = descendant_result.mappings().one()
+    now = datetime.now(timezone.utc)
+    return {
+        "ancestors": [
+            await serialize_lineage_entry(row, now)
+            for row in ancestor_result.mappings()
+        ],
+        "children": [
+            await serialize_lineage_entry(row, now)
+            for row in child_result.mappings()
+        ],
+        "descendant_count": int(descendant["descendant_count"] or 0),
+        "descendants_truncated": descendant["descendants_truncated"],
+    }
 
 
 @router.get("/api/v1/generations/{job_id}")

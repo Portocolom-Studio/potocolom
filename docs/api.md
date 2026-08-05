@@ -31,6 +31,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
 | POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
+| GET `/api/v1/generations/{id}/lineage` | implemented (#129) | ancestry, direct derivatives and subtree size of an owned generation |
+| GET `/api/v1/generations/{id}/subtree` | implemented (#130) | bounded descendants and render data for one Images canvas tree |
 | GET `/api/v1/benchmark/sessions/*` | implemented (#107) | list and read durable benchmark sessions, install-scoped |
 | POST `/api/v1/benchmark/sessions` | implemented (#107), `BENCHMARK_API`-gated | ingest a completed benchmark session |
 | GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
@@ -128,20 +130,26 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              {"model_id": "sdxl-base", "params": {"prompt": "a castle at sunset"}}
                              model_id is REQUIRED. For image_to_image or upscale, also pass
                              "source_asset_id"; upscale requires a source and is mutually
-                             exclusive with the diffusion capabilities.
+                             exclusive with the diffusion capabilities. A thumbnail cannot be
+                             used as source_asset_id and returns 422.
                              202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
                              402 when credits are insufficient, 422 when params fail the model's schema
 
 GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
                               "asset": {...} when succeeded, "thumbnail_url": "...",
                               "source_asset_id": "..." (img2img/upscale),
+                              "has_derivatives": true when any job uses one of its assets,
                               phase timings "input_fetch_ms"/"load_ms"/"postprocess_ms",
                               "dispatched_at"/"finished_at", "failure_reason" on failure}
 
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
-                             carrying short-lived signed URLs and "thumbnail_url"; cursor paging.
+                             carrying short-lived signed URLs and "thumbnail_url", plus
+                             "has_derivatives" for stable client layout; cursor paging.
                              (This is the real history endpoint. There is no /api/v1/assets.)
                              ?starred=true uses starred_at newest-first; false excludes favorites.
+                             ?roots_only=true returns source_asset_id IS NULL; false returns only
+                             derivatives. Omit it for the existing unfiltered history. Cursors must
+                             come from the same filtered result and retain created_at/id ordering.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 
@@ -149,6 +157,35 @@ POST /api/v1/generations/{id}/star    user or admin; 204; idempotent, 403 for vi
                                       404 for another user's or missing job
 DELETE /api/v1/generations/{id}/star  user or admin; 204; idempotent, 403 for viewer,
                                       404 for another user's or missing job
+
+GET /api/v1/generations/{id}/lineage  the derivation chain around one generation (#129)
+                                      {"ancestors": [entry], root first, direct parent last, [] for a root
+                                       "children":  [entry], direct derivatives, created_at ascending
+                                       "descendant_count": subtree size through depth 100,
+                                       "descendants_truncated": true when deeper rows exist}
+                                      entry = {"job_id": null when the source was an upload,
+                                               "asset_id", "action": generate|image_to_image|upscale|upload,
+                                               "model_id", "created_at", "state", "thumbnail_url",
+                                               "missing": true once the bytes are gone, renders a ghost}
+                                      404 for another user's or missing job. The walk is bounded at depth
+                                      100 and skips already-visited assets, so a cycle cannot hang it.
+                                      A missing ancestor keeps its place: the chain stays intact because
+                                      purging an asset drops its bytes and keeps the row (decisions.md).
+
+GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#130)
+                                      {"nodes": [{"parent_job_id": null, "output_asset_ids": [],
+                                                  "entry": entry,
+                                                  "generation": generation}],
+                                       "truncated": false,
+                                       "remaining_count_lower_bound": 0,
+                                       "max_depth": 100, "max_nodes": 600}
+                                      Nodes are breadth-first and include the generation fields and first
+                                      non-thumbnail master asset needed by the canvas. parent_job_id joins
+                                      each child to its parent generation; output_asset_ids lets cache
+                                      revalidation match derivatives of any output. The walk is user-owned, cycle safe, excludes
+                                      thumbnail assets, and stops at both limits. When truncated, the lower
+                                      bound counts known omitted branches, not every unseen descendant.
+                                      404 for another user's, missing, or assetless anchor job.
 ```
 
 The studio opens at most four generation event streams. An `EventSource` error
