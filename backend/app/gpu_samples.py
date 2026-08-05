@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
 
@@ -58,7 +59,11 @@ def _float_or_none(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        # NaN and infinities survive json.loads and persist in PostgreSQL, but
+        # Starlette refuses to serialize them: one poisoned sample would 500
+        # every history range that contains it, rollups included (issue #203).
+        return number if math.isfinite(number) else None
     return None
 
 
