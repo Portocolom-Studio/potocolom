@@ -108,6 +108,19 @@ last_progress_at: dict[uuid.UUID, float] = {}
 subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}
 
 
+def _worker_float(value: object, default: float = 0.0) -> float:
+    """Coerce a worker-supplied number to a float, or the default.
+
+    float() raises TypeError on a list or dict and OverflowError on a big int,
+    both of which json.loads produces from ordinary JSON.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    if isinstance(value, int) and not (-2**53 < value < 2**53):
+        return default
+    return float(value)
+
+
 def _worker_int(value: object, default: int = 0) -> int:
     """Coerce a worker-supplied number, treating anything unusable as absent.
 
@@ -1151,9 +1164,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     if current is None or current.worker is not worker:
         return  # stale report from a previous incarnation or attempt
     if control["type"] == "job_progress":
-        raw = control.get("progress") or 0.0
-        # float() raises TypeError on a list or dict, which json.loads accepts.
-        progress = float(raw) if isinstance(raw, (int, float)) else float("nan")
+        # float() raises TypeError on the list or dict json.loads accepts, and
+        # OverflowError on the arbitrary-precision int it also accepts.
+        # NaN as the default routes every unusable shape into the finite check
+        # below, so one branch logs and drops them all.
+        progress = _worker_float(control.get("progress"), default=float("nan"))
         if not math.isfinite(progress):
             # Stored, it breaks every generation list and detail response that
             # carries it; published, it emits the non-standard NaN token into

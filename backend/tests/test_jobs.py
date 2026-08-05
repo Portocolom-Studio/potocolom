@@ -1839,10 +1839,11 @@ def test_non_finite_progress_is_ignored():
         worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
     )
     try:
-        asyncio.run(jobs.on_worker_message(worker, {
-            "type": "job_progress", "job_id": str(job_id), "progress": float("nan"),
-        }))
-        assert job_id not in jobs.live_progress
+        for unusable in (float("nan"), float("inf"), 10 ** 400, [1], {"a": 1}, None):
+            asyncio.run(jobs.on_worker_message(worker, {
+                "type": "job_progress", "job_id": str(job_id), "progress": unusable,
+            }))
+            assert job_id not in jobs.live_progress, f"{unusable!r} was stored"
         asyncio.run(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
         }))
