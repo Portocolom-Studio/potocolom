@@ -907,6 +907,9 @@ class DiffusersEngine:
             and bool(getattr(pipeline.config, "force_zeros_for_empty_prompt", False))
         )
         if force_zero_negative:
+            # It implies dual_encoder, so the index-1 pass above ran with
+            # pooled=True and positive_pooled holds that encoder's embedding.
+            assert positive_pooled is not None
             negative_prompt_embeds = self.torch.zeros_like(prompt_embeds)
             negative_pooled = self.torch.zeros_like(positive_pooled)
         else:
