@@ -111,6 +111,33 @@ def encode_png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+def reject_degenerate_output(image: Image.Image, model_id: str) -> None:
+    """Raise when a denoise decoded to one flat colour.
+
+    A saturated or NaN denoise decodes to a single constant colour, and the
+    job would otherwise be stored as succeeded with a plausible asset row: that
+    is exactly how the group offload streaming defect stayed invisible (see
+    _apply_rung). Raising here fails the job and, through generate()'s
+    poison-evict branch, drops the resident that produced it so the next job
+    reloads clean rather than repeating the fault.
+
+    Every band being exactly constant is the whole test. VAE decode noise means
+    real diffusion output is never bit-flat, so there is no tolerance to tune
+    and no legitimate generation to misjudge. Upscale is not checked, because a
+    flat source legitimately upscales to a flat result, and neither is the
+    realtime frame path, which never reaches the offload rung this guards.
+    SimulatedEngine emits flat colour by design and is a separate class.
+    """
+    extrema = image.getextrema()
+    # Single-band images return one (low, high) pair rather than one per band.
+    bands = extrema if isinstance(extrema[0], tuple) else (extrema,)
+    if all(low == high for low, high in bands):
+        raise RuntimeError(
+            f"{model_id} produced a single flat colour, so the denoise or the "
+            "VAE decode failed; the image was discarded rather than stored"
+        )
+
+
 def _percentile_nearest(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -381,12 +408,11 @@ class DiffusersEngine:
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
-        use_group_offload_fast_path = not manifest.quantize
+        can_offload_to_disk = not manifest.quantize
         offload_dir = None
-        # Quantized torchao subclass tensors cannot be serialized by safetensors
-        # or handle aten.is_pinned for stream prefetch. They must remain in host
-        # RAM without streaming, so this rung is slower and needs enough host RAM.
-        if self.models_dir and use_group_offload_fast_path:
+        # Quantized torchao subclass tensors cannot be serialized by safetensors,
+        # so they must stay in host RAM: this rung needs enough of it.
+        if self.models_dir and can_offload_to_disk:
             safe_id = "".join(c if c.isalnum() or c in "._-" else "-" for c in manifest.id)
             offload_dir = str(Path(self.models_dir) / ".offload" / safe_id.lstrip("."))
             Path(offload_dir).mkdir(parents=True, exist_ok=True)
@@ -395,7 +421,13 @@ class DiffusersEngine:
             # leaf_level streams layer by layer and needs no block sizing;
             # block_level raises when num_blocks_per_group is unset.
             offload_type="leaf_level",
-            use_stream=use_group_offload_fast_path,
+            # use_stream=True silently produces wrong output on this rung:
+            # diffusers' lazy prefetch fails to onload every leaf ("some layers
+            # were not executed during the forward pass"), latents come back at
+            # roughly 20x their normal range (-56..56 against -2.7..2.4) and
+            # decode to a solid black image while the job still reports
+            # succeeded. Correctness first; this rung is already the slow one.
+            use_stream=False,
             offload_to_disk_path=offload_dir,
         )
         return pipeline
@@ -1033,6 +1065,7 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
+        reject_degenerate_output(image, manifest.id)
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
@@ -1080,6 +1113,7 @@ class DiffusersEngine:
             callback_on_step_end=on_step,
         ).images[0]
         gpu_ms = int((time.monotonic() - start) * 1000)
+        reject_degenerate_output(image, manifest.id)
         loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
