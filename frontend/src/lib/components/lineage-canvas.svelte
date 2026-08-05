@@ -85,6 +85,11 @@
 	} from '$lib/studio.svelte';
 
 	const ROOT_LIMIT = 50;
+	// A saved viewport names the root it was anchored to, and that root may sit
+	// several pages back. Hunting it costs one round trip per page with nothing
+	// drawn yet, and it never resolves at all when the anchor has since expired,
+	// so give up after this many and open on the newest instead.
+	const MAX_ANCHOR_SEARCH_PAGES = 4;
 	const MAX_MOUNTED_TILES = 600;
 	const MAX_CONCURRENT_TREE_LOADS = 4;
 	const MIN_SCALE = 0.12;
@@ -123,6 +128,8 @@
 	let rootsInitialized = $state(false);
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
+	let anchorSearchPages = 0;
+	let initializeFrame = 0;
 	let treeCache = $state(new Map(sessionTreeCache));
 	let newNodeIds = $state(new Set<string>());
 	let failedImageIds = $state(new Set<string>());
@@ -332,7 +339,18 @@
 		} finally {
 			if (canvasActive && canvasEpoch === canvasEpochSequence) rootsLoading = false;
 		}
-		if (loaded && !viewportReady) requestAnimationFrame(initializeViewport);
+		if (loaded && !viewportReady) initializeFrame = requestAnimationFrame(initializeViewport);
+	}
+
+	// Arrival markers have to come back off again. Tiles unmount once they leave
+	// the viewport, so an id left in the set replays its entry animation every
+	// time that tile is panned back into view.
+	function markArrived(ids: string[]): void {
+		if (reducedMotion || ids.length === 0) return;
+		newNodeIds = new Set([...newNodeIds, ...ids]);
+		setTimeout(() => {
+			newNodeIds = new Set([...newNodeIds].filter((id) => !ids.includes(id)));
+		}, 240);
 	}
 
 	async function loadTree(root: Generation, force = false): Promise<void> {
@@ -396,12 +414,7 @@
 				retried: undefined
 			});
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
-			if (!reducedMotion && previousIds.size > 0 && added.length > 0) {
-				newNodeIds = new Set([...newNodeIds, ...added]);
-				setTimeout(() => {
-					newNodeIds = new Set([...newNodeIds].filter((id) => !added.includes(id)));
-				}, 240);
-			}
+			if (previousIds.size > 0) markArrived(added);
 			if (rerun) scheduleTreeLoad(responseRoot.generation, true);
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -506,7 +519,7 @@
 					{ ...generation, has_derivatives: generation.has_derivatives ?? false },
 					...roots.filter((root) => root.id !== generation.id)
 				];
-				if (!reducedMotion) newNodeIds = new Set([...newNodeIds, generation.assets[0].id]);
+				markArrived([generation.assets[0].id]);
 				continue;
 			}
 			for (const [rootId, cached] of treeCache) {
@@ -833,8 +846,10 @@
 		if (
 			restoredViewport?.rootId &&
 			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
-			rootsHaveMore
+			rootsHaveMore &&
+			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES
 		) {
+			anchorSearchPages += 1;
 			void loadRoots();
 			return;
 		}
@@ -1151,6 +1166,7 @@
 		for (const controller of requestControllers) controller.abort();
 		requestControllers.clear();
 		stopInertia();
+		if (initializeFrame) cancelAnimationFrame(initializeFrame);
 		if (recenterTimer) clearTimeout(recenterTimer);
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 	});
