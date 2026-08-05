@@ -102,8 +102,9 @@ The wait is a full generation in the worst queued case, one frame for a realtime
 on a cold start a model download plus calibration, which can be minutes for multi-gigabyte
 weights. Under compose the stop grace period will SIGKILL before a cold-start download
 finishes. That is safe when nothing has been dispatched; a model load inside a
-dispatched job can be killed with work outstanding, and the API's stall sweep
-recovers it.
+dispatched job can be killed with work outstanding. The socket dies with the
+process, so `on_worker_lost` requeues it; the stall sweep covers the different
+case of a worker that stays connected and goes quiet.
 
 The alternative is worse: releasing the lock while the thread is still on the device lets the
 next entrant run concurrently on a GPU the scheduler treats as serialized, which is what the
