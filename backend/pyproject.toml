@@ -16,6 +16,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "boto3>=1.34,<2",
     "jsonschema>=4.21,<5",
+    "referencing>=0.35,<1",  # manifests.py catches Unresolvable directly
 ]
 
 [project.optional-dependencies]

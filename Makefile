@@ -127,6 +127,7 @@ WORKER ?= rocm
 
 api: ## API server on :8000; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
+		ALLOWED_ORIGINS=http://localhost:5173 \
 		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port 8000
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)

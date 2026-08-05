@@ -24,7 +24,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/health` | implemented | process liveness for the load balancer |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented (prototype) | realtime drawing sessions |
-| WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers |
+| WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused |
 | GET `/api/v1/models` | implemented (#11, #15) | registered models with parameter schemas and GPU-time estimates |
 | POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
