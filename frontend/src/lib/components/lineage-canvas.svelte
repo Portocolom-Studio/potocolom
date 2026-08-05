@@ -130,7 +130,6 @@
 	let refreshedImageIds = new Set<string>();
 	let pointerWorld = $state<{ x: number; y: number } | null>(null);
 	let focusedNodeId = $state<string | null>(null);
-	let selectedAssetId = $state<string | null>(null);
 	let selectionOrigin: HTMLButtonElement | null = null;
 	let reducedMotion = false;
 	let recentering = $state(false);
@@ -222,9 +221,9 @@
 		Math.max(0, ...packedTrees.map((packed) => packed.x + packed.layout.width))
 	);
 	const selectedNode = $derived.by(() => {
-		if (selectedAssetId === null) return null;
+		if (studio.lineageSelectedAssetId === null) return null;
 		for (const tree of packedTrees) {
-			const node = tree.layout.nodes.find((item) => item.id === selectedAssetId);
+			const node = tree.layout.nodes.find((item) => item.id === studio.lineageSelectedAssetId);
 			if (node) return node;
 		}
 		return null;
@@ -235,7 +234,7 @@
 			(selectedData?.entry.job_id ? (generationById(selectedData.entry.job_id) ?? null) : null)
 	);
 	const selectedAsset = $derived(
-		selectedGeneration?.assets.find((asset) => asset.id === selectedAssetId) ?? null
+		selectedGeneration?.assets.find((asset) => asset.id === studio.lineageSelectedAssetId) ?? null
 	);
 	const selectedImageUrl = $derived(
 		selectedData !== null && !selectedData.entry.missing ? (selectedAsset?.url ?? null) : null
@@ -254,11 +253,13 @@
 	const canEditSelected = $derived(selectedHasBytes && imageToImageModels.length > 0);
 	const canUpscaleSelected = $derived(selectedHasBytes && upscaleModels.length > 0);
 	const selectedPathEdgeIds = $derived.by(() => {
-		if (selectedAssetId === null) return new Set<string>();
+		if (studio.lineageSelectedAssetId === null) return new Set<string>();
 		const tree = packedTrees.find((item) =>
-			item.layout.nodes.some((node) => node.id === selectedAssetId)
+			item.layout.nodes.some((node) => node.id === studio.lineageSelectedAssetId)
 		);
-		return tree ? lineageAncestorEdgeIds(tree.layout.edges, selectedAssetId) : new Set<string>();
+		return tree
+			? lineageAncestorEdgeIds(tree.layout.edges, studio.lineageSelectedAssetId)
+			: new Set<string>();
 	});
 
 	function rootLayoutNode(root: Generation): LineageLayoutNode<CanvasNodeData> {
@@ -911,7 +912,7 @@
 
 	async function selectNode(data: CanvasNodeData, origin: HTMLButtonElement): Promise<void> {
 		selectionOrigin = origin;
-		selectedAssetId = data.entry.asset_id;
+		studio.lineageSelectedAssetId = data.entry.asset_id;
 		if (data.generation && generationById(data.generation.id) === undefined) {
 			studio.selectedExtra = data.generation;
 		}
@@ -938,8 +939,8 @@
 	}
 
 	function closeInspector(): void {
-		if (selectedAssetId === null) return;
-		selectedAssetId = null;
+		if (studio.lineageSelectedAssetId === null) return;
+		studio.lineageSelectedAssetId = null;
 		studio.selectedId = null;
 		const target = selectionOrigin?.isConnected ? selectionOrigin : viewportEl;
 		selectionOrigin = null;
@@ -947,7 +948,7 @@
 	}
 
 	function onWindowKeyDown(event: KeyboardEvent): void {
-		if (event.key !== 'Escape' || selectedAssetId === null) return;
+		if (event.key !== 'Escape' || studio.lineageSelectedAssetId === null) return;
 		event.preventDefault();
 		closeInspector();
 	}
@@ -1266,7 +1267,8 @@
 						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
 							<g
 								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={selectedAssetId !== null && !selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={studio.lineageSelectedAssetId !== null &&
+									!selectedPathEdgeIds.has(edge.id)}
 							>
 								<path
 									class="lineage-edge"
@@ -1304,7 +1306,7 @@
 						class="lineage-tile"
 						class:is-root={item.isRoot}
 						class:is-dragging={draggedRootId === item.rootId}
-						class:is-selected={selectedAssetId === data.entry.asset_id}
+						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}

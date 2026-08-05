@@ -247,6 +247,12 @@ export const studio = $state({
 	generationPrefill: null as GenerationPrefill | null,
 	lineageViewport: loadLineageViewport(),
 	lineageTreeOffsets: loadLineageTreeOffsets(),
+	// Canvas node selection. It lives here rather than in the canvas component
+	// because leaving the Images section destroys that component, and a node
+	// selected before an Upscale should still be selected on the way back.
+	// Deliberately not written to storage: a reload should open a clean canvas
+	// rather than an inspector pinned to whatever was picked days ago.
+	lineageSelectedAssetId: null as string | null,
 	selectedId: null as string | null, // generation pinned in the viewer
 	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
 	history: [] as Generation[],
