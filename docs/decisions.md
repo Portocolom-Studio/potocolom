@@ -763,6 +763,18 @@ The gallery's primary view is an infinite pannable canvas that lays generation h
 
 Rejected alternatives: a flat grid with a per-image lineage popover (hides the differentiator - the same base re-prompted five ways never becomes visible structure); a force-directed graph (unstable positions destroy the spatial memory a canvas exists to build; tidy trees are deterministic); a canvas or graph rendering library as a new dependency (the interaction set - transform-based pan and zoom, level-of-detail tiles, hover falloff - is already proven in-house by the landing hero field, and d3-hierarchy for layout ships with layerchart).
 
+## Fleet token verification: static shared secret first, signed tokens with the cloud
+
+Applies "The unauthenticated fleet WebSocket is acceptable-by-disclosure on a trusted LAN" to the shipped code, and fixes the order the two halves land in.
+
+`FLEET_TOKEN_KEY` verifies worker tokens on `/api/v1/fleet`. It ships as a static shared secret compared in constant time, which is the whole of what a self-hosted deployment needs: one value in the compose file, present on both the API and the worker. Signed short-lived tokens are the cloud shape, and their minting side lives in the private repository's fleet autoscaler, so the open repository would be verifying signatures no producer creates yet. Verification lands with the autoscaler, not before it.
+
+An unset `FLEET_TOKEN_KEY` leaves the socket open rather than refusing to start. The one-command self-host path is a documented promise, and a hard failure on upgrade would break every existing install that never set the variable. The API logs a warning at startup instead, and the trusted-LAN warning in `README.md` stays until the default flips. Flipping it to closed-by-default is a breaking change and belongs to a release boundary, not to the issue that introduces the setting.
+
+Origin validation is a separate control and not a substitute: it keeps browsers off both sockets, which is what makes the trusted-LAN posture true, but it does nothing about a process on the LAN. That is what the token is for.
+
+Rejected alternatives: shipping signature verification alongside the static secret, which writes a code path with no producer and fixes a token format before the service that mints it exists; refusing to start when the key is unset, which is safe-by-default but breaks the documented `docker compose up` story for existing installs on upgrade; treating the Origin check as sufficient and deferring the token entirely, which leaves any process on the LAN able to register as a worker and receive dispatched prompts.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
