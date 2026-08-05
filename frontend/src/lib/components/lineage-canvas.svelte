@@ -21,7 +21,9 @@
 		// One automatic retry per failure, tracked on the entry rather than per
 		// root: every load replaces the entry, so a later failure gets its own
 		// retry instead of inheriting an exhausted budget from an earlier one.
-		retried?: boolean;
+		// Required, not optional: dropping it from a transition is what made the
+		// retry loop forever, so every entry has to state its budget out loud.
+		retried: boolean | undefined;
 	};
 
 	const sessionTreeCache = new Map<string, CachedTree>();
@@ -388,7 +390,9 @@
 				omittedHistoryJobIds: subtree.truncated
 					? lineageTreeOmittedHistoryJobIds(layout.nodes, studio.history)
 					: new Set(),
-				remainingCountLowerBound: subtree.remaining_count_lower_bound
+				remainingCountLowerBound: subtree.remaining_count_lower_bound,
+				// A load that worked owes nothing, so the next failure starts fresh.
+				retried: undefined
 			});
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (!reducedMotion && previousIds.size > 0 && added.length > 0) {
@@ -410,8 +414,8 @@
 				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0,
 				retried: retained
 			});
-			// A coalesced force is a fresh request, not the automatic retry, so it
-			// leaves this failure's retry budget intact.
+			// A coalesced force is a fresh request rather than this failure's
+			// automatic retry, so it starts with a budget of its own.
 			if (rerun) scheduleTreeLoad(root, true);
 		}
 	}
@@ -470,7 +474,9 @@
 					dirty: false,
 					truncated: false,
 					omittedHistoryJobIds: new Set(),
-					remainingCountLowerBound: 0
+					remainingCountLowerBound: 0,
+					// Nothing was fetched, so there is no failure to budget for.
+					retried: undefined
 				});
 				continue;
 			}
