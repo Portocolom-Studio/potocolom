@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -312,3 +314,115 @@ def test_window_plan_reflects_the_pre_window_measurements() -> None:
     last_control = max(e.priority for e in entries if "control" in e.profile)
     guaranteed = sum(e.estimate_s for e in entries if e.priority <= last_control)
     assert guaranteed < 40 * 3600, f"controls only complete at {guaranteed / 3600:.1f}h"
+
+
+def test_window2_matrix_matches_the_approved_plan() -> None:
+    """98 entries, 206 observations, blocks A B R C D, styles pinned by name."""
+    from worker.illusion_campaign import (
+        WINDOW2_ARMS,
+        WINDOW2_NEGATIVE_PROMPT,
+        build_window2,
+    )
+
+    entries = build_window2()
+    assert len(entries) == 98
+    assert {e.tier for e in entries} == {"window2"}
+
+    blocks = [e.profile.split("_")[0] for e in entries]
+    assert Counter(blocks) == {"a": 36, "b": 8, "r": 6, "c": 36, "d": 12}
+    # Execution order A, B, R, C, D: the factorial that answers both complaints
+    # completes first, and the truncatable tail tests nothing new.
+    assert blocks == sorted(blocks, key="abrcd".index)
+
+    # A forks four Dream arms per base, so 36 bases carry 144 observations and
+    # the 62 single-arm cells carry one each.
+    forked = [e for e in entries if "--dream-arm" in e.flags]
+    assert len(forked) == 36
+    assert all(e.flags.count("--dream-arm") == len(WINDOW2_ARMS) == 4 for e in forked)
+    observations = sum(max(e.flags.count("--dream-arm"), 1) for e in entries)
+    assert observations == 206
+
+    # The first cell is the rig check: window 1's pair, wording, mode and seed,
+    # with only the Dream change. It is marked by profile, not duplicated.
+    first = entries[0]
+    assert first.profile == "a_anchor"
+    assert first.pair_id == "giraffe_penguin_calibration"
+    assert first.seed == 11
+    assert first.style == "reference_sketch"
+    assert first.flags[first.flags.index("--dream-arm") + 1] == "neg_off_indep:indep:off"
+
+    # Only forked bases carry a negative prompt, and it names no medium: the
+    # positive prompt is an HB pencil sketch, and negating that cancels it.
+    assert all((WINDOW2_NEGATIVE_PROMPT in e.flags) == ("--dream-arm" in e.flags) for e in entries)
+    terms = [term.strip() for term in WINDOW2_NEGATIVE_PROMPT.split(",")]
+    for medium in ("pencil", "hb pencil sketch", "pen", "oil", "oil painting"):
+        assert medium not in terms
+
+    # Styles are pinned by identifier: the code has three pencil templates and
+    # only reference_sketch is window 1's validated wording.
+    assert {e.style for e in entries} == {"reference_sketch", "oil"}
+    assert all(e.style == "oil" for e in entries if e.profile.startswith("r_"))
+
+    # One Dream round everywhere except the pinned schedule sentinel, whose
+    # truncation is explicit strengths rather than two spread rounds.
+    for entry in entries:
+        rounds = entry.flags[entry.flags.index("--dream-rounds") + 1]
+        if entry.profile == "b_full_8":
+            assert rounds == "8"
+        elif entry.profile == "b_truncated_2":
+            assert rounds == "2"
+            assert entry.flags.count("--dream-strength") == 2
+            assert "0.821" in entry.flags
+        else:
+            assert rounds == "1"
+
+    # 47.6h against a 58h deadline, with block A costed for its four arms.
+    hours = sum(e.estimate_s for e in entries) / 3600
+    assert 47.0 < hours < 48.0
+
+    # Nothing is planned twice, in any of the three identities that matter.
+    assert len({e.spec_hash() for e in entries}) == 98
+    assert len({e.out_rel for e in entries}) == 98
+    assert len({e.entry_id for e in entries}) == 98
+
+
+def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window2",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    # dry-run asserts unique spec hashes and the expected block count.
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_run_aborts_after_three_consecutive_failures(tmp_path: Path, monkeypatch) -> None:
+    """An unattended window must not spend hours reproducing one failure."""
+    import worker.illusion_campaign as campaign
+
+    plan = campaign.build_phase_plan(
+        phase="window2",
+        # Relative: the driver refuses a /tmp evidence root outright.
+        evidence_root=Path("build/window2-test-evidence"),
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+
+    attempted: list[str] = []
+
+    def fake_run_entry(_plan, entry, **_kwargs):
+        attempted.append(entry.entry_id)
+        return {"entry_id": entry.entry_id, "status": "failed", "out": "missing"}
+
+    monkeypatch.setattr(campaign, "run_entry", fake_run_entry)
+    monkeypatch.setattr(campaign, "git_sha", lambda: plan.git_sha)
+
+    assert campaign.main(["run", "--plan", str(path)]) == 4
+    assert len(attempted) == 3

@@ -12,10 +12,20 @@ mode and the seed, because those are what a comparison could be biased by. The
 prompts are shown because judging prompt-match without them is impossible, and
 knowing the pair cannot bias "did this work".
 
+The stage is hidden too. It used to be printed above the images, which told the
+rater "this is the final" before they looked, and window 2 compares stages.
+
+Final-stage items additionally record the two complaints window 1 could not
+measure: frame/desk/paper-edge artifacts, and whether colour was delivered and
+agreed between the views. They are asked ONLY on final items; four judgments on
+every item would trade score quality for answers nobody needs at SDS-end, and
+window 1 already measured the score drifting down over a long session.
+
 Stdlib only, binds loopback, resumable, and it never overwrites a rating file
 in place: verdicts are appended and the last one for an id wins.
 
     python -m worker.illusion_review --root <runs> --out ratings-pairs.jsonl
+    python -m worker.illusion_review --export-ratings raw.jsonl --out canonical.jsonl
 """
 
 from __future__ import annotations
@@ -30,6 +40,28 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 STAGES = ("final", "dream_d1", "sds_end")
+FRAME_LEVELS = ("none", "minor", "disqualifying")
+YES_NO_NA = ("yes", "no", "na")
+# The pencil templates cannot deliver colour, so the colour questions are N/A
+# there rather than a judgment the rater has to invent.
+MONOCHROME_STYLES = ("pencil", "reference_pencil", "reference_sketch")
+
+
+def questions(stage: str, style: str | None) -> list[str]:
+    """Which fields this item asks for, in the order they are asked."""
+    if stage != "final":
+        return ["score"]
+    asked = ["score", "frame_artifact"]
+    if style not in MONOCHROME_STYLES:
+        asked += ["colour_delivered", "colour_consistent_between_views"]
+    return asked
+
+
+def _views_digest(views: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for view in views:
+        digest.update(view.read_bytes())
+    return digest.hexdigest()
 
 
 def stage_dir(run: Path, stage: str) -> Path | None:
@@ -46,7 +78,11 @@ def stage_dir(run: Path, stage: str) -> Path | None:
 
 
 def collect(root: Path, stages: tuple[str, ...], seed: int) -> list[dict[str, Any]]:
-    """One item per (run, stage), carrying both views and both target subjects."""
+    """One item per (run, stage), carrying both views and both target subjects.
+
+    A forked base's arms each carry their own manifest, so every arm is its own
+    item and the base contributes only the SDS-end state its arms share.
+    """
     items: list[dict[str, Any]] = []
     for manifest_path in sorted(root.rglob("manifest.json")):
         try:
@@ -56,7 +92,10 @@ def collect(root: Path, stages: tuple[str, ...], seed: int) -> list[dict[str, An
         if m.get("status") != "completed":
             continue
         run = manifest_path.parent
-        subjects = m.get("subjects") or m.get("config", {}).get("prompts") or ["?", "?"]
+        config = m.get("config") or {}
+        subjects = m.get("subjects") or config.get("prompts") or ["?", "?"]
+        style = m.get("style_requested") or config.get("style")
+        seen_digests: set[str] = set()
         for stage in stages:
             d = stage_dir(run, stage)
             if d is None:
@@ -64,6 +103,12 @@ def collect(root: Path, stages: tuple[str, ...], seed: int) -> list[dict[str, An
             views = [d / "derived_1.png", d / "derived_2.png"]
             if not all(v.is_file() for v in views):
                 continue
+            # With one Dream round, dream_d1 IS final. Rating the same two images
+            # twice buys nothing and inflates the apparent sample size.
+            digest = _views_digest(views)
+            if digest in seen_digests:
+                continue
+            seen_digests.add(digest)
             # Opaque id: the reviewer must not be able to read mode or seed off it.
             ident = hashlib.sha256(f"{run}|{stage}|{seed}".encode()).hexdigest()[:12]
             items.append(
@@ -72,16 +117,129 @@ def collect(root: Path, stages: tuple[str, ...], seed: int) -> list[dict[str, An
                     "stage": stage,
                     "subject_a": subjects[0],
                     "subject_b": subjects[1] if len(subjects) > 1 else "?",
+                    "ask": questions(stage, style),
                     "paths": [str(v) for v in views],
                     "run_dir": str(run),
                     "pair_id": m.get("pair_id"),
-                    "seed": m.get("config", {}).get("seed"),
-                    "mode": "joint" if m.get("config", {}).get("dream_joint") else "indep",
-                    "sds_steps": m.get("config", {}).get("sds_steps"),
+                    "seed": config.get("seed"),
+                    "mode": "joint" if config.get("dream_joint") else "indep",
+                    "sds_steps": config.get("sds_steps"),
+                    "arm": m.get("dream_arm") or "",
+                    "spec_hash": m.get("spec_hash"),
+                    "style": style,
+                    "negative_prompt": config.get("negative_prompt"),
                 }
             )
     random.Random(seed).shuffle(items)
     return items
+
+
+def public_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the browser receives: enough to judge, and nothing else. The stage is
+    not in here either - it used to be printed above the images, which primed the
+    judgment window 2 needs unprimed."""
+    return [{key: item[key] for key in ("id", "subject_a", "subject_b", "ask")} for item in items]
+
+
+def rating_row(item: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
+    """The recorded verdict: the score plus the complaint fields, with na for
+    every question this item does not ask.
+
+    Keyed for analysis by (spec_hash, stage, arm). spec_hash already covers
+    prompts, style, seed, flags and models, so nothing that distinguishes two
+    cells can be dropped by accident.
+    """
+    asked = set(item["ask"])
+    score = int(answers["score"])
+    if not 0 <= score <= 5:
+        raise ValueError(f"score {score} out of range")
+    frame = answers.get("frame_artifact") if "frame_artifact" in asked else None
+    if frame is not None and frame not in FRAME_LEVELS:
+        raise ValueError(f"frame_artifact must be one of {FRAME_LEVELS}")
+    delivered = consistent = "na"
+    if "colour_delivered" in asked:
+        delivered = answers.get("colour_delivered", "na")
+        if delivered not in YES_NO_NA:
+            raise ValueError(f"colour_delivered must be one of {YES_NO_NA}")
+        if delivered == "yes":
+            # Only meaningful when there was colour to disagree about.
+            consistent = answers.get("colour_consistent_between_views", "na")
+            if consistent not in YES_NO_NA:
+                raise ValueError(f"colour_consistent_between_views must be one of {YES_NO_NA}")
+    return {
+        "id": item["id"],
+        "score": score,
+        "frame_artifact": frame,
+        "colour_delivered": delivered,
+        "colour_consistent_between_views": consistent,
+        "stage": item["stage"],
+        "arm": item["arm"],
+        "spec_hash": item["spec_hash"],
+        "pair_id": item["pair_id"],
+        "seed": item["seed"],
+        "mode": item["mode"],
+        "sds_steps": item["sds_steps"],
+        "style": item["style"],
+        "negative_prompt": item["negative_prompt"],
+        "run_dir": item["run_dir"],
+    }
+
+
+def _run_identity(run_dir: str | None) -> dict[str, Any]:
+    """spec_hash, arm and style from a run's manifest, for rating rows written
+    before those fields were recorded."""
+    if not run_dir:
+        return {}
+    try:
+        manifest = json.loads((Path(run_dir) / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    config = manifest.get("config") or {}
+    return {
+        "spec_hash": manifest.get("spec_hash"),
+        "arm": manifest.get("dream_arm") or "",
+        "style": manifest.get("style_requested") or config.get("style"),
+        "negative_prompt": config.get("negative_prompt"),
+    }
+
+
+def canonical_ratings(path: Path) -> list[dict[str, Any]]:
+    """Last score per id wins, which is what the append-only log has always
+    meant, plus the (spec_hash, stage, arm) analysis key on every row.
+
+    Window 1's mode head-to-head came out 48/58/164 instead of 48/59/163 because
+    an analysis keyed on fewer fields merged a 5k cell with a 10k one. Exporting
+    the key with the row is how that stops recurring.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows[row["id"]] = row
+    canonical: list[dict[str, Any]] = []
+    for row in rows.values():
+        merged = {**_run_identity(row.get("run_dir")), **row}
+        merged["key"] = [merged.get("spec_hash"), merged.get("stage"), merged.get("arm") or ""]
+        canonical.append(merged)
+    return sorted(canonical, key=lambda row: (str(row["key"]), row["id"]))
+
+
+def duplicate_keys(rows: list[dict[str, Any]]) -> list[list[Any]]:
+    """Analysis keys claimed by more than one item, e.g. a re-attempted cell.
+    Reported rather than merged: merging is the defect this exporter exists for.
+    """
+    seen: set[tuple[Any, ...]] = set()
+    duplicates: list[list[Any]] = []
+    for row in rows:
+        key = tuple(row["key"])
+        if key in seen:
+            duplicates.append(list(key))
+        seen.add(key)
+    return duplicates
 
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Illusion review</title>
@@ -108,30 +266,46 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Illusion review</title>
 <header>
  <h1>Illusion review</h1>
  <span class=muted id=progress></span>
- <span class=muted>stage <b id=stage></b></span>
- <span class=muted><kbd>0</kbd>-<kbd>5</kbd> score &middot; <kbd>&larr;</kbd> back
-  &middot; <kbd>s</kbd> skip</span>
+ <span class=muted><kbd>&larr;</kbd> back &middot; <kbd>s</kbd> skip</span>
 </header>
 <div class=bar><div id=fill></div></div>
 <div class=views>
  <figure><img id=v1><figcaption>upright &mdash; should read as <b id=sa></b></figcaption></figure>
  <figure><img id=v2><figcaption>rotated 180 &mdash; should read as <b id=sb></b></figcaption></figure>
 </div>
+<p id=question></p>
 <div class=scores id=scores></div>
-<p class=muted>0 = unusable, 3 = both subjects readable, 5 = would print it.
- Mode and seed are hidden on purpose. Your answer is saved as you go.</p>
+<p class=muted>Stage, mode and seed are hidden on purpose. One key per answer;
+ saved as you go.</p>
 <script>
-let items=[],rated={},i=0;
+let items=[],rated={},i=0,answers={};
 const $=id=>document.getElementById(id);
+const KEYS={
+  score:[['0',0],['1',1],['2',2],['3',3],['4',4],['5',5]],
+  frame_artifact:[['1','none'],['2','minor'],['3','disqualifying']],
+  colour_delivered:[['y','yes'],['n','no']],
+  colour_consistent_between_views:[['y','yes'],['n','no']],
+};
+const LABEL={
+  score:'score: 0 unusable, 3 both subjects readable, 5 would print it',
+  frame_artifact:'frame, desk, hand or paper-edge artifact?',
+  colour_delivered:'is there colour at all?',
+  colour_consistent_between_views:'do both views agree on the colour?',
+};
 async function boot(){
   items=await (await fetch('/api/items')).json();
   rated=await (await fetch('/api/ratings')).json();
   i=items.findIndex(x=>!(x.id in rated)); if(i<0)i=items.length-1;
-  for(let s=0;s<=5;s++){
-    const b=document.createElement('button');
-    b.textContent=s; b.onclick=()=>score(s); b.dataset.s=s; $('scores').append(b);
-  }
   show();
+}
+function pending(){
+  const it=items[i]; if(!it)return null;
+  for(const q of it.ask){
+    if(answers[q]!==undefined)continue;
+    if(q==='colour_consistent_between_views'&&answers.colour_delivered!=='yes')continue;
+    return q;
+  }
+  return null;
 }
 function show(){
   const it=items[i];
@@ -139,24 +313,35 @@ function show(){
   $('v1').src='/img?id='+it.id+'&view=1';
   $('v2').src='/img?id='+it.id+'&view=2';
   $('sa').textContent=it.subject_a; $('sb').textContent=it.subject_b;
-  $('stage').textContent=it.stage;
   const n=Object.keys(rated).length;
-  $('progress').textContent=`${i+1} / ${items.length}  (${n} scored)`;
+  $('progress').textContent=`${i+1} / ${items.length}  (${n} rated)`;
   $('fill').style.width=(100*n/items.length)+'%';
-  for(const b of $('scores').children)
-    b.classList.toggle('on', rated[it.id]!==undefined && String(rated[it.id])===b.dataset.s);
+  const q=pending();
+  $('question').textContent=q?LABEL[q]:'answered - s for the next item';
+  $('scores').replaceChildren();
+  for(const [key,value] of (q?KEYS[q]:[])){
+    const b=document.createElement('button');
+    b.textContent=key+'  '+value;
+    b.onclick=()=>answer(q,value);
+    if(rated[it.id]&&rated[it.id][q]===value)b.classList.add('on');
+    $('scores').append(b);
+  }
 }
-async function score(s){
-  const it=items[i]; if(!it)return;
-  rated[it.id]=s;
+async function answer(q,value){
+  const it=items[i]; if(!it||!q)return;
+  answers[q]=value;
+  rated[it.id]={...(rated[it.id]||{}),...answers};
   await fetch('/api/rate',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({id:it.id,score:s})});
-  if(i<items.length-1)i++; show();
+    body:JSON.stringify({id:it.id,answers:answers})});
+  if(pending()===null)next(); else show();
 }
+function next(){ if(i<items.length-1)i++; answers={}; show(); }
 addEventListener('keydown',e=>{
-  if(e.key>='0'&&e.key<='5')score(+e.key);
-  else if(e.key==='ArrowLeft'){if(i>0)i--;show()}
-  else if(e.key==='ArrowRight'||e.key==='s'){if(i<items.length-1)i++;show()}
+  if(e.key==='ArrowLeft'){if(i>0){i--;answers={}}show();return}
+  if(e.key==='ArrowRight'||e.key==='s'){next();return}
+  const q=pending(); if(!q)return;
+  const hit=KEYS[q].find(pair=>pair[0]===e.key);
+  if(hit)answer(q,hit[1]);
 });
 boot();
 </script>
@@ -165,14 +350,13 @@ boot();
 
 def serve(items: list[dict[str, Any]], out: Path, port: int) -> None:
     by_id = {it["id"]: it for it in items}
-    # The reviewer never receives identity, only what is needed to judge.
-    public = [{k: it[k] for k in ("id", "stage", "subject_a", "subject_b")} for it in items]
+    public = public_items(items)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     def existing() -> dict[str, Any]:
         if not out.is_file():
             return {}
-        scores: dict[str, Any] = {}
+        rows: dict[str, Any] = {}
         for line in out.read_text().splitlines():
             if not line.strip():
                 continue
@@ -180,8 +364,8 @@ def serve(items: list[dict[str, Any]], out: Path, port: int) -> None:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            scores[row["id"]] = row["score"]  # append-only; last wins
-        return scores
+            rows[row["id"]] = row  # append-only; last wins
+        return rows
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str) -> None:
@@ -222,38 +406,49 @@ def serve(items: list[dict[str, Any]], out: Path, port: int) -> None:
             if item is None:
                 self._send(400, b"unknown id", "text/plain")
                 return
-            row = {
-                "id": item["id"],
-                "score": int(payload["score"]),
-                "stage": item["stage"],
-                "pair_id": item["pair_id"],
-                "seed": item["seed"],
-                "mode": item["mode"],
-                "sds_steps": item["sds_steps"],
-                "run_dir": item["run_dir"],
-            }
+            try:
+                row = rating_row(item, payload.get("answers") or {})
+            except (KeyError, TypeError, ValueError) as error:
+                self._send(400, f"bad answers: {error}".encode(), "text/plain")
+                return
             with out.open("a") as handle:
                 handle.write(json.dumps(row) + "\n")
             self._send(200, b"ok", "text/plain")
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"{len(items)} items over stages {sorted({i['stage'] for i in items})}")
-    print(f"already scored: {len(existing())}")
+    print(f"already rated: {len(existing())}")
     print(f"open http://127.0.0.1:{port}/   (Ctrl-C to stop; progress is saved as you go)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"\nstopped. {len(existing())} scored -> {out}")
+        print(f"\nstopped. {len(existing())} rated -> {out}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--root", type=Path, required=True, help="campaign runs directory")
+    ap.add_argument("--root", type=Path, help="campaign runs directory")
     ap.add_argument("--out", type=Path, required=True, help="JSONL to append verdicts to")
+    ap.add_argument(
+        "--export-ratings",
+        type=Path,
+        default=None,
+        help="canonicalize a raw ratings JSONL (last score per id wins) to --out "
+        "instead of serving, with the (spec_hash, stage, arm) key on every row",
+    )
     ap.add_argument("--stages", default="final,dream_d1,sds_end")
     ap.add_argument("--seed", type=int, default=0, help="shuffle seed; also salts the ids")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
+
+    if args.export_ratings is not None:
+        rows = canonical_ratings(args.export_ratings)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        print(json.dumps({"rows": len(rows), "duplicate_keys": duplicate_keys(rows)}, indent=2))
+        return 0
+    if args.root is None:
+        ap.error("--root is required unless --export-ratings is given")
 
     stages = tuple(s.strip() for s in args.stages.split(",") if s.strip())
     unknown = [s for s in stages if s not in STAGES]

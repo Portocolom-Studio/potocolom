@@ -154,7 +154,10 @@ def test_phase_timing_from_sds_end_only(tmp_path: Path, monkeypatch) -> None:
     import worker.illusions as illusions
     from worker.illusions import IllusionResult, PhaseEvent
 
-    def fake_optimize(config, progress=lambda fraction: None, *, on_phase=None, on_checkpoint=None):
+    def fake_optimize(
+        config, progress=lambda fraction: None, *, on_phase=None, on_checkpoint=None, arms=None
+    ):
+        assert arms is None, "the unforked path must not pass arms"
         prime = torch.zeros(1, 3, 8, 8)
         derived = [torch.zeros(1, 3, 8, 8), torch.zeros(1, 3, 8, 8)]
         if on_phase is not None:
@@ -233,6 +236,154 @@ def test_allocate_run_dir_preserves_incomplete(tmp_path: Path) -> None:
     Image.new("RGB", (2, 2), (4, 5, 6)).save(first / "derived_2.png")
     write_manifest_atomic(first / "manifest.json", {"status": "completed"})
     assert resolve_run_out(requested) is None
+
+
+def test_dream_arm_flag_parses_and_refuses_nonsense() -> None:
+    from worker.illusion_experiment import parse_dream_arm
+
+    off = parse_dream_arm("neg_off_indep:indep:off", "watermark")
+    assert off.name == "neg_off_indep"
+    assert off.dream_joint is False
+    assert off.negative_prompt is None
+
+    on = parse_dream_arm("neg_on_joint:joint:on", "watermark")
+    assert on.dream_joint is True
+    assert on.negative_prompt == "watermark"
+
+    for bad in ("name:indep", "name:sideways:off", "name:indep:maybe", "../x:indep:off"):
+        with pytest.raises(ValueError):
+            parse_dream_arm(bad, "watermark")
+    # A negative-on arm with no negative prompt would silently be a duplicate
+    # of the negative-off arm, which is worse than failing.
+    with pytest.raises(ValueError, match="negative-on"):
+        parse_dream_arm("name:indep:on", None)
+
+
+def _textured_png(path: Path) -> None:
+    """A 16px checkerboard: passes the catastrophe floors a flat colour fails."""
+    from PIL import Image
+
+    image = Image.new("L", (16, 16))
+    image.putdata([255 if (x // 2 + y // 2) % 2 else 0 for y in range(16) for x in range(16)])
+    image.convert("RGB").save(path)
+
+
+def test_forked_base_is_complete_only_when_every_arm_is(tmp_path: Path) -> None:
+    from worker.illusion_experiment import degenerate_run
+
+    base = tmp_path / "base"
+    base.mkdir()
+    write_manifest_atomic(
+        base / "manifest.json",
+        {"status": "completed", "arms": ["a", "b"]},
+    )
+    for arm in ("a", "b"):
+        (base / f"arm_{arm}").mkdir()
+    # No images yet: a forked base holds none of its own, so this must not pass.
+    assert is_completed_run(base) is False
+
+    for arm in ("a", "b"):
+        for view in (1, 2):
+            _textured_png(base / f"arm_{arm}" / f"derived_{view}.png")
+    assert is_completed_run(base) is True
+    # The catastrophe brake has to see the arms too, or every forked cell reads
+    # as degenerate and the driver aborts on cell three.
+    assert degenerate_run(base) is False
+
+
+def test_forked_run_writes_one_manifest_and_images_per_arm(tmp_path: Path, monkeypatch) -> None:
+    import torch
+
+    import worker.illusion_experiment as mod
+    import worker.illusions as illusions
+    from worker.illusions import IllusionResult, PhaseEvent
+
+    def fake_optimize(
+        config, progress=lambda fraction: None, *, on_phase=None, on_checkpoint=None, arms=None
+    ):
+        assert arms is not None
+        assert [arm.name for arm in arms] == ["neg_off_indep", "neg_on_joint"]
+        prime = torch.full((1, 3, 8, 8), 0.5)
+        on_phase(PhaseEvent(phase="sds_begin", step=0, wall_s=0.0))
+        on_phase(PhaseEvent(phase="sds_end", step=5000, wall_s=100.0))
+        results = {}
+        for index, arm in enumerate(arms, start=1):
+            shade = 0.1 * index
+            derived = [torch.full((1, 3, 8, 8), shade), torch.full((1, 3, 8, 8), shade + 0.05)]
+            on_phase(PhaseEvent(phase="dream_begin", arm=arm.name, wall_s=100.0 + index))
+            on_phase(PhaseEvent(phase="dream_end", arm=arm.name, wall_s=100.5 + index))
+            on_phase(
+                PhaseEvent(
+                    phase="final",
+                    arm=arm.name,
+                    primes=[prime],
+                    derived=derived,
+                    wall_s=100.5 + index,
+                )
+            )
+            results[arm.name] = IllusionResult(primes=[prime], derived=derived)
+        lead = results[arms[0].name]
+        return IllusionResult(
+            primes=lead.primes,
+            derived=lead.derived,
+            diagnostics={"round_robin_exposures": [0, 0], "conflict": [], "losses": []},
+            arm_results=results,
+        )
+
+    monkeypatch.setattr(illusions, "optimize_illusion", fake_optimize)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(mod, "model_revision", lambda *_: None)
+    monkeypatch.setattr(mod, "gpu_name", lambda: None)
+    monkeypatch.setattr(mod, "peak_vram_mb", lambda: None)
+    monkeypatch.setattr(mod, "package_versions", lambda: {})
+    monkeypatch.setattr(mod, "git_sha", lambda: "test")
+
+    out = tmp_path / "base"
+    args = build_arg_parser().parse_args(
+        [
+            "run",
+            "--pair-id",
+            "wolf_raven",
+            "--style",
+            "reference_sketch",
+            "--device",
+            "cpu",
+            "--skip-clip",
+            "--negative-prompt",
+            "watermark, frame",
+            "--dream-arm",
+            "neg_off_indep:indep:off",
+            "--dream-arm",
+            "neg_on_joint:joint:on",
+            "--out",
+            str(out),
+        ]
+    )
+    assert run_single_experiment(args) == 0
+
+    base = json.loads((out / "manifest.json").read_text())
+    assert base["arms"] == ["neg_off_indep", "neg_on_joint"]
+    assert not (out / "derived_1.png").exists(), "a forked base owns no images"
+    assert base["phase_timings"]["sds_s"] == pytest.approx(100.0)
+
+    off = json.loads((out / "arm_neg_off_indep" / "manifest.json").read_text())
+    on = json.loads((out / "arm_neg_on_joint" / "manifest.json").read_text())
+    for arm_manifest in (off, on):
+        assert arm_manifest["status"] == "completed"
+        assert arm_manifest["arms"] == []
+        # Each arm reports its own timings, so the smoke can check ~40s per arm.
+        assert arm_manifest["phase_timings"]["dream_s"] == pytest.approx(0.5)
+    # An arm's mode and negative state must not be inherited from the base.
+    assert off["dream_arm"] == "neg_off_indep"
+    assert off["config"]["dream_joint"] is False
+    assert off["config"]["negative_prompt"] is None
+    assert on["config"]["dream_joint"] is True
+    assert on["config"]["negative_prompt"] == "watermark, frame"
+    # Both arms carry a rateable image pair, and the base carries none.
+    for arm in ("neg_off_indep", "neg_on_joint"):
+        for view in (1, 2):
+            assert (out / f"arm_{arm}" / f"derived_{view}.png").is_file()
+    assert is_completed_run(out) is True
 
 
 def test_pair_margins_min() -> None:

@@ -290,7 +290,7 @@ together with their target subjects, mode and seed hidden.
 | cell-stages scoring >= 4 | 35/546, 6.4% |
 | runs producing something usable at their best stage | 62/180, 34.4% |
 | pairs reaching a 5 at least once | 15/30 |
-| pairs never producing anything usable | 3/30 |
+| pairs never producing anything usable | 6/30 |
 
 ### The Dream phase's later rounds hurt
 
@@ -310,18 +310,27 @@ best-of-three selection effect. The direction now stands on human ratings
 rather than on a metric artifact, though the magnitude is smaller than that
 retracted claim.
 
-### Dream mode is parity, measured three independent ways
+### Dream mode has no clear global winner
 
 | Evidence | independent | joint |
 |---|---|---|
 | CLIP head-to-head, 90 comparisons | 40 | 50 |
-| human keep rate | 43/270, 15.9% | 50/276, 18.1% |
-| human head-to-head, 270 comparisons | 48 | 58 (164 tied) |
+| human keep rate, 5k only | 43/270, 15.9% | 50/270, 18.5% |
+| human head-to-head, 5k only, 270 comparisons | 48 | 59 (163 tied) |
 | human keepers scoring >= 4 | 19 | 16 |
 
-Neither mode is a default. Per-pair divergence is large and goes both ways, so
-the yield above is only reachable by choosing mode per pair, which is what
-running both as an axis bought.
+These are not three independent measurements: two of them reuse the same human
+labels, and CLIP failed calibration. The conclusion is no clear global winner,
+with useful complementarity: across the 90 pair-seeds, 14 were usable only under
+independent, 20 only under joint, 14 under both, and 42 under neither. Neither
+mode is a default, and the yield above is only reachable by choosing mode per
+pair, which is what running both as an axis bought.
+
+Ratings are canonicalized before any of this is computed: the raw log holds 552
+rows for 546 items because six were re-rated, and the server means last score
+wins. Use `illusion_review --export-ratings`, which also carries the
+`(spec_hash, stage, arm)` key on every row. The head-to-head above reads
+48/58/164 when a key omitting `sds_steps` merges a 5k cell with a 10k one.
 
 ### CLIP is not usable as a screen
 

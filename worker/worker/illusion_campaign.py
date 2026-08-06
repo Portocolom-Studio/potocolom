@@ -372,6 +372,207 @@ def build_window() -> list[CampaignEntry]:
     return entries
 
 
+# --- Window 2: fork the Dream arms from one SDS state --------------------
+#
+# Window 1 measured that SDS is not reproducible on this rig: across its 90
+# (pair, seed) groups the independent and joint arms share their whole SDS
+# configuration and ZERO of 90 SDS-end images are pixel-identical (mean absolute
+# difference 0.3012). A neg-off cell against a neg-on cell therefore compared two
+# SDS states as well as two Dream settings. Block A instead runs SDS once per
+# (pair, style, seed) and forks its four Dream arms from that identical state, so
+# each contrast differs in exactly the thing under test - and costs one SDS phase
+# instead of four.
+WINDOW2_SDS_STEPS = 5_000
+# One Dream round. Window 1's ratings condemned the late rounds, and
+# strength_schedule() would render "2 rounds" as [0.95, 0.05], whose round 2
+# carries old round 8's strength: the very thing that was condemned.
+WINDOW2_DREAM_ROUNDS = 1
+# reference_sketch, spelled out: the code has three pencil templates and only
+# this one is window 1's validated wording (illusions.py STYLE_TEMPLATES).
+WINDOW2_STYLES = ("reference_sketch", "oil")
+WINDOW2_SEEDS = (11, 23, 37)
+WINDOW2_DEPTH_SEED = 53
+# Desired-medium terms are deliberately absent: the positive prompt is an "hb
+# pencil sketch", and Perp-Neg reports ordinary negative prompting failing when
+# the positive and negative concepts overlap.
+WINDOW2_NEGATIVE_PROMPT = (
+    "hand, fingers, desk, table, paper edge, torn paper, frame, border, "
+    "sketchbook, watermark, signature, text, photograph of a drawing"
+)
+# The four Dream arms of one base: {negative off, on} x {independent, joint}.
+# Independent and neg-off comes first, so arm 1 of cell 1 is window 1's
+# configuration with only the Dream-round change.
+WINDOW2_ARMS: tuple[tuple[str, str, str], ...] = (
+    ("neg_off_indep", "indep", "off"),
+    ("neg_on_indep", "indep", "on"),
+    ("neg_off_joint", "joint", "off"),
+    ("neg_on_joint", "joint", "on"),
+)
+# From campaigns/window/review/corpus-decisions.json.
+WINDOW2_PROVEN = (
+    "giraffe_penguin_calibration",
+    "moose_butterfly",
+    "eagle_phoenix",
+    "elephant_swan",
+    "wolf_raven",
+    "deer_turtle",
+)
+WINDOW2_SENTINEL_PAIRS = (
+    "giraffe_penguin_calibration",
+    "moose_butterfly",
+    "wolf_raven",
+    "elephant_swan",
+)
+WINDOW2_RESCUE = ("koi_moon", "galleon_whale", "hummingbird_fuchsia")
+WINDOW2_REST = (
+    "ballerina_leaf",
+    "bear_salmon",
+    "crown_octopus",
+    "dog_sloth",
+    "fox_rabbit",
+    "gown_jellyfish",
+    "heron_swan",
+    "horse_wave",
+    "lighthouse_goblet",
+    "locomotive_eye_control",
+    "mountain_valley",
+    "octopus_camel",
+    "penguin_bat",
+    "pine_chandelier",
+    "rabbit_fox",
+    "squirrel_pelican",
+    "stag_oak",
+    "volcano_bouquet",
+)
+# Genuine truncation of window 1's eight-round schedule, as explicit strengths:
+# its first two values, not two rounds spread across the same endpoints.
+WINDOW2_TRUNCATED_STRENGTHS = ("0.95", "0.821")
+WINDOW2_FULL_DREAM_ROUNDS = 8
+# 1,608s SDS + 4 x 40s arm + 60s overhead for a forked base; single-arm cells
+# carry the same SDS phase with one Dream round, and B's cells are costed for
+# their own schedules rather than as one-round cells.
+WINDOW2_BASE_ESTIMATE_S = 1_828.0
+WINDOW2_CELL_ESTIMATE_S = 1_690.0
+WINDOW2_TRUNCATED_ESTIMATE_S = 1_713.0
+WINDOW2_FULL_DREAM_ESTIMATE_S = 1_841.0
+
+
+def _window2_flags(
+    *,
+    dream_joint: bool = False,
+    dream_rounds: int = WINDOW2_DREAM_ROUNDS,
+    strengths: tuple[str, ...] = (),
+    arms: tuple[tuple[str, str, str], ...] = (),
+) -> list[str]:
+    flags = [
+        "--experimental-recipe",
+        "author_reference",
+        "--collect-diagnostics",
+        "--skip-clip",
+        "--sds-steps",
+        str(WINDOW2_SDS_STEPS),
+        "--dream-rounds",
+        str(dream_rounds),
+    ]
+    for strength in strengths:
+        flags += ["--dream-strength", strength]
+    if dream_joint:
+        flags.append("--dream-joint")
+    if arms:
+        # Only forked bases carry a negative prompt, so every unforked cell is
+        # window 1's recipe with one Dream round and nothing else changed.
+        flags += ["--negative-prompt", WINDOW2_NEGATIVE_PROMPT]
+        for name, mode, negative in arms:
+            flags += ["--dream-arm", f"{name}:{mode}:{negative}"]
+    return flags
+
+
+def build_window2() -> list[CampaignEntry]:
+    """98 entries producing 206 observations, in execution order A, B, R, C, D.
+
+    Order is deliberate: the factorial that answers both review complaints
+    completes first, the schedule sentinel and the oil rescue next, and the
+    truncatable tail is the breadth block then the depth block, which test
+    nothing new.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+
+    def add(
+        *, profile: str, pair_id: str, seed: int, flags: list[str], style: str, estimate_s: float
+    ) -> None:
+        nonlocal priority
+        entries.append(
+            _entry(
+                tier="window2",
+                profile=profile,
+                pair_id=pair_id,
+                seed=seed,
+                flags=flags,
+                priority=priority,
+                style=style,
+                estimate_s=estimate_s,
+            )
+        )
+        priority += 1
+
+    # A: 6 proven pairs x 2 styles x 3 seeds, four forked Dream arms each.
+    for seed in WINDOW2_SEEDS:
+        for style in WINDOW2_STYLES:
+            for pair_id in WINDOW2_PROVEN:
+                anchor = (
+                    pair_id == WINDOW2_PROVEN[0]
+                    and style == WINDOW2_STYLES[0]
+                    and seed == WINDOW2_SEEDS[0]
+                )
+                add(
+                    profile="a_anchor" if anchor else f"a_forked_{style}",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window2_flags(arms=WINDOW2_ARMS),
+                    style=style,
+                    estimate_s=WINDOW2_BASE_ESTIMATE_S,
+                )
+
+    # B: Dream schedule sentinel, fully pinned: reference_sketch, neg off,
+    # independent, seed 11. Truncation first, then the full eight rounds.
+    sentinel: tuple[tuple[str, int, tuple[str, ...], float], ...] = (
+        ("b_truncated_2", 2, WINDOW2_TRUNCATED_STRENGTHS, WINDOW2_TRUNCATED_ESTIMATE_S),
+        ("b_full_8", WINDOW2_FULL_DREAM_ROUNDS, (), WINDOW2_FULL_DREAM_ESTIMATE_S),
+    )
+    for profile, rounds, strengths, estimate in sentinel:
+        for pair_id in WINDOW2_SENTINEL_PAIRS:
+            add(
+                profile=profile,
+                pair_id=pair_id,
+                seed=WINDOW2_SEEDS[0],
+                flags=_window2_flags(dream_rounds=rounds, strengths=strengths),
+                style=WINDOW2_STYLES[0],
+                estimate_s=estimate,
+            )
+
+    # R, C, D: single-arm cells, independent mode first so a window cut short
+    # keeps the validated mode.
+    tail: tuple[tuple[str, tuple[str, ...], str, int], ...] = (
+        ("r_oil", WINDOW2_RESCUE, "oil", WINDOW2_SEEDS[0]),
+        ("c", WINDOW2_REST, WINDOW2_STYLES[0], WINDOW2_SEEDS[0]),
+        ("d", WINDOW2_PROVEN, WINDOW2_STYLES[0], WINDOW2_DEPTH_SEED),
+    )
+    for block, pairs, style, seed in tail:
+        for joint in (False, True):
+            for pair_id in pairs:
+                add(
+                    profile=f"{block}_{'joint' if joint else 'indep'}",
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window2_flags(dream_joint=joint),
+                    style=style,
+                    estimate_s=WINDOW2_CELL_ESTIMATE_S,
+                )
+
+    return entries
+
+
 def build_reference_author_60h() -> list[CampaignEntry]:
     """36-cell breadth-first author-recipe matrix for the unattended window."""
     pair_seeds: dict[str, tuple[int, ...]] = {
@@ -834,6 +1035,12 @@ def run_entry(
                 time.sleep(1.0)
             if rc == 0:
                 status["status"] = "completed"
+                # Exit 0 is the cell's own opinion. The evidence is the manifest
+                # and both derived images (every arm's, for a forked base), so
+                # validate them here rather than discovering it at review time.
+                if not is_completed_matching(out, plan.git_sha, spec, identity):
+                    status["status"] = "failed"
+                    status["error"] = "invalid_output"
             elif rc == BUSY_EXIT_CODE:
                 status["status"] = "busy"
                 status["exit_code"] = rc
@@ -938,6 +1145,8 @@ def build_phase_plan(
         entries = build_reference_author_60h()
     elif phase == "window":
         entries = build_window()
+    elif phase == "window2":
+        entries = build_window2()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -954,7 +1163,7 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "window", "early-dream-backup")
+            if phase in ("reference60h", "window", "window2", "early-dream-backup")
             else _blocked_rotated(entries)
         ),
     )
@@ -1025,7 +1234,15 @@ def main(argv: list[str] | None = None) -> int:
     plan_cmd.add_argument("--dream-model", default="lykon/dreamshaper-8-lcm")
     plan_cmd.add_argument(
         "--phase",
-        choices=("wave1", "wave2", "away", "reference60h", "window", "early-dream-backup"),
+        choices=(
+            "wave1",
+            "wave2",
+            "away",
+            "reference60h",
+            "window",
+            "window2",
+            "early-dream-backup",
+        ),
         required=True,
     )
     plan_cmd.add_argument("--base-selection", default="legacy")
@@ -1048,6 +1265,14 @@ def main(argv: list[str] | None = None) -> int:
         metavar="I/K",
         help="run only entries at positions congruent to I modulo K, so K "
         "drivers can share one immutable plan. Pair with POTOCOLOM_GPU_SLOTS=K.",
+    )
+    run.add_argument(
+        "--abort-after-failed",
+        type=int,
+        default=3,
+        help="stop and exit nonzero after this many consecutive failed or "
+        "timed-out cells (0 disables). An unattended window must not spend "
+        "hours reproducing the same failure.",
     )
     run.add_argument(
         "--abort-after-dead",
@@ -1122,6 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("early_dream_backup", 0) not in (0, 48):
             print("FAIL: early_dream_backup expected 48", file=sys.stderr)
             return 1
+        if counts.get("window2", 0) not in (0, 98):
+            print(f"FAIL: window2 expected 98 got {counts.get('window2')}", file=sys.stderr)
+            return 1
         print("dry-run ok")
         return 0
 
@@ -1141,6 +1369,7 @@ def main(argv: list[str] | None = None) -> int:
         started = time.monotonic()
         n = 0
         dead_streak = 0
+        fail_streak = 0
         pending = list(plan.entries)
         if args.shard is not None:
             index, count = args.shard
@@ -1168,6 +1397,19 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(args.cooldown_s)
                 pending.insert(0, entry)
                 continue
+            if result.get("status") in ("failed", "timeout"):
+                fail_streak += 1
+                print(f"cell {result.get('status')} {fail_streak}/{args.abort_after_failed}")
+                if args.abort_after_failed and fail_streak >= args.abort_after_failed:
+                    print(
+                        f"ABORT: {fail_streak} consecutive cells failed or timed out. "
+                        f"Stopping so an unattended window does not spend hours "
+                        f"reproducing the same failure.",
+                        file=sys.stderr,
+                    )
+                    return 4
+            else:
+                fail_streak = 0
             if args.abort_after_dead and result.get("status") == "completed":
                 if degenerate_run(Path(str(result.get("out")))):
                     dead_streak += 1

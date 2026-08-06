@@ -385,16 +385,8 @@ def write_manifest_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def is_completed_run(run_dir: Path) -> bool:
-    manifest_path = run_dir / "manifest.json"
-    if not manifest_path.is_file():
-        return False
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except json.JSONDecodeError:
-        return False
-    if manifest.get("status") != "completed":
-        return False
+def has_usable_views(run_dir: Path) -> bool:
+    """Both derived views exist and are not a single flat colour."""
     d1 = run_dir / "derived_1.png"
     d2 = run_dir / "derived_2.png"
     if not d1.is_file() or not d2.is_file():
@@ -411,6 +403,24 @@ def is_completed_run(run_dir: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def is_completed_run(run_dir: Path) -> bool:
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError:
+        return False
+    if manifest.get("status") != "completed":
+        return False
+    # A forked base holds no images of its own: its arms do, and the base is
+    # only complete when every arm it promised is.
+    arms = manifest.get("arms") or []
+    if arms:
+        return all(has_usable_views(run_dir / f"arm_{arm}") for arm in arms)
+    return has_usable_views(run_dir)
 
 
 # Catastrophe floors for a derived image: a near-constant field, i.e. the
@@ -507,7 +517,8 @@ def degenerate_run(run_dir: Path) -> bool:
     nothing at all, which is what wasted the SDXL pilot night. It cannot and
     does not judge whether a formed image is a good illusion.
     """
-    derived = sorted(run_dir.glob("derived_*.png"))
+    # A forked base's images live in its arm directories.
+    derived = sorted(run_dir.glob("derived_*.png")) or sorted(run_dir.glob("arm_*/derived_*.png"))
     if not derived:
         return True
     for path in derived:
@@ -1563,6 +1574,8 @@ def _build_illusion_config(args: argparse.Namespace):
         "dream_rounds": _or_default(args.dream_rounds, 8),
         "dream_steps": _or_default(args.dream_steps, 300),
         "dream_joint": args.dream_joint,
+        # Dream/SDEdit only. Forked arms override this per arm.
+        "negative_prompt": args.negative_prompt,
         "sds_lr": args.sds_lr,
         "dream_lr": args.dream_lr,
         "learning_rate": 1e-3,
@@ -1610,6 +1623,35 @@ def _build_illusion_config(args: argparse.Namespace):
     return IllusionConfig(**kwargs), effective_prompts, subjects, style_requested
 
 
+def parse_dream_arm(text: str, negative_prompt: str | None) -> Any:
+    """Parse ``NAME:MODE:NEG`` into a ``DreamArm``.
+
+    MODE is indep|joint, NEG is on|off, and "on" means this arm uses the run's
+    ``--negative-prompt``. A fixed vocabulary rather than a free string per arm:
+    the arms of one base must differ only in the factors under test, and NAME
+    becomes a directory, so it stays alphanumeric.
+    """
+    from worker.illusions import DreamArm
+
+    parts = text.split(":")
+    if len(parts) != 3:
+        raise ValueError(f"--dream-arm wants NAME:MODE:NEG, got {text!r}")
+    name, mode, negative = parts
+    if not name or not name.replace("_", "").isalnum():
+        raise ValueError(f"--dream-arm name must be alphanumeric/underscore, got {name!r}")
+    if mode not in ("indep", "joint"):
+        raise ValueError(f"--dream-arm mode must be indep or joint, got {mode!r}")
+    if negative not in ("on", "off"):
+        raise ValueError(f"--dream-arm negative must be on or off, got {negative!r}")
+    if negative == "on" and not negative_prompt:
+        raise ValueError(f"--dream-arm {name} is negative-on but --negative-prompt is unset")
+    return DreamArm(
+        name=name,
+        dream_joint=mode == "joint",
+        negative_prompt=negative_prompt if negative == "on" else None,
+    )
+
+
 def run_single_experiment(args: argparse.Namespace) -> int:
     import torch
 
@@ -1617,6 +1659,9 @@ def run_single_experiment(args: argparse.Namespace) -> int:
 
     if args.sds_objective == "csd" and args.sds_guidance is not None:
         raise ValueError("CSD does not accept --sds-guidance")
+    arms = [parse_dream_arm(text, args.negative_prompt) for text in (args.dream_arm or [])]
+    if len({arm.name for arm in arms}) != len(arms):
+        raise ValueError("--dream-arm names must be unique")
     requested = Path(args.out)
     out = resolve_run_out(requested)
     if out is None:
@@ -1673,6 +1718,7 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         "package_versions": package_versions(),
         "model_ids": model_ids,
         "config": asdict(config) if hasattr(config, "__dataclass_fields__") else {},
+        "arms": [arm.name for arm in arms],
         "phase_timings": {},
         "peak_vram_mb": None,
         "checkpoints": {},
@@ -1680,9 +1726,14 @@ def run_single_experiment(args: argparse.Namespace) -> int:
     write_manifest_atomic(out / "manifest.json", manifest)
 
     phase_timings: dict[str, float] = {}
-    checkpoint_summaries: dict[str, Any] = {}
+    # Keyed by arm name, with "" for the shared SDS phase and for unforked runs.
+    checkpoint_summaries: dict[str, dict[str, Any]] = {}
     phase_wall: dict[str, float | None] = {"sds_end": None, "dream_begin": None, "dream_end": None}
+    arm_wall: dict[str, dict[str, float]] = {}
     t0 = time.perf_counter()
+
+    def arm_out(arm: str | None) -> Path:
+        return out if arm is None else out / f"arm_{arm}"
 
     def _clip_entry(derived) -> dict[str, Any] | None:
         if clip_model is None or len(derived) < 2 or len(prompts) < 2:
@@ -1706,16 +1757,19 @@ def run_single_experiment(args: argparse.Namespace) -> int:
 
     def on_phase(event: Any) -> None:
         phase = event.phase
+        arm = getattr(event, "arm", None)
         # Phase boundaries: record wall clocks even when no images are saved.
         if phase in phase_wall:
             phase_wall[phase] = event.wall_s
+            if arm is not None and event.wall_s is not None:
+                arm_wall.setdefault(arm, {})[phase] = float(event.wall_s)
             return
         # sds_begin carries no images and is not an image checkpoint.
         if phase == "sds_begin" or event.derived is None:
             return
 
         step = event.step
-        ck_dir = out / f"ckpt_{phase}"
+        ck_dir = arm_out(arm) / f"ckpt_{phase}"
         ck_dir.mkdir(parents=True, exist_ok=True)
         for index, prime in enumerate(event.primes or [], start=1):
             save_image(prime, ck_dir / f"prime_{index}.png")
@@ -1754,14 +1808,14 @@ def run_single_experiment(args: argparse.Namespace) -> int:
                     (row.get("norm") for row in grad_norms if row.get("step") == step),
                     None,
                 )
-        checkpoint_summaries[phase] = entry
+        checkpoint_summaries.setdefault(arm or "", {})[phase] = entry
         write_manifest_atomic(ck_dir / "scores.json", entry)
 
     def progress(fraction: float) -> None:
         print(f"\rprogress {fraction:6.1%}", end="", flush=True)
 
     try:
-        result = optimize_illusion(config, progress=progress, on_phase=on_phase)
+        result = optimize_illusion(config, progress=progress, on_phase=on_phase, arms=arms or None)
         print()
         total_s = time.perf_counter() - t0
         sds_end_wall = phase_wall["sds_end"]
@@ -1775,31 +1829,21 @@ def run_single_experiment(args: argparse.Namespace) -> int:
         phase_timings["dream_s"] = dream_s
         phase_timings["total_s"] = total_s
 
-        for index, prime in enumerate(result.primes, start=1):
-            save_image(prime, out / f"prime_{index}.png")
-        for index, image in enumerate(result.derived, start=1):
-            save_image(image, out / f"derived_{index}.png")
+        def _final_entry(derived: list[Any], wall_s: float) -> dict[str, Any]:
+            entry: dict[str, Any] = {"wall_s": wall_s}
+            clip_scores = _clip_entry(derived)
+            if clip_scores is not None:
+                entry.update(clip_scores)
+            return entry
 
-        final_entry: dict[str, Any] = {"wall_s": phase_timings["total_s"]}
-        if clip_model is not None and len(result.derived) >= 2 and len(prompts) >= 2:
-            sims = clip_similarity_matrix(
-                result.derived[:2],
-                prompts[:2],
-                model=clip_model,
-                processor=clip_processor,
-                device="cpu",
-            )
-            margins, score = pair_margins(sims)
-            warn_low_clip_margins(margins)
-            final_entry.update(
-                {
-                    "clip_model_id": CLIP_MODEL_ID,
-                    "clip_model_revision": clip_revision,
-                    "clip_matrix": sims,
-                    "clip_margins": margins,
-                    "clip_pair_score": score,
-                }
-            )
+        # A forked base owns the shared SDS checkpoints only; each arm's images
+        # and manifest live in its own directory, so review and analysis see one
+        # observation per arm.
+        if not arms:
+            for index, prime in enumerate(result.primes, start=1):
+                save_image(prime, out / f"prime_{index}.png")
+            for index, image in enumerate(result.derived, start=1):
+                save_image(image, out / f"derived_{index}.png")
 
         manifest.update(
             {
@@ -1807,8 +1851,8 @@ def run_single_experiment(args: argparse.Namespace) -> int:
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "phase_timings": phase_timings,
                 "peak_vram_mb": peak_vram_mb(),
-                "checkpoints": checkpoint_summaries,
-                "final": final_entry,
+                "checkpoints": checkpoint_summaries.get("", {}),
+                "final": _final_entry([] if arms else result.derived, phase_timings["total_s"]),
                 "diagnostics": {
                     "round_robin_exposures": result.diagnostics.get("round_robin_exposures"),
                     "conflict": result.diagnostics.get("conflict"),
@@ -1816,6 +1860,34 @@ def run_single_experiment(args: argparse.Namespace) -> int:
                 },
             }
         )
+        for arm in arms:
+            arm_result = result.arm_results[arm.name]
+            arm_dir = arm_out(arm.name)
+            arm_dir.mkdir(parents=True, exist_ok=True)
+            for index, prime in enumerate(arm_result.primes, start=1):
+                save_image(prime, arm_dir / f"prime_{index}.png")
+            for index, image in enumerate(arm_result.derived, start=1):
+                save_image(image, arm_dir / f"derived_{index}.png")
+            walls = arm_wall.get(arm.name, {})
+            dream_s = max(walls.get("dream_end", 0.0) - walls.get("dream_begin", 0.0), 0.0)
+            write_manifest_atomic(
+                arm_dir / "manifest.json",
+                {
+                    **manifest,
+                    "arms": [],
+                    "dream_arm": arm.name,
+                    # The arm's own settings, so a rating row cannot inherit the
+                    # base's mode or negative state.
+                    "config": {
+                        **manifest["config"],
+                        "dream_joint": arm.dream_joint,
+                        "negative_prompt": arm.negative_prompt,
+                    },
+                    "checkpoints": checkpoint_summaries.get(arm.name, {}),
+                    "final": _final_entry(arm_result.derived, dream_s),
+                    "phase_timings": {**phase_timings, "dream_s": dream_s},
+                },
+            )
         write_manifest_atomic(out / "manifest.json", manifest)
         print(f"wrote experiment to {out} (peak_vram_mb={manifest['peak_vram_mb']})")
         return 0
@@ -1827,7 +1899,7 @@ def run_single_experiment(args: argparse.Namespace) -> int:
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "phase_timings": phase_timings,
                 "peak_vram_mb": peak_vram_mb(),
-                "checkpoints": checkpoint_summaries,
+                "checkpoints": checkpoint_summaries.get("", {}),
             }
         )
         write_manifest_atomic(out / "manifest.json", manifest)
@@ -1956,6 +2028,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="explicit Dream strength; repeat to replace the generated schedule",
     )
     run.add_argument("--dream-joint", action="store_true")
+    run.add_argument(
+        "--negative-prompt",
+        default=None,
+        help="negative prompt for the Dream/SDEdit phase only; SDS stays untouched",
+    )
+    run.add_argument(
+        "--dream-arm",
+        action="append",
+        default=[],
+        metavar="NAME:MODE:NEG",
+        help="fork the Dream phase from one SDS state; repeatable. MODE is "
+        "indep|joint, NEG is on|off (on uses --negative-prompt). Each arm "
+        "writes arm_NAME/ with its own manifest.",
+    )
     run.add_argument("--sqrt-timestep-anneal", action="store_true")
     run.add_argument(
         "--hifa-schedule",

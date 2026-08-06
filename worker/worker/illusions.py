@@ -46,9 +46,14 @@ class PhaseEvent:
 
     phase examples: sds_begin, sds_0060, sds_end, dream_begin, dream_round_01,
     dream_end, final.
+
+    arm names the Dream arm the event belongs to when the Dream phase was
+    forked from one SDS state; it is None for the shared SDS phase and for
+    unforked runs.
     """
 
     phase: str
+    arm: str | None = None
     step: int | None = None
     round: int | None = None
     strength: float | None = None
@@ -980,13 +985,27 @@ class DiffusionAdapter:
             return add_training_noise(latent, noise, timesteps, alphas)
         return self.scheduler.add_noise(latent, noise, timesteps)
 
-    def sdedit(self, image: Tensor, prompt: str, strength: float, generator) -> Tensor:
+    def sdedit(
+        self,
+        image: Tensor,
+        prompt: str,
+        strength: float,
+        generator,
+        *,
+        negative_prompt: str | None = None,
+    ) -> Tensor:
         """SDEdit img2img: noise the derived image and denoise it toward
-        the prompt, producing a Dream Target (paper 3.3.2)."""
+        the prompt, producing a Dream Target (paper 3.3.2).
+
+        negative_prompt is ordinary sampling CFG at the Dream guidance of 2.0.
+        None is the pipeline's own default, so an unset negative prompt is the
+        pre-window-2 call.
+        """
         strength = max(strength, 0.05)
         with torch.no_grad():
             result = self.img2img(
                 prompt=prompt,
+                negative_prompt=negative_prompt,
                 image=image.to(self.dtype),
                 strength=strength,
                 num_inference_steps=sdedit_steps(self.dream_inference_steps, strength),
@@ -1013,8 +1032,30 @@ class DiffusionAdapter:
                 self.dream_embeddings[prompt] = (torch.cat([uncond, cond]), pooled)
         return self.dream_embeddings[prompt]
 
+    def _dream_embed_cfg(
+        self, prompt: str, negative_prompt: str | None
+    ) -> tuple[Tensor, Tensor | None]:
+        """[uncond, cond] for the Dream UNet, with the negative prompt taking
+        the unconditional slot when one is set. That is what a diffusers
+        pipeline does for `negative_prompt`, and it keeps the two-chunk batch
+        `sdedit_joint` already runs, so a negative arm costs no extra UNet time."""
+        hidden, pooled = self._dream_embed(prompt)
+        if negative_prompt is None:
+            return hidden, pooled
+        neg_hidden, neg_pooled = self._dream_embed(negative_prompt)
+        combined = torch.cat([neg_hidden[1:], hidden[1:]])
+        if pooled is None or neg_pooled is None:
+            return combined, None
+        return combined, torch.cat([neg_pooled[1:], pooled[1:]])
+
     def sdedit_joint(
-        self, views: list[Tensor], prompts: list[str], strength: float, generator
+        self,
+        views: list[Tensor],
+        prompts: list[str],
+        strength: float,
+        generator,
+        *,
+        negative_prompt: str | None = None,
     ) -> list[Tensor]:
         """Joint SDEdit for the flip illusion (issue #134): denoise both
         views together, reconciling their predicted images at every step so
@@ -1071,7 +1112,7 @@ class DiffusionAdapter:
                 predictions = []
                 for latent, prompt, scheduler in zip(latents, prompts, schedulers, strict=True):
                     model_in = scheduler.scale_model_input(torch.cat([latent, latent]), timestep)
-                    hidden, pooled = self._dream_embed(prompt)
+                    hidden, pooled = self._dream_embed_cfg(prompt, negative_prompt)
                     added = None
                     if pooled is not None:
                         added = {
@@ -1134,6 +1175,11 @@ class IllusionConfig:
     # joint targets (issue #134): flip only - rotate/hidden views are
     # overlays of several primes, not orthogonal transforms of one image
     dream_joint: bool = False
+    # Dream/SDEdit only, where guidance is 2.0. Deliberately NOT routed into
+    # SDS: replacing the unconditional branch of a guidance-60 weighted-SDS
+    # gradient gives the negative term coefficient 5.9 against the positive
+    # 6.0, which needs its own scaled perpendicular pilot rather than a flag.
+    negative_prompt: str | None = None
     dream_steps: int = 300
     # None means "use learning_rate"; explicit values override per phase.
     sds_lr: float | None = None
@@ -1167,11 +1213,28 @@ class IllusionConfig:
         ]
 
 
+@dataclass(frozen=True)
+class DreamArm:
+    """One Dream phase to run from the shared SDS state.
+
+    Only settings that act inside phase 2 belong here: anything earlier would
+    make the arms of a base incomparable, which is the whole point of forking.
+    """
+
+    name: str
+    dream_joint: bool = False
+    negative_prompt: str | None = None
+
+
 @dataclass
 class IllusionResult:
     primes: list[Tensor]
     derived: list[Tensor]
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    # Per-arm results when the Dream phase was forked; empty otherwise. The
+    # top-level primes/derived are the first arm's, so single-arm callers see
+    # exactly what they saw before forking existed.
+    arm_results: dict[str, "IllusionResult"] = field(default_factory=dict)
 
 
 def targets_for(config: IllusionConfig, spec: IllusionSpec) -> list[str | Tensor]:
@@ -1208,8 +1271,14 @@ def optimize_illusion(
     *,
     on_phase: PhaseFn | None = None,
     on_checkpoint: CheckpointFn | None = None,
+    arms: Sequence[DreamArm] | None = None,
 ) -> IllusionResult:
-    """Run both optimization phases and return primes and derived images."""
+    """Run both optimization phases and return primes and derived images.
+
+    arms forks the Dream phase: SDS runs once, and each arm restores the
+    SDS-end state before running its own Dream phase, so arms differ in exactly
+    the settings under test. None keeps the single unforked Dream phase.
+    """
     import time as _time
 
     if config.sds_objective not in SDS_OBJECTIVES:
@@ -1298,8 +1367,18 @@ def optimize_illusion(
         else None
     )
 
+    arm_list = (
+        [DreamArm(name="", dream_joint=config.dream_joint, negative_prompt=config.negative_prompt)]
+        if arms is None
+        else list(arms)
+    )
+    if not arm_list:
+        raise ValueError("arms must not be empty")
+    if len({arm.name for arm in arm_list}) != len(arm_list):
+        raise ValueError("dream arm names must be unique")
+
     dream_rounds = len(config.strength_schedule())
-    total = sds_iterations + dream_rounds * config.dream_steps
+    total = sds_iterations + len(arm_list) * dream_rounds * config.dream_steps
     done = 0
     low_res_steps = int(config.sds_steps * config.sds_low_res_fraction)
     diagnostics: dict[str, Any] = {
@@ -1496,105 +1575,168 @@ def optimize_illusion(
         )
     )
 
+    # The img2img swap is a one-time transition, not per-arm state: repeating it
+    # would reload the Dream checkpoint and invalidate its embedding cache.
     adapter.begin_dream_phase()
-    optimizer = torch.optim.Adam(parameters, lr=dream_lr)
-    emit(
-        PhaseEvent(
-            phase="dream_begin",
-            wall_s=_time.perf_counter() - t_wall0,
-            diagnostics=diagnostics,
-        )
-    )
 
-    joint = (
-        config.dream_joint
-        and config.illusion == "flip"
-        and all(isinstance(target, str) for target in targets)
-    )
+    # Everything phase 1 mutates that a Dream arm reads. The prime networks ARE
+    # the optimization state; the SDS optimizer is not snapshotted because the
+    # phase boundary already discards it in favour of a fresh Adam.
+    sds_weights = [
+        {name: value.detach().clone() for name, value in network.state_dict().items()}
+        for network in networks
+    ]
+    sds_cpu_rng = torch.get_rng_state()
+    sds_cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    sds_generator_rng = generator.get_state()
+
     dream_save_rounds = {1, 4, 8}
-    for round_index, strength in enumerate(config.strength_schedule(), start=1):
-        dream_targets: list[Tensor] = []
-        with torch.no_grad():
-            current = render_derived(RESOLUTION)
-        if joint:
-            prompts = [target for target in targets if isinstance(target, str)]
-            dream_targets = adapter.sdedit_joint(current, prompts, strength, generator)
-        else:
-            for derived, target in zip(current, targets, strict=True):
-                if isinstance(target, str):
-                    dream_targets.append(adapter.sdedit(derived, target, strength, generator))
-                else:
-                    dream_targets.append(target.to(config.device))
 
-        loss_start_t = torch.zeros((), device=config.device)
-        with torch.no_grad():
-            for derived, dream, weight in zip(
-                render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
-            ):
-                loss_start_t = loss_start_t + weight * image_similarity_loss(derived, dream)
-        loss_start = float(loss_start_t.item())
-        loss_end = loss_start
-        for _ in range(config.dream_steps):
-            optimizer.zero_grad()
-            loss = torch.zeros((), device=config.device)
-            for derived, dream, weight in zip(
-                render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
-            ):
-                loss = loss + weight * image_similarity_loss(derived, dream)
-            loss.backward()
-            optimizer.step()
-            loss_end = float(loss.detach().item())
-            done += 1
-            progress(done / total)
-
-        diagnostics["dream_rounds"].append(
-            {
-                "round": round_index,
-                "strength": strength,
-                "loss_start": loss_start,
-                "loss_end": loss_end,
-                "loss_reduction": loss_start - loss_end,
-            }
+    def run_dream_arm(arm: DreamArm) -> IllusionResult:
+        nonlocal done
+        tag = None if arms is None else arm.name
+        # Forked arms cannot share the round log; unforked runs keep the exact
+        # dict they always returned.
+        arm_diagnostics = (
+            diagnostics
+            if arms is None
+            else {**diagnostics, "dream_rounds": [], "dream_arm": arm.name}
         )
-        if observe and round_index in dream_save_rounds:
-            primes_ck, derived_ck = snapshot_images()
-            targets_det = [t.detach().clamp(0, 1) for t in dream_targets]
-            emit(
-                PhaseEvent(
-                    phase=f"dream_round_{round_index:02d}",
-                    round=round_index,
-                    strength=strength,
-                    primes=primes_ck,
-                    derived=derived_ck,
-                    targets=targets_det,
-                    loss_start=loss_start,
-                    loss_end=loss_end,
-                    wall_s=_time.perf_counter() - t_wall0,
-                    diagnostics=diagnostics,
-                )
+        emit(
+            PhaseEvent(
+                phase="dream_begin",
+                arm=tag,
+                wall_s=_time.perf_counter() - t_wall0,
+                diagnostics=arm_diagnostics,
             )
-
-    emit(
-        PhaseEvent(
-            phase="dream_end",
-            wall_s=_time.perf_counter() - t_wall0,
-            diagnostics=diagnostics,
         )
-    )
-
-    with torch.no_grad():
-        primes = [image.clamp(0, 1) for image in render_primes()]
-        final = [image.clamp(0, 1) for image in render_derived()]
-    emit(
-        PhaseEvent(
-            phase="final",
-            primes=primes,
-            derived=final,
-            wall_s=_time.perf_counter() - t_wall0,
-            diagnostics=diagnostics,
+        joint = (
+            arm.dream_joint
+            and config.illusion == "flip"
+            and all(isinstance(target, str) for target in targets)
         )
+        for round_index, strength in enumerate(config.strength_schedule(), start=1):
+            dream_targets: list[Tensor] = []
+            with torch.no_grad():
+                current = render_derived(RESOLUTION)
+            if joint:
+                prompts = [target for target in targets if isinstance(target, str)]
+                dream_targets = adapter.sdedit_joint(
+                    current,
+                    prompts,
+                    strength,
+                    generator,
+                    negative_prompt=arm.negative_prompt,
+                )
+            else:
+                for derived, target in zip(current, targets, strict=True):
+                    if isinstance(target, str):
+                        dream_targets.append(
+                            adapter.sdedit(
+                                derived,
+                                target,
+                                strength,
+                                generator,
+                                negative_prompt=arm.negative_prompt,
+                            )
+                        )
+                    else:
+                        dream_targets.append(target.to(config.device))
+
+            loss_start_t = torch.zeros((), device=config.device)
+            with torch.no_grad():
+                for derived, dream, weight in zip(
+                    render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
+                ):
+                    loss_start_t = loss_start_t + weight * image_similarity_loss(derived, dream)
+            loss_start = float(loss_start_t.item())
+            loss_end = loss_start
+            for _ in range(config.dream_steps):
+                optimizer.zero_grad()
+                loss = torch.zeros((), device=config.device)
+                for derived, dream, weight in zip(
+                    render_derived(RESOLUTION), dream_targets, spec.weights, strict=True
+                ):
+                    loss = loss + weight * image_similarity_loss(derived, dream)
+                loss.backward()
+                optimizer.step()
+                loss_end = float(loss.detach().item())
+                done += 1
+                progress(done / total)
+
+            arm_diagnostics["dream_rounds"].append(
+                {
+                    "round": round_index,
+                    "strength": strength,
+                    "loss_start": loss_start,
+                    "loss_end": loss_end,
+                    "loss_reduction": loss_start - loss_end,
+                }
+            )
+            if observe and round_index in dream_save_rounds:
+                primes_ck, derived_ck = snapshot_images()
+                targets_det = [t.detach().clamp(0, 1) for t in dream_targets]
+                emit(
+                    PhaseEvent(
+                        phase=f"dream_round_{round_index:02d}",
+                        arm=tag,
+                        round=round_index,
+                        strength=strength,
+                        primes=primes_ck,
+                        derived=derived_ck,
+                        targets=targets_det,
+                        loss_start=loss_start,
+                        loss_end=loss_end,
+                        wall_s=_time.perf_counter() - t_wall0,
+                        diagnostics=arm_diagnostics,
+                    )
+                )
+
+        emit(
+            PhaseEvent(
+                phase="dream_end",
+                arm=tag,
+                wall_s=_time.perf_counter() - t_wall0,
+                diagnostics=arm_diagnostics,
+            )
+        )
+
+        with torch.no_grad():
+            arm_primes = [image.clamp(0, 1) for image in render_primes()]
+            arm_final = [image.clamp(0, 1) for image in render_derived()]
+        emit(
+            PhaseEvent(
+                phase="final",
+                arm=tag,
+                primes=arm_primes,
+                derived=arm_final,
+                wall_s=_time.perf_counter() - t_wall0,
+                diagnostics=arm_diagnostics,
+            )
+        )
+        return IllusionResult(primes=arm_primes, derived=arm_final, diagnostics=arm_diagnostics)
+
+    arm_results: dict[str, IllusionResult] = {}
+    for arm in arm_list:
+        for network, weights in zip(networks, sds_weights, strict=True):
+            network.load_state_dict(weights)
+        torch.set_rng_state(sds_cpu_rng)
+        if sds_cuda_rng is not None:
+            torch.cuda.set_rng_state_all(sds_cuda_rng)
+        # One shared Dream RNG state for every arm: the arms of a base then
+        # differ in exactly the setting under test, and the 36 bases supply the
+        # independent draws that keep a result off one lucky sample.
+        generator.set_state(sds_generator_rng)
+        optimizer = torch.optim.Adam(parameters, lr=dream_lr)
+        arm_results[arm.name] = run_dream_arm(arm)
+
+    lead = arm_results[arm_list[0].name]
+    return IllusionResult(
+        primes=lead.primes,
+        derived=lead.derived,
+        diagnostics=lead.diagnostics,
+        arm_results={} if arms is None else arm_results,
     )
-    return IllusionResult(primes=primes, derived=final, diagnostics=diagnostics)
 
 
 # ------------------------------------------------------------------- cli
@@ -1712,6 +1854,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dream-steps", type=int, default=300)
     parser.add_argument(
+        "--negative-prompt",
+        default=None,
+        help="negative prompt for the Dream/SDEdit phase only; SDS is untouched",
+    )
+    parser.add_argument(
         "--learning-rate",
         type=float,
         default=None,
@@ -1765,6 +1912,7 @@ def config_from_args(args: argparse.Namespace) -> IllusionConfig:
         channels_last=args.channels_last,
         dream_rounds=args.dream_rounds,
         dream_joint=args.dream_joint,
+        negative_prompt=args.negative_prompt,
         dream_steps=args.dream_steps,
         sds_lr=sds_lr,
         dream_lr=dream_lr,
