@@ -38,11 +38,12 @@ def _utcnow() -> datetime:
 def _vram_used_pct(used: int | None, total: int | None) -> int | None:
     if used is None or total is None or total <= 0:
         return None
-    # The rollup columns are SmallInteger. A worker reporting used >> total
-    # would overflow one and fail maintain_once, which is a single
-    # transaction: rollups, pruning and worker cleanup would all stop until
-    # the sample aged out 48 hours later.
-    return min(round(used * 100 / total), 2**15 - 1)
+    # The rollup columns are SmallInteger, and maintain_once is one
+    # transaction: an overflow there stops rollups, pruning and worker cleanup
+    # until the sample ages out. Drop an impossible ratio rather than clamp it,
+    # matching _int_or_none and keeping the retained rollup means honest; a
+    # clamped 32767 would skew a 30-day bucket that a null is filtered out of.
+    return _int_or_none(round(used * 100 / total), bits=15)
 
 
 def _parse_gpu(gpu: Any) -> dict[str, Any]:

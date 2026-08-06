@@ -95,7 +95,10 @@ async def refuse(ws: WebSocket, code: int, message: str) -> None:
 def parse_control(text: str) -> dict:
     try:
         control = json.loads(text)
-    except json.JSONDecodeError as error:
+    except ValueError as error:
+        # JSONDecodeError subclasses ValueError, but CPython refuses an int
+        # conversion past 4300 digits with the bare parent, and three of the
+        # four callers only catch ProtocolError.
         raise ProtocolError("malformed JSON") from error
     if not isinstance(control, dict) or "type" not in control:
         raise ProtocolError("control message without a type")
@@ -317,7 +320,10 @@ async def fleet(ws: WebSocket) -> None:
         # operator with a bad manifest sees a worker that starts and never
         # registers, with nothing explaining why.
         logger.warning("fleet hello refused: %s", error)
-        await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+        # Reason on the wire: the worker logs the close it receives, and
+        # without it an operator with a bad manifest sees only a
+        # reconnect loop with no cause on either side.
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason=str(error)[:120])
         return
     if version < MIN_SUPPORTED_VERSION:
         logger.warning("worker %s rejected: protocol version %s below %s",

@@ -494,7 +494,11 @@ def test_vram_percentage_cannot_overflow_the_rollup_column():
     from app.gpu_samples import _vram_used_pct
 
     assert _vram_used_pct(4, 8) == 50
-    assert _vram_used_pct(2**62, 1) == 2**15 - 1
+    # An impossible ratio is dropped, not clamped, in both directions. A
+    # clamped 32767 would skew the rollup mean for the 30 days a bucket is
+    # retained, where a null is filtered out of it.
+    assert _vram_used_pct(2**62, 1) is None
+    assert _vram_used_pct(-(2**62), 1) is None
     assert _vram_used_pct(None, 8) is None
     assert _vram_used_pct(4, 0) is None
 

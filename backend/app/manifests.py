@@ -58,26 +58,36 @@ def _params_validator(schema_json: str) -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def json_finite(value: object) -> bool:
-    """jsonb has no NaN or Infinity, and json.loads produces both by default.
+# Deeper than any real parameter set or schema, and far below the depth at
+# which walking the structure would exhaust the stack. json.loads accepts ~993
+# levels and this predicate costs three frames per level, so without a cap it
+# would raise where json.loads succeeded: a guard failing inside the guard.
+JSON_MAX_DEPTH = 64
 
-    Anything reaching a JSONB column has to be checked at the edge: rejecting
-    them in the engine's serializer only turns the DataError into a ValueError,
-    and both are a 500.
+
+def json_finite(value: object, depth: int = 0) -> bool:
+    """Whether a decoded JSON value is storable in a JSONB column.
+
+    jsonb has no NaN or Infinity and json.loads produces both by default, so
+    this has to be checked at the edge: rejecting them in the engine's
+    serializer only turns the DataError into a ValueError, and both are a 500.
+    Over-deep structures are rejected here for the same reason.
     """
+    if depth > JSON_MAX_DEPTH:
+        return False
     if isinstance(value, float):
         return math.isfinite(value)
     if isinstance(value, dict):
-        return all(json_finite(item) for item in value.values())
+        return all(json_finite(item, depth + 1) for item in value.values())
     if isinstance(value, list):
-        return all(json_finite(item) for item in value)
+        return all(json_finite(item, depth + 1) for item in value)
     return True
 
 
 def validate_params(manifest: Manifest, params: dict) -> str | None:
     """Return a validation error message, or None when params are acceptable."""
     if not json_finite(params):
-        return "params contain a value JSON storage cannot hold"
+        return "params are too deeply nested or contain a value JSON storage cannot hold"
     try:
         # dumps walks the schema too, so it raises before check_schema can.
         schema_json = json.dumps(manifest.parameters, sort_keys=True)
@@ -123,6 +133,7 @@ def parse_manifests(raw: object) -> list[Manifest]:
         # Infinity; without this the upsert kills the socket on every reconnect.
         if not json_finite(manifest.parameters):
             raise ValueError(
-                f"manifest {manifest.id}: parameters contain a value JSON storage cannot hold"
+                f"manifest {manifest.id}: parameters are too deeply nested or contain "
+                "a value JSON storage cannot hold"
             )
     return manifests
