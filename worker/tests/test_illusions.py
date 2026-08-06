@@ -141,6 +141,7 @@ def test_sds_loss_batch_single_unet_call_with_cfg_doubled_batch() -> None:
 
     class FakeScheduler:
         config = SimpleNamespace(num_train_timesteps=1000)
+        alphas_cumprod = torch.linspace(0.99, 0.01, 1000)
 
         def add_noise(self, latents, noise, timesteps):
             assert latents.shape[0] == timesteps.shape[0]
@@ -148,7 +149,7 @@ def test_sds_loss_batch_single_unet_call_with_cfg_doubled_batch() -> None:
 
     adapter.pipe = SimpleNamespace(unet=FakeUNet())
     adapter.scheduler = FakeScheduler()
-    adapter.encode_latent = lambda image: torch.zeros(
+    adapter.encode_latent = lambda image, **_kwargs: torch.zeros(
         image.shape[0], 4, image.shape[2] // 8, image.shape[3] // 8
     )
     adapter.embed = lambda prompt: adapter.embeddings[prompt]
