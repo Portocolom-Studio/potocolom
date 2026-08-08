@@ -147,7 +147,6 @@ def test_unknown_manifest_field_is_loud(tmp_path):
         load_manifests(str(tmp_path))
 
 
-
 def test_min_vram_gb_is_bounded_where_the_operator_sees_it(tmp_path):
     # The API refuses a value past int4 at registration, which the operator
     # experiences as a worker that starts and reconnect-loops with no cause on
@@ -158,11 +157,11 @@ def test_min_vram_gb_is_bounded_where_the_operator_sees_it(tmp_path):
         "source": "x/y", "min_vram_gb": 3_000_000_000,
     }))
     with pytest.raises(ValidationError):
-        load_manifests(tmp_path)
+        load_manifests(str(tmp_path))
 
     (tmp_path / "bad.json").unlink()
     (tmp_path / "good.json").write_text(json.dumps({
         "id": "good", "name": "good", "capabilities": ["text_to_image"],
         "source": "x/y", "min_vram_gb": 12,
     }))
-    assert load_manifests(tmp_path)[0].min_vram_gb == 12
+    assert load_manifests(str(tmp_path))[0].min_vram_gb == 12

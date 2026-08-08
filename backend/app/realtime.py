@@ -95,10 +95,11 @@ async def refuse(ws: WebSocket, code: int, message: str) -> None:
 def parse_control(text: str) -> dict:
     try:
         control = json.loads(text)
-    except ValueError as error:
+    except (ValueError, RecursionError) as error:
         # JSONDecodeError subclasses ValueError, but CPython refuses an int
-        # conversion past 4300 digits with the bare parent, and three of the
-        # four callers only catch ProtocolError.
+        # conversion past 4300 digits with the bare parent, and the parser
+        # itself gives up past about 993 levels of nesting with a
+        # RecursionError. Three of the four callers only catch ProtocolError.
         raise ProtocolError("malformed JSON") from error
     if not isinstance(control, dict) or "type" not in control:
         raise ProtocolError("control message without a type")
@@ -321,9 +322,16 @@ async def fleet(ws: WebSocket) -> None:
         # registers, with nothing explaining why.
         logger.warning("fleet hello refused: %s", error)
         # Reason on the wire: the worker logs the close it receives, and
-        # without it an operator with a bad manifest sees only a
-        # reconnect loop with no cause on either side.
-        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason=str(error)[:120])
+        # without it an operator with a bad manifest sees only a reconnect
+        # loop with no cause on either side. Truncate in BYTES, not code
+        # points: a close frame carries at most 125, of which 2 are the code,
+        # and manifest ids reach this message unfiltered. Over that, websockets
+        # raises its own ProtocolError, which is a different class from ours
+        # and so escapes this handler, aborting with 1006 and no reason at all.
+        # The ignore on encode also drops the lone surrogates json.loads
+        # accepts but UTF-8 cannot represent.
+        detail = str(error).encode("utf-8", "ignore")[:123].decode("utf-8", "ignore")
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason=detail)
         return
     if version < MIN_SUPPORTED_VERSION:
         logger.warning("worker %s rejected: protocol version %s below %s",

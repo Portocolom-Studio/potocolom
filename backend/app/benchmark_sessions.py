@@ -43,7 +43,9 @@ class MeasurementInput(BaseModel):
         # This dict goes to a JSONB column unvalidated otherwise, and jsonb
         # rejects the NaN and Infinity json.loads accepts.
         if not json_finite(value):
-            raise ValueError("params contain a value JSON storage cannot hold")
+            raise ValueError(
+                "params are too deeply nested or contain a value JSON storage cannot hold"
+            )
         return value
     model_load_ms: int | None = Int4
     state: Literal["succeeded", "failed"]

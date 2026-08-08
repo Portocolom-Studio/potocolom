@@ -478,13 +478,20 @@ def test_gpu_history_rejects_unusable_timestamps():
     # 500s from an ordinary authenticated GET (issue #232).
     with TestClient(app) as client:
         good = "1700000000000"
-        for value in ("99999999999999999", "9" * 25, "\u00b2", "not-a-date"):
+        # The last two are the ISO branch: astimezone overflows at the edges
+        # of the representable range, one line below the digit branch.
+        for value in ("99999999999999999", "9" * 25, "\u00b2", "not-a-date",
+                      "0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00"):
             response = client.get("/api/v1/metrics/gpu/history",
                                   params={"from": value, "to": good})
             assert response.status_code == 422, f"{value!r} gave {response.status_code}"
         ok = client.get("/api/v1/metrics/gpu/history",
                         params={"from": good, "to": "1700000600000"})
         assert ok.status_code == 200
+        iso = client.get("/api/v1/metrics/gpu/history",
+                         params={"from": "2020-01-01T00:00:00Z",
+                                 "to": "2020-01-02T00:00:00Z"})
+        assert iso.status_code == 200
 
 
 def test_vram_percentage_cannot_overflow_the_rollup_column():
