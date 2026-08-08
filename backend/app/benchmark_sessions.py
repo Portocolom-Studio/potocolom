@@ -8,34 +8,51 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.auth import current_user, require_role
 from app.settings import get_settings
+from app.manifests import json_finite
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
 
 router = APIRouter()
 
 
+# Every int below lands in an int4 column, so a value past that is a 422 from
+# the model rather than a DataError from the insert.
+Int4 = Field(default=None, ge=-(2**31), lt=2**31)
+
+
 class MeasurementInput(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    prompt_id: int
+    prompt_id: int = Field(ge=-(2**31), lt=2**31)
     title: str
     category: str
     model_id: str
     variant: str
     cell_key: str
     params: dict = Field(default_factory=dict)
-    model_load_ms: int | None = None
+
+    @field_validator("params")
+    @classmethod
+    def _params_are_storable(cls, value: dict) -> dict:
+        # This dict goes to a JSONB column unvalidated otherwise, and jsonb
+        # rejects the NaN and Infinity json.loads accepts.
+        if not json_finite(value):
+            raise ValueError(
+                "params are too deeply nested or contain a value JSON storage cannot hold"
+            )
+        return value
+    model_load_ms: int | None = Int4
     state: Literal["succeeded", "failed"]
-    gpu_ms: int | None = None
+    gpu_ms: int | None = Int4
     wall_s: float | None = None
-    width: int | None = None
-    height: int | None = None
+    width: int | None = Int4
+    height: int | None = Int4
     job_id: str | None = None
     file: str | None = None
     error: str | None = None
@@ -44,12 +61,12 @@ class MeasurementInput(BaseModel):
 class BenchmarkInput(BaseModel):
     created_at: datetime
     target_vram_gb: float | None = None
-    prompt_count: int
+    prompt_count: int = Field(ge=0, lt=2**31)
     models: list[str]
-    variants_per_prompt: int
-    total_jobs: int
-    succeeded: int
-    failed: int
+    variants_per_prompt: int = Field(ge=0, lt=2**31)
+    total_jobs: int = Field(ge=0, lt=2**31)
+    succeeded: int = Field(ge=0, lt=2**31)
+    failed: int = Field(ge=0, lt=2**31)
     results: list[MeasurementInput]
 
 

@@ -95,11 +95,27 @@ async def refuse(ws: WebSocket, code: int, message: str) -> None:
 def parse_control(text: str) -> dict:
     try:
         control = json.loads(text)
-    except json.JSONDecodeError as error:
+    except (ValueError, RecursionError) as error:
+        # JSONDecodeError subclasses ValueError, but CPython refuses an int
+        # conversion past 4300 digits with the bare parent, and the parser
+        # itself gives up past about 993 levels of nesting with a
+        # RecursionError. Three of the four callers only catch ProtocolError.
         raise ProtocolError("malformed JSON") from error
     if not isinstance(control, dict) or "type" not in control:
         raise ProtocolError("control message without a type")
     return control
+
+
+def peer_uuid(value: object) -> uuid.UUID:
+    """Parse an id a peer sent.
+
+    uuid.UUID raises AttributeError on an int and TypeError on null, neither of
+    which belongs in the handler's except tuple: widening it would relabel an
+    internal bug as a protocol violation and close 4000 with no traceback.
+    """
+    if not isinstance(value, str):
+        raise ProtocolError("id must be a string")
+    return uuid.UUID(value)
 
 
 def frame_session_id(data: bytes) -> uuid.UUID:
@@ -300,8 +316,22 @@ async def fleet(ws: WebSocket) -> None:
                 and (worker.device is None or isinstance(worker.device, str))
                 and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
-    except (ProtocolError, KeyError):
-        await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+    except (ProtocolError, KeyError) as error:
+        # Logged: a rejected hello is otherwise silent on both sides, so an
+        # operator with a bad manifest sees a worker that starts and never
+        # registers, with nothing explaining why.
+        logger.warning("fleet hello refused: %s", error)
+        # Reason on the wire: the worker logs the close it receives, and
+        # without it an operator with a bad manifest sees only a reconnect
+        # loop with no cause on either side. Truncate in BYTES, not code
+        # points: a close frame carries at most 125, of which 2 are the code,
+        # and manifest ids reach this message unfiltered. Over that, websockets
+        # raises its own ProtocolError, which is a different class from ours
+        # and so escapes this handler, aborting with 1006 and no reason at all.
+        # The ignore on encode also drops the lone surrogates json.loads
+        # accepts but UTF-8 cannot represent.
+        detail = str(error).encode("utf-8", "ignore")[:123].decode("utf-8", "ignore")
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason=detail)
         return
     if version < MIN_SUPPORTED_VERSION:
         logger.warning("worker %s rejected: protocol version %s below %s",
@@ -316,8 +346,11 @@ async def fleet(ws: WebSocket) -> None:
     await ws.send_json({"type": "registered"})
     from app import gpu_samples, registry  # late import; registry reads this module's state
     gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
-    await registry.persist_manifests(worker.manifests)
     try:
+        # Inside the try: this awaits a database write, and a failure before
+        # the try left the worker in `workers` with no cleanup path, so it kept
+        # being advertised until the 90 second reaper noticed.
+        await registry.persist_manifests(worker.manifests)
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
@@ -332,14 +365,14 @@ async def fleet(ws: WebSocket) -> None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
-                        session = sessions.get(uuid.UUID(control["session_id"]))
+                        session = sessions.get(peer_uuid(control["session_id"]))
                         if session is not None:
                             session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
-                        session_id = uuid.UUID(control["session_id"])
+                        session_id = peer_uuid(control["session_id"])
                         owner = closing_sessions.pop(session_id, None)
                         if owner is not None:
                             from app import usage_events

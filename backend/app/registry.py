@@ -56,10 +56,15 @@ async def list_models() -> list[dict]:
         if "upscale" in manifest.capabilities:
             # Measured per-factor numbers for the studio's factor picker; the
             # default-params estimate cannot express factors with unequal cost.
-            factor_spec = manifest.parameters.get("properties", {}).get("factor", {})
+            # A manifest is worker-supplied, so neither properties nor the
+            # factor enum is guaranteed to be the shape it should be; a bare
+            # `for` over a non-list 500s this endpoint for every caller.
+            properties = manifest.parameters.get("properties")
+            factor_spec = properties.get("factor", {}) if isinstance(properties, dict) else {}
+            enum = factor_spec.get("enum") if isinstance(factor_spec, dict) else None
             by_factor = {
                 str(factor): estimate_gpu_ms(manifest.id, {"factor": factor})
-                for factor in factor_spec.get("enum", [])
+                for factor in (enum if isinstance(enum, list) else [])
             }
             payload["estimated_gpu_ms_by_factor"] = {
                 factor: ms for factor, ms in by_factor.items() if ms is not None

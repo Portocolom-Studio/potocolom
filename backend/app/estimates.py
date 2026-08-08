@@ -48,7 +48,7 @@ def _load_timings() -> dict[str, dict[str, Any]]:
             for key, value in factors_raw.items():
                 try:
                     factor, ms = int(key), int(value)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if factor > 0 and ms > 0:
                     factors[factor] = ms
@@ -97,7 +97,7 @@ def _estimate_from_baseline(
             return max(1, factors[min(factors)])
         try:
             factor = int(params["factor"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         known = factors.get(factor)
         return max(1, known) if known is not None else None
@@ -105,19 +105,20 @@ def _estimate_from_baseline(
     if not all(key in params for key in ("steps", "width", "height")):
         return None
 
+    # The arithmetic overflows before int() does: an arbitrary-precision int
+    # divides to a float that cannot hold it, and a merely huge one reaches
+    # round() as infinity. Both come straight from a worker manifest.
     try:
         steps = int(params["steps"])
         width = int(params["width"])
         height = int(params["height"])
-    except (TypeError, ValueError):
+        if steps <= 0 or width <= 0 or height <= 0:
+            return None
+        step_scale = steps / baseline["steps"]
+        pixel_scale = (width * height) / (baseline["width"] * baseline["height"])
+        return max(1, round(baseline["gpu_ms"] * step_scale * pixel_scale))
+    except (TypeError, ValueError, OverflowError):
         return None
-
-    if steps <= 0 or width <= 0 or height <= 0:
-        return None
-
-    step_scale = steps / baseline["steps"]
-    pixel_scale = (width * height) / (baseline["width"] * baseline["height"])
-    return max(1, round(baseline["gpu_ms"] * step_scale * pixel_scale))
 
 
 def _params_with_timing_defaults(

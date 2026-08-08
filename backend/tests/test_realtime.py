@@ -343,3 +343,68 @@ def test_foreign_origin_cannot_register_a_worker():
             ws.send_json(hello(worker_id="w-evil"))
             ws.receive_json()
     assert "w-evil" not in realtime.workers
+
+
+def test_fleet_closes_4000_on_a_non_string_job_id():
+    """Drive the socket, not peer_uuid.
+
+    uuid.UUID raises AttributeError on an int and TypeError on null, neither of
+    which is in the fleet handler's except tuple, so before peer_uuid these
+    escaped the endpoint. Testing the helper alone leaves jobs.py unguarded by
+    the suite, which is the failure mode that let this class survive four
+    review rounds (issue #232).
+    """
+    for bad in (5, None, [1], {"a": 1}):
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id=f"w-badid-{type(bad).__name__}"))
+            assert ws.receive_json()["type"] == "registered"
+            ws.send_json({"type": "job_done", "job_id": bad, "gpu_ms": 1})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_json()
+            assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION, bad
+
+
+def test_fleet_survives_an_over_deep_manifest_and_an_oversized_number():
+    # json_finite costs three frames per level against json.loads' ~993, so an
+    # uncapped walk raised where the parser succeeded. A number past CPython's
+    # 4300-digit int limit raises a bare ValueError, not JSONDecodeError.
+    deep: object = 1
+    for _ in range(400):
+        deep = {"a": deep}
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json({"type": "hello", "protocol_version": PROTOCOL_VERSION,
+                      "worker_id": "w-deep", "realtime_slots": 0,
+                      "models": [{"id": "m", "name": "m", "capabilities": ["text_to_image"],
+                                  "parameters": deep}]})
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
+
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_text('{"type": "hello", "protocol_version": ' + "9" * 5000 + "}")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
+
+
+def test_hello_refusal_reason_fits_a_close_frame():
+    """A close frame carries 125 bytes total, 2 of them the code.
+
+    manifest.id reaches the refusal message unfiltered, so truncating the
+    reason by code points overflowed the frame for any multi-byte id.
+    websockets then raises its own ProtocolError, a different class from ours,
+    which escapes the handler and aborts with 1006 and no reason: strictly
+    worse than the bare close the reason was added to improve (issue #232).
+    """
+    for bad_id in ("m" * 200, "\u6f22" * 200, "\U0001f600" * 200, "m\ud800m"):
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json({"type": "hello", "protocol_version": PROTOCOL_VERSION,
+                          "worker_id": "w-reason", "realtime_slots": 0,
+                          "models": [{"id": bad_id, "name": "n",
+                                      "capabilities": ["upscale", "text_to_image"],
+                                      "parameters": {}}]})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_json()
+            assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
+            encoded = (closed.value.reason or "").encode("utf-8")
+            assert len(encoded) <= 123, f"{bad_id[:8]}: {len(encoded)} bytes"

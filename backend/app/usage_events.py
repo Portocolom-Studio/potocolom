@@ -95,7 +95,8 @@ def _numeric(value: Any) -> bool:
         # isfinite() would raise OverflowError on a big int, and this is a
         # predicate: callers do not expect it to raise.
         return -2**31 <= value < 2**31
-    return math.isfinite(value)
+    # The float branch feeds int4 columns too, so finite is not enough.
+    return math.isfinite(value) and -2**31 <= value < 2**31
 
 
 def _optional_int(value: Any) -> int | None:

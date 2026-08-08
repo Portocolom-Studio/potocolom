@@ -1157,7 +1157,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
 
 
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
-    job_id = uuid.UUID(control["job_id"])
+    job_id = realtime.peer_uuid(control["job_id"])
     # Only the worker recorded for the attempt may speak for the job: after a
     # stall requeue the old worker may still be connected and reporting.
     current = inflight.get(job_id)
