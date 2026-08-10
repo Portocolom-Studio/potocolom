@@ -47,25 +47,30 @@ export type InitialLineageViewportAnchor = {
 	y: number;
 };
 
-/** Follow the root chosen by the initial automatic centring while one paging
- * burst repacks the forest. The final settled position is applied before the
- * anchor is dropped, so later user-driven pages and live arrivals cannot pull
- * the viewport back to a choice the user may already have left behind. */
+export type InitialLineageRootLoadState = 'loading' | 'failed' | 'settled';
+
+/** Follow the root chosen by automatic centring while one paging burst repacks
+ * the forest. Retriable failures keep the anchor for the next attempt. A
+ * settled burst drops it only after applying the final position, or asks the
+ * caller to recenter when the anchored root has expired. */
 export function decideInitialLineageViewportFollow(
 	viewport: { translateX: number; translateY: number; scale: number },
 	storedAnchor: InitialLineageViewportAnchor,
 	currentAnchor: { x: number; y: number } | null,
-	pagingInFlight: boolean
+	rootLoadState: InitialLineageRootLoadState
 ): {
 	translateX: number;
 	translateY: number;
 	anchor: InitialLineageViewportAnchor | null;
+	fallbackToNewest: boolean;
 } {
+	const retainAnchor = rootLoadState !== 'settled';
 	if (currentAnchor === null) {
 		return {
 			translateX: viewport.translateX,
 			translateY: viewport.translateY,
-			anchor: pagingInFlight ? storedAnchor : null
+			anchor: retainAnchor ? storedAnchor : null,
+			fallbackToNewest: !retainAnchor
 		};
 	}
 
@@ -76,7 +81,8 @@ export function decideInitialLineageViewportFollow(
 			: { rootId: storedAnchor.rootId, ...currentAnchor };
 	return {
 		...rebased,
-		anchor: pagingInFlight ? anchor : null
+		anchor: retainAnchor ? anchor : null,
+		fallbackToNewest: false
 	};
 }
 

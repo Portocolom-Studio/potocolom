@@ -632,8 +632,13 @@
 			viewport,
 			storedAnchor,
 			current,
-			rootsLoading
+			rootsFailed ? 'failed' : rootsLoading ? 'loading' : 'settled'
 		);
+		if (decision.fallbackToNewest) {
+			initialViewportAnchor = null;
+			recenterNewest(false);
+			return;
+		}
 		if (viewport.translateX !== decision.translateX) translateX = decision.translateX;
 		if (viewport.translateY !== decision.translateY) translateY = decision.translateY;
 		if (initialViewportAnchor !== decision.anchor) initialViewportAnchor = decision.anchor;

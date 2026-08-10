@@ -151,7 +151,7 @@ test('initial viewport keeps its centered root through a second root page', () =
 		viewport,
 		{ rootId: centeredRootId, ...firstAnchor },
 		currentAnchor,
-		true
+		'loading'
 	);
 	assert.deepEqual(
 		{ x: currentAnchor.x + decision.translateX, y: currentAnchor.y + decision.translateY },
@@ -163,7 +163,7 @@ test('initial viewport keeps its centered root through a second root page', () =
 		{ ...viewport, translateX: decision.translateX, translateY: decision.translateY },
 		decision.anchor,
 		currentAnchor,
-		false
+		'settled'
 	);
 	assert.deepEqual(
 		{ x: currentAnchor.x + settled.translateX, y: currentAnchor.y + settled.translateY },
@@ -211,7 +211,7 @@ test('filter reload follows its recentered root through later root pages', () =>
 		viewport,
 		{ rootId: recenteredRootId, ...recenteredAnchor },
 		secondAnchor,
-		true
+		'loading'
 	);
 	assert.deepEqual(secondDecision.anchor, { rootId: recenteredRootId, ...secondAnchor });
 	assert.ok(secondDecision.anchor);
@@ -224,7 +224,7 @@ test('filter reload follows its recentered root through later root pages', () =>
 		{ ...viewport, translateX: secondDecision.translateX, translateY: secondDecision.translateY },
 		secondDecision.anchor,
 		terminalAnchor,
-		false
+		'settled'
 	);
 	assert.deepEqual(
 		{
@@ -234,6 +234,50 @@ test('filter reload follows its recentered root through later root pages', () =>
 		{ x: 700, y: 400 }
 	);
 	assert.equal(terminalDecision.anchor, null);
+});
+
+test('failed root page keeps the viewport anchor through a successful retry', () => {
+	const viewport = { translateX: 300, translateY: 200, scale: 1 };
+	const storedAnchor = { rootId: 'retry-root', x: 100, y: 120 };
+	const failed = decideInitialLineageViewportFollow(
+		viewport,
+		storedAnchor,
+		{ x: 100, y: 120 },
+		'failed'
+	);
+	assert.deepEqual(failed.anchor, storedAnchor);
+	assert.equal(failed.fallbackToNewest, false);
+	assert.ok(failed.anchor);
+
+	const retried = decideInitialLineageViewportFollow(
+		viewport,
+		failed.anchor,
+		{ x: 420, y: 360 },
+		'loading'
+	);
+	assert.deepEqual(retried.anchor, { rootId: 'retry-root', x: 420, y: 360 });
+	assert.ok(retried.anchor);
+
+	const settled = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: retried.translateX, translateY: retried.translateY },
+		retried.anchor,
+		{ x: 420, y: 360 },
+		'settled'
+	);
+	assert.equal(settled.anchor, null);
+	assert.equal(settled.fallbackToNewest, false);
+});
+
+test('expired viewport anchor falls back after root paging settles', () => {
+	const decision = decideInitialLineageViewportFollow(
+		{ translateX: 300, translateY: 200, scale: 1 },
+		{ rootId: 'expired-root', x: 100, y: 120 },
+		null,
+		'settled'
+	);
+
+	assert.equal(decision.anchor, null);
+	assert.equal(decision.fallbackToNewest, true);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
