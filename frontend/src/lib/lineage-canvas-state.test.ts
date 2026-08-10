@@ -4,6 +4,7 @@ import {
 	LINEAGE_WORLD_LIMIT,
 	clampLineageCoordinate,
 	decideInitialLineageViewportFollow,
+	decideLineageLiveArrival,
 	decideLineageTreeLoad,
 	lineageRootPageUrl,
 	lineageTreeOmittedHistoryJobIds,
@@ -292,6 +293,13 @@ test('filtered root loads retain offsets for roots hidden by the filter', () => 
 	assert.deepEqual(retainedLineageTreeOffsets(offsets, visibleRootIds, false), {
 		'starred-root': { x: 120, y: 80 }
 	});
+});
+
+test('starred filter rejects unstarred live roots but still inspects descendants', () => {
+	assert.equal(decideLineageLiveArrival(true, true, false), 'ignore');
+	assert.equal(decideLineageLiveArrival(true, true, true), 'insert-root');
+	assert.equal(decideLineageLiveArrival(true, false, false), 'insert-root');
+	assert.equal(decideLineageLiveArrival(false, true, false), 'inspect-descendant');
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {

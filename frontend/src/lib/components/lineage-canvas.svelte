@@ -50,6 +50,7 @@
 	import {
 		clampLineageCoordinate,
 		decideInitialLineageViewportFollow,
+		decideLineageLiveArrival,
 		decideLineageTreeLoad,
 		lineageRootPageUrl,
 		lineageTreeOmittedHistoryJobIds,
@@ -569,7 +570,13 @@
 		for (const generation of finished) {
 			if (knownFinishedIds.has(generation.id)) continue;
 			knownFinishedIds.add(generation.id);
-			if (generation.source_asset_id === null) {
+			const arrival = decideLineageLiveArrival(
+				generation.source_asset_id === null,
+				starredOnly,
+				isStarred(generation.id)
+			);
+			if (arrival === 'ignore') continue;
+			if (arrival === 'insert-root') {
 				roots = [
 					{ ...generation, has_derivatives: generation.has_derivatives ?? false },
 					...roots.filter((root) => root.id !== generation.id)

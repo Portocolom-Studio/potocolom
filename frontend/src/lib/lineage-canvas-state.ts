@@ -26,6 +26,15 @@ export function retainedLineageTreeOffsets<T>(
 	) as Record<string, T>;
 }
 
+export function decideLineageLiveArrival(
+	isRoot: boolean,
+	starredOnly: boolean,
+	rootIsStarred: boolean
+): 'insert-root' | 'inspect-descendant' | 'ignore' {
+	if (!isRoot) return 'inspect-descendant';
+	return !starredOnly || rootIsStarred ? 'insert-root' : 'ignore';
+}
+
 export function lineageRootPageUrl(
 	limit: number,
 	cursor: string | null,
