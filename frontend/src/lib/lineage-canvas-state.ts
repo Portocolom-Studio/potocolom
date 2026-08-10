@@ -99,17 +99,6 @@ export function shouldReloadLineageRootsAfterStarToggle(
 	);
 }
 
-export function lineageRootPageUrl(
-	limit: number,
-	cursor: string | null,
-	starredOnly: boolean
-): string {
-	const query = new URLSearchParams({ roots_only: 'true', limit: String(limit) });
-	if (starredOnly) query.set('starred', 'true');
-	if (cursor !== null) query.set('cursor', cursor);
-	return `/api/v1/generations?${query.toString()}`;
-}
-
 export function rebaseLineageViewport(
 	viewport: { translateX: number; translateY: number; scale: number },
 	storedAnchor: { x: number; y: number },

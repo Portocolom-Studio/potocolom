@@ -7,7 +7,6 @@ import {
 	decideInitialLineageViewportFollow,
 	decideLineageLiveArrival,
 	decideLineageTreeLoad,
-	lineageRootPageUrl,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
 	retainedLineageTreeOffsets,
@@ -101,14 +100,6 @@ test('truncated tree ignores omitted children but refreshes changed retained nod
 test('persisted canvas coordinates stay inside the documented world range', () => {
 	assert.equal(clampLineageCoordinate(1e300), LINEAGE_WORLD_LIMIT);
 	assert.equal(clampLineageCoordinate(-1e300), -LINEAGE_WORLD_LIMIT);
-});
-
-test('starred root pages compose the starred and roots-only filters', () => {
-	assert.equal(
-		lineageRootPageUrl(50, 'root-cursor', true),
-		'/api/v1/generations?roots_only=true&limit=50&starred=true&cursor=root-cursor'
-	);
-	assert.equal(lineageRootPageUrl(50, null, false), '/api/v1/generations?roots_only=true&limit=50');
 });
 
 test('restored viewport keeps its anchor at the saved screen position', () => {

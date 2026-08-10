@@ -52,7 +52,6 @@
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
-		lineageRootPageUrl,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
@@ -342,11 +341,14 @@
 		const cursor = roots.at(-1)?.id;
 		let loaded = false;
 		try {
+			const query = new URLSearchParams({ roots_only: 'true', limit: String(ROOT_LIMIT) });
+			if (filterStarredOnly) query.set('starred', 'true');
+			if (cursor !== undefined) query.set('cursor', cursor);
 			// Starred mode selects starred roots, then keeps each returned root's
 			// complete subtree. Filtering descendants individually would sever the
 			// provenance that makes this a forest rather than a list of cards.
 			const page = await fetchCanvasJson<Generation[]>(
-				lineageRootPageUrl(ROOT_LIMIT, cursor ?? null, filterStarredOnly),
+				`/api/v1/generations?${query.toString()}`,
 				'history request failed'
 			);
 			if (filterEpoch !== rootsFilterEpoch) return;
