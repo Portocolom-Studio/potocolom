@@ -22,6 +22,7 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       INTERNAL_URL: http://api:8080
       TELEMETRY: ${TELEMETRY:-true}
+      FLEET_TOKEN_KEY: ${FLEET_SECRET}
     volumes:
       - assets:/data/assets
     depends_on:
@@ -57,6 +58,7 @@ services:
       # hub client picks HF_TOKEN up from the environment. Empty is fine when
       # no gated model is enabled.
       HF_TOKEN: ${HF_TOKEN:-}
+      FLEET_TOKEN: ${FLEET_SECRET}
     volumes:
       - models:/models
       # Downloaded model weights survive container recreation.
@@ -83,6 +85,7 @@ services:
       DEVICE: rocm
       API_URL: ws://api:8080/api/v1/fleet
       MODELS_DIR: /models
+      FLEET_TOKEN: ${FLEET_SECRET}
     volumes:
       - models:/models
       - hf-cache:/root/.cache/huggingface
@@ -103,6 +106,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.worker-sim
     environment:
       API_URL: ws://api:8080/api/v1/fleet
+      FLEET_TOKEN: ${FLEET_SECRET}
     depends_on:
       - api
 

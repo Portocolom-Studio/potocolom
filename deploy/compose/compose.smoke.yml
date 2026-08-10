@@ -13,6 +13,7 @@ services:
       STORAGE_BACKEND: local
       PUBLIC_URL: http://localhost:${COMPOSE_SMOKE_PORT:-18080}
       INTERNAL_URL: http://api:8080
+      FLEET_TOKEN_KEY: ${FLEET_SECRET:-smoke-fleet-secret}
     volumes:
       - assets:/data/assets
     depends_on:
@@ -39,6 +40,9 @@ services:
       dockerfile: deploy/docker/Dockerfile.worker-sim
     environment:
       API_URL: ws://api:8080/api/v1/fleet
+      # Non-empty by default: the smoke run is what proves a keyed stack still
+      # registers its worker, which a permissive default would never exercise.
+      FLEET_TOKEN: ${FLEET_SECRET:-smoke-fleet-secret}
     depends_on:
       - api
 

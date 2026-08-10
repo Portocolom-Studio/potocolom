@@ -16,6 +16,7 @@ from app.realtime import (
     GENERATED_FRAME,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
+    fleet_token_allowed,
     origin_allowed,
 )
 from app.settings import get_settings
@@ -38,6 +39,21 @@ class FakeHeaders:
 
     def __init__(self, origin):
         raw = [] if origin is None else [(b"origin", origin.encode())]
+        self.headers = Headers(raw=raw)
+
+
+class FakeTokenHeaders:
+    """Stands in for a WebSocket when only the fleet token header matters."""
+
+    def __init__(self, token, name=b"x-fleet-token"):
+        raw = [] if token is None else [(name, token.encode("utf-8"))]
+        self.headers = Headers(raw=raw)
+
+
+class FakeRawHeaders:
+    """Stands in for a WebSocket carrying arbitrary raw header pairs."""
+
+    def __init__(self, raw):
         self.headers = Headers(raw=raw)
 
 
@@ -71,6 +87,89 @@ def test_version_gate_rejects_older_than_n_minus_1():
         response = ws.receive_json()
         assert response["type"] == "rejected"
         assert response["min_supported_version"] == MIN_SUPPORTED_VERSION
+
+
+def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    with client.websocket_connect(
+        "/api/v1/fleet", headers={"x-fleet-token": "fleet-secret"}
+    ) as ws:
+        ws.send_json(hello(worker_id="w-token-ok"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+@pytest.mark.parametrize("token", ["wrong-secret", None, ""])
+def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
+    """Assert the worker never registers, not merely that the socket closed.
+
+    Exiting a websocket_connect block raises WebSocketDisconnect on its own,
+    so `pytest.raises` around an empty body passes with the check removed
+    entirely. Drive the handshake and prove nothing was admitted.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    headers = {} if token is None else {"x-fleet-token": token}
+    worker_id = "w-token-bad"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/v1/fleet", headers=headers) as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
+
+
+def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
+    """compare_digest rejects two str arguments unless both are ASCII.
+
+    Comparing the strings would raise here, and the caller would read the
+    exception as a wrong token. The comparison works on bytes, so it cannot
+    raise whatever the operator or the peer supplies. The documented contract
+    is still an ASCII secret, warned about at startup (app/main.py), because
+    not every client will put other bytes in a header.
+    """
+    secret = "cl\u00e9-secr\u00e8te"
+    monkeypatch.setattr(get_settings(), "fleet_token_key", secret)
+    assert fleet_token_allowed(FakeTokenHeaders(secret))
+    for presented in ("cl\u00e9-autre", "anything", "", None):
+        assert fleet_token_allowed(FakeTokenHeaders(presented)) is False
+
+
+def test_duplicate_token_headers_are_refused():
+    """Two of them, and the answer depends on which one came first.
+
+    An intermediary can add or reorder a header, so correct-then-wrong would
+    authenticate while wrong-then-correct would not. Require exactly one.
+    """
+    get_settings().fleet_token_key = "fleet-secret"
+    try:
+        good = (b"x-fleet-token", b"fleet-secret")
+        bad = (b"X-Fleet-Token", b"wrong-secret")
+        assert fleet_token_allowed(FakeRawHeaders([good]))
+        assert not fleet_token_allowed(FakeRawHeaders([good, bad]))
+        assert not fleet_token_allowed(FakeRawHeaders([bad, good]))
+        assert not fleet_token_allowed(FakeRawHeaders([good, good]))
+    finally:
+        get_settings().fleet_token_key = ""
+
+
+@pytest.mark.parametrize("name", [b"x-fleet-token", b"X-Fleet-Token", b"X-FLEET-TOKEN"])
+def test_fleet_token_lookup_is_case_insensitive(monkeypatch, name):
+    """The ASGI server passes the header name through as the client spelled it.
+
+    Headers.get matches the stored key verbatim, so a worker sending
+    X-Fleet-Token, which is what websockets emits for that spelling, was
+    refused as if it had sent nothing: enabling the guard broke every
+    legitimate worker. Header names are case-insensitive (RFC 9110), and the
+    TestClient lowercases its own headers, so only a raw-level test catches it.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    assert fleet_token_allowed(FakeTokenHeaders("fleet-secret", name=name))
+    assert not fleet_token_allowed(FakeTokenHeaders("wrong-secret", name=name))
+
+
+def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-token-unset"))
+        assert ws.receive_json()["type"] == "registered"
 
 
 def test_version_gate_accepts_n_minus_1():

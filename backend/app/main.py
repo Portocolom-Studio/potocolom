@@ -33,6 +33,17 @@ from app.telemetry import router as telemetry_router
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_format)
+    if not settings.fleet_token_key:
+        logging.getLogger("potocolom.realtime").warning(
+            "FLEET_TOKEN_KEY is unset; fleet authentication is permissive"
+        )
+    elif not settings.fleet_token_key.isascii():
+        # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
+        # survive the trip intact. Say so here rather than let the operator
+        # debug a worker that reconnects forever against a correct secret.
+        logging.getLogger("potocolom.realtime").warning(
+            "FLEET_TOKEN_KEY contains non-ASCII characters; use an ASCII secret"
+        )
     if settings.telemetry:
         logging.getLogger("potocolom.telemetry").info(
             "anonymous daily telemetry destination=%s payload=aggregate usage counts and "
