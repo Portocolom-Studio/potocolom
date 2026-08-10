@@ -421,7 +421,9 @@ async def run() -> None:
         try:
             async with websockets.connect(
                 settings.api_url,
-                additional_headers={"X-Fleet-Token": settings.fleet_token},
+                # Lowercase: header names are case-insensitive, but not every
+                # ASGI stack normalises them before the application looks.
+                additional_headers={"x-fleet-token": settings.fleet_token},
             ) as ws:
                 delay = BACKOFF_INITIAL
                 await serve_connection(ws, settings, manifests, engine)

@@ -72,7 +72,7 @@ Messages later issues add to this catalogue (queued position, prompt updates, cr
 sequenceDiagram
     participant W as Worker
     participant A as API server
-    W->>A: WS connect /api/v1/fleet
+    W->>A: WS connect /api/v1/fleet (X-Fleet-Token when FLEET_TOKEN_KEY is set)
     W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
@@ -172,7 +172,15 @@ Both endpoints refuse a handshake whose `Origin` header is present and not allow
 
 Allowed origins are `PUBLIC_URL` plus anything in `ALLOWED_ORIGINS`. The dev loop needs the latter, because the vite server proxies `/api/v1` and the browser's origin is its own.
 
-This is a boundary control, not authentication. WebSocket handshakes ignore the same-origin policy and send no preflight, so without it any page the operator visits can reach both sockets and the trusted-LAN posture in [README.md](../README.md) does not hold. Worker authentication is separate and still deferred (`FLEET_TOKEN_KEY`).
+This is a boundary control, not authentication. WebSocket handshakes ignore the same-origin policy and send no preflight, so without it any page the operator visits can reach both sockets and the trusted-LAN posture in [README.md](../README.md) does not hold. Worker authentication is separate and covered below.
+
+## Fleet authentication
+
+A worker presents the shared secret as an `X-Fleet-Token` request header on the upgrade. The API compares it against `FLEET_TOKEN_KEY` before accepting, so a missing or wrong token fails the handshake with HTTP 403 and no close code applies. Header names are case-insensitive; send it however you like.
+
+When `FLEET_TOKEN_KEY` is unset the socket stays open and the API warns at startup. That keeps the one-command self-hosted start working and is why the trusted-LAN warning in [README.md](../README.md) still applies to an unkeyed install. The secret is ASCII: it travels in an HTTP header.
+
+Signed short-lived tokens are the cloud shape and are not implemented here; their minting side lives in the private repository (`docs/repository-boundary.md`).
 
 ## Close codes
 

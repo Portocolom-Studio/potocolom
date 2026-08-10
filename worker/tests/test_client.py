@@ -151,7 +151,7 @@ def test_run_sends_the_fleet_token_as_a_handshake_header(monkeypatch):
         asyncio.run(run())
 
     assert calls == [(settings.api_url, {"additional_headers": {
-        "X-Fleet-Token": "fleet-secret",
+        "x-fleet-token": "fleet-secret",
     }})]
 
 

@@ -45,8 +45,8 @@ class FakeHeaders:
 class FakeTokenHeaders:
     """Stands in for a WebSocket when only the fleet token header matters."""
 
-    def __init__(self, token):
-        raw = [] if token is None else [(b"x-fleet-token", token.encode("utf-8"))]
+    def __init__(self, token, name=b"x-fleet-token"):
+        raw = [] if token is None else [(name, token.encode("utf-8"))]
         self.headers = Headers(raw=raw)
 
 
@@ -110,17 +110,34 @@ def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
 
 
 def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
-    """A non-ASCII secret cannot work, and must fail as a refusal not a crash.
+    """compare_digest rejects two str arguments unless both are ASCII.
 
-    compare_digest rejects two str arguments unless both are ASCII, so
-    comparing the strings would raise here. It cannot be made to work either:
-    an HTTP header is latin-1 on the wire and httpx refuses to send a
-    non-ASCII value at all, so the operator is warned at startup instead
-    (app/main.py) and the documented contract is an ASCII secret.
+    Comparing the strings would raise here, and the caller would read the
+    exception as a wrong token. The comparison works on bytes, so it cannot
+    raise whatever the operator or the peer supplies. The documented contract
+    is still an ASCII secret, warned about at startup (app/main.py), because
+    not every client will put other bytes in a header.
     """
-    monkeypatch.setattr(get_settings(), "fleet_token_key", "cl\u00e9-secr\u00e8te")
-    for presented in ("cl\u00e9-secr\u00e8te", "anything", "", None):
+    secret = "cl\u00e9-secr\u00e8te"
+    monkeypatch.setattr(get_settings(), "fleet_token_key", secret)
+    assert fleet_token_allowed(FakeTokenHeaders(secret))
+    for presented in ("cl\u00e9-autre", "anything", "", None):
         assert fleet_token_allowed(FakeTokenHeaders(presented)) is False
+
+
+@pytest.mark.parametrize("name", [b"x-fleet-token", b"X-Fleet-Token", b"X-FLEET-TOKEN"])
+def test_fleet_token_lookup_is_case_insensitive(monkeypatch, name):
+    """The ASGI server passes the header name through as the client spelled it.
+
+    Headers.get matches the stored key verbatim, so a worker sending
+    X-Fleet-Token, which is what websockets emits for that spelling, was
+    refused as if it had sent nothing: enabling the guard broke every
+    legitimate worker. Header names are case-insensitive (RFC 9110), and the
+    TestClient lowercases its own headers, so only a raw-level test catches it.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    assert fleet_token_allowed(FakeTokenHeaders("fleet-secret", name=name))
+    assert not fleet_token_allowed(FakeTokenHeaders("wrong-secret", name=name))
 
 
 def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):

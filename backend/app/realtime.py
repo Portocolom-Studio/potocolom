@@ -78,11 +78,18 @@ def fleet_token_allowed(ws: WebSocket) -> bool:
     key = get_settings().fleet_token_key
     if not key:
         return True
-    token = ws.headers.get(FLEET_TOKEN_HEADER)
-    if not isinstance(token, str):
+    # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
+    # matches the stored key verbatim, and the ASGI server passes the name
+    # through with whatever casing the client sent. Any worker spelling this
+    # X-Fleet-Token would otherwise be refused as if it sent nothing.
+    presented = next(
+        (value for name, value in ws.headers.raw
+         if name.lower() == FLEET_TOKEN_HEADER.encode()),
+        None,
+    )
+    if presented is None:
         return False
-    return hmac.compare_digest(token.encode("utf-8", "surrogateescape"),
-                               key.encode("utf-8", "surrogateescape"))
+    return hmac.compare_digest(presented, key.encode("utf-8", "surrogateescape"))
 
 
 class ProtocolError(Exception):
