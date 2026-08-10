@@ -143,6 +143,7 @@
 	let recenterTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportReady = $state(false);
+	let initialViewportAnchor: { rootId: string; x: number; y: number } | null = null;
 	let inertiaFrame = 0;
 	let panPointerId = $state<number | null>(null);
 	let panStart = { x: 0, y: 0, translateX: 0, translateY: 0 };
@@ -568,6 +569,22 @@
 	});
 
 	$effect(() => {
+		if (!viewportReady || initialViewportAnchor === null) return;
+		const current = rootWorldPosition(initialViewportAnchor.rootId);
+		if (current) {
+			const rebased = rebaseLineageViewport(
+				{ translateX, translateY, scale },
+				initialViewportAnchor,
+				current
+			);
+			translateX = rebased.translateX;
+			translateY = rebased.translateY;
+			initialViewportAnchor = { rootId: initialViewportAnchor.rootId, ...current };
+		}
+		if (!rootsHaveMore && !rootsLoading) initialViewportAnchor = null;
+	});
+
+	$effect(() => {
 		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
@@ -786,23 +803,26 @@
 		saveLineageTreeOffsets(treeOffsets);
 	}
 
-	function recenterNewest(animate = true): void {
+	function recenterNewest(animate = true): { rootId: string; x: number; y: number } | null {
 		const newest = [...persistedRoots].sort(
 			(left, right) =>
 				right.created_at.localeCompare(left.created_at) || left.id.localeCompare(right.id)
 		)[0];
-		if (!newest) return;
+		if (!newest) return null;
 		const packed = packedTrees.find((tree) => tree.rootId === newest.id);
 		const rootNode = packed?.layout.nodes.find((node) => node.id === packed.layout.rootId);
-		if (!packed || !rootNode) return;
+		if (!packed || !rootNode) return null;
 		stopInertia();
 		if (animate && !reducedMotion) {
 			recentering = true;
 			if (recenterTimer) clearTimeout(recenterTimer);
 			recenterTimer = setTimeout(() => (recentering = false), 260);
 		}
-		translateX = clampLineageCoordinate(viewportWidth / 2 - (packed.x + rootNode.x) * scale);
-		translateY = clampLineageCoordinate(viewportHeight / 2 - (packed.y + rootNode.y) * scale);
+		const x = packed.x + rootNode.x;
+		const y = packed.y + rootNode.y;
+		translateX = clampLineageCoordinate(viewportWidth / 2 - x * scale);
+		translateY = clampLineageCoordinate(viewportHeight / 2 - y * scale);
+		return { rootId: newest.id, x, y };
 	}
 
 	function restoredViewportIsUsable(): boolean {
@@ -875,7 +895,7 @@
 		}
 		if (!restoredViewportIsUsable()) {
 			scale = 1;
-			recenterNewest(false);
+			initialViewportAnchor = recenterNewest(false);
 		}
 		viewportReady = true;
 	}

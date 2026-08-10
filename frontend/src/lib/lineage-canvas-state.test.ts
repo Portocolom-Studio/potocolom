@@ -9,6 +9,7 @@ import {
 	retainedRetryBudget,
 	rebaseLineageViewport
 } from './lineage-canvas-state.ts';
+import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
 import type { Generation } from './studio.svelte.ts';
 
 function generation(id: string, assetId: string | null, sourceAssetId: string | null): Generation {
@@ -101,6 +102,45 @@ test('restored viewport keeps its anchor at the saved screen position', () => {
 			{ x: 100, y: 20 }
 		),
 		{ translateX: 30, translateY: 140 }
+	);
+});
+
+test('initial viewport keeps its centered root through a second root page', () => {
+	const tree = (index: number, createdAt: string) => {
+		const id = `root-${index}`;
+		return {
+			rootId: id,
+			createdAt,
+			hasDerivatives: false,
+			layout: layoutLineageTree({ id, createdAt, data: null, children: [] })
+		};
+	};
+	const firstPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index, `2026-08-09T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const secondPage = Array.from({ length: 51 }, (_, index) =>
+		tree(index + 50, `2026-08-10T00:00:${String(50 - index).padStart(2, '0')}Z`)
+	);
+	const centeredRootId = firstPage[0].rootId;
+	const rootPosition = (forest: ReturnType<typeof packLineageForest<null>>) => {
+		const packed = forest.find((item) => item.rootId === centeredRootId);
+		const root = packed?.layout.nodes.find((node) => node.id === centeredRootId);
+		assert.ok(packed && root);
+		return { x: packed.x + root.x, y: packed.y + root.y };
+	};
+	const firstAnchor = rootPosition(packLineageForest(firstPage));
+	const viewport = {
+		translateX: 700 - firstAnchor.x,
+		translateY: 400 - firstAnchor.y,
+		scale: 1
+	};
+	const currentAnchor = rootPosition(packLineageForest([...firstPage, ...secondPage]));
+
+	assert.notDeepEqual(currentAnchor, firstAnchor);
+	const rebased = rebaseLineageViewport(viewport, firstAnchor, currentAnchor);
+	assert.deepEqual(
+		{ x: currentAnchor.x + rebased.translateX, y: currentAnchor.y + rebased.translateY },
+		{ x: 700, y: 400 }
 	);
 });
 
