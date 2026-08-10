@@ -51,7 +51,9 @@ fi
 # The campaign then loops "GPU busy" all night with a fresh heartbeat and no
 # error, which has already cost this program two hours once. Name the process
 # rather than making the operator find it.
-holders="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $2" "$1}' | sort -u)"
+# `|| true` because lsof exits 1 when nothing holds the device, and under
+# `set -e` with pipefail that aborts the launcher in the GOOD case.
+holders="$(lsof /dev/kfd 2>/dev/null | awk 'NR>1 && $1 !~ /rocm-smi|amdgpu/ {print $2" "$1}' | sort -u || true)"
 if [[ -n "$holders" ]]; then
 	echo "refusing to launch: another process already holds the GPU." >&2
 	echo "$holders" | while read -r pid name; do
