@@ -35,6 +35,13 @@ export function decideLineageLiveArrival(
 	return !starredOnly || rootIsStarred ? 'insert-root' : 'ignore';
 }
 
+export function shouldDimLineageEdge(
+	selectedNodeExists: boolean,
+	edgeIsOnSelectedPath: boolean
+): boolean {
+	return selectedNodeExists && !edgeIsOnSelectedPath;
+}
+
 export type OptimisticStarMutation = {
 	id: string;
 	wasStarred: boolean;

@@ -58,6 +58,7 @@
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
+		shouldDimLineageEdge,
 		shouldReloadLineageRootsAfterStarToggle,
 		type InitialLineageViewportAnchor
 	} from '$lib/lineage-canvas-state';
@@ -1396,8 +1397,10 @@
 						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
 							<g
 								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={studio.lineageSelectedAssetId !== null &&
-									!selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={shouldDimLineageEdge(
+									selectedNode !== null,
+									selectedPathEdgeIds.has(edge.id)
+								)}
 							>
 								<path
 									class="lineage-edge"

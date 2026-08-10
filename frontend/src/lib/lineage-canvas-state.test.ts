@@ -15,6 +15,7 @@ import {
 	rebaseLineageViewport,
 	rollbackOptimisticStarMutation,
 	shouldReloadLineageRootsAfterStarToggle,
+	shouldDimLineageEdge,
 	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
 import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
@@ -329,6 +330,12 @@ test('star toggle reloads roots only in the unchanged starred filter epoch', () 
 	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 6, true), false);
 	assert.equal(shouldReloadLineageRootsAfterStarToggle(false, true, 4, 4, true), false);
 	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, false, 4, 4, true), false);
+});
+
+test('edges are not dimmed when the selected node left the filtered forest', () => {
+	assert.equal(shouldDimLineageEdge(false, false), false);
+	assert.equal(shouldDimLineageEdge(true, false), true);
+	assert.equal(shouldDimLineageEdge(true, true), false);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
