@@ -31,7 +31,7 @@
 </script>
 
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import ImageOffIcon from '@lucide/svelte/icons/image-off';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
@@ -48,11 +48,13 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		decideInitialLineageViewportFollow,
 		decideLineageTreeLoad,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
-		retainedRetryBudget
+		retainedRetryBudget,
+		type InitialLineageViewportAnchor
 	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
@@ -143,7 +145,7 @@
 	let recenterTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportReady = $state(false);
-	let initialViewportAnchor: { rootId: string; x: number; y: number } | null = null;
+	let initialViewportAnchor: InitialLineageViewportAnchor | null = null;
 	let inertiaFrame = 0;
 	let panPointerId = $state<number | null>(null);
 	let panStart = { x: 0, y: 0, translateX: 0, translateY: 0 };
@@ -570,18 +572,20 @@
 
 	$effect(() => {
 		if (!viewportReady || initialViewportAnchor === null) return;
-		const current = rootWorldPosition(initialViewportAnchor.rootId);
-		if (current) {
-			const rebased = rebaseLineageViewport(
-				{ translateX, translateY, scale },
-				initialViewportAnchor,
-				current
-			);
-			translateX = rebased.translateX;
-			translateY = rebased.translateY;
-			initialViewportAnchor = { rootId: initialViewportAnchor.rootId, ...current };
-		}
-		if (!rootsHaveMore && !rootsLoading) initialViewportAnchor = null;
+		const storedAnchor = initialViewportAnchor;
+		const current = rootWorldPosition(storedAnchor.rootId);
+		// The viewport translation is input to the pure decision, but not a reason
+		// to rerun this effect after it writes the decision back.
+		const viewport = untrack(() => ({ translateX, translateY, scale }));
+		const decision = decideInitialLineageViewportFollow(
+			viewport,
+			storedAnchor,
+			current,
+			rootsLoading
+		);
+		if (viewport.translateX !== decision.translateX) translateX = decision.translateX;
+		if (viewport.translateY !== decision.translateY) translateY = decision.translateY;
+		if (initialViewportAnchor !== decision.anchor) initialViewportAnchor = decision.anchor;
 	});
 
 	$effect(() => {

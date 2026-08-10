@@ -30,6 +30,45 @@ export function rebaseLineageViewport(
 	};
 }
 
+export type InitialLineageViewportAnchor = {
+	rootId: string;
+	x: number;
+	y: number;
+};
+
+/** Follow the root chosen by the initial automatic centring while one paging
+ * burst repacks the forest. The final settled position is applied before the
+ * anchor is dropped, so later user-driven pages and live arrivals cannot pull
+ * the viewport back to a choice the user may already have left behind. */
+export function decideInitialLineageViewportFollow(
+	viewport: { translateX: number; translateY: number; scale: number },
+	storedAnchor: InitialLineageViewportAnchor,
+	currentAnchor: { x: number; y: number } | null,
+	pagingInFlight: boolean
+): {
+	translateX: number;
+	translateY: number;
+	anchor: InitialLineageViewportAnchor | null;
+} {
+	if (currentAnchor === null) {
+		return {
+			translateX: viewport.translateX,
+			translateY: viewport.translateY,
+			anchor: pagingInFlight ? storedAnchor : null
+		};
+	}
+
+	const rebased = rebaseLineageViewport(viewport, storedAnchor, currentAnchor);
+	const anchor =
+		storedAnchor.x === currentAnchor.x && storedAnchor.y === currentAnchor.y
+			? storedAnchor
+			: { rootId: storedAnchor.rootId, ...currentAnchor };
+	return {
+		...rebased,
+		anchor: pagingInFlight ? anchor : null
+	};
+}
+
 export type LineageTreeLoadState = {
 	status: 'loading' | 'loaded' | 'error';
 	retried?: boolean;

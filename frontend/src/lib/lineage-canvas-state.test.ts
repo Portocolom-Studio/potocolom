@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
 	LINEAGE_WORLD_LIMIT,
 	clampLineageCoordinate,
+	decideInitialLineageViewportFollow,
 	decideLineageTreeLoad,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
@@ -137,11 +138,29 @@ test('initial viewport keeps its centered root through a second root page', () =
 	const currentAnchor = rootPosition(packLineageForest([...firstPage, ...secondPage]));
 
 	assert.notDeepEqual(currentAnchor, firstAnchor);
-	const rebased = rebaseLineageViewport(viewport, firstAnchor, currentAnchor);
+	const decision = decideInitialLineageViewportFollow(
+		viewport,
+		{ rootId: centeredRootId, ...firstAnchor },
+		currentAnchor,
+		true
+	);
 	assert.deepEqual(
-		{ x: currentAnchor.x + rebased.translateX, y: currentAnchor.y + rebased.translateY },
+		{ x: currentAnchor.x + decision.translateX, y: currentAnchor.y + decision.translateY },
 		{ x: 700, y: 400 }
 	);
+	assert.deepEqual(decision.anchor, { rootId: centeredRootId, ...currentAnchor });
+
+	const settled = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: decision.translateX, translateY: decision.translateY },
+		decision.anchor,
+		currentAnchor,
+		false
+	);
+	assert.deepEqual(
+		{ x: currentAnchor.x + settled.translateX, y: currentAnchor.y + settled.translateY },
+		{ x: 700, y: 400 }
+	);
+	assert.equal(settled.anchor, null);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
