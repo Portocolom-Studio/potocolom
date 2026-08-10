@@ -79,9 +79,14 @@ export function starredListSnapshotIsCurrent(
 	requestEpoch: number,
 	currentRequestEpoch: number,
 	mutationEpoch: number,
-	currentMutationEpoch: number
+	currentMutationEpoch: number,
+	mutationPending: boolean
 ): boolean {
-	return requestEpoch === currentRequestEpoch && mutationEpoch === currentMutationEpoch;
+	return (
+		requestEpoch === currentRequestEpoch &&
+		mutationEpoch === currentMutationEpoch &&
+		!mutationPending
+	);
 }
 
 export function shouldReloadLineageRootsAfterStarToggle(

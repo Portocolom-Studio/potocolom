@@ -309,10 +309,11 @@ test('failed star mutation rolls back only its generation', () => {
 	assert.deepEqual(rollbackOptimisticStarMutation(['b', 'c'], starB.mutation), ['c']);
 });
 
-test('starred list reload commits only at current request and mutation epochs', () => {
-	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4), false);
-	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4), false);
-	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4), true);
+test('starred list reload commits only at current epochs with no mutation pending', () => {
+	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4, false), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4, false), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, true), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, false), true);
 });
 
 test('star toggle reloads roots only in the unchanged starred filter epoch', () => {

@@ -326,6 +326,8 @@ const favoriteNotices = new Map<FavoriteNoticeKind, string>();
 // generation run in order so each one decides from the preceding result.
 let starredListRequestEpoch = 0;
 let starredMutationEpoch = 0;
+let starredMutationSequence = 0;
+const pendingStarredMutations = new Set<number>();
 const starredMutationQueues = new Map<string, Promise<boolean>>();
 
 function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): void {
@@ -644,7 +646,8 @@ export async function loadStarredGenerations(): Promise<void> {
 			requestEpoch,
 			starredListRequestEpoch,
 			mutationEpoch,
-			starredMutationEpoch
+			starredMutationEpoch,
+			pendingStarredMutations.size > 0
 		)
 	) {
 		return;
@@ -674,8 +677,11 @@ export function isStarred(id: string): boolean {
 
 async function performStarredToggle(id: string): Promise<boolean> {
 	const optimistic = beginOptimisticStarMutation(studio.starredIds, id);
+	const mutationToken = ++starredMutationSequence;
+	pendingStarredMutations.add(mutationToken);
 	starredMutationEpoch += 1;
 	studio.starredIds = optimistic.starredIds;
+	const settleMutation = () => pendingStarredMutations.delete(mutationToken);
 	const rollback = (): false => {
 		studio.starredIds = rollbackOptimisticStarMutation(studio.starredIds, optimistic.mutation);
 		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
@@ -685,6 +691,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		const response = await fetch(`/api/v1/generations/${id}/star`, {
 			method: optimistic.mutation.wasStarred ? 'DELETE' : 'POST'
 		});
+		settleMutation();
 		if (!response.ok) return rollback();
 		setFavoriteNotice('save', null);
 		try {
@@ -694,6 +701,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		}
 		return true;
 	} catch {
+		settleMutation();
 		return rollback();
 	}
 }
