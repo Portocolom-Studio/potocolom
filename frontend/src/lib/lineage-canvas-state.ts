@@ -15,6 +15,17 @@ export function clampLineageCoordinate(value: number): number {
 	return Math.min(LINEAGE_WORLD_LIMIT, Math.max(-LINEAGE_WORLD_LIMIT, value));
 }
 
+export function retainedLineageTreeOffsets<T>(
+	offsets: Record<string, T>,
+	loadedRootIds: ReadonlySet<string>,
+	rootsAreFiltered: boolean
+): Record<string, T> {
+	if (rootsAreFiltered) return offsets;
+	return Object.fromEntries(
+		Object.entries(offsets).filter(([rootId]) => loadedRootIds.has(rootId))
+	) as Record<string, T>;
+}
+
 export function lineageRootPageUrl(
 	limit: number,
 	cursor: string | null,

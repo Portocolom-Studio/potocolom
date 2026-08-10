@@ -55,6 +55,7 @@
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
+		retainedLineageTreeOffsets,
 		retainedRetryBudget,
 		type InitialLineageViewportAnchor
 	} from '$lib/lineage-canvas-state';
@@ -612,9 +613,7 @@
 	$effect(() => {
 		if (!rootsInitialized || rootsLoading || rootsHaveMore) return;
 		const rootIds = new Set(persistedRoots.map((root) => root.id));
-		const bounded = Object.fromEntries(
-			Object.entries(treeOffsets).filter(([rootId]) => rootIds.has(rootId))
-		);
+		const bounded = retainedLineageTreeOffsets(treeOffsets, rootIds, starredOnly);
 		if (Object.keys(bounded).length !== Object.keys(treeOffsets).length) {
 			treeOffsets = bounded;
 			saveLineageTreeOffsets(bounded);

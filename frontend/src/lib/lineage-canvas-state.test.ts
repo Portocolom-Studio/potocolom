@@ -8,6 +8,7 @@ import {
 	lineageRootPageUrl,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
+	retainedLineageTreeOffsets,
 	retainedRetryBudget,
 	rebaseLineageViewport
 } from './lineage-canvas-state.ts';
@@ -278,6 +279,19 @@ test('expired viewport anchor falls back after root paging settles', () => {
 
 	assert.equal(decision.anchor, null);
 	assert.equal(decision.fallbackToNewest, true);
+});
+
+test('filtered root loads retain offsets for roots hidden by the filter', () => {
+	const offsets = {
+		'starred-root': { x: 120, y: 80 },
+		'unstarred-root': { x: -240, y: 160 }
+	};
+	const visibleRootIds = new Set(['starred-root']);
+
+	assert.strictEqual(retainedLineageTreeOffsets(offsets, visibleRootIds, true), offsets);
+	assert.deepEqual(retainedLineageTreeOffsets(offsets, visibleRootIds, false), {
+		'starred-root': { x: 120, y: 80 }
+	});
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
