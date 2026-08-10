@@ -6,6 +6,7 @@
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import LineageCanvas from '$lib/components/lineage-canvas.svelte';
 	import ModelPanel from '$lib/components/model-panel.svelte';
+	import RealtimeCanvasPanel from '$lib/components/realtime-canvas-panel.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ServiceSketchPanel from '$lib/components/service-sketch-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
@@ -108,7 +109,9 @@
 						<ModelPanel />
 					{:else if studio.shellView === 'images'}
 						<LineageCanvas />
-					{:else if studio.shellView === 'edit_image' || studio.shellView === 'image_to_text' || studio.shellView === 'realtime_canvas'}
+					{:else if studio.shellView === 'realtime_canvas'}
+						<RealtimeCanvasPanel />
+					{:else if studio.shellView === 'edit_image' || studio.shellView === 'image_to_text'}
 						<ServiceSketchPanel mode={studio.shellView} />
 					{:else}
 						<GeneratePanel mode={studio.shellView} />
