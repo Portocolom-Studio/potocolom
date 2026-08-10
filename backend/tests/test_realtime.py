@@ -25,8 +25,21 @@ from app.tables import UsageEvent
 client = TestClient(app)
 
 
-def manifest(model_id="sd-sim") -> dict:
-    return {"id": model_id, "name": model_id, "capabilities": ["realtime"], "parameters": {}}
+def manifest(model_id="sd-sim", parameters=None) -> dict:
+    return {"id": model_id, "name": model_id, "capabilities": ["realtime"],
+            "parameters": {} if parameters is None else parameters}
+
+
+# The default manifest above takes any params, which is more permissive than
+# every shipped realtime model: sd-turbo, sdxl-turbo and vega-rt all require a
+# prompt. A client built against the permissive shape opens sessions in the
+# tests and the simulator, then is refused 4000 by the real thing, so the
+# refusal is pinned here with a manifest shaped like the shipped ones.
+REQUIRES_PROMPT = {
+    "type": "object",
+    "properties": {"prompt": {"type": "string"}},
+    "required": ["prompt"],
+}
 
 
 class FakeHeaders:
@@ -71,12 +84,13 @@ class FakeSocket:
         self.close_code = code
 
 
-def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slots=1):
+def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slots=1,
+          parameters=None):
     return {
         "type": "hello",
         "protocol_version": version,
         "worker_id": worker_id,
-        "models": [manifest(m) for m in models],
+        "models": [manifest(m, parameters) for m in models],
         "realtime_slots": slots,
     }
 
@@ -184,6 +198,35 @@ def test_unknown_model_is_refused():
         response = ws.receive_json()
         assert response["type"] == "error"
         assert response["code"] == 4004
+
+
+def test_open_without_the_required_prompt_is_refused():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-prompt", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            response = browser_ws.receive_json()
+            assert response["type"] == "error"
+            assert response["code"] == 4000
+
+
+def test_open_carrying_the_required_prompt_opens_the_session():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-prompt-ok", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({
+                "type": "open",
+                "model_id": "sd-sim",
+                "params": {"prompt": "a red house on a hill"},
+            })
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
 
 
 def test_session_and_frame_relay_both_directions():
