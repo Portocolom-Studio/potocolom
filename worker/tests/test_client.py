@@ -10,6 +10,7 @@ from worker.client import (
     FRAME_HEADER_BYTES,
     RegistrationRejected,
     SessionRunner,
+    run,
     run_job,
     serve_connection,
 )
@@ -114,6 +115,44 @@ def test_rejected_registration_raises_cleanly():
 
     with pytest.raises(RegistrationRejected, match="minimum supported version 3"):
         asyncio.run(scenario())
+
+
+def test_run_sends_the_fleet_token_as_a_handshake_header(monkeypatch):
+    calls = []
+
+    class Connection:
+        def __init__(self, url, **kwargs):
+            calls.append((url, kwargs))
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_serve_connection(*args):
+        return None
+
+    class StopReconnect(Exception):
+        pass
+
+    async def stop_sleep(_delay):
+        raise StopReconnect
+
+    settings = Settings(worker_id="w-token", fleet_token="fleet-secret")
+    monkeypatch.setattr("worker.client.get_settings", lambda: settings)
+    monkeypatch.setattr("worker.client.build_runtime",
+                        lambda _settings: ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    monkeypatch.setattr("worker.client.websockets.connect", Connection)
+    monkeypatch.setattr("worker.client.serve_connection", fake_serve_connection)
+    monkeypatch.setattr("worker.client.asyncio.sleep", stop_sleep)
+
+    with pytest.raises(StopReconnect):
+        asyncio.run(run())
+
+    assert calls == [(settings.api_url, {"additional_headers": {
+        "X-Fleet-Token": "fleet-secret",
+    }})]
 
 
 class FakeUpload:

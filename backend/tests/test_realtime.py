@@ -16,6 +16,7 @@ from app.realtime import (
     GENERATED_FRAME,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
+    fleet_token_allowed,
     origin_allowed,
 )
 from app.settings import get_settings
@@ -38,6 +39,14 @@ class FakeHeaders:
 
     def __init__(self, origin):
         raw = [] if origin is None else [(b"origin", origin.encode())]
+        self.headers = Headers(raw=raw)
+
+
+class FakeTokenHeaders:
+    """Stands in for a WebSocket when only the fleet token header matters."""
+
+    def __init__(self, token):
+        raw = [] if token is None else [(b"x-fleet-token", token.encode("utf-8"))]
         self.headers = Headers(raw=raw)
 
 
@@ -71,6 +80,54 @@ def test_version_gate_rejects_older_than_n_minus_1():
         response = ws.receive_json()
         assert response["type"] == "rejected"
         assert response["min_supported_version"] == MIN_SUPPORTED_VERSION
+
+
+def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    with client.websocket_connect(
+        "/api/v1/fleet", headers={"x-fleet-token": "fleet-secret"}
+    ) as ws:
+        ws.send_json(hello(worker_id="w-token-ok"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+@pytest.mark.parametrize("token", ["wrong-secret", None, "", "fleet-secret "])
+def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
+    """Assert the worker never registers, not merely that the socket closed.
+
+    Exiting a websocket_connect block raises WebSocketDisconnect on its own,
+    so `pytest.raises` around an empty body passes with the check removed
+    entirely. Drive the handshake and prove nothing was admitted.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    headers = {} if token is None else {"x-fleet-token": token}
+    worker_id = "w-token-bad"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/v1/fleet", headers=headers) as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
+
+
+def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
+    """A non-ASCII secret cannot work, and must fail as a refusal not a crash.
+
+    compare_digest rejects two str arguments unless both are ASCII, so
+    comparing the strings would raise here. It cannot be made to work either:
+    an HTTP header is latin-1 on the wire and httpx refuses to send a
+    non-ASCII value at all, so the operator is warned at startup instead
+    (app/main.py) and the documented contract is an ASCII secret.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "cl\u00e9-secr\u00e8te")
+    for presented in ("cl\u00e9-secr\u00e8te", "anything", "", None):
+        assert fleet_token_allowed(FakeTokenHeaders(presented)) is False
+
+
+def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-token-unset"))
+        assert ws.receive_json()["type"] == "registered"
 
 
 def test_version_gate_accepts_n_minus_1():

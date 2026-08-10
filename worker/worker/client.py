@@ -419,7 +419,10 @@ async def run() -> None:
     delay = BACKOFF_INITIAL
     while True:
         try:
-            async with websockets.connect(settings.api_url) as ws:
+            async with websockets.connect(
+                settings.api_url,
+                additional_headers={"X-Fleet-Token": settings.fleet_token},
+            ) as ws:
                 delay = BACKOFF_INITIAL
                 await serve_connection(ws, settings, manifests, engine)
         except RegistrationRejected as error:
