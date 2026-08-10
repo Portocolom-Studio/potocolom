@@ -353,6 +353,120 @@ Keepers scoring 4 or 5 are exported to
 `.local/illusion-reliability/keepers/window-2026-08/` as copies with both
 orientations and the printable prime.
 
+## Window 2: results
+
+Phase `window2`, 98 entries producing 206 final-stage observations, finished in
+about 44 hours with zero failed cells. Its plan is
+`.local/illusion-reliability/campaigns/window2/PLAN.md`; the decision rules
+below were fixed in writing before any image was seen.
+
+Two things changed in the design, and both mattered more than the settings
+under test. Dream arms now fork from ONE SDS state, so a mode or negative-prompt
+contrast differs in exactly the thing being contrasted. And the review tool
+shows both views of one image together, scored 0-5, with stage, mode and seed
+hidden.
+
+Overall keep rate is 79/206, 38.3 percent, mean score 1.85. That is not a
+corpus-wide yield: 144 of the 206 observations are the six PROVEN pairs, so the
+number is inflated by design. The comparable figure is block C, 18 previously
+untested pairs at one seed, which keeps 11/36, 30.6 percent.
+
+### The predeclared rules
+
+| Rule | Threshold | Measured | Verdict |
+|---|---|---|---|
+| Negative prompt | frame better by >= 1 category in >= 50% of A bases | 8.5% (6 better, 5 worse, 60 unchanged of 71) | not adopted |
+| Colour | oil keeps >= 80% of `reference_sketch`'s rate | 71.4% (oil 34.7%, sketch 48.6%) | not adopted |
+| Dream schedule | one round retained unless beaten on both measures | one round 2/4 and mean 3.00; truncated 1/4 and 1.75; full 8 rounds 0/4 and 0.25 | one round retained |
+
+The negative prompt does raise scores, by +10 keepers and +0.40 mean, but the
+paired sign test gives p=0.14 and the predeclared criterion was about frames.
+On `reference_sketch` it also trades sideways rather than cleanly: `minor` falls
+from 11 to 6 while `disqualifying` rises from 14 to 17.
+
+Colour is delivered in 78/78 oil arms, so the medium works. It costs keepers,
+which is what fails the rule.
+
+The Dream schedule comparison is four matched pairs per arm, so it settles
+nothing on its own. It does reproduce window 1's finding in the harshest form
+seen yet: at eight rounds, `wolf_raven` and `elephant_swan` both go from 5 to 0.
+
+### Joint Dream wins, and window 1 could not have seen it
+
+| Comparison | Pairing | joint up / down / tied | sign test |
+|---|---|---|---|
+| block A | within base and negative setting, one shared SDS state | 38 / 12 / 22 | p = 0.0003 |
+| blocks C and D | within pair and seed | 15 / 3 / 6 | p = 0.0075 |
+
+Campaign-wide, joint keeps 49.5 percent against independent's 28.0 percent, mean
+2.40 against 1.34. C and D are an independent replication of A on different
+pairs and a different seed, and the direction holds in every block.
+
+Window 1 called this parity (48/59 with 163 ties) and was not wrong on its own
+data. Its two modes came from separate runs with separate SDS states, so the
+comparison carried the whole run-to-run variance. Forking both arms from one
+state is the entire difference. The lesson is about the design, not the setting.
+
+This does not overturn A6. Joint Dream still collapses pairs whose subjects
+cannot be one image, and the calibration pair is still the example. It wins on
+average across a corpus; it is not safe unattended on an unknown pair.
+
+### Frames are a property of the medium, not of the prompt
+
+| Style | none | minor | disqualifying |
+|---|---|---|---|
+| `oil`, n=78 | 72 | 6 | 0 |
+| `reference_sketch`, n=127 | 36 | 35 | 56 |
+
+Same pairs, same seeds, same arms in block A. A prompt that asks for a pencil
+sketch gets the paper it is drawn on: hands, desk, torn edges, sketchbook
+borders. Asking for those things NOT to appear moved almost nothing, while
+changing the medium removed them entirely.
+
+So the frame complaint and the colour complaint are the same trade seen from two
+sides. Oil is clean and reads worse; pencil reads better and draws its own
+paper. Neither rule adopted anything, and that trade is now measured rather than
+argued.
+
+### Colour is measured, not judged
+
+The review tool used to ask two colour questions per final item. Both were
+removed:
+
+- `colour_consistent_between_views` cannot be answered no. `derived_2` is
+  `derived_1` rotated 180, and the largest single-channel disagreement anywhere
+  in window 2 is 1/255, on at most 0.02 percent of pixels.
+- `colour_delivered` is mean chroma. Oil's minimum is 30.7 against
+  `reference_sketch`'s median of 9.2.
+
+Both are computed by
+`.local/illusion-reliability/campaigns/window2/review/measure-colour.py` into
+`colour-measured.jsonl`, keyed `(spec_hash, stage, arm)` so it joins the
+ratings. The rating rows keep the columns, filled with `na`.
+
+This halved the keystrokes per item, which matters: window 1 measured the score
+drifting from 1.52 in the first quintile to 0.47 in the last.
+
+Chroma also found something nobody asked for. Twenty-three `reference_sketch`
+items leaked colour above threshold, and they keep at 26.1 percent against 45.7
+percent for the monochrome ones. Colour appearing in a pencil prompt is a
+symptom, not a neutral variation.
+
+### Block R: no rescues
+
+The three RESCUE candidates were re-run under oil at both modes. None reached a
+keeper: `galleon_whale` and `koi_moon` peak at 2 under joint, `hummingbird_fuchsia`
+stays at 0 in both modes. Recorded as "not rescued under this recipe", which is
+one recipe and one seed, not a verdict on the pairs.
+
+### The best cell, and why it is not a conclusion
+
+`reference_sketch` + joint + negative prompt on came in at 72.2 percent keep and
+mean 3.28, far above the other seven cells in block A. It also carries the most
+disqualifying frames of any cell, 10 of 18. It is the best of eight cells at
+n=18, so the margin includes selection. It is window 3's hypothesis, not a
+result.
+
 ## Running it
 
 Preflight, launch and review are in the campaign runbook at
