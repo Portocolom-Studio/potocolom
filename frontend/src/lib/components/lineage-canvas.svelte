@@ -363,7 +363,9 @@
 			initializeFrame = requestAnimationFrame(initializeViewport);
 		} else if (loaded && recenterAfterFilter) {
 			recenterAfterFilter = false;
-			initializeFrame = requestAnimationFrame(() => recenterNewest(false));
+			initializeFrame = requestAnimationFrame(() => {
+				initialViewportAnchor = recenterNewest(false);
+			});
 		}
 	}
 

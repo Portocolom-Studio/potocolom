@@ -172,6 +172,70 @@ test('initial viewport keeps its centered root through a second root page', () =
 	assert.equal(settled.anchor, null);
 });
 
+test('filter reload follows its recentered root through later root pages', () => {
+	const tree = (index: number, createdAt: string) => {
+		const id = `filter-root-${index}`;
+		return {
+			rootId: id,
+			createdAt,
+			hasDerivatives: false,
+			layout: layoutLineageTree({ id, createdAt, data: null, children: [] })
+		};
+	};
+	const firstPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index, `2026-08-09T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const secondPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index + 50, `2026-08-10T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const terminalPage = Array.from({ length: 49 }, (_, index) =>
+		tree(index + 100, `2026-08-11T00:00:${String(48 - index).padStart(2, '0')}Z`)
+	);
+	const recenteredRootId = firstPage[0].rootId;
+	const rootPosition = (forest: ReturnType<typeof packLineageForest<null>>) => {
+		const packed = forest.find((item) => item.rootId === recenteredRootId);
+		const root = packed?.layout.nodes.find((node) => node.id === recenteredRootId);
+		assert.ok(packed && root);
+		return { x: packed.x + root.x, y: packed.y + root.y };
+	};
+	const recenteredAnchor = rootPosition(packLineageForest(firstPage));
+	const viewport = {
+		translateX: 700 - recenteredAnchor.x,
+		translateY: 400 - recenteredAnchor.y,
+		scale: 1
+	};
+	const secondAnchor = rootPosition(packLineageForest([...firstPage, ...secondPage]));
+
+	assert.notDeepEqual(secondAnchor, recenteredAnchor);
+	const secondDecision = decideInitialLineageViewportFollow(
+		viewport,
+		{ rootId: recenteredRootId, ...recenteredAnchor },
+		secondAnchor,
+		true
+	);
+	assert.deepEqual(secondDecision.anchor, { rootId: recenteredRootId, ...secondAnchor });
+	assert.ok(secondDecision.anchor);
+
+	const terminalAnchor = rootPosition(
+		packLineageForest([...firstPage, ...secondPage, ...terminalPage])
+	);
+	assert.notDeepEqual(terminalAnchor, secondAnchor);
+	const terminalDecision = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: secondDecision.translateX, translateY: secondDecision.translateY },
+		secondDecision.anchor,
+		terminalAnchor,
+		false
+	);
+	assert.deepEqual(
+		{
+			x: terminalAnchor.x + terminalDecision.translateX,
+			y: terminalAnchor.y + terminalDecision.translateY
+		},
+		{ x: 700, y: 400 }
+	);
+	assert.equal(terminalDecision.anchor, null);
+});
+
 test('a chain-free root is synthesised once and never fetched', () => {
 	assert.equal(decideLineageTreeLoad(false, undefined), 'synthesize');
 	assert.equal(decideLineageTreeLoad(false, { status: 'loaded' }), 'skip');
