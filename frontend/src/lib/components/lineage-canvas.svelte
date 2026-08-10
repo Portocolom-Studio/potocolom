@@ -42,6 +42,7 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
@@ -50,6 +51,7 @@
 		clampLineageCoordinate,
 		decideInitialLineageViewportFollow,
 		decideLineageTreeLoad,
+		lineageRootPageUrl,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
@@ -76,11 +78,13 @@
 		filterTextToImageModels,
 		filterUpscaleModels,
 		generationById,
+		isStarred,
 		openService,
 		saveLineageTreeOffsets,
 		saveLineageViewport,
 		selectGeneration,
 		studio,
+		toggleStarred,
 		type Generation,
 		type GenerationSubtree,
 		type LineageEntry
@@ -130,6 +134,9 @@
 	let rootsInitialized = $state(false);
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
+	let starredOnly = $state(false);
+	let rootsFilterEpoch = 0;
+	let recenterAfterFilter = false;
 	let anchorSearchPages = 0;
 	let initializeFrame = 0;
 	let treeCache = $state(new Map(sessionTreeCache));
@@ -243,6 +250,9 @@
 		selectedData?.generation ??
 			(selectedData?.entry.job_id ? (generationById(selectedData.entry.job_id) ?? null) : null)
 	);
+	const selectedIsStarred = $derived(
+		selectedGeneration !== null && isStarred(selectedGeneration.id)
+	);
 	const selectedAsset = $derived(
 		selectedGeneration?.assets.find((asset) => asset.id === studio.lineageSelectedAssetId) ?? null
 	);
@@ -321,16 +331,21 @@
 
 	async function loadRoots(): Promise<void> {
 		if (rootsLoading || (!rootsHaveMore && roots.length > 0)) return;
+		const filterEpoch = rootsFilterEpoch;
+		const filterStarredOnly = starredOnly;
 		rootsLoading = true;
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
-		const cursorQuery = cursor ? `&cursor=${cursor}` : '';
 		let loaded = false;
 		try {
+			// Starred mode selects starred roots, then keeps each returned root's
+			// complete subtree. Filtering descendants individually would sever the
+			// provenance that makes this a forest rather than a list of cards.
 			const page = await fetchCanvasJson<Generation[]>(
-				`/api/v1/generations?roots_only=true&limit=${ROOT_LIMIT}${cursorQuery}`,
+				lineageRootPageUrl(ROOT_LIMIT, cursor ?? null, filterStarredOnly),
 				'history request failed'
 			);
+			if (filterEpoch !== rootsFilterEpoch) return;
 			const existing = new Set(roots.map((root) => root.id));
 			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
 			rootsHaveMore = page.length === ROOT_LIMIT;
@@ -338,11 +353,45 @@
 			loaded = true;
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
-			rootsFailed = true;
+			if (filterEpoch === rootsFilterEpoch) rootsFailed = true;
 		} finally {
-			if (canvasActive && canvasEpoch === canvasEpochSequence) rootsLoading = false;
+			if (canvasActive && canvasEpoch === canvasEpochSequence && filterEpoch === rootsFilterEpoch) {
+				rootsLoading = false;
+			}
 		}
-		if (loaded && !viewportReady) initializeFrame = requestAnimationFrame(initializeViewport);
+		if (loaded && !viewportReady) {
+			initializeFrame = requestAnimationFrame(initializeViewport);
+		} else if (loaded && recenterAfterFilter) {
+			recenterAfterFilter = false;
+			initializeFrame = requestAnimationFrame(() => recenterNewest(false));
+		}
+	}
+
+	function reloadRootsForFilter(value: boolean): void {
+		rootsFilterEpoch += 1;
+		starredOnly = value;
+		roots = [];
+		rootsLoading = false;
+		rootsInitialized = false;
+		rootsFailed = false;
+		rootsHaveMore = false;
+		recenterAfterFilter = viewportReady;
+		lastPageLoadWorld = { right: Number.NEGATIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
+		void loadRoots();
+	}
+
+	function setStarredOnly(value: boolean): void {
+		if (starredOnly === value) return;
+		reloadRootsForFilter(value);
+	}
+
+	async function toggleSelectedStar(): Promise<void> {
+		if (selectedGeneration === null) return;
+		const selectedWasRoot = roots.some((root) => root.id === selectedGeneration.id);
+		const removingFilteredRoot = starredOnly && selectedIsStarred && selectedWasRoot;
+		if ((await toggleStarred(selectedGeneration.id)) && removingFilteredRoot) {
+			reloadRootsForFilter(true);
+		}
 	}
 
 	// Arrival markers have to come back off again. Tiles unmount once they leave
@@ -1225,6 +1274,15 @@
 	>
 		<div class="absolute end-3 top-3 z-30 flex gap-1">
 			<Button
+				variant={starredOnly ? 'default' : 'secondary'}
+				size="sm"
+				aria-pressed={starredOnly}
+				onclick={() => setStarredOnly(!starredOnly)}
+			>
+				<StarIcon class={starredOnly ? 'fill-current' : ''} />
+				{t('app.images.starred_only')}
+			</Button>
+			<Button
 				variant="secondary"
 				size="icon-sm"
 				disabled={!hasTreeOffsets}
@@ -1281,7 +1339,7 @@
 			</div>
 		{:else if persistedRoots.length === 0}
 			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
-				{t('app.gen.result_hint')}
+				{starredOnly ? t('app.images.no_starred_roots') : t('app.gen.result_hint')}
 			</div>
 		{/if}
 
@@ -1343,6 +1401,7 @@
 			{#each visibleNodes as item (`${item.rootId}:${item.node.id}`)}
 				{@const data = item.node.data}
 				{@const shownImage = imageUrl(data, lod)}
+				{@const starred = data.entry.job_id !== null && isStarred(data.entry.job_id)}
 				<div
 					class="tile-shell"
 					class:is-new={newNodeIds.has(item.node.id)}
@@ -1356,7 +1415,7 @@
 						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
 						style={`--tile-pull: ${proximityScale(item)}`}
-						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
+						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
 						title={promptLabel(data)}
 						onfocus={() => (focusedNodeId = item.node.id)}
 						onblur={() => (focusedNodeId = null)}
@@ -1398,6 +1457,9 @@
 							{/if}
 						</span>
 						<span class="tree-content">
+							{#if starred}
+								<span class="node-star" aria-hidden="true"><StarIcon /></span>
+							{/if}
 							{#if shownImage !== null}
 								{#key shownImage}
 									<img
@@ -1412,6 +1474,9 @@
 							{/if}
 						</span>
 						<span class="card-content">
+							{#if starred}
+								<span class="node-star" aria-hidden="true"><StarIcon /></span>
+							{/if}
 							<span class="card-image">
 								{#if shownImage !== null}
 									{#key shownImage}
@@ -1517,6 +1582,15 @@
 			{/if}
 
 			<div class="border-border mb-4 grid gap-2 border-b pb-4">
+				<Button
+					variant="outline"
+					class="justify-start"
+					disabled={selectedGeneration === null}
+					onclick={() => void toggleSelectedStar()}
+				>
+					<StarIcon class={selectedIsStarred ? 'fill-current' : ''} />
+					{selectedIsStarred ? t('app.gen.unstar') : t('app.gen.star')}
+				</Button>
 				<Button
 					href={selectedAsset?.download_url}
 					variant="outline"
@@ -1877,6 +1951,29 @@
 		width: 24px;
 		height: 24px;
 		color: var(--muted-foreground);
+	}
+
+	.node-star {
+		position: absolute;
+		top: 5px;
+		left: 5px;
+		z-index: 2;
+		display: grid;
+		width: 22px;
+		height: 22px;
+		place-items: center;
+		border-radius: 999px;
+		color: var(--primary-foreground);
+		background: var(--primary);
+		box-shadow: 0 1px 4px color-mix(in oklch, var(--foreground) 20%, transparent);
+		pointer-events: none;
+	}
+
+	.node-star :global(svg) {
+		width: 12px;
+		height: 12px;
+		fill: currentColor;
+		color: inherit;
 	}
 
 	.lod-cards .lineage-tile {

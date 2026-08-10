@@ -649,38 +649,36 @@ export function isStarred(id: string): boolean {
 	return studio.starredIds.includes(id);
 }
 
-export function toggleStarred(id: string): void {
+export async function toggleStarred(id: string): Promise<boolean> {
 	const wasStarred = isStarred(id);
 	// Restoring the snapshot keeps a failed toggle from reordering the list, which
 	// rebuilding it through a Set would do.
 	const previous = studio.starredIds;
-	const rollback = () => {
+	const rollback = (): false => {
 		studio.starredIds = previous;
 		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
+		return false;
 	};
 	// The API orders favorites newest-first by starred_at, so a new star belongs at
 	// the front; appending would make it jump once the list reloads.
 	studio.starredIds = wasStarred
 		? studio.starredIds.filter((starredId) => starredId !== id)
 		: [id, ...studio.starredIds];
-	void fetch(`/api/v1/generations/${id}/star`, {
-		method: wasStarred ? 'DELETE' : 'POST'
-	})
-		.then(async (response) => {
-			if (!response.ok) {
-				rollback();
-				return;
-			}
-			setFavoriteNotice('save', null);
-			try {
-				await loadStarredGenerations();
-			} catch {
-				// The save succeeded; the next history refresh retries the list.
-			}
-		})
-		.catch(() => {
-			rollback();
+	try {
+		const response = await fetch(`/api/v1/generations/${id}/star`, {
+			method: wasStarred ? 'DELETE' : 'POST'
 		});
+		if (!response.ok) return rollback();
+		setFavoriteNotice('save', null);
+		try {
+			await loadStarredGenerations();
+		} catch {
+			// The save succeeded; the next history refresh retries the list.
+		}
+		return true;
+	} catch {
+		return rollback();
+	}
 }
 
 function closeGenerationStream(id: string): void {

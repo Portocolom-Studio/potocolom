@@ -763,6 +763,12 @@ The gallery's primary view is an infinite pannable canvas that lays generation h
 
 Rejected alternatives: a flat grid with a per-image lineage popover (hides the differentiator - the same base re-prompted five ways never becomes visible structure); a force-directed graph (unstable positions destroy the spatial memory a canvas exists to build; tidy trees are deterministic); a canvas or graph rendering library as a new dependency (the interaction set - transform-based pan and zoom, level-of-detail tiles, hover falloff - is already proven in-house by the landing hero field, and d3-hierarchy for layout ships with layerchart).
 
+## Starred canvas filter: roots select complete trees
+
+The canvas starred filter composes `starred=true` with `roots_only=true`. A starred root includes its complete subtree, including unstarred derivatives, because the tree is the canvas unit and those descendants provide the provenance and comparison context that makes the view useful. A starred derivative whose root is not starred does not appear in the filtered canvas. It remains available in favorites and can be reached in the unfiltered forest.
+
+Rejected alternatives: showing only individually starred nodes, which severs edges and turns a forest into disconnected cards; including every tree containing any starred descendant, which cannot be paginated by the existing root query and would require an ancestor-expansion API; treating `starred=true` as a replacement for `roots_only=true`, which returns list pages whose derivative rows cannot be packed as independent trees.
+
 ## Fleet token verification: static shared secret first, signed tokens with the cloud
 
 Fixes the order the two halves of `FLEET_TOKEN_KEY` land in. The unauthenticated fleet socket is disclosed in [README.md](../README.md) and [self-hosting.md](self-hosting.md) and mitigated by deployment posture; this entry covers authenticating it.
