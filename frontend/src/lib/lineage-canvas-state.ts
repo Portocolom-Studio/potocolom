@@ -35,6 +35,48 @@ export function decideLineageLiveArrival(
 	return !starredOnly || rootIsStarred ? 'insert-root' : 'ignore';
 }
 
+export type OptimisticStarMutation = {
+	id: string;
+	wasStarred: boolean;
+	previousIndex: number;
+};
+
+export function beginOptimisticStarMutation(
+	starredIds: string[],
+	id: string
+): { starredIds: string[]; mutation: OptimisticStarMutation } {
+	const previousIndex = starredIds.indexOf(id);
+	const wasStarred = previousIndex !== -1;
+	return {
+		starredIds: wasStarred
+			? starredIds.filter((starredId) => starredId !== id)
+			: [id, ...starredIds],
+		mutation: { id, wasStarred, previousIndex }
+	};
+}
+
+export function rollbackOptimisticStarMutation(
+	starredIds: string[],
+	mutation: OptimisticStarMutation
+): string[] {
+	if (!mutation.wasStarred) {
+		return starredIds.filter((starredId) => starredId !== mutation.id);
+	}
+	if (starredIds.includes(mutation.id)) return starredIds;
+	const restored = [...starredIds];
+	restored.splice(Math.min(mutation.previousIndex, restored.length), 0, mutation.id);
+	return restored;
+}
+
+export function starredListSnapshotIsCurrent(
+	requestEpoch: number,
+	currentRequestEpoch: number,
+	mutationEpoch: number,
+	currentMutationEpoch: number
+): boolean {
+	return requestEpoch === currentRequestEpoch && mutationEpoch === currentMutationEpoch;
+}
+
 export function lineageRootPageUrl(
 	limit: number,
 	cursor: string | null,

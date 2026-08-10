@@ -2,7 +2,12 @@
 // panel look at the same registry and history.
 
 import { t } from '$lib/i18n.svelte';
-import { clampLineageCoordinate } from '$lib/lineage-canvas-state';
+import {
+	beginOptimisticStarMutation,
+	clampLineageCoordinate,
+	rollbackOptimisticStarMutation,
+	starredListSnapshotIsCurrent
+} from '$lib/lineage-canvas-state';
 
 export type Model = {
 	id: string;
@@ -316,6 +321,12 @@ export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset
 
 type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
 const favoriteNotices = new Map<FavoriteNoticeKind, string>();
+// List snapshots are valid only if neither a newer list request nor an
+// optimistic mutation started while they were loading. Toggles for the same
+// generation run in order so each one decides from the preceding result.
+let starredListRequestEpoch = 0;
+let starredMutationEpoch = 0;
+const starredMutationQueues = new Map<string, Promise<boolean>>();
 
 function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): void {
 	if (message === null) {
@@ -613,6 +624,8 @@ export function reconcileStarredExtras(): void {
 }
 
 export async function loadStarredGenerations(): Promise<void> {
+	const requestEpoch = ++starredListRequestEpoch;
+	const mutationEpoch = starredMutationEpoch;
 	const favorites: Generation[] = [];
 	let cursor: string | null = null;
 	while (true) {
@@ -625,6 +638,16 @@ export async function loadStarredGenerations(): Promise<void> {
 		const nextCursor = page.at(-1)?.id;
 		if (!nextCursor || nextCursor === cursor) break;
 		cursor = nextCursor;
+	}
+	if (
+		!starredListSnapshotIsCurrent(
+			requestEpoch,
+			starredListRequestEpoch,
+			mutationEpoch,
+			starredMutationEpoch
+		)
+	) {
+		return;
 	}
 	studio.starredIds = favorites.map((generation) => generation.id);
 	const historyIds = new Set(studio.history.map((generation) => generation.id));
@@ -649,24 +672,18 @@ export function isStarred(id: string): boolean {
 	return studio.starredIds.includes(id);
 }
 
-export async function toggleStarred(id: string): Promise<boolean> {
-	const wasStarred = isStarred(id);
-	// Restoring the snapshot keeps a failed toggle from reordering the list, which
-	// rebuilding it through a Set would do.
-	const previous = studio.starredIds;
+async function performStarredToggle(id: string): Promise<boolean> {
+	const optimistic = beginOptimisticStarMutation(studio.starredIds, id);
+	starredMutationEpoch += 1;
+	studio.starredIds = optimistic.starredIds;
 	const rollback = (): false => {
-		studio.starredIds = previous;
+		studio.starredIds = rollbackOptimisticStarMutation(studio.starredIds, optimistic.mutation);
 		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
 		return false;
 	};
-	// The API orders favorites newest-first by starred_at, so a new star belongs at
-	// the front; appending would make it jump once the list reloads.
-	studio.starredIds = wasStarred
-		? studio.starredIds.filter((starredId) => starredId !== id)
-		: [id, ...studio.starredIds];
 	try {
 		const response = await fetch(`/api/v1/generations/${id}/star`, {
-			method: wasStarred ? 'DELETE' : 'POST'
+			method: optimistic.mutation.wasStarred ? 'DELETE' : 'POST'
 		});
 		if (!response.ok) return rollback();
 		setFavoriteNotice('save', null);
@@ -679,6 +696,21 @@ export async function toggleStarred(id: string): Promise<boolean> {
 	} catch {
 		return rollback();
 	}
+}
+
+export function toggleStarred(id: string): Promise<boolean> {
+	const previous = starredMutationQueues.get(id) ?? Promise.resolve(true);
+	const operation = previous.catch(() => false).then(() => performStarredToggle(id));
+	starredMutationQueues.set(id, operation);
+	void operation.then(
+		() => {
+			if (starredMutationQueues.get(id) === operation) starredMutationQueues.delete(id);
+		},
+		() => {
+			if (starredMutationQueues.get(id) === operation) starredMutationQueues.delete(id);
+		}
+	);
+	return operation;
 }
 
 function closeGenerationStream(id: string): void {

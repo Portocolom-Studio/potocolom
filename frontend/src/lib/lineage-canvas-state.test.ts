@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	LINEAGE_WORLD_LIMIT,
+	beginOptimisticStarMutation,
 	clampLineageCoordinate,
 	decideInitialLineageViewportFollow,
 	decideLineageLiveArrival,
@@ -11,7 +12,9 @@ import {
 	lineageTreeNeedsHistoryRefresh,
 	retainedLineageTreeOffsets,
 	retainedRetryBudget,
-	rebaseLineageViewport
+	rebaseLineageViewport,
+	rollbackOptimisticStarMutation,
+	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
 import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
 import type { Generation } from './studio.svelte.ts';
@@ -300,6 +303,23 @@ test('starred filter rejects unstarred live roots but still inspects descendants
 	assert.equal(decideLineageLiveArrival(true, true, true), 'insert-root');
 	assert.equal(decideLineageLiveArrival(true, false, false), 'insert-root');
 	assert.equal(decideLineageLiveArrival(false, true, false), 'inspect-descendant');
+});
+
+test('failed star mutation rolls back only its generation', () => {
+	const unstarA = beginOptimisticStarMutation(['a'], 'a');
+	assert.deepEqual(unstarA.starredIds, []);
+	const starB = beginOptimisticStarMutation(unstarA.starredIds, 'b');
+	assert.deepEqual(starB.starredIds, ['b']);
+
+	assert.deepEqual(rollbackOptimisticStarMutation(['a', 'b'], unstarA.mutation), ['a', 'b']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['b'], unstarA.mutation), ['a', 'b']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['b', 'c'], starB.mutation), ['c']);
+});
+
+test('starred list reload commits only at current request and mutation epochs', () => {
+	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4), true);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
