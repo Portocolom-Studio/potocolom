@@ -14,6 +14,7 @@ import {
 	retainedRetryBudget,
 	rebaseLineageViewport,
 	rollbackOptimisticStarMutation,
+	shouldReloadLineageRootsAfterStarToggle,
 	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
 import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
@@ -320,6 +321,14 @@ test('starred list reload commits only at current request and mutation epochs', 
 	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4), false);
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4), false);
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4), true);
+});
+
+test('star toggle reloads roots only in the unchanged starred filter epoch', () => {
+	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 4, true), true);
+	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 5, false), false);
+	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 6, true), false);
+	assert.equal(shouldReloadLineageRootsAfterStarToggle(false, true, 4, 4, true), false);
+	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, false, 4, 4, true), false);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {

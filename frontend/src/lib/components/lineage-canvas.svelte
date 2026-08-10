@@ -58,6 +58,7 @@
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
+		shouldReloadLineageRootsAfterStarToggle,
 		type InitialLineageViewportAnchor
 	} from '$lib/lineage-canvas-state';
 	import {
@@ -391,9 +392,19 @@
 
 	async function toggleSelectedStar(): Promise<void> {
 		if (selectedGeneration === null) return;
+		const filterEpoch = rootsFilterEpoch;
 		const selectedWasRoot = roots.some((root) => root.id === selectedGeneration.id);
-		const removingFilteredRoot = starredOnly && selectedIsStarred && selectedWasRoot;
-		if ((await toggleStarred(selectedGeneration.id)) && removingFilteredRoot) {
+		const filteredRootChanged = starredOnly && selectedWasRoot;
+		const succeeded = await toggleStarred(selectedGeneration.id);
+		if (
+			shouldReloadLineageRootsAfterStarToggle(
+				succeeded,
+				filteredRootChanged,
+				filterEpoch,
+				rootsFilterEpoch,
+				starredOnly
+			)
+		) {
 			reloadRootsForFilter(true);
 		}
 	}

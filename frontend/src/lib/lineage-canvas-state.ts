@@ -77,6 +77,21 @@ export function starredListSnapshotIsCurrent(
 	return requestEpoch === currentRequestEpoch && mutationEpoch === currentMutationEpoch;
 }
 
+export function shouldReloadLineageRootsAfterStarToggle(
+	mutationSucceeded: boolean,
+	filteredRootChanged: boolean,
+	startedFilterEpoch: number,
+	currentFilterEpoch: number,
+	starredOnly: boolean
+): boolean {
+	return (
+		mutationSucceeded &&
+		filteredRootChanged &&
+		startedFilterEpoch === currentFilterEpoch &&
+		starredOnly
+	);
+}
+
 export function lineageRootPageUrl(
 	limit: number,
 	cursor: string | null,
