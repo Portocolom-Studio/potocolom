@@ -103,14 +103,10 @@ def test_only_final_items_ask_the_complaint_fields(tmp_path) -> None:
     # SDS-end gets the score alone: four judgments on 400 items trades score
     # quality for answers nobody needs there.
     assert ask[("wolf_raven", "sds_end")] == ["score"]
-    # Pencil cannot deliver colour, so those questions are not asked at all.
+    # Colour is measured from the PNGs, not judged: the two views are the same
+    # pixels rotated, so they cannot disagree, and "is there colour" is chroma.
     assert ask[("wolf_raven", "final")] == ["score", "frame_artifact"]
-    assert ask[("koi_moon", "final")] == [
-        "score",
-        "frame_artifact",
-        "colour_delivered",
-        "colour_consistent_between_views",
-    ]
+    assert ask[("koi_moon", "final")] == ["score", "frame_artifact"]
 
     # The browser is told nothing that could prime the judgment.
     for public in public_items(items):
@@ -181,7 +177,7 @@ def test_rating_row_fills_na_for_questions_it_never_asked() -> None:
 
     item = {
         "id": "abc",
-        "ask": questions("final", "reference_sketch"),
+        "ask": questions("final"),
         "stage": "final",
         "arm": "neg_on_joint",
         "spec_hash": "h",
@@ -199,7 +195,13 @@ def test_rating_row_fills_na_for_questions_it_never_asked() -> None:
     assert row["colour_consistent_between_views"] == "na"
     assert row["arm"] == "neg_on_joint" and row["spec_hash"] == "h"
 
-    colour = {**item, "ask": questions("final", "oil"), "style": "oil"}
+    # No item asks these any more, but the columns and their validation stay so
+    # the measured colour can be merged into the same schema.
+    colour = {
+        **item,
+        "ask": ["score", "colour_delivered", "colour_consistent_between_views"],
+        "style": "oil",
+    }
     # Consistency is only meaningful when there was colour to disagree about.
     no_colour = rating_row(colour, {"score": 3, "colour_delivered": "no"})
     assert no_colour["colour_consistent_between_views"] == "na"

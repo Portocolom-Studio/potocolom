@@ -42,19 +42,21 @@ from urllib.parse import parse_qs, urlparse
 STAGES = ("final", "dream_d1", "sds_end")
 FRAME_LEVELS = ("none", "minor", "disqualifying")
 YES_NO_NA = ("yes", "no", "na")
-# The pencil templates cannot deliver colour, so the colour questions are N/A
-# there rather than a judgment the rater has to invent.
-MONOCHROME_STYLES = ("pencil", "reference_pencil", "reference_sketch")
 
 
-def questions(stage: str, style: str | None) -> list[str]:
-    """Which fields this item asks for, in the order they are asked."""
+def questions(stage: str) -> list[str]:
+    """Which fields this item asks for, in the order they are asked.
+
+    The two colour questions used to be asked here and are not, because neither
+    needs a human. derived_2 is derived_1 rotated 180 - the largest channel
+    disagreement measured across window 2 is 1/255 - so the views cannot
+    disagree about colour and the question can only be answered yes. And "is
+    there colour at all" is mean chroma. Both are measured from the PNGs
+    instead; the rows still carry the columns, filled with na by rating_row.
+    """
     if stage != "final":
         return ["score"]
-    asked = ["score", "frame_artifact"]
-    if style not in MONOCHROME_STYLES:
-        asked += ["colour_delivered", "colour_consistent_between_views"]
-    return asked
+    return ["score", "frame_artifact"]
 
 
 def _views_digest(views: list[Path]) -> str:
@@ -117,7 +119,7 @@ def collect(root: Path, stages: tuple[str, ...], seed: int) -> list[dict[str, An
                     "stage": stage,
                     "subject_a": subjects[0],
                     "subject_b": subjects[1] if len(subjects) > 1 else "?",
-                    "ask": questions(stage, style),
+                    "ask": questions(stage),
                     "paths": [str(v) for v in views],
                     "run_dir": str(run),
                     "pair_id": m.get("pair_id"),
@@ -282,7 +284,7 @@ let items=[],rated={},i=0,answers={};
 const $=id=>document.getElementById(id);
 const KEYS={
   score:[['0',0],['1',1],['2',2],['3',3],['4',4],['5',5]],
-  frame_artifact:[['1','none'],['2','minor'],['3','disqualifying']],
+  frame_artifact:[['c','none'],['m','minor'],['d','disqualifying']],
   colour_delivered:[['y','yes'],['n','no']],
   colour_consistent_between_views:[['y','yes'],['n','no']],
 };
