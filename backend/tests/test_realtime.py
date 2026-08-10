@@ -50,6 +50,13 @@ class FakeTokenHeaders:
         self.headers = Headers(raw=raw)
 
 
+class FakeRawHeaders:
+    """Stands in for a WebSocket carrying arbitrary raw header pairs."""
+
+    def __init__(self, raw):
+        self.headers = Headers(raw=raw)
+
+
 class FakeSocket:
     """Minimal WebSocket stand-in for driving realtime helpers on one loop."""
 
@@ -91,7 +98,7 @@ def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
         assert ws.receive_json()["type"] == "registered"
 
 
-@pytest.mark.parametrize("token", ["wrong-secret", None, "", "fleet-secret "])
+@pytest.mark.parametrize("token", ["wrong-secret", None, ""])
 def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
     """Assert the worker never registers, not merely that the socket closed.
 
@@ -123,6 +130,24 @@ def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
     assert fleet_token_allowed(FakeTokenHeaders(secret))
     for presented in ("cl\u00e9-autre", "anything", "", None):
         assert fleet_token_allowed(FakeTokenHeaders(presented)) is False
+
+
+def test_duplicate_token_headers_are_refused():
+    """Two of them, and the answer depends on which one came first.
+
+    An intermediary can add or reorder a header, so correct-then-wrong would
+    authenticate while wrong-then-correct would not. Require exactly one.
+    """
+    get_settings().fleet_token_key = "fleet-secret"
+    try:
+        good = (b"x-fleet-token", b"fleet-secret")
+        bad = (b"X-Fleet-Token", b"wrong-secret")
+        assert fleet_token_allowed(FakeRawHeaders([good]))
+        assert not fleet_token_allowed(FakeRawHeaders([good, bad]))
+        assert not fleet_token_allowed(FakeRawHeaders([bad, good]))
+        assert not fleet_token_allowed(FakeRawHeaders([good, good]))
+    finally:
+        get_settings().fleet_token_key = ""
 
 
 @pytest.mark.parametrize("name", [b"x-fleet-token", b"X-Fleet-Token", b"X-FLEET-TOKEN"])

@@ -82,14 +82,14 @@ def fleet_token_allowed(ws: WebSocket) -> bool:
     # matches the stored key verbatim, and the ASGI server passes the name
     # through with whatever casing the client sent. Any worker spelling this
     # X-Fleet-Token would otherwise be refused as if it sent nothing.
-    presented = next(
-        (value for name, value in ws.headers.raw
-         if name.lower() == FLEET_TOKEN_HEADER.encode()),
-        None,
-    )
-    if presented is None:
+    presented = [value for name, value in ws.headers.raw
+                 if name.lower() == FLEET_TOKEN_HEADER.encode()]
+    # Exactly one, or the answer depends on which duplicate an intermediary
+    # happened to put first: correct-then-wrong would authenticate and
+    # wrong-then-correct would not.
+    if len(presented) != 1:
         return False
-    return hmac.compare_digest(presented, key.encode("utf-8", "surrogateescape"))
+    return hmac.compare_digest(presented[0], key.encode("utf-8", "surrogateescape"))
 
 
 class ProtocolError(Exception):

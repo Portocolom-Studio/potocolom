@@ -65,9 +65,10 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   header. Generate it with `openssl rand -hex 32` and keep it private. Hex is
   not arbitrary advice: an HTTP header carries ASCII only, and Compose expands
   `$NAME` inside an unquoted `.env` value, so a secret containing a dollar sign
-  resolves to nothing and the API falls back to permissive. Single-quote the
-  value if you use anything other than hex. The API warns at startup when the
-  secret is unset or not ASCII.
+  can be altered or emptied, and an emptied one puts the API back in permissive
+  mode. Compose and the API both warn, but the run continues. Single-quote any
+  value containing a dollar sign. The API warns at startup when the secret is
+  unset or not ASCII.
 - If `FLEET_SECRET` is empty, the API logs a warning and keeps the fleet socket
   permissive for compatibility with existing installs. Treat the host as a
   trusted LAN in that mode.

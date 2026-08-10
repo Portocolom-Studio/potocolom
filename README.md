@@ -38,7 +38,7 @@ No account, no API key and no telemetry endpoint are required. [docs/self-hostin
 
 ```bash
 cp deploy/compose/.env.example deploy/compose/.env
-# edit POSTGRES_PASSWORD
+# edit POSTGRES_PASSWORD and FLEET_SECRET (openssl rand -hex 32)
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
 ```
