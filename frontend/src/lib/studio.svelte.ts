@@ -6,6 +6,7 @@ import {
 	beginOptimisticStarMutation,
 	clampLineageCoordinate,
 	rollbackOptimisticStarMutation,
+	settleStarredListMutation,
 	starredListSnapshotIsCurrent
 } from '$lib/lineage-canvas-state';
 
@@ -327,6 +328,7 @@ const favoriteNotices = new Map<FavoriteNoticeKind, string>();
 let starredListRequestEpoch = 0;
 let starredMutationEpoch = 0;
 let starredMutationSequence = 0;
+let starredListDirty = false;
 const pendingStarredMutations = new Set<number>();
 const starredMutationQueues = new Map<string, Promise<boolean>>();
 
@@ -652,6 +654,7 @@ export async function loadStarredGenerations(): Promise<void> {
 	) {
 		return;
 	}
+	starredListDirty = false;
 	studio.starredIds = favorites.map((generation) => generation.id);
 	const historyIds = new Set(studio.history.map((generation) => generation.id));
 	studio.starredExtras = favorites.filter(
@@ -681,28 +684,42 @@ async function performStarredToggle(id: string): Promise<boolean> {
 	pendingStarredMutations.add(mutationToken);
 	starredMutationEpoch += 1;
 	studio.starredIds = optimistic.starredIds;
-	const settleMutation = () => pendingStarredMutations.delete(mutationToken);
 	const rollback = (): false => {
 		studio.starredIds = rollbackOptimisticStarMutation(studio.starredIds, optimistic.mutation);
 		setFavoriteNotice('save', t('app.gen.favorite_save_failed'));
 		return false;
 	};
+	const settleMutation = async (succeeded: boolean): Promise<void> => {
+		pendingStarredMutations.delete(mutationToken);
+		const decision = settleStarredListMutation(
+			starredListDirty,
+			succeeded,
+			pendingStarredMutations.size
+		);
+		starredListDirty = decision.dirty;
+		if (!decision.reload) return;
+		try {
+			await loadStarredGenerations();
+		} catch {
+			// Keep the list dirty so the next history refresh retries it.
+		}
+	};
 	try {
 		const response = await fetch(`/api/v1/generations/${id}/star`, {
 			method: optimistic.mutation.wasStarred ? 'DELETE' : 'POST'
 		});
-		settleMutation();
-		if (!response.ok) return rollback();
-		setFavoriteNotice('save', null);
-		try {
-			await loadStarredGenerations();
-		} catch {
-			// The save succeeded; the next history refresh retries the list.
+		if (!response.ok) {
+			const result = rollback();
+			await settleMutation(false);
+			return result;
 		}
+		setFavoriteNotice('save', null);
+		await settleMutation(true);
 		return true;
 	} catch {
-		settleMutation();
-		return rollback();
+		const result = rollback();
+		await settleMutation(false);
+		return result;
 	}
 }
 

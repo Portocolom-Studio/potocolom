@@ -89,6 +89,18 @@ export function starredListSnapshotIsCurrent(
 	);
 }
 
+export function settleStarredListMutation(
+	dirty: boolean,
+	mutationSucceeded: boolean,
+	pendingMutations: number
+): { dirty: boolean; reload: boolean } {
+	const nextDirty = dirty || mutationSucceeded;
+	return {
+		dirty: nextDirty,
+		reload: nextDirty && pendingMutations === 0
+	};
+}
+
 export type LineageRootStarReconciliation = {
 	pending: number;
 	dirty: boolean;

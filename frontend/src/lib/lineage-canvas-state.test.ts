@@ -13,6 +13,7 @@ import {
 	retainedRetryBudget,
 	rebaseLineageViewport,
 	rollbackOptimisticStarMutation,
+	settleStarredListMutation,
 	settleLineageRootStarReconciliation,
 	shouldDimLineageEdge,
 	starredListSnapshotIsCurrent
@@ -333,6 +334,29 @@ test('starred list reload commits only at current epochs with no mutation pendin
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4, false), false);
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, true), false);
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, false), true);
+});
+
+test('a failed later mutation reloads the starred list dirtied by an earlier success', () => {
+	const afterFirstSuccess = settleStarredListMutation(false, true, 0);
+	assert.deepEqual(afterFirstSuccess, { dirty: true, reload: true });
+	assert.equal(starredListSnapshotIsCurrent(1, 1, 3, 4, false), false);
+	assert.deepEqual(settleStarredListMutation(afterFirstSuccess.dirty, false, 0), {
+		dirty: true,
+		reload: true
+	});
+});
+
+test('starred list reconciliation waits for the final pending mutation', () => {
+	const first = settleStarredListMutation(false, true, 1);
+	assert.deepEqual(first, { dirty: true, reload: false });
+	assert.deepEqual(settleStarredListMutation(first.dirty, false, 0), {
+		dirty: true,
+		reload: true
+	});
+	assert.deepEqual(settleStarredListMutation(false, false, 0), {
+		dirty: false,
+		reload: false
+	});
 });
 
 test('a root star settling after Starred roots was enabled reloads the filtered roots', () => {
