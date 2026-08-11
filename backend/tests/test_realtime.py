@@ -302,7 +302,7 @@ def test_a_transition_address_is_refused_though_it_is_not_global(host):
 
 
 @pytest.mark.parametrize("spec", ["*", "0.0.0.0/0", "::/0", "127.0.0.1,0.0.0.0/0",
-                                  " * ", "10.0.0.0/8, ::/0"])
+                                  "10.0.0.0/8, ::/0", " 0.0.0.0/0 "])
 def test_a_forwarding_setting_that_trusts_everyone_is_recognised(spec):
     """Measured against uvicorn 0.50.1: each of these makes it accept
     X-Forwarded-For from a public peer, which forges the address permissive mode
@@ -312,13 +312,26 @@ def test_a_forwarding_setting_that_trusts_everyone_is_recognised(spec):
 
 
 @pytest.mark.parametrize("spec", ["", "127.0.0.1", "0.0.0.0", "::", "10.0.0.0/8",
-                                  "127.0.0.1,172.18.0.0/16", "some-host"])
+                                  "127.0.0.1,172.18.0.0/16", "some-host",
+                                  " * ", "*,127.0.0.1", "127.0.0.1, *"])
 def test_a_narrow_forwarding_setting_is_not_warned_about(spec):
     """The bare literals 0.0.0.0 and :: are single addresses in uvicorn and trust
     nothing, so warning about them would cry wolf; an earlier version of this
-    check did exactly that while missing the /0 forms above.
+    check did exactly that while missing the /0 forms above. uvicorn does not
+    treat a wildcard inside a list or with surrounding whitespace as trust-all,
+    so warning about those would cry wolf too.
     """
     assert not forwarding_trusts_any_peer(spec)
+
+
+def test_permissive_mode_is_refused_when_forwarding_trusts_every_peer(monkeypatch):
+    """With FORWARDED_ALLOW_IPS=* uvicorn takes the peer address from a header
+    the client controls, so permissive mode cannot trust it even for a loopback
+    peer: if the unroutable check were consulted, a loopback peer would pass.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    assert fleet_token_allowed(FakePeer("127.0.0.1")) is False
 
 
 def test_permissive_mode_refuses_a_public_peer(monkeypatch):

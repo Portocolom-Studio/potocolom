@@ -14,6 +14,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Coroutine
@@ -81,16 +82,18 @@ def forwarding_trusts_any_peer(forwarded_allow_ips: str) -> bool:
 
     uvicorn rewrites the peer address from X-Forwarded-For for every client it
     trusts, so a setting that trusts everything hands the address this module
-    checks to whoever connects. Measured against uvicorn 0.50.1: "*" trusts
-    every peer, and so does a zero-length prefix, "0.0.0.0/0" for IPv4 or "::/0"
-    for IPv6, in any position of the comma-separated list. The bare literals
-    "0.0.0.0" and "::" are single addresses that trust nothing, so warning about
-    those would be a false alarm.
+    checks to whoever connects. Measured against uvicorn 0.50.1: the wildcard
+    "*" is special only when it is the entire value, with no surrounding
+    whitespace and no other list entries; a zero-length prefix, "0.0.0.0/0" for
+    IPv4 or "::/0" for IPv6, trusts every peer in any position of the
+    comma-separated list. The bare literals "0.0.0.0" and "::" are single
+    addresses that trust nothing, so warning about those would be a false
+    alarm.
     """
+    if forwarded_allow_ips == "*":
+        return True
     for entry in forwarded_allow_ips.split(","):
         candidate = entry.strip()
-        if candidate == "*":
-            return True
         try:
             if ipaddress.ip_network(candidate, strict=False).prefixlen == 0:
                 return True
@@ -158,6 +161,15 @@ def fleet_token_allowed(ws: WebSocket) -> bool:
     """
     key = get_settings().fleet_token_key
     if not key:
+        # The peer address cannot be trusted at all in this configuration:
+        # uvicorn will have taken it from a header the client controls, so
+        # there is nothing left for the check to decide on.
+        if forwarding_trusts_any_peer(os.environ.get("FORWARDED_ALLOW_IPS", "")):
+            logger.warning(
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset and "
+                "FORWARDED_ALLOW_IPS trusts every peer, so uvicorn takes the "
+                "peer address from X-Forwarded-For and the client can forge it")
+            return False
         return peer_is_unroutable(ws)
     # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
     # matches the stored key verbatim, and the ASGI server passes the name
