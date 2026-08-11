@@ -13,7 +13,9 @@ import {
 	GENERATED_FRAME,
 	SLOW_INTERVAL_MS,
 	canvasFrame,
+	nextDelayMs,
 	nextIntervalMs,
+	openMessage,
 	parseGeneratedFrame,
 	shouldSendFrame,
 	stateForCloseCode,
@@ -23,6 +25,12 @@ import {
 const SESSION = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 /** The same session with only the final byte changed. */
 const NEARLY = '3f2504e0-4f89-11d3-9a0c-0305e82c3302';
+/**
+ * And with only the first byte changed. Both ends are needed: a comparison
+ * weakened to any single byte passes as long as every fixture differs at that
+ * one byte, so one near-miss fixture cannot pin the whole UUID.
+ */
+const NEARLY_FIRST = '402504e0-4f89-11d3-9a0c-0305e82c3301';
 
 test('a uuid becomes its sixteen raw bytes', () => {
 	const bytes = uuidBytes(SESSION);
@@ -60,11 +68,13 @@ test('a generated frame yields the image bytes after the header', () => {
 });
 
 test('a frame for a session differing in one byte is not ours', () => {
-	const frame = new Uint8Array(FRAME_HEADER_BYTES + 2);
-	frame[0] = GENERATED_FRAME;
-	frame.set(uuidBytes(NEARLY), 1);
+	for (const other of [NEARLY, NEARLY_FIRST]) {
+		const frame = new Uint8Array(FRAME_HEADER_BYTES + 2);
+		frame[0] = GENERATED_FRAME;
+		frame.set(uuidBytes(other), 1);
 
-	assert.equal(parseGeneratedFrame(frame, SESSION), null);
+		assert.equal(parseGeneratedFrame(frame, SESSION), null, other);
+	}
 });
 
 test('a canvas frame echoed back is not treated as generated output', () => {
@@ -106,6 +116,30 @@ test('the cadence stays inside the two to four fps band', () => {
 	assert.equal(nextIntervalMs(FAST_INTERVAL_MS + 1), SLOW_INTERVAL_MS);
 	assert.equal(nextIntervalMs(5_000), SLOW_INTERVAL_MS);
 	assert.ok(SLOW_INTERVAL_MS <= 500 && FAST_INTERVAL_MS >= 250);
+});
+
+test('the delay is what is left of the period, not the whole period', () => {
+	// Waiting the full interval after the work would put a 251 ms encode 751 ms
+	// from the previous start, which is 1.3 fps and outside the band above.
+	for (const cost of [0, 10, 120, 250, 251, 400, 499]) {
+		const period = cost + nextDelayMs(cost);
+		assert.ok(period >= 250 && period <= 500, `cost ${cost} gave a ${period} ms period`);
+	}
+});
+
+test('a frame that outruns the slow interval schedules immediately', () => {
+	// Nothing negative, and no attempt to catch up by queueing work.
+	assert.equal(nextDelayMs(SLOW_INTERVAL_MS), 0);
+	assert.equal(nextDelayMs(5_000), 0);
+});
+
+test('the open message carries the prompt every realtime manifest requires', () => {
+	// The regression this whole module exists to prevent: an open with no params
+	// is refused 4000 by the API before a worker is assigned.
+	const message = JSON.parse(openMessage('vega-rt', '  a red house  '));
+	assert.equal(message.type, 'open');
+	assert.equal(message.model_id, 'vega-rt');
+	assert.deepEqual(message.params, { prompt: 'a red house' });
 });
 
 test('a refusal fails the session and anything else invites a reconnect', () => {

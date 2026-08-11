@@ -1,8 +1,11 @@
 <script lang="ts">
 	// The live realtime drawing surface (issue #3). One 512 by 512 bitmap, CSS
 	// scaled for display, sent as complete WebP frames over the realtime
-	// protocol. The framing and the send policy live in $lib/realtime-canvas so
-	// they stay testable; this file owns only the DOM and the socket.
+	// protocol. The framing, the send predicate, the cadence and the opening
+	// message live in $lib/realtime-canvas so they carry tests. What stays here
+	// is not only the DOM: the timer, the changed and encoding flags, the
+	// latest-wins drop policy, the decode loop and the session lifecycle live in
+	// this file and are covered by the browser run rather than by unit tests.
 	//
 	// Out of scope here, by their own issues: the replayable stroke journal and
 	// undo (#54), frame-diff skip and finer cadence adaptation (#42), and
@@ -15,12 +18,13 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { studio } from '$lib/studio.svelte';
+	import { modelIsRemoved, studio } from '$lib/studio.svelte';
 	import {
 		FAST_INTERVAL_MS,
 		IDLE_TICKS_BEFORE_STOP,
 		canvasFrame,
-		nextIntervalMs,
+		nextDelayMs,
+		openMessage,
 		parseGeneratedFrame,
 		shouldSendFrame,
 		stateForCloseCode,
@@ -30,6 +34,8 @@
 	/** The wire dimensions. CSS scales the display without changing these. */
 	const CANVAS_SIZE = 512;
 	const STROKE_WIDTH = 6;
+	const INK = '#111827';
+	const PAPER = '#ffffff';
 
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
@@ -63,12 +69,21 @@
 	let lastPoint: { x: number; y: number } | null = null;
 	let userClosing = false;
 
-	// Only a model advertising the realtime capability can take canvas frames.
+	// Only a model advertising the realtime capability can take canvas frames,
+	// and only one the user has not removed in Models: that screen promises a
+	// removed model disappears from the service pickers, and every other picker
+	// filters the same way.
 	const realtimeModels = $derived(
-		studio.models.filter((model) => model.capabilities.includes('realtime'))
+		studio.models.filter(
+			(model) => model.capabilities.includes('realtime') && !modelIsRemoved(model.id)
+		)
 	);
 	const modelId = $derived(realtimeModels[0]?.id ?? '');
 	const connected = $derived(connection === 'active' || connection === 'resuming');
+	// Frames only go out while a worker is actually attached. During a reassign
+	// the socket is open and the session is alive, but the API has no worker to
+	// relay to and silently drops whatever arrives.
+	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
 
@@ -89,12 +104,12 @@
 		if (!paint) return;
 		// Opaque white: a transparent canvas would reach the model as
 		// transparency rather than as the blank paper the user sees.
-		paint.fillStyle = '#ffffff';
+		paint.fillStyle = PAPER;
 		paint.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 		paint.lineWidth = STROKE_WIDTH;
 		paint.lineCap = 'round';
 		paint.lineJoin = 'round';
-		paint.strokeStyle = '#111827';
+		paint.strokeStyle = INK;
 	});
 
 	// Tear the socket and the timer down with the panel, so leaving the view
@@ -121,7 +136,7 @@
 		idleTicks = 0;
 		// The loop stops arming itself once the canvas goes quiet, so new paint
 		// has to restart it.
-		if (connected && timer === null) armCapture(FAST_INTERVAL_MS);
+		if (sending && timer === null) armCapture(FAST_INTERVAL_MS);
 	}
 
 	/** One segment per move, so a long stroke does not restroke its whole path. */
@@ -133,15 +148,31 @@
 		paint.stroke();
 	}
 
+	/**
+	 * A tap is filled rather than stroked, so the mark does not depend on how an
+	 * engine treats a zero-length segment. Measured in Chrome 149: stroking from
+	 * a point to itself with a round cap does paint a dot, 32 dark pixels, the
+	 * same as this arc; with a butt cap it paints nothing, and a lone moveTo with
+	 * no segment paints nothing either. The spec prunes zero-length segments and
+	 * calls a one-point path empty, so the round-cap dot is engine behaviour to
+	 * lean on rather than a guarantee. Filling says what is meant.
+	 */
+	function drawDot(at: { x: number; y: number }): void {
+		if (!paint) return;
+		paint.beginPath();
+		paint.arc(at.x, at.y, STROKE_WIDTH / 2, 0, Math.PI * 2);
+		paint.fillStyle = INK;
+		paint.fill();
+	}
+
 	function onPointerDown(event: PointerEvent): void {
 		if (!event.isPrimary || !paint) return;
 		drawing = true;
 		strokePointer = event.pointerId;
 		(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
 		const point = canvasPoint(event);
-		// A tap that never moves should still leave a mark; the round cap makes
-		// a zero length segment a dot.
-		drawSegment(point, point);
+		// A tap that never moves should still leave a mark.
+		drawDot(point);
 		lastPoint = point;
 		markChanged();
 	}
@@ -171,14 +202,14 @@
 		// A blank canvas has nothing to clear, and sending it again would spend
 		// an inference reproducing what the model already returned.
 		if (!paint || blank) return;
-		paint.fillStyle = '#ffffff';
+		paint.fillStyle = PAPER;
 		paint.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 		blank = true;
 		// Still a revision worth sending: the model should stop drawing what is
 		// no longer on the canvas.
 		changed = true;
 		idleTicks = 0;
-		if (connected && timer === null) armCapture(FAST_INTERVAL_MS);
+		if (sending && timer === null) armCapture(FAST_INTERVAL_MS);
 	}
 
 	function stopTimer(): void {
@@ -193,8 +224,10 @@
 
 	function encodeCanvas(canvas: HTMLCanvasElement): Promise<Uint8Array> {
 		return new Promise((resolve, reject) => {
-			// WebP per docs/connection-handling.md. A browser that cannot encode
-			// WebP silently returns PNG, which the worker's decoder also opens.
+			// WebP is what docs/connection-handling.md specifies. A browser that
+			// cannot encode WebP silently returns PNG instead, which the worker's
+			// decoder happens to open too, so this leans on that rather than
+			// failing: an extension to the documented wire, not conformance.
 			canvas.toBlob((blob) => {
 				if (!blob) {
 					reject(new Error('the canvas produced no image'));
@@ -208,16 +241,23 @@
 	async function captureTick(): Promise<void> {
 		timer = null;
 		if (!socket || socket.readyState !== WebSocket.OPEN || !sessionId || !drawCanvas) return;
+		if (!sending) return; // a reassign is in flight; resumed re-arms
 
 		if (!shouldSendFrame({ changed, encoding, buffered: socket.bufferedAmount })) {
 			idleTicks += 1;
 			// Nothing to send for a while: stop arming rather than hold a timer
 			// open on an untouched canvas. Paint, a clear, or a resume restarts it.
 			if (idleTicks >= IDLE_TICKS_BEFORE_STOP && !changed) return;
-			armCapture(nextIntervalMs(lastFrameCostMs));
+			armCapture(nextDelayMs(lastFrameCostMs));
 			return;
 		}
 
+		// The session this frame belongs to. Encoding is asynchronous, so by the
+		// time it finishes the user may have disconnected, cleared and
+		// reconnected; sending then would frame a stale bitmap as the new
+		// session and hand the replacement worker input the canvas no longer has.
+		const forSocket = socket;
+		const forSession = sessionId;
 		const started = performance.now();
 		// Cleared before the encode, so paint arriving during it marks the canvas
 		// changed again rather than being swallowed by this frame.
@@ -225,8 +265,12 @@
 		encoding = true;
 		try {
 			const image = await encodeCanvas(drawCanvas);
-			if (socket && socket.readyState === WebSocket.OPEN && sessionId) {
-				socket.send(canvasFrame(sessionId, image));
+			if (
+				socket === forSocket &&
+				sessionId === forSession &&
+				forSocket.readyState === WebSocket.OPEN
+			) {
+				forSocket.send(canvasFrame(forSession, image));
 				sentFrames += 1;
 			}
 		} catch {
@@ -238,7 +282,9 @@
 			encoding = false;
 			lastFrameCostMs = performance.now() - started;
 		}
-		armCapture(nextIntervalMs(lastFrameCostMs));
+		// Not after the session went away: re-arming there would resurrect a
+		// timer the teardown had already stopped.
+		if (socket === forSocket && sessionId === forSession) armCapture(nextDelayMs(lastFrameCostMs));
 	}
 
 	async function drainGenerated(): Promise<void> {
@@ -248,14 +294,27 @@
 			while (pendingFrame !== null) {
 				const image = pendingFrame;
 				pendingFrame = null;
-				// The Blob copies the bytes, so the socket's buffer is free to go.
-				const bitmap = await createImageBitmap(new Blob([image], { type: 'image/webp' }));
-				const target = outputCanvas?.getContext('2d');
-				if (target) {
-					target.drawImage(bitmap, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
-					renderedFrames += 1;
+				const forSession = sessionId;
+				// Per frame, so one that fails to decode does not strand the frame
+				// waiting behind it: without this the loop exits and nothing runs
+				// again until a further frame happens to arrive.
+				try {
+					// The Blob copies the bytes, so the socket's buffer is free to go.
+					const bitmap = await createImageBitmap(new Blob([image], { type: 'image/webp' }));
+					try {
+						// A decode that outlived its session must not paint over the
+						// output of the one that replaced it.
+						const target = sessionId === forSession ? outputCanvas?.getContext('2d') : null;
+						if (target) {
+							target.drawImage(bitmap, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
+							renderedFrames += 1;
+						}
+					} finally {
+						bitmap.close();
+					}
+				} catch {
+					notice = 'app.realtime_canvas.decode_failed';
 				}
-				bitmap.close();
 			}
 		} catch {
 			notice = 'app.realtime_canvas.decode_failed';
@@ -326,16 +385,10 @@
 		opening.binaryType = 'arraybuffer';
 		socket = opening;
 		opening.onopen = () => {
-			// params must carry the prompt: every realtime manifest marks it
-			// required, and an open without it is refused with 4000 before a
-			// worker is ever assigned (backend/app/realtime.py).
-			opening.send(
-				JSON.stringify({
-					type: 'open',
-					model_id: modelId,
-					params: { prompt: prompt.trim() }
-				})
-			);
+			// openMessage carries the prompt every realtime manifest marks
+			// required; an open without it is refused 4000 before a worker is
+			// assigned. It is built in $lib/realtime-canvas so a test holds it.
+			opening.send(openMessage(modelId, prompt));
 		};
 		opening.onmessage = onMessage;
 		opening.onerror = () => {

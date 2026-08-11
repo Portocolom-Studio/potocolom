@@ -83,14 +83,37 @@ export function shouldSendFrame(state: {
 }
 
 /**
- * Back off to the slow end of the band when encoding and queueing a frame
- * already costs more than the fast interval. This measures the browser's own
- * cost, not the model's: the generated frame is not correlated to the canvas
- * frame that produced it on this wire, so a true round trip is not observable
- * until issue #19 adds revisions.
+ * The period to aim for between frame starts. Backs off to the slow end of the
+ * band when encoding and queueing a frame already costs more than the fast
+ * interval. This measures the browser's own cost, not the model's: the
+ * generated frame is not correlated to the canvas frame that produced it on
+ * this wire, so a true round trip is not observable until issue #19 adds
+ * revisions.
  */
 export function nextIntervalMs(lastFrameCostMs: number): number {
 	return lastFrameCostMs > FAST_INTERVAL_MS ? SLOW_INTERVAL_MS : FAST_INTERVAL_MS;
+}
+
+/**
+ * How long to wait before starting the next frame, given what the last one
+ * cost. The interval above is a period between starts, so the work already
+ * done has to come out of it: sleeping the full interval after a 251 ms encode
+ * would put the next frame 751 ms later, which is 1.3 fps and outside the band
+ * this is supposed to hold.
+ */
+export function nextDelayMs(lastFrameCostMs: number): number {
+	return Math.max(0, nextIntervalMs(lastFrameCostMs) - lastFrameCostMs);
+}
+
+/**
+ * The opening control message. Lives here rather than in the panel because the
+ * params are a contract with the model's manifest, not a detail of the DOM:
+ * every shipped realtime manifest marks the prompt required, and an open
+ * without it is refused 4000 before a worker is assigned. A previous version of
+ * this panel was built against a permissive fake and never connected.
+ */
+export function openMessage(modelId: string, prompt: string): string {
+	return JSON.stringify({ type: 'open', model_id: modelId, params: { prompt: prompt.trim() } });
 }
 
 /**

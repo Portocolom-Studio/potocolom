@@ -225,6 +225,11 @@ def test_open_carrying_the_required_prompt_opens_the_session():
             })
             opened = worker_ws.receive_json()
             assert opened["type"] == "open_session"
+            # The params have to reach the worker, not merely pass validation.
+            # Asserting only that the session opens would let the API forward an
+            # empty dict: the simulated engine ignores the prompt, so nothing
+            # here would notice, while a real model would generate from nothing.
+            assert opened["params"] == {"prompt": "a red house on a hill"}
             worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
             assert browser_ws.receive_json()["type"] == "ready"
 
