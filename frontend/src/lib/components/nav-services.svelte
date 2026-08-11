@@ -42,8 +42,7 @@
 		{
 			view: 'realtime_canvas' as const,
 			label: t('app.service.realtime_canvas'),
-			icon: FrameIcon,
-			comingSoon: true
+			icon: FrameIcon
 		}
 	]);
 </script>
