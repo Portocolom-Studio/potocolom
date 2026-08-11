@@ -3,6 +3,7 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
 import struct
+import threading
 import time
 import uuid
 import zlib
@@ -626,16 +627,23 @@ def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
 
                 async def image_info(self, storage_key):
                     jobs.inflight[key] = replacement
-                    return None  # the late verdict: attempt one was invalid
+                    try:
+                        return None  # the late verdict: attempt one was invalid
+                    finally:
+                        inspected.set()
 
+            inspected = threading.Event()
             monkeypatch.setattr(jobs, "get_storage", lambda: Replacing())
             worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
                               "width": 512, "height": 512})
 
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                assert jobs.inflight.get(key) is replacement, "the replacement was popped"
-                time.sleep(0.05)
+            # The stand-in gives a deterministic hook, so wait on the verdict
+            # rather than polling a negative for two seconds on every run.
+            assert inspected.wait(timeout=5), "the output was never inspected"
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline and jobs.inflight.get(key) is replacement:
+                time.sleep(0.02)
+            assert jobs.inflight.get(key) is replacement, "the replacement was popped"
             state = client.get(f"/api/v1/generations/{job_id}").json()["state"]
             assert state != "failed", "a superseded attempt failed the live row"
 

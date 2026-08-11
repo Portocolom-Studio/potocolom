@@ -81,9 +81,14 @@ class _FakeBody:
         self.closed = False
 
     def read(self, amt=None):
-        # botocore's StreamingBody takes an amt; image_info passes one to bound
-        # what a worker can make the API buffer.
-        return self.data if amt is None else self.data[:amt]
+        # botocore's StreamingBody takes an amt and returns at most that many,
+        # not exactly that many. Hand back one byte at a time so a caller that
+        # assumes a single read fills its buffer is caught here.
+        if amt is None:
+            data, self.data = self.data, b""
+            return data
+        data, self.data = self.data[:1], self.data[1:]
+        return data[:amt]
 
     def close(self):
         self.closed = True

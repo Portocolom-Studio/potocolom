@@ -232,9 +232,21 @@ class S3Storage:
             response = self.client.get_object(Bucket=self.bucket, Key=key)
             body = response["Body"]
             try:
-                # amt bounds what a worker can make the API buffer: the
-                # presigned PUT constrains bucket, key and content type only.
-                return response, body.read(MAX_VERIFY_BYTES + 1)
+                # read(amt) returns at most amt, not exactly amt, so a short
+                # read would truncate a valid PNG into a rejection and let an
+                # oversized object slip past the length check below. Loop to
+                # EOF or one byte past the bound, which is what makes the
+                # bound mean anything: the presigned PUT constrains bucket,
+                # key and content type only, never size.
+                chunks = []
+                remaining = MAX_VERIFY_BYTES + 1
+                while remaining > 0:
+                    chunk = body.read(remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                return response, b"".join(chunks)
             finally:
                 body.close()
 
