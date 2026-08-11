@@ -427,6 +427,135 @@ def serve(items: list[dict[str, Any]], out: Path, port: int) -> None:
         print(f"\nstopped. {len(existing())} rated -> {out}")
 
 
+# Between reference_sketch's median chroma (9.2) and oil's minimum (30.7) as
+# measured over window 2. Nothing sits near it, so the exact value changes no
+# verdict; chroma is recorded as a number too, so it can move without re-reading
+# every PNG.
+COLOUR_CHROMA_THRESHOLD = 20.0
+
+
+def measure_colour(item: dict[str, Any]) -> dict[str, Any]:
+    """Measure the two colour fields instead of asking a human for them.
+
+    `colour_consistent_between_views` cannot be a judgment: derived_2 IS
+    derived_1 rotated 180, so the views are the same pixels and can never
+    disagree about colour. `max_view_diff` records that rather than assuming it,
+    so it grows the day it stops being true.
+
+    `colour_delivered` is mean chroma, the per-pixel spread between the largest
+    and smallest channel. PIL does both in C, so this needs no array library and
+    no conversion pass.
+    """
+    from PIL import Image, ImageChops, ImageStat
+
+    view_1 = Image.open(item["paths"][0]).convert("RGB")
+    view_2 = Image.open(item["paths"][1]).convert("RGB")
+    red, green, blue = view_1.split()
+    brightest = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    darkest = ImageChops.darker(ImageChops.darker(red, green), blue)
+    chroma = ImageStat.Stat(ImageChops.difference(brightest, darkest)).mean[0]
+    rotated = view_2.rotate(180)
+    max_view_diff = max(
+        hi for _lo, hi in ImageStat.Stat(ImageChops.difference(view_1, rotated)).extrema
+    )
+    return {
+        "id": item["id"],
+        "key": [item["spec_hash"], item["stage"], item["arm"] or ""],
+        "pair_id": item["pair_id"],
+        "style": item["style"],
+        "arm": item["arm"],
+        "mode": item["mode"],
+        "seed": item["seed"],
+        "chroma": round(chroma, 3),
+        "colour_delivered": "yes" if chroma >= COLOUR_CHROMA_THRESHOLD else "no",
+        "max_view_diff": max_view_diff,
+        "colour_consistent_between_views": "yes",
+        "run_dir": item["run_dir"],
+    }
+
+
+def export_keepers(ratings: Path, runs: Path, out: Path, min_score: int = 4) -> dict[str, Any]:
+    """Copy every keeper's images out of the runs tree, with a manifest.
+
+    Copies rather than links: these are the window's actual output and must
+    outlive any cleanup of the evidence tree. The filename carries score, pair,
+    seed, style, arm and stage, because window 2 can produce four arms from one
+    base and the pair alone no longer identifies an image.
+    """
+    import shutil
+
+    rows = [json.loads(line) for line in ratings.read_text().splitlines() if line.strip()]
+    kept = [r for r in rows if int(r.get("score", -1)) >= min_score]
+    kept.sort(key=lambda r: (-r["score"], r["pair_id"], r.get("seed") or 0))
+
+    out.mkdir(parents=True, exist_ok=True)
+    manifest: list[dict[str, Any]] = []
+    for row in kept:
+        source = Path(row["run_dir"])
+        arm = row.get("arm") or row.get("mode") or ""
+        parts = [
+            f"s{row['score']}",
+            row["pair_id"],
+            f"seed{row.get('seed')}",
+            row.get("style") or "unknown",
+            arm,
+            row.get("stage") or "final",
+        ]
+        base = "-".join(part for part in parts if part)
+        files: dict[str, str] = {}
+        for name, label in (
+            ("derived_1.png", "view1"),
+            ("derived_2.png", "view2"),
+            ("prime_1.png", "prime"),
+        ):
+            candidate = source / name
+            if candidate.is_file():
+                shutil.copy2(candidate, out / f"{base}-{label}.png")
+                files[label] = f"{base}-{label}.png"
+        manifest.append(
+            {
+                **{
+                    k: row.get(k)
+                    for k in (
+                        "score",
+                        "pair_id",
+                        "seed",
+                        "style",
+                        "arm",
+                        "mode",
+                        "stage",
+                        "frame_artifact",
+                        "run_dir",
+                    )
+                },
+                "files": files,
+            }
+        )
+
+    summary = {"min_score": min_score, "count": len(manifest), "keepers": manifest}
+    (out / "keepers.json").write_text(json.dumps(summary, indent=2) + "\n")
+    cards = "\n".join(
+        f'<figure><img src="{m["files"].get("view1", "")}">'
+        f'<img src="{m["files"].get("view2", "")}">'
+        f"<figcaption><b>{m['score']}</b> {m['pair_id']}"
+        f"<span>seed {m['seed']} &middot; {m['style']} &middot; {m['arm'] or m['mode']}"
+        f" &middot; frame: {m.get('frame_artifact') or 'n/a'}</span>"
+        f'<a href="{m["files"].get("prime", "")}">prime</a></figcaption></figure>'
+        for m in manifest
+    )
+    (out / "index.html").write_text(
+        "<!doctype html><meta charset=utf-8><title>Illusion keepers</title>"
+        "<style>body{font:15px system-ui;background:#141414;color:#eee;margin:2rem}"
+        "figure{margin:0 0 2rem;max-width:70rem}img{width:48%;border-radius:6px;background:#000}"
+        "figcaption{margin-top:.4rem}span{color:#8b8b8b;margin-left:.5rem}"
+        "a{color:#8cf;margin-left:.75rem}b{color:#7bd88f}</style>"
+        f"<h1>Illusion keepers</h1><p>{len(manifest)} images scoring {min_score} or better. "
+        "Each row is one printable image in both orientations; 'prime' is the file "
+        "you would actually print.</p>" + cards + "\n"
+    )
+    return {"count": len(manifest), "out": str(out)}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, help="campaign runs directory")
@@ -441,6 +570,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stages", default="final,dream_d1,sds_end")
     ap.add_argument("--seed", type=int, default=0, help="shuffle seed; also salts the ids")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument(
+        "--measure-colour",
+        action="store_true",
+        help="write measured colour rows for every final item to --out, instead "
+        "of serving. Neither colour question needs a human: the views are the "
+        "same pixels rotated, and 'is there colour' is chroma.",
+    )
+    ap.add_argument(
+        "--export-keepers",
+        type=Path,
+        default=None,
+        help="copy every image scoring at least --min-score out of the runs "
+        "tree to --out, with a manifest and an index",
+    )
+    ap.add_argument("--min-score", type=int, default=4)
     args = ap.parse_args(argv)
 
     if args.export_ratings is not None:
@@ -448,6 +592,15 @@ def main(argv: list[str] | None = None) -> int:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text("".join(json.dumps(row) + "\n" for row in rows))
         print(json.dumps({"rows": len(rows), "duplicate_keys": duplicate_keys(rows)}, indent=2))
+        return 0
+    if args.export_keepers is not None:
+        if args.root is None:
+            ap.error("--export-keepers needs --root for the runs tree")
+        print(
+            json.dumps(
+                export_keepers(args.export_keepers, args.root, args.out, args.min_score), indent=2
+            )
+        )
         return 0
     if args.root is None:
         ap.error("--root is required unless --export-ratings is given")
@@ -459,6 +612,12 @@ def main(argv: list[str] | None = None) -> int:
     items = collect(args.root, stages, args.seed)
     if not items:
         ap.error(f"no completed runs with those stages under {args.root}")
+    if args.measure_colour:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        rows = [measure_colour(item) for item in items if item["stage"] == "final"]
+        args.out.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        print(json.dumps({"rows": len(rows), "threshold": COLOUR_CHROMA_THRESHOLD}, indent=2))
+        return 0
     serve(items, args.out, args.port)
     return 0
 

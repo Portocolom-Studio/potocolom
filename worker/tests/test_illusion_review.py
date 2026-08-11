@@ -256,3 +256,101 @@ def test_canonical_export_is_last_score_wins_and_keyed_for_analysis(tmp_path) ->
     assert all(row["style"] == "oil" for row in rows)
     assert duplicate_keys(rows) == []
     assert duplicate_keys(rows + rows[:1]) == [list(rows[0]["key"])]
+
+
+def test_measure_colour_reads_chroma_not_a_human(tmp_path) -> None:
+    """Neither colour question needs judgment: the views are the same pixels
+    rotated, and "is there colour" is chroma."""
+    from PIL import Image
+
+    from worker.illusion_review import COLOUR_CHROMA_THRESHOLD, measure_colour
+
+    def item(colour):
+        d = tmp_path / f"c{colour}"
+        d.mkdir()
+        view = Image.new("RGB", (8, 8), colour)
+        view.save(d / "derived_1.png")
+        view.rotate(180).save(d / "derived_2.png")
+        return {
+            "id": "x",
+            "paths": [str(d / "derived_1.png"), str(d / "derived_2.png")],
+            "spec_hash": "h",
+            "stage": "final",
+            "arm": "",
+            "pair_id": "p",
+            "style": "reference_sketch",
+            "mode": "indep",
+            "seed": 11,
+            "run_dir": str(d),
+        }
+
+    grey = measure_colour(item((128, 128, 128)))
+    assert grey["chroma"] == 0.0
+    assert grey["colour_delivered"] == "no"
+
+    vivid = measure_colour(item((200, 20, 20)))
+    assert vivid["chroma"] == 180.0  # max channel minus min, per pixel
+    assert vivid["colour_delivered"] == "yes"
+    assert vivid["chroma"] > COLOUR_CHROMA_THRESHOLD
+
+    # derived_2 IS derived_1 rotated, so the views cannot disagree. Recorded
+    # rather than assumed, so it grows the day that stops being true.
+    assert vivid["max_view_diff"] == 0
+    assert vivid["colour_consistent_between_views"] == "yes"
+    assert vivid["key"] == ["h", "final", ""]
+
+
+def test_export_keepers_copies_and_names_by_every_dimension(tmp_path) -> None:
+    """Window 2 makes four arms from one base, so pair alone no longer names an
+    image, and the export must survive the runs tree being cleaned up."""
+    import json
+
+    from PIL import Image
+
+    from worker.illusion_review import export_keepers
+
+    runs = tmp_path / "runs"
+    rows = []
+    for score, pair, arm, style in (
+        (5, "wolf_raven", "neg_on_joint", "reference_sketch"),
+        (4, "koi_moon", "", "oil"),
+        (2, "dud_pair", "neg_off_indep", "reference_sketch"),  # below the bar
+    ):
+        run = runs / pair
+        run.mkdir(parents=True)
+        for name in ("derived_1.png", "derived_2.png", "prime_1.png"):
+            Image.new("RGB", (8, 8), (score * 20, 10, 10)).save(run / name)
+        rows.append(
+            {
+                "id": pair,
+                "score": score,
+                "pair_id": pair,
+                "seed": 11,
+                "style": style,
+                "arm": arm,
+                "mode": "joint" if arm.endswith("joint") else "indep",
+                "stage": "final",
+                "frame_artifact": "none",
+                "run_dir": str(run),
+            }
+        )
+    ratings = tmp_path / "canonical.jsonl"
+    ratings.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    out = tmp_path / "keepers"
+    summary = export_keepers(ratings, runs, out, min_score=4)
+    assert summary["count"] == 2, "the score-2 row must not be exported"
+
+    names = sorted(p.name for p in out.glob("*.png"))
+    assert "s5-wolf_raven-seed11-reference_sketch-neg_on_joint-final-view1.png" in names
+    # No arm (a single-arm cell), so the mode identifies it instead.
+    assert "s4-koi_moon-seed11-oil-indep-final-prime.png" in names
+    assert len(names) == 6, "both views and the prime for each keeper"
+    assert not any("dud_pair" in n for n in names)
+
+    # Copies, not links: they must outlive a cleanup of the evidence tree.
+    assert not (out / names[0]).is_symlink()
+    manifest = json.loads((out / "keepers.json").read_text())
+    assert manifest["count"] == 2 and manifest["min_score"] == 4
+    assert {k["pair_id"] for k in manifest["keepers"]} == {"wolf_raven", "koi_moon"}
+    assert (out / "index.html").is_file()
