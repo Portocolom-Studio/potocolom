@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from worker.illusion_experiment import (
+    BREADTH_FAMILIES,
+    BREADTH_PAIRS,
     FINAL_PAIRS,
     SCREEN_PAIRS,
     PAIR_BY_ID,
@@ -457,6 +459,72 @@ WINDOW2_TRUNCATED_ESTIMATE_S = 1_713.0
 WINDOW2_FULL_DREAM_ESTIMATE_S = 1_841.0
 
 
+# --- Window 3: acquisition, not settings ---------------------------------
+#
+# Windows 1 and 2 settled the recipe, so nothing here is under test. The corpus
+# is the binding constraint on yield: 144 of window 2's 206 observations came
+# from six already-proven pairs. This window spends its hours on pairs no window
+# has run, at the settled configuration.
+#
+# Two arms forked from one SDS state, joint first. Joint is the settled default
+# (38 up, 12 down, p=0.0003) but collapses some pairs, and which pairs is not
+# predictable: window 1 varied ONLY the seed, and a single seed missed 24 of the
+# 72 seed-cells belonging to a pair that demonstrably produced a keeper at some
+# other seed - one seed finds about 0.67 of the pairs that can work. So a second
+# arm off the same snapshot is cheaper than any predictor could be: about 22s
+# against the 1,556s SDS phase it reuses.
+WINDOW3_SDS_STEPS = WINDOW2_SDS_STEPS
+WINDOW3_DREAM_ROUNDS = 1
+# oil, not window 1's reference_sketch, and NOT because it yields more. At the
+# unit this window actually produces - one base, best of its two arms, negative
+# off - the two media tie: 7 clean keepers against 6 of 18, McNemar p = 1.00. Oil
+# is chosen because it ties while producing 0 disqualifying frames against
+# reference_sketch's 31 in 72 observations, and delivering colour in 78/78 arms.
+# Those two were the human reviewer's actual complaints. The per-observation
+# table (oil 25, reference_sketch 14) overstates this: two arms of one base share
+# an SDS state, so they are not independent observations.
+WINDOW3_STYLE = "oil"
+# The anchor exercises the fallback arm by construction: at spec_hash
+# fd46cd54684e, negative off, its independent arm beat joint 5 to 0 from one
+# shared SDS state, with joint also moving from a minor to a disqualifying frame.
+# Its score is not a gate - one seed on a working pair misses a third of the time,
+# so gating on one score would gate on noise. What it gates is structural.
+WINDOW3_ANCHOR_PAIR = "wolf_raven"
+WINDOW3_ANCHOR_SEED = 11
+# Seeds are drawn round-robin along the family-interleaved order, so each seed
+# lands in several families rather than concentrating in one. Window 2 leaned on
+# seed 11, and a corpus-wide constant seed confounds pair effects with that draw.
+WINDOW3_SEED_POOL = (
+    11,
+    23,
+    37,
+    53,
+    71,
+    89,
+    101,
+    113,
+    131,
+    149,
+    167,
+    181,
+    199,
+    211,
+    233,
+    251,
+    269,
+)
+# Execution order is a fixed hash permutation rather than corpus order, so a
+# window cut short leaves an unbiased sample of all four families instead of
+# whichever family happens to sort first.
+WINDOW3_ORDER_SALT = "window3-2026-08"
+WINDOW3_ARMS: tuple[tuple[str, str, str], ...] = (
+    ("joint", "joint", "off"),
+    ("indep", "indep", "off"),
+)
+# 1,556s SDS measured in window 2 + 2 x 22s arm + ~60s load and lock.
+WINDOW3_BASE_ESTIMATE_S = 1_736.0
+
+
 def _window2_flags(
     *,
     dream_joint: bool = False,
@@ -570,6 +638,102 @@ def build_window2() -> list[CampaignEntry]:
                     estimate_s=WINDOW2_CELL_ESTIMATE_S,
                 )
 
+    return entries
+
+
+def _window3_flags() -> list[str]:
+    # No --negative-prompt: it was rejected by its rule (frame improved in 8.5%
+    # of paired bases against 50% required), and oil needs no frame fix. No
+    # --prime-resolution either: 256 is already the author_reference default.
+    flags = [
+        "--experimental-recipe",
+        "author_reference",
+        "--collect-diagnostics",
+        "--skip-clip",
+        "--sds-steps",
+        str(WINDOW3_SDS_STEPS),
+        "--dream-rounds",
+        str(WINDOW3_DREAM_ROUNDS),
+    ]
+    for name, mode, negative in WINDOW3_ARMS:
+        flags += ["--dream-arm", f"{name}:{mode}:{negative}"]
+    return flags
+
+
+def _hash_order(pair_ids: list[str]) -> list[str]:
+    """Deterministic permutation. md5 is stable across Python versions, where
+    random.shuffle's algorithm is only stable in practice."""
+    return sorted(
+        pair_ids,
+        key=lambda pair_id: hashlib.md5(
+            f"{WINDOW3_ORDER_SALT}:{pair_id}".encode(), usedforsecurity=False
+        ).hexdigest(),
+    )
+
+
+def window3_order() -> list[tuple[str, int]]:
+    """The frozen (pair_id, seed) sequence of the breadth block, stratified.
+
+    Both the order and the seeds are stratified BY FAMILY. An unstratified hash
+    permutation over the whole corpus put 20 scene pairs and 8 object pairs in
+    the first 60 executions, and gave seed 181 five upright pairs and no object
+    or scene pair at all. Neither breaks total yield if all 97 finish, but both
+    make a truncated window unrepresentative and confound any family comparison.
+
+    Stratifying: permute within each family, then round-robin across families, so
+    any prefix of the result is close to balanced. Seeds are assigned along that
+    interleaved order, which spreads each seed across families too.
+    """
+    within = {
+        family: _hash_order([pair.pair_id for pair in pairs])
+        for family, pairs in BREADTH_FAMILIES.items()
+    }
+    families = _hash_order(list(within))
+    interleaved: list[str] = []
+    for index in range(max(len(v) for v in within.values())):
+        for family in families:
+            if index < len(within[family]):
+                interleaved.append(within[family][index])
+    return [
+        (pair_id, WINDOW3_SEED_POOL[index % len(WINDOW3_SEED_POOL)])
+        for index, pair_id in enumerate(interleaved)
+    ]
+
+
+def build_window3() -> list[CampaignEntry]:
+    """120 bases producing 240 observations: one anchor plus 119 new pairs.
+
+    Acquisition, so one seed per pair rather than two. Expected distinct
+    successful pairs is 2Np for one seed on 2N pairs against N(2p - p^2) for two
+    seeds on N, and 2Np > 2Np - Np^2 always. Replication buys ranking
+    reliability, which this window does not need; that is exactly why a pair
+    that misses at its single seed is recorded as not obtained, never as dead.
+    """
+    entries = [
+        _entry(
+            tier="window3",
+            profile="anchor",
+            pair_id=WINDOW3_ANCHOR_PAIR,
+            seed=WINDOW3_ANCHOR_SEED,
+            flags=_window3_flags(),
+            priority=0,
+            style=WINDOW3_STYLE,
+            estimate_s=WINDOW3_BASE_ESTIMATE_S,
+        )
+    ]
+    for priority, (pair_id, seed) in enumerate(window3_order(), start=1):
+        entries.append(
+            _entry(
+                tier="window3",
+                profile="breadth",
+                pair_id=pair_id,
+                seed=seed,
+                flags=_window3_flags(),
+                priority=priority,
+                style=WINDOW3_STYLE,
+                estimate_s=WINDOW3_BASE_ESTIMATE_S,
+            )
+        )
     return entries
 
 
@@ -1147,6 +1311,8 @@ def build_phase_plan(
         entries = build_window()
     elif phase == "window2":
         entries = build_window2()
+    elif phase == "window3":
+        entries = build_window3()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1163,7 +1329,7 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "window", "window2", "early-dream-backup")
+            if phase in ("reference60h", "window", "window2", "window3", "early-dream-backup")
             else _blocked_rotated(entries)
         ),
     )
@@ -1241,6 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
             "reference60h",
             "window",
             "window2",
+            "window3",
             "early-dream-backup",
         ),
         required=True,
@@ -1349,6 +1516,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if counts.get("window2", 0) not in (0, 98):
             print(f"FAIL: window2 expected 98 got {counts.get('window2')}", file=sys.stderr)
+            return 1
+        if counts.get("window3", 0) not in (0, 1 + len(BREADTH_PAIRS)):
+            print(f"FAIL: window3 expected 120 got {counts.get('window3')}", file=sys.stderr)
             return 1
         print("dry-run ok")
         return 0

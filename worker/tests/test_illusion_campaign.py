@@ -386,6 +386,88 @@ def test_window2_matrix_matches_the_approved_plan() -> None:
     assert len({e.entry_id for e in entries}) == 98
 
 
+def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
+    """98 bases, 196 observations, two arms off one SDS state, oil everywhere."""
+    from worker.illusion_campaign import (
+        WINDOW3_ARMS,
+        WINDOW3_SEED_POOL,
+        build_window3,
+        window3_order,
+    )
+    from worker.illusion_experiment import BREADTH_FAMILIES, BREADTH_PAIRS
+
+    entries = build_window3()
+    assert len(entries) == 1 + len(BREADTH_PAIRS) == 98
+    assert {e.tier for e in entries} == {"window3"}
+    assert sum(e.flags.count("--dream-arm") for e in entries) == 196
+
+    # Every base forks both arms from one SDS phase, joint first: joint is the
+    # settled default and independent is the fallback for the pairs it collapses.
+    assert all(e.flags.count("--dream-arm") == len(WINDOW3_ARMS) == 2 for e in entries)
+    for entry in entries:
+        first = entry.flags.index("--dream-arm")
+        assert entry.flags[first + 1] == "joint:joint:off"
+        assert entry.flags[first + 3] == "indep:indep:off"
+
+    # Nothing under test: the recipe is windows 1 and 2's, and the two rules that
+    # rejected a setting are honoured by its absence rather than by a comment.
+    assert all(e.style == "oil" for e in entries)
+    assert all("--negative-prompt" not in e.flags for e in entries)
+    assert all("--prime-resolution" not in e.flags for e in entries)
+    for entry in entries:
+        assert entry.flags[entry.flags.index("--sds-steps") + 1] == "5000"
+        assert entry.flags[entry.flags.index("--dream-rounds") + 1] == "1"
+
+    # The anchor runs first and exercises the fallback arm by construction: at
+    # spec_hash fd46cd54684e, negative off, independent beat joint 5 to 0.
+    assert entries[0].profile == "anchor"
+    assert entries[0].pair_id == "wolf_raven"
+    assert [e.profile for e in entries[1:]] == ["breadth"] * len(BREADTH_PAIRS)
+
+    # Frozen and stable across calls, or a resumed plan diverges from its own SHA.
+    breadth = [(e.pair_id, e.seed) for e in entries[1:]]
+    assert breadth == window3_order() == window3_order()
+
+    # STRATIFIED BY FAMILY, both in order and in seed. An unstratified hash
+    # permutation put 20 scene and 8 object pairs in the first 60 executions and
+    # gave one seed five upright pairs and no object or scene pair at all, which
+    # makes a truncated window unrepresentative and confounds family comparisons.
+    family = {p.pair_id: f for f, pairs in BREADTH_FAMILIES.items() for p in pairs}
+    for prefix in (20, 40, 60, 80):
+        counts = Counter(family[pair_id] for pair_id, _ in breadth[:prefix])
+        assert len(counts) == len(BREADTH_FAMILIES)
+        assert max(counts.values()) - min(counts.values()) <= 1, (prefix, counts)
+    for seed in set(WINDOW3_SEED_POOL):
+        assert len({family[p] for p, s in breadth if s == seed}) >= 3
+
+    # Seeds spread over the pool rather than leaning on window 2's seed 11.
+    seeds = Counter(seed for _, seed in breadth)
+    assert set(seeds) == set(WINDOW3_SEED_POOL)
+    assert max(seeds.values()) - min(seeds.values()) <= 1
+
+    # One seed per pair, so ~47h of acquisition with slack in a 58h window.
+    hours = sum(e.estimate_s for e in entries) / 3600
+    assert 46.0 < hours < 49.0
+
+    assert len({e.spec_hash() for e in entries}) == 98
+    assert len({e.out_rel for e in entries}) == 98
+    assert len({e.entry_id for e in entries}) == 98
+
+
+def test_window3_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window3",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
 def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
     from worker.illusion_campaign import build_phase_plan, main
 

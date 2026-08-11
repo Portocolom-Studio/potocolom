@@ -41,6 +41,10 @@ from urllib.parse import parse_qs, urlparse
 
 STAGES = ("final", "dream_d1", "sds_end")
 FRAME_LEVELS = ("none", "minor", "disqualifying")
+# "Clean" is a rated frame of none or minor. A MISSING answer is unrated, never
+# clean: writing the rule as `!= "disqualifying"` counted one unrated window 2
+# item as clean and moved a headline number from 13 to 14.
+CLEAN_FRAME_LEVELS = ("none", "minor")
 YES_NO_NA = ("yes", "no", "na")
 
 
@@ -156,6 +160,11 @@ def rating_row(item: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
     if not 0 <= score <= 5:
         raise ValueError(f"score {score} out of range")
     frame = answers.get("frame_artifact") if "frame_artifact" in asked else None
+    # Required once asked. Window 2 accepted a missing answer and produced one
+    # score-5 row with no frame, which then had to be special-cased in every
+    # count that used it.
+    if "frame_artifact" in asked and frame not in FRAME_LEVELS:
+        raise ValueError(f"frame_artifact must be one of {FRAME_LEVELS}, got {frame!r}")
     if frame is not None and frame not in FRAME_LEVELS:
         raise ValueError(f"frame_artifact must be one of {FRAME_LEVELS}")
     delivered = consistent = "na"
@@ -474,18 +483,33 @@ def measure_colour(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def export_keepers(ratings: Path, runs: Path, out: Path, min_score: int = 4) -> dict[str, Any]:
+def export_keepers(
+    ratings: Path,
+    runs: Path,
+    out: Path,
+    min_score: int = 4,
+    require_clean_frame: bool = True,
+) -> dict[str, Any]:
     """Copy every keeper's images out of the runs tree, with a manifest.
 
     Copies rather than links: these are the window's actual output and must
     outlive any cleanup of the evidence tree. The filename carries score, pair,
     seed, style, arm and stage, because window 2 can produce four arms from one
     base and the pair alone no longer identifies an image.
+
+    The frame rule is applied by default. Window 2's export filtered on score
+    alone, so 16 of its 43 "keepers" carry a disqualifying frame and one carries
+    no frame answer at all: not a clean-keeper corpus, which is what the word
+    implies. Clean means the frame was RATED and rated none or minor - a missing
+    answer is unrated, not clean. Pass require_clean_frame=False to reproduce the
+    window 2 export as it was.
     """
     import shutil
 
     rows = [json.loads(line) for line in ratings.read_text().splitlines() if line.strip()]
     kept = [r for r in rows if int(r.get("score", -1)) >= min_score]
+    if require_clean_frame:
+        kept = [r for r in kept if r.get("frame_artifact") in CLEAN_FRAME_LEVELS]
     kept.sort(key=lambda r: (-r["score"], r["pair_id"], r.get("seed") or 0))
 
     out.mkdir(parents=True, exist_ok=True)

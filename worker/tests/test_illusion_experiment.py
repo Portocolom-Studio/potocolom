@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -519,3 +520,62 @@ def test_score_run_dir_writes_sidecar_not_manifest(tmp_path, monkeypatch) -> Non
     score_run_dir(run, device="cpu")
     assert (run / "clip_scores.json").is_file()
     assert (run / "manifest.json").read_text() == before
+
+
+def test_breadth_corpus_obeys_the_pairing_rules() -> None:
+    """Window 3's corpus, checked against issue #138 rather than by eye.
+
+    These rules were verified once in a scratch script, which caught five
+    problems and missed a sixth ("a wax seal and signet", two objects in one
+    subject). They belong here so the next pair added is checked too.
+    """
+    from worker.illusion_experiment import (
+        BREADTH_CUT,
+        BREADTH_FAMILIES,
+        BREADTH_PAIRS,
+        FINAL_PAIRS,
+        PAIRING_RULES_PAIRS,
+        REFERENCE_PAIRS,
+    )
+
+    assert len(BREADTH_PAIRS) == 97
+    # The 22 cut in semantic review stay cut, and stay out of the corpus.
+    assert len(BREADTH_CUT) == 22
+    assert not {p.pair_id for p in BREADTH_PAIRS} & set(BREADTH_CUT)
+    # Families partition the corpus exactly: no pair in two, none orphaned.
+    assert sum(len(v) for v in BREADTH_FAMILIES.values()) == len(BREADTH_PAIRS)
+    assert len({p.pair_id for pairs in BREADTH_FAMILIES.values() for p in pairs}) == 97
+
+    # A failure in this corpus has to be new information, so nothing here may
+    # repeat a pair - or a subject - that any earlier window already ran.
+    earlier = [*FINAL_PAIRS, *REFERENCE_PAIRS, *PAIRING_RULES_PAIRS]
+    earlier_ids = {pair.pair_id for pair in earlier}
+    earlier_subjects = {s for pair in earlier for s in (pair.subject_a, pair.subject_b)}
+    ids = [pair.pair_id for pair in BREADTH_PAIRS]
+    subjects = [s for pair in BREADTH_PAIRS for s in (pair.subject_a, pair.subject_b)]
+    assert len(set(ids)) == len(ids)
+    assert not set(ids) & earlier_ids
+    assert not set(subjects) & earlier_subjects
+
+    # One subject may recur once across families; a third use means the corpus
+    # is narrower than its pair count suggests.
+    repeated = {s: n for s, n in Counter(subjects).items() if n > 2}
+    assert not repeated, f"subjects used more than twice: {repeated}"
+
+    # A pair and its inverse are the same experiment: the flip is symmetric.
+    forward = {(pair.subject_a, pair.subject_b) for pair in BREADTH_PAIRS}
+    assert not forward & {(b, a) for a, b in forward}
+
+    for pair in BREADTH_PAIRS:
+        # One subject, at most one pose or scene clause. Two objects in one
+        # subject give SDS two things to place and the flip nothing to hold.
+        for subject in (pair.subject_a, pair.subject_b):
+            assert "," not in subject, subject
+            assert " and " not in subject, subject
+        # The style is baked into the prompt, so asking for oil must not wrap it
+        # a second time.
+        assert pair.baked_style == "oil"
+        subjects, prompts = resolve_pair_prompts(pair, "oil")
+        assert subjects == [pair.subject_a, pair.subject_b]
+        assert prompts == [pair.prompt_a, pair.prompt_b]
+        assert all(prompt.count("oil painting") == 1 for prompt in prompts)

@@ -211,11 +211,202 @@ PAIRING_RULES_PAIRS: list[PromptPair] = [
     ),
 ]
 
+
+# Window 3's acquisition corpus, in four structural families. Every pair follows
+# the issue #138 rules: one shared scene, compatible frame mass, inversion-native
+# anatomy in at least one subject, DISTINCT silhouettes, and no dependence on
+# colour, texture, text or fine orientation cues. Subjects are style-free with at
+# most one pose or scene clause.
+#
+# The vocabulary is disjoint from both windows AND from the 2026-07-19 gallery
+# curation, so a failure here is new information rather than a rerun of a known
+# one.
+#
+# 22 pairs were CUT in review after a semantic pass that the programmatic checks
+# cannot do. They are listed in BREADTH_CUT below with the rule each broke, so the
+# same mistakes are not reintroduced: identical silhouettes, 180-symmetric forms
+# whose flip carries no information, colour or texture dependence, and frame-mass
+# mismatches between a solid animal and a wispy or tiny form.
+
+# One subject stands or rises, the other hangs. The cheapest illusion there is,
+# because one view needs no violence done to it.
+BREADTH_UPRIGHT_PENDANT: list[PromptPair] = [
+    _rules_pair(
+        "kingfisher_wisteria", "a kingfisher perched on a reed", "a hanging wisteria bloom"
+    ),
+    _rules_pair("meerkat_weavernest", "a meerkat standing alert on sand", "a hanging weaver nest"),
+    _rules_pair("mantis_orchid", "a mantis upright on a stem", "a pendant orchid flower"),
+    _rules_pair("toucan_heliconia", "a toucan perched on a branch", "a hanging heliconia flower"),
+    _rules_pair("armadillo_seedpod", "an armadillo standing on dry earth", "a pendant seed pod"),
+    _rules_pair("hoopoe_catkin", "a hoopoe standing on short grass", "a hanging catkin"),
+    _rules_pair("cicada_cocoon", "a cicada clinging upright to bark", "a hanging cocoon"),
+    _rules_pair("nautilus_lantern", "a nautilus resting on sand", "a hanging paper lantern"),
+    _rules_pair("mongoose_bellflower", "a mongoose standing on a rock", "a hanging bellflower"),
+    _rules_pair("gibbon_liana", "a gibbon standing on a limb", "a hanging liana coil"),
+    _rules_pair("cuttlefish_kelpblade", "a cuttlefish hovering over sand", "a hanging kelp blade"),
+    _rules_pair("warthog_thistlehead", "a warthog standing in dust", "a hanging thistle head"),
+    _rules_pair("oryx_agaveflower", "an oryx standing on a ridge", "a hanging agave flower"),
+    _rules_pair(
+        "chameleon_curledfrond", "a chameleon gripping a twig", "a hanging curled fern frond"
+    ),
+    _rules_pair("hornbill_gourd", "a hornbill perched on a bough", "a hanging gourd"),
+    _rules_pair("seahorse_anemone", "a seahorse upright among reeds", "a hanging sea anemone"),
+    _rules_pair("wren_teasel", "a wren perched on a stalk", "a hanging teasel head"),
+    _rules_pair("marten_pinecone", "a marten standing on a stump", "a hanging pine cone"),
+    _rules_pair("thrush_snail", "a thrush standing on a stone", "a hanging snail shell"),
+    _rules_pair(
+        "pangolin_bananaflower", "a pangolin standing on leaf litter", "a hanging banana flower"
+    ),
+    _rules_pair("gazelle_laburnum", "a gazelle standing in dry grass", "a hanging laburnum spray"),
+    _rules_pair("caracal_tassel", "a caracal sitting on sandstone", "a hanging silk tassel"),
+]
+
+# Branching or radial structure shared between an animal and a natural form: the
+# stag_oak logic, where the two silhouettes agree structurally.
+BREADTH_BRANCHING_RADIAL: list[PromptPair] = [
+    _rules_pair("markhor_deadwood", "a markhor on a crag", "a weathered deadwood snag"),
+    _rules_pair("kudu_coralfan", "a kudu standing in scrub", "a sea fan on a reef"),
+    _rules_pair(
+        "wildebeest_thorntree", "a wildebeest standing on a plain", "a flat-topped thorn tree"
+    ),
+    _rules_pair("mantisshrimp_bromeliad", "a mantis shrimp at its burrow", "a bromeliad rosette"),
+    _rules_pair(
+        "featherstar_fernfiddle", "a feather star on coral", "an unrolling fern fiddlehead"
+    ),
+    _rules_pair("antler_beachtree", "a shed antler on moss", "a wind-bent beach tree"),
+    _rules_pair("cicadawing_leafskeleton", "a cicada wing on stone", "a skeleton leaf"),
+    _rules_pair("brittlestar_rootball", "a brittle star on sand", "an exposed root ball"),
+    _rules_pair("nudibranch_allium", "a nudibranch on a reef", "an allium seed head"),
+    _rules_pair("clubmoss_coral", "a clubmoss cluster", "a staghorn coral head"),
+    _rules_pair("pheasantfeather_frond", "a single pheasant tail feather", "a young palm frond"),
+    _rules_pair("ibexhorn_hornedmelon", "an ibex horn on sand", "a horned melon"),
+    _rules_pair("crystalcluster_thistle", "a quartz crystal cluster", "a dried thistle head"),
+    _rules_pair("hoodoo_termitemound", "a sandstone hoodoo", "a termite mound"),
+    _rules_pair("basaltcolumn_organpipe", "a basalt column cluster", "an organ pipe rank"),
+    _rules_pair("ammonite_ropecoil", "an ammonite in shale", "a coiled mooring rope"),
+    _rules_pair("cyclonecloud_shellwhorl", "a spiral cloud over ocean", "a whorled shell on sand"),
+    _rules_pair("horsetail_bamboo", "a horsetail stand in marsh", "a bamboo cluster"),
+    _rules_pair("ginkgoleaf_clamshell", "a ginkgo leaf on moss", "an open clam shell"),
+    _rules_pair("protea_seaanemonehead", "a protea flower head", "a closed sea anemone"),
+    _rules_pair("banksia_beehive", "a banksia cone", "a wild bee comb"),
+    _rules_pair("waratah_seastar", "a waratah flower", "a cushion sea star"),
+    _rules_pair("driftwood_reindeermoss", "a bleached driftwood limb", "a clump of reindeer moss"),
+    _rules_pair("mushroomgills_fanvault", "mushroom gills seen from below", "a fan vault ceiling"),
+    _rules_pair(
+        "lightningtree_rootweb", "a lightning fork over a plain", "a root web in cut earth"
+    ),
+]
+
+# An object silhouette matched to a natural form at the same frame mass. Window 1
+# found object-like pairs among its strongest, and they carry no anatomy to break.
+BREADTH_OBJECT_NATURAL: list[PromptPair] = [
+    _rules_pair("censer_seedhead", "a hanging censer", "a dried poppy seed head"),
+    _rules_pair("amphora_wasps_nest", "a clay amphora", "a paper wasp nest"),
+    _rules_pair("chalice_tulip", "a stone chalice", "a single tulip bloom"),
+    _rules_pair("ewer_gourdvine", "a bronze ewer", "a bottle gourd"),
+    _rules_pair("sextant_crabclaw", "a brass sextant", "a crab claw"),
+    _rules_pair("orrery_seedwhorl", "a small orrery", "a whorl of sycamore seeds"),
+    _rules_pair("sundial_limpet", "a stone sundial", "a limpet on rock"),
+    _rules_pair("anvil_boulder", "a blacksmith anvil", "a glacial erratic boulder"),
+    _rules_pair("bellows_stingray", "a leather bellows", "a stingray on sand"),
+    _rules_pair("spindle_seedpod", "a wooden spindle", "a spindle-shaped seed pod"),
+    _rules_pair("quill_reedstem", "a cut quill pen", "a dry reed stem"),
+    _rules_pair("inkwell_inkcap", "a glass inkwell", "an ink cap mushroom"),
+    _rules_pair("signet_ammonitecast", "a wax signet ring", "a cast ammonite"),
+    _rules_pair("lantern_seedcase", "a storm lantern", "a chinese lantern seed case"),
+    _rules_pair("brazier_urchinshell", "an iron brazier", "an urchin shell on stone"),
+    _rules_pair("sconce_coralbranch", "a wall sconce", "a branch of red coral"),
+    _rules_pair("urn_beehiveoven", "a funerary urn", "a clay beehive oven"),
+    _rules_pair("bobbin_cocoonspindle", "a thread bobbin", "a silkworm cocoon"),
+    _rules_pair("horseshoe_crabshell", "a worn horseshoe", "a horseshoe crab shell"),
+    _rules_pair("bellmetal_barnacle", "a small hand bell", "a barnacle cluster"),
+    _rules_pair("kettle_puffball", "a copper kettle", "a giant puffball"),
+    _rules_pair("mortar_geodehalf", "a stone mortar", "a geode half"),
+    _rules_pair("scythe_crescentdune", "a scythe blade", "a crescent dune"),
+    _rules_pair("plumbbob_teardropseed", "a plumb bob on a line", "a teardrop seed"),
+    _rules_pair("foldingfan_shellhinge", "an open folding fan", "a hinged mussel shell"),
+    _rules_pair("clockescape_fernuncoil", "a clock escapement wheel", "an uncoiling fern crozier"),
+    _rules_pair("weathervane_reedhead", "an iron weathervane", "a bulrush head"),
+]
+
+# Reflection, horizon and figure-ground, where window 1 found landscape flips
+# forgiving - though mountain_valley kept only 2 of 18, so "forgiving" is thin.
+BREADTH_SCENE_LANDFORM: list[PromptPair] = [
+    _rules_pair("seastack_cloudcolumn", "a sea stack in surf", "a column of cloud over water"),
+    _rules_pair("dune_snowdrift", "a wind-carved dune", "a snow drift against a fence"),
+    _rules_pair(
+        "fjordwall_glaciertongue", "a fjord wall above dark water", "a glacier tongue in a valley"
+    ),
+    _rules_pair("oxbow_shellspiral", "an oxbow lake from above", "a spiral shell in wet sand"),
+    _rules_pair("mesa_anvilcloud", "a flat-topped mesa", "an anvil cloud at dusk"),
+    _rules_pair("hoodoofield_chimneysmoke", "a field of stone hoodoos", "chimney smoke over roofs"),
+    _rules_pair("tor_cairn", "a granite tor on moor", "a stacked stone cairn"),
+    _rules_pair("esker_railembankment", "a winding esker ridge", "a rail embankment across fields"),
+    _rules_pair("moraine_shinglebank", "a lateral moraine", "a storm shingle bank"),
+    _rules_pair("cirque_amphitheatre", "a mountain cirque", "a stone amphitheatre"),
+    _rules_pair("delta_treecrown", "a river delta from above", "a bare tree crown against sky"),
+    _rules_pair("yardang_shipwreck", "a wind-cut yardang ridge", "a beached wooden wreck"),
+    _rules_pair("mudflat_leafvein", "a tidal mudflat at low water", "veins in a held leaf"),
+    _rules_pair("caldera_millpond", "a flooded caldera", "a still mill pond"),
+    _rules_pair("scree_gravelroof", "a scree slope under cliff", "a gravel roof edge"),
+    _rules_pair("icecave_marblehall", "an ice cave mouth", "a marble hall entrance"),
+    _rules_pair("lavafield_bark", "a cooled lava field", "the bark of an old trunk"),
+    _rules_pair(
+        "mangroveroots_lightning", "mangrove roots in shallow water", "lightning over a bay"
+    ),
+    _rules_pair("reedbed_wheatfield", "a reed bed at dusk", "a wheat field before harvest"),
+    _rules_pair("glacialcrevasse_quarrycut", "a glacial crevasse", "a quarry cut face"),
+    _rules_pair(
+        "stormfront_mountainridge", "a storm front over plains", "a serrated mountain ridge"
+    ),
+    _rules_pair("sandripple_zenrake", "wind ripples on a dune", "raked lines in a gravel garden"),
+    _rules_pair("crater_cupola", "a shallow impact crater", "a domed cupola from below"),
+]
+
+# family name -> its pairs, so execution order can be stratified. An unstratified
+# hash permutation put 20 scene and 8 object pairs in the first 60 executions,
+# which would make a truncated window unrepresentative by family.
+BREADTH_FAMILIES: dict[str, list[PromptPair]] = {
+    "upright_pendant": BREADTH_UPRIGHT_PENDANT,
+    "branching_radial": BREADTH_BRANCHING_RADIAL,
+    "object_natural": BREADTH_OBJECT_NATURAL,
+    "scene_landform": BREADTH_SCENE_LANDFORM,
+}
+BREADTH_PAIRS: list[PromptPair] = [p for pairs in BREADTH_FAMILIES.values() for p in pairs]
+
+# Cut in review, with the rule each broke. Kept as a record: re-adding any of
+# these needs an argument against the reason, not a fresh opinion.
+BREADTH_CUT: dict[str, str] = {
+    "archrock_bridgearch": "both are arches of the same proportion",
+    "astrolabe_sanddollar": "both circular and symmetric",
+    "capybara_willowfrond": "solid bulk against thin fronds",
+    "dandelionclock_seaurchin": "both radially symmetric spheres",
+    "dipper_icicle": "compact bird against a thin spike",
+    "frostfern_riverdelta": "fine branching texture, no silhouette",
+    "geode_pomegranate": "reads only through colour and crystalline material",
+    "hourglass_teardrop": "an hourglass is its own 180 rotation",
+    "keyring_vinecircle": "circular, and a ring of keys is many objects",
+    "lacewing_dewdrop": "a delicate insect against a solid droplet",
+    "lemur_fig": "tall animal against a small round fruit",
+    "loom_spiderweb": "fine thread texture at 256px",
+    "nervesleaf_creekmap": "vein texture, no silhouette",
+    "okapi_lichen": "solid bulk against strands",
+    "saltflat_crackedglaze": "crack texture, no silhouette",
+    "spire_tarnreflection": "a spire and its own reflection are the same silhouette",
+    "stalagmite_stalactite": "same silhouette inverted, nothing to distinguish the views",
+    "tapir_mossbeard": "solid bulk against hanging strands",
+    "terracedfield_contourmap": "contour lines are effectively text/graphic",
+    "tidepool_stainedglass": "reads only through colour",
+    "urchin_chestnutcase": "both radially symmetric",
+    "waterfallcurtain_lacepanel": "fine lace texture at 256px",
+}
+
+
 _SCREEN_IDS = frozenset({"dog_sloth", "fox_rabbit", "walrus_ladybug", "mountain_valley"})
 SCREEN_PAIRS: list[PromptPair] = [p for p in FINAL_PAIRS if p.pair_id in _SCREEN_IDS]
 
 PAIR_BY_ID: dict[str, PromptPair] = {
-    p.pair_id: p for p in [*FINAL_PAIRS, *REFERENCE_PAIRS, *PAIRING_RULES_PAIRS]
+    p.pair_id: p for p in [*FINAL_PAIRS, *REFERENCE_PAIRS, *PAIRING_RULES_PAIRS, *BREADTH_PAIRS]
 }
 
 _UNSTYLED = frozenset({None, "none"})

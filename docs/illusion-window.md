@@ -464,8 +464,249 @@ one recipe and one seed, not a verdict on the pairs.
 `reference_sketch` + joint + negative prompt on came in at 72.2 percent keep and
 mean 3.28, far above the other seven cells in block A. It also carries the most
 disqualifying frames of any cell, 10 of 18. It is the best of eight cells at
-n=18, so the margin includes selection. It is window 3's hypothesis, not a
-result.
+n=18, so the margin includes selection.
+
+It was written up here as window 3's hypothesis. It is not, for two reasons found
+after the write-up and recorded in the next section: on the endpoint that
+describes a printable image it is 4 of 18, not 13 of 18, and a rerun of one fixed
+configuration agrees with itself too weakly for a single 18-cell margin to mean
+much. Best-of-eight at n=18 is a place to look, not a thing to spend 60 hours
+confirming.
+
+## After window 2: three findings from re-analysis
+
+No new GPU time. All three come from window 2's own ratings, and two of them
+change what the next window should do.
+
+### The run is reproducible; the seed is the lottery
+
+Every number in this section is recomputed by
+`.local/illusion-reliability/campaigns/window3/reanalysis.py`, which exists
+because these were first computed in throwaway shell heredocs and one of them
+reached a plan while being wrong. Window 1 has 552 rating rows but 546 unique
+ids: six items were rated twice, and the last rating per id is canonical.
+
+Window 1's independent and joint runs are two separate runs of the same pair and
+seed, and their `sds_end` images are produced before the Dream mode can matter.
+That makes them a clean run-to-run comparison, n=90:
+
+| Measure | Value |
+|---|---|
+| score correlation | 0.565 |
+| mean absolute difference | 0.778 |
+| keeper agreement at >= 3 | 85.6 percent, Cohen kappa 0.539 |
+| keeper agreement at >= 4 | 90.0 percent, Cohen kappa 0.348 |
+
+So a run reproduces itself moderately well on the human endpoint. "SDS is not
+reproducible" should be narrowed to "not pixel-identical": 0 of 90 images match
+bit for bit, which turned out to be too strict a criterion to reason from.
+
+What actually varies is the seed. At the endpoint window 3 uses, one Dream round,
+the unit being one seed at the better of the two modes:
+
+| Measure | Value |
+|---|---|
+| pairs with a round-one keeper at some seed | 17 of 30 |
+| seed-cells on those pairs that missed | 23 of 51 = 45.1 percent |
+| per-seed success on a workable pair | p = 0.549 |
+
+A miss at one seed is therefore weak evidence about the PAIR, which is why window
+3 records it as "not obtained in this run" and never as dead. It also makes the
+acquisition arithmetic concrete: at p = 0.549, one seed on 97 pairs expects about
+1.3 times as many distinct workable pairs as two seeds on 49. That holds only if
+the smaller set would be drawn from the same distribution; two seeds win if the
+retained pairs are materially better.
+
+WITHDRAWN, and recorded because it was load-bearing for a day. An earlier version
+of this section claimed 72 cells across the two windows were reruns of one
+configuration, agreeing at r = 0.10 with keeper status disagreeing 44 percent of
+the time, and concluded that one observation is "close to uninformative". Those
+72 cells match only at the `final` stage, because window 2 rated no other stage,
+and window 1's final is after EIGHT Dream rounds against window 2's one. The
+schedule is the largest effect either window measured, and it appears here as a
+mean shift of 1.19 against 1.81. Matching window 1's `dream_d1` against window
+2's `final` is closer to like-for-like and gives r = 0.196 with 28 of 72
+disagreeing, still crossing two implementations. Neither is a rerun; no
+configuration was ever run twice in either window. The conclusion was also wrong
+in the other direction: run agreement is 85.6 percent, not near-random.
+
+What survives is that ranking cells by a single small-n margin ranks noise, which
+is what retired the best-cell hypothesis.
+
+### The colour rule measured the wrong endpoint
+
+Oil failed its predeclared rule on raw readability, and that failure stands. But
+raw readability counts images that cannot be shipped. Block A, same pairs, same
+seeds, per observation, n=72 per style:
+
+Clean means the frame was rated and rated `none` or `minor`. A missing answer is
+unrated, not clean: writing the rule as `!= disqualifying` counted one unrated
+`reference_sketch` item scoring 5 as clean and moved the number below from 13 to
+14. The review server now requires the frame answer once it asks for it.
+
+| Endpoint, per observation, n=72 | `oil` | `reference_sketch` |
+|---|---|---|
+| score >= 3 | 25 | 35 |
+| clean, score >= 3 | 25 | 13 |
+| clean, score >= 4 | 11 | 10 |
+| disqualifying frames | 0 | 31 |
+| frame unrated | 0 | 1 |
+
+`reference_sketch` loses 22 of its 35 readable images to their own frames; oil
+loses none. The same defect is in the window 2 keeper export: it filtered on
+score alone, so of 43 images scoring >= 4, 16 are disqualifying-framed and one is
+unrated, leaving 26 clean keepers. `export_keepers` now applies the frame rule by
+default.
+
+That table is per OBSERVATION, and it overstates the case, because the two arms
+of one base share an SDS state and are not independent observations. At the unit a
+window 3 base actually produces - one base, better of its two arms, negative off:
+
+| Endpoint, per base, n=18 | `oil` | `reference_sketch` | discordant | McNemar p |
+|---|---|---|---|---|
+| clean, score >= 3 | 7 | 6 | 5 / 4 | 1.00 |
+| clean, score >= 4 | 5 | 6 | 4 / 5 | 1.00 |
+| raw score >= 3 | 7 | 11 | 2 / 6 | 0.29 |
+
+So the honest statement is that **oil does not yield more.** It ties at the
+decision-relevant unit on a small n, and at >= 4 it is nominally behind. Oil is
+chosen because it ties while producing no disqualifying frames at all and
+delivering colour in 78 of 78 arms, which were the human reviewer's two actual
+complaints about window 2's output. That is a product-risk argument, not a yield
+argument, and treating the per-observation table as though it settled yield would
+be motivated reasoning.
+
+This does not reinstate the rejected rule either. The rule tested raw
+readability, a quantity nobody wants to maximise, so the primary endpoint is now
+stated as **score >= 3 AND frame not `disqualifying`**, with raw readability as a
+secondary.
+
+### A6 stands, and the explanation offered for it was wrong
+
+An intermediate claim held that A6's collapse came from joint Dream combined with
+the eight-round schedule, since joint helps 20 of 27 pairs at one round. That is
+refuted by this document: A6's collapse was already present at Dream round 1
+(line 179 above), whose strength is 0.95, identical to window 2's single round.
+Rounds 2 to 8 cannot cause an outcome that exists after round 1.
+
+The properly paired case is `wolf_raven` seed 11 at spec_hash `fd46cd54684e`,
+negative off, where independent scored 5 and joint 0 from one shared SDS state,
+and the joint arm also moved from a minor to a disqualifying frame. The
+negative-on arms of that same base run the other way, 1 against 4, which is why
+the negative setting has to be part of the key: keying on `spec_hash` alone lets
+one arm pair overwrite the other and prints the opposite result. That is the same
+under-specified-key mistake that contaminated the first mode head-to-head, and it
+recurred once while checking this very claim.
+
+So joint remains the default and collapse remains real at the shipped
+configuration. What is not supportable is predicting collapse per pair. The
+evidence for a stable pair property is one pair at one seed, and the same pair
+reverses under a different negative setting; meanwhile a single seed misses a
+third of the pairs that demonstrably work. There is no stable label to learn, and
+a second arm forked from the same snapshot costs about 22 seconds against a 1,556
+second SDS phase, which is cheaper than any predictor could be.
+
+## Window 3: acquisition
+
+Planned, not yet run. `worker.illusion_campaign --phase window3`, 98 bases and
+196 observations at 47.3h, which leaves real slack in a 58h window. The plan is
+`.local/illusion-reliability/campaigns/window3/PLAN.md`, the launch procedure is
+`RUNBOOK.md` beside it, and the corpus is `BREADTH_FAMILIES` in
+`illusion_experiment.py`.
+
+Nothing is under test. Windows 1 and 2 settled the recipe, and the corpus is now
+the binding constraint on yield: 144 of window 2's 206 observations came from six
+already-proven pairs, and the 18 genuinely untested pairs kept 30.6 percent
+against 38.3 percent overall. This window spends its hours on 97 pairs no window
+has run.
+
+| Setting | Value | Source |
+|---|---|---|
+| SDS steps | 5,000 | window 1, A3 |
+| Dream rounds | 1 | window 2: eight rounds scored 0.25 against 3.00 |
+| Dream arms | joint primary, independent fallback, forked from one SDS state | joint wins overall, collapses some pairs, and the fallback costs 22s |
+| Style | `oil` | the frames and colour, not yield: see above |
+| Negative prompt | off | rejected by its rule, and oil needs no frame fix |
+| Prime resolution | 256 | window 1, A4 |
+| GPU slots | 1 | throughput is flat from 1 to 3 |
+
+One seed per pair rather than two, because at p = 0.549 one seed on 97 pairs
+discovers about 1.3 times as many distinct workable pairs as two seeds on 49.
+Replication buys ranking reliability, which this window does not need, and that is
+exactly why a miss is recorded as not obtained.
+
+Order and seeds are both **stratified by family**: permute within each family,
+then round-robin across families. An unstratified hash permutation over the whole
+corpus put 20 scene pairs and 8 object pairs in the first 60 executions, and gave
+one seed five upright pairs and no object or scene pair at all. Neither breaks
+total yield if all 97 finish, but both make a truncated window unrepresentative
+and confound any comparison between families. Stratified, every prefix is balanced
+to within one pair per family.
+
+### The corpus, and the pass that programmatic checks cannot do
+
+97 pairs in four families: upright/pendant 22, branching/radial 25,
+object/natural 27, scene/landform 23. Vocabulary is disjoint from both windows
+and from the 2026-07-19 gallery curation, so a failure here is new information.
+
+`test_breadth_corpus_obeys_the_pairing_rules` enforces what can be checked
+mechanically: unique ids, no collision with any pair either window ran, no
+subject used more than twice, no inverse duplicates, no multi-clause subjects, and
+no double-wrapped style. Passing it says nothing about whether two subjects share
+a scene at compatible frame mass, which is the part that decides whether a pair
+can work at all.
+
+A semantic pass cut 22 of the original 119, recorded with their reasons in
+`BREADTH_CUT`:
+
+| Reason cut | Examples |
+|---|---|
+| identical or near-identical silhouettes | `stalagmite_stalactite`, `archrock_bridgearch`, `spire_tarnreflection` |
+| symmetric under 180 rotation, so the flip carries no information | `hourglass_teardrop`, `urchin_chestnutcase`, `dandelionclock_seaurchin`, `astrolabe_sanddollar` |
+| depends on colour or material | `geode_pomegranate`, `tidepool_stainedglass` |
+| depends on fine texture that survives neither 256px nor the flip | `loom_spiderweb`, `waterfallcurtain_lacepanel`, `saltflat_crackedglaze` |
+| frame-mass mismatch: a solid animal against a wispy or tiny form | `lemur_fig`, `tapir_mossbeard`, `capybara_willowfrond`, `dipper_icicle` |
+
+The upright/pendant family took the deepest cut and remains the highest-risk
+family, because its logic keeps inviting a large animal to be paired with a small
+compact form. Scene/landform is next, because several of its distinctions reduce
+to texture or viewpoint rather than to inversion. If a family fails wholesale that
+is diagnosable from the yield sheets, which is the reason to keep the split.
+
+### Predeclared, before any data is seen
+
+- Primary endpoint: **clean readable**, score >= 3 with the frame rated `none` or
+  `minor`. Reported alongside **clean keeper**, score >= 4 on the same frame rule,
+  because the exporter uses >= 4 and the two must not be conflated.
+- Raw readability is a secondary and never the headline. In window 2 the two
+  disagreed by a factor of two.
+- The endpoint is the better of a base's two `final` arms. Not SDS-end, not
+  another checkpoint, chosen now rather than after seeing the sheets.
+- A pair that misses at its single seed is "not obtained in this run".
+- No adoption decision about settings comes out of this window. Pairs that produce
+  a clean keeper enter the corpus; nothing else changes.
+- Window-level success: at least **17 of the 97** new pairs produce a clean
+  readable image, the anchor excluded. That is window 2 block C's 6-of-18 strict
+  clean rate carried across, whose Wilson 95 percent lower bound is about 16
+  percent. It is a soft expectation with no action attached, not a gate, and it is
+  transported across a different corpus and medium.
+
+The anchor cell is `wolf_raven`, which exercises the fallback arm by
+construction: at spec_hash `fd46cd54684e` with the negative prompt off, its
+independent arm scored 5 against joint's 0 from one shared SDS state. Its score is
+not a gate, because one seed on a workable pair misses 45 percent of the time.
+What it gates is structural: two arm directories, two distinct images, SDS run
+once.
+
+### Run the SDXL diagnostic first
+
+It has still never been run, and it is two 20-step generations, a VAE
+reconstruction and six UNet probes: minutes, not hours. It goes first because the
+window has slack and because an unrun diagnostic keeps being deferred.
+
+Predeclare that it is diagnostic only. Whatever it shows, it does not become an
+improvised SDXL pivot inside this window; SD 1.5 remains the backbone for the 98
+bases either way.
 
 ## Running it
 

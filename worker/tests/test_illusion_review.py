@@ -354,3 +354,78 @@ def test_export_keepers_copies_and_names_by_every_dimension(tmp_path) -> None:
     assert manifest["count"] == 2 and manifest["min_score"] == 4
     assert {k["pair_id"] for k in manifest["keepers"]} == {"wolf_raven", "koi_moon"}
     assert (out / "index.html").is_file()
+
+
+def test_export_keepers_enforces_the_frame_rule(tmp_path) -> None:
+    """A keeper is clean by default: rated frame, none or minor.
+
+    Window 2's export filtered on score alone, so 16 of its 43 keepers carry a
+    disqualifying frame and one carries no frame answer. Both must now be
+    excluded, and a missing answer must not pass as clean.
+    """
+    import json
+
+    from PIL import Image
+
+    from worker.illusion_review import export_keepers
+
+    runs = tmp_path / "runs"
+    rows = []
+    for pair, frame in (
+        ("clean_none", "none"),
+        ("clean_minor", "minor"),
+        ("framed_out", "disqualifying"),
+        ("unrated_frame", None),
+    ):
+        run = runs / pair
+        run.mkdir(parents=True)
+        for name in ("derived_1.png", "derived_2.png", "prime_1.png"):
+            Image.new("RGB", (8, 8), (10, 10, 10)).save(run / name)
+        rows.append(
+            {
+                "id": pair,
+                "score": 5,
+                "pair_id": pair,
+                "seed": 11,
+                "style": "oil",
+                "arm": "joint",
+                "mode": "joint",
+                "stage": "final",
+                "frame_artifact": frame,
+                "run_dir": str(run),
+            }
+        )
+    ratings = tmp_path / "canonical.jsonl"
+    ratings.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    summary = export_keepers(ratings, runs, tmp_path / "clean", min_score=4)
+    assert summary["count"] == 2
+    exported = {k["pair_id"] for k in json.loads((tmp_path / "clean" / "keepers.json").read_text())["keepers"]}
+    assert exported == {"clean_none", "clean_minor"}
+
+    # The window 2 behaviour stays reachable, so its export can be reproduced.
+    loose = export_keepers(ratings, runs, tmp_path / "loose", min_score=4, require_clean_frame=False)
+    assert loose["count"] == 4
+
+
+def test_rating_row_requires_the_frame_answer_once_asked() -> None:
+    from worker.illusion_review import rating_row
+
+    item = {
+        "id": "x",
+        "ask": ["score", "frame_artifact"],
+        "spec_hash": "deadbeef",
+        "stage": "final",
+        "arm": "joint",
+        "pair_id": "wolf_raven",
+        "seed": 11,
+        "style": "oil",
+        "mode": "joint",
+        "sds_steps": 5000,
+        "negative_prompt": None,
+        "run_dir": "/tmp/x",
+    }
+    assert rating_row(item, {"score": 4, "frame_artifact": "minor"})["frame_artifact"] == "minor"
+    for missing in ({"score": 4}, {"score": 4, "frame_artifact": None}):
+        with pytest.raises(ValueError, match="frame_artifact"):
+            rating_row(item, missing)
