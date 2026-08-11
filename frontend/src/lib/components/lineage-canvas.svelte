@@ -57,9 +57,10 @@
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
+		settleLineageRootStarReconciliation,
 		shouldDimLineageEdge,
-		shouldReloadLineageRootsAfterStarToggle,
-		type InitialLineageViewportAnchor
+		type InitialLineageViewportAnchor,
+		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
@@ -138,7 +139,9 @@
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
 	let starredOnly = $state(false);
-	let rootsFilterEpoch = 0;
+	let rootsFilterModeEpoch = 0;
+	let rootsRequestEpoch = 0;
+	let rootStarReconciliation: LineageRootStarReconciliation = { pending: 0, dirty: false };
 	let recenterAfterFilter = false;
 	let anchorSearchPages = 0;
 	let initializeFrame = 0;
@@ -334,7 +337,8 @@
 
 	async function loadRoots(): Promise<void> {
 		if (rootsLoading || (!rootsHaveMore && roots.length > 0)) return;
-		const filterEpoch = rootsFilterEpoch;
+		const filterModeEpoch = rootsFilterModeEpoch;
+		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
 		rootsLoading = true;
 		rootsFailed = false;
@@ -351,7 +355,9 @@
 				`/api/v1/generations?${query.toString()}`,
 				'history request failed'
 			);
-			if (filterEpoch !== rootsFilterEpoch) return;
+			if (filterModeEpoch !== rootsFilterModeEpoch || requestEpoch !== rootsRequestEpoch) {
+				return;
+			}
 			const existing = new Set(roots.map((root) => root.id));
 			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
 			rootsHaveMore = page.length === ROOT_LIMIT;
@@ -359,9 +365,16 @@
 			loaded = true;
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
-			if (filterEpoch === rootsFilterEpoch) rootsFailed = true;
+			if (filterModeEpoch === rootsFilterModeEpoch && requestEpoch === rootsRequestEpoch) {
+				rootsFailed = true;
+			}
 		} finally {
-			if (canvasActive && canvasEpoch === canvasEpochSequence && filterEpoch === rootsFilterEpoch) {
+			if (
+				canvasActive &&
+				canvasEpoch === canvasEpochSequence &&
+				filterModeEpoch === rootsFilterModeEpoch &&
+				requestEpoch === rootsRequestEpoch
+			) {
 				rootsLoading = false;
 			}
 		}
@@ -375,9 +388,8 @@
 		}
 	}
 
-	function reloadRootsForFilter(value: boolean): void {
-		rootsFilterEpoch += 1;
-		starredOnly = value;
+	function reloadRoots(): void {
+		rootsRequestEpoch += 1;
 		roots = [];
 		rootsLoading = false;
 		rootsInitialized = false;
@@ -390,25 +402,34 @@
 
 	function setStarredOnly(value: boolean): void {
 		if (starredOnly === value) return;
-		reloadRootsForFilter(value);
+		rootsFilterModeEpoch += 1;
+		starredOnly = value;
+		reloadRoots();
 	}
 
 	async function toggleSelectedStar(): Promise<void> {
 		if (selectedGeneration === null) return;
-		const filterEpoch = rootsFilterEpoch;
-		const selectedWasRoot = roots.some((root) => root.id === selectedGeneration.id);
-		const filteredRootChanged = starredOnly && selectedWasRoot;
-		const succeeded = await toggleStarred(selectedGeneration.id);
-		if (
-			shouldReloadLineageRootsAfterStarToggle(
-				succeeded,
-				filteredRootChanged,
-				filterEpoch,
-				rootsFilterEpoch,
-				starredOnly
-			)
-		) {
-			reloadRootsForFilter(true);
+		const generation = selectedGeneration;
+		const changesRootFilter = generation.source_asset_id === null;
+		if (changesRootFilter) {
+			rootStarReconciliation = {
+				...rootStarReconciliation,
+				pending: rootStarReconciliation.pending + 1
+			};
+		}
+		let succeeded = false;
+		try {
+			succeeded = await toggleStarred(generation.id);
+		} finally {
+			if (changesRootFilter) {
+				const decision = settleLineageRootStarReconciliation(
+					rootStarReconciliation,
+					succeeded,
+					starredOnly
+				);
+				rootStarReconciliation = decision.state;
+				if (decision.reload) reloadRoots();
+			}
 		}
 	}
 

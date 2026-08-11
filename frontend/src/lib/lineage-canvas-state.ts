@@ -89,19 +89,23 @@ export function starredListSnapshotIsCurrent(
 	);
 }
 
-export function shouldReloadLineageRootsAfterStarToggle(
+export type LineageRootStarReconciliation = {
+	pending: number;
+	dirty: boolean;
+};
+
+export function settleLineageRootStarReconciliation(
+	state: LineageRootStarReconciliation,
 	mutationSucceeded: boolean,
-	filteredRootChanged: boolean,
-	startedFilterEpoch: number,
-	currentFilterEpoch: number,
 	starredOnly: boolean
-): boolean {
-	return (
-		mutationSucceeded &&
-		filteredRootChanged &&
-		startedFilterEpoch === currentFilterEpoch &&
-		starredOnly
-	);
+): { state: LineageRootStarReconciliation; reload: boolean } {
+	const pending = state.pending - 1;
+	const dirty = state.dirty || mutationSucceeded;
+	if (pending > 0) return { state: { pending, dirty }, reload: false };
+	return {
+		state: { pending: 0, dirty: false },
+		reload: dirty && starredOnly
+	};
 }
 
 export function rebaseLineageViewport(

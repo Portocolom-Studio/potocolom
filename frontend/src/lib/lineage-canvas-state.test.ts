@@ -13,7 +13,7 @@ import {
 	retainedRetryBudget,
 	rebaseLineageViewport,
 	rollbackOptimisticStarMutation,
-	shouldReloadLineageRootsAfterStarToggle,
+	settleLineageRootStarReconciliation,
 	shouldDimLineageEdge,
 	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
@@ -335,12 +335,34 @@ test('starred list reload commits only at current epochs with no mutation pendin
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, false), true);
 });
 
-test('star toggle reloads roots only in the unchanged starred filter epoch', () => {
-	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 4, true), true);
-	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 5, false), false);
-	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, true, 4, 6, true), false);
-	assert.equal(shouldReloadLineageRootsAfterStarToggle(false, true, 4, 4, true), false);
-	assert.equal(shouldReloadLineageRootsAfterStarToggle(true, false, 4, 4, true), false);
+test('a root star settling after Starred roots was enabled reloads the filtered roots', () => {
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, true, true), {
+		state: { pending: 0, dirty: false },
+		reload: true
+	});
+});
+
+test('a later failed root toggle cannot discard an earlier successful reconciliation', () => {
+	const first = settleLineageRootStarReconciliation({ pending: 2, dirty: false }, true, true);
+	assert.deepEqual(first, {
+		state: { pending: 1, dirty: true },
+		reload: false
+	});
+	assert.deepEqual(settleLineageRootStarReconciliation(first.state, false, true), {
+		state: { pending: 0, dirty: false },
+		reload: true
+	});
+});
+
+test('settled root toggles reload only when a successful change can affect the active filter', () => {
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, true, false), {
+		state: { pending: 0, dirty: false },
+		reload: false
+	});
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, false, true), {
+		state: { pending: 0, dirty: false },
+		reload: false
+	});
 });
 
 test('edges are not dimmed when the selected node left the filtered forest', () => {
