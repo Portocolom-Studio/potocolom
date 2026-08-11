@@ -79,6 +79,13 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   `FLEET_SECRET` to run a worker from anywhere else. Note that behind a reverse
   proxy every connection appears to arrive from the proxy, so a fronted
   deployment must set the secret rather than rely on this.
+- One combination is unsafe and easy to reach by accident: `FLEET_SECRET` empty
+  together with `FORWARDED_ALLOW_IPS=*`. The second tells uvicorn to believe the
+  `X-Forwarded-For` header from any client, and the address in that header is
+  what the permissive check then sees, so a client can claim to be on your
+  network and register as a worker from anywhere. Setting the wildcard is
+  ordinary advice when running behind a proxy, so the API warns about the pair
+  at startup. Set `FLEET_SECRET` in that setup.
 - Models are JSON manifests in the `models` volume, seeded from
   `worker/models/` on first boot. Add or edit manifests in the volume (or
   rebuild the image) and restart the worker; see

@@ -191,6 +191,19 @@ def test_a_peer_off_the_public_internet_is_unroutable(host):
     assert peer_is_unroutable(FakePeer(host))
 
 
+@pytest.mark.parametrize("host,unroutable", [("::ffff:127.0.0.1", True),
+                                             ("::ffff:192.168.1.5", True),
+                                             ("::ffff:8.8.8.8", False),
+                                             ("::ffff:1.1.1.1", False)])
+def test_an_ipv4_mapped_peer_is_classified_by_the_address_it_maps(host, unroutable):
+    """A dual-stack listener reports an IPv4 client as ::ffff:A.B.C.D, so this
+    is the form a public peer most plausibly arrives in. Classifying the mapped
+    form as non-global would hand permissive mode straight back to the internet;
+    older CPython did exactly that for some mapped ranges.
+    """
+    assert peer_is_unroutable(FakePeer(host)) is unroutable
+
+
 @pytest.mark.parametrize("host", ["100.64.0.1", "100.115.92.2", "fd7a:115c:a1e0::1"])
 def test_a_worker_reached_over_a_mesh_vpn_is_unroutable(host):
     """Tailscale hands out 100.64.0.0/10, which is carrier-grade NAT space:

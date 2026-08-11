@@ -35,8 +35,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(settings.log_format)
     if not settings.fleet_token_key:
         logging.getLogger("potocolom.realtime").warning(
-            "FLEET_TOKEN_KEY is unset; fleet authentication is permissive"
+            "FLEET_TOKEN_KEY is unset; fleet authentication is permissive for "
+            "workers whose address cannot route from the internet"
         )
+        # Permissive mode decides on the peer address, and uvicorn overwrites
+        # that from X-Forwarded-For for any peer it is told to trust. Trusting
+        # every peer hands the decision to the client, which can then claim a
+        # loopback address and register from anywhere. The pair is what is
+        # dangerous, so warn only when both halves are present.
+        if os.environ.get("FORWARDED_ALLOW_IPS", "").strip() in {"*", "0.0.0.0", "::"}:
+            logging.getLogger("potocolom.realtime").warning(
+                "FORWARDED_ALLOW_IPS trusts forwarded headers from every peer while "
+                "FLEET_TOKEN_KEY is unset: a client can present any address and "
+                "register as a worker. Set FLEET_TOKEN_KEY."
+            )
     elif not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
         # survive the trip intact. Say so here rather than let the operator
