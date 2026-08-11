@@ -508,13 +508,13 @@
 					<Card.Title class="text-base">{t('app.realtime_canvas.input_title')}</Card.Title>
 					<Card.Description>{t('app.realtime_canvas.input_sub')}</Card.Description>
 				</Card.Header>
-				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3">
+				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 					<canvas
 						bind:this={drawCanvas}
 						width={CANVAS_SIZE}
 						height={CANVAS_SIZE}
 						aria-label={t('app.realtime_canvas.draw_surface')}
-						class="border-border w-full max-w-full touch-none rounded-lg border bg-white"
+						class="border-border mx-auto h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border bg-white object-contain touch-none"
 						onpointerdown={onPointerDown}
 						onpointermove={onPointerMove}
 						onpointerup={onPointerUp}
@@ -536,13 +536,13 @@
 					<Card.Title class="text-base">{t('app.realtime_canvas.output_title')}</Card.Title>
 					<Card.Description>{t('app.realtime_canvas.output_sub')}</Card.Description>
 				</Card.Header>
-				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3">
+				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 					<div class="relative">
 						<canvas
 							bind:this={outputCanvas}
 							width={CANVAS_SIZE}
 							height={CANVAS_SIZE}
-							class="border-border bg-muted/20 w-full max-w-full rounded-lg border"
+							class="border-border bg-muted/20 mx-auto h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border object-contain"
 						></canvas>
 						{#if renderedFrames === 0}
 							<p
@@ -574,7 +574,7 @@
 						{/if}
 					</div>
 					{#if selectedModel}
-						<div class="flex flex-col gap-4">
+						<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 							<ParamSliderField
 								id="realtime-strength"
 								label={t('app.realtime_canvas.strength')}
