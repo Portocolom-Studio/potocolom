@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 from app.files import MAX_UPLOAD_BYTES
 from app.main import app
 from app.settings import Settings
-from app.storage import MAX_VERIFY_BYTES, LocalStorage, S3Storage, get_storage
+from app.storage import (
+    MAX_IMAGE_EDGE,
+    MAX_VERIFY_BYTES,
+    LocalStorage,
+    S3Storage,
+    get_storage,
+)
 
 client = TestClient(app)
 
@@ -244,3 +250,60 @@ def test_image_info_refuses_an_oversized_object(tmp_path, monkeypatch):
     monkeypatch.setattr("app.storage.MAX_VERIFY_BYTES", 8)
     assert asyncio.run(storage.image_info("big.png")) is None
     assert MAX_VERIFY_BYTES > 1024 * 1024
+
+
+def _chunk(kind, body):
+    return (struct.pack(">I", len(body)) + kind + body
+            + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
+
+
+def _header(width, height, depth=8, colour=2, interlace=0):
+    return struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace)
+
+
+def test_image_info_requires_a_structurally_complete_png(tmp_path):
+    """Checking the header and the last twelve bytes is not structure.
+
+    An IHDR followed by arbitrary bytes and a trailer-shaped tail passed that,
+    so junk was persisted as a successful archival image/png. The walk checks
+    every chunk boundary and CRC without decompressing anything.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    sig = b"\x89PNG\r\n\x1a\n"
+    idat = zlib.compress(b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16)))
+    good = sig + _chunk(b"IHDR", _header(16, 16)) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+    bad = {
+        "junk-between": sig + _chunk(b"IHDR", _header(16, 16)) + b"\x00" * 40
+                        + _chunk(b"IEND", b""),
+        "no-idat": sig + _chunk(b"IHDR", _header(16, 16)) + _chunk(b"IEND", b""),
+        "repeat-header": sig + _chunk(b"IHDR", _header(16, 16))
+                         + _chunk(b"IHDR", _header(16, 16)) + _chunk(b"IDAT", idat)
+                         + _chunk(b"IEND", b""),
+        "illegal-depth": sig + _chunk(b"IHDR", _header(16, 16, depth=3))
+                         + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""),
+        "trailing-bytes": good + b"appended",
+        # Same length and kind, one byte of the body changed: only the CRC
+        # tells you the object is damaged.
+        "corrupt-crc": good[:len(sig) + 8 + 13 + 4 + 8] + bytes([good[len(sig) + 8 + 13 + 4 + 8] ^ 0xff])
+                       + good[len(sig) + 8 + 13 + 4 + 9:],
+        "over-edge": sig + _chunk(b"IHDR", _header(MAX_IMAGE_EDGE + 1, 16))
+                     + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""),
+    }
+    for name, data in bad.items():
+        (tmp_path / f"{name}.png").write_bytes(data)
+        assert asyncio.run(storage.image_info(f"{name}.png")) is None, name
+
+    for name, data in {"good": good,
+                       "at-edge": sig + _chunk(b"IHDR", _header(MAX_IMAGE_EDGE, 16))
+                                  + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""),
+                       "interlaced": sig + _chunk(b"IHDR", _header(16, 16, interlace=1))
+                                     + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")}.items():
+        (tmp_path / f"{name}.png").write_bytes(data)
+        assert asyncio.run(storage.image_info(f"{name}.png")) is not None, name
+
+
+def test_max_image_edge_matches_the_largest_real_output():
+    # A factor-4 upscale of the largest shipped generation size. Anything more
+    # only moves the memory question to whatever decodes the file later.
+    assert MAX_IMAGE_EDGE == 4096

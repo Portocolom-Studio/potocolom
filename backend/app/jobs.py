@@ -1215,6 +1215,12 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         except Exception:
             logger.exception("could not inspect output for job %s", job_id)
             return
+        # Before either branch. image_info awaits a thread, so a stall requeue
+        # can have replaced this attempt while its output was being inspected,
+        # and a late verdict must not fail the row or delete the objects that
+        # now belong to the attempt after it.
+        if inflight.get(job_id) is not current:
+            return
         if (image is None or image.size <= 0
                 or image.content_type != "image/png"):
             entry = inflight.pop(job_id, None)
@@ -1224,19 +1230,19 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             last_progress_at.pop(job_id, None)
             release_job_slot(worker)
             await mark_failed(job_id, "worker output was missing or invalid")
-            # Nothing else collects a rejected upload: no asset row names it
-            # and the success path only cleans up earlier attempts.
-            for rejected in (entry.storage_key, entry.thumb_storage_key):
+            # Nothing else collects these: no asset row names them, and the
+            # success path that cleans up earlier attempts never runs. Clean
+            # this attempt and every one before it.
+            rejected_keys = [entry.storage_key, entry.thumb_storage_key]
+            for earlier in range(1, entry.attempt):
+                rejected_keys.extend(storage_keys_for_attempt(entry.user_id, job_id, earlier))
+            for rejected in rejected_keys:
                 try:
                     await get_storage().delete(rejected)
                 except Exception:
                     logger.debug("no rejected blob %s to remove for job %s", rejected, job_id)
             return
         image_dimensions = (image.width, image.height)
-        # image_info awaits a thread, so re-check ownership: a stall requeue
-        # can have replaced this attempt while we were inspecting its output.
-        if inflight.get(job_id) is not current:
-            return
 
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)

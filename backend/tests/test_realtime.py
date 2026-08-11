@@ -225,10 +225,18 @@ def test_worker_relay_requires_its_session_and_generated_frames():
                 session = realtime.sessions[uuid.UUID(session_id)]
 
                 other_worker_ws.send_json({"type": "session_ready", "session_id": session_id})
-                assert not session.ready.is_set()
                 other_worker_ws.send_bytes(
                     bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"foreign"
                 )
+                # Barrier on the stranger's own socket: a connection processes
+                # its messages in order, so once this violation has closed it
+                # the two above have been handled. Asserting straight after a
+                # send is a race that passes with the guard removed.
+                other_worker_ws.send_text("not json at all")
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    other_worker_ws.receive_json()
+                assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
+                assert not session.ready.is_set(), "a stranger readied the session"
 
                 worker_ws.send_json({"type": "session_ready", "session_id": session_id})
                 assert browser_ws.receive_json()["type"] == "ready"

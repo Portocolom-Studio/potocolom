@@ -56,38 +56,70 @@ class ImageInfo:
     content_type: str
 
 
-# Generated output is one image. Both bounds are fixed here rather than derived
-# from the object, because the object is what a worker chose to upload: a
-# ceiling computed from a declared width and height is a ceiling the peer sets.
-MAX_IMAGE_EDGE = 16384
+# Both bounds are fixed here rather than derived from the object, because the
+# object is what a worker chose to upload: a ceiling computed from a declared
+# width and height is a ceiling the peer sets. 4096 is the real maximum, a
+# factor-4 upscale of the largest shipped generation size.
+MAX_IMAGE_EDGE = 4096
+# Enough for any real encoder, and it bounds the walk below.
+MAX_PNG_CHUNKS = 4096
+
+# Bit depths each PNG colour type allows (PNG spec, table 11.1).
+_PNG_DEPTHS = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
 
 
 def _png_dimensions(data: bytes) -> tuple[int, int]:
     """Dimensions of a stored PNG, or ValueError if it is not a usable one.
 
-    Structure only: signature, a well-formed IHDR, and an IEND at the end. It
-    does not decompress. An earlier version did, to prove the image decoded,
-    and that was twice a denial of service: unbounded it turned 400 KB into
-    831 MB, and bounded by the declared dimensions it granted an 80 GB ceiling
-    to a 65 KB object claiming to be 100000x100000. Deciding how much memory to
-    spend from a number the peer supplied cannot be made safe, and a real
-    decoder belongs off the event loop, so this checks what it can cheaply
-    check and the caller treats the result as a claim about shape, not proof
-    the pixels are good.
+    Walks the chunk structure and checks every CRC, but never decompresses.
+    An earlier version did, to prove the image decoded, and that was twice a
+    denial of service: unbounded it turned 400 KB into 831 MB, and bounded by
+    the declared dimensions it granted an 80 GB ceiling to a 65 KB object
+    claiming 100000x100000. Deciding how much memory to spend from a number the
+    peer supplied cannot be made safe, and a real decoder belongs off this path
+    entirely, so the guarantee here is that the bytes are a structurally
+    complete PNG of a plausible size, not that the pixels decode.
     """
     if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("stored object is not a PNG")
-    length = struct.unpack(">I", data[8:12])[0]
-    if data[12:16] != b"IHDR" or length != 13:
-        raise ValueError("stored object has no PNG header")
-    body = data[16:29]
-    if zlib.crc32(b"IHDR" + body) & 0xffffffff != struct.unpack(">I", data[29:33])[0]:
-        raise ValueError("stored object has a corrupt PNG header")
-    # The trailer is fixed width, so completeness costs nothing to check and a
-    # truncated upload is the likeliest real failure here.
-    if data[-8:-4] != b"IEND" or struct.unpack(">I", data[-12:-8])[0] != 0:
+    position = 8
+    width = height = 0
+    chunks = 0
+    saw_idat = False
+    while position + 12 <= len(data):
+        chunks += 1
+        if chunks > MAX_PNG_CHUNKS:
+            raise ValueError("stored PNG has too many chunks")
+        length = struct.unpack(">I", data[position:position + 4])[0]
+        end = position + 12 + length
+        if end > len(data):
+            raise ValueError("stored object has a truncated PNG chunk")
+        kind = data[position + 4:position + 8]
+        body = data[position + 8:position + 8 + length]
+        if zlib.crc32(kind + body) & 0xffffffff != struct.unpack(">I", data[end - 4:end])[0]:
+            raise ValueError("stored object has a corrupt PNG chunk")
+        if chunks == 1:
+            if kind != b"IHDR" or length != 13:
+                raise ValueError("stored object does not start with a PNG header")
+            width, height = struct.unpack(">II", body[:8])
+            depth, colour, compression, filtering, interlace = body[8:13]
+            if colour not in _PNG_DEPTHS or depth not in _PNG_DEPTHS[colour]:
+                raise ValueError("stored PNG has an illegal colour type or bit depth")
+            if compression != 0 or filtering != 0 or interlace not in (0, 1):
+                raise ValueError("stored PNG declares an unknown encoding")
+        elif kind == b"IHDR":
+            raise ValueError("stored PNG repeats its header")
+        elif kind == b"IDAT":
+            saw_idat = True
+        elif kind == b"IEND":
+            if length != 0 or end != len(data):
+                raise ValueError("stored PNG does not end at its IEND")
+            break
+        position = end
+    else:
         raise ValueError("stored object is not a complete PNG")
-    width, height = struct.unpack(">II", body[:8])
+    if not saw_idat:
+        raise ValueError("stored PNG carries no image data")
     if width == 0 or height == 0:
         raise ValueError("stored PNG has empty dimensions")
     if width > MAX_IMAGE_EDGE or height > MAX_IMAGE_EDGE:

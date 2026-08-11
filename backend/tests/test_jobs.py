@@ -591,6 +591,64 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
+    """image_info awaits a thread, so the attempt can change under it.
+
+    A stalled attempt one whose inspection finally returns invalid would
+    otherwise pop attempt two, fail the authoritative row, and delete attempt
+    two's objects. The replacement is simulated inside image_info rather than
+    by timing, so the ordering is deterministic.
+    """
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-late-verdict")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "late"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            assert client.put(urlsplit(dispatch["upload"]["url"]).path,
+                              content=png_bytes()).status_code == 200
+            key = uuid.UUID(job_id)
+            superseded = jobs.inflight[key]
+            replacement = jobs.InFlight(
+                worker=superseded.worker, storage_key="replacement.png",
+                thumb_storage_key="replacement-thumb.webp",
+                user_id=superseded.user_id, attempt=2,
+            )
+            real_storage = jobs.get_storage()
+
+            class Replacing:
+                """Stands in for storage; swaps the entry mid-inspection."""
+
+                def __getattr__(self, name):
+                    return getattr(real_storage, name)
+
+                async def image_info(self, storage_key):
+                    jobs.inflight[key] = replacement
+                    return None  # the late verdict: attempt one was invalid
+
+            monkeypatch.setattr(jobs, "get_storage", lambda: Replacing())
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                assert jobs.inflight.get(key) is replacement, "the replacement was popped"
+                time.sleep(0.05)
+            state = client.get(f"/api/v1/generations/{job_id}").json()["state"]
+            assert state != "failed", "a superseded attempt failed the live row"
+
+            # Let the job finish so it does not sit running in the shared
+            # database and starve the dispatch loop for every test after this.
+            monkeypatch.undo()
+            jobs.inflight[key] = superseded
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+            poll_until(client, job_id, "succeeded")
+
+
+@pytest.mark.db
 def test_a_rejected_upload_is_not_left_in_storage():
     """Verification rejecting the output must not leave the object behind.
 
