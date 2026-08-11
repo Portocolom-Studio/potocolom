@@ -9,7 +9,7 @@ description = "potocolom API server"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",
-    "uvicorn[standard]>=0.30,<1",
+    "uvicorn[standard]>=0.31,<1",
     "pydantic-settings>=2.4,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
     "asyncpg>=0.29,<1",

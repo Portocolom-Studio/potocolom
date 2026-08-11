@@ -43,7 +43,7 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
 ```
 
-Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment; set it. Left empty it stays unauthenticated for compatibility with existing installs, and then the host must be a trusted LAN. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
+Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment; set it. Left empty it stays unauthenticated for compatibility with existing installs, and then only a worker whose address cannot route from the internet is accepted. Treat that as a safety net, not a boundary: it refuses a direct IPv4 connection from the internet, but a connection arriving over IPv6 reaches the IPv4-only container through Docker's userland proxy and so looks local, and anything else that re-originates traffic, a reverse proxy included, can look local too. If the host has a public address, set `FLEET_SECRET`. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
 ## Documentation
 

@@ -11,8 +11,10 @@ written back, so an in-flight heartbeat cannot undo a just-committed slot.
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Coroutine
@@ -66,18 +68,109 @@ def origin_allowed(ws: WebSocket) -> bool:
     return origin.rstrip("/") in allowed
 
 
-def fleet_token_allowed(ws: WebSocket) -> bool:
-    """Whether the peer presented the configured fleet secret.
+# Classified non-global, but reachable from the public internet through relays,
+# so admitting them would contradict what this check is for: Teredo (RFC 4380)
+# and 6to4 (RFC 3056, deprecated by RFC 7526).
+PUBLIC_TRANSITION_NETWORKS = (
+    ipaddress.ip_network("2001::/32"),
+    ipaddress.ip_network("2002::/16"),
+)
 
-    Unset key means permissive, which keeps the one-command self-hosted start
-    working (docs/decisions.md). Compare encoded bytes: compare_digest refuses
-    two str arguments unless both are ASCII, so comparing the strings would
-    raise on a secret an operator is perfectly entitled to choose, and the
-    handler would then read that as a wrong token and refuse forever.
+
+def forwarding_trusts_any_peer(forwarded_allow_ips: str) -> bool:
+    """Whether this FORWARDED_ALLOW_IPS lets any peer forge its own address.
+
+    uvicorn rewrites the peer address from X-Forwarded-For for every client it
+    trusts, so a setting that trusts everything hands the address this module
+    checks to whoever connects. Measured against uvicorn 0.50.1: the wildcard
+    "*" is special only when it is the entire value, with no surrounding
+    whitespace and no other list entries; a zero-length prefix, "0.0.0.0/0" for
+    IPv4 or "::/0" for IPv6, trusts every peer in any position of the
+    comma-separated list. The bare literals "0.0.0.0" and "::" are single
+    addresses that trust nothing, so warning about those would be a false
+    alarm.
+    """
+    if forwarded_allow_ips == "*":
+        return True
+    for entry in forwarded_allow_ips.split(","):
+        candidate = entry.strip()
+        try:
+            if ipaddress.ip_network(candidate, strict=False).prefixlen == 0:
+                return True
+        except ValueError:
+            continue  # a hostname or junk; uvicorn matches it literally at most
+    return False
+
+
+def peer_is_unroutable(ws: WebSocket) -> bool:
+    """Whether the peer address cannot be reached from the public internet.
+
+    Permissive mode is documented as trusted-LAN only (README.md,
+    docs/self-hosting.md). Nothing enforced that: compose publishes the API on
+    0.0.0.0, so a host with a public address and no firewall accepted worker
+    registrations from anyone. This is that premise checked rather than assumed.
+
+    Loopback, RFC 1918, carrier-grade NAT and link-local ranges, and IPv6 ULA
+    are all non-global, so a compose worker on the bridge network and a LAN
+    worker on an IPv4 or ULA address both still connect. A worker on a global
+    IPv6 address does not, even on the same LAN, because nothing distinguishes
+    it from a remote one.
+
+    No peer address at all is refused. A socket always yields one, so this means
+    a transport with no IP peer, and in practice that is uvicorn behind a proxy
+    over a unix socket: there every public request would arrive indistinguishable
+    from a local one. Such a deployment is fronted, and a fronted deployment has
+    to set the secret regardless.
+
+    An address that does not parse is admitted and logged. This code never reads
+    X-Forwarded-For, but uvicorn does, and when told to trust the forwarding peer
+    it copies that header in verbatim without validating it; an attacker in that
+    position would send a parseable "127.0.0.1" rather than a string that does
+    not parse, so refusing the unparseable form closes nothing. The
+    configuration is what has to be fixed, and app/main.py warns about it.
+
+    A reverse proxy usually replaces the peer with its own address, so a fronted
+    deployment gains little here and must set the secret.
+    """
+    client = ws.client
+    if client is None:
+        logger.warning("fleet handshake has no peer address; refusing in permissive mode")
+        return False
+    try:
+        address = ipaddress.ip_address(client.host)
+    except ValueError:
+        logger.warning(
+            "fleet peer address %r does not parse; treating it as local", client.host)
+        return True
+    if address.is_global:
+        return False
+    return not any(address in network for network in PUBLIC_TRANSITION_NETWORKS)
+
+
+def fleet_token_allowed(ws: WebSocket) -> bool:
+    """Whether the peer may open a fleet socket.
+
+    An unset key stays permissive, which keeps the one-command self-hosted
+    start working (docs/decisions.md), but only for a peer that is not routable
+    from the internet: permissive plus a public peer is an open door to worker
+    registration, and a registered worker receives other people's prompts and
+    canvas frames. Compare encoded bytes: compare_digest refuses two str
+    arguments unless both are ASCII, so comparing the strings would raise on a
+    secret an operator is perfectly entitled to choose, and the handler would
+    then read that as a wrong token and refuse forever.
     """
     key = get_settings().fleet_token_key
     if not key:
-        return True
+        # The peer address cannot be trusted at all in this configuration:
+        # uvicorn will have taken it from a header the client controls, so
+        # there is nothing left for the check to decide on.
+        if forwarding_trusts_any_peer(os.environ.get("FORWARDED_ALLOW_IPS", "")):
+            logger.warning(
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset and "
+                "FORWARDED_ALLOW_IPS trusts every peer, so uvicorn takes the "
+                "peer address from X-Forwarded-For and the client can forge it")
+            return False
+        return peer_is_unroutable(ws)
     # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
     # matches the stored key verbatim, and the ASGI server passes the name
     # through with whatever casing the client sent. Any worker spelling this
@@ -326,7 +419,17 @@ async def fleet(ws: WebSocket) -> None:
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     if not fleet_token_allowed(ws):
-        logger.warning("fleet handshake refused: invalid token")
+        if get_settings().fleet_token_key:
+            logger.warning("fleet handshake refused: invalid token")
+        else:
+            # Naming the cause matters: the operator who exposed the port would
+            # otherwise read "invalid token" and go looking for a secret that
+            # was never the problem.
+            logger.warning(
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset, so only a worker "
+                "whose address cannot route from the internet is accepted, and %s "
+                "does not qualify; set the secret to admit remote workers",
+                ws.client.host if ws.client else "a peer with no address")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     await ws.accept()

@@ -5,7 +5,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from starlette.datastructures import Headers
+from starlette.datastructures import Address, Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
@@ -17,12 +17,17 @@ from app.realtime import (
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     fleet_token_allowed,
+    forwarding_trusts_any_peer,
     origin_allowed,
+    peer_is_unroutable,
 )
 from app.settings import get_settings
 from app.tables import UsageEvent
 
-client = TestClient(app)
+# A real peer address rather than the default "testclient", which no ASGI server
+# would ever report: permissive fleet mode decides on that address, so the tests
+# should present the shape production does.
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def manifest(model_id="sd-sim") -> dict:
@@ -55,6 +60,18 @@ class FakeRawHeaders:
 
     def __init__(self, raw):
         self.headers = Headers(raw=raw)
+
+
+class FakePeer:
+    """Stands in for a WebSocket when only the peer address matters.
+
+    A host of None stands for the address the ASGI server did not supply, which
+    is what a unix socket transport gives.
+    """
+
+    def __init__(self, host):
+        self.client = None if host is None else Address(host, 1234)
+        self.headers = Headers(raw=[])
 
 
 class FakeSocket:
@@ -116,6 +133,46 @@ def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
     assert worker_id not in realtime.workers
 
 
+def test_a_refused_fleet_handshake_is_never_accepted(monkeypatch):
+    """The refusal has to happen before accept, so it fails as HTTP 403 and no
+    WebSocket ever exists.
+
+    Driving this through the TestClient cannot tell the two apart: exiting a
+    websocket_connect block raises WebSocketDisconnect whether the handshake was
+    refused or accepted and then closed, so moving `await ws.accept()` above the
+    origin and token checks passes every other test here. Call the app directly
+    and look at the first message it sends.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "path": "/api/v1/fleet",
+        "raw_path": b"/api/v1/fleet",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"x-fleet-token", b"wrong-secret")],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8000),
+        "subprotocols": [],
+    }
+    asyncio.run(app(scope, receive, send))
+
+    assert sent, "the endpoint sent nothing at all"
+    assert sent[0]["type"] == "websocket.close", sent
+    assert not any(message["type"] == "websocket.accept" for message in sent), sent
+
+
 def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
     """compare_digest rejects two str arguments unless both are ASCII.
 
@@ -169,6 +226,146 @@ def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
     with client.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(worker_id="w-token-unset"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "10.1.2.3", "172.18.0.3", "192.168.1.5",
+                                  "169.254.1.1", "::1", "fc00::1"])
+def test_a_peer_off_the_public_internet_is_unroutable(host):
+    assert peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host,unroutable", [("::ffff:127.0.0.1", True),
+                                             ("::ffff:192.168.1.5", True),
+                                             ("::ffff:8.8.8.8", False),
+                                             ("::ffff:1.1.1.1", False)])
+def test_an_ipv4_mapped_peer_is_classified_by_the_address_it_maps(host, unroutable):
+    """A dual-stack listener reports an IPv4 client as ::ffff:A.B.C.D, so this
+    is the form a public peer most plausibly arrives in. Classifying the mapped
+    form as non-global would hand permissive mode straight back to the internet;
+    older CPython did exactly that for some mapped ranges.
+    """
+    assert peer_is_unroutable(FakePeer(host)) is unroutable
+
+
+@pytest.mark.parametrize("host", ["100.64.0.1", "100.115.92.2", "fd7a:115c:a1e0::1"])
+def test_a_worker_reached_over_a_mesh_vpn_is_unroutable(host):
+    """Tailscale hands out 100.64.0.0/10, which is carrier-grade NAT space:
+    not private, and not global either. Testing `not is_private` instead of
+    `is_global` would refuse every worker on a mesh VPN, which is a normal way
+    to run one away from the LAN.
+    """
+    assert peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host", ["8.8.8.8", "1.1.1.1", "2606:4700::1111"])
+def test_a_public_peer_is_routable(host):
+    """Addresses that genuinely route. The documentation ranges of RFC 5737,
+    203.0.113.0/24 and friends, are reserved rather than global, so using one
+    here would assert the opposite of what it looks like."""
+    assert not peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host", ["", "testclient", "not-an-address", "127.1",
+                                  "2130706433", "8.8.8.8:80", " 8.8.8.8 ", "[::1]"])
+def test_an_address_that_does_not_parse_counts_as_local(host):
+    """A socket always yields a real address, so these come from the test
+    harness or from a forged X-Forwarded-For that uvicorn was told to trust.
+    Measured: with trusted hosts of 172.18.0.0/16, a peer in that range sending
+    "not-an-address" arrives as ("not-an-address", 0). Refusing these would buy
+    nothing, because an attacker in that position would send a parseable
+    "127.0.0.1" instead, which no notation rule here can distinguish from a real
+    one. The configuration is the exposure, and main.py warns about it.
+    """
+    assert peer_is_unroutable(FakePeer(host))
+
+
+def test_no_peer_address_at_all_is_refused():
+    """uvicorn reports None for a unix-socket peer, which in practice means it
+    sits behind a proxy: every public request would then look identical to a
+    local one. Such a deployment has to set the secret, so permissive mode
+    refuses rather than admitting the whole internet through one socket.
+    """
+    assert not peer_is_unroutable(FakePeer(None))
+
+
+@pytest.mark.parametrize("host", ["2001::1", "2001:0:53aa:64c:0:5efe:1.2.3.4",
+                                  "2002:c000:204::1"])
+def test_a_transition_address_is_refused_though_it_is_not_global(host):
+    """Teredo 2001::/32 and 6to4 2002::/16 are classified non-global, but they
+    carry traffic to and from the internet through relays, so is_global alone
+    would admit a remote client. NAT64's 64:ff9b::/96 needs no special case: it
+    is already global.
+    """
+    assert not peer_is_unroutable(FakePeer(host))
+    assert not peer_is_unroutable(FakePeer("64:ff9b::8.8.8.8"))
+
+
+@pytest.mark.parametrize("spec", ["*", "0.0.0.0/0", "::/0", "127.0.0.1,0.0.0.0/0",
+                                  "10.0.0.0/8, ::/0", " 0.0.0.0/0 "])
+def test_a_forwarding_setting_that_trusts_everyone_is_recognised(spec):
+    """Measured against uvicorn 0.50.1: each of these makes it accept
+    X-Forwarded-For from a public peer, which forges the address permissive mode
+    checks.
+    """
+    assert forwarding_trusts_any_peer(spec)
+
+
+@pytest.mark.parametrize("spec", ["", "127.0.0.1", "0.0.0.0", "::", "10.0.0.0/8",
+                                  "127.0.0.1,172.18.0.0/16", "some-host",
+                                  " * ", "*,127.0.0.1", "127.0.0.1, *"])
+def test_a_narrow_forwarding_setting_is_not_warned_about(spec):
+    """The bare literals 0.0.0.0 and :: are single addresses in uvicorn and trust
+    nothing, so warning about them would cry wolf; an earlier version of this
+    check did exactly that while missing the /0 forms above. uvicorn does not
+    treat a wildcard inside a list or with surrounding whitespace as trust-all,
+    so warning about those would cry wolf too.
+    """
+    assert not forwarding_trusts_any_peer(spec)
+
+
+def test_permissive_mode_is_refused_when_forwarding_trusts_every_peer(monkeypatch):
+    """With FORWARDED_ALLOW_IPS=* uvicorn takes the peer address from a header
+    the client controls, so permissive mode cannot trust it even for a loopback
+    peer: if the unroutable check were consulted, a loopback peer would pass.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    assert fleet_token_allowed(FakePeer("127.0.0.1")) is False
+
+
+def test_permissive_mode_refuses_a_public_peer(monkeypatch):
+    """Compose publishes on 0.0.0.0, so an unset secret on a host with a public
+    address used to accept worker registrations from anyone. A registered worker
+    is handed other people's prompts and canvas frames."""
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    remote = TestClient(app, client=("8.8.8.8", 44321))
+    worker_id = "w-public-peer"
+    with pytest.raises(WebSocketDisconnect):
+        with remote.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
+
+
+def test_permissive_mode_admits_a_worker_on_the_compose_network(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    bridged = TestClient(app, client=("172.18.0.3", 51000))
+    with bridged.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-bridge-peer"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+def test_a_correct_token_still_admits_a_public_peer(monkeypatch):
+    """The peer check guards permissive mode only. A remote worker holding the
+    secret is exactly what an operator configures on purpose, and refusing it
+    would make the secret useless for the deployment that needs it most."""
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    remote = TestClient(app, client=("1.1.1.1", 44322))
+    with remote.websocket_connect(
+        "/api/v1/fleet", headers={"x-fleet-token": "fleet-secret"}
+    ) as ws:
+        ws.send_json(hello(worker_id="w-remote-token"))
         assert ws.receive_json()["type"] == "registered"
 
 
