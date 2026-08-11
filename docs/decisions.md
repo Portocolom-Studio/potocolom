@@ -775,6 +775,18 @@ Origin validation is a separate control and not a substitute: it keeps browsers 
 
 Rejected alternatives: shipping signature verification alongside the static secret, which writes a code path with no producer and fixes a token format before the service that mints it exists; refusing to start when the key is unset, which is safe-by-default but breaks the documented `docker compose up` story for existing installs on upgrade; treating the Origin check as sufficient and deferring the token entirely, which leaves any process on the LAN able to register as a worker and receive dispatched prompts.
 
+## Permissive fleet mode is confined to peers that cannot route from the internet
+
+Refines the entry above rather than reversing it. That entry keeps the socket open when `FLEET_TOKEN_KEY` is unset, and rests the safety of doing so on deployment posture: the host "must be a trusted LAN". Nothing in the code held the operator to that. `deploy/compose/compose.yml` publishes `8080:8080`, which Docker binds on `0.0.0.0`, and `FLEET_SECRET` has no default, so a self-hosted install on a machine with a public address and no firewall accepted worker registrations from anywhere. A registered worker is dispatched real sessions, so it reads other people's prompts and canvas frames and returns whatever images it likes.
+
+Permissive mode now additionally requires a peer address that is not globally routable: loopback, RFC 1918, carrier and link-local space, and IPv6 ULA. The test is "not globally routable" rather than "private" on purpose. Carrier-grade NAT space, `100.64.0.0/10`, is neither private nor global, and it is what Tailscale hands out, so a private-only test would refuse every worker reached over a mesh VPN, which is a normal way to run one away from the LAN. A compose worker on the bridge network and a worker elsewhere on the LAN are unaffected, which is the whole of the one-command promise. A peer address the ASGI server did not supply, or one that does not parse, counts as non-public, because that is a transport with no IP peer rather than a remote client. Setting the secret restores unrestricted reach, so an operator who genuinely runs a remote worker configures the thing that was always meant to authenticate it.
+
+This is not the deferred flip. The default is still permissive, no existing install has to set a variable, and nothing refuses to start; the change only stops permissive mode from applying to a network the documentation already declared out of scope. Closed-by-default remains a breaking change for a release boundary.
+
+Two limits are deliberate. Behind a reverse proxy or load balancer every peer is the proxy's own private address, so a fronted deployment gains nothing here and must set the secret; the forwarded-for header is not consulted, because the peer chooses its contents. And the check is about reachability, not identity: any process already on the LAN still registers, which is exactly what the entry above says the token is for.
+
+Rejected alternatives: flipping to closed-by-default now, which is the breaking change the entry above assigns to a release boundary; binding the published port to loopback in compose, which also removes the studio from every other machine on the LAN and so breaks a legitimate self-hosted setup to fix the fleet socket; gating on a new development-only flag, which is closed-by-default wearing a different name and still makes every existing install edit its environment on upgrade; trusting `X-Forwarded-For` so proxied deployments could be distinguished, which lets the peer assert its own trustworthiness.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

@@ -70,8 +70,15 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   value containing a dollar sign. The API warns at startup when the secret is
   unset or not ASCII.
 - If `FLEET_SECRET` is empty, the API logs a warning and keeps the fleet socket
-  permissive for compatibility with existing installs. Treat the host as a
-  trusted LAN in that mode.
+  permissive for compatibility with existing installs, but only for workers
+  whose address cannot route from the internet: loopback, private and
+  link-local ranges, which covers the compose network and the rest of your LAN.
+  A worker connecting from a public address is refused with the secret unset,
+  because `docker compose up` publishes port 8080 on all interfaces and an
+  admitted worker is dispatched real prompts and canvas frames. Set
+  `FLEET_SECRET` to run a worker from anywhere else. Note that behind a reverse
+  proxy every connection appears to arrive from the proxy, so a fronted
+  deployment must set the secret rather than rely on this.
 - Models are JSON manifests in the `models` volume, seeded from
   `worker/models/` on first boot. Add or edit manifests in the volume (or
   rebuild the image) and restart the worker; see

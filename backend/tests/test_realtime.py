@@ -5,7 +5,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from starlette.datastructures import Headers
+from starlette.datastructures import Address, Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
@@ -18,6 +18,7 @@ from app.realtime import (
     PROTOCOL_VERSION,
     fleet_token_allowed,
     origin_allowed,
+    peer_is_unroutable,
 )
 from app.settings import get_settings
 from app.tables import UsageEvent
@@ -55,6 +56,18 @@ class FakeRawHeaders:
 
     def __init__(self, raw):
         self.headers = Headers(raw=raw)
+
+
+class FakePeer:
+    """Stands in for a WebSocket when only the peer address matters.
+
+    A host of None stands for the address the ASGI server did not supply, which
+    is what a unix socket transport gives.
+    """
+
+    def __init__(self, host):
+        self.client = None if host is None else Address(host, 1234)
+        self.headers = Headers(raw=[])
 
 
 class FakeSocket:
@@ -169,6 +182,73 @@ def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
     with client.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(worker_id="w-token-unset"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "10.1.2.3", "172.18.0.3", "192.168.1.5",
+                                  "169.254.1.1", "::1", "fc00::1"])
+def test_a_peer_off_the_public_internet_is_unroutable(host):
+    assert peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host", ["100.64.0.1", "100.115.92.2", "fd7a:115c:a1e0::1"])
+def test_a_worker_reached_over_a_mesh_vpn_is_unroutable(host):
+    """Tailscale hands out 100.64.0.0/10, which is carrier-grade NAT space:
+    not private, and not global either. Testing `not is_private` instead of
+    `is_global` would refuse every worker on a mesh VPN, which is a normal way
+    to run one away from the LAN.
+    """
+    assert peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host", ["8.8.8.8", "1.1.1.1", "2606:4700::1111"])
+def test_a_public_peer_is_routable(host):
+    """Addresses that genuinely route. The documentation ranges of RFC 5737,
+    203.0.113.0/24 and friends, are reserved rather than global, so using one
+    here would assert the opposite of what it looks like."""
+    assert not peer_is_unroutable(FakePeer(host))
+
+
+@pytest.mark.parametrize("host", [None, "", "testclient", "not-an-address"])
+def test_an_address_the_server_did_not_supply_is_not_a_public_peer(host):
+    """No parseable peer means no TCP peer: the test harness says "testclient"
+    and a unix socket says nothing. Refusing those would break the local paths
+    without closing anything a remote client could reach."""
+    assert peer_is_unroutable(FakePeer(host))
+
+
+def test_permissive_mode_refuses_a_public_peer(monkeypatch):
+    """Compose publishes on 0.0.0.0, so an unset secret on a host with a public
+    address used to accept worker registrations from anyone. A registered worker
+    is handed other people's prompts and canvas frames."""
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    remote = TestClient(app, client=("8.8.8.8", 44321))
+    worker_id = "w-public-peer"
+    with pytest.raises(WebSocketDisconnect):
+        with remote.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
+
+
+def test_permissive_mode_admits_a_worker_on_the_compose_network(monkeypatch):
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    bridged = TestClient(app, client=("172.18.0.3", 51000))
+    with bridged.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-bridge-peer"))
+        assert ws.receive_json()["type"] == "registered"
+
+
+def test_a_correct_token_still_admits_a_public_peer(monkeypatch):
+    """The peer check guards permissive mode only. A remote worker holding the
+    secret is exactly what an operator configures on purpose, and refusing it
+    would make the secret useless for the deployment that needs it most."""
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    remote = TestClient(app, client=("1.1.1.1", 44322))
+    with remote.websocket_connect(
+        "/api/v1/fleet", headers={"x-fleet-token": "fleet-secret"}
+    ) as ws:
+        ws.send_json(hello(worker_id="w-remote-token"))
         assert ws.receive_json()["type"] == "registered"
 
 

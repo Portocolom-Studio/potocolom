@@ -11,6 +11,7 @@ written back, so an in-flight heartbeat cannot undo a just-committed slot.
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
 import time
@@ -66,18 +67,49 @@ def origin_allowed(ws: WebSocket) -> bool:
     return origin.rstrip("/") in allowed
 
 
-def fleet_token_allowed(ws: WebSocket) -> bool:
-    """Whether the peer presented the configured fleet secret.
+def peer_is_unroutable(ws: WebSocket) -> bool:
+    """Whether the peer address cannot be reached from the public internet.
 
-    Unset key means permissive, which keeps the one-command self-hosted start
-    working (docs/decisions.md). Compare encoded bytes: compare_digest refuses
-    two str arguments unless both are ASCII, so comparing the strings would
-    raise on a secret an operator is perfectly entitled to choose, and the
-    handler would then read that as a wrong token and refuse forever.
+    Permissive mode is documented as trusted-LAN only (README.md,
+    docs/self-hosting.md). Nothing enforced that: compose publishes the API on
+    0.0.0.0, so a host with a public address and no firewall accepted worker
+    registrations from anyone. This is that premise checked rather than assumed.
+
+    Loopback, RFC 1918, carrier and link-local ranges, and IPv6 ULA are all
+    non-global, so a compose worker on the bridge network and a LAN worker both
+    still connect. An address the ASGI server did not supply, or one that does
+    not parse, is not a public peer either: the test harness reports
+    "testclient" and a unix socket reports nothing.
+
+    A reverse proxy replaces every peer with its own private address, so a
+    deployment that fronts the API gains nothing here and must set the secret.
+    The forwarded-for header is deliberately not consulted, because the peer
+    chooses what it says.
+    """
+    client = ws.client
+    if client is None or not client.host:
+        return True
+    try:
+        return not ipaddress.ip_address(client.host).is_global
+    except ValueError:
+        return True
+
+
+def fleet_token_allowed(ws: WebSocket) -> bool:
+    """Whether the peer may open a fleet socket.
+
+    An unset key stays permissive, which keeps the one-command self-hosted
+    start working (docs/decisions.md), but only for a peer that is not routable
+    from the internet: permissive plus a public peer is an open door to worker
+    registration, and a registered worker receives other people's prompts and
+    canvas frames. Compare encoded bytes: compare_digest refuses two str
+    arguments unless both are ASCII, so comparing the strings would raise on a
+    secret an operator is perfectly entitled to choose, and the handler would
+    then read that as a wrong token and refuse forever.
     """
     key = get_settings().fleet_token_key
     if not key:
-        return True
+        return peer_is_unroutable(ws)
     # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
     # matches the stored key verbatim, and the ASGI server passes the name
     # through with whatever casing the client sent. Any worker spelling this
@@ -326,7 +358,17 @@ async def fleet(ws: WebSocket) -> None:
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     if not fleet_token_allowed(ws):
-        logger.warning("fleet handshake refused: invalid token")
+        if get_settings().fleet_token_key:
+            logger.warning("fleet handshake refused: invalid token")
+        else:
+            # Naming the cause matters: the operator who exposed the port would
+            # otherwise read "invalid token" and go looking for a secret that
+            # was never the problem.
+            logger.warning(
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset, so only workers "
+                "on a private network are accepted, and %s is not one; set the "
+                "secret to admit remote workers",
+                ws.client.host if ws.client else "the peer")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     await ws.accept()
