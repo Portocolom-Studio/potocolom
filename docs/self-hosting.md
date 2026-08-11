@@ -104,6 +104,23 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   rebuild the image) and restart the worker; see
   [third-party-models.md](third-party-models.md) for licensing notes.
 
+## Accounts
+
+There are none yet. `AUTH_MODE` defaults to `none`, every request resolves to a single local
+user, and that user holds the `admin` role, so anyone who can reach the API can do anything
+the install can do. Keep it on a trusted network, and see the fleet secret above for the
+worker side of the same question.
+
+Do not set `AUTH_MODE=local` or `AUTH_MODE=oauth`. Neither is implemented: they are accepted
+today and behave exactly like `none`, which means an install configured for authentication
+performs none (issue #241 makes that a startup failure instead).
+
+Multi-user is the intended shape, not a maybe: an operator holding `admin`, invited people
+signing in with a local email and password or with Google or GitHub, and a read-only `viewer`
+tier for someone who should see the gallery without spending the GPU. That is recorded in
+[decisions.md](decisions.md) under "Self-hosted installs are multi-user" and tracked in issues
+#5 and #9. Until those land, treat the install as single-operator.
+
 ## Gated models
 
 `sd35-medium` (Stable Diffusion 3.5 Medium) is a gated Hugging Face
