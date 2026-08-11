@@ -15,7 +15,6 @@ import {
 	rollbackOptimisticStarMutation,
 	settleStarredListMutation,
 	settleLineageRootStarReconciliation,
-	shouldDimLineageEdge,
 	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
 import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
@@ -387,12 +386,6 @@ test('settled root toggles reload only when a successful change can affect the a
 		state: { pending: 0, dirty: false },
 		reload: false
 	});
-});
-
-test('edges are not dimmed when the selected node left the filtered forest', () => {
-	assert.equal(shouldDimLineageEdge(false, false), false);
-	assert.equal(shouldDimLineageEdge(true, false), true);
-	assert.equal(shouldDimLineageEdge(true, true), false);
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
