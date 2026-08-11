@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     oauth_providers: str = ""  # comma separated, read only when auth_mode is oauth
     billing_enabled: bool = False
     log_format: Literal["plain", "json"] = "plain"
+    fleet_token_key: str = ""
 
     # PUBLIC_URL is where browsers reach this API; asset URLs in responses use it.
     public_url: str = "http://localhost:8000"

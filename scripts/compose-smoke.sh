@@ -37,6 +37,18 @@ for _ in $(seq 1 90); do
 done
 curl -sf "${base}/api/v1/health"
 
+# The stack runs keyed, so an unauthenticated upgrade must be refused. Without
+# this the smoke run only proves that a matching secret works, and a check that
+# went permissive would still pass everything below.
+fleet_code=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  "${base}/api/v1/fleet")
+if [[ "$fleet_code" != "403" ]]; then
+  echo "expected an untokened fleet upgrade to return 403, got ${fleet_code}" >&2
+  exit 1
+fi
+
 app_code=$(curl -s -o /dev/null -w '%{http_code}' "${base}/app")
 if [[ "$app_code" != "200" ]]; then
   echo "expected /app to return 200, got ${app_code}" >&2

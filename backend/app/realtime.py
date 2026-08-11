@@ -10,6 +10,7 @@ written back, so an in-flight heartbeat cannot undo a just-committed slot.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -38,6 +39,7 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 CLOSE_UNSUPPORTED_VERSION = 4002
 CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
+FLEET_TOKEN_HEADER = "x-fleet-token"
 
 SESSION_READY_TIMEOUT = 10.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
@@ -46,8 +48,8 @@ router = APIRouter()
 
 
 def origin_allowed(ws: WebSocket) -> bool:
-    """Neither socket authenticates its peer; the documented mitigation is a
-    trusted LAN (README.md). WebSocket handshakes ignore the same-origin policy
+    """Origin is a separate control; the documented mitigation is a trusted
+    LAN (README.md). WebSocket handshakes ignore the same-origin policy
     and send no preflight, so without this a page the operator merely visits
     reaches both sockets from outside that LAN. Browsers always send Origin and
     cannot forge it; worker processes send none (issue #201)."""
@@ -62,6 +64,32 @@ def origin_allowed(ws: WebSocket) -> bool:
         if candidate.strip()
     )
     return origin.rstrip("/") in allowed
+
+
+def fleet_token_allowed(ws: WebSocket) -> bool:
+    """Whether the peer presented the configured fleet secret.
+
+    Unset key means permissive, which keeps the one-command self-hosted start
+    working (docs/decisions.md). Compare encoded bytes: compare_digest refuses
+    two str arguments unless both are ASCII, so comparing the strings would
+    raise on a secret an operator is perfectly entitled to choose, and the
+    handler would then read that as a wrong token and refuse forever.
+    """
+    key = get_settings().fleet_token_key
+    if not key:
+        return True
+    # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
+    # matches the stored key verbatim, and the ASGI server passes the name
+    # through with whatever casing the client sent. Any worker spelling this
+    # X-Fleet-Token would otherwise be refused as if it sent nothing.
+    presented = [value for name, value in ws.headers.raw
+                 if name.lower() == FLEET_TOKEN_HEADER.encode()]
+    # Exactly one, or the answer depends on which duplicate an intermediary
+    # happened to put first: correct-then-wrong would authenticate and
+    # wrong-then-correct would not.
+    if len(presented) != 1:
+        return False
+    return hmac.compare_digest(presented[0], key.encode("utf-8", "surrogateescape"))
 
 
 class ProtocolError(Exception):
@@ -295,6 +323,10 @@ async def reap_dead_workers() -> None:
 async def fleet(ws: WebSocket) -> None:
     if not origin_allowed(ws):
         logger.warning("fleet handshake refused from origin %s", ws.headers.get("origin"))
+        await ws.close()  # before accept: the handshake fails with HTTP 403
+        return
+    if not fleet_token_allowed(ws):
+        logger.warning("fleet handshake refused: invalid token")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     await ws.accept()
