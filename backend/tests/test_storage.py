@@ -191,24 +191,48 @@ def _png(width, height, idat):
             + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
 
 
-def test_image_info_refuses_a_decompression_bomb(tmp_path):
-    """Validating the output must not be a way to exhaust the API.
+def test_image_info_does_not_decompress_and_bounds_dimensions(tmp_path):
+    """The validator reads structure, never pixels.
 
-    The IDAT of a structurally valid PNG can be a zip bomb: 400 KB on the wire
-    expanded to 831 MB in process before this was bounded, and the parser
-    reported it as a well-formed 16x16 image. The ceiling comes from the
-    declared dimensions, so a genuine image of that size still passes.
+    It decompressed once, to prove the image decoded, and that was twice a
+    denial of service: unbounded it turned 400 KB into 831 MB, and bounded by
+    the declared dimensions it granted an 80 GB ceiling to a 65 KB object
+    claiming 100000x100000. Deciding how much memory to spend from a number the
+    peer supplied cannot be made safe, so a bomb is now simply bytes we never
+    expand, and the defence is a fixed dimension cap plus the size cap.
     """
     storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
     bomb = zlib.compress(b"\x00" * (64 * 1024 * 1024), 9)
+
+    # Honest dimensions: accepted, and cost nothing because nothing inflates.
     (tmp_path / "bomb.png").write_bytes(_png(16, 16, bomb))
-    assert len(_png(16, 16, bomb)) < 100_000
-    assert asyncio.run(storage.image_info("bomb.png")) is None
+    info = asyncio.run(storage.image_info("bomb.png"))
+    assert (info.width, info.height) == (16, 16)
+
+    # The bypass: a ceiling derived from the header is a ceiling the peer sets.
+    (tmp_path / "huge.png").write_bytes(_png(100000, 100000, bomb))
+    assert asyncio.run(storage.image_info("huge.png")) is None
+
+    (tmp_path / "empty.png").write_bytes(_png(16, 0, bomb))
+    assert asyncio.run(storage.image_info("empty.png")) is None
 
     rows = b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16))
     (tmp_path / "real.png").write_bytes(_png(16, 16, zlib.compress(rows)))
     info = asyncio.run(storage.image_info("real.png"))
     assert (info.width, info.height) == (16, 16)
+
+
+def test_image_info_requires_a_complete_object(tmp_path):
+    # Truncation is the likeliest real failure, and the trailer is fixed width
+    # so checking it costs nothing.
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    rows = b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16))
+    complete = _png(16, 16, zlib.compress(rows))
+    (tmp_path / "cut.png").write_bytes(complete[:-12])
+    assert asyncio.run(storage.image_info("cut.png")) is None
+    (tmp_path / "not-png.png").write_bytes(b"GIF89a" + complete[6:])
+    assert asyncio.run(storage.image_info("not-png.png")) is None
+    assert asyncio.run(storage.image_info("absent.png")) is None
 
 
 def test_image_info_refuses_an_oversized_object(tmp_path, monkeypatch):

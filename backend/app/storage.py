@@ -56,52 +56,42 @@ class ImageInfo:
     content_type: str
 
 
+# Generated output is one image. Both bounds are fixed here rather than derived
+# from the object, because the object is what a worker chose to upload: a
+# ceiling computed from a declared width and height is a ceiling the peer sets.
+MAX_IMAGE_EDGE = 16384
+
+
 def _png_dimensions(data: bytes) -> tuple[int, int]:
-    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n":
+    """Dimensions of a stored PNG, or ValueError if it is not a usable one.
+
+    Structure only: signature, a well-formed IHDR, and an IEND at the end. It
+    does not decompress. An earlier version did, to prove the image decoded,
+    and that was twice a denial of service: unbounded it turned 400 KB into
+    831 MB, and bounded by the declared dimensions it granted an 80 GB ceiling
+    to a 65 KB object claiming to be 100000x100000. Deciding how much memory to
+    spend from a number the peer supplied cannot be made safe, and a real
+    decoder belongs off the event loop, so this checks what it can cheaply
+    check and the caller treats the result as a claim about shape, not proof
+    the pixels are good.
+    """
+    if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("stored object is not a PNG")
-    position = 8
-    width = height = None
-    idat = bytearray()
-    saw_iend = False
-    while position + 12 <= len(data):
-        length = struct.unpack(">I", data[position:position + 4])[0]
-        end = position + 12 + length
-        if end > len(data):
-            raise ValueError("stored object has a truncated PNG chunk")
-        kind = data[position + 4:position + 8]
-        body = data[position + 8:position + 8 + length]
-        checksum = struct.unpack(">I", data[position + 8 + length:end])[0]
-        if zlib.crc32(kind + body) & 0xffffffff != checksum:
-            raise ValueError("stored object has a corrupt PNG chunk")
-        if kind == b"IHDR":
-            if position != 8 or length != 13:
-                raise ValueError("stored object has no PNG dimensions")
-            width, height = struct.unpack(">II", body[:8])
-        elif kind == b"IDAT":
-            idat.extend(body)
-        elif kind == b"IEND":
-            saw_iend = length == 0
-            break
-        position = end
-    if width is None or height is None or width == 0 or height == 0:
-        raise ValueError("stored PNG has empty dimensions")
-    if width >= 2**31 or height >= 2**31:
-        raise ValueError("stored PNG dimensions exceed the database limit")
-    if not saw_iend or not idat:
+    length = struct.unpack(">I", data[8:12])[0]
+    if data[12:16] != b"IHDR" or length != 13:
+        raise ValueError("stored object has no PNG header")
+    body = data[16:29]
+    if zlib.crc32(b"IHDR" + body) & 0xffffffff != struct.unpack(">I", data[29:33])[0]:
+        raise ValueError("stored object has a corrupt PNG header")
+    # The trailer is fixed width, so completeness costs nothing to check and a
+    # truncated upload is the likeliest real failure here.
+    if data[-8:-4] != b"IEND" or struct.unpack(">I", data[-12:-8])[0] != 0:
         raise ValueError("stored object is not a complete PNG")
-    # Decompress against a ceiling derived from the header, not to completion.
-    # A few hundred KB of IDAT expands to hundreds of MB, and this runs on the
-    # API event loop for output a worker chose, so an unbounded decompress here
-    # is a denial of service with a small upload behind it. A row cannot exceed
-    # one filter byte plus four channels of 16 bits per pixel.
-    limit = height * (1 + width * 8) + 1
-    stream = zlib.decompressobj()
-    try:
-        produced = len(stream.decompress(bytes(idat), limit))
-    except zlib.error as error:
-        raise ValueError("stored PNG data is not decodable") from error
-    if produced >= limit:
-        raise ValueError("stored PNG expands past its declared dimensions")
+    width, height = struct.unpack(">II", body[:8])
+    if width == 0 or height == 0:
+        raise ValueError("stored PNG has empty dimensions")
+    if width > MAX_IMAGE_EDGE or height > MAX_IMAGE_EDGE:
+        raise ValueError("stored PNG dimensions are implausible")
     return width, height
 
 
@@ -139,19 +129,25 @@ class LocalStorage:
         )
 
     async def image_info(self, key: str) -> ImageInfo | None:
-        path = self.path(key)
-        try:
-            if path.stat().st_size > MAX_VERIFY_BYTES:
+        def inspect() -> ImageInfo | None:
+            path = self.path(key)
+            try:
+                if path.stat().st_size > MAX_VERIFY_BYTES:
+                    return None
+                data = path.read_bytes()
+            except FileNotFoundError:
                 return None
-            data = path.read_bytes()
-        except FileNotFoundError:
-            return None
-        try:
-            width, height = _png_dimensions(data)
-        except ValueError:
-            return None
-        return ImageInfo(width=width, height=height, size=len(data),
-                         content_type=PNG_CONTENT_TYPE)
+            try:
+                width, height = _png_dimensions(data)
+            except ValueError:
+                return None
+            return ImageInfo(width=width, height=height, size=len(data),
+                             content_type=PNG_CONTENT_TYPE)
+
+        # Off the loop: the read is up to MAX_VERIFY_BYTES of peer-supplied
+        # bytes and every millisecond of it would otherwise stall every other
+        # request and socket on this process.
+        return await asyncio.to_thread(inspect)
 
     async def url(self, key: str, download_name: str | None = None) -> str:
         url = f"{self.public_url}/api/v1/files/{key}"
@@ -211,7 +207,7 @@ class S3Storage:
                 body.close()
 
         try:
-            response, data = read_object()
+            response, data = await asyncio.to_thread(read_object)
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code in ("404", "NoSuchKey", "NotFound"):

@@ -590,6 +590,34 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
         get_settings.cache_clear()
 
 
+@pytest.mark.db
+def test_a_rejected_upload_is_not_left_in_storage():
+    """Verification rejecting the output must not leave the object behind.
+
+    No asset row ever names it, and the success path only collects earlier
+    attempts, so nothing else would. A worker can push an arbitrarily large
+    invalid object through the presigned PUT, which carries no size condition.
+    """
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-rejected-upload")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "rejected"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            key = upload_path.rsplit("/api/v1/files/", 1)[-1]
+            assert client.put(upload_path, content=b"not a png at all").status_code == 200
+            storage = jobs.get_storage()
+            assert storage.path(key).exists()
+
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+            poll_until(client, job_id, "failed")
+            assert not storage.path(key).exists(), "rejected upload was left behind"
+
+
 async def _write_blob(storage, key, data):
     storage.path(key).parent.mkdir(parents=True, exist_ok=True)
     storage.path(key).write_bytes(data)

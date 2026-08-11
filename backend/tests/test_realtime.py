@@ -232,13 +232,40 @@ def test_worker_relay_requires_its_session_and_generated_frames():
 
                 worker_ws.send_json({"type": "session_ready", "session_id": session_id})
                 assert browser_ws.receive_json()["type"] == "ready"
-                worker_ws.send_bytes(
-                    bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"not-generated"
-                )
                 generated = bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"owned"
                 worker_ws.send_bytes(generated)
+                # Arrives after the foreign frame above was dropped, which is
+                # what proves the drop: a relayed foreign frame would be read
+                # here instead.
                 assert browser_ws.receive_bytes() == generated
                 assert session.worker is realtime.workers["w-session-owner"]
+
+
+def test_assigned_worker_sending_a_canvas_frame_is_a_protocol_violation():
+    """A non-owner's frame is dropped, because reassignment races produce those.
+
+    The assigned worker sending a canvas frame is not a race: nothing in the
+    protocol lets a worker send that direction, so it closes 4000 rather than
+    being ignored while the peer stays connected.
+    """
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-wrong-kind"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            session_id = worker_ws.receive_json()["session_id"]
+            worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+            assert browser_ws.receive_json()["type"] == "ready"
+            worker_ws.send_bytes(
+                bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"wrong-direction"
+            )
+            # Deadline rather than a blocking receive: with the check removed
+            # the frame is merely ignored and receive_json would hang forever,
+            # which is a worse failure than a red test.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and "w-wrong-kind" in realtime.workers:
+                time.sleep(0.05)
+            assert "w-wrong-kind" not in realtime.workers, "the violation was ignored"
 
 
 @pytest.mark.db
@@ -537,3 +564,59 @@ def test_hello_refusal_reason_fits_a_close_frame():
             assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
             encoded = (closed.value.reason or "").encode("utf-8")
             assert len(encoded) <= 123, f"{bad_id[:8]}: {len(encoded)} bytes"
+
+
+@pytest.mark.db
+def test_session_closed_from_another_worker_is_ignored():
+    """The last session-scoped message still routed by UUID alone.
+
+    A worker that held this session earlier still knows its id. Popping the
+    entry on its word drops the current owner's accounting and bills this user
+    for a session it did not run.
+
+    Asserted through the persisted event rather than the in-memory dict: the
+    two sockets are separate tasks, so any assertion timed against a send is a
+    race, and a racy test passes with the check removed.
+    """
+    with TestClient(app) as db_client, \
+            db_client.websocket_connect("/api/v1/fleet") as owner_ws:
+        owner_ws.send_json(hello(worker_id="w-closing-owner"))
+        assert owner_ws.receive_json()["type"] == "registered"
+        with db_client.websocket_connect("/api/v1/fleet") as other_ws:
+            other_ws.send_json(hello(worker_id="w-closing-other"))
+            assert other_ws.receive_json()["type"] == "registered"
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                session_id = owner_ws.receive_json()["session_id"]
+                owner_ws.send_json({"type": "session_ready", "session_id": session_id})
+                assert browser_ws.receive_json()["type"] == "ready"
+            assert owner_ws.receive_json()["type"] == "close_session"
+
+            async def recorded():
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    rows = (await session.execute(
+                        select(UsageEvent).where(
+                            UsageEvent.kind == "realtime",
+                            UsageEvent.duration_ms.in_((700, 9999)),
+                        )
+                    )).scalars().all()
+                    return [row.frames for row in rows]
+
+            # The stranger acts alone, so nothing races it: give the server a
+            # window in which its claim would have been written, then check.
+            other_ws.send_json({"type": "session_closed", "session_id": session_id,
+                                "frames": 9999, "gpu_ms": 9999, "duration_ms": 9999,
+                                "category": "other"})
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                assert 9999 not in asyncio.run(recorded()), "a stranger closed the session"
+                time.sleep(0.05)
+
+            owner_ws.send_json({"type": "session_closed", "session_id": session_id,
+                                "frames": 7, "gpu_ms": 70, "duration_ms": 700,
+                                "category": "other"})
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and 7 not in asyncio.run(recorded()):
+                time.sleep(0.05)
+            assert 7 in asyncio.run(recorded()), "the owner's close was not recorded"

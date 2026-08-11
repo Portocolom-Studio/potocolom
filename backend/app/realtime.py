@@ -392,9 +392,13 @@ async def fleet(ws: WebSocket) -> None:
                     data = message["bytes"]
                     session = sessions.get(frame_session_id(data))
                     # The worker is a network peer too: only the assigned
-                    # worker may relay generated frames for this session.
-                    if (session is not None and session.worker is worker
-                            and data[0] == GENERATED_FRAME):
+                    # worker may relay frames for this session. A frame for a
+                    # session this worker does not own is dropped, because
+                    # reassignment races produce those legitimately; the
+                    # assigned worker sending the wrong kind is not a race.
+                    if session is not None and session.worker is worker:
+                        if data[0] != GENERATED_FRAME:
+                            raise ProtocolError("worker frame is not a generated frame")
                         await safe_send(session.browser.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
@@ -408,8 +412,13 @@ async def fleet(ws: WebSocket) -> None:
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
                         session_id = peer_uuid(control["session_id"])
-                        owner = closing_sessions.pop(session_id, None)
-                        if owner is not None:
+                        # Peek before popping: a worker that held this session
+                        # earlier still knows its id, and popping on its word
+                        # would drop the current owner's entry and bill this
+                        # user for a session it did not run.
+                        owner = closing_sessions.get(session_id)
+                        if owner is not None and owner[2] is worker:
+                            del closing_sessions[session_id]
                             from app import usage_events
                             usage_events.schedule_realtime(owner[0], owner[1], control)
                     elif control["type"] in ("gpu_status", "model_loaded",

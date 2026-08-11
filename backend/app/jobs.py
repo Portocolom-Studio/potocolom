@@ -1224,8 +1224,19 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             last_progress_at.pop(job_id, None)
             release_job_slot(worker)
             await mark_failed(job_id, "worker output was missing or invalid")
+            # Nothing else collects a rejected upload: no asset row names it
+            # and the success path only cleans up earlier attempts.
+            for rejected in (entry.storage_key, entry.thumb_storage_key):
+                try:
+                    await get_storage().delete(rejected)
+                except Exception:
+                    logger.debug("no rejected blob %s to remove for job %s", rejected, job_id)
             return
         image_dimensions = (image.width, image.height)
+        # image_info awaits a thread, so re-check ownership: a stall requeue
+        # can have replaced this attempt while we were inspecting its output.
+        if inflight.get(job_id) is not current:
+            return
 
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
