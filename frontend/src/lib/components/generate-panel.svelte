@@ -422,7 +422,7 @@
 	}
 
 	function starShown(): void {
-		if (shown !== null) toggleStarred(shown.id);
+		if (shown !== null) void toggleStarred(shown.id);
 	}
 
 	function editShown(): void {

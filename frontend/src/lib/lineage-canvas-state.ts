@@ -15,6 +15,104 @@ export function clampLineageCoordinate(value: number): number {
 	return Math.min(LINEAGE_WORLD_LIMIT, Math.max(-LINEAGE_WORLD_LIMIT, value));
 }
 
+export function retainedLineageTreeOffsets<T>(
+	offsets: Record<string, T>,
+	loadedRootIds: ReadonlySet<string>,
+	rootsAreFiltered: boolean
+): Record<string, T> {
+	if (rootsAreFiltered) return offsets;
+	return Object.fromEntries(
+		Object.entries(offsets).filter(([rootId]) => loadedRootIds.has(rootId))
+	) as Record<string, T>;
+}
+
+export function decideLineageLiveArrival(
+	isRoot: boolean,
+	starredOnly: boolean,
+	rootIsStarred: boolean
+): 'insert-root' | 'inspect-descendant' | 'ignore' {
+	if (!isRoot) return 'inspect-descendant';
+	return !starredOnly || rootIsStarred ? 'insert-root' : 'ignore';
+}
+
+export type OptimisticStarMutation = {
+	id: string;
+	wasStarred: boolean;
+	previousIndex: number;
+};
+
+export function beginOptimisticStarMutation(
+	starredIds: string[],
+	id: string
+): { starredIds: string[]; mutation: OptimisticStarMutation } {
+	const previousIndex = starredIds.indexOf(id);
+	const wasStarred = previousIndex !== -1;
+	return {
+		starredIds: wasStarred
+			? starredIds.filter((starredId) => starredId !== id)
+			: [id, ...starredIds],
+		mutation: { id, wasStarred, previousIndex }
+	};
+}
+
+export function rollbackOptimisticStarMutation(
+	starredIds: string[],
+	mutation: OptimisticStarMutation
+): string[] {
+	if (!mutation.wasStarred) {
+		return starredIds.filter((starredId) => starredId !== mutation.id);
+	}
+	if (starredIds.includes(mutation.id)) return starredIds;
+	const restored = [...starredIds];
+	restored.splice(Math.min(mutation.previousIndex, restored.length), 0, mutation.id);
+	return restored;
+}
+
+export function starredListSnapshotIsCurrent(
+	requestEpoch: number,
+	currentRequestEpoch: number,
+	mutationEpoch: number,
+	currentMutationEpoch: number,
+	mutationPending: boolean
+): boolean {
+	return (
+		requestEpoch === currentRequestEpoch &&
+		mutationEpoch === currentMutationEpoch &&
+		!mutationPending
+	);
+}
+
+export function settleStarredListMutation(
+	dirty: boolean,
+	mutationSucceeded: boolean,
+	pendingMutations: number
+): { dirty: boolean; reload: boolean } {
+	const nextDirty = dirty || mutationSucceeded;
+	return {
+		dirty: nextDirty,
+		reload: nextDirty && pendingMutations === 0
+	};
+}
+
+export type LineageRootStarReconciliation = {
+	pending: number;
+	dirty: boolean;
+};
+
+export function settleLineageRootStarReconciliation(
+	state: LineageRootStarReconciliation,
+	mutationSucceeded: boolean,
+	starredOnly: boolean
+): { state: LineageRootStarReconciliation; reload: boolean } {
+	const pending = state.pending - 1;
+	const dirty = state.dirty || mutationSucceeded;
+	if (pending > 0) return { state: { pending, dirty }, reload: false };
+	return {
+		state: { pending: 0, dirty: false },
+		reload: dirty && starredOnly
+	};
+}
+
 export function rebaseLineageViewport(
 	viewport: { translateX: number; translateY: number; scale: number },
 	storedAnchor: { x: number; y: number },
@@ -27,6 +125,51 @@ export function rebaseLineageViewport(
 		translateY: clampLineageCoordinate(
 			viewport.translateY + (storedAnchor.y - currentAnchor.y) * viewport.scale
 		)
+	};
+}
+
+export type InitialLineageViewportAnchor = {
+	rootId: string;
+	x: number;
+	y: number;
+};
+
+export type InitialLineageRootLoadState = 'loading' | 'failed' | 'settled';
+
+/** Follow the root chosen by automatic centring while one paging burst repacks
+ * the forest. Retriable failures keep the anchor for the next attempt. A
+ * settled burst drops it only after applying the final position, or asks the
+ * caller to recenter when the anchored root has expired. */
+export function decideInitialLineageViewportFollow(
+	viewport: { translateX: number; translateY: number; scale: number },
+	storedAnchor: InitialLineageViewportAnchor,
+	currentAnchor: { x: number; y: number } | null,
+	rootLoadState: InitialLineageRootLoadState
+): {
+	translateX: number;
+	translateY: number;
+	anchor: InitialLineageViewportAnchor | null;
+	fallbackToNewest: boolean;
+} {
+	const retainAnchor = rootLoadState !== 'settled';
+	if (currentAnchor === null) {
+		return {
+			translateX: viewport.translateX,
+			translateY: viewport.translateY,
+			anchor: retainAnchor ? storedAnchor : null,
+			fallbackToNewest: !retainAnchor
+		};
+	}
+
+	const rebased = rebaseLineageViewport(viewport, storedAnchor, currentAnchor);
+	const anchor =
+		storedAnchor.x === currentAnchor.x && storedAnchor.y === currentAnchor.y
+			? storedAnchor
+			: { rootId: storedAnchor.rootId, ...currentAnchor };
+	return {
+		...rebased,
+		anchor: retainAnchor ? anchor : null,
+		fallbackToNewest: false
 	};
 }
 

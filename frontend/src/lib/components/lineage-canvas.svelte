@@ -31,7 +31,7 @@
 </script>
 
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import ImageOffIcon from '@lucide/svelte/icons/image-off';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
@@ -42,17 +42,24 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		decideInitialLineageViewportFollow,
+		decideLineageLiveArrival,
 		decideLineageTreeLoad,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
-		retainedRetryBudget
+		retainedLineageTreeOffsets,
+		retainedRetryBudget,
+		settleLineageRootStarReconciliation,
+		type InitialLineageViewportAnchor,
+		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
 	import {
 		LINEAGE_TILE_HEIGHT,
@@ -74,11 +81,13 @@
 		filterTextToImageModels,
 		filterUpscaleModels,
 		generationById,
+		isStarred,
 		openService,
 		saveLineageTreeOffsets,
 		saveLineageViewport,
 		selectGeneration,
 		studio,
+		toggleStarred,
 		type Generation,
 		type GenerationSubtree,
 		type LineageEntry
@@ -128,6 +137,11 @@
 	let rootsInitialized = $state(false);
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
+	let starredOnly = $state(false);
+	let rootsFilterModeEpoch = 0;
+	let rootsRequestEpoch = 0;
+	let rootStarReconciliation: LineageRootStarReconciliation = { pending: 0, dirty: false };
+	let recenterAfterFilter = false;
 	let anchorSearchPages = 0;
 	let initializeFrame = 0;
 	let treeCache = $state(new Map(sessionTreeCache));
@@ -143,6 +157,7 @@
 	let recenterTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let viewportReady = $state(false);
+	let initialViewportAnchor: InitialLineageViewportAnchor | null = null;
 	let inertiaFrame = 0;
 	let panPointerId = $state<number | null>(null);
 	let panStart = { x: 0, y: 0, translateX: 0, translateY: 0 };
@@ -240,6 +255,9 @@
 		selectedData?.generation ??
 			(selectedData?.entry.job_id ? (generationById(selectedData.entry.job_id) ?? null) : null)
 	);
+	const selectedIsStarred = $derived(
+		selectedGeneration !== null && isStarred(selectedGeneration.id)
+	);
 	const selectedAsset = $derived(
 		selectedGeneration?.assets.find((asset) => asset.id === studio.lineageSelectedAssetId) ?? null
 	);
@@ -300,6 +318,14 @@
 		if (tree.status === 'loaded') sessionTreeCache.set(rootId, tree);
 	}
 
+	function invalidateCachedTree(rootId: string): void {
+		treeLoadQueue.delete(rootId);
+		const next = new Map(treeCache);
+		next.delete(rootId);
+		treeCache = next;
+		sessionTreeCache.delete(rootId);
+	}
+
 	async function fetchCanvasJson<T>(url: string, failure: string): Promise<T> {
 		const controller = new AbortController();
 		requestControllers.add(controller);
@@ -318,16 +344,27 @@
 
 	async function loadRoots(): Promise<void> {
 		if (rootsLoading || (!rootsHaveMore && roots.length > 0)) return;
+		const filterModeEpoch = rootsFilterModeEpoch;
+		const requestEpoch = rootsRequestEpoch;
+		const filterStarredOnly = starredOnly;
 		rootsLoading = true;
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
-		const cursorQuery = cursor ? `&cursor=${cursor}` : '';
 		let loaded = false;
 		try {
+			const query = new URLSearchParams({ roots_only: 'true', limit: String(ROOT_LIMIT) });
+			if (filterStarredOnly) query.set('starred', 'true');
+			if (cursor !== undefined) query.set('cursor', cursor);
+			// Starred mode selects starred roots, then keeps each returned root's
+			// complete subtree. Filtering descendants individually would sever the
+			// provenance that makes this a forest rather than a list of cards.
 			const page = await fetchCanvasJson<Generation[]>(
-				`/api/v1/generations?roots_only=true&limit=${ROOT_LIMIT}${cursorQuery}`,
+				`/api/v1/generations?${query.toString()}`,
 				'history request failed'
 			);
+			if (filterModeEpoch !== rootsFilterModeEpoch || requestEpoch !== rootsRequestEpoch) {
+				return;
+			}
 			const existing = new Set(roots.map((root) => root.id));
 			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
 			rootsHaveMore = page.length === ROOT_LIMIT;
@@ -335,11 +372,72 @@
 			loaded = true;
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
-			rootsFailed = true;
+			if (filterModeEpoch === rootsFilterModeEpoch && requestEpoch === rootsRequestEpoch) {
+				rootsFailed = true;
+			}
 		} finally {
-			if (canvasActive && canvasEpoch === canvasEpochSequence) rootsLoading = false;
+			if (
+				canvasActive &&
+				canvasEpoch === canvasEpochSequence &&
+				filterModeEpoch === rootsFilterModeEpoch &&
+				requestEpoch === rootsRequestEpoch
+			) {
+				rootsLoading = false;
+			}
 		}
-		if (loaded && !viewportReady) initializeFrame = requestAnimationFrame(initializeViewport);
+		if (loaded && !viewportReady) {
+			initializeFrame = requestAnimationFrame(initializeViewport);
+		} else if (loaded && recenterAfterFilter) {
+			recenterAfterFilter = false;
+			initializeFrame = requestAnimationFrame(() => {
+				initialViewportAnchor = recenterNewest(false);
+			});
+		}
+	}
+
+	function reloadRoots(): void {
+		rootsRequestEpoch += 1;
+		roots = [];
+		rootsLoading = false;
+		rootsInitialized = false;
+		rootsFailed = false;
+		rootsHaveMore = false;
+		recenterAfterFilter = viewportReady;
+		lastPageLoadWorld = { right: Number.NEGATIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
+		void loadRoots();
+	}
+
+	function setStarredOnly(value: boolean): void {
+		if (starredOnly === value) return;
+		rootsFilterModeEpoch += 1;
+		starredOnly = value;
+		reloadRoots();
+	}
+
+	async function toggleSelectedStar(): Promise<void> {
+		if (selectedGeneration === null) return;
+		const generation = selectedGeneration;
+		const changesRootFilter = generation.source_asset_id === null;
+		if (changesRootFilter) {
+			rootStarReconciliation = {
+				...rootStarReconciliation,
+				pending: rootStarReconciliation.pending + 1
+			};
+		}
+		let succeeded = false;
+		try {
+			succeeded = await toggleStarred(generation.id);
+		} finally {
+			if (changesRootFilter) {
+				const decision = settleLineageRootStarReconciliation(
+					rootStarReconciliation,
+					succeeded,
+					starredOnly
+				);
+				rootStarReconciliation = decision.state;
+				if (decision.reload) reloadRoots();
+			}
+		}
 	}
 
 	// Arrival markers have to come back off again. Tiles unmount once they leave
@@ -413,6 +511,9 @@
 				// A load that worked owes nothing, so the next failure starts fresh.
 				retried: undefined
 			});
+			// The response predates a coalesced force. Do not let it repopulate the
+			// session cache if the component unmounts before the rerun completes.
+			if (rerun) sessionTreeCache.delete(root.id);
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (previousIds.size > 0) markArrived(added);
 			if (rerun) scheduleTreeLoad(responseRoot.generation, true);
@@ -514,7 +615,13 @@
 		for (const generation of finished) {
 			if (knownFinishedIds.has(generation.id)) continue;
 			knownFinishedIds.add(generation.id);
-			if (generation.source_asset_id === null) {
+			const arrival = decideLineageLiveArrival(
+				generation.source_asset_id === null,
+				starredOnly,
+				isStarred(generation.id)
+			);
+			if (arrival === 'ignore') continue;
+			if (arrival === 'insert-root') {
 				roots = [
 					{ ...generation, has_derivatives: generation.has_derivatives ?? false },
 					...roots.filter((root) => root.id !== generation.id)
@@ -528,7 +635,18 @@
 					root.id === rootId ? { ...root, has_derivatives: true } : root
 				);
 				const root = roots.find((item) => item.id === rootId);
-				if (root) scheduleTreeLoad(root, true);
+				if (root) {
+					scheduleTreeLoad(root, true);
+				} else if (cached.status === 'loading') {
+					// This hidden tree already has a request in flight. Make that request
+					// rerun, and discard the older settled copy held across mounts.
+					sessionTreeCache.delete(rootId);
+					if (!cached.dirty) setCachedTree(rootId, { ...cached, dirty: true });
+				} else {
+					// A filter-hidden settled tree cannot reload now. Evict it so exposing
+					// the root later cannot reuse a permanently incomplete layout.
+					invalidateCachedTree(rootId);
+				}
 				break;
 			}
 		}
@@ -558,13 +676,34 @@
 	$effect(() => {
 		if (!rootsInitialized || rootsLoading || rootsHaveMore) return;
 		const rootIds = new Set(persistedRoots.map((root) => root.id));
-		const bounded = Object.fromEntries(
-			Object.entries(treeOffsets).filter(([rootId]) => rootIds.has(rootId))
-		);
+		const bounded = retainedLineageTreeOffsets(treeOffsets, rootIds, starredOnly);
 		if (Object.keys(bounded).length !== Object.keys(treeOffsets).length) {
 			treeOffsets = bounded;
 			saveLineageTreeOffsets(bounded);
 		}
+	});
+
+	$effect(() => {
+		if (!viewportReady || initialViewportAnchor === null) return;
+		const storedAnchor = initialViewportAnchor;
+		const current = rootWorldPosition(storedAnchor.rootId);
+		// The viewport translation is input to the pure decision, but not a reason
+		// to rerun this effect after it writes the decision back.
+		const viewport = untrack(() => ({ translateX, translateY, scale }));
+		const decision = decideInitialLineageViewportFollow(
+			viewport,
+			storedAnchor,
+			current,
+			rootsFailed ? 'failed' : rootsLoading ? 'loading' : 'settled'
+		);
+		if (decision.fallbackToNewest) {
+			initialViewportAnchor = null;
+			recenterNewest(false);
+			return;
+		}
+		if (viewport.translateX !== decision.translateX) translateX = decision.translateX;
+		if (viewport.translateY !== decision.translateY) translateY = decision.translateY;
+		if (initialViewportAnchor !== decision.anchor) initialViewportAnchor = decision.anchor;
 	});
 
 	$effect(() => {
@@ -786,23 +925,26 @@
 		saveLineageTreeOffsets(treeOffsets);
 	}
 
-	function recenterNewest(animate = true): void {
+	function recenterNewest(animate = true): { rootId: string; x: number; y: number } | null {
 		const newest = [...persistedRoots].sort(
 			(left, right) =>
 				right.created_at.localeCompare(left.created_at) || left.id.localeCompare(right.id)
 		)[0];
-		if (!newest) return;
+		if (!newest) return null;
 		const packed = packedTrees.find((tree) => tree.rootId === newest.id);
 		const rootNode = packed?.layout.nodes.find((node) => node.id === packed.layout.rootId);
-		if (!packed || !rootNode) return;
+		if (!packed || !rootNode) return null;
 		stopInertia();
 		if (animate && !reducedMotion) {
 			recentering = true;
 			if (recenterTimer) clearTimeout(recenterTimer);
 			recenterTimer = setTimeout(() => (recentering = false), 260);
 		}
-		translateX = clampLineageCoordinate(viewportWidth / 2 - (packed.x + rootNode.x) * scale);
-		translateY = clampLineageCoordinate(viewportHeight / 2 - (packed.y + rootNode.y) * scale);
+		const x = packed.x + rootNode.x;
+		const y = packed.y + rootNode.y;
+		translateX = clampLineageCoordinate(viewportWidth / 2 - x * scale);
+		translateY = clampLineageCoordinate(viewportHeight / 2 - y * scale);
+		return { rootId: newest.id, x, y };
 	}
 
 	function restoredViewportIsUsable(): boolean {
@@ -875,7 +1017,7 @@
 		}
 		if (!restoredViewportIsUsable()) {
 			scale = 1;
-			recenterNewest(false);
+			initialViewportAnchor = recenterNewest(false);
 		}
 		viewportReady = true;
 	}
@@ -1201,6 +1343,15 @@
 	>
 		<div class="absolute end-3 top-3 z-30 flex gap-1">
 			<Button
+				variant={starredOnly ? 'default' : 'secondary'}
+				size="sm"
+				aria-pressed={starredOnly}
+				onclick={() => setStarredOnly(!starredOnly)}
+			>
+				<StarIcon class={starredOnly ? 'fill-current' : ''} />
+				{t('app.images.starred_only')}
+			</Button>
+			<Button
 				variant="secondary"
 				size="icon-sm"
 				disabled={!hasTreeOffsets}
@@ -1257,7 +1408,7 @@
 			</div>
 		{:else if persistedRoots.length === 0}
 			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
-				{t('app.gen.result_hint')}
+				{starredOnly ? t('app.images.no_starred_roots') : t('app.gen.result_hint')}
 			</div>
 		{/if}
 
@@ -1290,8 +1441,7 @@
 						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
 							<g
 								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={studio.lineageSelectedAssetId !== null &&
-									!selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={selectedNode !== null && !selectedPathEdgeIds.has(edge.id)}
 							>
 								<path
 									class="lineage-edge"
@@ -1319,6 +1469,7 @@
 			{#each visibleNodes as item (`${item.rootId}:${item.node.id}`)}
 				{@const data = item.node.data}
 				{@const shownImage = imageUrl(data, lod)}
+				{@const starred = data.entry.job_id !== null && isStarred(data.entry.job_id)}
 				<div
 					class="tile-shell"
 					class:is-new={newNodeIds.has(item.node.id)}
@@ -1331,8 +1482,9 @@
 						class:is-dragging={draggedRootId === item.rootId}
 						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
+						class:is-starred={starred}
 						style={`--tile-pull: ${proximityScale(item)}`}
-						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
+						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
 						title={promptLabel(data)}
 						onfocus={() => (focusedNodeId = item.node.id)}
 						onblur={() => (focusedNodeId = null)}
@@ -1374,6 +1526,9 @@
 							{/if}
 						</span>
 						<span class="tree-content">
+							{#if starred}
+								<span class="node-star" aria-hidden="true"><StarIcon /></span>
+							{/if}
 							{#if shownImage !== null}
 								{#key shownImage}
 									<img
@@ -1388,6 +1543,9 @@
 							{/if}
 						</span>
 						<span class="card-content">
+							{#if starred}
+								<span class="node-star" aria-hidden="true"><StarIcon /></span>
+							{/if}
 							<span class="card-image">
 								{#if shownImage !== null}
 									{#key shownImage}
@@ -1493,6 +1651,15 @@
 			{/if}
 
 			<div class="border-border mb-4 grid gap-2 border-b pb-4">
+				<Button
+					variant="outline"
+					class="justify-start"
+					disabled={selectedGeneration === null}
+					onclick={() => void toggleSelectedStar()}
+				>
+					<StarIcon class={selectedIsStarred ? 'fill-current' : ''} />
+					{selectedIsStarred ? t('app.gen.unstar') : t('app.gen.star')}
+				</Button>
 				<Button
 					href={selectedAsset?.download_url}
 					variant="outline"
@@ -1806,6 +1973,11 @@
 		height: 36px;
 	}
 
+	.lod-constellation .lineage-tile.is-starred {
+		border-color: var(--primary);
+		box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 78%, transparent);
+	}
+
 	.lod-constellation .tile-shell {
 		--visible-tile-half-width: 18px;
 		--visible-tile-half-height: 18px;
@@ -1853,6 +2025,29 @@
 		width: 24px;
 		height: 24px;
 		color: var(--muted-foreground);
+	}
+
+	.node-star {
+		position: absolute;
+		top: 5px;
+		left: 5px;
+		z-index: 2;
+		display: grid;
+		width: 22px;
+		height: 22px;
+		place-items: center;
+		border-radius: 999px;
+		color: var(--primary-foreground);
+		background: var(--primary);
+		box-shadow: 0 1px 4px color-mix(in oklch, var(--foreground) 20%, transparent);
+		pointer-events: none;
+	}
+
+	.node-star :global(svg) {
+		width: 12px;
+		height: 12px;
+		fill: currentColor;
+		color: inherit;
 	}
 
 	.lod-cards .lineage-tile {

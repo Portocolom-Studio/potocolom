@@ -2,13 +2,22 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	LINEAGE_WORLD_LIMIT,
+	beginOptimisticStarMutation,
 	clampLineageCoordinate,
+	decideInitialLineageViewportFollow,
+	decideLineageLiveArrival,
 	decideLineageTreeLoad,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
+	retainedLineageTreeOffsets,
 	retainedRetryBudget,
-	rebaseLineageViewport
+	rebaseLineageViewport,
+	rollbackOptimisticStarMutation,
+	settleStarredListMutation,
+	settleLineageRootStarReconciliation,
+	starredListSnapshotIsCurrent
 } from './lineage-canvas-state.ts';
+import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
 import type { Generation } from './studio.svelte.ts';
 
 function generation(id: string, assetId: string | null, sourceAssetId: string | null): Generation {
@@ -102,6 +111,281 @@ test('restored viewport keeps its anchor at the saved screen position', () => {
 		),
 		{ translateX: 30, translateY: 140 }
 	);
+});
+
+test('initial viewport keeps its centered root through a second root page', () => {
+	const tree = (index: number, createdAt: string) => {
+		const id = `root-${index}`;
+		return {
+			rootId: id,
+			createdAt,
+			hasDerivatives: false,
+			layout: layoutLineageTree({ id, createdAt, data: null, children: [] })
+		};
+	};
+	const firstPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index, `2026-08-09T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const secondPage = Array.from({ length: 51 }, (_, index) =>
+		tree(index + 50, `2026-08-10T00:00:${String(50 - index).padStart(2, '0')}Z`)
+	);
+	const centeredRootId = firstPage[0].rootId;
+	const rootPosition = (forest: ReturnType<typeof packLineageForest<null>>) => {
+		const packed = forest.find((item) => item.rootId === centeredRootId);
+		const root = packed?.layout.nodes.find((node) => node.id === centeredRootId);
+		assert.ok(packed && root);
+		return { x: packed.x + root.x, y: packed.y + root.y };
+	};
+	const firstAnchor = rootPosition(packLineageForest(firstPage));
+	const viewport = {
+		translateX: 700 - firstAnchor.x,
+		translateY: 400 - firstAnchor.y,
+		scale: 1
+	};
+	const currentAnchor = rootPosition(packLineageForest([...firstPage, ...secondPage]));
+
+	assert.notDeepEqual(currentAnchor, firstAnchor);
+	const decision = decideInitialLineageViewportFollow(
+		viewport,
+		{ rootId: centeredRootId, ...firstAnchor },
+		currentAnchor,
+		'loading'
+	);
+	assert.deepEqual(
+		{ x: currentAnchor.x + decision.translateX, y: currentAnchor.y + decision.translateY },
+		{ x: 700, y: 400 }
+	);
+	assert.deepEqual(decision.anchor, { rootId: centeredRootId, ...currentAnchor });
+
+	const settled = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: decision.translateX, translateY: decision.translateY },
+		decision.anchor,
+		currentAnchor,
+		'settled'
+	);
+	assert.deepEqual(
+		{ x: currentAnchor.x + settled.translateX, y: currentAnchor.y + settled.translateY },
+		{ x: 700, y: 400 }
+	);
+	assert.equal(settled.anchor, null);
+});
+
+test('filter reload follows its recentered root through later root pages', () => {
+	const tree = (index: number, createdAt: string) => {
+		const id = `filter-root-${index}`;
+		return {
+			rootId: id,
+			createdAt,
+			hasDerivatives: false,
+			layout: layoutLineageTree({ id, createdAt, data: null, children: [] })
+		};
+	};
+	const firstPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index, `2026-08-09T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const secondPage = Array.from({ length: 50 }, (_, index) =>
+		tree(index + 50, `2026-08-10T00:00:${String(49 - index).padStart(2, '0')}Z`)
+	);
+	const terminalPage = Array.from({ length: 49 }, (_, index) =>
+		tree(index + 100, `2026-08-11T00:00:${String(48 - index).padStart(2, '0')}Z`)
+	);
+	const recenteredRootId = firstPage[0].rootId;
+	const rootPosition = (forest: ReturnType<typeof packLineageForest<null>>) => {
+		const packed = forest.find((item) => item.rootId === recenteredRootId);
+		const root = packed?.layout.nodes.find((node) => node.id === recenteredRootId);
+		assert.ok(packed && root);
+		return { x: packed.x + root.x, y: packed.y + root.y };
+	};
+	const recenteredAnchor = rootPosition(packLineageForest(firstPage));
+	const viewport = {
+		translateX: 700 - recenteredAnchor.x,
+		translateY: 400 - recenteredAnchor.y,
+		scale: 1
+	};
+	const secondAnchor = rootPosition(packLineageForest([...firstPage, ...secondPage]));
+
+	assert.notDeepEqual(secondAnchor, recenteredAnchor);
+	const secondDecision = decideInitialLineageViewportFollow(
+		viewport,
+		{ rootId: recenteredRootId, ...recenteredAnchor },
+		secondAnchor,
+		'loading'
+	);
+	assert.deepEqual(secondDecision.anchor, { rootId: recenteredRootId, ...secondAnchor });
+	assert.ok(secondDecision.anchor);
+
+	const terminalAnchor = rootPosition(
+		packLineageForest([...firstPage, ...secondPage, ...terminalPage])
+	);
+	assert.notDeepEqual(terminalAnchor, secondAnchor);
+	const terminalDecision = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: secondDecision.translateX, translateY: secondDecision.translateY },
+		secondDecision.anchor,
+		terminalAnchor,
+		'settled'
+	);
+	assert.deepEqual(
+		{
+			x: terminalAnchor.x + terminalDecision.translateX,
+			y: terminalAnchor.y + terminalDecision.translateY
+		},
+		{ x: 700, y: 400 }
+	);
+	assert.equal(terminalDecision.anchor, null);
+});
+
+test('failed root page keeps the viewport anchor through a successful retry', () => {
+	const viewport = { translateX: 300, translateY: 200, scale: 1 };
+	const storedAnchor = { rootId: 'retry-root', x: 100, y: 120 };
+	const failed = decideInitialLineageViewportFollow(
+		viewport,
+		storedAnchor,
+		{ x: 100, y: 120 },
+		'failed'
+	);
+	assert.deepEqual(failed.anchor, storedAnchor);
+	assert.equal(failed.fallbackToNewest, false);
+	assert.ok(failed.anchor);
+
+	const retried = decideInitialLineageViewportFollow(
+		viewport,
+		failed.anchor,
+		{ x: 420, y: 360 },
+		'loading'
+	);
+	assert.deepEqual(retried.anchor, { rootId: 'retry-root', x: 420, y: 360 });
+	assert.ok(retried.anchor);
+
+	const settled = decideInitialLineageViewportFollow(
+		{ ...viewport, translateX: retried.translateX, translateY: retried.translateY },
+		retried.anchor,
+		{ x: 420, y: 360 },
+		'settled'
+	);
+	assert.equal(settled.anchor, null);
+	assert.equal(settled.fallbackToNewest, false);
+});
+
+test('expired viewport anchor falls back after root paging settles', () => {
+	const decision = decideInitialLineageViewportFollow(
+		{ translateX: 300, translateY: 200, scale: 1 },
+		{ rootId: 'expired-root', x: 100, y: 120 },
+		null,
+		'settled'
+	);
+
+	assert.equal(decision.anchor, null);
+	assert.equal(decision.fallbackToNewest, true);
+});
+
+test('filtered root loads retain offsets for roots hidden by the filter', () => {
+	const offsets = {
+		'starred-root': { x: 120, y: 80 },
+		'unstarred-root': { x: -240, y: 160 }
+	};
+	const visibleRootIds = new Set(['starred-root']);
+
+	assert.strictEqual(retainedLineageTreeOffsets(offsets, visibleRootIds, true), offsets);
+	assert.deepEqual(retainedLineageTreeOffsets(offsets, visibleRootIds, false), {
+		'starred-root': { x: 120, y: 80 }
+	});
+});
+
+test('starred filter rejects unstarred live roots but still inspects descendants', () => {
+	assert.equal(decideLineageLiveArrival(true, true, false), 'ignore');
+	assert.equal(decideLineageLiveArrival(true, true, true), 'insert-root');
+	assert.equal(decideLineageLiveArrival(true, false, false), 'insert-root');
+	assert.equal(decideLineageLiveArrival(false, true, false), 'inspect-descendant');
+});
+
+test('failed star mutation rolls back only its generation', () => {
+	const unstarA = beginOptimisticStarMutation(['a'], 'a');
+	assert.deepEqual(unstarA.starredIds, []);
+	const starB = beginOptimisticStarMutation(unstarA.starredIds, 'b');
+	assert.deepEqual(starB.starredIds, ['b']);
+
+	assert.deepEqual(rollbackOptimisticStarMutation(['a', 'b'], unstarA.mutation), ['a', 'b']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['b'], unstarA.mutation), ['a', 'b']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['b', 'c'], starB.mutation), ['c']);
+});
+
+test('a new star goes to the front, where the reloaded list will put it', () => {
+	// The API orders favorites newest-first by starred_at. Appending would place
+	// the star correctly until the next reload moved it, so the optimistic order
+	// has to match the server's from the start.
+	assert.deepEqual(beginOptimisticStarMutation(['old', 'older'], 'fresh').starredIds, [
+		'fresh',
+		'old',
+		'older'
+	]);
+	// Restoring an unstar puts the id back where it was, not at either end.
+	const unstarMiddle = beginOptimisticStarMutation(['a', 'b', 'c'], 'b');
+	assert.deepEqual(unstarMiddle.starredIds, ['a', 'c']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['a', 'c'], unstarMiddle.mutation), [
+		'a',
+		'b',
+		'c'
+	]);
+});
+
+test('starred list reload commits only at current epochs with no mutation pending', () => {
+	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4, false), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4, false), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, true), false);
+	assert.equal(starredListSnapshotIsCurrent(2, 2, 4, 4, false), true);
+});
+
+test('a failed later mutation reloads the starred list dirtied by an earlier success', () => {
+	const afterFirstSuccess = settleStarredListMutation(false, true, 0);
+	assert.deepEqual(afterFirstSuccess, { dirty: true, reload: true });
+	assert.equal(starredListSnapshotIsCurrent(1, 1, 3, 4, false), false);
+	assert.deepEqual(settleStarredListMutation(afterFirstSuccess.dirty, false, 0), {
+		dirty: true,
+		reload: true
+	});
+});
+
+test('starred list reconciliation waits for the final pending mutation', () => {
+	const first = settleStarredListMutation(false, true, 1);
+	assert.deepEqual(first, { dirty: true, reload: false });
+	assert.deepEqual(settleStarredListMutation(first.dirty, false, 0), {
+		dirty: true,
+		reload: true
+	});
+	assert.deepEqual(settleStarredListMutation(false, false, 0), {
+		dirty: false,
+		reload: false
+	});
+});
+
+test('a root star settling after Starred roots was enabled reloads the filtered roots', () => {
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, true, true), {
+		state: { pending: 0, dirty: false },
+		reload: true
+	});
+});
+
+test('a later failed root toggle cannot discard an earlier successful reconciliation', () => {
+	const first = settleLineageRootStarReconciliation({ pending: 2, dirty: false }, true, true);
+	assert.deepEqual(first, {
+		state: { pending: 1, dirty: true },
+		reload: false
+	});
+	assert.deepEqual(settleLineageRootStarReconciliation(first.state, false, true), {
+		state: { pending: 0, dirty: false },
+		reload: true
+	});
+});
+
+test('settled root toggles reload only when a successful change can affect the active filter', () => {
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, true, false), {
+		state: { pending: 0, dirty: false },
+		reload: false
+	});
+	assert.deepEqual(settleLineageRootStarReconciliation({ pending: 1, dirty: false }, false, true), {
+		state: { pending: 0, dirty: false },
+		reload: false
+	});
 });
 
 test('a chain-free root is synthesised once and never fetched', () => {
