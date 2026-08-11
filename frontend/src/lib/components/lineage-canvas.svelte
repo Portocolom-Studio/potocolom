@@ -319,6 +319,14 @@
 		if (tree.status === 'loaded') sessionTreeCache.set(rootId, tree);
 	}
 
+	function invalidateCachedTree(rootId: string): void {
+		treeLoadQueue.delete(rootId);
+		const next = new Map(treeCache);
+		next.delete(rootId);
+		treeCache = next;
+		sessionTreeCache.delete(rootId);
+	}
+
 	async function fetchCanvasJson<T>(url: string, failure: string): Promise<T> {
 		const controller = new AbortController();
 		requestControllers.add(controller);
@@ -504,6 +512,9 @@
 				// A load that worked owes nothing, so the next failure starts fresh.
 				retried: undefined
 			});
+			// The response predates a coalesced force. Do not let it repopulate the
+			// session cache if the component unmounts before the rerun completes.
+			if (rerun) sessionTreeCache.delete(root.id);
 			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
 			if (previousIds.size > 0) markArrived(added);
 			if (rerun) scheduleTreeLoad(responseRoot.generation, true);
@@ -625,7 +636,18 @@
 					root.id === rootId ? { ...root, has_derivatives: true } : root
 				);
 				const root = roots.find((item) => item.id === rootId);
-				if (root) scheduleTreeLoad(root, true);
+				if (root) {
+					scheduleTreeLoad(root, true);
+				} else if (cached.status === 'loading') {
+					// This hidden tree already has a request in flight. Make that request
+					// rerun, and discard the older settled copy held across mounts.
+					sessionTreeCache.delete(rootId);
+					if (!cached.dirty) setCachedTree(rootId, { ...cached, dirty: true });
+				} else {
+					// A filter-hidden settled tree cannot reload now. Evict it so exposing
+					// the root later cannot reuse a permanently incomplete layout.
+					invalidateCachedTree(rootId);
+				}
 				break;
 			}
 		}
