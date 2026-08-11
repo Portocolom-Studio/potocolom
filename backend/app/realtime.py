@@ -77,21 +77,29 @@ def peer_is_unroutable(ws: WebSocket) -> bool:
 
     Loopback, RFC 1918, carrier and link-local ranges, and IPv6 ULA are all
     non-global, so a compose worker on the bridge network and a LAN worker both
-    still connect. An address the ASGI server did not supply, or one that does
-    not parse, is not a public peer either: the test harness reports
-    "testclient" and a unix socket reports nothing.
+    still connect.
+
+    An absent or unparseable address counts as local, and is logged because it
+    should not happen: a socket always yields a real address, and the test
+    harness's "testclient" is the only ordinary source of anything else. It is
+    not treated as hostile because refusing it would buy nothing. This code
+    never reads X-Forwarded-For, but uvicorn does, and when it is told to trust
+    the forwarding peer it copies that header in verbatim without validating it;
+    an attacker in that position would send a parseable "127.0.0.1" rather than
+    a string that does not parse, so the two branches are equally exposed and
+    the configuration is the thing that has to be fixed (see app/main.py).
 
     A reverse proxy replaces every peer with its own private address, so a
     deployment that fronts the API gains nothing here and must set the secret.
-    The forwarded-for header is deliberately not consulted, because the peer
-    chooses what it says.
     """
     client = ws.client
-    if client is None or not client.host:
+    if client is None:
         return True
     try:
         return not ipaddress.ip_address(client.host).is_global
     except ValueError:
+        logger.warning(
+            "fleet peer address %r does not parse; treating it as local", client.host)
         return True
 
 

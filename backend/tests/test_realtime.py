@@ -23,7 +23,10 @@ from app.realtime import (
 from app.settings import get_settings
 from app.tables import UsageEvent
 
-client = TestClient(app)
+# A real peer address rather than the default "testclient", which no ASGI server
+# would ever report: permissive fleet mode decides on that address, and refuses
+# one it cannot parse.
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def manifest(model_id="sd-sim") -> dict:
@@ -222,11 +225,17 @@ def test_a_public_peer_is_routable(host):
     assert not peer_is_unroutable(FakePeer(host))
 
 
-@pytest.mark.parametrize("host", [None, "", "testclient", "not-an-address"])
-def test_an_address_the_server_did_not_supply_is_not_a_public_peer(host):
-    """No parseable peer means no TCP peer: the test harness says "testclient"
-    and a unix socket says nothing. Refusing those would break the local paths
-    without closing anything a remote client could reach."""
+@pytest.mark.parametrize("host", [None, "", "testclient", "not-an-address", "127.1",
+                                  "2130706433", "8.8.8.8:80", " 8.8.8.8 ", "[::1]"])
+def test_an_address_that_is_absent_or_does_not_parse_counts_as_local(host):
+    """A socket always yields a real address, so these come from the test
+    harness or from a forged X-Forwarded-For that uvicorn was told to trust.
+    Measured: with trusted hosts of 172.18.0.0/16, a peer in that range sending
+    "not-an-address" arrives as ("not-an-address", 0). Refusing these would buy
+    nothing, because an attacker in that position would send a parseable
+    "127.0.0.1" instead, which no notation rule here can distinguish from a real
+    one. The configuration is the exposure, and main.py warns about it.
+    """
     assert peer_is_unroutable(FakePeer(host))
 
 

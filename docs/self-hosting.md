@@ -76,9 +76,16 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   A worker connecting from a public address is refused with the secret unset,
   because `docker compose up` publishes port 8080 on all interfaces and an
   admitted worker is dispatched real prompts and canvas frames. Set
-  `FLEET_SECRET` to run a worker from anywhere else. Note that behind a reverse
-  proxy every connection appears to arrive from the proxy, so a fronted
-  deployment must set the secret rather than rely on this.
+  `FLEET_SECRET` to run a worker from anywhere else.
+- That check is a safety net, not a boundary, and it does not cover every path.
+  Published IPv4 ports are forwarded by iptables and keep the client's address,
+  so a direct IPv4 connection from the internet is refused. A connection
+  arriving over IPv6 reaches the IPv4-only container through Docker's userland
+  proxy, which opens a fresh connection from the bridge gateway, so the client
+  becomes indistinguishable from a worker on the compose network and is
+  admitted. Measured on Docker 29.6.1. A reverse proxy has the same effect for
+  both families. If the host has a public address of either family, set
+  `FLEET_SECRET`; nothing else closes the IPv6 path.
 - One combination is unsafe and easy to reach by accident: `FLEET_SECRET` empty
   together with `FORWARDED_ALLOW_IPS=*`. The second tells uvicorn to believe the
   `X-Forwarded-For` header from any client, and the address in that header is
