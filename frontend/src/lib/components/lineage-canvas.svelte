@@ -1486,6 +1486,7 @@
 						class:is-dragging={draggedRootId === item.rootId}
 						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
+						class:is-starred={starred}
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
 						title={promptLabel(data)}
@@ -1974,6 +1975,11 @@
 	.lod-constellation .lineage-tile {
 		width: 36px;
 		height: 36px;
+	}
+
+	.lod-constellation .lineage-tile.is-starred {
+		border-color: var(--primary);
+		box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 78%, transparent);
 	}
 
 	.lod-constellation .tile-shell {
