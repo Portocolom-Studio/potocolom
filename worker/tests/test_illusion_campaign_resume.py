@@ -119,7 +119,9 @@ def test_deadline_reserve_does_not_create_optimizer_output(tmp_path: Path, monke
     plan.entries = [_entry()]
     path = tmp_path / "plan.json"
     path.write_text(json.dumps(plan.to_json()))
-    assert main(["run", "--plan", str(path), "--deadline-s", "0"]) == 0
+    # --allow-dirty: this asserts deadline behaviour, not provenance, and the
+    # working tree is routinely dirty while developing.
+    assert main(["run", "--plan", str(path), "--deadline-s", "0", "--allow-dirty"]) == 0
     assert not (tmp_path / "evidence" / _entry().out_rel).exists()
 
 

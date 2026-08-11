@@ -607,10 +607,26 @@ def is_completed_run(run_dir: Path) -> bool:
     if manifest.get("status") != "completed":
         return False
     # A forked base holds no images of its own: its arms do, and the base is
-    # only complete when every arm it promised is.
+    # only complete when every arm it promised is. Each arm needs its MANIFEST as
+    # well as its images: the review collector reads per-arm manifests, so an arm
+    # with images but no manifest used to pass here and then be silently omitted
+    # from the ratings - an observation paid for in GPU time and dropped without
+    # a word.
     arms = manifest.get("arms") or []
     if arms:
-        return all(has_usable_views(run_dir / f"arm_{arm}") for arm in arms)
+        for arm in arms:
+            arm_dir = run_dir / f"arm_{arm}"
+            arm_manifest = arm_dir / "manifest.json"
+            if not arm_manifest.is_file():
+                return False
+            try:
+                if json.loads(arm_manifest.read_text()).get("status") != "completed":
+                    return False
+            except json.JSONDecodeError:
+                return False
+            if not has_usable_views(arm_dir):
+                return False
+        return True
     return has_usable_views(run_dir)
 
 

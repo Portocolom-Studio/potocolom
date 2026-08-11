@@ -701,7 +701,7 @@ def window3_order() -> list[tuple[str, int]]:
 
 
 def build_window3() -> list[CampaignEntry]:
-    """120 bases producing 240 observations: one anchor plus 119 new pairs.
+    """98 bases producing 196 observations: one anchor plus 97 new pairs.
 
     Acquisition, so one seed per pair rather than two. Expected distinct
     successful pairs is 2Np for one seed on 2N pairs against N(2p - p^2) for two
@@ -1063,9 +1063,16 @@ def _next_attempt(entry_root: Path) -> tuple[int, Path]:
 
 
 def _append_event(event: dict[str, Any]) -> None:
-    if EVENTS_PATH.parent.is_dir():
+    # Journalling is optional telemetry, so it must never take the campaign down
+    # with it. An unwritable events.jsonl used to raise straight through the
+    # driver, killing a 47-hour run immediately AFTER a cell had completed fine.
+    if not EVENTS_PATH.parent.is_dir():
+        return
+    try:
         with EVENTS_PATH.open("a") as handle:
             handle.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(), **event}) + "\n")
+    except OSError as exc:
+        print(f"warning: could not append campaign event: {exc}", file=sys.stderr)
 
 
 def _sample_telemetry() -> dict[str, Any]:
@@ -1091,6 +1098,7 @@ def run_entry(
     force_gpu: bool = False,
     dry_run: bool = False,
     plan_identity: str | None = None,
+    timeout_cap_s: float | None = None,
 ) -> dict[str, Any]:
     entry_root = _entry_root(plan, entry)
     identity = plan_identity or plan.to_json()["plan_sha"]
@@ -1178,6 +1186,11 @@ def run_entry(
             status["pid"] = proc.pid
             write_manifest_atomic(status_path, status)
             timeout_s = max(RUN_TIMEOUT_S, entry.estimate_s * 1.5)
+            # --deadline-s was only a START gate, so a cell could begin with
+            # ~2,210s left and run to its own 3,900s timeout, overrunning the
+            # window by ~28 minutes. The caller caps it by the time left.
+            if timeout_cap_s is not None:
+                timeout_s = min(timeout_s, max(60.0, timeout_cap_s))
             deadline = time.monotonic() + timeout_s
             telemetry: list[dict[str, Any]] = []
             next_tel = time.monotonic()
@@ -1442,6 +1455,23 @@ def main(argv: list[str] | None = None) -> int:
         "hours reproducing the same failure.",
     )
     run.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="run even though tracked files are modified. Off by default: a dirty "
+        "optimizer under a matching HEAD produces evidence that names a commit it "
+        "did not come from.",
+    )
+    run.add_argument(
+        "--abort-after-busy",
+        type=int,
+        default=20,
+        help="stop and exit nonzero after this many consecutive cells refused as "
+        "busy (0 disables). 20 at the default cooldown is roughly an hour of "
+        "refusals. Without this the driver retried forever and then exited 0 at "
+        "the deadline having produced nothing, which is what a lost "
+        "POTOCOLOM_GPU_IDLE_PCT looks like from outside.",
+    )
+    run.add_argument(
         "--abort-after-dead",
         type=int,
         default=4,
@@ -1518,7 +1548,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL: window2 expected 98 got {counts.get('window2')}", file=sys.stderr)
             return 1
         if counts.get("window3", 0) not in (0, 1 + len(BREADTH_PAIRS)):
-            print(f"FAIL: window3 expected 120 got {counts.get('window3')}", file=sys.stderr)
+            print(f"FAIL: window3 expected 98 got {counts.get('window3')}", file=sys.stderr)
             return 1
         print("dry-run ok")
         return 0
@@ -1527,6 +1557,23 @@ def main(argv: list[str] | None = None) -> int:
         if git_sha() != plan.git_sha:
             print(
                 f"refusing run: HEAD {git_sha()} does not match plan.git_sha {plan.git_sha}",
+                file=sys.stderr,
+            )
+            return 1
+        # HEAD alone is not the provenance. A dirty optimizer runs happily under a
+        # matching SHA while every manifest records the plan's frozen fingerprint,
+        # so the evidence would name a commit that did not produce it.
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root(),
+        ).stdout.strip()
+        if dirty and not args.allow_dirty:
+            print(
+                "refusing run: tracked files are modified, so the evidence would "
+                f"name {plan.git_sha[:9]} without matching it:\n{dirty}\n"
+                "Commit or stash, then regenerate the plan. --allow-dirty overrides.",
                 file=sys.stderr,
             )
             return 1
@@ -1540,6 +1587,7 @@ def main(argv: list[str] | None = None) -> int:
         n = 0
         dead_streak = 0
         fail_streak = 0
+        busy_streak = 0
         pending = list(plan.entries)
         if args.shard is not None:
             index, count = args.shard
@@ -1558,15 +1606,43 @@ def main(argv: list[str] | None = None) -> int:
                 break
             print(f"RUN {entry.entry_id}")
             result = run_entry(
-                plan, entry, py=py, force_gpu=args.force_gpu, plan_identity=plan_identity
+                plan,
+                entry,
+                py=py,
+                force_gpu=args.force_gpu,
+                plan_identity=plan_identity,
+                timeout_cap_s=remaining,
             )
             print(json.dumps({"entry_id": entry.entry_id, "status": result.get("status")}))
             n += 1
             if result.get("status") == "busy":
-                print(f"GPU busy; retrying after {args.cooldown_s:.0f}s")
+                # A busy streak must be able to end the run. This loop used to
+                # retry forever without counting anything, so a lost
+                # POTOCOLOM_GPU_IDLE_PCT made every cell refuse, and the driver
+                # then exited 0 at the deadline having produced nothing. Silent
+                # total failure that reports success is the worst outcome
+                # available, so it is now a nonzero exit.
+                busy_streak += 1
+                print(
+                    f"GPU busy {busy_streak}/{args.abort_after_busy}; "
+                    f"retrying after {args.cooldown_s:.0f}s"
+                )
+                if args.abort_after_busy and busy_streak >= args.abort_after_busy:
+                    print(
+                        f"ABORT: {busy_streak} consecutive cells refused as busy. "
+                        "The GPU is held by something else, or "
+                        "POTOCOLOM_GPU_IDLE_PCT is below the desktop's own idle "
+                        "utilisation. Nothing was produced.",
+                        file=sys.stderr,
+                    )
+                    _append_event(
+                        {"event": "abort_busy", "entry_id": entry.entry_id, "streak": busy_streak}
+                    )
+                    return 1
                 time.sleep(args.cooldown_s)
                 pending.insert(0, entry)
                 continue
+            busy_streak = 0
             if result.get("status") in ("failed", "timeout"):
                 fail_streak += 1
                 print(f"cell {result.get('status')} {fail_streak}/{args.abort_after_failed}")

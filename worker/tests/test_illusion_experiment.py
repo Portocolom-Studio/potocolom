@@ -286,6 +286,18 @@ def test_forked_base_is_complete_only_when_every_arm_is(tmp_path: Path) -> None:
     for arm in ("a", "b"):
         for view in (1, 2):
             _textured_png(base / f"arm_{arm}" / f"derived_{view}.png")
+    # Images alone are NOT enough. The review collector reads per-arm manifests,
+    # so an arm without one used to count as complete here and then vanish from
+    # the ratings: an observation paid for in GPU time and dropped silently.
+    assert is_completed_run(base) is False
+
+    write_manifest_atomic(base / "arm_a" / "manifest.json", {"status": "completed"})
+    assert is_completed_run(base) is False, "one arm still has no manifest"
+
+    write_manifest_atomic(base / "arm_b" / "manifest.json", {"status": "running"})
+    assert is_completed_run(base) is False, "an unfinished arm is not complete"
+
+    write_manifest_atomic(base / "arm_b" / "manifest.json", {"status": "completed"})
     assert is_completed_run(base) is True
     # The catastrophe brake has to see the arms too, or every forked cell reads
     # as degenerate and the driver aborts on cell three.

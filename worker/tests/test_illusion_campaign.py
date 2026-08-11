@@ -506,5 +506,58 @@ def test_run_aborts_after_three_consecutive_failures(tmp_path: Path, monkeypatch
     monkeypatch.setattr(campaign, "run_entry", fake_run_entry)
     monkeypatch.setattr(campaign, "git_sha", lambda: plan.git_sha)
 
-    assert campaign.main(["run", "--plan", str(path)]) == 4
+    assert campaign.main(["run", "--plan", str(path), "--allow-dirty"]) == 4
     assert len(attempted) == 3
+
+
+def test_run_refuses_a_dirty_tree_and_aborts_a_busy_streak(tmp_path: Path, monkeypatch) -> None:
+    """Two ways an unattended window can lie about what it did.
+
+    A dirty optimizer under a matching HEAD writes manifests naming the plan's
+    frozen commit, so the evidence claims a provenance it does not have. And a
+    GPU that refuses every cell used to be retried forever, with the driver then
+    exiting 0 at the deadline having produced nothing - a total failure reported
+    as success, which is the worst outcome available.
+    """
+    import worker.illusion_campaign as campaign
+
+    plan = campaign.build_phase_plan(
+        phase="window3",
+        evidence_root=Path("build/window3-test-evidence"),
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+
+    monkeypatch.setattr(campaign, "git_sha", lambda: plan.git_sha)
+
+    monkeypatch.setattr(
+        campaign.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, " M worker/worker/illusions.py\n", ""),
+    )
+    assert campaign.main(["run", "--plan", str(path)]) == 1
+
+    monkeypatch.setattr(
+        campaign.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "", ""),
+    )
+    monkeypatch.setattr(campaign, "run_entry", lambda *a, **k: {"status": "busy"})
+    monkeypatch.setattr(campaign.time, "sleep", lambda _s: None)
+    assert (
+        campaign.main(
+            [
+                "run",
+                "--plan",
+                str(path),
+                "--allow-dirty",
+                "--abort-after-busy",
+                "3",
+                "--cooldown-s",
+                "0",
+            ]
+        )
+        == 1
+    )

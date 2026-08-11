@@ -73,7 +73,15 @@ for ((i = 0; i < slots; i++)); do
 	# -u because the driver's stdout is redirected to a file, where Python
 	# block-buffers it: without this the top-level log stays empty for hours
 	# while the run is perfectly healthy, which reads exactly like a hang.
+	# POTOCOLOM_GPU_IDLE_PCT is forwarded EXPLICITLY, not inherited. Exporting it
+	# above is not enough: when a tmux server is already running, the client's
+	# environment does not reach a new session unless the variable is named here
+	# or in update-environment. Losing it falls back to gpu-lock's 15% default,
+	# which ordinary desktop graphics trips - the stall that already cost two
+	# hours, and which the driver used to survive by retrying `busy` forever and
+	# then exiting 0 at the deadline having run nothing.
 	cmd="cd '$root' && PYTHONPATH=worker POTOCOLOM_GPU_SLOTS='$slots' \
+		POTOCOLOM_GPU_IDLE_PCT='$POTOCOLOM_GPU_IDLE_PCT' \
 		worker/.venv/bin/python -u -m worker.illusion_campaign run \
 		--plan '$plan' --shard '$i/$slots' --deadline-s '$deadline' \
 		>> '$log' 2>&1 & \
