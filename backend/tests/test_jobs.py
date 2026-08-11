@@ -592,6 +592,37 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_reported_failure_does_not_leave_its_upload_behind():
+    """job_failed never calls image_info, so nothing bounds or collects it.
+
+    A worker can upload a master and a thumbnail and then report a failure. No
+    asset row names those objects and the success path never runs, so the
+    terminal failure path is their only collector.
+    """
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-failed-upload")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "failed"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            key = upload_path.rsplit("/api/v1/files/", 1)[-1]
+            assert client.put(upload_path, content=png_bytes()).status_code == 200
+            storage = jobs.get_storage()
+            assert storage.path(key).exists()
+
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no"})
+            poll_until(client, job_id, "failed")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and storage.path(key).exists():
+                time.sleep(0.05)
+            assert not storage.path(key).exists(), "a reported failure kept its upload"
+
+
+@pytest.mark.db
 def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
     """image_info awaits a thread, so the attempt can change under it.
 

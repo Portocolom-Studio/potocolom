@@ -82,6 +82,7 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
     """
     if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("stored object is not a PNG")
+    view = memoryview(data)
     position = 8
     width = height = 0
     chunks = 0
@@ -90,19 +91,25 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
         chunks += 1
         if chunks > MAX_PNG_CHUNKS:
             raise ValueError("stored PNG has too many chunks")
-        length = struct.unpack(">I", data[position:position + 4])[0]
+        length = struct.unpack_from(">I", view, position)[0]
         end = position + 12 + length
         if end > len(data):
             raise ValueError("stored object has a truncated PNG chunk")
-        kind = data[position + 4:position + 8]
-        body = data[position + 8:position + 8 + length]
-        if zlib.crc32(kind + body) & 0xffffffff != struct.unpack(">I", data[end - 4:end])[0]:
+        kind = bytes(view[position + 4:position + 8])
+        # Seed the CRC with the kind and feed the body as a view. Slicing the
+        # body and concatenating it copied the chunk twice, so a 60 MB IDAT
+        # cost about 180 MB live for a 64 MB input, and a few concurrent
+        # completions would then exhaust the API task.
+        checksum = zlib.crc32(view[position + 8:position + 8 + length],
+                              zlib.crc32(kind)) & 0xffffffff
+        if checksum != struct.unpack_from(">I", view, end - 4)[0]:
             raise ValueError("stored object has a corrupt PNG chunk")
         if chunks == 1:
             if kind != b"IHDR" or length != 13:
                 raise ValueError("stored object does not start with a PNG header")
-            width, height = struct.unpack(">II", body[:8])
-            depth, colour, compression, filtering, interlace = body[8:13]
+            header = bytes(view[position + 8:position + 21])
+            width, height = struct.unpack_from(">II", header, 0)
+            depth, colour, compression, filtering, interlace = header[8:13]
             if colour not in _PNG_DEPTHS or depth not in _PNG_DEPTHS[colour]:
                 raise ValueError("stored PNG has an illegal colour type or bit depth")
             if compression != 0 or filtering != 0 or interlace not in (0, 1):

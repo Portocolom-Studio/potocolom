@@ -1230,17 +1230,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             last_progress_at.pop(job_id, None)
             release_job_slot(worker)
             await mark_failed(job_id, "worker output was missing or invalid")
-            # Nothing else collects these: no asset row names them, and the
-            # success path that cleans up earlier attempts never runs. Clean
-            # this attempt and every one before it.
-            rejected_keys = [entry.storage_key, entry.thumb_storage_key]
-            for earlier in range(1, entry.attempt):
-                rejected_keys.extend(storage_keys_for_attempt(entry.user_id, job_id, earlier))
-            for rejected in rejected_keys:
-                try:
-                    await get_storage().delete(rejected)
-                except Exception:
-                    logger.debug("no rejected blob %s to remove for job %s", rejected, job_id)
+            await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
             return
         image_dimensions = (image.width, image.height)
 
@@ -1316,6 +1306,29 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     else:
         reason = str(control.get("reason", "worker reported failure"))
         await mark_failed(job_id, reason)
+        # A reported failure can still have uploaded: nothing downstream names
+        # those objects, so this is their only collector.
+        await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
+
+
+async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> None:
+    """Remove the objects of this attempt and every earlier one.
+
+    Terminal paths are the only collector these have: no asset row names them,
+    and the success path never runs. A worker can upload a master and a
+    thumbnail and then report a failure, and on S3 nothing bounds what it
+    uploaded.
+
+    On a versioned S3 bucket this removes the key, not the bytes: the delete
+    writes a marker and the object survives as a noncurrent version. Issue
+    #252 covers purging by version; until then the reclaim is local-only.
+    """
+    for earlier in range(1, attempt + 1):
+        for key in storage_keys_for_attempt(user_id, job_id, earlier):
+            try:
+                await get_storage().delete(key)
+            except Exception:
+                logger.debug("no blob %s to remove for job %s", key, job_id)
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str) -> None:
