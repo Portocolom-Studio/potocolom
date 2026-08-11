@@ -70,27 +70,33 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   value containing a dollar sign. The API warns at startup when the secret is
   unset or not ASCII.
 - If `FLEET_SECRET` is empty, the API logs a warning and keeps the fleet socket
-  permissive for compatibility with existing installs, but only for workers
-  whose address cannot route from the internet: loopback, private and
-  link-local ranges, which covers the compose network and the rest of your LAN.
-  A worker connecting from a public address is refused with the secret unset,
-  because `docker compose up` publishes port 8080 on all interfaces and an
-  admitted worker is dispatched real prompts and canvas frames. Set
-  `FLEET_SECRET` to run a worker from anywhere else.
+  permissive for compatibility with existing installs, but only for a worker
+  whose address cannot route from the internet: loopback, private, carrier-grade
+  NAT and link-local ranges, and IPv6 ULA. That covers the compose network, a
+  worker on an IPv4 LAN address, and one reached over a mesh VPN such as
+  Tailscale. It does not cover a worker on a global IPv6 address, even on your
+  own LAN, because nothing distinguishes that from a remote one; give such a
+  worker the secret. Set `FLEET_SECRET` to run a worker from anywhere else.
 - That check is a safety net, not a boundary, and it does not cover every path.
   Published IPv4 ports are forwarded by iptables and keep the client's address,
   so a direct IPv4 connection from the internet is refused. A connection
   arriving over IPv6 reaches the IPv4-only container through Docker's userland
   proxy, which opens a fresh connection from the bridge gateway, so the client
   becomes indistinguishable from a worker on the compose network and is
-  admitted. Measured on Docker 29.6.1. A reverse proxy has the same effect for
-  both families. If the host has a public address of either family, set
-  `FLEET_SECRET`; nothing else closes the IPv6 path.
+  admitted. Measured on Docker 29.6.1. Anything else that re-originates traffic
+  has the same effect, including a reverse proxy, rootless or Docker Desktop
+  port forwarding, and load balancers that do not preserve the client source.
+  The check only works where the server sees the original source address.
+- So if the host has a public address of either family, set `FLEET_SECRET`. It is
+  the only thing here that closes the IPv6 path; a host firewall, a network ACL,
+  or publishing the port on a chosen interface rather than all of them will also
+  keep the socket away from the internet, and are worth doing regardless.
 - One combination is unsafe and easy to reach by accident: `FLEET_SECRET` empty
-  together with `FORWARDED_ALLOW_IPS=*`. The second tells uvicorn to believe the
-  `X-Forwarded-For` header from any client, and the address in that header is
-  what the permissive check then sees, so a client can claim to be on your
-  network and register as a worker from anywhere. Setting the wildcard is
+  together with a `FORWARDED_ALLOW_IPS` that trusts everything, which means `*`
+  or a zero-length prefix such as `0.0.0.0/0` or `::/0`. It tells uvicorn to
+  believe the `X-Forwarded-For` header from any client, and the address in that
+  header is what the permissive check then sees, so a client can claim to be on
+  your network and register as a worker from anywhere. Setting a trust-all value is
   ordinary advice when running behind a proxy, so the API warns about the pair
   at startup. Set `FLEET_SECRET` in that setup.
 - Models are JSON manifests in the `models` volume, seeded from

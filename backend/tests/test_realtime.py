@@ -17,6 +17,7 @@ from app.realtime import (
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     fleet_token_allowed,
+    forwarding_trusts_any_peer,
     origin_allowed,
     peer_is_unroutable,
 )
@@ -24,8 +25,8 @@ from app.settings import get_settings
 from app.tables import UsageEvent
 
 # A real peer address rather than the default "testclient", which no ASGI server
-# would ever report: permissive fleet mode decides on that address, and refuses
-# one it cannot parse.
+# would ever report: permissive fleet mode decides on that address, so the tests
+# should present the shape production does.
 client = TestClient(app, client=("127.0.0.1", 50000))
 
 
@@ -132,6 +133,46 @@ def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
     assert worker_id not in realtime.workers
 
 
+def test_a_refused_fleet_handshake_is_never_accepted(monkeypatch):
+    """The refusal has to happen before accept, so it fails as HTTP 403 and no
+    WebSocket ever exists.
+
+    Driving this through the TestClient cannot tell the two apart: exiting a
+    websocket_connect block raises WebSocketDisconnect whether the handshake was
+    refused or accepted and then closed, so moving `await ws.accept()` above the
+    origin and token checks passes every other test here. Call the app directly
+    and look at the first message it sends.
+    """
+    monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "path": "/api/v1/fleet",
+        "raw_path": b"/api/v1/fleet",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"x-fleet-token", b"wrong-secret")],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8000),
+        "subprotocols": [],
+    }
+    asyncio.run(app(scope, receive, send))
+
+    assert sent, "the endpoint sent nothing at all"
+    assert sent[0]["type"] == "websocket.close", sent
+    assert not any(message["type"] == "websocket.accept" for message in sent), sent
+
+
 def test_fleet_token_check_never_raises_on_a_non_ascii_secret(monkeypatch):
     """compare_digest rejects two str arguments unless both are ASCII.
 
@@ -225,9 +266,9 @@ def test_a_public_peer_is_routable(host):
     assert not peer_is_unroutable(FakePeer(host))
 
 
-@pytest.mark.parametrize("host", [None, "", "testclient", "not-an-address", "127.1",
+@pytest.mark.parametrize("host", ["", "testclient", "not-an-address", "127.1",
                                   "2130706433", "8.8.8.8:80", " 8.8.8.8 ", "[::1]"])
-def test_an_address_that_is_absent_or_does_not_parse_counts_as_local(host):
+def test_an_address_that_does_not_parse_counts_as_local(host):
     """A socket always yields a real address, so these come from the test
     harness or from a forged X-Forwarded-For that uvicorn was told to trust.
     Measured: with trusted hosts of 172.18.0.0/16, a peer in that range sending
@@ -237,6 +278,47 @@ def test_an_address_that_is_absent_or_does_not_parse_counts_as_local(host):
     one. The configuration is the exposure, and main.py warns about it.
     """
     assert peer_is_unroutable(FakePeer(host))
+
+
+def test_no_peer_address_at_all_is_refused():
+    """uvicorn reports None for a unix-socket peer, which in practice means it
+    sits behind a proxy: every public request would then look identical to a
+    local one. Such a deployment has to set the secret, so permissive mode
+    refuses rather than admitting the whole internet through one socket.
+    """
+    assert not peer_is_unroutable(FakePeer(None))
+
+
+@pytest.mark.parametrize("host", ["2001::1", "2001:0:53aa:64c:0:5efe:1.2.3.4",
+                                  "2002:c000:204::1"])
+def test_a_transition_address_is_refused_though_it_is_not_global(host):
+    """Teredo 2001::/32 and 6to4 2002::/16 are classified non-global, but they
+    carry traffic to and from the internet through relays, so is_global alone
+    would admit a remote client. NAT64's 64:ff9b::/96 needs no special case: it
+    is already global.
+    """
+    assert not peer_is_unroutable(FakePeer(host))
+    assert not peer_is_unroutable(FakePeer("64:ff9b::8.8.8.8"))
+
+
+@pytest.mark.parametrize("spec", ["*", "0.0.0.0/0", "::/0", "127.0.0.1,0.0.0.0/0",
+                                  " * ", "10.0.0.0/8, ::/0"])
+def test_a_forwarding_setting_that_trusts_everyone_is_recognised(spec):
+    """Measured against uvicorn 0.50.1: each of these makes it accept
+    X-Forwarded-For from a public peer, which forges the address permissive mode
+    checks.
+    """
+    assert forwarding_trusts_any_peer(spec)
+
+
+@pytest.mark.parametrize("spec", ["", "127.0.0.1", "0.0.0.0", "::", "10.0.0.0/8",
+                                  "127.0.0.1,172.18.0.0/16", "some-host"])
+def test_a_narrow_forwarding_setting_is_not_warned_about(spec):
+    """The bare literals 0.0.0.0 and :: are single addresses in uvicorn and trust
+    nothing, so warning about them would cry wolf; an earlier version of this
+    check did exactly that while missing the /0 forms above.
+    """
+    assert not forwarding_trusts_any_peer(spec)
 
 
 def test_permissive_mode_refuses_a_public_peer(monkeypatch):

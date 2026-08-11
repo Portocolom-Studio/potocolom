@@ -19,7 +19,7 @@ from app.gpu_samples import maintain_loop
 from app.jobs import router as jobs_router
 from app.logs import setup_logging
 from app.metrics import router as metrics_router
-from app.realtime import reap_dead_workers
+from app.realtime import forwarding_trusts_any_peer, reap_dead_workers
 from app.realtime import router as realtime_router
 from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
@@ -43,7 +43,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # every peer hands the decision to the client, which can then claim a
         # loopback address and register from anywhere. The pair is what is
         # dangerous, so warn only when both halves are present.
-        if os.environ.get("FORWARDED_ALLOW_IPS", "").strip() in {"*", "0.0.0.0", "::"}:
+        #
+        # The environment variable is what the shipped Docker command uses, and
+        # it is all this can see: a --forwarded-allow-ips flag or a programmatic
+        # Config would set the same thing somewhere unreachable from here, so
+        # this warning can miss a dangerous launch and cannot be the control.
+        if forwarding_trusts_any_peer(os.environ.get("FORWARDED_ALLOW_IPS", "")):
             logging.getLogger("potocolom.realtime").warning(
                 "FORWARDED_ALLOW_IPS trusts forwarded headers from every peer while "
                 "FLEET_TOKEN_KEY is unset: a client can present any address and "

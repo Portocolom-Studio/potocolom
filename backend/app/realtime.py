@@ -67,6 +67,38 @@ def origin_allowed(ws: WebSocket) -> bool:
     return origin.rstrip("/") in allowed
 
 
+# Classified non-global, but reachable from the public internet through relays,
+# so admitting them would contradict what this check is for: Teredo (RFC 4380)
+# and 6to4 (RFC 3056, deprecated by RFC 7526).
+PUBLIC_TRANSITION_NETWORKS = (
+    ipaddress.ip_network("2001::/32"),
+    ipaddress.ip_network("2002::/16"),
+)
+
+
+def forwarding_trusts_any_peer(forwarded_allow_ips: str) -> bool:
+    """Whether this FORWARDED_ALLOW_IPS lets any peer forge its own address.
+
+    uvicorn rewrites the peer address from X-Forwarded-For for every client it
+    trusts, so a setting that trusts everything hands the address this module
+    checks to whoever connects. Measured against uvicorn 0.50.1: "*" trusts
+    every peer, and so does a zero-length prefix, "0.0.0.0/0" for IPv4 or "::/0"
+    for IPv6, in any position of the comma-separated list. The bare literals
+    "0.0.0.0" and "::" are single addresses that trust nothing, so warning about
+    those would be a false alarm.
+    """
+    for entry in forwarded_allow_ips.split(","):
+        candidate = entry.strip()
+        if candidate == "*":
+            return True
+        try:
+            if ipaddress.ip_network(candidate, strict=False).prefixlen == 0:
+                return True
+        except ValueError:
+            continue  # a hostname or junk; uvicorn matches it literally at most
+    return False
+
+
 def peer_is_unroutable(ws: WebSocket) -> bool:
     """Whether the peer address cannot be reached from the public internet.
 
@@ -75,32 +107,41 @@ def peer_is_unroutable(ws: WebSocket) -> bool:
     0.0.0.0, so a host with a public address and no firewall accepted worker
     registrations from anyone. This is that premise checked rather than assumed.
 
-    Loopback, RFC 1918, carrier and link-local ranges, and IPv6 ULA are all
-    non-global, so a compose worker on the bridge network and a LAN worker both
-    still connect.
+    Loopback, RFC 1918, carrier-grade NAT and link-local ranges, and IPv6 ULA
+    are all non-global, so a compose worker on the bridge network and a LAN
+    worker on an IPv4 or ULA address both still connect. A worker on a global
+    IPv6 address does not, even on the same LAN, because nothing distinguishes
+    it from a remote one.
 
-    An absent or unparseable address counts as local, and is logged because it
-    should not happen: a socket always yields a real address, and the test
-    harness's "testclient" is the only ordinary source of anything else. It is
-    not treated as hostile because refusing it would buy nothing. This code
-    never reads X-Forwarded-For, but uvicorn does, and when it is told to trust
-    the forwarding peer it copies that header in verbatim without validating it;
-    an attacker in that position would send a parseable "127.0.0.1" rather than
-    a string that does not parse, so the two branches are equally exposed and
-    the configuration is the thing that has to be fixed (see app/main.py).
+    No peer address at all is refused. A socket always yields one, so this means
+    a transport with no IP peer, and in practice that is uvicorn behind a proxy
+    over a unix socket: there every public request would arrive indistinguishable
+    from a local one. Such a deployment is fronted, and a fronted deployment has
+    to set the secret regardless.
 
-    A reverse proxy replaces every peer with its own private address, so a
-    deployment that fronts the API gains nothing here and must set the secret.
+    An address that does not parse is admitted and logged. This code never reads
+    X-Forwarded-For, but uvicorn does, and when told to trust the forwarding peer
+    it copies that header in verbatim without validating it; an attacker in that
+    position would send a parseable "127.0.0.1" rather than a string that does
+    not parse, so refusing the unparseable form closes nothing. The
+    configuration is what has to be fixed, and app/main.py warns about it.
+
+    A reverse proxy usually replaces the peer with its own address, so a fronted
+    deployment gains little here and must set the secret.
     """
     client = ws.client
     if client is None:
-        return True
+        logger.warning("fleet handshake has no peer address; refusing in permissive mode")
+        return False
     try:
-        return not ipaddress.ip_address(client.host).is_global
+        address = ipaddress.ip_address(client.host)
     except ValueError:
         logger.warning(
             "fleet peer address %r does not parse; treating it as local", client.host)
         return True
+    if address.is_global:
+        return False
+    return not any(address in network for network in PUBLIC_TRANSITION_NETWORKS)
 
 
 def fleet_token_allowed(ws: WebSocket) -> bool:
@@ -373,10 +414,10 @@ async def fleet(ws: WebSocket) -> None:
             # otherwise read "invalid token" and go looking for a secret that
             # was never the problem.
             logger.warning(
-                "fleet handshake refused: FLEET_TOKEN_KEY is unset, so only workers "
-                "on a private network are accepted, and %s is not one; set the "
-                "secret to admit remote workers",
-                ws.client.host if ws.client else "the peer")
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset, so only a worker "
+                "whose address cannot route from the internet is accepted, and %s "
+                "does not qualify; set the secret to admit remote workers",
+                ws.client.host if ws.client else "a peer with no address")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     await ws.accept()

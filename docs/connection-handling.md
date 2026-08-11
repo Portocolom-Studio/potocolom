@@ -172,13 +172,13 @@ Both endpoints refuse a handshake whose `Origin` header is present and not allow
 
 Allowed origins are `PUBLIC_URL` plus anything in `ALLOWED_ORIGINS`. The dev loop needs the latter, because the vite server proxies `/api/v1` and the browser's origin is its own.
 
-This is a boundary control, not authentication. WebSocket handshakes ignore the same-origin policy and send no preflight, so without it any page the operator visits can reach both sockets and the trusted-LAN posture in [README.md](../README.md) does not hold. Worker authentication is separate and covered below.
+This is a boundary control, not authentication. WebSocket handshakes ignore the same-origin policy and send no preflight, so without it any page the operator visits can reach both sockets and the network restriction described in [README.md](../README.md) does not hold. Worker authentication is separate and covered below.
 
 ## Fleet authentication
 
 A worker presents the shared secret as an `X-Fleet-Token` request header on the upgrade. The API compares it against `FLEET_TOKEN_KEY` before accepting, so a missing or wrong token fails the handshake with HTTP 403 and no close code applies. Header names are case-insensitive; send it however you like.
 
-When `FLEET_TOKEN_KEY` is unset the socket stays open and the API warns at startup. That keeps the one-command self-hosted start working and is why the trusted-LAN warning in [README.md](../README.md) still applies to an unkeyed install. The secret is ASCII: it travels in an HTTP header.
+When `FLEET_TOKEN_KEY` is unset the socket stays permissive only for a peer whose address cannot route from the public internet, and the API warns at startup. The restriction does not cover a connection arriving through a proxy or Docker's userland proxy. Issue #245 tracks closing the socket by default. That keeps the one-command self-hosted start working, and [README.md](../README.md) explains why an unkeyed install still needs a private network or a secret. The secret is ASCII: it travels in an HTTP header.
 
 Signed short-lived tokens are the cloud shape and are not implemented here; their minting side lives in the private repository (`docs/repository-boundary.md`).
 
