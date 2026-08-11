@@ -25,12 +25,17 @@ import {
 const SESSION = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 /** The same session with only the final byte changed. */
 const NEARLY = '3f2504e0-4f89-11d3-9a0c-0305e82c3302';
-/**
- * And with only the first byte changed. Both ends are needed: a comparison
- * weakened to any single byte passes as long as every fixture differs at that
- * one byte, so one near-miss fixture cannot pin the whole UUID.
- */
+/** Only the first byte changed. */
 const NEARLY_FIRST = '402504e0-4f89-11d3-9a0c-0305e82c3301';
+/** Only a middle byte changed. */
+const NEARLY_MIDDLE = '3f2504e0-4f89-21d3-9a0c-0305e82c3301';
+/**
+ * The three near-miss fixtures differ from SESSION at the first byte, a middle
+ * byte and the last byte respectively. All three are needed: a comparison
+ * weakened to check only some of those positions passes as long as every
+ * fixture differs at a checked one, so a fixture at each end of the id cannot
+ * pin the bytes between them.
+ */
 
 test('a uuid becomes its sixteen raw bytes', () => {
 	const bytes = uuidBytes(SESSION);
@@ -68,7 +73,7 @@ test('a generated frame yields the image bytes after the header', () => {
 });
 
 test('a frame for a session differing in one byte is not ours', () => {
-	for (const other of [NEARLY, NEARLY_FIRST]) {
+	for (const other of [NEARLY, NEARLY_FIRST, NEARLY_MIDDLE]) {
 		const frame = new Uint8Array(FRAME_HEADER_BYTES + 2);
 		frame[0] = GENERATED_FRAME;
 		frame.set(uuidBytes(other), 1);

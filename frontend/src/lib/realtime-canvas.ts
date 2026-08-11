@@ -1,7 +1,8 @@
 // Wire framing and send policy for the realtime drawing canvas (issue #3).
 // Kept apart from the panel so the rules the canvas depends on are reachable
-// from node --test: the framing, the one-encode-one-send invariant, the
-// cadence band, and what a close code means. The panel owns only the DOM.
+// from node --test: this module holds the framing, the send predicate, the
+// cadence and the opening message. The panel owns the DOM and the session
+// lifecycle.
 //
 // The wire is docs/connection-handling.md: a 17 byte header of one kind byte
 // and the 16 byte session UUID, then a complete WebP image. That header

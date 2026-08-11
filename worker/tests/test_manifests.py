@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from worker.manifests import load_manifests
+from worker.manifests import SIMULATED_MANIFEST, load_manifests
 
 SD_TURBO = {
     "id": "sd-turbo",
@@ -15,6 +15,14 @@ SD_TURBO = {
     "source": "stabilityai/sd-turbo",
     "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
 }
+
+
+def test_simulated_manifest_requires_prompt():
+    """The no-GPU manifest must stay as strict as the shipped ones. A
+    permissive simulated manifest is the easiest contract to build a client
+    against, and a client built against it is refused 4000 by every shipped
+    realtime model."""
+    assert "prompt" in SIMULATED_MANIFEST.parameters["required"]
 
 
 def test_load_manifests_and_wire_shape(tmp_path):

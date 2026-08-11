@@ -5,7 +5,9 @@
 	// message live in $lib/realtime-canvas so they carry tests. What stays here
 	// is not only the DOM: the timer, the changed and encoding flags, the
 	// latest-wins drop policy, the decode loop and the session lifecycle live in
-	// this file and are covered by the browser run rather than by unit tests.
+	// this file. The happy path is covered by a browser run; the failure and
+	// teardown paths (refused sessions, invalid session ids, overlapping
+	// sockets, stale asynchronous work) are not covered by any automated test.
 	//
 	// Out of scope here, by their own issues: the replayable stroke journal and
 	// undo (#54), frame-diff skip and finer cadence adaptation (#42), and
@@ -317,14 +319,25 @@
 				sessionId === forSession &&
 				forSocket.readyState === WebSocket.OPEN
 			) {
-				forSocket.send(canvasFrame(forSession, image));
-				sentFrames += 1;
+				if (sending) {
+					forSocket.send(canvasFrame(forSession, image));
+					sentFrames += 1;
+				} else {
+					// An interrupted arrived while this encode was in flight: the
+					// API has no worker to relay to and would drop the frame. Keep
+					// the revision pending so the resumed handler re-sends it.
+					changed = true;
+				}
 			}
 		} catch {
 			// A failed encode must not end the session silently: keep the
-			// revision pending and let the next tick try again.
-			changed = true;
-			notice = 'app.realtime_canvas.encode_failed';
+			// revision pending and let the next tick try again. A rejection
+			// that outlived its session belongs to a session that is gone and
+			// must not write into the one that replaced it.
+			if (socket === forSocket && sessionId === forSession) {
+				changed = true;
+				notice = 'app.realtime_canvas.encode_failed';
+			}
 		} finally {
 			encoding = false;
 			lastFrameCostMs = performance.now() - started;
@@ -360,7 +373,11 @@
 						bitmap.close();
 					}
 				} catch {
-					notice = 'app.realtime_canvas.decode_failed';
+					// A decode that failed for a session that is gone must not
+					// write its notice into the session that replaced it.
+					if (sessionId === forSession) {
+						notice = 'app.realtime_canvas.decode_failed';
+					}
 				}
 			}
 		} catch {
@@ -384,6 +401,16 @@
 			if (!UUID_RE.test(control.session_id)) {
 				notice = 'app.realtime_canvas.socket_error';
 				connection = 'failed';
+				// Close the refused socket the way disconnect does, so no handler
+				// of the refused session survives. onclose ignores a socket that is
+				// no longer the module's, so clearing socket here keeps the
+				// failure state just set above instead of letting onclose
+				// overwrite it.
+				stopTimer();
+				socket?.close(1000);
+				socket = null;
+				sessionId = null;
+				pendingFrame = null;
 				return;
 			}
 			sessionId = control.session_id;
@@ -457,11 +484,14 @@
 		opening.binaryType = 'arraybuffer';
 		socket = opening;
 		opening.onopen = () => {
-			// openMessage carries the params every realtime manifest declares: the
-			// prompt is required (an open without it is refused 4000 before a
-			// worker is assigned), and strength and steps are in the contract too.
-			// It is built in $lib/realtime-canvas so a test holds it. The params
-			// are sent once at open and cannot change mid-session.
+			// openMessage carries the params every shipped realtime model
+			// declares: the prompt is required (an open without it is refused
+			// 4000 before a worker is assigned), and strength and steps are
+			// declared by every shipped realtime model too. The simulated
+			// manifest declares only the prompt and accepts the other two as
+			// extra properties, which JSON Schema allows. It is built in
+			// $lib/realtime-canvas so a test holds it. The params are sent once
+			// at open and cannot change mid-session.
 			opening.send(
 				openMessage(sessionModelId, sessionPrompt, {
 					strength: sessionStrength,
@@ -474,6 +504,10 @@
 			if (!notice) notice = 'app.realtime_canvas.socket_error';
 		};
 		opening.onclose = (event) => {
+			// A late close from a socket that was replaced must not touch live
+			// state: its session is gone and the current one is owned by the
+			// socket that replaced it.
+			if (opening !== socket) return;
 			stopTimer();
 			socket = null;
 			sessionId = null;
