@@ -109,11 +109,21 @@ export function nextDelayMs(lastFrameCostMs: number): number {
  * The opening control message. Lives here rather than in the panel because the
  * params are a contract with the model's manifest, not a detail of the DOM:
  * every shipped realtime manifest marks the prompt required, and an open
- * without it is refused 4000 before a worker is assigned. A previous version of
- * this panel was built against a permissive fake and never connected.
+ * without it is refused 4000 before a worker is assigned. Strength and steps
+ * are declared by every shipped realtime manifest too, so sending them is
+ * within the contract. A previous version of this panel was built against a
+ * permissive fake and never connected.
  */
-export function openMessage(modelId: string, prompt: string): string {
-	return JSON.stringify({ type: 'open', model_id: modelId, params: { prompt: prompt.trim() } });
+export function openMessage(
+	modelId: string,
+	prompt: string,
+	params: { strength: number; steps: number }
+): string {
+	return JSON.stringify({
+		type: 'open',
+		model_id: modelId,
+		params: { prompt: prompt.trim(), strength: params.strength, steps: params.steps }
+	});
 }
 
 /**

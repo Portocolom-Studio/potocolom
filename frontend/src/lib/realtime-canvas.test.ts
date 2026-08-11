@@ -136,10 +136,18 @@ test('a frame that outruns the slow interval schedules immediately', () => {
 test('the open message carries the prompt every realtime manifest requires', () => {
 	// The regression this whole module exists to prevent: an open with no params
 	// is refused 4000 by the API before a worker is assigned.
-	const message = JSON.parse(openMessage('vega-rt', '  a red house  '));
+	const message = JSON.parse(
+		openMessage('vega-rt', '  a red house  ', { strength: 0.5, steps: 10 })
+	);
 	assert.equal(message.type, 'open');
 	assert.equal(message.model_id, 'vega-rt');
-	assert.deepEqual(message.params, { prompt: 'a red house' });
+	assert.deepEqual(message.params, { prompt: 'a red house', strength: 0.5, steps: 10 });
+});
+
+test('the open message carries the strength and steps passed to it', () => {
+	const message = JSON.parse(openMessage('vega-rt', 'a cat', { strength: 0.25, steps: 30 }));
+	assert.equal(message.params.strength, 0.25);
+	assert.equal(message.params.steps, 30);
 });
 
 test('a refusal fails the session and anything else invites a reconnect', () => {

@@ -18,6 +18,14 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import ParamSliderField from '$lib/components/param-slider-field.svelte';
+	import {
+		formatParamValue,
+		normToValue,
+		stepsSpec,
+		strengthSpec,
+		valueToNorm
+	} from '$lib/model-params';
 	import { modelIsRemoved, studio } from '$lib/studio.svelte';
 	import {
 		FAST_INTERVAL_MS,
@@ -78,7 +86,22 @@
 			(model) => model.capabilities.includes('realtime') && !modelIsRemoved(model.id)
 		)
 	);
-	const modelId = $derived(realtimeModels[0]?.id ?? '');
+	// The chosen model. Not derived: the picker writes it. An effect keeps a
+	// removal or a reorder from leaving it pointing at a model that is not (or
+	// no longer is) a realtime one, while still letting the user pick freely
+	// among the current entries.
+	let modelId = $state('');
+	const selectedModel = $derived(realtimeModels.find((model) => model.id === modelId));
+	const stepsRange = $derived(stepsSpec(selectedModel));
+	const strengthRange = $derived(strengthSpec(selectedModel));
+	// Norm positions for the sliders. The defaults belong to the model, so a
+	// model change re-seeds them rather than carrying old positions into a range
+	// that does not share them.
+	let stepsNorm = $state(0);
+	let strengthNorm = $state(0);
+	let normForModelId = $state('');
+	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
+	const strengthValue = $derived(normToValue(strengthNorm, strengthRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	// Frames only go out while a worker is actually attached. During a reassign
 	// the socket is open and the session is alive, but the API has no worker to
@@ -97,6 +120,27 @@
 		failed: 'app.realtime_canvas.status_failed'
 	} as const;
 	const statusLabel = $derived(t(STATUS_KEYS[connection]));
+
+	$effect(() => {
+		// Fall back to the first realtime model when the chosen one is gone, and
+		// to no model at all when the list is empty. The picker can then write a
+		// modelId that survives until the list changes under it.
+		if (realtimeModels.length === 0) {
+			modelId = '';
+			return;
+		}
+		if (!realtimeModels.some((model) => model.id === modelId)) {
+			modelId = realtimeModels[0].id;
+		}
+	});
+
+	$effect(() => {
+		// Re-seed the slider positions for the model the picker now shows.
+		if (!selectedModel || normForModelId === modelId) return;
+		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
+		strengthNorm = valueToNorm(strengthRange.default, strengthRange);
+		normForModelId = modelId;
+	});
 
 	$effect(() => {
 		if (!drawCanvas) return;
@@ -385,10 +429,12 @@
 		opening.binaryType = 'arraybuffer';
 		socket = opening;
 		opening.onopen = () => {
-			// openMessage carries the prompt every realtime manifest marks
-			// required; an open without it is refused 4000 before a worker is
-			// assigned. It is built in $lib/realtime-canvas so a test holds it.
-			opening.send(openMessage(modelId, prompt));
+			// openMessage carries the params every realtime manifest declares: the
+			// prompt is required (an open without it is refused 4000 before a
+			// worker is assigned), and strength and steps are in the contract too.
+			// It is built in $lib/realtime-canvas so a test holds it. The params
+			// are sent once at open and cannot change mid-session.
+			opening.send(openMessage(modelId, prompt, { strength: strengthValue, steps: stepsValue }));
 		};
 		opening.onmessage = onMessage;
 		opening.onerror = () => {
@@ -473,6 +519,49 @@
 							</p>
 						{/if}
 					</div>
+					<div class="flex flex-col gap-2">
+						<!-- The label lives in the picker branch: with one model there is no
+						     labelable control for its `for` to point at, and a paragraph
+						     cannot carry that id. -->
+						{#if realtimeModels.length > 1}
+							<Label for="realtime-model">{t('app.realtime_canvas.model')}</Label>
+							<select
+								id="realtime-model"
+								bind:value={modelId}
+								disabled={busy}
+								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								{#each realtimeModels as model (model.id)}
+									<option value={model.id}>{model.name}</option>
+								{/each}
+							</select>
+						{:else}
+							<p class="text-sm font-medium">{t('app.realtime_canvas.model')}</p>
+							<p class="text-muted-foreground text-sm">{realtimeModels[0]?.name}</p>
+						{/if}
+					</div>
+					{#if selectedModel}
+						<div class="flex flex-col gap-4">
+							<ParamSliderField
+								id="realtime-strength"
+								label={t('app.realtime_canvas.strength')}
+								bind:norm={strengthNorm}
+								disabled={busy}
+								minLabel={formatParamValue(strengthRange.min, strengthRange)}
+								maxLabel={formatParamValue(strengthRange.max, strengthRange)}
+								valueLabel={formatParamValue(strengthValue, strengthRange)}
+							/>
+							<ParamSliderField
+								id="realtime-steps"
+								label={t('app.realtime_canvas.steps')}
+								bind:norm={stepsNorm}
+								disabled={busy}
+								minLabel={formatParamValue(stepsRange.min, stepsRange)}
+								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+								valueLabel={formatParamValue(stepsValue, stepsRange)}
+							/>
+						</div>
+					{/if}
 					<div class="flex flex-col gap-2">
 						<Label for="realtime-prompt">{t('app.gen.prompt')}</Label>
 						<Input
