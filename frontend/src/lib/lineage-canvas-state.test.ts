@@ -309,6 +309,25 @@ test('failed star mutation rolls back only its generation', () => {
 	assert.deepEqual(rollbackOptimisticStarMutation(['b', 'c'], starB.mutation), ['c']);
 });
 
+test('a new star goes to the front, where the reloaded list will put it', () => {
+	// The API orders favorites newest-first by starred_at. Appending would place
+	// the star correctly until the next reload moved it, so the optimistic order
+	// has to match the server's from the start.
+	assert.deepEqual(beginOptimisticStarMutation(['old', 'older'], 'fresh').starredIds, [
+		'fresh',
+		'old',
+		'older'
+	]);
+	// Restoring an unstar puts the id back where it was, not at either end.
+	const unstarMiddle = beginOptimisticStarMutation(['a', 'b', 'c'], 'b');
+	assert.deepEqual(unstarMiddle.starredIds, ['a', 'c']);
+	assert.deepEqual(rollbackOptimisticStarMutation(['a', 'c'], unstarMiddle.mutation), [
+		'a',
+		'b',
+		'c'
+	]);
+});
+
 test('starred list reload commits only at current epochs with no mutation pending', () => {
 	assert.equal(starredListSnapshotIsCurrent(1, 2, 4, 4, false), false);
 	assert.equal(starredListSnapshotIsCurrent(2, 2, 3, 4, false), false);
