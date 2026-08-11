@@ -391,14 +391,17 @@ async def fleet(ws: WebSocket) -> None:
                 if message.get("bytes") is not None:
                     data = message["bytes"]
                     session = sessions.get(frame_session_id(data))
-                    if session is not None:  # browser may have just closed
+                    # The worker is a network peer too: only the assigned
+                    # worker may relay generated frames for this session.
+                    if (session is not None and session.worker is worker
+                            and data[0] == GENERATED_FRAME):
                         await safe_send(session.browser.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
-                        if session is not None:
+                        if session is not None and session.worker is worker:
                             session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state

@@ -433,9 +433,10 @@ def test_job_dispatch_and_finish_timestamps():
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 job = asyncio.run(read_job())
-                if job.state == "succeeded":
+                if job.state in ("failed", "succeeded"):
                     break
                 time.sleep(0.05)
+            assert job.state == "failed"
             assert job.finished_at is not None
 
 

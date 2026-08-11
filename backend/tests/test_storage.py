@@ -1,4 +1,6 @@
 import asyncio
+import struct
+import zlib
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -7,9 +9,20 @@ from fastapi.testclient import TestClient
 from app.files import MAX_UPLOAD_BYTES
 from app.main import app
 from app.settings import Settings
-from app.storage import LocalStorage, S3Storage, get_storage
+from app.storage import MAX_VERIFY_BYTES, LocalStorage, S3Storage, get_storage
 
 client = TestClient(app)
+
+
+def png_bytes(width=3, height=2):
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = b"".join(b"\0" + b"\0" * (width * 3) for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 def test_local_storage_rejects_escaping_keys(tmp_path):
@@ -32,6 +45,67 @@ def test_local_storage_urls(tmp_path):
     assert parse_qs(urlsplit(download_url).query) == {
         "download": ["potocolom-20260729-142530-castle.png"],
     }
+
+
+def test_local_storage_reads_uploaded_image_info(tmp_path):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    path = storage.path("u/j.png")
+    path.parent.mkdir(parents=True)
+    data = png_bytes()
+    path.write_bytes(data)
+
+    info = asyncio.run(storage.image_info("u/j.png"))
+    assert info is not None
+    assert (info.width, info.height, info.size, info.content_type) == (
+        3, 2, len(data), "image/png",
+    )
+    assert asyncio.run(storage.image_info("u/missing.png")) is None
+    path.write_bytes(b"not an image")
+    assert asyncio.run(storage.image_info("u/j.png")) is None
+    oversized = bytearray(data)
+    struct.pack_into(">I", oversized, 16, 2**31)
+    struct.pack_into(">I", oversized, 29, zlib.crc32(oversized[12:29]) & 0xffffffff)
+    path.write_bytes(oversized)
+    assert asyncio.run(storage.image_info("u/j.png")) is None
+
+
+class _FakeBody:
+    def __init__(self, data):
+        self.data = data
+        self.closed = False
+
+    def read(self, amt=None):
+        # botocore's StreamingBody takes an amt; image_info passes one to bound
+        # what a worker can make the API buffer.
+        return self.data if amt is None else self.data[:amt]
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeS3Client:
+    def __init__(self, data):
+        self.data = data
+
+    def get_object(self, **kwargs):
+        return {
+            "Body": _FakeBody(self.data),
+            "ContentLength": len(self.data),
+            "ContentType": "image/png",
+        }
+
+
+def test_s3_storage_reads_uploaded_image_info():
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    data = png_bytes(5, 7)
+    storage.client = _FakeS3Client(data)
+
+    info = asyncio.run(storage.image_info("u/j.png"))
+    assert info is not None
+    assert (info.width, info.height, info.size, info.content_type) == (
+        5, 7, len(data), "image/png",
+    )
 
 
 def test_s3_storage_presigns_offline():
@@ -105,3 +179,44 @@ def test_upload_ceiling_admits_a_lossless_upscale_master():
     """
     pixels = (1024 * 4) ** 2
     assert MAX_UPLOAD_BYTES >= pixels * 3  # raw RGB, which PNG does not exceed in practice
+
+
+def _png(width, height, idat):
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+
+
+def test_image_info_refuses_a_decompression_bomb(tmp_path):
+    """Validating the output must not be a way to exhaust the API.
+
+    The IDAT of a structurally valid PNG can be a zip bomb: 400 KB on the wire
+    expanded to 831 MB in process before this was bounded, and the parser
+    reported it as a well-formed 16x16 image. The ceiling comes from the
+    declared dimensions, so a genuine image of that size still passes.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    bomb = zlib.compress(b"\x00" * (64 * 1024 * 1024), 9)
+    (tmp_path / "bomb.png").write_bytes(_png(16, 16, bomb))
+    assert len(_png(16, 16, bomb)) < 100_000
+    assert asyncio.run(storage.image_info("bomb.png")) is None
+
+    rows = b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16))
+    (tmp_path / "real.png").write_bytes(_png(16, 16, zlib.compress(rows)))
+    info = asyncio.run(storage.image_info("real.png"))
+    assert (info.width, info.height) == (16, 16)
+
+
+def test_image_info_refuses_an_oversized_object(tmp_path, monkeypatch):
+    # The local PUT route caps uploads, but a presigned S3 PUT carries no size
+    # condition, so the inspection itself has to refuse to buffer the object.
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    rows = b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16))
+    (tmp_path / "big.png").write_bytes(_png(16, 16, zlib.compress(rows)))
+    monkeypatch.setattr("app.storage.MAX_VERIFY_BYTES", 8)
+    assert asyncio.run(storage.image_info("big.png")) is None
+    assert MAX_VERIFY_BYTES > 1024 * 1024

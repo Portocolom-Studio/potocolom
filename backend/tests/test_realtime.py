@@ -211,6 +211,36 @@ def test_session_and_frame_relay_both_directions():
             assert browser_ws.receive_bytes() == generated
 
 
+def test_worker_relay_requires_its_session_and_generated_frames():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-session-owner"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/fleet") as other_worker_ws:
+            other_worker_ws.send_json(hello(worker_id="w-session-other"))
+            assert other_worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = worker_ws.receive_json()
+                session_id = opened["session_id"]
+                session = realtime.sessions[uuid.UUID(session_id)]
+
+                other_worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+                assert not session.ready.is_set()
+                other_worker_ws.send_bytes(
+                    bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"foreign"
+                )
+
+                worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+                assert browser_ws.receive_json()["type"] == "ready"
+                worker_ws.send_bytes(
+                    bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"not-generated"
+                )
+                generated = bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"owned"
+                worker_ws.send_bytes(generated)
+                assert browser_ws.receive_bytes() == generated
+                assert session.worker is realtime.workers["w-session-owner"]
+
+
 @pytest.mark.db
 def test_closed_session_persists_usage_event():
     with TestClient(app) as db_client:

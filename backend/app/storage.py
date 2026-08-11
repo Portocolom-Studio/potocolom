@@ -7,6 +7,8 @@ URL in the cloud, an internal API route (app/files.py) when local.
 
 import asyncio
 import re
+import struct
+import zlib
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -40,8 +42,73 @@ class UploadTarget:
     headers: dict[str, str] = field(default_factory=dict)
 
 
+# Outputs are one generated image; anything larger is not worth reading into
+# the API process to inspect. The local upload route already caps at 20 MB,
+# but a presigned S3 PUT carries no size condition.
+MAX_VERIFY_BYTES = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ImageInfo:
+    width: int
+    height: int
+    size: int
+    content_type: str
+
+
+def _png_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("stored object is not a PNG")
+    position = 8
+    width = height = None
+    idat = bytearray()
+    saw_iend = False
+    while position + 12 <= len(data):
+        length = struct.unpack(">I", data[position:position + 4])[0]
+        end = position + 12 + length
+        if end > len(data):
+            raise ValueError("stored object has a truncated PNG chunk")
+        kind = data[position + 4:position + 8]
+        body = data[position + 8:position + 8 + length]
+        checksum = struct.unpack(">I", data[position + 8 + length:end])[0]
+        if zlib.crc32(kind + body) & 0xffffffff != checksum:
+            raise ValueError("stored object has a corrupt PNG chunk")
+        if kind == b"IHDR":
+            if position != 8 or length != 13:
+                raise ValueError("stored object has no PNG dimensions")
+            width, height = struct.unpack(">II", body[:8])
+        elif kind == b"IDAT":
+            idat.extend(body)
+        elif kind == b"IEND":
+            saw_iend = length == 0
+            break
+        position = end
+    if width is None or height is None or width == 0 or height == 0:
+        raise ValueError("stored PNG has empty dimensions")
+    if width >= 2**31 or height >= 2**31:
+        raise ValueError("stored PNG dimensions exceed the database limit")
+    if not saw_iend or not idat:
+        raise ValueError("stored object is not a complete PNG")
+    # Decompress against a ceiling derived from the header, not to completion.
+    # A few hundred KB of IDAT expands to hundreds of MB, and this runs on the
+    # API event loop for output a worker chose, so an unbounded decompress here
+    # is a denial of service with a small upload behind it. A row cannot exceed
+    # one filter byte plus four channels of 16 bits per pixel.
+    limit = height * (1 + width * 8) + 1
+    stream = zlib.decompressobj()
+    try:
+        produced = len(stream.decompress(bytes(idat), limit))
+    except zlib.error as error:
+        raise ValueError("stored PNG data is not decodable") from error
+    if produced >= limit:
+        raise ValueError("stored PNG expands past its declared dimensions")
+    return width, height
+
+
 class Storage(Protocol):
     async def upload_target(self, key: str) -> UploadTarget: ...
+
+    async def image_info(self, key: str) -> ImageInfo | None: ...
 
     async def url(self, key: str, download_name: str | None = None) -> str: ...
 
@@ -70,6 +137,21 @@ class LocalStorage:
             url=f"{self.worker_url}/api/v1/files/{key}",
             headers={"Content-Type": content_type},
         )
+
+    async def image_info(self, key: str) -> ImageInfo | None:
+        path = self.path(key)
+        try:
+            if path.stat().st_size > MAX_VERIFY_BYTES:
+                return None
+            data = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            width, height = _png_dimensions(data)
+        except ValueError:
+            return None
+        return ImageInfo(width=width, height=height, size=len(data),
+                         content_type=PNG_CONTENT_TYPE)
 
     async def url(self, key: str, download_name: str | None = None) -> str:
         url = f"{self.public_url}/api/v1/files/{key}"
@@ -114,6 +196,39 @@ class S3Storage:
             ExpiresIn=SIGNED_URL_TTL,
         )
         return UploadTarget(url=url, headers={"Content-Type": content_type})
+
+    async def image_info(self, key: str) -> ImageInfo | None:
+        from botocore.exceptions import ClientError
+
+        def read_object() -> tuple[dict, bytes]:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+            body = response["Body"]
+            try:
+                # amt bounds what a worker can make the API buffer: the
+                # presigned PUT constrains bucket, key and content type only.
+                return response, body.read(MAX_VERIFY_BYTES + 1)
+            finally:
+                body.close()
+
+        try:
+            response, data = read_object()
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        if len(data) > MAX_VERIFY_BYTES:
+            return None
+        try:
+            width, height = _png_dimensions(data)
+        except ValueError:
+            return None
+        return ImageInfo(
+            width=width,
+            height=height,
+            size=response.get("ContentLength", len(data)),
+            content_type=response.get("ContentType", PNG_CONTENT_TYPE),
+        )
 
     async def url(self, key: str, download_name: str | None = None) -> str:
         params = {"Bucket": self.bucket, "Key": key}
