@@ -44,6 +44,9 @@
 	const STROKE_WIDTH = 6;
 	const INK = '#111827';
 	const PAPER = '#ffffff';
+	// The shape uuidBytes requires: 32 hex digits with optional hyphens in the
+	// 8-4-4-4-12 positions.
+	const UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
@@ -375,6 +378,14 @@
 			return;
 		}
 		if (control.type === 'ready' && control.session_id) {
+			// A server that sends a session id this client cannot frame is a
+			// server this client cannot talk to. Failing visibly beats throwing
+			// once per frame behind an Active badge.
+			if (!UUID_RE.test(control.session_id)) {
+				notice = 'app.realtime_canvas.socket_error';
+				connection = 'failed';
+				return;
+			}
 			sessionId = control.session_id;
 			connection = 'active';
 			notice = '';
@@ -424,6 +435,23 @@
 		notice = '';
 		userClosing = false;
 		connection = 'connecting';
+		// A new session must not show the previous one's output.
+		sentFrames = 0;
+		renderedFrames = 0;
+		pendingFrame = null;
+		const output = outputCanvas?.getContext('2d');
+		if (output) {
+			output.fillStyle = PAPER;
+			output.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+		}
+		// The open message must carry what the user chose when they pressed
+		// Connect, not whatever the reactive state holds by the time the socket
+		// completes: an effect can rewrite modelId if the model list changes in
+		// between.
+		const sessionModelId = modelId;
+		const sessionPrompt = prompt;
+		const sessionStrength = strengthValue;
+		const sessionSteps = stepsValue;
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const opening = new WebSocket(`${scheme}//${location.host}/api/v1/realtime`);
 		opening.binaryType = 'arraybuffer';
@@ -434,7 +462,12 @@
 			// worker is assigned), and strength and steps are in the contract too.
 			// It is built in $lib/realtime-canvas so a test holds it. The params
 			// are sent once at open and cannot change mid-session.
-			opening.send(openMessage(modelId, prompt, { strength: strengthValue, steps: stepsValue }));
+			opening.send(
+				openMessage(sessionModelId, sessionPrompt, {
+					strength: sessionStrength,
+					steps: sessionSteps
+				})
+			);
 		};
 		opening.onmessage = onMessage;
 		opening.onerror = () => {
@@ -580,7 +613,7 @@
 						<p class="text-muted-foreground text-sm">{t('app.realtime_canvas.no_model')}</p>
 					{/if}
 					{#if notice}
-						<p class="text-destructive text-sm">{t(notice)}</p>
+						<p class="text-destructive text-sm" role="status" aria-live="polite">{t(notice)}</p>
 					{/if}
 					{#if busy}
 						<Button variant="secondary" onclick={disconnect}>
