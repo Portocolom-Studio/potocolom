@@ -95,7 +95,9 @@ test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the 
 			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
 
 dev-db: ## create this checkout's dev database; no-op on the main worktree (make deps first)
-	@if [ -z "$(DB_SUFFIX)" ]; then \
+	@if [ -n "$(DEV_DB_SUPPLIED)" ]; then \
+		echo 'DATABASE_URL is set; this worktree uses that database, not its own'; \
+	elif [ -z "$(DB_SUFFIX)" ]; then \
 		: ; \
 	else \
 		i=0; \
@@ -169,17 +171,25 @@ endif
 override API_PORT := $(or $(strip $(API_PORT)),$(patsubst API_PORT=%,%,$(filter API_PORT=%,$(CHECKOUT_PORTS))))
 override WEB_PORT := $(or $(strip $(WEB_PORT)),$(patsubst WEB_PORT=%,%,$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
 override DB_SUFFIX := $(patsubst DB_SUFFIX=%,%,$(filter DB_SUFFIX=%,$(CHECKOUT_PORTS)))
-# Resolved once so api, dev-start, dev-restart and cleanup-failed agree, and
-# so an exported or command-line DATABASE_URL survives (the alternate-port
-# workflow in docs/local-development.md).
-DEV_DATABASE_URL := $(or $(strip $(DATABASE_URL)),postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX))
+# Supply the derived database only when the developer exported nothing (the
+# alternate-port workflow in docs/local-development.md exports their own). Make
+# expands an environment value recursively and the recipe shell expands it
+# again, so a password containing $ arrives truncated if the value is passed
+# through a variable; an inherited one make never touches survives byte-exact.
+# Target-specific, never global: verify-backend must not see a dev database,
+# because conftest.py takes DATABASE_URL with setdefault and the whole suite
+# would then run against it.
+DEV_DB_SUPPLIED := $(if $(strip $(value DATABASE_URL)),1,)
+ifeq (,$(DEV_DB_SUPPLIED))
+api dev-start dev-restart cleanup-failed: export DATABASE_URL := \
+	postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)
+endif
 WORKER ?= rocm
 
 api: dev-db ## API server on the configured port; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
 		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
 		PUBLIC_URL=http://localhost:$(API_PORT) \
-		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT)
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
@@ -220,12 +230,10 @@ dev-stop: ## stop background API, frontend, and worker
 
 dev-start: dev-db ## start API, frontend, and worker in the background (make deps first)
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
-		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" start
 
 dev-restart: dev-db ## restart background API, frontend, and worker
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
-		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" restart
 
 dev-status: ## show pid files, ports, local workers, and /api/v1/models
@@ -267,7 +275,7 @@ ci-runner-status: ## show self-hosted runner service status
 	fi
 
 cleanup-failed: dev-db ## remove failed generation jobs from the database
-	DATABASE_URL="$(DEV_DATABASE_URL)" backend/.venv/bin/python scripts/cleanup-failed-jobs.py
+	backend/.venv/bin/python scripts/cleanup-failed-jobs.py
 
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py --api http://localhost:$(API_PORT) "$(PROMPT)"

@@ -113,7 +113,7 @@ cmd_start() {
 
 	echo "Starting API on :$API_PORT..."
 	start_one api "$DEV_DIR/api.pid" \
-		"cd \"$REPO/backend\" && STORAGE_LOCAL_PATH=\"$REPO/data\" \
+		"cd $(printf '%q' "$REPO/backend") && STORAGE_LOCAL_PATH=$(printf '%q' "$REPO/data") \
 		ALLOWED_ORIGINS=\"http://localhost:$WEB_PORT\" \
 		PUBLIC_URL=\"http://localhost:$API_PORT\" \
 		DATABASE_URL=$(printf '%q' "$DATABASE_URL") \
@@ -121,22 +121,22 @@ cmd_start() {
 
 	echo "Starting frontend on :$WEB_PORT..."
 	start_one web "$DEV_DIR/web.pid" \
-		"cd \"$REPO/frontend\" && \
+		"cd $(printf '%q' "$REPO/frontend") && \
 		exec npm run dev -- --host 127.0.0.1 --port $WEB_PORT"
 
 	if [[ "$WORKER" == "rocm" || "$WORKER" == "cuda" ]]; then
 		echo "Starting worker ($WORKER, MODELS_DIR=models)..."
 		start_one worker "$DEV_DIR/worker.pid" \
-			"cd \"$REPO/worker\" && MODELS_DIR=models DEVICE=$WORKER \
+			"cd $(printf '%q' "$REPO/worker") && MODELS_DIR=models DEVICE=$WORKER \
 			API_URL=ws://127.0.0.1:$API_PORT/api/v1/fleet \
-			WORKER_LOCK=\"$DEV_DIR/worker.lock\" \
+			WORKER_LOCK=$(printf '%q' "$DEV_DIR/worker.lock") \
 			exec .venv/bin/python -m worker"
 	elif [[ "$WORKER" == "sim" ]]; then
 		echo "Starting worker (simulated engine)..."
 		start_one worker "$DEV_DIR/worker.pid" \
-			"cd \"$REPO/worker\" && \
+			"cd $(printf '%q' "$REPO/worker") && \
 			API_URL=ws://127.0.0.1:$API_PORT/api/v1/fleet \
-			WORKER_LOCK=\"$DEV_DIR/worker.lock\" \
+			WORKER_LOCK=$(printf '%q' "$DEV_DIR/worker.lock") \
 			exec .venv/bin/python -m worker"
 	fi
 
