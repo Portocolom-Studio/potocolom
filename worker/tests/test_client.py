@@ -71,6 +71,88 @@ def test_latest_input_wins():
     assert socket.sent[0][FRAME_HEADER_BYTES:] == b"third"
 
 
+class RecordingSocket:
+    """Plays the API role for serve_connection and records what it sent."""
+
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.sent = []
+        self.close_code = None
+
+    async def send(self, data):
+        self.sent.append(data)
+
+    async def recv(self):
+        return json.dumps({"type": "registered"})
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.messages:
+            raise StopAsyncIteration
+        return self.messages.pop(0)
+
+    async def close(self, code=1000):
+        self.close_code = code
+
+
+def drive_update_session(monkeypatch, messages):
+    """Run serve_connection through the given API messages, recording runners.
+
+    SessionRunner is replaced by a subclass that records its instances, so the
+    test can inspect the params the update_session handler replaced.
+    """
+    created = []
+
+    class RecordingRunner(SessionRunner):
+        def __init__(self, *args):
+            created.append(self)
+            super().__init__(*args)
+
+    monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
+    socket = RecordingSocket(messages)
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-update"),
+                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    return socket, created
+
+
+def test_update_session_replaces_params_and_keeps_seed(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house"}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    seed = runner.params["seed"]
+    assert isinstance(seed, int)
+    # The update replaced the prompt and left the open's seed untouched: an
+    # update that re-rolled it would make the image jump on the next frame.
+    assert runner.params == {"prompt": "a blue house", "seed": seed}
+    assert socket.close_code is None
+
+
+def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "update_session",
+                    "session_id": str(uuid.uuid4()),
+                    "params": {"prompt": "a blue house"}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    seed = runner.params["seed"]
+    # The unknown session was ignored, so the live runner kept its params and
+    # the connection stayed open instead of closing 4000.
+    assert runner.params == {"prompt": "a red house", "seed": seed}
+    assert socket.close_code is None
+
+
 def test_malformed_control_closes_and_returns_for_reconnect():
     class ScriptedSocket:
         def __init__(self, messages):

@@ -19,6 +19,7 @@ import {
 	parseGeneratedFrame,
 	shouldSendFrame,
 	stateForCloseCode,
+	updateParamsMessage,
 	uuidBytes
 } from './realtime-canvas.ts';
 
@@ -159,6 +160,18 @@ test('the open message carries the structure strength and steps passed to it', (
 	);
 	assert.equal(message.params.structure_strength, 0.25);
 	assert.equal(message.params.steps, 30);
+});
+
+test('the update message carries a subset of the session params', () => {
+	const message = JSON.parse(updateParamsMessage({ structure_strength: 0.3 }));
+	assert.equal(message.type, 'update_params');
+	assert.deepEqual(message.params, { structure_strength: 0.3 });
+});
+
+test('the update message trims the prompt exactly like the open message', () => {
+	const message = JSON.parse(updateParamsMessage({ prompt: '  a blue house  ', steps: 6 }));
+	assert.equal(message.params.prompt, 'a blue house');
+	assert.equal(message.params.steps, 6);
 });
 
 test('a refusal fails the session and anything else invites a reconnect', () => {

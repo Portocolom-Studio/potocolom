@@ -126,13 +126,14 @@ class SessionRunner:
     def __init__(self, session_id: uuid.UUID, ws, engine: Engine, manifest: Manifest,
                  params: dict):
         self.session_id = session_id
+        self.params = params
         self.pending: bytes | None = None
         self.arrived = asyncio.Event()
         self.dropped = 0
         self.frames = 0
         self.gpu_ms = 0
         self.started_at = time.monotonic()
-        self._task = asyncio.create_task(self._run(ws, engine, manifest, params))
+        self._task = asyncio.create_task(self._run(ws, engine, manifest))
 
     def submit(self, payload: bytes) -> None:
         if self.pending is not None:
@@ -140,7 +141,7 @@ class SessionRunner:
         self.pending = payload
         self.arrived.set()
 
-    async def _run(self, ws, engine: Engine, manifest: Manifest, params: dict) -> None:
+    async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
         while True:
             await self.arrived.wait()
             self.arrived.clear()
@@ -148,7 +149,9 @@ class SessionRunner:
             if payload is None:  # unreachable today; narrows the Optional for mypy
                 continue
             try:
-                generated = await engine.frame(manifest, params, payload)
+                # self.params is read per frame, so an update_session lands on
+                # the next frame while one in flight finishes on the old dict.
+                generated = await engine.frame(manifest, self.params, payload)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -381,6 +384,29 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             ensure_seed(manifest.with_defaults(control.get("params") or {})))
                         await ws.send(json.dumps({"type": "session_ready",
                                                   "session_id": control["session_id"]}))
+                    elif control["type"] == "update_session":
+                        # Ignored for an unknown session rather than raised:
+                        # the API may send an update for a session this
+                        # worker has just torn down, and the teardown and the
+                        # update cross on the wire without either side being
+                        # wrong.
+                        runner = runners.get(uuid.UUID(control["session_id"]))
+                        if runner is not None:
+                            # The API already merged the update over the
+                            # session's open params, so the message carries
+                            # the full set and replacing is the whole change:
+                            # re-running with_defaults would reset an explicit
+                            # choice to the manifest's default. The seed is
+                            # the one value the API cannot reconstruct, so it
+                            # is carried over from the params being replaced:
+                            # ensure_seed ran at open, and re-rolling it would
+                            # make the image jump on the next frame instead of
+                            # staying stable across a prompt change.
+                            params = dict(control["params"])
+                            assert isinstance(runner.params.get("seed"), int), \
+                                "a live session always carries a seed from open"
+                            params["seed"] = runner.params["seed"]
+                            runner.params = params
                     elif control["type"] == "close_session":
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
                         if runner is not None:

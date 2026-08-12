@@ -38,6 +38,7 @@
 		parseGeneratedFrame,
 		shouldSendFrame,
 		stateForCloseCode,
+		updateParamsMessage,
 		type ConnectionState
 	} from '$lib/realtime-canvas';
 
@@ -62,6 +63,13 @@
 	let notice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
+	// The params the current session last applied, from the open message and
+	// from params_updated confirmations. The Update button and the slider
+	// debounce compare against these, so they reflect what the worker runs,
+	// not what the inputs hope for.
+	let appliedPrompt = $state('');
+	let appliedStructure = $state(0);
+	let appliedSteps = $state(0);
 
 	let socket: WebSocket | null = null;
 	let sessionId: string | null = null;
@@ -81,6 +89,12 @@
 	let strokePointer: number | null = null;
 	let lastPoint: { x: number; y: number } | null = null;
 	let userClosing = false;
+	// Slider updates are debounced so a drag does not send one message per
+	// pixel: the timer is re-armed on every movement and fires once the slider
+	// has settled, mirroring how armCapture/stopTimer time the capture loop.
+	const SLIDER_UPDATE_MS = 300;
+	let structureTimer: ReturnType<typeof setTimeout> | null = null;
+	let stepsTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// The tool in use on the canvas. A forward contract for issue #54's
 	// replayable stroke journal: for its replay to stay faithful, erase must be
@@ -124,6 +138,9 @@
 	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
+	// The prompt differs from what the session last applied; whitespace around
+	// it does not count, because openMessage and updateParamsMessage both trim.
+	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
 
 	const STATUS_KEYS = {
 		idle: 'app.realtime_canvas.status_idle',
@@ -157,6 +174,35 @@
 		normForModelId = modelId;
 	});
 
+	// Each effect clears the slider's timer on any of its dependencies
+	// changing and re-arms it, so a drag that keeps moving never sends: the
+	// update goes out once the value has held still for SLIDER_UPDATE_MS.
+	// While the session is not connected nothing is armed, and a value that
+	// already applied never sends, so reconnects and confirmations stay quiet.
+	$effect(() => {
+		if (structureTimer !== null) {
+			clearTimeout(structureTimer);
+			structureTimer = null;
+		}
+		if (!connected || structureValue === appliedStructure) return;
+		structureTimer = setTimeout(() => {
+			structureTimer = null;
+			sendUpdate({ structure_strength: structureValue });
+		}, SLIDER_UPDATE_MS);
+	});
+
+	$effect(() => {
+		if (stepsTimer !== null) {
+			clearTimeout(stepsTimer);
+			stepsTimer = null;
+		}
+		if (!connected || stepsValue === appliedSteps) return;
+		stepsTimer = setTimeout(() => {
+			stepsTimer = null;
+			sendUpdate({ steps: stepsValue });
+		}, SLIDER_UPDATE_MS);
+	});
+
 	$effect(() => {
 		if (!drawCanvas) return;
 		paint = drawCanvas.getContext('2d');
@@ -176,6 +222,8 @@
 	$effect(() => () => {
 		userClosing = true;
 		stopTimer();
+		if (structureTimer !== null) clearTimeout(structureTimer);
+		if (stepsTimer !== null) clearTimeout(stepsTimer);
 		socket?.close(1000);
 		socket = null;
 	});
@@ -275,6 +323,23 @@
 	function stopTimer(): void {
 		if (timer !== null) clearTimeout(timer);
 		timer = null;
+	}
+
+	/**
+	 * Send an update_params message for a subset of the session's params.
+	 * Only while the session is live and the socket is open: everything else
+	 * silently drops, and the params_updated confirmation records what the
+	 * API actually merged rather than what was sent.
+	 */
+	function sendUpdate(params: Record<string, string | number>): void {
+		if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+		socket.send(updateParamsMessage(params));
+	}
+
+	function applyPrompt(): void {
+		if (!promptDirty) return;
+		// updateParamsMessage trims, so the untrimmed text is sent.
+		sendUpdate({ prompt });
 	}
 
 	function armCapture(delay: number): void {
@@ -399,7 +464,12 @@
 	}
 
 	function handleControl(text: string): void {
-		let control: { type?: string; session_id?: string; code?: number };
+		let control: {
+			type?: string;
+			session_id?: string;
+			code?: number;
+			params?: unknown;
+		};
 		try {
 			control = JSON.parse(text) as typeof control;
 		} catch {
@@ -441,7 +511,23 @@
 			changed = true;
 			idleTicks = 0;
 			armCapture(FAST_INTERVAL_MS);
+		} else if (control.type === 'params_updated' && control.params) {
+			// Record what actually applied. A rejected update leaves these
+			// untouched, so the Update button and the slider debounce keep
+			// comparing against the last confirmed params rather than optimism.
+			const params = control.params as {
+				prompt?: unknown;
+				structure_strength?: unknown;
+				steps?: unknown;
+			};
+			if (typeof params.prompt === 'string') appliedPrompt = params.prompt;
+			if (typeof params.structure_strength === 'number') {
+				appliedStructure = params.structure_strength;
+			}
+			if (typeof params.steps === 'number') appliedSteps = params.steps;
 		} else if (control.type === 'error') {
+			// A rejected update reports through the notice and leaves the
+			// session alone; the socket stays open either way.
 			notice = refusalNotice(control.code ?? 0);
 		}
 	}
@@ -501,8 +587,12 @@
 			// steps are declared by every shipped realtime model too. The
 			// simulated manifest declares only the prompt and accepts the other
 			// two as extra properties, which JSON Schema allows. It is built in
-			// $lib/realtime-canvas so a test holds it. The params are sent once
-			// at open and cannot change mid-session.
+			// $lib/realtime-canvas so a test holds it. What opens is what is
+			// applied, so the same values seed the applied state that the
+			// Update button and the slider debounce compare against.
+			appliedPrompt = sessionPrompt.trim();
+			appliedStructure = sessionStructure;
+			appliedSteps = sessionSteps;
 			opening.send(
 				openMessage(sessionModelId, sessionPrompt, {
 					structure_strength: sessionStructure,
@@ -635,7 +725,6 @@
 								id="realtime-structure"
 								label={t('app.realtime_canvas.structure')}
 								bind:norm={structureNorm}
-								disabled={busy}
 								minLabel={formatParamValue(structureRange.min, structureRange)}
 								maxLabel={formatParamValue(structureRange.max, structureRange)}
 								valueLabel={formatParamValue(structureValue, structureRange)}
@@ -644,7 +733,6 @@
 								id="realtime-steps"
 								label={t('app.realtime_canvas.steps')}
 								bind:norm={stepsNorm}
-								disabled={busy}
 								minLabel={formatParamValue(stepsRange.min, stepsRange)}
 								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
 								valueLabel={formatParamValue(stepsValue, stepsRange)}
@@ -653,12 +741,17 @@
 					{/if}
 					<div class="flex flex-col gap-2">
 						<Label for="realtime-prompt">{t('app.gen.prompt')}</Label>
-						<Input
-							id="realtime-prompt"
-							bind:value={prompt}
-							disabled={busy}
-							placeholder={t('app.realtime_canvas.prompt_placeholder')}
-						/>
+						<div class="flex gap-2">
+							<Input
+								id="realtime-prompt"
+								bind:value={prompt}
+								class="min-w-0"
+								placeholder={t('app.realtime_canvas.prompt_placeholder')}
+							/>
+							<Button variant="outline" size="sm" disabled={!promptDirty} onclick={applyPrompt}>
+								{t('app.realtime_canvas.update')}
+							</Button>
+						</div>
 						<p class="text-muted-foreground text-xs">
 							{busy
 								? t('app.realtime_canvas.prompt_locked')

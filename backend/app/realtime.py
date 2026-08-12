@@ -23,7 +23,12 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from app.manifests import Manifest, parse_manifests, validate_params
+from app.manifests import (
+    Manifest,
+    parse_manifests,
+    validate_param_update,
+    validate_params,
+)
 from app.settings import get_settings
 from app import db
 
@@ -620,8 +625,41 @@ async def realtime(ws: WebSocket) -> None:
                     if session.worker is not None:  # a dead worker means reassign is in flight
                         await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
-                    if parse_control(message["text"])["type"] == "close":
+                    control = parse_control(message["text"])
+                    if control["type"] == "close":
                         break
+                    if control["type"] == "update_params":
+                        params = control.get("params")
+                        if not isinstance(params, dict):
+                            raise ProtocolError("params must be an object")
+                        manifest = registry.available().get(session.model_id)
+                        if manifest is not None:
+                            invalid = validate_param_update(manifest, params)
+                            if invalid is not None:
+                                # A bad update is a recoverable client mistake,
+                                # unlike a bad open, which happens before a
+                                # session exists: report it and keep the socket.
+                                await safe_send(ws.send_json({
+                                    "type": "error",
+                                    "code": CLOSE_PROTOCOL_VIOLATION,
+                                    "message": invalid,
+                                }))
+                                continue
+                        # Later keys win, so a second update of the same
+                        # parameter overwrites the first. The merged dict is
+                        # what the worker replaces its params with, and what
+                        # the browser confirms as actually applied.
+                        session.params.update(params)
+                        if session.worker is not None:
+                            await safe_send(session.worker.ws.send_json({
+                                "type": "update_session",
+                                "session_id": str(session.id),
+                                "params": session.params,
+                            }))
+                        await safe_send(ws.send_json({
+                            "type": "params_updated",
+                            "params": session.params,
+                        }))
             except ProtocolError:
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break

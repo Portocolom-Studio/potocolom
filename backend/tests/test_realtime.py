@@ -431,6 +431,96 @@ def test_open_carrying_the_required_prompt_opens_the_session():
             assert browser_ws.receive_json()["type"] == "ready"
 
 
+def test_update_params_reaches_the_worker_and_browser():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-ok", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            updated = worker_ws.receive_json()
+            # The merged params: the update won because later keys win.
+            assert updated == {"type": "update_session",
+                               "session_id": opened["session_id"],
+                               "params": {"prompt": "a blue house"}}
+            acknowledged = browser_ws.receive_json()
+            assert acknowledged == {"type": "params_updated",
+                                    "params": {"prompt": "a blue house"}}
+
+            # A subset update merges instead of replacing the whole dict.
+            browser_ws.send_json({"type": "update_params", "params": {}})
+            # An empty update is a client bug: reported, not applied.
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            assert "empty" in refused["message"]
+
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.params == {"prompt": "a blue house"}
+
+
+def test_invalid_update_params_keeps_the_session_open():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-bad", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params", "params": {"prompt": 123}})
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            assert realtime.sessions[uuid.UUID(opened["session_id"])].params == {
+                "prompt": "a red house"
+            }
+
+            # The socket survived the rejection: a frame still flows, and the
+            # session closes normally afterwards.
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-alive"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            closed = worker_ws.receive_json()
+            assert closed["type"] == "close_session"
+
+
+def test_malformed_update_params_closes_as_a_protocol_violation():
+    """A wire-shape violation is not a recoverable client mistake: params that
+    are not an object are parsed with the same control parsing as everything
+    else, so they close 4000 like any other malformed message."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-mangled", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params", "params": "not an object"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 4000
+
+
 def test_session_and_frame_relay_both_directions():
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello())

@@ -116,8 +116,8 @@ export function nextDelayMs(lastFrameCostMs: number): number {
  * the scale it sends is the conditioning scale, `structure_strength`,
  * declared by every shipped realtime manifest. The other strength the
  * manifest still declares belongs to queued image-to-image jobs, where the
- * drawing is fed back in; this path ignores it. The params are sent once at
- * open and cannot change mid-session.
+ * drawing is fed back in; this path ignores it. The params open the session;
+ * changes land through updateParamsMessage.
  */
 export function openMessage(
 	modelId: string,
@@ -133,6 +133,18 @@ export function openMessage(
 			steps: params.steps
 		}
 	});
+}
+
+/**
+ * The update control message carrying a subset of the session's params.
+ * Lives here beside openMessage for the same reason: the params are a
+ * contract with the model's manifest. The prompt is trimmed exactly as
+ * openMessage trims it, so the two cannot disagree about whitespace.
+ */
+export function updateParamsMessage(params: Record<string, string | number>): string {
+	const update = { ...params };
+	if (typeof update.prompt === 'string') update.prompt = update.prompt.trim();
+	return JSON.stringify({ type: 'update_params', params: update });
 }
 
 /**

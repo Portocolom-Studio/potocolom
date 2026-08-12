@@ -119,6 +119,53 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
     return None
 
 
+def validate_param_update(manifest: Manifest, params: dict) -> str | None:
+    """Return a validation error message, or None when an update is acceptable.
+
+    The same validation as validate_params, except that nothing is required:
+    an update carries a subset of the session's params, so the schema is the
+    manifest's with the `required` list removed rather than a second schema
+    the two could drift from. An empty update is a client bug, not a no-op.
+    """
+    if not params:
+        return "params update is empty"
+    if not json_finite(params):
+        return "params are too deeply nested or contain a value JSON storage cannot hold"
+    try:
+        # dumps walks the schema too, so it raises before check_schema can.
+        # The required list is dropped so a subset can validate; everything
+        # else about the schema, bounds and extras included, still applies.
+        schema = dict(manifest.parameters)
+        schema.pop("required", None)
+        schema_json = json.dumps(schema, sort_keys=True)
+        validator = _params_validator(schema_json)
+    except jsonschema.SchemaError:
+        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
+                       manifest.id)
+        return None
+    except RecursionError:
+        # check_schema walks the schema, so it raises this before validate can.
+        return "schema nests too deeply to validate"
+    try:
+        validator.validate(params)
+    except jsonschema.ValidationError as error:
+        return error.message
+    except RecursionError:
+        # Returning None here would mean "params acceptable", so a schema too
+        # deep to walk would silently skip the only validation gate the API
+        # has. Fail closed: not validated is not the same as valid.
+        return "params or schema nest too deeply to validate"
+    except Unresolvable:
+        # A $ref naming something the schema does not define raises past
+        # ValidationError, so it would reach the request handler as a 500.
+        # A manifest is worker-supplied, not user-supplied, so treat it like
+        # the invalid-schema case above and blame the log, not the caller.
+        logger.warning("model %s has an unusable schema reference; "
+                       "accepting params unchecked", manifest.id)
+        return None
+    return None
+
+
 def parse_manifests(raw: object) -> list[Manifest]:
     """Validate the hello models field; ValueError means protocol violation."""
     if not isinstance(raw, list):
