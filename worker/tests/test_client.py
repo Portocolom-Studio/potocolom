@@ -203,6 +203,52 @@ def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
     assert socket.close_code is None
 
 
+def test_open_session_for_an_unpreparable_model_refuses_without_a_runner(
+        monkeypatch):
+    class RefusingEngine(SimulatedEngine):
+        async def prepare_realtime(self, manifest):
+            return False
+
+    session_id = str(uuid.uuid4())
+    created = []
+
+    class RecordingRunner(SessionRunner):
+        def __init__(self, *args):
+            created.append(self)
+            super().__init__(*args)
+
+    monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
+    socket = RecordingSocket([
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+    ])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-refuse"),
+                                 [SIMULATED_MANIFEST], RefusingEngine(0.01)))
+    refused = json.loads(socket.sent[-1])
+    assert refused["type"] == "session_refused"
+    assert refused["session_id"] == session_id
+    # The reason names the model for the operator reading the API log.
+    assert "sd-sim" in refused["reason"]
+    assert created == []  # no runner exists for a session that cannot run
+    assert socket.close_code is None  # the connection survives the refusal
+
+
+def test_open_session_sends_session_ready_when_the_model_can_be_prepared():
+    session_id = str(uuid.uuid4())
+    socket = RecordingSocket([
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+    ])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-ready"),
+                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    messages = [json.loads(m) for m in socket.sent]
+    ready = next(
+        m for m in messages
+        if m.get("type") == "session_ready" and m["session_id"] == session_id
+    )
+    assert ready["session_id"] == session_id
+
+
 def test_malformed_control_closes_and_returns_for_reconnect():
     class ScriptedSocket:
         def __init__(self, messages):
@@ -427,6 +473,75 @@ def test_session_runner_observes_each_rendered_frame_for_its_model():
     asyncio.run(scenario())
     assert engine.observed == [("vega-rt", 200), ("vega-rt", 200)]
     assert len(socket.sent) == 2
+
+
+def test_three_consecutive_frame_failures_end_the_session():
+    """A rung that changed under a live session makes every frame raise; a
+    session that keeps failing must end and say so, or the browser would sit
+    on an Active session forever (issue #270)."""
+    socket = FakeSocket()
+
+    class FailingEngine(SimulatedEngine):
+        async def frame(self, manifest, params, payload):
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, FailingEngine(0.01),
+                               manifest, {"prompt": "x"})
+        for _ in range(3):
+            runner.submit(b"canvas")
+            await asyncio.sleep(0.03)
+        assert runner._task.done(), "three consecutive failures must end the session"
+        refused = json.loads(socket.sent[-1])
+        assert refused["type"] == "session_refused"
+        assert refused["session_id"] == str(runner.session_id)
+        assert "vega-rt" in refused["reason"]
+        # A later frame changes nothing: the loop has ended.
+        runner.submit(b"canvas")
+        await asyncio.sleep(0.03)
+        assert len(socket.sent) == 1
+
+    asyncio.run(scenario())
+
+
+def test_two_failures_then_a_success_reset_the_failure_count():
+    """A single bad frame must not end a session, and a success means the
+    next failure starts the count over: only consecutive failures count."""
+    socket = FakeSocket()
+
+    class RecoveringEngine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+            self.frames = 0
+
+        async def frame(self, manifest, params, payload):
+            self.frames += 1
+            if self.frames == 3:  # one success in the middle resets the count
+                return GeneratedFrame(payload, 100)
+            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, RecoveringEngine(),
+                               manifest, {"prompt": "x"})
+        for _ in range(3):
+            runner.submit(b"canvas")
+            await asyncio.sleep(0.03)
+        assert not runner._task.done(), "two failures and a success must not end it"
+        assert len(socket.sent) == 1  # one rendered frame, no refusal
+        # Three more consecutive failures after the success must end the
+        # session: the success reset the count.
+        for _ in range(3):
+            runner.submit(b"canvas")
+            await asyncio.sleep(0.03)
+        assert runner._task.done()
+        refused = json.loads(socket.sent[-1])
+        assert refused["type"] == "session_refused"
+
+    asyncio.run(scenario())
 
 
 def test_heartbeat_advertises_only_frames_at_default_steps():

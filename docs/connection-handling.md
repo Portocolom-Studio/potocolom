@@ -33,6 +33,7 @@ Fleet connection, worker to API:
 | `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). Each manifest may carry `realtime_p95_ms` (the measured single-frame p95 on this worker's card, absent until something has measured it) and `studio_capabilities` (narrows what the studio offers, absent when every capability is offered). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
 | `heartbeat` | `slots_in_use`, `loaded_models`, `frame_p95_ms`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. `frame_p95_ms` maps each model id to that worker's measured single-frame p95 on that card; the key is always present and is an empty object when nothing has been measured, and the API overwrites the hello value with it. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
+| `session_refused` | `session_id`, `reason` | the model could not be made fully resident for realtime, sent at open (no runner was created and no slot taken) or mid-session (the live session ended, issue #270). The API fails the open or closes the live session immediately, instead of waiting out the ready timeout or leaving the browser on an Active session that never renders. An API that does not know this message ignores it and falls back to the ready timeout, which is why it is safe to add |
 | `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
 | `job_progress` | `job_id`, `progress`, `dispatch_token` | fraction of denoising steps done |
 | `job_done` | `job_id`, `dispatch_token`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
@@ -191,7 +192,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | 1000 | normal close | either |
 | 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse) | either |
 | 4002 | unsupported protocol version | worker |
-| 4003 | no worker capacity for the requested model | browser |
+| 4003 | no worker capacity for the requested model; also closes a session whose assigned worker refused it (the model could not be made or kept fully resident) | browser |
 | 4004 | unknown model | browser |
 
 > Shipped status (2026-07-30): code 4003 is currently an immediate full-pool rejection. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers.

@@ -1008,6 +1008,149 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
         assert realtime.workers["w-silent"].slots_in_use == 0
 
 
+def test_session_refused_during_assignment_fails_the_open_promptly(monkeypatch):
+    """A worker that cannot make the model fully resident says so instead of
+    letting the open sit out the ready timeout (issue #270)."""
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 5.0)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-refused-assign", slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({
+                "type": "session_refused",
+                "session_id": opened["session_id"],
+                "reason": "model sd-sim could not be made fully resident",
+            })
+            # The refusal, not the five second timeout, answers the open.
+            refusal = browser_ws.receive_json()
+            assert refusal["type"] == "error"
+            assert refusal["code"] == 4003
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 4003
+        # The failed assignment compensated the slot exactly once.
+        assert realtime.workers["w-refused-assign"].slots_in_use == 0
+        assert uuid.UUID(opened["session_id"]) not in realtime.sessions
+
+
+def test_session_refused_for_a_live_session_closes_the_browser_and_releases_the_slot():
+    """A rung that changes under a live session ends it: the browser is
+    closed with the refusal code and the slot is released exactly once."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-refused-live", slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+            worker_ws.send_json({
+                "type": "session_refused",
+                "session_id": opened["session_id"],
+                "reason": "model sd-sim could not be kept fully resident",
+            })
+            refusal = browser_ws.receive_json()
+            assert refusal["type"] == "error"
+            assert refusal["code"] == 4003
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 4003
+            # A real browser answers the server's close frame with its own;
+            # TestClient cannot produce that reply, so the test pushes it.
+            # That wake-up is what ends the browser handler, whose teardown
+            # releases the slot by closing the worker side of the session.
+            browser_ws.close(4003)
+            closed_msg = worker_ws.receive_json()
+            assert closed_msg["type"] == "close_session"
+        assert realtime.workers["w-refused-live"].slots_in_use == 0
+        assert uuid.UUID(opened["session_id"]) not in realtime.sessions
+
+
+def test_session_refused_from_a_worker_that_does_not_own_the_session_is_ignored():
+    """A stale worker's word, as with session_closed: only the assigned
+    worker's refusal may end the session."""
+    with client.websocket_connect("/api/v1/fleet") as owner_ws:
+        owner_ws.send_json(hello(worker_id="w-owner", slots=1))
+        assert owner_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/fleet") as stranger_ws:
+            stranger_ws.send_json(hello(worker_id="w-stranger", slots=1))
+            assert stranger_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = owner_ws.receive_json()
+                session_id = opened["session_id"]
+                session = realtime.sessions[uuid.UUID(session_id)]
+                owner_ws.send_json({"type": "session_ready",
+                                    "session_id": session_id})
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                stranger_ws.send_json({
+                    "type": "session_refused",
+                    "session_id": session_id,
+                    "reason": "model sd-sim could not be made fully resident",
+                })
+                # Give the stranger's claim a window in which it would have
+                # taken effect, then check the session is untouched.
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    assert realtime.sessions.get(session.id) is session
+                    assert realtime.workers["w-owner"].slots_in_use == 1
+                    time.sleep(0.05)
+
+                # The browser is still served by the owner: a generated frame
+                # relays, so the refusal did not close the session.
+                generated = bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"live"
+                owner_ws.send_bytes(generated)
+                assert browser_ws.receive_bytes() == generated
+                assert session.worker is realtime.workers["w-owner"]
+
+
+def test_reassign_tries_another_worker_after_a_refusal():
+    """A refusal from one worker is not a refusal from the fleet: reassign
+    must place the session on the next candidate instead of closing 4003."""
+    async def scenario():
+        browser = FakeSocket()
+        refuser_ws = FakeSocket()
+        refuser = realtime.Worker(id="w-refuser", ws=refuser_ws,
+                                  manifests=[Manifest.model_validate(manifest())],
+                                  realtime_slots=1)
+        acceptor_ws = FakeSocket()
+        acceptor = realtime.Worker(id="w-acceptor", ws=acceptor_ws,
+                                   manifests=[Manifest.model_validate(manifest())],
+                                   realtime_slots=1)
+        realtime.workers.update({refuser.id: refuser, acceptor.id: acceptor})
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.reassign(session))
+            await asyncio.sleep(0.01)  # interrupted sent, first open in flight
+            assert refuser_ws.sent[0]["type"] == "open_session"
+            # What the fleet handler does on session_refused from this worker.
+            session.refused = "model sd-sim could not be made fully resident"
+            session.ready.set()
+            await asyncio.sleep(0.01)  # assign compensates; next worker picked
+            assert refuser.slots_in_use == 0
+            assert acceptor_ws.sent[0]["type"] == "open_session"
+            assert acceptor_ws.sent[0]["session_id"] == str(session.id)
+            session.ready.set()  # what the fleet handler does on session_ready
+            await task
+            assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
+            assert session.worker is acceptor
+            assert acceptor.slots_in_use == 1
+            assert browser.close_code is None  # the session survived
+        finally:
+            realtime.workers.pop(refuser.id, None)
+            realtime.workers.pop(acceptor.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
 def test_reassign_moves_the_session_with_correct_accounting():
     # TestClient runs each WebSocket connection on its own event loop, so the
     # cross-connection recovery flow cannot be driven through it; the CI

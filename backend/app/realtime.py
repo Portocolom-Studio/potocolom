@@ -325,6 +325,10 @@ class Session:
     user_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # The worker's reason, set together with `ready` when it refuses the
+    # session (session_refused): lets the assign waiter tell a refusal from
+    # a readiness instead of waiting out the ready timeout.
+    refused: str | None = None
 
     @property
     def is_live(self) -> bool:
@@ -387,8 +391,12 @@ async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> 
         gpu_requests.pop(request_id, None)
 
 
-def pick_worker(model_id: str) -> Worker | None:
-    candidates = [w for w in workers.values() if model_id in w.models and w.free_slots > 0]
+def pick_worker(model_id: str, *, exclude: set[str] | None = None) -> Worker | None:
+    candidates = [
+        w for w in workers.values()
+        if model_id in w.models and w.free_slots > 0
+        and (exclude is None or w.id not in exclude)
+    ]
     return max(candidates, key=lambda w: w.free_slots, default=None)
 
 
@@ -400,10 +408,13 @@ async def assign(session: Session, worker: Worker) -> bool:
     """Open the session on a worker and wait for its slot. True when ready.
 
     On any failure the slot increment is compensated here, so no caller can
-    leak a slot by abandoning the session mid-assignment.
+    leak a slot by abandoning the session mid-assignment. A refusal
+    (session_refused) is a failure like a timeout, but it is recorded before
+    the event is set so the waiter can tell the two apart.
     """
     session.worker = worker
     session.ready.clear()
+    session.refused = None
     worker.slots_in_use += 1
     try:
         await worker.ws.send_json(
@@ -412,6 +423,13 @@ async def assign(session: Session, worker: Worker) -> bool:
         )
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
+        worker.slots_in_use -= 1
+        session.worker = None
+        return False
+    if session.refused is not None:
+        # The worker said no (its model could not be made fully resident);
+        # the refusal was recorded before ready was set, so this is the
+        # failure path, compensated exactly once.
         worker.slots_in_use -= 1
         session.worker = None
         return False
@@ -435,15 +453,26 @@ async def reassign(session: Session) -> None:
     if not session.is_live:  # browser already gone
         return
     await safe_send(session.browser.send_json({"type": "interrupted"}))
-    replacement = pick_worker(session.model_id)
-    if replacement is None or not await assign(session, replacement):
+    tried: set[str] = set()
+    placed: Worker | None = None
+    while placed is None and session.is_live:
+        replacement = pick_worker(session.model_id, exclude=tried)
+        if replacement is None:
+            break
+        tried.add(replacement.id)
+        if await assign(session, replacement):
+            placed = replacement
+            break
+        # assign compensated its slot; a refusal from one worker is not a
+        # refusal from the fleet, so the next candidate gets its turn.
+    if placed is None:
         logger.warning("session %s lost its worker and no replacement was available", session.id)
         await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
         return
     if not session.is_live:  # browser disconnected while we assigned
         await release(session)
         return
-    logger.info("session %s resumed on worker %s", session.id, replacement.id)
+    logger.info("session %s resumed on worker %s", session.id, placed.id)
     await safe_send(session.browser.send_json({"type": "resumed"}))
 
 
@@ -560,6 +589,33 @@ async def fleet(ws: WebSocket) -> None:
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
                         if session is not None and session.worker is worker:
+                            session.ready.set()
+                    elif control["type"] == "session_refused":
+                        session = sessions.get(peer_uuid(control["session_id"]))
+                        # A worker's word is only valid for its own session,
+                        # as with session_closed: a stale worker still knows
+                        # an old session's id.
+                        if session is None or session.worker is not worker:
+                            continue
+                        reason = control.get("reason")
+                        if not isinstance(reason, str):
+                            reason = ""
+                        logger.warning(
+                            "session %s refused by worker %s (model %s): %s",
+                            session.id, worker.id, session.model_id, reason,
+                        )
+                        if session.ready.is_set():
+                            # The session is live: its worker can no longer
+                            # serve frames. Closing the browser ends it, and
+                            # the realtime handler's teardown releases the
+                            # slot exactly once.
+                            await refuse(session.browser, CLOSE_NO_CAPACITY,
+                                         "worker could not serve the session")
+                        else:
+                            # Assignment in flight: record the refusal before
+                            # waking the waiter, so assign can tell it from a
+                            # readiness and compensate instead of accepting.
+                            session.refused = reason
                             session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state

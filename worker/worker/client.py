@@ -34,6 +34,14 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 UPLOAD_TIMEOUT = 60.0
 # Heartbeat interval while a job runs without denoising progress (model load).
 PROGRESS_KEEPALIVE_SECONDS = 60.0
+# One bad frame must not end a session: transient GPU errors (an allocation
+# spike, a bad weight read) fail a single frame and recover on the next, and
+# ending the session on one would turn a hiccup into an interruption. Three
+# in a row mean the condition is permanent (a rung that changed under the
+# live session makes every frame raise), and a session that keeps failing
+# must end visibly instead of looping forever with only the worker log
+# showing it (issue #270).
+MAX_CONSECUTIVE_FRAME_FAILURES = 3
 
 
 class RegistrationRejected(Exception):
@@ -178,6 +186,7 @@ class SessionRunner:
 
     async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
         steps_default = default_steps(manifest)
+        consecutive_failures = 0
         while True:
             await self.arrived.wait()
             self.arrived.clear()
@@ -193,7 +202,21 @@ class SessionRunner:
             except Exception:
                 logger.exception("session %s dropped a frame on an inference error",
                                  self.session_id)
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FRAME_FAILURES:
+                    # Consecutive failures are a permanent condition (a rung
+                    # that changed under the live session), not a bad frame:
+                    # end the session and say so, or the browser would sit on
+                    # an Active session forever with only this log to show it.
+                    with suppress(websockets.WebSocketException):
+                        await ws.send(json.dumps({
+                            "type": "session_refused",
+                            "session_id": str(self.session_id),
+                            "reason": f"model {manifest.id} could not be kept fully resident",
+                        }))
+                    return
                 continue
+            consecutive_failures = 0
             self.frames += 1
             self.gpu_ms += generated.gpu_ms
             # The same quantity calibration measures: worker-side inference
@@ -444,11 +467,24 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                     if control["type"] == "open_session":
                         session_id = uuid.UUID(control["session_id"])
                         manifest = by_id[control["model_id"]]
-                        runners[session_id] = SessionRunner(
-                            session_id, ws, engine, manifest,
-                            ensure_seed(manifest.with_defaults(control.get("params") or {})))
-                        await ws.send(json.dumps({"type": "session_ready",
-                                                  "session_id": control["session_id"]}))
+                        if await engine.prepare_realtime(manifest):
+                            runners[session_id] = SessionRunner(
+                                session_id, ws, engine, manifest,
+                                ensure_seed(manifest.with_defaults(control.get("params") or {})))
+                            await ws.send(json.dumps({"type": "session_ready",
+                                                      "session_id": control["session_id"]}))
+                        else:
+                            # The model cannot serve frames on this worker
+                            # right now; refuse rather than open a session
+                            # whose every frame would fail. An API that does
+                            # not know this message ignores it and falls back
+                            # to the ready timeout, which ends the same open
+                            # with 4003.
+                            await ws.send(json.dumps({
+                                "type": "session_refused",
+                                "session_id": control["session_id"],
+                                "reason": f"model {manifest.id} could not be made fully resident",
+                            }))
                     elif control["type"] == "update_session":
                         # Ignored for an unknown session rather than raised:
                         # the API may send an update for a session this

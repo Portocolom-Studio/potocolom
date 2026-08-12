@@ -1092,6 +1092,38 @@ def test_evict_cold_removes_oldest_first():
     assert "b" not in engine._rungs
 
 
+def test_evicting_the_last_pipeline_forgets_the_cached_rung():
+    """A cached rung must not outlive its conditions: with the model evicted,
+    the next load decides against the VRAM that exists then, not the VRAM
+    that existed when the rung was chosen (issue #270)."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._evict_model("m")
+
+    assert engine._pipelines == {}
+    assert engine.model_rung("m") is None
+
+
+def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
+    """The realtime and t2i entries share every weight, so removing one of
+    them leaves the model resident and the rung it was loaded at is still
+    the truth; only the removal of the last entry may forget it."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object(), ("m", "realtime"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._drop_pipeline(("m", "t2i"))
+    assert engine.model_rung("m") == "full"
+    engine._drop_pipeline(("m", "realtime"))
+    assert engine.model_rung("m") is None
+
+
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
@@ -1105,6 +1137,7 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     engine._rungs = {}
     engine._last_used = {}
     engine._free_gpu_cache = MagicMock()
+    engine._gpu = asyncio.Lock()
     engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
     engine._select_rung = MagicMock(return_value="full")
     attempts: list[str] = []
@@ -1176,6 +1209,67 @@ def test_final_load_oom_drops_failed_attempt_traceback():
 
     assert attempts == ["full", "model_offload", "group_offload", "group_offload"]
     assert "load" not in frame_names
+
+
+def _realtime_manifest() -> Manifest:
+    return Manifest(
+        id="m", name="M",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        t2i_adapter="org/adapter",
+    )
+
+
+def test_prepare_realtime_true_when_the_model_loads_fully():
+    engine, attempts = _load_oom_engine(set())
+    manifest = _realtime_manifest()
+
+    assert asyncio.run(engine.prepare_realtime(manifest)) is True
+
+    assert attempts == ["full"]
+    assert engine.model_rung("m") == "full"
+    assert ("m", "realtime") in engine._pipelines
+
+
+def test_prepare_realtime_false_when_only_a_demoted_load_would_succeed():
+    """The load must not demote: a demoted rung is exactly the state that
+    makes every frame raise, so a load that can only succeed demoted is a
+    failure for this purpose."""
+    engine, attempts = _load_oom_engine({"full"})
+    manifest = _realtime_manifest()
+
+    assert asyncio.run(engine.prepare_realtime(manifest)) is False
+
+    assert attempts == ["full"]  # no model_offload attempt: demotion refused
+    assert engine.model_rung("m") == "full"
+
+
+def test_prepare_realtime_confirms_the_rung_after_loading():
+    """A model whose cached rung is below full loads successfully and must
+    still be refused: the rung is confirmed afterwards rather than assumed
+    from the load succeeding."""
+    engine, attempts = _load_oom_engine(set())
+    engine._rungs["m"] = "model_offload"
+    manifest = _realtime_manifest()
+
+    assert asyncio.run(engine.prepare_realtime(manifest)) is False
+
+    assert attempts == ["model_offload"]
+    assert ("m", "realtime") in engine._pipelines
+
+
+def test_prepare_realtime_is_idempotent_for_a_resident_model():
+    engine, attempts = _load_oom_engine(set())
+    manifest = _realtime_manifest()
+    assert asyncio.run(engine.prepare_realtime(manifest)) is True
+
+    assert asyncio.run(engine.prepare_realtime(manifest)) is True
+
+    # The second call found the pipeline already resident and loaded nothing.
+    assert attempts == ["full"]
+
+
+def test_simulated_engine_prepare_realtime_always_true():
+    assert asyncio.run(SimulatedEngine(0.01).prepare_realtime(SIMULATED_MANIFEST)) is True
 
 
 def _poison_engine(model_id: str = "m") -> DiffusersEngine:
