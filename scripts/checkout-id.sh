@@ -22,4 +22,10 @@ fi
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$root" ]] || exit 0
 
-printf '%s' "$root" | sha256sum | cut -c1-8
+# shasum is the macOS spelling; without the fallback every make invocation in
+# this checkout would die on the guard in the Makefile.
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s' "$root" | sha256sum | cut -c1-8
+else
+  printf '%s' "$root" | shasum -a 256 | cut -c1-8
+fi
