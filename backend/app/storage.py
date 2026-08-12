@@ -291,7 +291,34 @@ class S3Storage:
         return await self.url(key)
 
     async def delete(self, key: str) -> None:
-        await asyncio.to_thread(self.client.delete_object, Bucket=self.bucket, Key=key)
+        """Remove the object and, on a versioned bucket, its history.
+
+        delete_object without a VersionId writes a delete marker and keeps the
+        bytes as a noncurrent version, so on the cloud bucket, which has
+        versioning on, a plain delete hides the key and keeps billing for it.
+        The terminal paths in jobs.py delete to reclaim storage from a peer
+        that can upload whatever it likes, so hiding is not enough.
+
+        Listing by exact prefix and filtering is deliberate: list_object_versions
+        takes a prefix, not a key, and a bucket with u/j-attempt-1.png also has
+        u/j-attempt-10.png under that prefix.
+        """
+        def purge() -> None:
+            paginator = self.client.get_paginator("list_object_versions")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=key):
+                doomed = [
+                    {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+                    for group in ("Versions", "DeleteMarkers")
+                    for entry in page.get(group, [])
+                    if entry.get("Key") == key
+                ]
+                for start in range(0, len(doomed), 1000):  # DeleteObjects caps at 1000
+                    self.client.delete_objects(
+                        Bucket=self.bucket,
+                        Delete={"Objects": doomed[start:start + 1000], "Quiet": True},
+                    )
+
+        await asyncio.to_thread(purge)
 
 
 @lru_cache

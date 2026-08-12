@@ -1319,16 +1319,19 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     thumbnail and then report a failure, and on S3 nothing bounds what it
     uploaded.
 
-    On a versioned S3 bucket this removes the key, not the bytes: the delete
-    writes a marker and the object survives as a noncurrent version. Issue
-    #252 covers purging by version; until then the reclaim is local-only.
+    S3Storage.delete purges every version of the key, not just the current
+    one, so this reclaims the storage rather than hiding it.
     """
     for earlier in range(1, attempt + 1):
         for key in storage_keys_for_attempt(user_id, job_id, earlier):
             try:
                 await get_storage().delete(key)
             except Exception:
-                logger.debug("no blob %s to remove for job %s", key, job_id)
+                # Warning, not debug: a missing object does not normally make
+                # a delete raise, so this is a real cleanup failure such as a
+                # denied permission, and nothing retries it.
+                logger.warning("could not remove blob %s for job %s", key, job_id,
+                               exc_info=True)
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str) -> None:

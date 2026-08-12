@@ -94,9 +94,24 @@ class _FakeBody:
         self.closed = True
 
 
+class _FakePaginator:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def paginate(self, **kwargs):
+        prefix = kwargs.get("Prefix", "")
+        for page in self.pages:
+            yield {
+                group: [e for e in page.get(group, []) if e["Key"].startswith(prefix)]
+                for group in ("Versions", "DeleteMarkers")
+            }
+
+
 class _FakeS3Client:
-    def __init__(self, data):
+    def __init__(self, data, pages=None):
         self.data = data
+        self.pages = pages or []
+        self.deleted: list[dict] = []
 
     def get_object(self, **kwargs):
         return {
@@ -104,6 +119,14 @@ class _FakeS3Client:
             "ContentLength": len(self.data),
             "ContentType": "image/png",
         }
+
+    def get_paginator(self, name):
+        assert name == "list_object_versions"
+        return _FakePaginator(self.pages)
+
+    def delete_objects(self, **kwargs):
+        self.deleted.extend(kwargs["Delete"]["Objects"])
+        return {}
 
 
 def test_s3_storage_reads_uploaded_image_info():
@@ -312,3 +335,48 @@ def test_max_image_edge_matches_the_largest_real_output():
     # A factor-4 upscale of the largest shipped generation size. Anything more
     # only moves the memory question to whatever decodes the file later.
     assert MAX_IMAGE_EDGE == 4096
+
+
+def test_s3_delete_removes_every_version_of_exactly_that_key():
+    """A delete marker hides the object and keeps billing for the bytes.
+
+    The terminal paths in jobs.py delete to reclaim storage from a peer that
+    can upload whatever it likes, so a plain delete_object is not enough on the
+    cloud bucket, which has versioning on.
+    """
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    key = "u/j-attempt-1.png"
+    storage.client = _FakeS3Client(b"", pages=[
+        {"Versions": [{"Key": key, "VersionId": "v1"},
+                      {"Key": key, "VersionId": "v2"},
+                      # Same prefix, different object: attempt 10, not attempt 1.
+                      {"Key": "u/j-attempt-10.png", "VersionId": "other"}],
+         "DeleteMarkers": [{"Key": key, "VersionId": "marker"}]},
+        {"Versions": [{"Key": key, "VersionId": "v3"}]},
+    ])
+
+    asyncio.run(storage.delete(key))
+    assert storage.client.deleted == [
+        {"Key": key, "VersionId": "v1"},
+        {"Key": key, "VersionId": "v2"},
+        {"Key": key, "VersionId": "marker"},
+        {"Key": key, "VersionId": "v3"},
+    ]
+
+
+def test_s3_delete_is_quiet_on_an_unversioned_bucket():
+    # An unversioned bucket reports VersionId "null"; the same path works.
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    storage.client = _FakeS3Client(b"", pages=[
+        {"Versions": [{"Key": "u/j.png", "VersionId": "null"}]},
+    ])
+    asyncio.run(storage.delete("u/j.png"))
+    assert storage.client.deleted == [{"Key": "u/j.png", "VersionId": "null"}]
+
+    empty = S3Storage.__new__(S3Storage)
+    empty.bucket = "bucket"
+    empty.client = _FakeS3Client(b"", pages=[{}])
+    asyncio.run(empty.delete("u/absent.png"))
+    assert empty.client.deleted == []
