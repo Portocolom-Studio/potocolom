@@ -24,7 +24,10 @@ def test_unimplemented_auth_mode_refuses_to_start(monkeypatch, mode):
     monkeypatch.setenv("AUTH_MODE", mode)
     get_settings.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+        # Match the mode as well as the variable: a message naming a mode the
+        # operator never set would satisfy the looser check while telling them
+        # to fix the wrong thing.
+        with pytest.raises(RuntimeError, match=f"AUTH_MODE={mode}"):
             with TestClient(app):
                 pass
     finally:
@@ -42,7 +45,7 @@ def test_unimplemented_auth_mode_cannot_even_import(monkeypatch):
     monkeypatch.setenv("AUTH_MODE", "local")
     get_settings.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+        with pytest.raises(RuntimeError, match="AUTH_MODE=local"):
             importlib.reload(main_module)
     finally:
         monkeypatch.delenv("AUTH_MODE", raising=False)
