@@ -45,6 +45,9 @@ BACKOFF_JITTER = 0.25
 
 # One bound for every session seed: large enough that torch.Generator accepts
 # it comfortably, small enough that consecutive sessions never collide by luck.
+# Mirrors the API's SESSION_SEED_BOUND (app/realtime.py), which fills the seed
+# at session open; the two packages have no shared import, so the number is
+# written twice with this comment binding them.
 SEED_BOUND = 2**31 - 1
 
 
@@ -82,7 +85,10 @@ def ensure_seed(params: dict) -> dict:
     A realtime session renders the same canvas the same way on every frame:
     a fresh latent per frame would re-roll the whole image when nothing
     changed (measured at 85.9 percent of pixels). An explicit seed from the
-    client is kept as-is so a session can be reproduced exactly.
+    client is kept as-is so a session can be reproduced exactly. The API
+    fills the seed at session open (app/realtime.py, SESSION_SEED_BOUND is
+    this module's SEED_BOUND), so this is the fallback for a params dict
+    that arrives without one: an older API will not send it.
     """
     if isinstance(params.get("seed"), int):
         return params
@@ -447,25 +453,18 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         runner = runners.get(uuid.UUID(control["session_id"]))
                         if runner is not None:
                             # The API's stored params are the browser's keys
-                            # only: it keeps the raw dict from `open` and
-                            # .update()s it, so it never holds a value the
-                            # client did not send. Applying the manifest's
-                            # defaults here restores what open_session did,
-                            # so a subset update cannot leave the engine's
-                            # hardcoded fallbacks in charge of settings the
-                            # manifest declares. with_defaults fills only
-                            # absent keys, so a value the browser sent
-                            # survives unchanged. The seed is the one value
-                            # the API cannot reconstruct, so it is carried
-                            # over from the params being replaced: ensure_seed
-                            # ran at open, and re-rolling it would make the
-                            # image jump on the next frame instead of staying
-                            # stable across a prompt change.
-                            params = runner.manifest.with_defaults(control["params"])
-                            assert isinstance(runner.params.get("seed"), int), \
-                                "a live session always carries a seed from open"
-                            params["seed"] = runner.params["seed"]
-                            runner.params = params
+                            # merged over the session's, and they now carry
+                            # the authoritative seed: the API fills one at
+                            # open and forwards browser seed updates through,
+                            # so an update here must apply as-is rather than
+                            # be reverted to the seed this worker drew at
+                            # open, or the params_updated acknowledgement
+                            # would claim a value the runner never used.
+                            # with_defaults restores what open_session did,
+                            # filling only absent keys, so a subset update
+                            # cannot leave the engine's hardcoded fallbacks
+                            # in charge of settings the manifest declares.
+                            runner.params = runner.manifest.with_defaults(control["params"])
                     elif control["type"] == "close_session":
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
                         if runner is not None:

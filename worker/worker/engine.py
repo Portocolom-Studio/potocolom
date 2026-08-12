@@ -779,6 +779,17 @@ class DiffusersEngine:
         base = self._pipelines.get((manifest.id, "t2i"))
         if base is None:
             base = self._load(manifest, "t2i")
+            # Registered directly rather than through _pipeline, which would
+            # re-enter the loader's own eviction and demotion logic from
+            # inside a load; the rung for this model has already been chosen
+            # by the caller. This does not make eviction free: the two cache
+            # entries share their UNet, text encoders and VAE, so evicting
+            # one of them frees nothing while the other is alive. Eviction
+            # accounting does not model shared components; this at least
+            # makes the base visible to the cache rather than invisible to
+            # it, so a later text-to-image job reuses it instead of loading
+            # a second copy.
+            self._pipelines[(manifest.id, "t2i")] = base
         # T2IAdapter computes its conditioning features once before the
         # denoising loop, so the conditioned path's cost is roughly constant
         # in step count (scripts/prototype-canvas-conditioning.py).

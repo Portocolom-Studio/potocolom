@@ -15,6 +15,7 @@ import ipaddress
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from collections.abc import Coroutine
@@ -51,6 +52,14 @@ FLEET_TOKEN_HEADER = "x-fleet-token"
 
 SESSION_READY_TIMEOUT = 10.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
+
+# One bound for every session seed, shared with the worker's SEED_BOUND
+# (worker/worker/client.py): the API fills the seed at session open and the
+# worker's ensure_seed fallback must draw from the same range, so both sides
+# agree on what a seed is. The two packages have no shared import, so the
+# number is written twice with this comment binding them, like the wire
+# constants above.
+SESSION_SEED_BOUND = 2**31 - 1
 
 router = APIRouter()
 
@@ -588,8 +597,18 @@ async def fleet(ws: WebSocket) -> None:
                             # this worker has measured, and a stale entry is
                             # a worse outcome than no entry only if it can
                             # never be corrected, which a later heartbeat
-                            # does.
-                            worker.frame_p95_ms.update(measured)
+                            # does. The merge is bounded by the worker's own
+                            # manifest set: a measurement for a model this
+                            # worker does not serve is meaningless, and
+                            # admitting one would let the map grow with every
+                            # heartbeat for the worker's lifetime. The ids
+                            # come from the registered manifests, never from
+                            # anything the heartbeat carries.
+                            worker.frame_p95_ms.update({
+                                model_id: value
+                                for model_id, value in measured.items()
+                                if model_id in worker.models
+                            })
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )
@@ -644,6 +663,16 @@ async def realtime(ws: WebSocket) -> None:
         if validate_params(manifest, params) is not None:
             await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
             return
+    if not isinstance(params.get("seed"), int):
+        # The API owns the session seed, not the worker: a session outlives
+        # its worker, so reassign re-opens with session.params and the value
+        # must ride on it, and a browser seed update must be able to replace
+        # it. An explicit client seed is kept as-is so a session can be
+        # reproduced exactly; a missing one is filled here so the worker
+        # always receives one (worker/client.py's ensure_seed is only the
+        # fallback for an older API). SESSION_SEED_BOUND matches the
+        # worker's SEED_BOUND.
+        params = {**params, "seed": random.randrange(SESSION_SEED_BOUND)}
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")

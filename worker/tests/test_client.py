@@ -119,45 +119,46 @@ def drive_update_session(monkeypatch, messages, manifests=None):
     return socket, created
 
 
-def test_update_session_replaces_params_and_keeps_seed(monkeypatch):
+def test_update_session_carries_the_authoritative_seed(monkeypatch):
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
         json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house", "seed": 11}}),
         json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "a blue house"}}),
+                    "params": {"prompt": "a blue house", "seed": 22}}),
     ])
     assert len(created) == 1
     runner = created[0]
-    seed = runner.params["seed"]
-    assert isinstance(seed, int)
-    # The update replaced the prompt and left the open's seed untouched: an
-    # update that re-rolled it would make the image jump on the next frame.
-    assert runner.params == {"prompt": "a blue house", "seed": seed}
+    # The API owns the seed: a browser seed update arrives in the merged
+    # params and must take effect rather than be reverted to the seed this
+    # worker drew at open, or the params_updated acknowledgement would claim
+    # a value the runner never used.
+    assert runner.params == {"prompt": "a blue house", "seed": 22}
     assert socket.close_code is None
 
 
 def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch):
-    # The API's stored params are the browser's keys only, so an update
-    # carries a subset and nothing else. Without with_defaults the runner
-    # would render with whatever the engine's hardcoded fallbacks happen to
-    # be, so the manifest's declared steps default is the value asserted.
+    # The API's stored params are the browser's keys plus the seed it filled
+    # at open, so an update carries that subset and nothing else. Without
+    # with_defaults the runner would render with whatever the engine's
+    # hardcoded fallbacks happen to be, so the manifest's declared steps
+    # default is the value asserted.
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
     socket, created = drive_update_session(monkeypatch, [
         json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "vega-rt", "params": {"prompt": "x"}}),
+                    "model_id": "vega-rt",
+                    "params": {"prompt": "x", "seed": 7}}),
         json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "y"}}),
+                    "params": {"prompt": "y", "seed": 7}}),
     ], manifests=[manifest])
     assert len(created) == 1
     runner = created[0]
-    seed = runner.params["seed"]
-    assert isinstance(seed, int)
-    # The update carried only the prompt, so the manifest's declared default
-    # step count came back in place of the engine's fallback, and the seed
-    # survived the replacement.
-    assert runner.params == {"prompt": "y", "steps": 4, "seed": seed}
+    # The update carried only the prompt and the seed, so the manifest's
+    # declared default step count came back in place of the engine's
+    # fallback, and the seed the API sent survived the replacement.
+    assert runner.params == {"prompt": "y", "steps": 4, "seed": 7}
     assert socket.close_code is None
 
 
@@ -174,15 +175,13 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default(
     socket, created = drive_update_session(monkeypatch, [
         json.dumps({"type": "open_session", "session_id": session_id,
                     "model_id": "vega-rt",
-                    "params": {"prompt": "x", "steps": 8}}),
+                    "params": {"prompt": "x", "steps": 8, "seed": 5}}),
         json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "y", "steps": 8}}),
+                    "params": {"prompt": "y", "steps": 8, "seed": 5}}),
     ], manifests=[manifest])
     assert len(created) == 1
     runner = created[0]
-    seed = runner.params["seed"]
-    assert isinstance(seed, int)
-    assert runner.params == {"prompt": "y", "steps": 8, "seed": seed}
+    assert runner.params == {"prompt": "y", "steps": 8, "seed": 5}
     assert socket.close_code is None
 
 

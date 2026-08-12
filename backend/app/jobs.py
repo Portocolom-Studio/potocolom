@@ -220,6 +220,25 @@ async def create_generation(
     manifest = registry.for_jobs().get(request.model_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="unknown model")
+    # The model row may be missing if the worker registered while the database
+    # was down; upserting here keeps the foreign key satisfied either way.
+    # The row records what the model can do, not what the studio chooses to
+    # offer: persist the unnarrowed manifest, since usage_events and
+    # job-history classification read that row. The unnarrowed copy is
+    # snapshotted from available() here, before the source-asset fetch below,
+    # so a worker disconnecting during that fetch cannot narrow what gets
+    # written: the value is already in hand. The fallback is reachable only
+    # if the model is absent from available() entirely, which a model that
+    # just passed the for_jobs() gate cannot be; the job cannot be dispatched
+    # in that state anyway, so the row exists only to satisfy the foreign key.
+    persisted = registry.available().get(request.model_id)
+    if persisted is None:
+        logger.warning(
+            "model %s left the registry while its job was being created; "
+            "writing the models row from the narrowed copy",
+            request.model_id,
+        )
+        persisted = manifest
     if error := validate_params(manifest, request.params):
         raise HTTPException(status_code=422, detail=f"params: {error}")
     source_asset_id = request.source_asset_id
@@ -247,24 +266,6 @@ async def create_generation(
                 status_code=422,
                 detail="model does not support image_to_image or upscale",
             )
-    # The model row may be missing if the worker registered while the database
-    # was down; upserting here keeps the foreign key satisfied either way.
-    # The row records what the model can do, not what the studio chooses to
-    # offer: persist the unnarrowed manifest, since usage_events and
-    # job-history classification read that row. The worker can disconnect
-    # between the for_jobs() read above and this second registry read; when
-    # it does, available() no longer carries the model and the fallback is
-    # the narrowed copy. Writing the narrowed list is deliberate, not
-    # silent: the job cannot be dispatched in that state anyway, so the row
-    # exists only to satisfy the foreign key.
-    persisted = registry.available().get(request.model_id)
-    if persisted is None:
-        logger.warning(
-            "model %s left the registry while its job was being created; "
-            "writing the models row from the narrowed copy",
-            request.model_id,
-        )
-        persisted = manifest
     await registry.persist_manifests([persisted])
     job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
               source_asset_id=source_asset_id)

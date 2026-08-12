@@ -275,6 +275,49 @@ def test_canvas_to_sketch_map_inverts_stroke_polarity():
     assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 4)) == (0, 0, 0)
 
 
+def test_load_realtime_registers_the_base_under_the_t2i_key():
+    """The realtime pipeline's base must be visible to the cache.
+
+    A realtime session on a full-resident model holds the whole text-to-image
+    pipeline, and a queued text-to-image job for the same model afterwards
+    must reuse it: without the registration below, the cache has no entry and
+    the job loads a second complete pipeline while the first is still held.
+    """
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._pipelines = {}
+    base = MagicMock()
+    base.unet = object()
+    pipeline = MagicMock()
+    pipeline.unet = base.unet
+    adapter = MagicMock()
+    diffusers = ModuleType("diffusers")
+    diffusers.T2IAdapter = MagicMock()
+    diffusers.T2IAdapter.from_pretrained = MagicMock(return_value=adapter)
+    diffusers.StableDiffusionXLAdapterPipeline = MagicMock()
+    diffusers.StableDiffusionXLAdapterPipeline.from_pipe = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        t2i_adapter="org/vega-sketch",
+    )
+    engine._load = MagicMock(return_value=base)
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        loaded = engine._load_realtime(manifest)
+
+    assert loaded is pipeline
+    # The base is cached under the t2i key, and it is the very object the
+    # realtime pipeline was composed from: the job and the session share the
+    # UNet, text encoders and VAE.
+    assert engine._pipelines[(manifest.id, "t2i")] is base
+    assert diffusers.StableDiffusionXLAdapterPipeline.from_pipe.call_args.args[0] is base
+    engine._load.assert_called_once_with(manifest, "t2i")
+
+
 def test_simulated_gpu_lifecycle():
     engine = SimulatedEngine(0.04)
 
