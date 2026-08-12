@@ -1,11 +1,13 @@
 """Self-hosted SPA static serving and the AUTH_MODE startup gate."""
 
+import importlib
 from pathlib import Path
 
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+import app.main as main_module
 from app.main import SPAStaticFiles, app
 from app.settings import get_settings
 
@@ -27,6 +29,27 @@ def test_unimplemented_auth_mode_refuses_to_start(monkeypatch, mode):
                 pass
     finally:
         get_settings.cache_clear()
+
+
+def test_unimplemented_auth_mode_cannot_even_import(monkeypatch):
+    """An unimplemented AUTH_MODE must refuse to import, not just to start.
+
+    The ASGI lifespan protocol is optional: uvicorn --lifespan off and a
+    TestClient outside a context manager serve the app without it, so a gate
+    that runs only inside lifespan is bypassable. Importing the module is
+    unavoidable, so the gate must fire there too.
+    """
+    monkeypatch.setenv("AUTH_MODE", "local")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+            importlib.reload(main_module)
+    finally:
+        monkeypatch.delenv("AUTH_MODE", raising=False)
+        get_settings.cache_clear()
+        # Reload with the environment restored so the module left in
+        # sys.modules is the good one and later tests are not poisoned.
+        importlib.reload(main_module)
 
 
 def test_auth_mode_none_starts(monkeypatch):
