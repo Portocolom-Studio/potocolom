@@ -25,7 +25,7 @@
 		formatParamValue,
 		normToValue,
 		stepsSpec,
-		strengthSpec,
+		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
 	import { modelIsRemoved, studio } from '$lib/studio.svelte';
@@ -82,6 +82,16 @@
 	let lastPoint: { x: number; y: number } | null = null;
 	let userClosing = false;
 
+	// The tool in use on the canvas. A forward contract for issue #54's
+	// replayable stroke journal: for its replay to stay faithful, erase must be
+	// recorded as a stroke operation carrying a mode flag, not as a separate
+	// kind of event.
+	let tool = $state<'draw' | 'erase'>('draw');
+	// Erase paints the paper back on: the canvas stays opaque, because a
+	// transparent pixel would reach the model as transparency rather than as
+	// blank paper, and the conditioning path assumes dark strokes on white.
+	const strokeColour = $derived(tool === 'erase' ? PAPER : INK);
+
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
 	// removed model disappears from the service pickers, and every other picker
@@ -98,15 +108,15 @@
 	let modelId = $state('');
 	const selectedModel = $derived(realtimeModels.find((model) => model.id === modelId));
 	const stepsRange = $derived(stepsSpec(selectedModel));
-	const strengthRange = $derived(strengthSpec(selectedModel));
+	const structureRange = $derived(structureStrengthSpec(selectedModel));
 	// Norm positions for the sliders. The defaults belong to the model, so a
 	// model change re-seeds them rather than carrying old positions into a range
 	// that does not share them.
 	let stepsNorm = $state(0);
-	let strengthNorm = $state(0);
+	let structureNorm = $state(0);
 	let normForModelId = $state('');
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
-	const strengthValue = $derived(normToValue(strengthNorm, strengthRange));
+	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	// Frames only go out while a worker is actually attached. During a reassign
 	// the socket is open and the session is alive, but the API has no worker to
@@ -143,7 +153,7 @@
 		// Re-seed the slider positions for the model the picker now shows.
 		if (!selectedModel || normForModelId === modelId) return;
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
-		strengthNorm = valueToNorm(strengthRange.default, strengthRange);
+		structureNorm = valueToNorm(structureRange.default, structureRange);
 		normForModelId = modelId;
 	});
 
@@ -191,6 +201,7 @@
 	/** One segment per move, so a long stroke does not restroke its whole path. */
 	function drawSegment(from: { x: number; y: number }, to: { x: number; y: number }): void {
 		if (!paint) return;
+		paint.strokeStyle = strokeColour;
 		paint.beginPath();
 		paint.moveTo(from.x, from.y);
 		paint.lineTo(to.x, to.y);
@@ -210,7 +221,7 @@
 		if (!paint) return;
 		paint.beginPath();
 		paint.arc(at.x, at.y, STROKE_WIDTH / 2, 0, Math.PI * 2);
-		paint.fillStyle = INK;
+		paint.fillStyle = strokeColour;
 		paint.fill();
 	}
 
@@ -477,7 +488,7 @@
 		// between.
 		const sessionModelId = modelId;
 		const sessionPrompt = prompt;
-		const sessionStrength = strengthValue;
+		const sessionStructure = structureValue;
 		const sessionSteps = stepsValue;
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const opening = new WebSocket(`${scheme}//${location.host}/api/v1/realtime`);
@@ -486,15 +497,15 @@
 		opening.onopen = () => {
 			// openMessage carries the params every shipped realtime model
 			// declares: the prompt is required (an open without it is refused
-			// 4000 before a worker is assigned), and strength and steps are
-			// declared by every shipped realtime model too. The simulated
-			// manifest declares only the prompt and accepts the other two as
-			// extra properties, which JSON Schema allows. It is built in
+			// 4000 before a worker is assigned), and structure_strength and
+			// steps are declared by every shipped realtime model too. The
+			// simulated manifest declares only the prompt and accepts the other
+			// two as extra properties, which JSON Schema allows. It is built in
 			// $lib/realtime-canvas so a test holds it. The params are sent once
 			// at open and cannot change mid-session.
 			opening.send(
 				openMessage(sessionModelId, sessionPrompt, {
-					strength: sessionStrength,
+					structure_strength: sessionStructure,
 					steps: sessionSteps
 				})
 			);
@@ -543,6 +554,17 @@
 					<Card.Description>{t('app.realtime_canvas.input_sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+					<div class="flex flex-col gap-2">
+						<Label for="realtime-tool">{t('app.realtime_canvas.tool')}</Label>
+						<select
+							id="realtime-tool"
+							bind:value={tool}
+							class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
+							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
+						</select>
+					</div>
 					<canvas
 						bind:this={drawCanvas}
 						width={CANVAS_SIZE}
@@ -610,13 +632,13 @@
 					{#if selectedModel}
 						<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 							<ParamSliderField
-								id="realtime-strength"
-								label={t('app.realtime_canvas.strength')}
-								bind:norm={strengthNorm}
+								id="realtime-structure"
+								label={t('app.realtime_canvas.structure')}
+								bind:norm={structureNorm}
 								disabled={busy}
-								minLabel={formatParamValue(strengthRange.min, strengthRange)}
-								maxLabel={formatParamValue(strengthRange.max, strengthRange)}
-								valueLabel={formatParamValue(strengthValue, strengthRange)}
+								minLabel={formatParamValue(structureRange.min, structureRange)}
+								maxLabel={formatParamValue(structureRange.max, structureRange)}
+								valueLabel={formatParamValue(structureValue, structureRange)}
 							/>
 							<ParamSliderField
 								id="realtime-steps"

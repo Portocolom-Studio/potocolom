@@ -110,20 +110,28 @@ export function nextDelayMs(lastFrameCostMs: number): number {
  * The opening control message. Lives here rather than in the panel because the
  * params are a contract with the model's manifest, not a detail of the DOM:
  * every shipped realtime manifest marks the prompt required, and an open
- * without it is refused 4000 before a worker is assigned. Strength and steps
- * are declared by every shipped realtime manifest too, so sending them is
- * within the contract. A previous version of this panel was built against a
- * permissive fake and never connected.
+ * without it is refused 4000 before a worker is assigned. The realtime path
+ * is conditioned, not image-to-image: the worker runs text-to-image from a
+ * fresh latent and constrains it on the drawing with a sketch T2I-Adapter, so
+ * the scale it sends is the conditioning scale, `structure_strength`,
+ * declared by every shipped realtime manifest. The other strength the
+ * manifest still declares belongs to queued image-to-image jobs, where the
+ * drawing is fed back in; this path ignores it. The params are sent once at
+ * open and cannot change mid-session.
  */
 export function openMessage(
 	modelId: string,
 	prompt: string,
-	params: { strength: number; steps: number }
+	params: { structure_strength: number; steps: number }
 ): string {
 	return JSON.stringify({
 		type: 'open',
 		model_id: modelId,
-		params: { prompt: prompt.trim(), strength: params.strength, steps: params.steps }
+		params: {
+			prompt: prompt.trim(),
+			structure_strength: params.structure_strength,
+			steps: params.steps
+		}
 	});
 }
 
