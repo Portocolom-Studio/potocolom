@@ -387,7 +387,7 @@ def test_window2_matrix_matches_the_approved_plan() -> None:
 
 
 def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
-    """134 bases: 98 acquisition at oil, then a 36-base wording screen."""
+    """116 bases: 98 acquisition at oil, then an 18-base wording screen."""
     from worker.illusion_campaign import (
         WINDOW3_ARMS,
         WINDOW3_SEED_POOL,
@@ -399,9 +399,9 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
     entries = build_window3()
     acquisition = [e for e in entries if not e.profile.startswith("w_")]
     assert len(acquisition) == 1 + len(BREADTH_PAIRS) == 98
-    assert len(entries) == 134
+    assert len(entries) == 116
     assert {e.tier for e in entries} == {"window3"}
-    assert sum(e.flags.count("--dream-arm") for e in entries) == 268
+    assert sum(e.flags.count("--dream-arm") for e in entries) == 232
 
     # Every base forks both arms from one SDS phase, joint first: joint is the
     # settled default and independent is the fallback for the pairs it collapses.
@@ -450,21 +450,25 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
     # One seed per pair: ~47h of acquisition, ~65h with the wording tail, inside
     # a 68h deadline for the confirmed 70h window.
     assert 46.0 < sum(e.estimate_s for e in acquisition) / 3600 < 49.0
-    assert 63.0 < sum(e.estimate_s for e in entries) / 3600 < 66.0
+    assert 55.0 < sum(e.estimate_s for e in entries) / 3600 < 57.0
 
-    assert len({e.spec_hash() for e in entries}) == 134
-    assert len({e.out_rel for e in entries}) == 134
-    assert len({e.entry_id for e in entries}) == 134
+    assert len({e.spec_hash() for e in entries}) == 116
+    assert len({e.out_rel for e in entries}) == 116
+    assert len({e.entry_id for e in entries}) == 116
 
 
 def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> None:
-    """36 bases screening two candidate wordings, and it must be truncatable.
+    """18 bases screening ONE candidate wording, and it must be truncatable.
 
-    Neither validated wording wins the trade that caps the product:
-    reference_sketch reads better raw and loses 31 of 72 to its own frames, oil
-    produces 0 frames and only ties on the clean endpoint. Both candidates are
-    monochrome; monochrome_oil drops the paper-bound medium and charcoal keeps it,
-    which is what separates the two hypotheses.
+    Two candidates were planned. Both were smoked at 1,500 steps against a
+    plain-oil control before any block time was committed, and monochrome_oil was
+    cut for summoning a wooden picture frame in both arms - worse than anything
+    plain oil produced in 78 observations, and frame-cleanliness was the whole
+    reason to start from oil. charcoal survived: pencil-grade monochrome
+    (9.9/7.1 against reference_sketch's 9.2) with none of pencil's frames.
+
+    That smoke also refuted the mechanism the screen was built on, so this test
+    pins the survivor rather than the theory.
     """
     from worker.illusion_campaign import (
         WINDOW2_PROVEN,
@@ -476,8 +480,12 @@ def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> N
 
     entries = build_window3()
     wording = [e for e in entries if e.profile.startswith("w_")]
-    assert len(wording) == 36
-    assert Counter(e.style for e in wording) == {"monochrome_oil": 18, "charcoal": 18}
+    assert len(wording) == 18
+    assert Counter(e.style for e in wording) == {"charcoal": 18}
+    # monochrome_oil stays in STYLE_TEMPLATES as a record of why it was cut, but
+    # must never be planned again.
+    assert "monochrome_oil" not in WINDOW3_WORDINGS
+    assert "monochrome_oil" in STYLE_TEMPLATES
 
     # LAST, so an acquisition overrun truncates the bonus, never the deliverable.
     assert min(e.priority for e in wording) > max(
@@ -497,9 +505,6 @@ def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> N
         assert "--negative-prompt" not in entry.flags
         assert entry.flags[entry.flags.index("--sds-steps") + 1] == "5000"
 
-    # Both candidates are monochrome; exactly one is paper-bound.
-    assert "monochrome" in STYLE_TEMPLATES["monochrome_oil"]
-    assert "oil painting" in STYLE_TEMPLATES["monochrome_oil"]
     assert "charcoal" in STYLE_TEMPLATES["charcoal"]
 
 

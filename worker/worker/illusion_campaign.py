@@ -537,7 +537,14 @@ WINDOW3_BASE_ESTIMATE_S = 1_736.0
 # Same pairs and same seeds as window 2's negative-off block A bases, so each
 # candidate is compared against both incumbents on identical ground rather than
 # against a remembered number.
-WINDOW3_WORDINGS = ("monochrome_oil", "charcoal")
+#
+# ONE candidate, not the two originally planned. Both were smoked at 1,500 steps
+# against a plain-oil control before any block time was committed, and
+# monochrome_oil was cut: it summons a wooden picture frame in both arms, worse
+# than anything plain oil produced in 78 observations, and frame-cleanliness was
+# the whole reason to start from oil. See STYLE_TEMPLATES for the numbers. The
+# smoke cost 24 minutes and saved 8.2 hours.
+WINDOW3_WORDINGS = ("charcoal",)
 WINDOW3_WORDING_PAIRS = WINDOW2_PROVEN
 WINDOW3_WORDING_SEEDS = WINDOW2_SEEDS
 

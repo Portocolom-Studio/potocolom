@@ -608,9 +608,9 @@ second SDS phase, which is cheaper than any predictor could be.
 
 ## Window 3: acquisition
 
-Planned, not yet run. `worker.illusion_campaign --phase window3`, 134 bases and
-268 observations at 64.6h (60.7h at the anchor's measured rate), inside a 68h
-deadline for a 70h window. Two blocks: 98 acquisition bases, then a 36-base
+Planned, not yet run. `worker.illusion_campaign --phase window3`, 116 bases and
+232 observations at 55.9h (52.6h at the anchor's measured rate), inside a 68h
+deadline for a 70h window. Two blocks: 98 acquisition bases, then an 18-base
 wording screen that runs last. The plan is
 `.local/illusion-reliability/campaigns/window3/PLAN.md`, the launch procedure is
 `RUNBOOK.md` beside it, and the corpus is `BREADTH_FAMILIES` in
@@ -700,7 +700,7 @@ not a gate, because one seed on a workable pair misses 45 percent of the time.
 What it gates is structural: two arm directories, two distinct images, SDS run
 once.
 
-### Block W: screening two wordings
+### Block W: screening one wording, after a smoke killed the other
 
 Added when the window grew to 70h. The extra hours went here rather than into more
 corpus because the binding resource on the corpus is careful pair-writing, not GPU
@@ -712,28 +712,51 @@ reads better raw, 35 of 72 against 25, and loses 31 of 72 to its own frames. `oi
 produces no disqualifying frames in 78 and only ties on the clean endpoint. The
 product wants both and can currently have either.
 
-This is a screen with a mechanism behind it, not the unpriored prompt search
-rejected earlier. Every pencil wording in `STYLE_TEMPLATES` names a paper-bound
-artifact - "pencil sketch", "isolated on plain warm paper" - which is what summons
-the hands, desks and torn edges. A2 separately found that monochrome removes the
-colour agreement the two flip views must otherwise negotiate. If both hold,
-monochrome without a paper-bound medium gets the readability and not the frames.
+Two candidates were planned. **Both were smoked at 1,500 steps before any block
+time was committed**, on `moose_butterfly` seed 11 with a plain-`oil` control at
+the same step count, and the predictions were written down first. Chroma is the
+`measure_colour` statistic, threshold 20:
 
-| Candidate | Wording | What it isolates |
+| Wording, 1,500 steps | chroma indep / joint | frames |
 |---|---|---|
-| `monochrome_oil` | a monochrome oil painting of {} | monochrome alone: one word off a wording with 0 frames in 78 |
-| `charcoal` | a detailed charcoal drawing of {} | dry media, still paper-bound: separates monochrome from texture, and tests whether every paper-bound medium frames |
+| `oil` control | 66.0 / 57.2 | clean, full bleed |
+| `monochrome_oil` | 18.6 / 27.0 | **wooden picture frame, both arms** |
+| `charcoal` | 9.9 / 7.1 | clean, faint edge only |
 
-2 wordings x the 6 proven pairs x seeds 11, 23 and 37, both Dream arms, 36 bases
-at 16.3h. Same pairs and seeds as window 2's negative-off bases, so each candidate
-meets both incumbents on matched ground rather than a remembered number: `oil` 7
-of 18 and `reference_sketch` 6 of 18 on the clean base rate.
+`monochrome_oil` was CUT. The word works on colour - it cuts chroma by about 60
+percent against the control - but it also summons a framed painting, worse than
+anything plain `oil` produced in 78 observations, and frame-cleanliness was the
+entire reason to start from `oil`. "Monochrome oil painting" is auction-catalogue
+vocabulary, where the images genuinely are photographs of framed paintings. The
+smoke cost 24 minutes of GPU and saved 8.2 hours.
+
+`charcoal` survived and is the live candidate. It delivers pencil-grade monochrome,
+9.9 and 7.1 against `reference_sketch`'s 9.2 median, with none of pencil's frames.
+It was included as the CONTROL, expected to fail.
+
+**The mechanism this screen was built on is refuted.** The claim was that frames
+come from naming a paper-bound artifact - "pencil sketch", "isolated on plain warm
+paper". But `charcoal` is paper-bound and clean, while `monochrome_oil` is
+canvas-bound and framed. Both directions fail, so frame behaviour is a property of
+the SPECIFIC PHRASE and is not derivable from the medium, from paper-boundness, or
+from any reasoning available before rendering. The plain-`oil` control is what makes
+this conclusion safe: at the same 1,500 steps it is clean, so the frames belong to
+the wordings and not to the reduced step count.
+
+That has a method consequence worth more than the finding: screen candidate strings
+with an 8-minute smoke, and do not reason about them. Ten candidates screen in
+about 80 minutes, and block time goes only to survivors.
+
+Block W is therefore 1 wording x the 6 proven pairs x seeds 11, 23 and 37, both
+Dream arms, 18 bases at 8.2h. Same pairs and seeds as window 2's negative-off
+bases, so `charcoal` meets both incumbents on matched ground: `oil` 7 of 18 and
+`reference_sketch` 6 of 18 on the clean base rate.
 
 It runs LAST, so an acquisition overrun truncates the bonus and never the
-deliverable. Predeclared: at n=18 per wording this is a **screen, not an adoption
-test**, since window 2 showed that size resolves only a large effect. A candidate
-that beats BOTH incumbents advances to replication in a later window and changes no
-default here. A truncated block W is reported as **inconclusive**, never negative.
+deliverable. Predeclared: at n=18 this is a **screen, not an adoption test**, since
+window 2 showed that size resolves only a large effect. A candidate that beats BOTH
+incumbents advances to replication in a later window and changes no default here. A
+truncated block W is reported as **inconclusive**, never negative.
 
 ### Run the SDXL diagnostic first
 
