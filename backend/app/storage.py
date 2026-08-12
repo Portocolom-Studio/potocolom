@@ -18,6 +18,8 @@ from urllib.parse import urlencode
 from app.settings import Settings, get_settings
 
 SIGNED_URL_TTL = 3600
+# Carries the dispatch token on a local upload (app/files.py, issue #247).
+UPLOAD_TOKEN_HEADER = "X-Upload-Token"
 PNG_CONTENT_TYPE = "image/png"
 WEBP_CONTENT_TYPE = "image/webp"
 DOWNLOAD_NAME_MAX_LENGTH = 96
@@ -134,8 +136,62 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
     return width, height
 
 
+def _webp_dimensions(data: bytes) -> tuple[int, int]:
+    """Dimensions of a stored WebP, or ValueError if it is not a usable one.
+
+    Thumbnails are the only WebP the fleet uploads, and until now nothing read
+    them: job_done created the thumbnail row on the worker's word alone. This
+    reads the RIFF container and the first chunk header, which is all three
+    WebP flavours need to state their canvas, and like the PNG walk above it
+    never decodes a pixel.
+    """
+    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        raise ValueError("stored object is not a WebP")
+    # The RIFF length counts everything after it, so it must fit the object.
+    if struct.unpack_from("<I", data, 4)[0] + 8 > len(data):
+        raise ValueError("stored WebP is truncated")
+    kind = data[12:16]
+    if kind == b"VP8X":
+        width = int.from_bytes(data[24:27], "little") + 1
+        height = int.from_bytes(data[27:30], "little") + 1
+    elif kind == b"VP8 ":
+        if data[23:26] != b"\x9d\x01\x2a":
+            raise ValueError("stored WebP has no lossy keyframe")
+        width = struct.unpack_from("<H", data, 26)[0] & 0x3fff
+        height = struct.unpack_from("<H", data, 28)[0] & 0x3fff
+    elif kind == b"VP8L":
+        if data[20] != 0x2f:
+            raise ValueError("stored WebP has no lossless signature")
+        bits = int.from_bytes(data[21:25], "little")
+        width = (bits & 0x3fff) + 1
+        height = ((bits >> 14) & 0x3fff) + 1
+    else:
+        raise ValueError("stored WebP has an unknown first chunk")
+    if width == 0 or height == 0:
+        raise ValueError("stored WebP has empty dimensions")
+    if width > MAX_IMAGE_EDGE or height > MAX_IMAGE_EDGE:
+        raise ValueError("stored WebP dimensions are implausible")
+    return width, height
+
+
+def _inspect(data: bytes) -> tuple[int, int, str] | None:
+    """Dimensions and content type of stored bytes, or None if unusable.
+
+    The type is decided by the bytes, never by what the peer declared: an
+    uploader controls its own Content-Type header.
+    """
+    for parse, content_type in ((_png_dimensions, PNG_CONTENT_TYPE),
+                                (_webp_dimensions, WEBP_CONTENT_TYPE)):
+        try:
+            width, height = parse(data)
+        except ValueError:
+            continue
+        return width, height, content_type
+    return None
+
+
 class Storage(Protocol):
-    async def upload_target(self, key: str) -> UploadTarget: ...
+    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget: ...
 
     async def image_info(self, key: str) -> ImageInfo | None: ...
 
@@ -160,11 +216,17 @@ class LocalStorage:
             raise ValueError("storage key escapes the storage root")
         return path
 
-    async def upload_target(self, key: str) -> UploadTarget:
+    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
         content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
+        headers = {"Content-Type": content_type}
+        if token:
+            # The local route has no signature to check, so the dispatch token
+            # is what proves this upload belongs to the dispatch that minted
+            # the key rather than to anyone who can derive it (issue #247).
+            headers[UPLOAD_TOKEN_HEADER] = token
         return UploadTarget(
             url=f"{self.worker_url}/api/v1/files/{key}",
-            headers={"Content-Type": content_type},
+            headers=headers,
         )
 
     async def image_info(self, key: str) -> ImageInfo | None:
@@ -176,12 +238,12 @@ class LocalStorage:
                 data = path.read_bytes()
             except FileNotFoundError:
                 return None
-            try:
-                width, height = _png_dimensions(data)
-            except ValueError:
+            inspected = _inspect(data)
+            if inspected is None:
                 return None
+            width, height, content_type = inspected
             return ImageInfo(width=width, height=height, size=len(data),
-                             content_type=PNG_CONTENT_TYPE)
+                             content_type=content_type)
 
         # Off the loop: the read is up to MAX_VERIFY_BYTES of peer-supplied
         # bytes and every millisecond of it would otherwise stall every other
@@ -218,8 +280,9 @@ class S3Storage:
             config=Config(signature_version="s3v4"),  # MinIO requires SigV4
         )
 
-    async def upload_target(self, key: str) -> UploadTarget:
-        # Presigning is local computation, no network round trip.
+    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
+        # Presigning is local computation, no network round trip. The token is
+        # the local backend's capability; here the signed URL is one already.
         content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
         url = self.client.generate_presigned_url(
             "put_object",
@@ -227,10 +290,16 @@ class S3Storage:
                 "Bucket": self.bucket,
                 "Key": key,
                 "ContentType": content_type,
+                # Signed so the bucket refuses a second write with 412: a
+                # presigned PUT stays valid for its whole TTL and would
+                # otherwise replace bytes the API has already verified
+                # (issue #249).
+                "IfNoneMatch": "*",
             },
             ExpiresIn=SIGNED_URL_TTL,
         )
-        return UploadTarget(url=url, headers={"Content-Type": content_type})
+        return UploadTarget(url=url, headers={"Content-Type": content_type,
+                                              "If-None-Match": "*"})
 
     async def image_info(self, key: str) -> ImageInfo | None:
         from botocore.exceptions import ClientError
@@ -266,15 +335,16 @@ class S3Storage:
             raise
         if len(data) > MAX_VERIFY_BYTES:
             return None
-        try:
-            width, height = _png_dimensions(data)
-        except ValueError:
+        inspected = _inspect(data)
+        if inspected is None:
             return None
+        width, height, content_type = inspected
         return ImageInfo(
             width=width,
             height=height,
             size=response.get("ContentLength", len(data)),
-            content_type=response.get("ContentType", PNG_CONTENT_TYPE),
+            # Not response ContentType: that is what the uploader declared.
+            content_type=content_type,
         )
 
     async def url(self, key: str, download_name: str | None = None) -> str:

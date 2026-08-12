@@ -3,17 +3,24 @@
 With STORAGE_BACKEND=s3 these routes answer 404: uploads go straight to the
 bucket via presigned URLs and never pass through the API.
 
-Keys are minted server side at dispatch time and contain a job UUID, so an
-upload URL is unguessable; fleet authentication tightens this further when it
-lands (docs/blueprint.md, FLEET_TOKEN_KEY).
+Keys are minted server side at dispatch time, but a key is not authority: every
+part of it is derivable by any worker that was ever dispatched the job, so the
+PUT carries the dispatch token as well (issue #247). Uploads are write-once:
+the object the API verified must still be that object when a client reads it
+(issue #249).
 """
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.storage import LocalStorage, get_storage, validate_download_name
+from app.storage import (
+    UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -36,7 +43,7 @@ def local_storage() -> LocalStorage:
 async def upload(key: str, request: Request) -> dict:
     from app import jobs
 
-    if not jobs.storage_key_in_flight(key):
+    if not jobs.upload_authorized(key, request.headers.get(UPLOAD_TOKEN_HEADER)):
         raise HTTPException(status_code=403, detail="upload not authorized")
 
     storage = local_storage()
@@ -53,10 +60,19 @@ async def upload(key: str, request: Request) -> dict:
 
     def write_file() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
+        # Exclusive: a second PUT to a key must not replace bytes the API has
+        # already inspected and committed an asset row for.
+        with open(path, "xb") as handle:
+            handle.write(body)
 
     try:
         await asyncio.to_thread(write_file)
+    except FileExistsError:
+        # Either a retry whose first upload actually landed, which is benign,
+        # or a replay. Refusing costs the caller nothing either way: a real
+        # retry is a new attempt and writes to a new key.
+        logger.warning("refused a second upload of %s", key)
+        raise HTTPException(status_code=409, detail="already uploaded") from None
     except Exception:
         path.unlink(missing_ok=True)
         raise

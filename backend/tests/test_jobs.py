@@ -47,6 +47,32 @@ MANIFEST_WITH_RT = {
 HOSTILE_PROMPT = 'A "lighthouse"\n; ../../ caf\u00e9'
 
 
+def webp_bytes(width=64, height=64):
+    """The extended (VP8X) form, which carries the canvas size in its header."""
+    body = (b"VP8X" + struct.pack("<I", 10) + b"\x00" * 4
+            + (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little"))
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body + b"\x00" * 10
+
+
+def dispatch_for(worker, job_id, limit=5):
+    """The dispatch for this job, skipping any the suite left requeued.
+
+    A job another test left running is requeued when its socket closes, so a
+    fresh socket can be handed that dispatch before this test's own.
+    """
+    for _ in range(limit):
+        message = worker.receive_json()
+        if message.get("type") == "dispatch_job" and message["job_id"] == job_id:
+            return message
+    raise AssertionError(f"no dispatch for job {job_id}")
+
+
+def put_upload(client, spec, content):
+    """PUT the way a worker does: the dispatch headers carry the upload token."""
+    return client.put(urlsplit(spec["url"]).path, content=content,
+                      headers=spec.get("headers") or {})
+
+
 def png_bytes(width=512, height=512):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data
@@ -312,16 +338,21 @@ def test_generation_end_to_end():
             assert dispatch["job_id"] == job_id
             assert dispatch["params"] == {"prompt": HOSTILE_PROMPT}
             assert dispatch["upload"]["url"].endswith(f"/{job_id}-attempt-1.png")
-            assert dispatch["upload"]["headers"] == {"Content-Type": "image/png"}
+            assert dispatch["upload"]["headers"]["Content-Type"] == "image/png"
+            # The token authorises the PUT: the key alone is derivable by any
+            # worker that ever held this job (issue #247).
+            token = dispatch["upload"]["headers"]["X-Upload-Token"]
+            assert token and dispatch["thumb_upload"]["headers"]["X-Upload-Token"] == token
+            assert dispatch["dispatch_token"] == token
             assert dispatch["thumb_upload"]["url"].endswith(
                 f"/{job_id}-attempt-1-thumb.webp"
             )
-            assert dispatch["thumb_upload"]["headers"] == {"Content-Type": "image/webp"}
+            assert dispatch["thumb_upload"]["headers"]["Content-Type"] == "image/webp"
 
-            upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=png_bytes(320, 240)).status_code == 200
-            thumb_path = urlsplit(dispatch["thumb_upload"]["url"]).path
-            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes(320, 240)).status_code == 200
+            assert put_upload(client, dispatch["thumb_upload"],
+                              webp_bytes()).status_code == 200
 
             worker.send_json({"type": "job_progress", "job_id": job_id, "progress": 0.5})
             worker.send_json({"type": "job_done", "job_id": job_id,
@@ -346,7 +377,7 @@ def test_generation_end_to_end():
             )
             assert asset["thumbnail_url"] is not None
             assert client.get(urlsplit(asset["url"]).path).content == png_bytes(320, 240)
-            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == b"thumb-bytes"
+            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == webp_bytes()
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
@@ -541,8 +572,9 @@ def test_retried_attempt_uses_a_new_upload_key_and_rejects_the_old_key(monkeypat
                 second = worker.receive_json()
                 second_path = urlsplit(second["upload"]["url"]).path
                 assert first_path != second_path
-                assert client.put(first_path, content=b"stale").status_code == 403
-                assert client.put(second_path, content=png_bytes()).status_code == 200
+                assert put_upload(client, first["upload"], b"stale").status_code == 403
+                assert put_upload(client, second["upload"],
+                                  png_bytes()).status_code == 200
     finally:
         monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
         get_settings.cache_clear()
@@ -578,8 +610,8 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
                 asyncio.run(_write_blob(storage, first_key, png_bytes()))
                 asyncio.run(_write_blob(storage, first_thumb_key, png_bytes()))
 
-                assert client.put(urlsplit(second["upload"]["url"]).path,
-                                  content=png_bytes()).status_code == 200
+                assert put_upload(client, second["upload"],
+                                  png_bytes()).status_code == 200
                 worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
                                   "width": 512, "height": 512})
                 poll_until(client, job_id, "succeeded")
@@ -609,7 +641,7 @@ def test_a_reported_failure_does_not_leave_its_upload_behind():
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
             key = upload_path.rsplit("/api/v1/files/", 1)[-1]
-            assert client.put(upload_path, content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             storage = jobs.get_storage()
             assert storage.path(key).exists()
 
@@ -639,14 +671,15 @@ def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
                 json={"model_id": "sd-test", "params": {"prompt": "late"}},
             ).json()["job_id"]
             dispatch = worker.receive_json()
-            assert client.put(urlsplit(dispatch["upload"]["url"]).path,
-                              content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes()).status_code == 200
             key = uuid.UUID(job_id)
             superseded = jobs.inflight[key]
             replacement = jobs.InFlight(
                 worker=superseded.worker, storage_key="replacement.png",
                 thumb_storage_key="replacement-thumb.webp",
-                user_id=superseded.user_id, attempt=2,
+                user_id=superseded.user_id, dispatch_token="replacement-token",
+                attempt=2,
             )
             real_storage = jobs.get_storage()
 
@@ -705,7 +738,8 @@ def test_a_rejected_upload_is_not_left_in_storage():
             dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
             key = upload_path.rsplit("/api/v1/files/", 1)[-1]
-            assert client.put(upload_path, content=b"not a png at all").status_code == 200
+            assert put_upload(client, dispatch["upload"],
+                              b"not a png at all").status_code == 200
             storage = jobs.get_storage()
             assert storage.path(key).exists()
 
@@ -751,8 +785,8 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
                 # The retry's output is rejected: the key is still inflight so
                 # the PUT succeeds, and the invalid bytes fail verification.
                 second_path = urlsplit(second["upload"]["url"]).path
-                assert client.put(second_path,
-                                  content=b"not a png at all").status_code == 200
+                assert put_upload(client, second["upload"],
+                                  b"not a png at all").status_code == 200
                 second_key = second_path.rsplit("/api/v1/files/", 1)[-1]
 
                 worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
@@ -831,10 +865,9 @@ def test_recover_requeues_running_and_dispatches_queued():
             assert first["type"] == "dispatch_job"
             first_id = first["job_id"]
 
-            upload_path = urlsplit(first["upload"]["url"]).path
-            assert client.put(upload_path, content=png_bytes()).status_code == 200
-            thumb_path = urlsplit(first["thumb_upload"]["url"]).path
-            assert client.put(thumb_path, content=b"thumb-bytes").status_code == 200
+            assert put_upload(client, first["upload"], png_bytes()).status_code == 200
+            assert put_upload(client, first["thumb_upload"],
+                              webp_bytes()).status_code == 200
             worker.send_json({"type": "job_done", "job_id": first_id,
                               "gpu_ms": 1, "width": 512, "height": 512,
                               "has_thumbnail": True})
@@ -859,8 +892,7 @@ def test_img2img_dispatch_includes_input_url():
             source_job_id = created.json()["job_id"]
 
             dispatch = worker.receive_json()
-            upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 100, "width": 512, "height": 512})
             source_job = poll_until(client, source_job_id, "succeeded")
@@ -880,8 +912,8 @@ def test_img2img_dispatch_includes_input_url():
             input_path = urlsplit(i2i_dispatch["input"]["url"]).path
             assert client.get(input_path).content == png_bytes()
 
-            assert client.put(urlsplit(i2i_dispatch["upload"]["url"]).path,
-                              content=png_bytes()).status_code == 200
+            assert put_upload(client, i2i_dispatch["upload"],
+                              png_bytes()).status_code == 200
             worker.send_json({"type": "job_done", "job_id": edit_job_id,
                               "gpu_ms": 200, "width": 512, "height": 512})
             edit_job = poll_until(client, edit_job_id, "succeeded")
@@ -900,8 +932,7 @@ def test_img2img_rejects_model_without_capability():
                                         "params": {"prompt": "seed"}})
             job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
-            upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "gpu_ms": 1, "width": 512, "height": 512})
             source_job = poll_until(client, job_id, "succeeded")
@@ -937,8 +968,8 @@ def test_upscale_dispatch_includes_input_url():
                                         "params": {"prompt": "seed"}})
             source_job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
-            assert client.put(urlsplit(dispatch["upload"]["url"]).path,
-                              content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes()).status_code == 200
             worker.send_json({"type": "job_done", "job_id": source_job_id,
                               "gpu_ms": 50, "width": 512, "height": 512})
             source_asset_id = poll_until(client, source_job_id, "succeeded")["assets"][0]["id"]
@@ -969,8 +1000,8 @@ def test_upscale_dispatch_includes_input_url():
 
             # Upload the real upscaled image: the asset row takes its
             # dimensions from the object now, not from the worker's claim.
-            assert client.put(urlsplit(up_dispatch["upload"]["url"]).path,
-                              content=png_bytes(1024, 1024)).status_code == 200
+            assert put_upload(client, up_dispatch["upload"],
+                              png_bytes(1024, 1024)).status_code == 200
             worker.send_json({"type": "job_done", "job_id": upscale_job_id,
                               "gpu_ms": 400, "width": 1024, "height": 1024})
             done = poll_until(client, upscale_job_id, "succeeded")
@@ -1069,8 +1100,7 @@ def test_job_phase_timings_persisted():
                                         "params": {"prompt": "timing"}})
             job_id = created.json()["job_id"]
             dispatch = worker.receive_json()
-            upload_path = urlsplit(dispatch["upload"]["url"]).path
-            assert client.put(upload_path, content=png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
 
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "gpu_ms": 900, "input_fetch_ms": 50,
@@ -1139,8 +1169,7 @@ def _wait_for_dispatch(worker, expected: set[str], timeout=5.0) -> dict:
 
 
 def _finish_job(client, worker, dispatch: dict) -> None:
-    upload_path = urlsplit(dispatch["upload"]["url"]).path
-    assert client.put(upload_path, content=png_bytes()).status_code == 200
+    assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
     worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
                       "gpu_ms": 1, "width": 512, "height": 512})
     poll_until(client, dispatch["job_id"], "succeeded")
@@ -2144,6 +2173,7 @@ def test_non_finite_progress_is_ignored():
     job_id = uuid.uuid4()
     jobs.inflight[job_id] = jobs.InFlight(
         worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+        dispatch_token="token",
     )
     try:
         for unusable in (float("nan"), float("inf"), 10 ** 400, [1], {"a": 1}, None):
@@ -2193,6 +2223,7 @@ def test_job_done_with_unusable_numbers_leaves_the_job_recoverable():
         job_id = uuid.uuid4()
         jobs.inflight[job_id] = jobs.InFlight(
             worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+            dispatch_token="token",
         )
         try:
             asyncio.run(jobs.on_worker_message(worker, {
@@ -2227,3 +2258,167 @@ def test_peer_uuid_rejects_a_non_string_id():
         except realtime.ProtocolError:
             continue
         raise AssertionError(f"{bad!r} was accepted as an id")
+
+
+@pytest.mark.db
+def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
+    """A stall requeue can hand a job back to the same Worker object, so the
+    `current.worker is worker` identity check cannot separate attempt one from
+    attempt two. Only the per-dispatch token can (issue #247).
+
+    The requeue itself is driven here rather than waited for: the sweeper's
+    window is milliseconds wide and the point of the test is the token, not
+    the timing. test_stalled_job_requeues_once covers the real requeue.
+    """
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-stale-token")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "token"}},
+            ).json()["job_id"]
+            dispatch_for(worker, job_id)
+
+            # What a requeue to the same worker leaves behind: a new entry,
+            # same Worker object, new key, new token.
+            key = uuid.UUID(job_id)
+            superseded = jobs.inflight[key]
+            second_keys = jobs.storage_keys_for_attempt(superseded.user_id, key, 2)
+            jobs.inflight[key] = jobs.InFlight(
+                worker=superseded.worker, storage_key=second_keys[0],
+                thumb_storage_key=second_keys[1], user_id=superseded.user_id,
+                dispatch_token="second-attempt-token", attempt=2,
+            )
+            current = jobs.inflight[key]
+            assert current.dispatch_token != superseded.dispatch_token
+
+            # The superseded attempt reports success. It knows the job id and
+            # holds the same socket, and must still not be believed.
+            asyncio.run(jobs.on_worker_message(current.worker, {
+                "type": "job_done", "job_id": job_id,
+                "dispatch_token": superseded.dispatch_token,
+                "gpu_ms": 1, "width": 512, "height": 512,
+            }))
+            assert jobs.inflight.get(key) is current
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
+
+            # The live attempt's own token is believed.
+            put = client.put(
+                f"/api/v1/files/{current.storage_key}", content=png_bytes(),
+                headers={"X-Upload-Token": current.dispatch_token},
+            )
+            assert put.status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": current.dispatch_token,
+                              "gpu_ms": 2, "width": 512, "height": 512})
+            assert poll_until(client, job_id, "succeeded")["gpu_ms"] == 2
+
+
+@pytest.mark.db
+def test_a_worker_that_sends_no_dispatch_token_is_still_believed():
+    """The N-1 promise: an older worker echoes no token and must still be able
+    to finish a job (docs/connection-handling.md)."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-no-token")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "n-1"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "gpu_ms": 7, "width": 512, "height": 512})
+            assert poll_until(client, job_id, "succeeded")["gpu_ms"] == 7
+
+
+@pytest.mark.db
+def test_an_upload_needs_the_token_of_its_own_dispatch():
+    """The key is derivable by anyone who was ever dispatched the job; the
+    token is not (issue #247)."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-upload-token")
+            first_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "one"}},
+            ).json()["job_id"]
+            first = dispatch_for(worker, first_id)
+            second_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "two"}},
+            ).json()["job_id"]
+            second = dispatch_for(worker, second_id)
+            assert first_id != second_id
+
+            path = urlsplit(first["upload"]["url"]).path
+            assert client.put(path, content=png_bytes()).status_code == 403
+            assert client.put(path, content=png_bytes(),
+                              headers={"X-Upload-Token": ""}).status_code == 403
+            # Another live dispatch's token does not carry to this key.
+            assert client.put(path, content=png_bytes(), headers={
+                "X-Upload-Token": second["upload"]["headers"]["X-Upload-Token"],
+            }).status_code == 403
+            assert put_upload(client, first["upload"], png_bytes()).status_code == 200
+
+            # Finish both: a job left running is requeued when this socket
+            # closes and its dispatch would arrive in the next test's socket.
+            for job, ident in ((first, first_id), (second, second_id)):
+                if job is second:
+                    assert put_upload(client, job["upload"],
+                                      png_bytes()).status_code == 200
+                worker.send_json({"type": "job_done", "job_id": ident,
+                                  "dispatch_token": job["dispatch_token"],
+                                  "gpu_ms": 1, "width": 512, "height": 512})
+                poll_until(client, ident, "succeeded")
+
+
+@pytest.mark.db
+def test_an_output_is_written_once():
+    """Verification proves what the object was at inspection time; a second
+    write would make that proof worthless (issue #249)."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-write-once")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "once"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes(320, 240)).status_code == 200
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes(64, 64)).status_code == 409
+            served = client.get(urlsplit(dispatch["upload"]["url"]).path)
+            assert served.content == png_bytes(320, 240)
+            worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 1, "width": 320, "height": 240})
+            poll_until(client, dispatch["job_id"], "succeeded")
+
+
+@pytest.mark.db
+def test_a_thumbnail_that_is_not_a_webp_is_dropped_rather_than_served():
+    """has_thumbnail used to create the row on the worker's word alone, so a
+    worker could have the studio serve arbitrary bytes as an image."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-bad-thumb")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "thumb"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["thumb_upload"],
+                              b"not a webp at all").status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 3, "width": 512, "height": 512,
+                              "has_thumbnail": True})
+
+            job = poll_until(client, job_id, "succeeded")
+            assert len(job["assets"]) == 1
+            assert job["assets"][0]["thumbnail_url"] is None
+            # The rejected object is collected, not left addressable.
+            assert client.get(urlsplit(dispatch["thumb_upload"]["url"]).path).status_code == 404

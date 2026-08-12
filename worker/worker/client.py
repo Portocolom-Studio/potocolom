@@ -154,6 +154,11 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     """One queued job: generate, upload to the given target, report the result.
     Failures are reported, never raised: the connection outlives the job."""
     job_id = control["job_id"]
+    # Echoed on every message about this job so the API can tell this dispatch
+    # from an earlier attempt of the same job that reached the same worker
+    # (docs/connection-handling.md). An older API sends none, so send none.
+    token = control.get("dispatch_token")
+    stamp = {"dispatch_token": token} if isinstance(token, str) and token else {}
     job_started = time.monotonic()
     progress_tasks: list[asyncio.Task[None]] = []
     last_fraction = 0.0
@@ -166,7 +171,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
     async def send_progress(fraction: float) -> None:
         with suppress(websockets.WebSocketException):
             await ws.send(json.dumps({"type": "job_progress", "job_id": job_id,
-                                      "progress": round(fraction, 4)}))
+                                      "progress": round(fraction, 4), **stamp}))
 
     async def progress_keepalive() -> None:
         while True:
@@ -219,7 +224,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                     logger.exception("job %s thumbnail failed; delivering without one",
                                      job_id)
         postprocess_ms = int((time.monotonic() - post_start) * 1000)
-        done_msg: dict = {"type": "job_done", "job_id": job_id,
+        done_msg: dict = {"type": "job_done", "job_id": job_id, **stamp,
                           "gpu_ms": result.gpu_ms,
                           "input_fetch_ms": input_fetch_ms,
                           "load_ms": result.load_ms,
@@ -244,7 +249,7 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
         logger.exception("job %s failed", job_id)
         with suppress(websockets.WebSocketException):
             await ws.send(json.dumps({"type": "job_failed", "job_id": job_id,
-                                      "reason": str(error)}))
+                                      "reason": str(error), **stamp}))
     finally:
         keepalive_task.cancel()
         with suppress(asyncio.CancelledError):

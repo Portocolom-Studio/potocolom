@@ -43,8 +43,9 @@ def test_local_storage_urls(tmp_path):
     target = asyncio.run(storage.upload_target("u/j.png"))
     assert target.url == "http://worker/api/v1/files/u/j.png"
     assert target.headers == {"Content-Type": "image/png"}
-    thumb_target = asyncio.run(storage.upload_target("u/j-thumb.webp"))
-    assert thumb_target.headers == {"Content-Type": "image/webp"}
+    # The dispatch token rides in the headers the worker echoes (issue #247).
+    tokened = asyncio.run(storage.upload_target("u/j.png", "tok"))
+    assert tokened.headers == {"Content-Type": "image/png", "X-Upload-Token": "tok"}
     assert asyncio.run(storage.url("u/j.webp")) == "http://browser/api/v1/files/u/j.webp"
     download_url = asyncio.run(
         storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
@@ -154,9 +155,14 @@ def test_s3_storage_presigns_offline():
     assert target.url.startswith("http://localhost:9100/")
     assert "u/j.png" in target.url
     assert "X-Amz-Signature" in target.url
-    assert target.headers == {"Content-Type": "image/png"}
+    # If-None-Match is signed as well as sent: the bucket refuses a second
+    # write with 412, so a presigned PUT cannot be replayed over an object the
+    # API has already verified (issue #249).
+    assert target.headers == {"Content-Type": "image/png", "If-None-Match": "*"}
+    signed = parse_qs(urlsplit(target.url).query)["X-Amz-SignedHeaders"][0]
+    assert "if-none-match" in signed
     thumb_target = asyncio.run(storage.upload_target("u/j-thumb.webp"))
-    assert thumb_target.headers == {"Content-Type": "image/webp"}
+    assert thumb_target.headers == {"Content-Type": "image/webp", "If-None-Match": "*"}
     # Browser-facing image URL (SPA <img src>), not the worker upload target.
     view = asyncio.run(storage.url("u/j.png"))
     assert view.startswith("http://localhost:9100/")

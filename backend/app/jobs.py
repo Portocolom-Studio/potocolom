@@ -10,10 +10,12 @@ the queue is rebuilt from them on startup.
 
 import asyncio
 import heapq
+import hmac
 import json
 import logging
 import math
 import re
+import secrets
 import time
 import unicodedata
 import uuid
@@ -89,6 +91,7 @@ class InFlight:
     storage_key: str
     thumb_storage_key: str
     user_id: uuid.UUID
+    dispatch_token: str
     attempt: int = 1
 
 
@@ -96,10 +99,20 @@ inflight: dict[uuid.UUID, InFlight] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
 
-def storage_key_in_flight(key: str) -> bool:
-    for job_id, entry in inflight.items():
-        expected = storage_keys_for_attempt(entry.user_id, job_id, entry.attempt)
-        if key in expected:
+def upload_authorized(key: str, token: object) -> bool:
+    """Whether this key may be written by whoever presented this token.
+
+    The key alone is not authority: every part of it is derivable by any
+    worker that was ever dispatched this job, so attempt one could overwrite
+    what attempt two uploaded. The token is minted per dispatch and only the
+    worker that received that dispatch has it.
+    """
+    if not isinstance(token, str) or not token:
+        return False
+    for entry in inflight.values():
+        if key not in (entry.storage_key, entry.thumb_storage_key):
+            continue
+        if hmac.compare_digest(token, entry.dispatch_token):
             return True
     return False
 
@@ -1120,14 +1133,15 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         storage_key, thumb_storage_key = storage_keys_for_attempt(
             job.user_id, job.id, job.attempt
         )
-        target = await get_storage().upload_target(storage_key)
-        thumb_target = await get_storage().upload_target(thumb_storage_key)
+        dispatch_token = secrets.token_urlsafe(16)
+        target = await get_storage().upload_target(storage_key, dispatch_token)
+        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.jobs_in_flight += 1
         inflight[job.id] = InFlight(
             worker=worker, storage_key=storage_key, thumb_storage_key=thumb_storage_key,
-            user_id=job.user_id, attempt=job.attempt,
+            user_id=job.user_id, dispatch_token=dispatch_token, attempt=job.attempt,
         )
         last_progress_at[job_id] = time.monotonic()
         job.state = "running"
@@ -1137,6 +1151,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             "job_id": str(job.id),
             "model_id": job.model_id,
             "params": job.params,
+            "dispatch_token": dispatch_token,
             "upload": {"url": target.url, "headers": target.headers},
             "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
         }
@@ -1176,6 +1191,18 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     current = inflight.get(job_id)
     if current is None or current.worker is not worker:
         return  # stale report from a previous incarnation or attempt
+    # The identity check alone cannot separate two attempts: a stall requeue
+    # can hand the job back to the same Worker object, and then attempt one's
+    # late job_done is indistinguishable from attempt two's. The token is per
+    # dispatch, so it can. An N-1 worker sends none and is still believed
+    # (docs/connection-handling.md), which is the compatibility floor.
+    presented = control.get("dispatch_token")
+    if presented is not None:
+        if (not isinstance(presented, str)
+                or not hmac.compare_digest(presented, current.dispatch_token)):
+            logger.warning("worker %s sent a stale dispatch token for job %s; ignored",
+                           worker.id, job_id)
+            return
     if control["type"] == "job_progress":
         # float() raises TypeError on the list or dict json.loads accepts, and
         # OverflowError on the arbitrary-precision int it also accepts.
@@ -1194,6 +1221,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         publish(job_id, {"state": "running", "progress": progress})
         return
     image_dimensions = (0, 0)
+    has_thumbnail = control.get("has_thumbnail") is True
     if control["type"] == "job_done":
         gpu_ms = _worker_int(control.get("gpu_ms"))
         phase_ms = {
@@ -1233,6 +1261,22 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
             return
         image_dimensions = (image.width, image.height)
+        if has_thumbnail:
+            # The thumbnail row used to exist on the worker's word alone, so a
+            # worker could have the studio serve arbitrary bytes as an image.
+            # A bad one is cosmetic, so it costs the row and the object, never
+            # the job.
+            try:
+                thumb = await get_storage().image_info(current.thumb_storage_key)
+            except Exception:
+                logger.exception("could not inspect thumbnail for job %s", job_id)
+                thumb = None
+            if inflight.get(job_id) is not current:
+                return  # a requeue replaced this attempt during the inspection
+            if thumb is None or thumb.size <= 0 or thumb.content_type != "image/webp":
+                logger.warning("worker %s claimed a thumbnail for job %s that is not a "
+                               "usable WebP; dropping it", worker.id, job_id)
+                has_thumbnail = False
 
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
@@ -1266,7 +1310,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             )
             session.add(full)
             await session.flush()
-            if control.get("has_thumbnail") is True:
+            if has_thumbnail:
                 edge = THUMBNAIL_MAX_EDGE
                 thumb_width = min(width, edge) if width else 0
                 thumb_height = min(height, edge) if height else 0
@@ -1285,8 +1329,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 ))
             await session.commit()
         orphans = []
-        if control.get("has_thumbnail") is not True:
-            # This attempt may have uploaded a thumbnail it did not report.
+        if not has_thumbnail:
+            # This attempt may have uploaded a thumbnail it did not report, or
+            # reported one the inspection below rejected.
             orphans.append(entry.thumb_storage_key)
         # Attempts no longer share one key, so a retry leaves the earlier
         # attempt's blobs behind instead of overwriting them. Nothing else

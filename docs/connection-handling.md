@@ -34,9 +34,11 @@ Fleet connection, worker to API:
 | `heartbeat` | `slots_in_use`, `loaded_models`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
-| `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
-| `job_done` | `job_id`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
-| `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
+| `job_progress` | `job_id`, `progress`, `dispatch_token` | fraction of denoising steps done |
+| `job_done` | `job_id`, `dispatch_token`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
+| `job_failed` | `job_id`, `dispatch_token`, `reason` | the job fails visibly; only worker death triggers the one retry |
+
+`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. A message that omits the field is accepted, because an N-1 worker does not send it; that acceptance goes away when the compatibility floor next moves.
 
 Fleet connection, API to worker:
 
@@ -46,7 +48,7 @@ Fleet connection, API to worker:
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
 | `close_session` | `session_id` | release the slot |
-| `dispatch_job` | `job_id`, `model_id`, `params`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. Older workers ignore the optional fields (N-1 safe). |
+| `dispatch_job` | `job_id`, `model_id`, `params`, `dispatch_token`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. `dispatch_token` identifies this dispatch: it is echoed on the messages below and, on the local storage backend, rides in `upload.headers` as `X-Upload-Token` because the key alone is derivable by any worker that ever held the job. Older workers ignore the optional fields (N-1 safe). |
 
 Realtime connection, browser to API:
 
