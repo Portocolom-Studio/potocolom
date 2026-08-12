@@ -58,11 +58,18 @@ class Manifest(BaseModel):
 
 # What the worker serves when no models directory is configured: every
 # protocol path stays runnable without a GPU (scripts/simulate.py, CI).
+#
+# The prompt is required here because every shipped realtime manifest requires
+# it. A permissive schema makes this the easier contract to build a client
+# against, and the API then refuses that client 4000 for params it never
+# learned to send.
 SIMULATED_MANIFEST = Manifest(
     id="sd-sim",
     name="Simulated",
     capabilities=["text_to_image", "image_to_image", "realtime"],
-    parameters={"type": "object", "properties": {"prompt": {"type": "string"}}},
+    parameters={"type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"]},
 )
 
 

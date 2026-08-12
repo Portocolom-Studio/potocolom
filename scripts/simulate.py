@@ -114,7 +114,14 @@ class BrowserSim:
                     self.resumed.set()
 
     async def open(self, model_id: str) -> None:
-        await self.ws.send(json.dumps({"type": "open", "model_id": model_id}))
+        # params must satisfy the model's schema or the API refuses the session
+        # with 4000 before assigning a worker. A real drawing client has the
+        # same obligation, so this sends what one would send.
+        await self.ws.send(json.dumps({
+            "type": "open",
+            "model_id": model_id,
+            "params": {"prompt": "a red house on a hill"},
+        }))
         ready = json.loads(await self.ws.recv())
         assert ready["type"] == "ready", ready
         self.session = uuid.UUID(ready["session_id"])
