@@ -28,6 +28,16 @@ def available() -> dict[str, Manifest]:
             # benchmark_only=true for the same id (first-connect used to win).
             existing = manifests.get(manifest.id)
             if existing is None or (existing.benchmark_only and not manifest.benchmark_only):
+                # A live heartbeat measurement supersedes the calibration
+                # estimate from hello, but only for the worker that supplied
+                # this manifest. Copied rather than mutated so the worker's
+                # manifest stays pristine. public() copies again for
+                # capability narrowing, and the two must compose: a model
+                # that is both narrowed and measured keeps both, because each
+                # copy carries the other's change forward.
+                live = worker.frame_p95_ms.get(manifest.id)
+                if live is not None:
+                    manifest = manifest.model_copy(update={"realtime_p95_ms": live})
                 manifests[manifest.id] = manifest
     return manifests
 

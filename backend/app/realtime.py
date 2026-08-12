@@ -250,6 +250,38 @@ def frame_session_id(data: bytes) -> uuid.UUID:
     return uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES])
 
 
+# A live frame p95 is worker-supplied data that reaches a browser, so the
+# ceiling only needs to catch absurd values: a slow frame is still an honest
+# measurement, while a number past this means a broken or hostile worker.
+FRAME_P95_MAX_MS = 60_000
+
+
+def parse_frame_p95(raw: object) -> dict[str, int] | None:
+    """Validate a heartbeat's live per-model frame p95s; None means drop it.
+
+    Accepts only a dict whose keys are strings and whose values are integers
+    (or floats that are whole numbers) greater than zero and below the
+    ceiling. Anything else is dropped silently rather than raised: a
+    malformed heartbeat must not kill the fleet connection.
+    """
+    if not isinstance(raw, dict):
+        return None
+    measured: dict[str, int] = {}
+    for model_id, value in raw.items():
+        if not isinstance(model_id, str):
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, float):
+            if not value.is_integer():
+                return None
+            value = int(value)
+        if not isinstance(value, int) or value <= 0 or value > FRAME_P95_MAX_MS:
+            return None
+        measured[model_id] = value
+    return measured
+
+
 @dataclass
 class Worker:
     id: str
@@ -261,6 +293,9 @@ class Worker:
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
+    # Live per-model frame p95 from heartbeats; supersedes the calibration
+    # value the worker sent in hello (registry.available()).
+    frame_p95_ms: dict[str, int] = field(default_factory=dict)
 
     @property
     def models(self) -> list[str]:
@@ -542,6 +577,9 @@ async def fleet(ws: WebSocket) -> None:
                             memory_mode = control.get("memory_mode")
                             if isinstance(memory_mode, str):
                                 worker.memory_mode = memory_mode
+                        measured = parse_frame_p95(control.get("frame_p95_ms"))
+                        if measured is not None:
+                            worker.frame_p95_ms = measured
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )

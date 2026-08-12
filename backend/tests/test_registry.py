@@ -131,6 +131,76 @@ def test_models_endpoint_without_measurement_reports_null():
     assert entry["realtime_p95_ms"] is None
 
 
+def test_available_replaces_hello_measurement_with_the_live_value():
+    worker = realtime.Worker(
+        id="w-live", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="vega-rt", name="VegaRT",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=8, realtime_p95_ms=408)],
+        frame_p95_ms={"vega-rt": 333},
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-live"] = worker
+        advertised = registry.available()["vega-rt"]
+        # One field with one meaning: the live number replaced the
+        # calibration value from hello, not a second field layered on.
+        assert advertised.realtime_p95_ms == 333
+        assert advertised.capabilities == ["text_to_image", "image_to_image", "realtime"]
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_available_keeps_calibration_when_no_live_measurement():
+    worker = realtime.Worker(
+        id="w-cal", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="vega-rt", name="VegaRT",
+                            capabilities=["realtime"], realtime_p95_ms=408)],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-cal"] = worker
+        advertised = registry.available()["vega-rt"]
+        assert advertised.realtime_p95_ms == 408
+        # No live measurement means no copy: the worker's own manifest is
+        # served unchanged.
+        assert advertised is worker.manifests[0]
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_public_composes_live_measurement_with_capability_narrowing():
+    # The case most likely to break: a manifest that is both
+    # capability-narrowed (studio_capabilities) and live-measured must keep
+    # both in public(). available() copies for the live number and public()
+    # copies again for narrowing; one must not lose the other.
+    worker = realtime.Worker(
+        id="w-compose", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="sdxl-turbo", name="SDXL Turbo",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=10, studio_capabilities=["realtime"],
+                            realtime_p95_ms=408)],
+        frame_p95_ms={"sdxl-turbo": 333},
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-compose"] = worker
+        live = registry.available()["sdxl-turbo"]
+        assert live.realtime_p95_ms == 333
+        assert live.capabilities == ["text_to_image", "image_to_image", "realtime"]
+        narrowed = registry.public()["sdxl-turbo"]
+        assert narrowed.capabilities == ["realtime"]
+        assert narrowed.realtime_p95_ms == 333
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
 def test_public_narrows_studio_capabilities_but_available_keeps_full():
     worker = realtime.Worker(
         id="w-narrow", ws=None, realtime_slots=1,

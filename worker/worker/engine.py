@@ -15,6 +15,7 @@ import math
 import os
 import time
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
@@ -47,6 +48,13 @@ POISON_EVICT_COOLDOWN_S = 30.0
 # Timing samples after the discarded warmup pass; nearest-rank p95 over
 # these tolerates one outlier (19th of 20) instead of becoming the max.
 CALIBRATION_SAMPLES = 20
+# Live frame observations supersede the calibration estimate once a session
+# has produced enough to mean anything: a handful of frames is not a
+# distribution, and the first frames of a session are the least
+# representative ones. The window is bounded so a slow early session cannot
+# keep dragging a model's advertised p95 after it speeds up.
+OBSERVED_FRAME_SAMPLES = 20
+OBSERVED_FRAME_WINDOW = 120
 # Pillow work was implicitly bounded to one operation by the GPU lock before
 # this change moved it outside that lock. Use half the logical CPUs so codec
 # work leaves room in the shared default executor, with a floor of one for
@@ -84,6 +92,8 @@ class Engine(Protocol):
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int: ...
+
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None: ...
 
     def realtime_p95_ms(self, model_id: str) -> int | None: ...
 
@@ -178,6 +188,11 @@ class SimulatedEngine:
         return self.effective_realtime_slots(
             self.measured_manifests([manifest]), configured,
         )
+
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
+        # Simulated engine has no meaningful timings to learn from; a no-op
+        # keeps its realtime_p95_ms advertising nothing forever.
+        return None
 
     def realtime_p95_ms(self, model_id: str) -> int | None:
         # Simulated engine never measured a frame; nothing to advertise.
@@ -287,6 +302,7 @@ class DiffusersEngine:
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
         self._realtime_p95_ms: dict[str, int] = {}
+        self._observed_frame_ms: dict[str, deque[float]] = {}
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
@@ -653,7 +669,23 @@ class DiffusersEngine:
                 self._realtime_p95_ms.pop(manifest.id, None)
                 return 0
 
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
+        """Record a completed realtime frame's worker-side inference time.
+
+        The window is bounded, so a slow early session stops affecting the
+        advertised p95 once newer frames fill it (OBSERVED_FRAME_WINDOW).
+        """
+        window = self._observed_frame_ms.setdefault(
+            model_id, deque(maxlen=OBSERVED_FRAME_WINDOW))
+        window.append(gpu_ms)
+
     def realtime_p95_ms(self, model_id: str) -> int | None:
+        window = self._observed_frame_ms.get(model_id)
+        if window is not None and len(window) >= OBSERVED_FRAME_SAMPLES:
+            # Real frames supersede the calibration estimate: a handful of
+            # frames is not a distribution, and the first frames of a
+            # session are the least representative ones.
+            return round(_percentile_nearest(list(window), 95.0))
         return self._realtime_p95_ms.get(model_id)
 
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:

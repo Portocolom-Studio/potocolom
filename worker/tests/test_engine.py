@@ -11,6 +11,8 @@ from worker.engine import (
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
     GeneratedFrame,
+    OBSERVED_FRAME_SAMPLES,
+    OBSERVED_FRAME_WINDOW,
     REALTIME_SIZE,
     SimulatedEngine,
     _canvas_to_sketch_map,
@@ -810,6 +812,7 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._last_used = {}
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(
@@ -850,7 +853,60 @@ def test_calibrate_realtime_sets_slots_from_p95():
 def test_realtime_p95_ms_none_before_any_calibration():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     assert engine.realtime_p95_ms("vega-rt") is None
+
+
+def test_observed_frames_below_threshold_keep_the_calibration_value():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {"vega-rt": 408}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES - 1):
+        engine.observe_frame_ms("vega-rt", 600.0)
+    assert engine.realtime_p95_ms("vega-rt") == 408
+
+
+def test_observed_frames_supersede_calibration_with_nearest_rank_p95():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {"vega-rt": 408}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES - 1):
+        engine.observe_frame_ms("vega-rt", 200.4)
+    engine.observe_frame_ms("vega-rt", 900.0)  # one outlier
+    # Nearest-rank p95 of 20 is the 19th ordered sample (200.4, rounded to
+    # 200), not the calibration number and not the outlier.
+    assert engine.realtime_p95_ms("vega-rt") == 200
+
+
+def test_observed_frame_window_drops_the_oldest():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_WINDOW):
+        engine.observe_frame_ms("vega-rt", 900.0)
+    for _ in range(OBSERVED_FRAME_WINDOW):
+        engine.observe_frame_ms("vega-rt", 300.0)
+    # The bounded window dropped the slow early session entirely: unbounded,
+    # the p95 of 240 samples would sit in the 900 ms tail.
+    assert engine.realtime_p95_ms("vega-rt") == 300
+
+
+def test_observed_frames_report_a_value_without_calibration():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES):
+        engine.observe_frame_ms("sdxl-turbo", 250.0)
+    assert engine.realtime_p95_ms("sdxl-turbo") == 250
+
+
+def test_simulated_engine_ignores_frame_observations():
+    engine = SimulatedEngine(0.01)
+    engine.observe_frame_ms("sd-sim", 123.0)
+    engine.observe_frame_ms("sd-sim", 456.0)
+    assert engine.realtime_p95_ms("sd-sim") is None
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
@@ -863,6 +919,7 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine._last_used = {}
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -901,6 +958,7 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine._last_used = {}
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
@@ -930,6 +988,7 @@ def test_calibrate_realtime_skips_cpu_without_frames():
     engine._last_used = {}
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")

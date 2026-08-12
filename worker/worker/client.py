@@ -48,6 +48,17 @@ BACKOFF_JITTER = 0.25
 SEED_BOUND = 2**31 - 1
 
 
+def frame_p95_payload(engine: Engine) -> dict[str, int]:
+    """The live per-model frame p95s for a heartbeat; models with no
+    measurement (never calibrated, or not yet enough observed frames) are
+    omitted."""
+    return {
+        model_id: p95
+        for model_id in engine.loaded_models()
+        if (p95 := engine.realtime_p95_ms(model_id)) is not None
+    }
+
+
 def ensure_seed(params: dict) -> dict:
     """Return params with a session-stable seed, honoring an explicit one.
 
@@ -160,6 +171,10 @@ class SessionRunner:
                 continue
             self.frames += 1
             self.gpu_ms += generated.gpu_ms
+            # The same quantity calibration measures: worker-side inference
+            # time per frame, and the number the 500 ms bar is defined
+            # against. Real frames supersede the calibration estimate.
+            engine.observe_frame_ms(manifest.id, generated.gpu_ms)
             try:
                 await ws.send(
                     bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)
@@ -369,6 +384,9 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 "slots_in_use": len(runners),
                 "loaded_models": engine.loaded_models(),
                 "gpu": gpu,
+                # The API overwrites the calibration estimate with these, so
+                # every loaded model reports what its sessions cost.
+                "frame_p95_ms": frame_p95_payload(engine),
             }))
 
     heartbeat_task = asyncio.create_task(heartbeats())

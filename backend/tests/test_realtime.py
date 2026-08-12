@@ -13,12 +13,14 @@ from app.main import app
 from app.manifests import Manifest
 from app.realtime import (
     CANVAS_FRAME,
+    FRAME_P95_MAX_MS,
     GENERATED_FRAME,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     fleet_token_allowed,
     forwarding_trusts_any_peer,
     origin_allowed,
+    parse_frame_p95,
     peer_is_unroutable,
 )
 from app.settings import get_settings
@@ -753,6 +755,87 @@ def test_heartbeat_does_not_free_committed_slots():
                 refusal = second_ws.receive_json()
                 assert refusal["type"] == "error"
                 assert refusal["code"] == 4003
+
+
+def test_heartbeat_frame_p95_replaces_the_hello_measurement():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        hello_msg = hello(worker_id="w-live", models=("vega-rt",), slots=1)
+        hello_msg["models"][0]["realtime_p95_ms"] = 408
+        worker_ws.send_json(hello_msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        before = client.get("/api/v1/models").json()
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        worker = realtime.workers["w-live"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+        after = client.get("/api/v1/models").json()
+    entry = next(m for m in before if m["id"] == "vega-rt")
+    assert entry["realtime_p95_ms"] == 408
+    entry = next(m for m in after if m["id"] == "vega-rt")
+    assert entry["realtime_p95_ms"] == 333
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-dict",
+    None,
+    {"vega-rt": "slow"},
+    {"vega-rt": 0},
+    {"vega-rt": -1},
+    {"vega-rt": 10**30},
+    {"vega-rt": 1.5},
+])
+def test_malformed_heartbeat_frame_p95_is_ignored_and_connection_survives(bad):
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-badp95", models=("vega-rt",), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 222}})
+        worker = realtime.workers["w-badp95"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 222}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 222}
+
+        # The malformed heartbeat must not close the fleet connection: the
+        # valid heartbeat after it is still processed, and the previous
+        # value stood in the meantime (messages process in order).
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": bad})
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+        assert "w-badp95" in realtime.workers
+
+
+def test_parse_frame_p95_accepts_whole_milliseconds():
+    assert parse_frame_p95({"vega-rt": 333}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": 333.0}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS}) == {"vega-rt": FRAME_P95_MAX_MS}
+    assert parse_frame_p95({}) == {}
+    assert parse_frame_p95({"vega-rt": 333, "sdxl-turbo": 250}) == {
+        "vega-rt": 333, "sdxl-turbo": 250,
+    }
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-dict",
+    None,
+    [],
+    5,
+    {"vega-rt": "slow"},
+    {"vega-rt": 0},
+    {"vega-rt": -1},
+    {"vega-rt": 10**30},
+    {"vega-rt": FRAME_P95_MAX_MS + 1},
+    {"vega-rt": 1.5},
+    {"vega-rt": True},
+    {"vega-rt": None},
+    {7: 100},  # a non-string key
+])
+def test_parse_frame_p95_drops_malformed_payloads(bad):
+    assert parse_frame_p95(bad) is None, bad
 
 
 def test_assign_timeout_releases_the_slot(monkeypatch):

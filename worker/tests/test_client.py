@@ -12,6 +12,7 @@ from worker.client import (
     SEED_BOUND,
     SessionRunner,
     ensure_seed,
+    frame_p95_payload,
     run,
     run_job,
     serve_connection,
@@ -235,6 +236,80 @@ def test_hello_carries_measured_realtime_p95_ms():
                                  manifests, P95Engine()))
     hello = json.loads(socket.sent[0])
     assert hello["models"][0]["realtime_p95_ms"] == 408
+
+
+def test_frame_p95_payload_omits_unmeasured_models():
+    class P95Engine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+            self._measured = {"vega-rt": 412}
+
+        def realtime_p95_ms(self, model_id):
+            return self._measured.get(model_id)
+
+        def loaded_models(self):
+            return ["vega-rt", "sdxl-turbo"]
+
+    assert frame_p95_payload(P95Engine()) == {"vega-rt": 412}
+
+
+def test_heartbeat_carries_live_frame_p95():
+    import time
+
+    class P95Engine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+            self._measured = {"vega-rt": 412}
+
+        def realtime_p95_ms(self, model_id):
+            return self._measured.get(model_id)
+
+        def loaded_models(self):
+            return ["vega-rt", "sdxl-turbo"]
+
+    class HeartbeatSocket(RecordingSocket):
+        def __init__(self):
+            # One message so the connection loop is live while the heartbeat
+            # task runs, then it blocks until the test releases it.
+            super().__init__([json.dumps({"type": "gpu_status", "request_id": "r1"})])
+            self.release = asyncio.Event()
+
+        async def __anext__(self):
+            if self.messages:
+                return self.messages.pop(0)
+            await self.release.wait()
+            raise StopAsyncIteration
+
+    socket = HeartbeatSocket()
+    manifests = [Manifest(id="vega-rt", name="VegaRT",
+                          capabilities=["text_to_image", "image_to_image", "realtime"],
+                          min_vram_gb=8),
+                 Manifest(id="sdxl-turbo", name="SDXL Turbo",
+                          capabilities=["text_to_image", "image_to_image", "realtime"],
+                          min_vram_gb=10)]
+
+    async def scenario():
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-hb", heartbeat_seconds=0.01),
+            manifests, P95Engine()))
+        heartbeat = None
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            for message in socket.sent:
+                if isinstance(message, str):
+                    payload = json.loads(message)
+                    if payload.get("type") == "heartbeat":
+                        heartbeat = payload
+            if heartbeat is not None:
+                break
+            await asyncio.sleep(0.005)
+        assert heartbeat is not None, "no heartbeat was sent"
+        # The measured model is carried; the unmeasured one is omitted.
+        assert heartbeat["frame_p95_ms"] == {"vega-rt": 412}
+        socket.release.set()
+        await task
+
+    asyncio.run(scenario())
 
 
 def test_rejected_registration_raises_cleanly():
