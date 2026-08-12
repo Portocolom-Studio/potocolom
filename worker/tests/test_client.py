@@ -9,7 +9,9 @@ from PIL import Image
 from worker.client import (
     FRAME_HEADER_BYTES,
     RegistrationRejected,
+    SEED_BOUND,
     SessionRunner,
+    ensure_seed,
     run,
     run_job,
     serve_connection,
@@ -25,6 +27,28 @@ class FakeSocket:
 
     async def send(self, data):
         self.sent.append(data)
+
+
+def test_ensure_seed_keeps_explicit_integer_seed():
+    params = {"prompt": "x", "seed": 42}
+    assert ensure_seed(params) is params
+    assert params["seed"] == 42
+
+
+def test_ensure_seed_adds_integer_seed_within_bound():
+    params = ensure_seed({"prompt": "x"})
+    assert isinstance(params["seed"], int)
+    assert 0 <= params["seed"] < SEED_BOUND
+    assert "prompt" in params
+
+
+def test_ensure_seed_differs_between_sessions():
+    assert ensure_seed({})["seed"] != ensure_seed({})["seed"]
+
+
+def test_ensure_seed_non_integer_seed_is_replaced():
+    params = ensure_seed({"seed": "seven"})
+    assert isinstance(params["seed"], int)
 
 
 def test_latest_input_wins():

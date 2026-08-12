@@ -43,6 +43,25 @@ BACKOFF_INITIAL = 1.0
 BACKOFF_CAP = 30.0
 BACKOFF_JITTER = 0.25
 
+# One bound for every session seed: large enough that torch.Generator accepts
+# it comfortably, small enough that consecutive sessions never collide by luck.
+SEED_BOUND = 2**31 - 1
+
+
+def ensure_seed(params: dict) -> dict:
+    """Return params with a session-stable seed, honoring an explicit one.
+
+    A realtime session renders the same canvas the same way on every frame:
+    a fresh latent per frame would re-roll the whole image when nothing
+    changed (measured at 85.9 percent of pixels). An explicit seed from the
+    client is kept as-is so a session can be reproduced exactly.
+    """
+    if isinstance(params.get("seed"), int):
+        return params
+    seeded = dict(params)
+    seeded["seed"] = random.randrange(SEED_BOUND)
+    return seeded
+
 
 class LockedWebSocket:
     """Serialize ws.send calls; cheap insurance against concurrent writers."""
@@ -359,7 +378,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         manifest = by_id[control["model_id"]]
                         runners[session_id] = SessionRunner(
                             session_id, ws, engine, manifest,
-                            manifest.with_defaults(control.get("params") or {}))
+                            ensure_seed(manifest.with_defaults(control.get("params") or {})))
                         await ws.send(json.dumps({"type": "session_ready",
                                                   "session_id": control["session_id"]}))
                     elif control["type"] == "close_session":

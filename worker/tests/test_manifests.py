@@ -27,16 +27,19 @@ def test_simulated_manifest_requires_prompt():
 
 def test_load_manifests_and_wire_shape(tmp_path):
     (tmp_path / "sd-turbo.json").write_text(
-        json.dumps({**SD_TURBO, "quantize": "text_encoder_3:int8"})
+        json.dumps({**SD_TURBO, "quantize": "text_encoder_3:int8",
+                    "t2i_adapter": "TencentARC/t2i-adapter-sketch-sdxl-1.0"})
     )
     manifests = load_manifests(str(tmp_path))
     assert [m.id for m in manifests] == ["sd-turbo"]
     assert manifests[0].quantize == "text_encoder_3:int8"
+    assert manifests[0].t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
     wire = manifests[0].wire()
     assert wire["capabilities"] == ["text_to_image", "realtime"]
     assert wire["prompt_token_limit"] == 77  # the studio warning reads this
     assert "source" not in wire  # weight locations stay worker side
     assert "quantize" not in wire
+    assert "t2i_adapter" not in wire
 
 
 def test_malformed_quantize_is_loud(tmp_path):
@@ -123,6 +126,33 @@ def test_shipped_manifests_load():
     assert fast.source.endswith("realesr-general-x4v3.pth")
     assert fast.min_vram_gb == 1
     assert fast.parameters["properties"]["factor"]["enum"] == [2, 4]
+
+
+def test_vega_rt_declares_sketch_adapter_and_structure_strength():
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    vega = next(m for m in load_manifests(str(models_dir)) if m.id == "vega-rt")
+    assert vega.t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
+    properties = vega.parameters["properties"]
+    # The realtime frame switches to conditioned text-to-image when a
+    # manifest names an adapter, and img2img keeps its own meaning for jobs:
+    # structure_strength is new, strength stays.
+    structure_strength = properties["structure_strength"]
+    assert structure_strength["type"] == "number"
+    assert structure_strength["minimum"] == 0
+    assert structure_strength["maximum"] == 1.5
+    assert structure_strength["default"] == 0.7
+    steps = properties["steps"]
+    assert steps["minimum"] == 2
+    assert steps["maximum"] == 8
+    assert steps["default"] == 4
+    assert "strength" in properties
+    # An adapter-only parameter must never appear on a manifest without one.
+    for manifest in load_manifests(str(models_dir)):
+        if manifest.id == "vega-rt":
+            continue
+        if not manifest.t2i_adapter:
+            assert "structure_strength" not in manifest.parameters.get("properties", {})
+        assert "t2i_adapter" not in manifest.wire()
 
 
 def test_every_prompting_manifest_declares_its_token_window():

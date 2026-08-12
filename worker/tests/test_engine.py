@@ -13,6 +13,7 @@ from worker.engine import (
     GeneratedFrame,
     REALTIME_SIZE,
     SimulatedEngine,
+    _canvas_to_sketch_map,
     encode_webp,
 )
 from worker.manifests import Manifest, SIMULATED_MANIFEST
@@ -251,6 +252,25 @@ def test_sdxl_pooled_embedding_comes_from_first_chunk():
     assert kwargs["prompt_embeds"].shape == kwargs["negative_prompt_embeds"].shape
     assert kwargs["pooled_prompt_embeds"].shape == (1, 6)
     assert kwargs["pooled_prompt_embeds"].marker == 10
+
+
+def test_canvas_to_sketch_map_inverts_stroke_polarity():
+    """The T2I-Adapter wants light strokes on black; the canvas is dark
+    strokes on white. Sample a stroke pixel and a background pixel so an
+    inverted (or missing) conversion fails rather than passing by accident."""
+    from PIL import ImageDraw
+
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.line((0, 0, REALTIME_SIZE, REALTIME_SIZE), fill=(0, 0, 0), width=8)
+    draw.line((REALTIME_SIZE, 0, 0, REALTIME_SIZE), fill=(0, 0, 0), width=8)
+
+    sketch = _canvas_to_sketch_map(canvas)
+
+    assert sketch.size == (REALTIME_SIZE, REALTIME_SIZE)
+    assert sketch.mode == "RGB"
+    assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 2)) == (255, 255, 255)
+    assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 4)) == (0, 0, 0)
 
 
 def test_simulated_gpu_lifecycle():
