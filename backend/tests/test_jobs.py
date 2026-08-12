@@ -715,6 +715,64 @@ def test_a_rejected_upload_is_not_left_in_storage():
             assert not storage.path(key).exists(), "rejected upload was left behind"
 
 
+@pytest.mark.db
+def test_a_rejected_retry_collects_every_attempt(monkeypatch):
+    """Per-attempt keys stop a stale worker overwriting the winning output, and
+    start leaking: a stalled attempt's blobs are overwritten by nothing and
+    named by no asset row, and when the retry is then rejected, the success
+    path never runs. The rejection path is the only collector those blobs have,
+    so it must walk every attempt, not just the rejected one; a first-attempt
+    test proves only the loop's last iteration.
+    """
+    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-rejected-retry")
+                job_id = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "rejected retry"}},
+                ).json()["job_id"]
+                first = worker.receive_json()
+                first_path = urlsplit(first["upload"]["url"]).path
+                first_thumb = urlsplit(first["thumb_upload"]["url"]).path
+
+                # The first attempt uploaded before it stalled.
+                poll_until_attempt(client, job_id, 2, timeout=3.0)
+                second = worker.receive_json()
+                storage = jobs.get_storage()
+                first_key = first_path.rsplit("/api/v1/files/", 1)[-1]
+                first_thumb_key = first_thumb.rsplit("/api/v1/files/", 1)[-1]
+                asyncio.run(_write_blob(storage, first_key, png_bytes()))
+                asyncio.run(_write_blob(storage, first_thumb_key, png_bytes()))
+
+                # The retry's output is rejected: the key is still inflight so
+                # the PUT succeeds, and the invalid bytes fail verification.
+                second_path = urlsplit(second["upload"]["url"]).path
+                assert client.put(second_path,
+                                  content=b"not a png at all").status_code == 200
+                second_key = second_path.rsplit("/api/v1/files/", 1)[-1]
+
+                worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                                  "width": 512, "height": 512})
+                poll_until(client, job_id, "failed")
+                deadline = time.monotonic() + 3
+                keys = (first_key, first_thumb_key, second_key)
+                while time.monotonic() < deadline and any(storage.path(k).exists()
+                                                          for k in keys):
+                    time.sleep(0.05)
+
+                assert not storage.path(first_key).exists(), "stalled attempt left behind"
+                assert not storage.path(first_thumb_key).exists(), \
+                    "stalled attempt's thumbnail left behind"
+                assert not storage.path(second_key).exists(), "rejected upload left behind"
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
+
+
 async def _write_blob(storage, key, data):
     storage.path(key).parent.mkdir(parents=True, exist_ok=True)
     storage.path(key).write_bytes(data)
