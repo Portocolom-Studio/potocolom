@@ -11,6 +11,7 @@ from app.main import app
 from app.settings import Settings
 from app.storage import (
     MAX_IMAGE_EDGE,
+    MAX_PNG_CHUNKS,
     MAX_VERIFY_BYTES,
     LocalStorage,
     S3Storage,
@@ -282,6 +283,33 @@ def test_image_info_refuses_an_oversized_object(tmp_path, monkeypatch):
     assert MAX_VERIFY_BYTES > 1024 * 1024
 
 
+def test_s3_image_info_refuses_an_oversized_object(monkeypatch):
+    """The local PUT route caps upload size, but a presigned S3 PUT constrains
+    bucket, key and content type, never size, so this check is the only bound
+    on how many peer-chosen bytes the API process buffers to verify a
+    completion. The read goes one byte past the bound because read(amt) may
+    return less than amt, and an object exactly at the bound must be admitted
+    while one a byte larger must not. The constant is 64 MiB, so the test
+    patches it down to the size of an object it builds rather than allocating
+    the real bound.
+    """
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    data = png_bytes(5, 7)
+    head, iend = data[:-12], data[-12:]
+    at_limit = head + _chunk(b"prVt", b"pad") + iend
+    one_past = head + _chunk(b"prVt", b"padd") + iend
+    monkeypatch.setattr("app.storage.MAX_VERIFY_BYTES", len(at_limit))
+
+    storage.client = _FakeS3Client(at_limit)
+    info = asyncio.run(storage.image_info("u/j.png"))
+    assert info is not None
+    assert info.size == len(at_limit)
+
+    storage.client = _FakeS3Client(one_past)
+    assert asyncio.run(storage.image_info("u/j.png")) is None
+
+
 def _chunk(kind, body):
     return (struct.pack(">I", len(body)) + kind + body
             + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
@@ -331,6 +359,31 @@ def test_image_info_requires_a_structurally_complete_png(tmp_path):
                                      + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")}.items():
         (tmp_path / f"{name}.png").write_bytes(data)
         assert asyncio.run(storage.image_info(f"{name}.png")) is not None, name
+
+
+def test_image_info_refuses_a_png_past_the_chunk_cap(tmp_path):
+    """A stored object is peer-supplied and the walk's cost is per chunk.
+
+    Bounded only by MAX_VERIFY_BYTES, one object could force millions of chunk
+    iterations (a 64 MiB object of empty chunks is about five million), each
+    seeding a CRC. MAX_PNG_CHUNKS is far beyond any real encoder, so a file
+    past the cap is junk, not an output worth inspecting, and a file exactly at
+    it must still be accepted: the guard is a ceiling on abuse, and an
+    off-by-one in either direction is a real bug.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    sig = b"\x89PNG\r\n\x1a\n"
+    idat = zlib.compress(b"".join(b"\0" + b"\0" * (16 * 3) for _ in range(16)))
+    filler = _chunk(b"prVt", b"")
+    at_cap = (sig + _chunk(b"IHDR", _header(16, 16)) + _chunk(b"IDAT", idat)
+              + filler * (MAX_PNG_CHUNKS - 3) + _chunk(b"IEND", b""))
+    over_cap = (sig + _chunk(b"IHDR", _header(16, 16)) + _chunk(b"IDAT", idat)
+                + filler * (MAX_PNG_CHUNKS - 2) + _chunk(b"IEND", b""))
+
+    (tmp_path / "at-cap.png").write_bytes(at_cap)
+    assert asyncio.run(storage.image_info("at-cap.png")) is not None
+    (tmp_path / "over-cap.png").write_bytes(over_cap)
+    assert asyncio.run(storage.image_info("over-cap.png")) is None
 
 
 def test_max_image_edge_matches_the_largest_real_output():
