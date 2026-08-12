@@ -226,6 +226,11 @@ async def create_generation(
     caps = set(manifest.capabilities)
     if "upscale" in caps and source_asset_id is None:
         raise HTTPException(status_code=422, detail="upscale requires source_asset_id")
+    # A prompt-only request still implies a capability, and capability
+    # narrowing makes the gap reachable: without this, a studio-narrowed
+    # model (issue #268) queues jobs its worker refuses.
+    if source_asset_id is None and "text_to_image" not in caps:
+        raise HTTPException(status_code=422, detail="model does not support text_to_image")
     if source_asset_id is not None:
         source = await session.get(Asset, source_asset_id)
         if source is None or source.user_id != user.id:
@@ -239,7 +244,11 @@ async def create_generation(
             )
     # The model row may be missing if the worker registered while the database
     # was down; upserting here keeps the foreign key satisfied either way.
-    await registry.persist_manifests([manifest])
+    # The row records what the model can do, not what the studio chooses to
+    # offer: persist the unnarrowed manifest, since usage_events and
+    # job-history classification read that row.
+    persisted = registry.available().get(request.model_id, manifest)
+    await registry.persist_manifests([persisted])
     job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
               source_asset_id=source_asset_id)
     session.add(job)

@@ -95,10 +95,8 @@ def test_shipped_manifests_load():
     sdxl_turbo = next(m for m in manifests if m.id == "sdxl-turbo")
     assert not sdxl_turbo.benchmark_only  # studio-visible realtime tier
     assert sdxl_turbo.t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
-    # One step fits the 500 ms bar on the reference card; two steps already
-    # costs 671 ms, so four is unreachable in the realtime path.
     assert sdxl_turbo.parameters["properties"]["structure_strength"]["default"] == 1.0
-    assert sdxl_turbo.parameters["properties"]["steps"]["maximum"] == 2
+    assert sdxl_turbo.parameters["properties"]["steps"]["maximum"] == 4
     dreamshaper = next(m for m in manifests if m.id == "dreamshaper-lcm")
     assert dreamshaper.benchmark_only
     vega = next(m for m in manifests if m.id == "vega-rt")

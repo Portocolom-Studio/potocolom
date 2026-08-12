@@ -51,12 +51,29 @@ SEED_BOUND = 2**31 - 1
 def frame_p95_payload(engine: Engine) -> dict[str, int]:
     """The live per-model frame p95s for a heartbeat; models with no
     measurement (never calibrated, or not yet enough observed frames) are
-    omitted."""
+    omitted. Built from the engine's measured ids, not its residency: a model
+    evicted from VRAM still holds a valid past measurement, and dropping it
+    would make the advertised number flap with memory pressure."""
     return {
         model_id: p95
-        for model_id in engine.loaded_models()
+        for model_id in engine.p95_model_ids()
         if (p95 := engine.realtime_p95_ms(model_id)) is not None
     }
+
+
+def default_steps(manifest: Manifest) -> object | None:
+    """The manifest's declared default step count, or None if it declares none.
+
+    A worker-supplied schema is not guaranteed to be the shape it should be,
+    so every level is checked rather than assumed.
+    """
+    properties = manifest.parameters.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    steps = properties.get("steps")
+    if not isinstance(steps, dict):
+        return None
+    return steps.get("default")
 
 
 def ensure_seed(params: dict) -> dict:
@@ -153,6 +170,7 @@ class SessionRunner:
         self.arrived.set()
 
     async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
+        steps_default = default_steps(manifest)
         while True:
             await self.arrived.wait()
             self.arrived.clear()
@@ -173,8 +191,16 @@ class SessionRunner:
             self.gpu_ms += generated.gpu_ms
             # The same quantity calibration measures: worker-side inference
             # time per frame, and the number the 500 ms bar is defined
-            # against. Real frames supersede the calibration estimate.
-            engine.observe_frame_ms(manifest.id, generated.gpu_ms)
+            # against. Real frames supersede the calibration estimate, but
+            # only when the session rendered at the manifest's declared
+            # defaults: the advertised number claims the model's cost at
+            # defaults, so a session at other settings (steps is the
+            # cost-determining parameter; width and height are fixed enums)
+            # measures something else and must not overwrite it. The default
+            # is fixed for the session; self.params is not, so an update to
+            # steps stops the observing from the next frame on.
+            if steps_default is not None and self.params.get("steps") == steps_default:
+                engine.observe_frame_ms(manifest.id, generated.gpu_ms)
             try:
                 await ws.send(
                     bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)

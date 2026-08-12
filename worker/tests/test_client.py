@@ -17,7 +17,7 @@ from worker.client import (
     run_job,
     serve_connection,
 )
-from worker.engine import SimulatedEngine
+from worker.engine import GeneratedFrame, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 
@@ -238,7 +238,7 @@ def test_hello_carries_measured_realtime_p95_ms():
     assert hello["models"][0]["realtime_p95_ms"] == 408
 
 
-def test_frame_p95_payload_omits_unmeasured_models():
+def test_frame_p95_payload_reports_measured_models_even_evicted():
     class P95Engine(SimulatedEngine):
         def __init__(self):
             super().__init__(0.01)
@@ -247,8 +247,11 @@ def test_frame_p95_payload_omits_unmeasured_models():
         def realtime_p95_ms(self, model_id):
             return self._measured.get(model_id)
 
+        def p95_model_ids(self):
+            return list(self._measured)
+
         def loaded_models(self):
-            return ["vega-rt", "sdxl-turbo"]
+            return []  # evicted: residency must not silence a past measurement
 
     assert frame_p95_payload(P95Engine()) == {"vega-rt": 412}
 
@@ -264,7 +267,9 @@ def test_heartbeat_carries_live_frame_p95():
         def realtime_p95_ms(self, model_id):
             return self._measured.get(model_id)
 
-        def loaded_models(self):
+        def p95_model_ids(self):
+            # The engine holds measurements for both ids; the payload still
+            # omits the one with no number.
             return ["vega-rt", "sdxl-turbo"]
 
     class HeartbeatSocket(RecordingSocket):
@@ -310,6 +315,94 @@ def test_heartbeat_carries_live_frame_p95():
         await task
 
     asyncio.run(scenario())
+
+
+def _realtime_manifest(model_id, steps_default):
+    return Manifest(
+        id=model_id, name=model_id,
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+        parameters={"type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "steps": {"type": "integer", "minimum": 1,
+                                  "maximum": 8, "default": steps_default},
+                    },
+                    "required": ["prompt"]},
+    )
+
+
+class RecordingEngine(SimulatedEngine):
+    """Renders instantly with a canned gpu_ms and records observations."""
+
+    def __init__(self):
+        super().__init__(0.01)
+        self.observed = []
+
+    async def frame(self, manifest, params, payload):
+        await asyncio.sleep(0.01)
+        return GeneratedFrame(payload, 200)
+
+    def observe_frame_ms(self, model_id, gpu_ms):
+        self.observed.append((model_id, gpu_ms))
+
+    def realtime_p95_ms(self, model_id):
+        if sum(1 for m, _ in self.observed if m == model_id) >= 2:
+            return 200
+        return None
+
+    def p95_model_ids(self):
+        return sorted({m for m, _ in self.observed})
+
+
+def test_session_runner_observes_each_rendered_frame_for_its_model():
+    # The call site that makes the live p95 feature exist: if it is deleted
+    # the engine sees nothing and this fails.
+    socket = FakeSocket()
+    engine = RecordingEngine()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    asyncio.run(scenario())
+    assert engine.observed == [("vega-rt", 200), ("vega-rt", 200)]
+    assert len(socket.sent) == 2
+
+
+def test_heartbeat_advertises_only_frames_at_default_steps():
+    # The advertised number claims the model's cost at its declared defaults,
+    # so a session at other settings must not supersede it: frames rendered
+    # at the default change what a heartbeat carries, frames off-default do
+    # not.
+    socket = FakeSocket()
+    engine = RecordingEngine()
+    default_manifest = _realtime_manifest("sdxl-turbo", steps_default=1)
+    off_default_manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def run_session(manifest, params, frames):
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults(params)))
+        for _ in range(frames):
+            runner.submit(b"canvas")
+            await asyncio.sleep(0.03)
+        runner.close()
+        await asyncio.sleep(0.01)
+
+    async def scenario():
+        await run_session(default_manifest, {"prompt": "x"}, frames=2)
+        await run_session(off_default_manifest, {"prompt": "x", "steps": 8}, frames=2)
+
+    asyncio.run(scenario())
+    # Only the default-steps session was observed, and only it is advertised.
+    assert engine.observed == [("sdxl-turbo", 200), ("sdxl-turbo", 200)]
+    assert frame_p95_payload(engine) == {"sdxl-turbo": 200}
 
 
 def test_rejected_registration_raises_cleanly():

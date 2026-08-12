@@ -1,5 +1,6 @@
 """Model registry merge rules across concurrent workers."""
 
+import pytest
 from unittest.mock import MagicMock
 
 from app import realtime, registry
@@ -267,8 +268,11 @@ def test_public_omits_a_manifest_narrowed_to_nothing():
         realtime.workers.update(saved)
 
 
+@pytest.mark.db
 def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
     from app.settings import get_settings
+    from app.main import app
+    from fastapi.testclient import TestClient
 
     get_settings.cache_clear()
     worker = realtime.Worker(
@@ -281,15 +285,27 @@ def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
     try:
         realtime.workers.clear()
         realtime.workers["w-jobs"] = worker
-        # Queued generations read for_jobs(): realtime only, so POST
-        # /api/v1/generations cannot reach the unmeasured text_to_image path.
+        # Queued generations read for_jobs(): realtime only, so the endpoint
+        # refuses a prompt-only job even though the full manifest admits one
+        # (issue #268).
         assert registry.for_jobs()["sdxl-turbo"].capabilities == ["realtime"]
+        with TestClient(app) as client:
+            refused = client.post("/api/v1/generations",
+                                  json={"model_id": "sdxl-turbo",
+                                        "params": {"prompt": "x"}})
+            assert refused.status_code == 422
+            assert "text_to_image" in refused.json()["detail"]
         monkeypatch.setenv("BENCHMARK_API", "1")
         get_settings.cache_clear()
         # The benchmark harness is exempt: it drives every shipped path.
         assert registry.for_jobs()["sdxl-turbo"].capabilities == [
             "text_to_image", "image_to_image", "realtime",
         ]
+        with TestClient(app) as client:
+            accepted = client.post("/api/v1/generations",
+                                   json={"model_id": "sdxl-turbo",
+                                         "params": {"prompt": "x"}})
+            assert accepted.status_code == 202
     finally:
         monkeypatch.delenv("BENCHMARK_API", raising=False)
         get_settings.cache_clear()
@@ -300,8 +316,8 @@ def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
 def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
     # The shipped manifest is the contract the studio picker builds on:
     # studio-visible (benchmark_only false), sketch-conditioned like vega-rt,
-    # with a two-step ceiling that stays under the 500 ms bar, and advertised
-    # for realtime only since that is the only measured path.
+    # with a steps ceiling that covers the shipped 512-4step benchmark entries,
+    # and advertised for realtime only since that is the only measured path.
     import json
     from pathlib import Path
 
@@ -323,7 +339,7 @@ def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
     assert properties["structure_strength"] == {
         "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0,
     }
-    assert properties["steps"]["maximum"] == 2
+    assert properties["steps"]["maximum"] == 4
     assert properties["steps"]["default"] == 1
 
     worker = realtime.Worker(
@@ -371,3 +387,22 @@ def test_min_vram_gb_is_bounded_at_the_manifest():
         pass
     else:
         raise AssertionError("an out-of-range min_vram_gb was accepted")
+
+
+def test_realtime_p95_ms_is_bounded_at_the_manifest():
+    # hello is the primary source of the advertised p95 and it reaches the
+    # browser, so an out-of-range value must refuse the hello where manifests
+    # are already rejected rather than be silently corrected.
+    from app.manifests import FRAME_P95_MAX_MS, parse_manifests
+
+    base = {"id": "m", "name": "m", "capabilities": ["realtime"]}
+    for bad in (-1, 0, FRAME_P95_MAX_MS + 1):
+        entry = {**base, "realtime_p95_ms": bad}
+        try:
+            parse_manifests([entry])
+        except ValueError as error:
+            assert "realtime_p95_ms" in str(error), bad
+        else:
+            raise AssertionError(f"an out-of-range realtime_p95_ms was accepted: {bad}")
+    accepted = parse_manifests([{**base, "realtime_p95_ms": FRAME_P95_MAX_MS}])
+    assert accepted[0].realtime_p95_ms == FRAME_P95_MAX_MS

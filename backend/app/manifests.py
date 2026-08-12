@@ -18,6 +18,14 @@ logger = logging.getLogger("potocolom.manifests")
 
 DIFFUSION_CAPABILITIES = frozenset({"text_to_image", "image_to_image"})
 
+# One bound for both wire sources of a per-model p95: hello carries it on the
+# manifest and heartbeats carry it per model, and the two must agree on the
+# ceiling or the same measurement could be accepted in one and refused in the
+# other. The ceiling only needs to catch absurd values: a slow frame is still
+# an honest measurement, while a number past this means a broken or hostile
+# worker.
+FRAME_P95_MAX_MS = 60_000
+
 
 class Manifest(BaseModel):
     # Worker-side manifest files may carry extra fields (weight sources); only
@@ -44,8 +52,10 @@ class Manifest(BaseModel):
     # of the queued pickers while its verified path stays offered.
     studio_capabilities: list[str] | None = None
     # Measured single-frame p95 on the reporting worker's card; None until a
-    # worker has calibrated the model, absent on the simulated worker.
-    realtime_p95_ms: int | None = None
+    # worker has calibrated the model, absent on the simulated worker. The
+    # bounds match the heartbeat's ceiling (FRAME_P95_MAX_MS), so a value the
+    # manifest accepts is a value the heartbeat would accept too.
+    realtime_p95_ms: int | None = Field(default=None, ge=1, le=FRAME_P95_MAX_MS)
 
 
 def validate_capability_exclusivity(manifest: Manifest) -> None:

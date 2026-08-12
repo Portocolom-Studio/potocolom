@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.manifests import (
+    FRAME_P95_MAX_MS,
     Manifest,
     parse_manifests,
     validate_param_update,
@@ -250,34 +251,33 @@ def frame_session_id(data: bytes) -> uuid.UUID:
     return uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES])
 
 
-# A live frame p95 is worker-supplied data that reaches a browser, so the
-# ceiling only needs to catch absurd values: a slow frame is still an honest
-# measurement, while a number past this means a broken or hostile worker.
-FRAME_P95_MAX_MS = 60_000
-
-
 def parse_frame_p95(raw: object) -> dict[str, int] | None:
     """Validate a heartbeat's live per-model frame p95s; None means drop it.
 
-    Accepts only a dict whose keys are strings and whose values are integers
-    (or floats that are whole numbers) greater than zero and below the
-    ceiling. Anything else is dropped silently rather than raised: a
-    malformed heartbeat must not kill the fleet connection.
+    A payload that is not a dict at all is dropped whole: there is nothing to
+    salvage. Entries within a dict are independent: a malformed one is
+    skipped rather than discarding the valid entries beside it, so a worker
+    that appends one junk entry to every heartbeat cannot pin the last
+    accepted number. Accepts only string keys and integer values (or floats
+    that are whole numbers) greater than zero and below the ceiling, which
+    hello's realtime_p95_ms shares (FRAME_P95_MAX_MS). Anything unusable is
+    skipped silently rather than raised: a malformed heartbeat must not kill
+    the fleet connection.
     """
     if not isinstance(raw, dict):
         return None
     measured: dict[str, int] = {}
     for model_id, value in raw.items():
         if not isinstance(model_id, str):
-            return None
+            continue
         if isinstance(value, bool):
-            return None
+            continue
         if isinstance(value, float):
             if not value.is_integer():
-                return None
+                continue
             value = int(value)
         if not isinstance(value, int) or value <= 0 or value > FRAME_P95_MAX_MS:
-            return None
+            continue
         measured[model_id] = value
     return measured
 

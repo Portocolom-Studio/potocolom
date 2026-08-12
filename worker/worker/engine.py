@@ -97,6 +97,8 @@ class Engine(Protocol):
 
     def realtime_p95_ms(self, model_id: str) -> int | None: ...
 
+    def p95_model_ids(self) -> list[str]: ...
+
     async def load_model(self, manifest: Manifest) -> int: ...
 
     async def unload_model(self, model_id: str) -> None: ...
@@ -197,6 +199,10 @@ class SimulatedEngine:
     def realtime_p95_ms(self, model_id: str) -> int | None:
         # Simulated engine never measured a frame; nothing to advertise.
         return None
+
+    def p95_model_ids(self) -> list[str]:
+        # Simulated engine never measured a frame; nothing to advertise.
+        return []
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -687,6 +693,19 @@ class DiffusersEngine:
             # session are the least representative ones.
             return round(_percentile_nearest(list(window), 95.0))
         return self._realtime_p95_ms.get(model_id)
+
+    def p95_model_ids(self) -> list[str]:
+        """Model ids this engine can report a frame p95 for, resident or not.
+
+        A model evicted from VRAM still holds its measurements, and residency
+        has nothing to do with whether a past measurement is valid: the
+        heartbeat must keep advertising it until the window fills with
+        newer frames.
+        """
+        return sorted(
+            model_id for model_id in set(self._realtime_p95_ms) | set(self._observed_frame_ms)
+            if self.realtime_p95_ms(model_id) is not None
+        )
 
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.

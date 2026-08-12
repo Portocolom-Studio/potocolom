@@ -20,7 +20,7 @@
       "prompt": { "type": "string" },
       "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
       "structure_strength": { "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0 },
-      "steps": { "type": "integer", "minimum": 1, "maximum": 2, "default": 1 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
       "guidance": { "type": "number", "minimum": 0, "maximum": 2, "default": 0 },
       "seed": { "type": "integer" },
       "width": { "type": "integer", "enum": [512], "default": 512 },

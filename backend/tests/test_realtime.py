@@ -10,10 +10,9 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
 from app.main import app
-from app.manifests import Manifest
+from app.manifests import FRAME_P95_MAX_MS, Manifest
 from app.realtime import (
     CANVAS_FRAME,
-    FRAME_P95_MAX_MS,
     GENERATED_FRAME,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
@@ -780,11 +779,7 @@ def test_heartbeat_frame_p95_replaces_the_hello_measurement():
 @pytest.mark.parametrize("bad", [
     "not-a-dict",
     None,
-    {"vega-rt": "slow"},
-    {"vega-rt": 0},
-    {"vega-rt": -1},
-    {"vega-rt": 10**30},
-    {"vega-rt": 1.5},
+    5,
 ])
 def test_malformed_heartbeat_frame_p95_is_ignored_and_connection_survives(bad):
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
@@ -797,9 +792,10 @@ def test_malformed_heartbeat_frame_p95_is_ignored_and_connection_survives(bad):
             time.sleep(0.05)
         assert worker.frame_p95_ms == {"vega-rt": 222}
 
-        # The malformed heartbeat must not close the fleet connection: the
-        # valid heartbeat after it is still processed, and the previous
-        # value stood in the meantime (messages process in order).
+        # A non-dict payload is dropped whole, so the previous value stands
+        # until the valid heartbeat after it lands, and the malformed
+        # heartbeat must not close the fleet connection (messages process in
+        # order).
         worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": bad})
         worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
         deadline = time.monotonic() + 3
@@ -807,6 +803,23 @@ def test_malformed_heartbeat_frame_p95_is_ignored_and_connection_survives(bad):
             time.sleep(0.05)
         assert worker.frame_p95_ms == {"vega-rt": 333}
         assert "w-badp95" in realtime.workers
+
+
+def test_heartbeat_frame_p95_skips_a_bad_entry_and_keeps_the_good_one():
+    # Entries within a dict are independent: one junk entry must not discard
+    # the valid measurement beside it, or a worker that appends a bad entry
+    # to every heartbeat pins its last accepted number indefinitely.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-salvage", models=("vega-rt",), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+            "vega-rt": "slow", "sdxl-turbo": 250,
+        }})
+        worker = realtime.workers["w-salvage"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"sdxl-turbo": 250}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"sdxl-turbo": 250}
 
 
 def test_parse_frame_p95_accepts_whole_milliseconds():
@@ -819,22 +832,32 @@ def test_parse_frame_p95_accepts_whole_milliseconds():
     }
 
 
+def test_parse_frame_p95_skips_bad_entries_and_keeps_good_ones():
+    assert parse_frame_p95({"vega-rt": 333, "sdxl-turbo": "slow"}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": 0, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": 1.5, "sdxl-turbo": 250.0}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": True, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": 333, 7: 100}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": None, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": -1, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    # The ceiling is the branch that keeps an absurd number out of a browser,
+    # so it is asserted at the boundary and far past it.
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS}) == {"vega-rt": FRAME_P95_MAX_MS}
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS + 1, "sdxl-turbo": 250}) == {
+        "sdxl-turbo": 250,
+    }
+    assert parse_frame_p95({"vega-rt": 10**30}) == {}
+    assert parse_frame_p95({"vega-rt": "slow"}) == {}
+    assert parse_frame_p95({7: 100}) == {}
+
+
 @pytest.mark.parametrize("bad", [
     "not-a-dict",
     None,
     [],
     5,
-    {"vega-rt": "slow"},
-    {"vega-rt": 0},
-    {"vega-rt": -1},
-    {"vega-rt": 10**30},
-    {"vega-rt": FRAME_P95_MAX_MS + 1},
-    {"vega-rt": 1.5},
-    {"vega-rt": True},
-    {"vega-rt": None},
-    {7: 100},  # a non-string key
 ])
-def test_parse_frame_p95_drops_malformed_payloads(bad):
+def test_parse_frame_p95_drops_whole_non_dict_payloads(bad):
     assert parse_frame_p95(bad) is None, bad
 
 
