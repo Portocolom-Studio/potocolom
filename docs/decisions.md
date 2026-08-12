@@ -799,6 +799,18 @@ The honest limit of this control, measured on Docker 29.6.1 with a published `80
 
 Rejected alternatives: flipping to closed-by-default now, which is the breaking change the entry above assigns to a release boundary; binding the published port to loopback in compose, which also removes the studio from every other machine on the LAN and so breaks a legitimate self-hosted setup to fix the fleet socket; gating on a new development-only flag, which is closed-by-default wearing a different name and still makes every existing install edit its environment on upgrade; trusting `X-Forwarded-For` so proxied deployments could be distinguished, which lets the peer assert its own trustworthiness.
 
+## Self-hosted installs are multi-user
+
+Sharpens "Authentication: built-in module", "OAuth at launch: Google and GitHub" and "Roles: three tiers on the user row" into one statement about who uses a self-hosted install, because those three entries each describe a piece and none says the shape.
+
+A self-hosted install is not assumed to be one person. The operator runs it, holds `admin`, and configures the install; the people they invite hold `user` and generate, star and manage their own work; `viewer` stays read-only for someone who should see the gallery without spending the GPU. That is the existing three-tier model unchanged, applied to a household or a small team rather than to the cloud alone.
+
+Those people sign in with a local email and password, or with Google or GitHub. Both halves ship for self-hosters, not only for the cloud: local accounts serve an install with no external dependency, and the providers serve people who would rather not hold another password. `AUTH_MODE=none` remains the default and the zero-configuration path for a single operator who wants no accounts at all.
+
+Generic OIDC against an operator's own identity provider is rejected. Authentik, Keycloak, Authelia and Entra would each be reachable through one OIDC client implementation, and it is the obvious request from a self-hoster who already runs an identity provider, but it is a larger surface than the two providers plus local accounts, it needs discovery, key rotation and claim mapping to be correct rather than merely working, and nobody has asked for it. It layers on the same seam later if they do.
+
+Rejected alternatives: treating self-hosted as single-user and putting accounts in the cloud only, which is what the current code implies and which makes a shared install impossible without sharing one identity; a fourth tier between `user` and `viewer` for people who may generate but not manage their own history, which nobody asked for and which the three tiers already approximate; generic OIDC now, for the reasons above.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
