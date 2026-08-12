@@ -9,6 +9,7 @@ DEV_DIR="${DEV_DIR:-$REPO/data/dev}"
 API_PORT="${API_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-5173}"
 WORKER="${WORKER:-rocm}"
+DATABASE_URL="${DATABASE_URL:-postgresql://potocolom:potocolom@localhost:5432/potocolom}"
 
 mkdir -p "$DEV_DIR"
 
@@ -114,6 +115,8 @@ cmd_start() {
 	start_one api "$DEV_DIR/api.pid" \
 		"cd \"$REPO/backend\" && STORAGE_LOCAL_PATH=\"$REPO/data\" \
 		ALLOWED_ORIGINS=\"http://localhost:$WEB_PORT\" \
+		PUBLIC_URL=\"http://localhost:$API_PORT\" \
+		DATABASE_URL=\"$DATABASE_URL\" \
 		exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $API_PORT"
 
 	echo "Starting frontend on :$WEB_PORT..."

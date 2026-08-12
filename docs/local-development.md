@@ -96,8 +96,11 @@ Those ports are what this checkout gets. A linked git worktree derives its own
 from its path, so two checkouts can run the dev loop at once without either
 knowing about the other: `scripts/checkout-ports.sh` prints what yours will use,
 `make api` and `make web` follow it, and the dev database gains a matching
-suffix. Set `API_PORT` or `WEB_PORT` to override. Only the main worktree gets
-the canonical `8000` and `5173` above.
+suffix. The derivation applies to the Make targets only: running `uvicorn`,
+`npm run dev` or `python -m worker` by hand, as the blocks above and below show,
+gets the canonical ports and the bare `potocolom` database unless you export
+`API_PORT`, `WEB_PORT` and `DATABASE_URL` yourself. Set `API_PORT` or `WEB_PORT`
+to override. Only the main worktree gets the canonical `8000` and `5173` above.
 
 ```bash
 

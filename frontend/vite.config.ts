@@ -8,9 +8,10 @@ import { waitlistProxy } from './vite.waitlist-proxy.js';
 // calls it with relative /api/v1 paths in every deployment. Linked worktrees
 // get their own ports from the Makefile (scripts/checkout-ports.sh), so read
 // them from the environment and fall back to the documented single-checkout
-// values when unset.
-const apiPort = process.env.API_PORT ?? '8000';
-const webPort = process.env.WEB_PORT ?? '5173';
+// values when unset. || not ??, so an exported but empty API_PORT= falls back
+// the same way an unset one does.
+const apiPort = process.env.API_PORT || '8000';
+const webPort = process.env.WEB_PORT || '5173';
 
 const apiProxy = {
 	'/api/v1': { target: `http://localhost:${apiPort}`, changeOrigin: true, ws: true }
