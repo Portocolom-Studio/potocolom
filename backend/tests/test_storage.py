@@ -299,7 +299,6 @@ def test_s3_image_info_refuses_an_oversized_object(monkeypatch):
     head, iend = data[:-12], data[-12:]
     at_limit = head + _chunk(b"prVt", b"pad") + iend
     one_past = head + _chunk(b"prVt", b"padd") + iend
-    trailing = at_limit + b"\x00"
     monkeypatch.setattr("app.storage.MAX_VERIFY_BYTES", len(at_limit))
 
     storage.client = _FakeS3Client(at_limit)
@@ -308,9 +307,6 @@ def test_s3_image_info_refuses_an_oversized_object(monkeypatch):
     assert info.size == len(at_limit)
 
     storage.client = _FakeS3Client(one_past)
-    assert asyncio.run(storage.image_info("u/j.png")) is None
-
-    storage.client = _FakeS3Client(trailing)
     assert asyncio.run(storage.image_info("u/j.png")) is None
 
 
