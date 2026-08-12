@@ -902,6 +902,31 @@ def test_observed_frames_report_a_value_without_calibration():
     assert engine.realtime_p95_ms("sdxl-turbo") == 250
 
 
+def test_p95_model_ids_covers_observed_and_calibrated_and_never_none():
+    # The headline case the feature exists for is a model with observed
+    # frames and no calibration entry: it must be advertised, and a test-local
+    # p95_model_ids cannot prove the real method does. The union is what
+    # matters: enough observations supersede calibration, a calibration entry
+    # advertises until observations catch up, and nothing whose realtime_p95
+    # is None is ever named.
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES):
+        engine.observe_frame_ms("vega-rt", 200.0)
+    engine._realtime_p95_ms["sdxl-turbo"] = 333
+    engine.observe_frame_ms("sd-turbo", 400.0)  # too few to supersede
+
+    ids = engine.p95_model_ids()
+
+    assert "vega-rt" in ids  # observed enough frames, no calibration entry
+    assert engine.realtime_p95_ms("vega-rt") == 200
+    assert "sdxl-turbo" in ids  # calibration entry, no observations
+    assert engine.realtime_p95_ms("sdxl-turbo") == 333
+    assert "sd-turbo" not in ids  # no calibration entry, too few observations
+    assert all(engine.realtime_p95_ms(model_id) is not None for model_id in ids)
+
+
 def test_simulated_engine_ignores_frame_observations():
     engine = SimulatedEngine(0.01)
     engine.observe_frame_ms("sd-sim", 123.0)

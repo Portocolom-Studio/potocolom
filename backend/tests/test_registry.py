@@ -354,6 +354,47 @@ def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
     assert entry["capabilities"] == ["realtime"]
 
 
+def test_benchmark_matrix_cells_validate_against_shipped_manifests():
+    # The shipped matrices are the record of what was measured, and a
+    # manifest's schema is the contract that keeps those cells runnable: a
+    # steps ceiling or enum that refuses a measured variant fails every
+    # benchmark run with 422. Every shipped matrix is checked, so the same
+    # mistake on any model fails here instead of only the one literal the
+    # per-manifest tests assert. The harness always submits prompt alongside
+    # the variant's settings (scripts/generate.py), so the check mirrors that
+    # shape; a matrix naming a model that is not shipped is skipped, not a
+    # failure.
+    import json
+    from pathlib import Path
+
+    from app.manifests import validate_params
+
+    root = Path(__file__).resolve().parents[2]
+    shipped = {
+        manifest.id: manifest
+        for manifest in (
+            Manifest(**json.loads(path.read_text()))
+            for path in sorted((root / "worker" / "models").glob("*.json"))
+        )
+    }
+    for matrix_path in sorted((root / "scripts").glob("benchmark-matrix*.json")):
+        matrix = json.loads(matrix_path.read_text())
+        for group in ("models", "capped_commercial"):
+            for entry in matrix.get(group, []):
+                manifest = shipped.get(entry.get("id"))
+                if manifest is None:
+                    continue
+                for variant in entry.get("variants", []):
+                    params = {"prompt": "x"}
+                    params.update(variant.get("params") or {})
+                    refused = validate_params(manifest, params)
+                    assert refused is None, (
+                        f"{matrix_path.name}: model {entry['id']} variant "
+                        f"{variant.get('label')!r} is refused by its shipped "
+                        f"manifest: {refused}"
+                    )
+
+
 def test_manifest_parameters_must_be_json_storable():
     # parameters is persisted to JSONB, which has no NaN or Infinity, while
     # json.loads produces both. Without this the upsert killed the fleet
@@ -389,20 +430,17 @@ def test_min_vram_gb_is_bounded_at_the_manifest():
         raise AssertionError("an out-of-range min_vram_gb was accepted")
 
 
-def test_realtime_p95_ms_is_bounded_at_the_manifest():
+def test_out_of_range_realtime_p95_ms_normalises_to_none_at_the_manifest():
     # hello is the primary source of the advertised p95 and it reaches the
-    # browser, so an out-of-range value must refuse the hello where manifests
-    # are already rejected rather than be silently corrected.
+    # browser, but a measurement is cosmetic while a manifest is not: an
+    # out-of-range number costs the label, not the worker's registration,
+    # which is what refusing the manifest did (and the heartbeat carrying
+    # the identical number is merely skipped).
     from app.manifests import FRAME_P95_MAX_MS, parse_manifests
 
     base = {"id": "m", "name": "m", "capabilities": ["realtime"]}
     for bad in (-1, 0, FRAME_P95_MAX_MS + 1):
-        entry = {**base, "realtime_p95_ms": bad}
-        try:
-            parse_manifests([entry])
-        except ValueError as error:
-            assert "realtime_p95_ms" in str(error), bad
-        else:
-            raise AssertionError(f"an out-of-range realtime_p95_ms was accepted: {bad}")
+        parsed = parse_manifests([{**base, "realtime_p95_ms": bad}])
+        assert parsed[0].realtime_p95_ms is None, bad
     accepted = parse_manifests([{**base, "realtime_p95_ms": FRAME_P95_MAX_MS}])
     assert accepted[0].realtime_p95_ms == FRAME_P95_MAX_MS

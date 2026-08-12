@@ -12,7 +12,7 @@ from functools import lru_cache
 import jsonschema
 from jsonschema import Draft202012Validator
 from referencing.exceptions import Unresolvable
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger("potocolom.manifests")
 
@@ -54,8 +54,21 @@ class Manifest(BaseModel):
     # Measured single-frame p95 on the reporting worker's card; None until a
     # worker has calibrated the model, absent on the simulated worker. The
     # bounds match the heartbeat's ceiling (FRAME_P95_MAX_MS), so a value the
-    # manifest accepts is a value the heartbeat would accept too.
-    realtime_p95_ms: int | None = Field(default=None, ge=1, le=FRAME_P95_MAX_MS)
+    # manifest accepts is a value the heartbeat would accept too. The bound
+    # check is a validator that returns None rather than raising: a
+    # measurement is cosmetic (displayed, never persisted) while a manifest
+    # is not, so losing the label is the proportionate consequence of a bad
+    # measurement, and refusing the whole manifest would strand the worker in
+    # a reconnect loop over a number the heartbeat carrying the identical
+    # value would merely skip.
+    realtime_p95_ms: int | None = Field(default=None)
+
+    @field_validator("realtime_p95_ms")
+    @classmethod
+    def _normalise_realtime_p95_ms(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        return value if 1 <= value <= FRAME_P95_MAX_MS else None
 
 
 def validate_capability_exclusivity(manifest: Manifest) -> None:

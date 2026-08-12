@@ -154,6 +154,7 @@ class SessionRunner:
     def __init__(self, session_id: uuid.UUID, ws, engine: Engine, manifest: Manifest,
                  params: dict):
         self.session_id = session_id
+        self.manifest = manifest
         self.params = params
         self.pending: bytes | None = None
         self.arrived = asyncio.Event()
@@ -410,8 +411,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 "slots_in_use": len(runners),
                 "loaded_models": engine.loaded_models(),
                 "gpu": gpu,
-                # The API overwrites the calibration estimate with these, so
-                # every loaded model reports what its sessions cost.
+                # The API overwrites the calibration estimate with these,
+                # for every model the engine has measured; residency is
+                # irrelevant to a past measurement, so an evicted model
+                # keeps reporting its number.
                 "frame_p95_ms": frame_p95_payload(engine),
             }))
 
@@ -443,17 +446,22 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         # wrong.
                         runner = runners.get(uuid.UUID(control["session_id"]))
                         if runner is not None:
-                            # The API already merged the update over the
-                            # session's open params, so the message carries
-                            # the full set and replacing is the whole change:
-                            # re-running with_defaults would reset an explicit
-                            # choice to the manifest's default. The seed is
-                            # the one value the API cannot reconstruct, so it
-                            # is carried over from the params being replaced:
-                            # ensure_seed ran at open, and re-rolling it would
-                            # make the image jump on the next frame instead of
-                            # staying stable across a prompt change.
-                            params = dict(control["params"])
+                            # The API's stored params are the browser's keys
+                            # only: it keeps the raw dict from `open` and
+                            # .update()s it, so it never holds a value the
+                            # client did not send. Applying the manifest's
+                            # defaults here restores what open_session did,
+                            # so a subset update cannot leave the engine's
+                            # hardcoded fallbacks in charge of settings the
+                            # manifest declares. with_defaults fills only
+                            # absent keys, so a value the browser sent
+                            # survives unchanged. The seed is the one value
+                            # the API cannot reconstruct, so it is carried
+                            # over from the params being replaced: ensure_seed
+                            # ran at open, and re-rolling it would make the
+                            # image jump on the next frame instead of staying
+                            # stable across a prompt change.
+                            params = runner.manifest.with_defaults(control["params"])
                             assert isinstance(runner.params.get("seed"), int), \
                                 "a live session always carries a seed from open"
                             params["seed"] = runner.params["seed"]

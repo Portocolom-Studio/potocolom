@@ -121,6 +121,23 @@ def test_version_gate_rejects_older_than_n_minus_1():
         assert response["min_supported_version"] == MIN_SUPPORTED_VERSION
 
 
+def test_hello_with_an_absurd_realtime_p95_ms_still_registers():
+    # A measurement is cosmetic; a manifest is not. An out-of-range p95
+    # costs the label (None), not the worker's registration: refusing the
+    # hello stranded the worker in a reconnect loop that only a process
+    # restart could end, over a number the heartbeat carrying the identical
+    # value would merely skip.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        hello_msg = hello(worker_id="w-absurd", models=("vega-rt",), slots=1)
+        hello_msg["models"][0]["realtime_p95_ms"] = FRAME_P95_MAX_MS + 1
+        worker_ws.send_json(hello_msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-absurd"]
+        # The model registered and its label came through as absent.
+        assert worker.manifests[0].id == "vega-rt"
+        assert worker.manifests[0].realtime_p95_ms is None
+
+
 def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
     with client.websocket_connect(
@@ -820,6 +837,33 @@ def test_heartbeat_frame_p95_skips_a_bad_entry_and_keeps_the_good_one():
         while time.monotonic() < deadline and worker.frame_p95_ms != {"sdxl-turbo": 250}:
             time.sleep(0.05)
         assert worker.frame_p95_ms == {"sdxl-turbo": 250}
+
+
+def test_heartbeat_junk_for_one_model_keeps_its_live_value():
+    # Merging (not replacing) is what makes per-entry salvage protect the
+    # value already held: a good value, then a heartbeat with junk for that
+    # same model and a good value for another, must leave the first model's
+    # live value in place rather than snap it back to hello's number.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-merge",
+                                  models=("vega-rt", "sdxl-turbo"), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        worker = realtime.workers["w-merge"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+            "vega-rt": "junk", "sdxl-turbo": 250,
+        }})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {
+            "vega-rt": 333, "sdxl-turbo": 250,
+        }:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333, "sdxl-turbo": 250}
 
 
 def test_parse_frame_p95_accepts_whole_milliseconds():

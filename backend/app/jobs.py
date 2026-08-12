@@ -246,8 +246,20 @@ async def create_generation(
     # was down; upserting here keeps the foreign key satisfied either way.
     # The row records what the model can do, not what the studio chooses to
     # offer: persist the unnarrowed manifest, since usage_events and
-    # job-history classification read that row.
-    persisted = registry.available().get(request.model_id, manifest)
+    # job-history classification read that row. The worker can disconnect
+    # between the for_jobs() read above and this second registry read; when
+    # it does, available() no longer carries the model and the fallback is
+    # the narrowed copy. Writing the narrowed list is deliberate, not
+    # silent: the job cannot be dispatched in that state anyway, so the row
+    # exists only to satisfy the foreign key.
+    persisted = registry.available().get(request.model_id)
+    if persisted is None:
+        logger.warning(
+            "model %s left the registry while its job was being created; "
+            "writing the models row from the narrowed copy",
+            request.model_id,
+        )
+        persisted = manifest
     await registry.persist_manifests([persisted])
     job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
               source_asset_id=source_asset_id)

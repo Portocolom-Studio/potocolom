@@ -579,7 +579,17 @@ async def fleet(ws: WebSocket) -> None:
                                 worker.memory_mode = memory_mode
                         measured = parse_frame_p95(control.get("frame_p95_ms"))
                         if measured is not None:
-                            worker.frame_p95_ms = measured
+                            # Merge, not replace: a skipped entry must leave
+                            # the value already held for that model in place,
+                            # or a worker that intermittently sends junk for
+                            # one model makes that model's label flap between
+                            # hello's value and the live one. Merging is safe
+                            # because measurements only accumulate for models
+                            # this worker has measured, and a stale entry is
+                            # a worse outcome than no entry only if it can
+                            # never be corrected, which a later heartbeat
+                            # does.
+                            worker.frame_p95_ms.update(measured)
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )

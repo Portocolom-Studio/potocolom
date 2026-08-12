@@ -31,7 +31,7 @@ Fleet connection, worker to API:
 | type | Fields | Notes |
 |---|---|---|
 | `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). Each manifest may carry `realtime_p95_ms` (the measured single-frame p95 on this worker's card, absent until something has measured it) and `studio_capabilities` (narrows what the studio offers, absent when every capability is offered). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
-| `heartbeat` | `slots_in_use`, `loaded_models`, `frame_p95_ms`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. `frame_p95_ms` maps each model id to that worker's measured single-frame p95 on that card; absent until something has measured it, and the API overwrites the hello value with it. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
+| `heartbeat` | `slots_in_use`, `loaded_models`, `frame_p95_ms`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. `frame_p95_ms` maps each model id to that worker's measured single-frame p95 on that card; the key is always present and is an empty object when nothing has been measured, and the API overwrites the hello value with it. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
 | `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
@@ -187,7 +187,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | Code | Meaning | Sent to |
 |---|---|---|
 | 1000 | normal close | either |
-| 4000 | protocol violation (first message was not hello or open, malformed JSON) | either |
+| 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse) | either |
 | 4002 | unsupported protocol version | worker |
 | 4003 | no worker capacity for the requested model | browser |
 | 4004 | unknown model | browser |

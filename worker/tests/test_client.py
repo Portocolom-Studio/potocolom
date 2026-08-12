@@ -98,7 +98,7 @@ class RecordingSocket:
         self.close_code = code
 
 
-def drive_update_session(monkeypatch, messages):
+def drive_update_session(monkeypatch, messages, manifests=None):
     """Run serve_connection through the given API messages, recording runners.
 
     SessionRunner is replaced by a subclass that records its instances, so the
@@ -114,7 +114,8 @@ def drive_update_session(monkeypatch, messages):
     monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
     socket = RecordingSocket(messages)
     asyncio.run(serve_connection(socket, Settings(worker_id="w-update"),
-                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+                                 manifests or [SIMULATED_MANIFEST],
+                                 SimulatedEngine(0.01)))
     return socket, created
 
 
@@ -133,6 +134,55 @@ def test_update_session_replaces_params_and_keeps_seed(monkeypatch):
     # The update replaced the prompt and left the open's seed untouched: an
     # update that re-rolled it would make the image jump on the next frame.
     assert runner.params == {"prompt": "a blue house", "seed": seed}
+    assert socket.close_code is None
+
+
+def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch):
+    # The API's stored params are the browser's keys only, so an update
+    # carries a subset and nothing else. Without with_defaults the runner
+    # would render with whatever the engine's hardcoded fallbacks happen to
+    # be, so the manifest's declared steps default is the value asserted.
+    session_id = str(uuid.uuid4())
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "vega-rt", "params": {"prompt": "x"}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "y"}}),
+    ], manifests=[manifest])
+    assert len(created) == 1
+    runner = created[0]
+    seed = runner.params["seed"]
+    assert isinstance(seed, int)
+    # The update carried only the prompt, so the manifest's declared default
+    # step count came back in place of the engine's fallback, and the seed
+    # survived the replacement.
+    assert runner.params == {"prompt": "y", "steps": 4, "seed": seed}
+    assert socket.close_code is None
+
+
+def test_update_session_keeps_an_explicit_value_differing_from_the_default(
+        monkeypatch):
+    # with_defaults fills only absent keys, so an explicitly chosen steps
+    # value that differs from the manifest's default must survive an update
+    # that does not mention it.
+    # The API sends the merged browser params, so an explicitly chosen steps
+    # value survives in the message; with_defaults must keep it rather than
+    # reset it to the manifest's default.
+    session_id = str(uuid.uuid4())
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "vega-rt",
+                    "params": {"prompt": "x", "steps": 8}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "y", "steps": 8}}),
+    ], manifests=[manifest])
+    assert len(created) == 1
+    runner = created[0]
+    seed = runner.params["seed"]
+    assert isinstance(seed, int)
+    assert runner.params == {"prompt": "y", "steps": 8, "seed": seed}
     assert socket.close_code is None
 
 

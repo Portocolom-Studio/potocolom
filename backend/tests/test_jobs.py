@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
-from app import db, jobs, realtime
+from app import db, jobs, realtime, registry
 from app.jobs import generation_download_name
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
@@ -42,6 +42,17 @@ MANIFEST_T2I_ONLY = {
 MANIFEST_WITH_RT = {
     **MANIFEST,
     "capabilities": ["text_to_image", "image_to_image", "realtime"],
+}
+
+# Studio-narrowed but still admitting a prompt-only job: the narrowing
+# (capabilities intersect studio_capabilities) must keep text_to_image, or
+# the capability gate refuses before the persist path is reached. The model
+# row the persist writes must carry the unnarrowed list.
+MANIFEST_NARROWED_WITH_T2I = {
+    **MANIFEST,
+    "id": "sd-narrow",
+    "capabilities": ["text_to_image", "image_to_image", "realtime"],
+    "studio_capabilities": ["text_to_image", "realtime"],
 }
 
 HOSTILE_PROMPT = 'A "lighthouse"\n; ../../ caf\u00e9'
@@ -414,6 +425,54 @@ def test_benchmark_only_model_allowed_when_benchmark_api_enabled(monkeypatch):
                                   json={"model_id": "bench-only",
                                         "params": {"prompt": "benchmark"}})
             assert created.status_code == 202
+
+
+@pytest.mark.db
+def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
+        monkeypatch):
+    # The models row records what the model can do, not what the studio
+    # chooses to offer (usage_events and job-history classification read it),
+    # so a prompt-only POST for a studio-narrowed model must persist the
+    # unnarrowed manifest. Reverting the persist lookup to
+    # persist_manifests([manifest]) leaves the rest of the suite
+    # byte-identical, so the row is read back here to pin the behaviour.
+    from app.settings import get_settings
+
+    # get_settings is a global cache, and the benchmark-mode test above this
+    # one cached benchmark_api=True; re-read from the restored environment
+    # so this test runs narrowed regardless of neighbour order.
+    monkeypatch.delenv("BENCHMARK_API", raising=False)
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-narrow", manifest=MANIFEST_NARROWED_WITH_T2I)
+            # The premise: queued generations see the narrowed list.
+            assert registry.for_jobs()["sd-narrow"].capabilities == [
+                "text_to_image", "realtime",
+            ]
+
+            async def drop_model_row() -> None:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    await session.execute(delete(Model).where(Model.id == "sd-narrow"))
+                    await session.commit()
+
+            # The row may be missing when the worker registered while the
+            # database was down; drop it so this POST is the write under test.
+            asyncio.run(drop_model_row())
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-narrow",
+                                        "params": {"prompt": "x"}})
+            assert created.status_code == 202
+
+            async def row_capabilities():
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = await session.get(Model, "sd-narrow")
+                    return list(row.capabilities) if row is not None else None
+
+            capabilities = asyncio.run(row_capabilities())
+    assert capabilities == ["text_to_image", "image_to_image", "realtime"]
 
 
 @pytest.mark.db
