@@ -29,9 +29,28 @@ from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
 
 
+def _reject_unimplemented_auth_mode(mode: str) -> None:
+    if mode == "none":
+        # none is the only implemented mode, so it must keep working.
+        return
+    # Refusing to boot is deliberate rather than a warning, because a
+    # warning is exactly what an operator misses while the API resolves
+    # every request to the local admin user.
+    raise RuntimeError(
+        f"AUTH_MODE={mode} is not implemented and "
+        "authenticates nobody, so every request would resolve to the local "
+        "admin user. Unset AUTH_MODE or set it to none (local is tracked "
+        "in #5, oauth in #9)."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # The import-time check cannot see an environment that changes after
+    # import, and get_settings caches per process, so startup re-checks with
+    # the settings this process actually runs under.
+    _reject_unimplemented_auth_mode(settings.auth_mode)
     setup_logging(settings.log_format)
     if not settings.fleet_token_key:
         logging.getLogger("potocolom.realtime").warning(
@@ -86,6 +105,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await task
     await db.dispose()
 
+
+# The gate runs at import time because the ASGI lifespan protocol is optional:
+# uvicorn --lifespan off and a TestClient outside a context manager serve the
+# app without it, so a lifespan-only check is bypassable. No server flag or
+# embedder can avoid importing the module that defines app.
+_reject_unimplemented_auth_mode(get_settings().auth_mode)
 
 app = FastAPI(
     title="potocolom",
