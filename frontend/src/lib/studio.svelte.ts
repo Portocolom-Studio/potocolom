@@ -427,7 +427,7 @@ function applyModels(models: Model[]): void {
 	applyModelSelections();
 }
 
-function fallbackModelId(models: Model[]): string {
+export function fallbackModelId(models: Model[]): string {
 	return models.length > 0 ? (models.find((model) => model.default) ?? models[0]).id : '';
 }
 

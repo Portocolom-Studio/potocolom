@@ -94,6 +94,7 @@ def test_shipped_manifests_load():
     assert sd_turbo.benchmark_only
     sdxl_turbo = next(m for m in manifests if m.id == "sdxl-turbo")
     assert not sdxl_turbo.benchmark_only  # studio-visible realtime tier
+    assert sdxl_turbo.default  # the realtime picker's declared default
     assert sdxl_turbo.t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
     assert sdxl_turbo.parameters["properties"]["structure_strength"]["default"] == 1.0
     assert sdxl_turbo.parameters["properties"]["steps"]["maximum"] == 4

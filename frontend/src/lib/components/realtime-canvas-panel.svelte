@@ -28,7 +28,7 @@
 		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
-	import { modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
+	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
 		FAST_INTERVAL_MS,
 		IDLE_TICKS_BEFORE_STOP,
@@ -154,15 +154,16 @@
 	const statusLabel = $derived(t(STATUS_KEYS[connection]));
 
 	$effect(() => {
-		// Fall back to the first realtime model when the chosen one is gone, and
-		// to no model at all when the list is empty. The picker can then write a
-		// modelId that survives until the list changes under it.
+		// Fall back to the declared default, else the first realtime model, when
+		// the chosen one is gone, and to no model at all when the list is empty.
+		// The picker can then write a modelId that survives until the list
+		// changes under it.
 		if (realtimeModels.length === 0) {
 			modelId = '';
 			return;
 		}
 		if (!realtimeModels.some((model) => model.id === modelId)) {
-			modelId = realtimeModels[0].id;
+			modelId = fallbackModelId(realtimeModels);
 		}
 	});
 

@@ -228,9 +228,14 @@ async def create_generation(
         raise HTTPException(status_code=422, detail="upscale requires source_asset_id")
     # A prompt-only request still implies a capability, and capability
     # narrowing makes the gap reachable: without this, a studio-narrowed
-    # model (issue #268) queues jobs its worker refuses.
+    # model (issue #268) queues jobs its worker refuses. The narrowed model
+    # does support text_to_image; the studio simply does not offer it, so the
+    # refusal says what happened rather than inventing a model limitation.
+    # Consequence: `scripts/generate.py --model sdxl-turbo` now gets a 422
+    # against a normal API, and BENCHMARK_API=1 is the path that still
+    # reaches it, because for_jobs() returns available() in that mode.
     if source_asset_id is None and "text_to_image" not in caps:
-        raise HTTPException(status_code=422, detail="model does not support text_to_image")
+        raise HTTPException(status_code=422, detail="model is not offered for text_to_image")
     if source_asset_id is not None:
         source = await session.get(Asset, source_asset_id)
         if source is None or source.user_id != user.id:

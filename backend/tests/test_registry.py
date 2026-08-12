@@ -294,7 +294,7 @@ def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
                                   json={"model_id": "sdxl-turbo",
                                         "params": {"prompt": "x"}})
             assert refused.status_code == 422
-            assert "text_to_image" in refused.json()["detail"]
+            assert refused.json()["detail"] == "model is not offered for text_to_image"
         monkeypatch.setenv("BENCHMARK_API", "1")
         get_settings.cache_clear()
         # The benchmark harness is exempt: it drives every shipped path.
@@ -352,6 +352,49 @@ def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
         realtime.workers.pop(worker.id, None)
     entry = next(m for m in payload if m["id"] == "sdxl-turbo")
     assert entry["capabilities"] == ["realtime"]
+
+
+def test_shipped_defaults_cannot_both_win():
+    # The queued default is the model whose `default` flag survives a
+    # text_to_image-filtered list. sdxl-turbo declares `default` for the
+    # realtime picker, but public() narrows its advertised capabilities to
+    # realtime alone, so it cannot appear in a capability-filtered queued
+    # list and its flag cannot win there. sdxl-base keeps the queued default.
+    import json
+    from pathlib import Path
+
+    from app.manifests import Manifest
+
+    models_dir = Path(__file__).resolve().parents[2].joinpath("worker", "models")
+    turbo_raw = json.loads((models_dir / "sdxl-turbo.json").read_text())
+    base_raw = json.loads((models_dir / "sdxl-base.json").read_text())
+    turbo = Manifest(**turbo_raw)
+    base = Manifest(**base_raw)
+    assert turbo.default is True
+    assert base.default is True
+    for worker_id, manifest in {
+        "w-turbo": turbo,
+        "w-base": base,
+    }.items():
+        realtime.workers[worker_id] = realtime.Worker(
+            id=worker_id, ws=None, realtime_slots=1, manifests=[manifest],
+        )
+    try:
+        advertised_turbo = registry.public()["sdxl-turbo"]
+        assert advertised_turbo.default is True
+        assert advertised_turbo.capabilities == ["realtime"]
+        advertised_base = registry.public()["sdxl-base"]
+        assert advertised_base.default is True
+        assert "text_to_image" in advertised_base.capabilities
+        text_to_image_models = [
+            manifest for manifest in registry.public().values()
+            if "text_to_image" in manifest.capabilities
+        ]
+        assert "sdxl-turbo" not in {manifest.id for manifest in text_to_image_models}
+        assert "sdxl-base" in {manifest.id for manifest in text_to_image_models}
+    finally:
+        realtime.workers.pop("w-turbo", None)
+        realtime.workers.pop("w-base", None)
 
 
 def test_benchmark_matrix_cells_validate_against_shipped_manifests():

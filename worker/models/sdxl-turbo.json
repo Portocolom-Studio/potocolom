@@ -12,6 +12,7 @@
   "commercial_max_revenue_usd": 1000000,
   "license_registration_url": "https://stability.ai/community-license",
   "requires_attribution": "Powered by Stability AI",
+  "default": true,
   "benchmark_only": false,
   "studio_capabilities": ["realtime"],
   "parameters": {
