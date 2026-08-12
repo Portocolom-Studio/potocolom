@@ -104,6 +104,25 @@ STYLE_TEMPLATES: dict[str, str] = {
         "a centered intricate oil painting of {}"
         ", full object, strong silhouette, isolated on plain warm canvas"
     ),
+    # Window 3's wording screen. Both target the trade neither validated wording
+    # wins: reference_sketch reads better raw (35 of 72 against 25) but loses 31
+    # of 72 to its own frames, while oil produces 0 frames in 78 and only ties on
+    # the clean endpoint.
+    #
+    # The mechanism under test: EVERY pencil wording above names a paper-bound
+    # artifact ("pencil sketch", "on plain warm paper"), which is what summons the
+    # hands, desks and torn edges - and pre-window arm A2 recorded that monochrome
+    # removes the colour agreement the two flip views must otherwise negotiate. If
+    # both hold, monochrome WITHOUT a paper-bound medium gets the readability and
+    # not the frames.
+    #
+    # monochrome_oil is one word off a wording with 0 disqualifying frames in 78
+    # observations, so it is an attribution test of monochrome alone. charcoal is
+    # the control on the other side - dry media, still paper-bound - separating
+    # "monochrome helps" from "dry-media texture helps", and testing whether every
+    # paper-bound medium frames or specifically the pencil-sketch wording.
+    "monochrome_oil": "a monochrome oil painting of {}",
+    "charcoal": "a detailed charcoal drawing of {}",
 }
 
 # Square-root SDS timestep anneal (NOT full HiFA): endpoints and exponent.

@@ -387,7 +387,7 @@ def test_window2_matrix_matches_the_approved_plan() -> None:
 
 
 def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
-    """98 bases, 196 observations, two arms off one SDS state, oil everywhere."""
+    """134 bases: 98 acquisition at oil, then a 36-base wording screen."""
     from worker.illusion_campaign import (
         WINDOW3_ARMS,
         WINDOW3_SEED_POOL,
@@ -397,9 +397,11 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
     from worker.illusion_experiment import BREADTH_FAMILIES, BREADTH_PAIRS
 
     entries = build_window3()
-    assert len(entries) == 1 + len(BREADTH_PAIRS) == 98
+    acquisition = [e for e in entries if not e.profile.startswith("w_")]
+    assert len(acquisition) == 1 + len(BREADTH_PAIRS) == 98
+    assert len(entries) == 134
     assert {e.tier for e in entries} == {"window3"}
-    assert sum(e.flags.count("--dream-arm") for e in entries) == 196
+    assert sum(e.flags.count("--dream-arm") for e in entries) == 268
 
     # Every base forks both arms from one SDS phase, joint first: joint is the
     # settled default and independent is the fallback for the pairs it collapses.
@@ -411,7 +413,7 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
 
     # Nothing under test: the recipe is windows 1 and 2's, and the two rules that
     # rejected a setting are honoured by its absence rather than by a comment.
-    assert all(e.style == "oil" for e in entries)
+    assert all(e.style == "oil" for e in acquisition)
     assert all("--negative-prompt" not in e.flags for e in entries)
     assert all("--prime-resolution" not in e.flags for e in entries)
     for entry in entries:
@@ -422,10 +424,10 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
     # spec_hash fd46cd54684e, negative off, independent beat joint 5 to 0.
     assert entries[0].profile == "anchor"
     assert entries[0].pair_id == "wolf_raven"
-    assert [e.profile for e in entries[1:]] == ["breadth"] * len(BREADTH_PAIRS)
+    assert [e.profile for e in acquisition[1:]] == ["breadth"] * len(BREADTH_PAIRS)
 
     # Frozen and stable across calls, or a resumed plan diverges from its own SHA.
-    breadth = [(e.pair_id, e.seed) for e in entries[1:]]
+    breadth = [(e.pair_id, e.seed) for e in acquisition[1:]]
     assert breadth == window3_order() == window3_order()
 
     # STRATIFIED BY FAMILY, both in order and in seed. An unstratified hash
@@ -445,13 +447,60 @@ def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
     assert set(seeds) == set(WINDOW3_SEED_POOL)
     assert max(seeds.values()) - min(seeds.values()) <= 1
 
-    # One seed per pair, so ~47h of acquisition with slack in a 58h window.
-    hours = sum(e.estimate_s for e in entries) / 3600
-    assert 46.0 < hours < 49.0
+    # One seed per pair: ~47h of acquisition, ~65h with the wording tail, inside
+    # a 68h deadline for the confirmed 70h window.
+    assert 46.0 < sum(e.estimate_s for e in acquisition) / 3600 < 49.0
+    assert 63.0 < sum(e.estimate_s for e in entries) / 3600 < 66.0
 
-    assert len({e.spec_hash() for e in entries}) == 98
-    assert len({e.out_rel for e in entries}) == 98
-    assert len({e.entry_id for e in entries}) == 98
+    assert len({e.spec_hash() for e in entries}) == 134
+    assert len({e.out_rel for e in entries}) == 134
+    assert len({e.entry_id for e in entries}) == 134
+
+
+def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> None:
+    """36 bases screening two candidate wordings, and it must be truncatable.
+
+    Neither validated wording wins the trade that caps the product:
+    reference_sketch reads better raw and loses 31 of 72 to its own frames, oil
+    produces 0 frames and only ties on the clean endpoint. Both candidates are
+    monochrome; monochrome_oil drops the paper-bound medium and charcoal keeps it,
+    which is what separates the two hypotheses.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW2_SEEDS,
+        WINDOW3_WORDINGS,
+        build_window3,
+    )
+    from worker.illusions import STYLE_TEMPLATES
+
+    entries = build_window3()
+    wording = [e for e in entries if e.profile.startswith("w_")]
+    assert len(wording) == 36
+    assert Counter(e.style for e in wording) == {"monochrome_oil": 18, "charcoal": 18}
+
+    # LAST, so an acquisition overrun truncates the bonus, never the deliverable.
+    assert min(e.priority for e in wording) > max(
+        e.priority for e in entries if not e.profile.startswith("w_")
+    )
+
+    # Same pairs and seeds as window 2's negative-off bases, or the comparison is
+    # against a remembered number rather than against matched ground.
+    for style in WINDOW3_WORDINGS:
+        block = [e for e in wording if e.style == style]
+        assert {e.pair_id for e in block} == set(WINDOW2_PROVEN)
+        assert {e.seed for e in block} == set(WINDOW2_SEEDS)
+
+    # Same recipe as the acquisition block: only the wording differs.
+    for entry in wording:
+        assert entry.flags.count("--dream-arm") == 2
+        assert "--negative-prompt" not in entry.flags
+        assert entry.flags[entry.flags.index("--sds-steps") + 1] == "5000"
+
+    # Both candidates are monochrome; exactly one is paper-bound.
+    assert "monochrome" in STYLE_TEMPLATES["monochrome_oil"]
+    assert "oil painting" in STYLE_TEMPLATES["monochrome_oil"]
+    assert "charcoal" in STYLE_TEMPLATES["charcoal"]
 
 
 def test_window3_plan_passes_dry_run(tmp_path: Path) -> None:

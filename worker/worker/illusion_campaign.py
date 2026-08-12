@@ -521,8 +521,25 @@ WINDOW3_ARMS: tuple[tuple[str, str, str], ...] = (
     ("joint", "joint", "off"),
     ("indep", "indep", "off"),
 )
-# 1,556s SDS measured in window 2 + 2 x 22s arm + ~60s load and lock.
+# 1,556s SDS measured in window 2 + 2 x 22s arm + ~60s load and lock. The anchor
+# smoke came in at 1,632s, so this carries about 100s of margin per base.
 WINDOW3_BASE_ESTIMATE_S = 1_736.0
+
+# Block W: the wording screen, added when the window grew to 70h. It runs LAST,
+# so an acquisition overrun truncates the bonus and never the deliverable.
+#
+# Neither validated wording wins the trade that caps the product: reference_sketch
+# reads better raw (35 of 72 against 25) and loses 31 of 72 to its own frames,
+# while oil produces 0 frames in 78 and only ties on the clean endpoint (7 against
+# 6 per base, McNemar p=1.00). See STYLE_TEMPLATES for the mechanism each
+# candidate tests.
+#
+# Same pairs and same seeds as window 2's negative-off block A bases, so each
+# candidate is compared against both incumbents on identical ground rather than
+# against a remembered number.
+WINDOW3_WORDINGS = ("monochrome_oil", "charcoal")
+WINDOW3_WORDING_PAIRS = WINDOW2_PROVEN
+WINDOW3_WORDING_SEEDS = WINDOW2_SEEDS
 
 
 def _window2_flags(
@@ -701,7 +718,7 @@ def window3_order() -> list[tuple[str, int]]:
 
 
 def build_window3() -> list[CampaignEntry]:
-    """98 bases producing 196 observations: one anchor plus 97 new pairs.
+    """134 bases producing 268 observations: 98 acquisition then 36 wording.
 
     Acquisition, so one seed per pair rather than two. Expected distinct
     successful pairs is 2Np for one seed on 2N pairs against N(2p - p^2) for two
@@ -734,6 +751,29 @@ def build_window3() -> list[CampaignEntry]:
                 estimate_s=WINDOW3_BASE_ESTIMATE_S,
             )
         )
+
+    # Block W last: 36 bases, 2 wordings x 6 proven pairs x 3 seeds. At n=18 per
+    # wording this is a SCREEN, not an adoption test - window 2 showed n=18 can
+    # only resolve a large effect (7 against 6 gave McNemar p=1.00). A candidate
+    # that beats both incumbents advances to replication in a later window and
+    # changes no default here.
+    priority = len(entries)
+    for wording in WINDOW3_WORDINGS:
+        for seed in WINDOW3_WORDING_SEEDS:
+            for pair_id in WINDOW3_WORDING_PAIRS:
+                entries.append(
+                    _entry(
+                        tier="window3",
+                        profile=f"w_{wording}",
+                        pair_id=pair_id,
+                        seed=seed,
+                        flags=_window3_flags(),
+                        priority=priority,
+                        style=wording,
+                        estimate_s=WINDOW3_BASE_ESTIMATE_S,
+                    )
+                )
+                priority += 1
     return entries
 
 
@@ -1547,8 +1587,16 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window2", 0) not in (0, 98):
             print(f"FAIL: window2 expected 98 got {counts.get('window2')}", file=sys.stderr)
             return 1
-        if counts.get("window3", 0) not in (0, 1 + len(BREADTH_PAIRS)):
-            print(f"FAIL: window3 expected 98 got {counts.get('window3')}", file=sys.stderr)
+        window3_expected = (
+            1
+            + len(BREADTH_PAIRS)
+            + len(WINDOW3_WORDINGS) * len(WINDOW3_WORDING_PAIRS) * len(WINDOW3_WORDING_SEEDS)
+        )
+        if counts.get("window3", 0) not in (0, window3_expected):
+            print(
+                f"FAIL: window3 expected {window3_expected} got {counts.get('window3')}",
+                file=sys.stderr,
+            )
             return 1
         print("dry-run ok")
         return 0
