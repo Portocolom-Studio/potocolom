@@ -168,7 +168,7 @@ The stated tolerance at launch: an availability zone failure may cost up to five
 
 - RDS runs single AZ with point in time recovery and automated snapshots (14 day window). Multi-AZ is a checkbox to enable when revenue justifies roughly 30 USD per month of insurance.
 - Redis is a cache and a queue, never a source of truth. If it fails, sessions fall back to PostgreSQL (nobody gets logged out), generation and realtime features degrade behind a status banner, and the queue is rebuilt from job rows in the `queued` state when Redis returns.
-- The images bucket has versioning enabled, so an application bug that deletes objects is recoverable; S3 durability covers the hardware side.
+- The images bucket has versioning enabled, so an ordinary delete writes a marker and an application bug that removes an object is recoverable; S3 durability covers the hardware side. The exception is terminal job cleanup, which purges by version id on purpose: it exists to reclaim storage from a worker that uploaded something the API rejected, and a delete marker would keep paying for those bytes. A bug in that path is therefore not recoverable from S3, which is the trade for not letting an untrusted peer bill the install indefinitely.
 - Worker machines are expected to vanish: queued jobs retry once on another worker, realtime sessions reattach through the recovery flow, both specified in [architecture.md](architecture.md).
 
 ## Observability

@@ -89,6 +89,7 @@ class InFlight:
     storage_key: str
     thumb_storage_key: str
     user_id: uuid.UUID
+    attempt: int = 1
 
 
 inflight: dict[uuid.UUID, InFlight] = {}
@@ -96,7 +97,16 @@ lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 
 
 def storage_key_in_flight(key: str) -> bool:
-    return any(key in (entry.storage_key, entry.thumb_storage_key) for entry in inflight.values())
+    for job_id, entry in inflight.items():
+        expected = storage_keys_for_attempt(entry.user_id, job_id, entry.attempt)
+        if key in expected:
+            return True
+    return False
+
+
+def storage_keys_for_attempt(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> tuple[str, str]:
+    prefix = f"{user_id}/{job_id}-attempt-{attempt}"
+    return f"{prefix}.png", f"{prefix}-thumb.webp"
 
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
@@ -1107,15 +1117,18 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         worker = pick_job_worker(job.model_id)
         if worker is None:
             return False
-        storage_key = f"{job.user_id}/{job.id}.png"
-        thumb_storage_key = f"{job.user_id}/{job.id}-thumb.webp"
+        storage_key, thumb_storage_key = storage_keys_for_attempt(
+            job.user_id, job.id, job.attempt
+        )
         target = await get_storage().upload_target(storage_key)
         thumb_target = await get_storage().upload_target(thumb_storage_key)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.jobs_in_flight += 1
-        inflight[job.id] = InFlight(worker=worker, storage_key=storage_key,
-                                    thumb_storage_key=thumb_storage_key, user_id=job.user_id)
+        inflight[job.id] = InFlight(
+            worker=worker, storage_key=storage_key, thumb_storage_key=thumb_storage_key,
+            user_id=job.user_id, attempt=job.attempt,
+        )
         last_progress_at[job_id] = time.monotonic()
         job.state = "running"
         job.dispatched_at = datetime.now(timezone.utc)
@@ -1180,6 +1193,47 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         last_progress_at[job_id] = time.monotonic()
         publish(job_id, {"state": "running", "progress": progress})
         return
+    image_dimensions = (0, 0)
+    if control["type"] == "job_done":
+        gpu_ms = _worker_int(control.get("gpu_ms"))
+        phase_ms = {
+            field: _worker_int(control[field])
+            for field in ("input_fetch_ms", "load_ms", "postprocess_ms")
+            if control.get(field) is not None
+        }
+        # Convert claimed dimensions before touching inflight as well. The
+        # object is authoritative below, but malformed peer fields must not
+        # strand the running row if conversion ever rejects one.
+        _worker_int(control.get("width"))
+        _worker_int(control.get("height"))
+        if db.session_factory is None:
+            logger.warning("job %s finished on the worker but the database is unavailable",
+                           job_id)
+            return
+        try:
+            image = await get_storage().image_info(current.storage_key)
+        except Exception:
+            logger.exception("could not inspect output for job %s", job_id)
+            return
+        # Before either branch. image_info awaits a thread, so a stall requeue
+        # can have replaced this attempt while its output was being inspected,
+        # and a late verdict must not fail the row or delete the objects that
+        # now belong to the attempt after it.
+        if inflight.get(job_id) is not current:
+            return
+        if (image is None or image.size <= 0
+                or image.content_type != "image/png"):
+            entry = inflight.pop(job_id, None)
+            if entry is None:
+                return
+            live_progress.pop(job_id, None)
+            last_progress_at.pop(job_id, None)
+            release_job_slot(worker)
+            await mark_failed(job_id, "worker output was missing or invalid")
+            await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
+            return
+        image_dimensions = (image.width, image.height)
+
     entry = inflight.pop(job_id, None)
     live_progress.pop(job_id, None)
     last_progress_at.pop(job_id, None)
@@ -1196,13 +1250,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             if job is None:
                 return
             job.state = "succeeded"
-            job.gpu_ms = _worker_int(control.get("gpu_ms"))
-            for field in ("input_fetch_ms", "load_ms", "postprocess_ms"):
-                if control.get(field) is not None:
-                    setattr(job, field, _worker_int(control[field]))
+            job.gpu_ms = gpu_ms
+            for field, value in phase_ms.items():
+                setattr(job, field, value)
             job.finished_at = datetime.now(timezone.utc)
-            width = _worker_int(control.get("width"))
-            height = _worker_int(control.get("height"))
+            width, height = image_dimensions
             full = Asset(
                 user_id=entry.user_id,
                 job_id=job_id,
@@ -1232,13 +1284,21 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                     height=thumb_height,
                 ))
             await session.commit()
+        orphans = []
         if control.get("has_thumbnail") is not True:
-            # A previous attempt may have uploaded a thumbnail this attempt
-            # did not report; drop the orphan blob rather than leak it.
+            # This attempt may have uploaded a thumbnail it did not report.
+            orphans.append(entry.thumb_storage_key)
+        # Attempts no longer share one key, so a retry leaves the earlier
+        # attempt's blobs behind instead of overwriting them. Nothing else
+        # collects them: the asset row only ever names the winning key.
+        for earlier in range(1, entry.attempt):
+            orphans.extend(storage_keys_for_attempt(entry.user_id, job_id, earlier))
+        for orphan in orphans:
             try:
-                await get_storage().delete(entry.thumb_storage_key)
+                await get_storage().delete(orphan)
             except Exception:
-                logger.debug("no orphaned thumbnail to remove for job %s", job_id)
+                logger.warning("could not remove orphaned blob %s for job %s", orphan,
+                               job_id, exc_info=True)
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
@@ -1247,6 +1307,32 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     else:
         reason = str(control.get("reason", "worker reported failure"))
         await mark_failed(job_id, reason)
+        # A reported failure can still have uploaded: nothing downstream names
+        # those objects, so this is their only collector.
+        await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
+
+
+async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> None:
+    """Remove the objects of this attempt and every earlier one.
+
+    Terminal paths are the only collector these have: no asset row names them,
+    and the success path never runs. A worker can upload a master and a
+    thumbnail and then report a failure, and on S3 nothing bounds what it
+    uploaded.
+
+    S3Storage.delete purges every version of the key, not just the current
+    one, so this reclaims the storage rather than hiding it.
+    """
+    for earlier in range(1, attempt + 1):
+        for key in storage_keys_for_attempt(user_id, job_id, earlier):
+            try:
+                await get_storage().delete(key)
+            except Exception:
+                # Warning, not debug: a missing object does not normally make
+                # a delete raise, so this is a real cleanup failure such as a
+                # denied permission, and nothing retries it.
+                logger.warning("could not remove blob %s for job %s", key, job_id,
+                               exc_info=True)
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str) -> None:

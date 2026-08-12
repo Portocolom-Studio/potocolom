@@ -494,22 +494,34 @@ async def fleet(ws: WebSocket) -> None:
                 if message.get("bytes") is not None:
                     data = message["bytes"]
                     session = sessions.get(frame_session_id(data))
-                    if session is not None:  # browser may have just closed
+                    # The worker is a network peer too: only the assigned
+                    # worker may relay frames for this session. A frame for a
+                    # session this worker does not own is dropped, because
+                    # reassignment races produce those legitimately; the
+                    # assigned worker sending the wrong kind is not a race.
+                    if session is not None and session.worker is worker:
+                        if data[0] != GENERATED_FRAME:
+                            raise ProtocolError("worker frame is not a generated frame")
                         await safe_send(session.browser.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
-                        if session is not None:
+                        if session is not None and session.worker is worker:
                             session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
                         session_id = peer_uuid(control["session_id"])
-                        owner = closing_sessions.pop(session_id, None)
-                        if owner is not None:
+                        # Peek before popping: a worker that held this session
+                        # earlier still knows its id, and popping on its word
+                        # would drop the current owner's entry and bill this
+                        # user for a session it did not run.
+                        owner = closing_sessions.get(session_id)
+                        if owner is not None and owner[2] is worker:
+                            del closing_sessions[session_id]
                             from app import usage_events
                             usage_events.schedule_realtime(owner[0], owner[1], control)
                     elif control["type"] in ("gpu_status", "model_loaded",
