@@ -97,14 +97,28 @@ test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the 
 dev-db: ## create this checkout's dev database; no-op on the main worktree (make deps first)
 	@if [ -z "$(DB_SUFFIX)" ]; then \
 		: ; \
-	elif docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
-		"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
-		echo "dev database potocolom$(DB_SUFFIX) already exists"; \
-	elif docker exec compose-postgres-1 psql -U potocolom -d postgres \
-		-c "CREATE DATABASE \"potocolom$(DB_SUFFIX)\""; then \
-		echo "created dev database potocolom$(DB_SUFFIX)"; \
 	else \
+		i=0; \
+		while [ $$i -lt 10 ]; do \
+			if docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
+				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
+				exit 0; \
+			fi; \
+			if docker exec compose-postgres-1 psql -U potocolom -d postgres \
+				-c "CREATE DATABASE \"potocolom$(DB_SUFFIX)\""; then \
+				echo "created dev database potocolom$(DB_SUFFIX)"; \
+				exit 0; \
+			elif docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
+				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
+				exit 0; \
+			fi; \
+			sleep 1; \
+			i=$$((i+1)); \
+		done; \
 		echo 'dev database not created; is compose-postgres-1 running? (make deps)'; \
+		exit 1; \
 	fi
 
 dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
@@ -149,18 +163,23 @@ CHECKOUT_PORTS := $(shell scripts/checkout-ports.sh)
 ifeq (,$(and $(filter API_PORT=%,$(CHECKOUT_PORTS)),$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
 $(error scripts/checkout-ports.sh printed no API_PORT= or WEB_PORT= line)
 endif
-# $(or ...) treats an exported but empty API_PORT= as unset; DB_SUFFIX is
-# legitimately empty on the main worktree, so it keeps the plain derived value.
-API_PORT := $(or $(strip $(API_PORT)),$(patsubst API_PORT=%,%,$(filter API_PORT=%,$(CHECKOUT_PORTS))))
-WEB_PORT := $(or $(strip $(WEB_PORT)),$(patsubst WEB_PORT=%,%,$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
-DB_SUFFIX ?= $(patsubst DB_SUFFIX=%,%,$(filter DB_SUFFIX=%,$(CHECKOUT_PORTS)))
+# override + $(or ...) lets a non-empty API_PORT or WEB_PORT from the command
+# line or environment win while an empty one falls back to the derived value.
+# DB_SUFFIX is derived only: an override would break worktree isolation.
+override API_PORT := $(or $(strip $(API_PORT)),$(patsubst API_PORT=%,%,$(filter API_PORT=%,$(CHECKOUT_PORTS))))
+override WEB_PORT := $(or $(strip $(WEB_PORT)),$(patsubst WEB_PORT=%,%,$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
+override DB_SUFFIX := $(patsubst DB_SUFFIX=%,%,$(filter DB_SUFFIX=%,$(CHECKOUT_PORTS)))
+# Resolved once so api, dev-start, dev-restart and cleanup-failed agree, and
+# so an exported or command-line DATABASE_URL survives (the alternate-port
+# workflow in docs/local-development.md).
+DEV_DATABASE_URL := $(or $(strip $(DATABASE_URL)),postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX))
 WORKER ?= rocm
 
 api: dev-db ## API server on the configured port; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
 		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
 		PUBLIC_URL=http://localhost:$(API_PORT) \
-		DATABASE_URL=postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX) \
+		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT)
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
@@ -201,12 +220,12 @@ dev-stop: ## stop background API, frontend, and worker
 
 dev-start: dev-db ## start API, frontend, and worker in the background (make deps first)
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
-		DATABASE_URL="postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)" \
+		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" start
 
 dev-restart: dev-db ## restart background API, frontend, and worker
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
-		DATABASE_URL="postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)" \
+		DATABASE_URL="$(DEV_DATABASE_URL)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" restart
 
 dev-status: ## show pid files, ports, local workers, and /api/v1/models
@@ -247,8 +266,8 @@ ci-runner-status: ## show self-hosted runner service status
 		echo "runner not installed ($(CI_RUNNER_DIR))"; \
 	fi
 
-cleanup-failed: ## remove failed generation jobs from the database
-	backend/.venv/bin/python scripts/cleanup-failed-jobs.py
+cleanup-failed: dev-db ## remove failed generation jobs from the database
+	DATABASE_URL="$(DEV_DATABASE_URL)" backend/.venv/bin/python scripts/cleanup-failed-jobs.py
 
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py --api http://localhost:$(API_PORT) "$(PROMPT)"

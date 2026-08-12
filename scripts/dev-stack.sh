@@ -116,7 +116,7 @@ cmd_start() {
 		"cd \"$REPO/backend\" && STORAGE_LOCAL_PATH=\"$REPO/data\" \
 		ALLOWED_ORIGINS=\"http://localhost:$WEB_PORT\" \
 		PUBLIC_URL=\"http://localhost:$API_PORT\" \
-		DATABASE_URL=\"$DATABASE_URL\" \
+		DATABASE_URL=$(printf '%q' "$DATABASE_URL") \
 		exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $API_PORT"
 
 	echo "Starting frontend on :$WEB_PORT..."
