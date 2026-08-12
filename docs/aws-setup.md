@@ -95,14 +95,20 @@ Certificates: ACM in us-east-1 for both CloudFront domains, ACM in eu-west-1 for
 One cluster, three services (API public repo; billing and autoscaler from the private repo). Two IAM roles per service:
 
 - Execution role: the managed `AmazonECSTaskExecutionRolePolicy` plus `ssm:GetParameters` and `kms:Decrypt` scoped to `/potocolom/<env>/*`, so tasks pull secrets at start.
-- API task role (what the running code can do):
+- API task role (what the running code can do). The bucket is versioned, so reclaiming an
+  output means deleting its versions, not writing a delete marker: the API lists versions on
+  the bucket and deletes them on the objects. Without those four actions the terminal
+  cleanup paths fail with AccessDenied and a rejected upload stays billable forever.
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
-    {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"],
+    {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject",
+                                   "s3:DeleteObject", "s3:DeleteObjectVersion"],
      "Resource": "arn:aws:s3:::potocolom-images/*"},
+    {"Effect": "Allow", "Action": ["s3:ListBucketVersions"],
+     "Resource": "arn:aws:s3:::potocolom-images"},
     {"Effect": "Allow", "Action": "ses:SendEmail", "Resource": "*",
      "Condition": {"StringEquals": {"ses:FromAddress": "no-reply@potocolom.com"}}},
     {"Effect": "Allow", "Action": "cloudwatch:PutMetricData", "Resource": "*",

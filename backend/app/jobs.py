@@ -1297,7 +1297,8 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             try:
                 await get_storage().delete(orphan)
             except Exception:
-                logger.debug("no orphaned blob %s to remove for job %s", orphan, job_id)
+                logger.warning("could not remove orphaned blob %s for job %s", orphan,
+                               job_id, exc_info=True)
         url = await get_storage().url(entry.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))

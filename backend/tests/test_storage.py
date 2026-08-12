@@ -108,10 +108,12 @@ class _FakePaginator:
 
 
 class _FakeS3Client:
-    def __init__(self, data, pages=None):
+    def __init__(self, data, pages=None, delete_response=None):
         self.data = data
         self.pages = pages or []
         self.deleted: list[dict] = []
+        # DeleteObjects answers 200 with an Errors list on partial failure.
+        self.delete_response = delete_response or {}
 
     def get_object(self, **kwargs):
         return {
@@ -126,7 +128,7 @@ class _FakeS3Client:
 
     def delete_objects(self, **kwargs):
         self.deleted.extend(kwargs["Delete"]["Objects"])
-        return {}
+        return dict(self.delete_response)
 
 
 def test_s3_storage_reads_uploaded_image_info():
@@ -380,3 +382,23 @@ def test_s3_delete_is_quiet_on_an_unversioned_bucket():
     empty.client = _FakeS3Client(b"", pages=[{}])
     asyncio.run(empty.delete("u/absent.png"))
     assert empty.client.deleted == []
+
+
+def test_s3_delete_raises_when_a_version_could_not_be_removed():
+    """DeleteObjects answers 200 with an Errors list on partial failure.
+
+    Quiet suppresses the successes, not the failures. Discarding the response
+    reports a reclaim that did not happen, and the caller then logs nothing.
+    """
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    key = "u/j-attempt-1.png"
+    storage.client = _FakeS3Client(
+        b"",
+        pages=[{"Versions": [{"Key": key, "VersionId": "v1"}]}],
+        delete_response={"Errors": [{"Key": key, "VersionId": "v1",
+                                     "Code": "AccessDenied",
+                                     "Message": "Access Denied"}]},
+    )
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        asyncio.run(storage.delete(key))

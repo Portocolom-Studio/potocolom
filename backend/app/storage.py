@@ -313,10 +313,19 @@ class S3Storage:
                     if entry.get("Key") == key
                 ]
                 for start in range(0, len(doomed), 1000):  # DeleteObjects caps at 1000
-                    self.client.delete_objects(
+                    response = self.client.delete_objects(
                         Bucket=self.bucket,
                         Delete={"Objects": doomed[start:start + 1000], "Quiet": True},
                     )
+                    # Quiet suppresses the successes, not the failures, and the
+                    # call answers 200 either way. Discarding this reports a
+                    # reclaim that did not happen.
+                    errors = response.get("Errors") or []
+                    if errors:
+                        raise RuntimeError(
+                            f"could not delete {len(errors)} version(s) of {key}: "
+                            f"{errors[0].get('Code')}"
+                        )
 
         await asyncio.to_thread(purge)
 
