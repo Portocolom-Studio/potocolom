@@ -90,6 +90,16 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 npm install
 npm run dev                                      # http://localhost:5173
 npm run lint && npm run check                    # format check and type check
+```
+
+Those ports are what this checkout gets. A linked git worktree derives its own
+from its path, so two checkouts can run the dev loop at once without either
+knowing about the other: `scripts/checkout-ports.sh` prints what yours will use,
+`make api` and `make web` follow it, and the dev database gains a matching
+suffix. Set `API_PORT` or `WEB_PORT` to override. Only the main worktree gets
+the canonical `8000` and `5173` above.
+
+```bash
 
 # worker, from worker/
 python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"

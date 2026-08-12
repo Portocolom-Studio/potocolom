@@ -31,6 +31,9 @@ import pytest
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
+# scripts/checkout-ports.sh names the dev database with the same idea (a hash
+# of the checkout path), but the two derivations are deliberately independent:
+# the test suite must never depend on a shell script being executable.
 _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
 
 os.environ.setdefault("DATABASE_URL",

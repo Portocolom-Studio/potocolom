@@ -4,17 +4,24 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { waitlistProxy } from './vite.waitlist-proxy.js';
 
-// The dev loop runs the API natively on :8000 (docs/local-development.md);
-// the SPA calls it with relative /api/v1 paths in every deployment.
+// The dev loop runs the API natively (docs/local-development.md); the SPA
+// calls it with relative /api/v1 paths in every deployment. Linked worktrees
+// get their own ports from the Makefile (scripts/checkout-ports.sh), so read
+// them from the environment and fall back to the documented single-checkout
+// values when unset.
+const apiPort = process.env.API_PORT ?? '8000';
+const webPort = process.env.WEB_PORT ?? '5173';
+
 const apiProxy = {
-	'/api/v1': { target: 'http://localhost:8000', changeOrigin: true, ws: true }
+	'/api/v1': { target: `http://localhost:${apiPort}`, changeOrigin: true, ws: true }
 };
 
 export default defineConfig({
 	// strictPort: the API allowlists this exact origin for the WebSocket
 	// endpoints (ALLOWED_ORIGINS in the Makefile), so a silent fallback to
-	// 5174 when 5173 is taken would produce an opaque 403 instead.
-	server: { port: 5173, strictPort: true, proxy: apiProxy },
+	// another port when the configured one is taken would produce an opaque
+	// 403 instead. The port is per-checkout now, but it must still fail loudly.
+	server: { port: Number(webPort), strictPort: true, proxy: apiProxy },
 	preview: { proxy: apiProxy },
 	plugins: [
 		waitlistProxy(),
