@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ from app.security import (
     SecurityHeadersMiddleware,
     unhandled_exception_response,
 )
+from app.settings import get_settings
 
 client = TestClient(app)
 
@@ -181,3 +183,18 @@ def test_csp_img_src_allows_http_object_store():
     )
     tokens = img_src.split()[1:]
     assert tokens == ["'self'", "https:", "http:"]
+
+
+@pytest.mark.parametrize("mode", ["local", "oauth"])
+def test_unimplemented_auth_modes_refuse_to_start(monkeypatch, mode):
+    """Entering the app must fail, not boot unauthenticated in disguise."""
+    monkeypatch.setattr(get_settings(), "auth_mode", mode)
+    with pytest.raises(RuntimeError, match="authenticate nobody"):
+        with TestClient(app):
+            pass
+
+
+def test_auth_mode_none_starts():
+    """The default mode keeps the existing startup path."""
+    with TestClient(app):
+        pass

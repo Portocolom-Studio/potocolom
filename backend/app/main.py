@@ -33,6 +33,16 @@ from app.telemetry import router as telemetry_router
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_format)
+    if settings.auth_mode != "none":
+        # An install configured for authentication that performs none is worse
+        # than one that will not start: nothing in the running system reveals
+        # the difference, so the operator would never find out.
+        raise RuntimeError(
+            f"AUTH_MODE={settings.auth_mode} is not implemented and would "
+            "authenticate nobody: every request would resolve to the local "
+            "admin user. Set AUTH_MODE=none until issues #5 and #9 land local "
+            "and OAuth accounts."
+        )
     if not settings.fleet_token_key:
         logging.getLogger("potocolom.realtime").warning(
             "FLEET_TOKEN_KEY is unset; fleet authentication is permissive for "

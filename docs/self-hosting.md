@@ -111,9 +111,9 @@ user, and that user holds the `admin` role, so anyone who can reach the API can 
 the install can do. Keep it on a trusted network, and see the fleet secret above for the
 worker side of the same question.
 
-Do not set `AUTH_MODE=local` or `AUTH_MODE=oauth`. Neither is implemented: they are accepted
-today and behave exactly like `none`, which means an install configured for authentication
-performs none (issue #241 makes that a startup failure instead).
+`AUTH_MODE=local` and `AUTH_MODE=oauth` are refused: the API will not start with either,
+because neither is implemented and an install configured for authentication that performs
+none is worse than one that will not boot. They become available with issues #5 and #9.
 
 Multi-user is the intended shape, not a maybe: an operator holding `admin`, invited people
 signing in with a local email and password or with Google or GitHub, and a read-only `viewer`
