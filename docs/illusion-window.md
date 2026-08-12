@@ -608,8 +608,10 @@ second SDS phase, which is cheaper than any predictor could be.
 
 ## Window 3: acquisition
 
-Planned, not yet run. `worker.illusion_campaign --phase window3`, 98 bases and
-196 observations at 47.3h, which leaves real slack in a 58h window. The plan is
+Planned, not yet run. `worker.illusion_campaign --phase window3`, 134 bases and
+268 observations at 64.6h (60.7h at the anchor's measured rate), inside a 68h
+deadline for a 70h window. Two blocks: 98 acquisition bases, then a 36-base
+wording screen that runs last. The plan is
 `.local/illusion-reliability/campaigns/window3/PLAN.md`, the launch procedure is
 `RUNBOOK.md` beside it, and the corpus is `BREADTH_FAMILIES` in
 `illusion_experiment.py`.
@@ -697,6 +699,41 @@ independent arm scored 5 against joint's 0 from one shared SDS state. Its score 
 not a gate, because one seed on a workable pair misses 45 percent of the time.
 What it gates is structural: two arm directories, two distinct images, SDS run
 once.
+
+### Block W: screening two wordings
+
+Added when the window grew to 70h. The extra hours went here rather than into more
+corpus because the binding resource on the corpus is careful pair-writing, not GPU
+time - 22 of the last 119 pairs had to be cut in a semantic pass, and 36 more
+written in one sitting would repeat that error.
+
+Neither validated wording wins the trade that caps the product. `reference_sketch`
+reads better raw, 35 of 72 against 25, and loses 31 of 72 to its own frames. `oil`
+produces no disqualifying frames in 78 and only ties on the clean endpoint. The
+product wants both and can currently have either.
+
+This is a screen with a mechanism behind it, not the unpriored prompt search
+rejected earlier. Every pencil wording in `STYLE_TEMPLATES` names a paper-bound
+artifact - "pencil sketch", "isolated on plain warm paper" - which is what summons
+the hands, desks and torn edges. A2 separately found that monochrome removes the
+colour agreement the two flip views must otherwise negotiate. If both hold,
+monochrome without a paper-bound medium gets the readability and not the frames.
+
+| Candidate | Wording | What it isolates |
+|---|---|---|
+| `monochrome_oil` | a monochrome oil painting of {} | monochrome alone: one word off a wording with 0 frames in 78 |
+| `charcoal` | a detailed charcoal drawing of {} | dry media, still paper-bound: separates monochrome from texture, and tests whether every paper-bound medium frames |
+
+2 wordings x the 6 proven pairs x seeds 11, 23 and 37, both Dream arms, 36 bases
+at 16.3h. Same pairs and seeds as window 2's negative-off bases, so each candidate
+meets both incumbents on matched ground rather than a remembered number: `oil` 7
+of 18 and `reference_sketch` 6 of 18 on the clean base rate.
+
+It runs LAST, so an acquisition overrun truncates the bonus and never the
+deliverable. Predeclared: at n=18 per wording this is a **screen, not an adoption
+test**, since window 2 showed that size resolves only a large effect. A candidate
+that beats BOTH incumbents advances to replication in a later window and changes no
+default here. A truncated block W is reported as **inconclusive**, never negative.
 
 ### Run the SDXL diagnostic first
 
