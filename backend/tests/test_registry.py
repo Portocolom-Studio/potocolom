@@ -88,6 +88,186 @@ def test_models_endpoint_survives_manifest_numbers_that_overflow_the_estimate():
             realtime.workers.pop(worker.id, None)
 
 
+def test_models_endpoint_round_trips_realtime_p95_ms():
+    # A worker's calibration measurement must reach the browser: the studio
+    # picker labels each realtime model with its measured frame cost.
+    from app import realtime
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    worker = realtime.Worker(
+        id="w-rt", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="vega-rt", name="VegaRT",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=8, realtime_p95_ms=408)],
+    )
+    realtime.workers[worker.id] = worker
+    try:
+        payload = TestClient(app).get("/api/v1/models").json()
+    finally:
+        realtime.workers.pop(worker.id, None)
+    entry = next(m for m in payload if m["id"] == "vega-rt")
+    assert entry["realtime_p95_ms"] == 408
+
+
+def test_models_endpoint_without_measurement_reports_null():
+    # A worker that never calibrated (the simulator) carries no measurement;
+    # the field must come through as null rather than break the endpoint.
+    from app import realtime
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    worker = realtime.Worker(
+        id="w-sim", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="sd-sim", name="Simulated",
+                            capabilities=["text_to_image", "image_to_image", "realtime"])],
+    )
+    realtime.workers[worker.id] = worker
+    try:
+        payload = TestClient(app).get("/api/v1/models").json()
+    finally:
+        realtime.workers.pop(worker.id, None)
+    entry = next(m for m in payload if m["id"] == "sd-sim")
+    assert entry["realtime_p95_ms"] is None
+
+
+def test_public_narrows_studio_capabilities_but_available_keeps_full():
+    worker = realtime.Worker(
+        id="w-narrow", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="sdxl-turbo", name="SDXL Turbo",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=10, studio_capabilities=["realtime"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-narrow"] = worker
+        narrowed = registry.public()["sdxl-turbo"]
+        assert narrowed.capabilities == ["realtime"]
+        assert narrowed.studio_capabilities == ["realtime"]
+        # The full manifest stays the registry's: the benchmark page and the
+        # realtime session path read available() and must not be narrowed.
+        assert registry.available()["sdxl-turbo"].capabilities == [
+            "text_to_image", "image_to_image", "realtime",
+        ]
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_public_leaves_an_unrestricted_manifest_alone():
+    worker = realtime.Worker(
+        id="w-open", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="vega-rt", name="VegaRT",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=8)],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-open"] = worker
+        advertised = registry.public()["vega-rt"]
+        assert advertised.capabilities == ["text_to_image", "image_to_image", "realtime"]
+        # No narrowing means no copy: the registry's manifest is the one served.
+        assert advertised is registry.available()["vega-rt"]
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_public_omits_a_manifest_narrowed_to_nothing():
+    # A model whose studio set intersects nothing would be advertised with an
+    # empty capability list: listed in the studio but offered by no picker,
+    # which reads as a removal the user never made.
+    worker = realtime.Worker(
+        id="w-none", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="m-none", name="None",
+                            capabilities=["text_to_image"],
+                            studio_capabilities=["upscale"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-none"] = worker
+        assert "m-none" not in registry.public()
+        # Still available to the benchmark page and the realtime path.
+        assert "m-none" in registry.available()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
+    worker = realtime.Worker(
+        id="w-jobs", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="sdxl-turbo", name="SDXL Turbo",
+                            capabilities=["text_to_image", "image_to_image", "realtime"],
+                            min_vram_gb=10, studio_capabilities=["realtime"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-jobs"] = worker
+        # Queued generations read for_jobs(): realtime only, so POST
+        # /api/v1/generations cannot reach the unmeasured text_to_image path.
+        assert registry.for_jobs()["sdxl-turbo"].capabilities == ["realtime"]
+        monkeypatch.setenv("BENCHMARK_API", "1")
+        get_settings.cache_clear()
+        # The benchmark harness is exempt: it drives every shipped path.
+        assert registry.for_jobs()["sdxl-turbo"].capabilities == [
+            "text_to_image", "image_to_image", "realtime",
+        ]
+    finally:
+        monkeypatch.delenv("BENCHMARK_API", raising=False)
+        get_settings.cache_clear()
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
+    # The shipped manifest is the contract the studio picker builds on:
+    # studio-visible (benchmark_only false), sketch-conditioned like vega-rt,
+    # with a two-step ceiling that stays under the 500 ms bar, and advertised
+    # for realtime only since that is the only measured path.
+    import json
+    from pathlib import Path
+
+    from app import realtime
+    from app.main import app
+    from app.manifests import Manifest
+    from fastapi.testclient import TestClient
+
+    raw = json.loads(Path(__file__).resolve().parents[2].joinpath(
+        "worker", "models", "sdxl-turbo.json").read_text())
+    manifest = Manifest(**raw)
+    assert manifest.benchmark_only is False
+    assert manifest.studio_capabilities == ["realtime"]
+    assert "realtime" in manifest.capabilities
+    # The backend model is extra="ignore": worker-only weight fields never
+    # enter it, so they cannot leak into the /api/v1/models dump.
+    assert "t2i_adapter" not in manifest.model_dump()
+    properties = manifest.parameters["properties"]
+    assert properties["structure_strength"] == {
+        "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0,
+    }
+    assert properties["steps"]["maximum"] == 2
+    assert properties["steps"]["default"] == 1
+
+    worker = realtime.Worker(
+        id="w-sdxl", ws=None, realtime_slots=1, manifests=[manifest],
+    )
+    realtime.workers[worker.id] = worker
+    try:
+        payload = TestClient(app).get("/api/v1/models").json()
+    finally:
+        realtime.workers.pop(worker.id, None)
+    entry = next(m for m in payload if m["id"] == "sdxl-turbo")
+    assert entry["capabilities"] == ["realtime"]
+
+
 def test_manifest_parameters_must_be_json_storable():
     # parameters is persisted to JSONB, which has no NaN or Infinity, while
     # json.loads produces both. Without this the upsert killed the fleet

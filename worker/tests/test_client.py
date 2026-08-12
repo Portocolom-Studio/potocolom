@@ -17,7 +17,7 @@ from worker.client import (
     serve_connection,
 )
 from worker.engine import SimulatedEngine
-from worker.manifests import SIMULATED_MANIFEST
+from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 
 
@@ -202,8 +202,39 @@ def test_hello_carries_manifests():
     assert manifest["id"] == "sd-sim"
     assert "realtime" in manifest["capabilities"]
     assert "source" not in manifest  # weight locations stay worker side
+    # The simulated engine never calibrated a frame, so nothing is advertised.
+    assert "realtime_p95_ms" not in manifest
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
+
+
+def test_hello_carries_measured_realtime_p95_ms():
+    class P95Engine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+            self._measured = {"vega-rt": 408}
+
+        def realtime_p95_ms(self, model_id):
+            return self._measured.get(model_id)
+
+    class HelloOnlySocket(FakeSocket):
+        async def recv(self):
+            return json.dumps({"type": "registered"})
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    socket = HelloOnlySocket()
+    manifests = [Manifest(id="vega-rt", name="VegaRT",
+                          capabilities=["text_to_image", "image_to_image", "realtime"],
+                          min_vram_gb=8)]
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-p95"),
+                                 manifests, P95Engine()))
+    hello = json.loads(socket.sent[0])
+    assert hello["models"][0]["realtime_p95_ms"] == 408
 
 
 def test_rejected_registration_raises_cleanly():

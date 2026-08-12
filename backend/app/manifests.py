@@ -39,6 +39,13 @@ class Manifest(BaseModel):
     license_registration_url: str = ""
     requires_attribution: str = ""
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
+    # Studio-visible subset of capabilities; None means all of them. A model
+    # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
+    # of the queued pickers while its verified path stays offered.
+    studio_capabilities: list[str] | None = None
+    # Measured single-frame p95 on the reporting worker's card; None until a
+    # worker has calibrated the model, absent on the simulated worker.
+    realtime_p95_ms: int | None = None
 
 
 def validate_capability_exclusivity(manifest: Manifest) -> None:

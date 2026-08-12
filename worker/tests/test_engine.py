@@ -809,6 +809,7 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(
@@ -841,6 +842,15 @@ def test_calibrate_realtime_sets_slots_from_p95():
     canvases = [call.args[2] for call in engine._frame.call_args_list]
     assert all(canvas is canvases[0] for canvas in canvases)
     assert all(call.args[3] == 0.7 for call in engine._frame.call_args_list)
+    # The measured p95 is advertised per model: 200 ms samples -> 200.
+    assert engine.realtime_p95_ms("vega-rt") == 200
+    assert engine.realtime_p95_ms("sdxl-turbo") is None
+
+
+def test_realtime_p95_ms_none_before_any_calibration():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    assert engine.realtime_p95_ms("vega-rt") is None
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
@@ -852,6 +862,7 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -889,6 +900,7 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
@@ -917,6 +929,7 @@ def test_calibrate_realtime_skips_cpu_without_frames():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -932,6 +945,7 @@ def test_calibrate_realtime_skips_cpu_without_frames():
 
     assert slots == 0
     assert engine._calibrated_slots == 0
+    assert engine.realtime_p95_ms("vega-rt") is None
     engine._frame.assert_not_called()
     engine._select_rung.assert_not_called()
 

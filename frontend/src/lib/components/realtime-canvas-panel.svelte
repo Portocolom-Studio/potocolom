@@ -28,7 +28,7 @@
 		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
-	import { modelIsRemoved, studio } from '$lib/studio.svelte';
+	import { modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
 		FAST_INTERVAL_MS,
 		IDLE_TICKS_BEFORE_STOP,
@@ -540,6 +540,15 @@
 		return 'app.realtime_canvas.socket_error';
 	}
 
+	/** The picker's option label: the model's measured frame cost when its
+	 * worker reported one, so the vega-rt versus sdxl-turbo trade-off is
+	 * visible before a session starts. */
+	function modelOptionLabel(model: Model): string {
+		return model.realtime_p95_ms != null
+			? `${model.name} - ${Math.round(model.realtime_p95_ms)} ${t('app.realtime_canvas.latency_ms')}`
+			: model.name;
+	}
+
 	function onMessage(event: MessageEvent): void {
 		if (typeof event.data === 'string') {
 			handleControl(event.data);
@@ -711,12 +720,15 @@
 								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{#each realtimeModels as model (model.id)}
-									<option value={model.id}>{model.name}</option>
+									<option value={model.id}>{modelOptionLabel(model)}</option>
 								{/each}
 							</select>
 						{:else}
 							<p class="text-sm font-medium">{t('app.realtime_canvas.model')}</p>
 							<p class="text-muted-foreground text-sm">{realtimeModels[0]?.name}</p>
+						{/if}
+						{#if selectedModel?.requires_attribution}
+							<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
 						{/if}
 					</div>
 					{#if selectedModel}

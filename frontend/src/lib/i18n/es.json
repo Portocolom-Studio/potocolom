@@ -280,6 +280,7 @@
 	"app.realtime_canvas.refused_capacity": "No hay capacidad de workers disponible. Intentalo en un momento.",
 	"app.realtime_canvas.refused_model": "El modelo seleccionado ya no esta disponible.",
 	"app.realtime_canvas.model": "Modelo",
+	"app.realtime_canvas.latency_ms": "ms",
 	"app.realtime_canvas.strength": "Intensidad",
 	"app.realtime_canvas.structure": "Estructura",
 	"app.realtime_canvas.steps": "Pasos",

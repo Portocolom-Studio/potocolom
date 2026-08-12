@@ -19,6 +19,9 @@ export type Model = {
 	// Non-empty when the model's license demands visible credit, e.g. the
 	// Stability Community License "Powered by Stability AI".
 	requires_attribution?: string;
+	// Worker-measured realtime frame p95; the API dumps it for every model,
+	// so an uncalibrated one arrives as null rather than an absent key.
+	realtime_p95_ms?: number | null;
 	/** Text encoder window; absent or 0 means the model never declared one. */
 	prompt_token_limit?: number;
 	estimated_gpu_ms_default: number | null;

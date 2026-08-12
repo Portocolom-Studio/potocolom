@@ -33,8 +33,26 @@ def available() -> dict[str, Manifest]:
 
 
 def public() -> dict[str, Manifest]:
-    return {model_id: manifest for model_id, manifest in available().items()
-            if not manifest.benchmark_only}
+    published = {model_id: manifest for model_id, manifest in available().items()
+                 if not manifest.benchmark_only}
+    public_models: dict[str, Manifest] = {}
+    for model_id, manifest in published.items():
+        if manifest.studio_capabilities is None:
+            public_models[model_id] = manifest
+            continue
+        # The studio pickers filter on capabilities, so narrowing them here is
+        # enough to place the model in only the pickers its measurement backs.
+        # Preserve the order capabilities already has.
+        narrowed = [cap for cap in manifest.capabilities
+                    if cap in manifest.studio_capabilities]
+        if not narrowed:
+            # A model offered for nothing must not be advertised at all: the
+            # studio would list it while no picker could ever offer it, which
+            # reads as a removal the user never made. available() still serves
+            # it to the benchmark page and the realtime session path.
+            continue
+        public_models[model_id] = manifest.model_copy(update={"capabilities": narrowed})
+    return public_models
 
 
 def for_jobs() -> dict[str, Manifest]:

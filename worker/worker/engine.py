@@ -85,6 +85,8 @@ class Engine(Protocol):
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int: ...
 
+    def realtime_p95_ms(self, model_id: str) -> int | None: ...
+
     async def load_model(self, manifest: Manifest) -> int: ...
 
     async def unload_model(self, model_id: str) -> None: ...
@@ -176,6 +178,10 @@ class SimulatedEngine:
         return self.effective_realtime_slots(
             self.measured_manifests([manifest]), configured,
         )
+
+    def realtime_p95_ms(self, model_id: str) -> int | None:
+        # Simulated engine never measured a frame; nothing to advertise.
+        return None
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -280,6 +286,7 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._realtime_p95_ms: dict[str, int] = {}
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
@@ -643,7 +650,11 @@ class DiffusersEngine:
                 # and never let a boot-time inference error kill the worker.
                 logger.exception("realtime calibration failed for %s", manifest.id)
                 self._calibrated_slots = 0
+                self._realtime_p95_ms.pop(manifest.id, None)
                 return 0
+
+    def realtime_p95_ms(self, model_id: str) -> int | None:
+        return self._realtime_p95_ms.get(model_id)
 
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.
@@ -654,12 +665,15 @@ class DiffusersEngine:
         if self.device != "cuda":
             # CPU diffusion cannot hold the bar; skip the frames, advertise nothing.
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             return 0
         if self._select_rung(manifest) != "full":
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
             )
@@ -698,6 +712,7 @@ class DiffusersEngine:
         p95 = _percentile_nearest(samples, 95.0)
         slots = slots_from_frame_ms(p95, configured, bar_ms=REALTIME_BAR_MS)
         self._calibrated_slots = slots
+        self._realtime_p95_ms[manifest.id] = round(p95)
         logger.info(
             "realtime calibration model=%s p95_ms=%.1f slots=%d (cap=%d)",
             manifest.id, p95, slots, configured,

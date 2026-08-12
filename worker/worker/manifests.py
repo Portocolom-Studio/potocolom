@@ -43,6 +43,10 @@ class Manifest(BaseModel):
     license_registration_url: str = ""
     requires_attribution: str = ""  # e.g. "Powered by Stability AI"
     benchmark_only: bool = False  # benchmark reference; hidden from GET /api/v1/models
+    # Studio-visible subset of capabilities; None means all of them. A model
+    # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
+    # of the queued pickers while its verified path stays offered.
+    studio_capabilities: list[str] | None = None
 
     def wire(self) -> dict:
         return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "quantize", "t2i_adapter"})

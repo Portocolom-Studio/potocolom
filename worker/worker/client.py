@@ -322,6 +322,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
     await warmup_realtime(engine, manifests, settings.realtime_slots)
     wire_manifests = engine.measured_manifests(manifests)
+    # A measurement from this worker on this card, not a property of the
+    # model: attach it at the wire edge so the API can advertise what a real
+    # frame costs without Manifest.wire() growing a field of its own.
+    for wire in wire_manifests:
+        p95 = engine.realtime_p95_ms(wire["id"])
+        if p95 is not None:
+            wire["realtime_p95_ms"] = p95
     await ws.send(json.dumps({
         "type": "hello",
         "protocol_version": PROTOCOL_VERSION,
