@@ -19,7 +19,7 @@ Read the list below before reporting. Several open surfaces here are recorded de
 Known and deliberate, so not vulnerabilities:
 
 - **The fleet WebSocket (`/api/v1/fleet`) authenticates workers with a shared secret in `FLEET_TOKEN_KEY`, compared in constant time.** When the secret is unset the socket stays permissive for compatibility with existing installs, but only for a peer whose address cannot route from the public internet. That restriction is a mitigation and not a boundary: a connection arriving over IPv6 reaches an IPv4-only container through Docker's userland proxy and so appears local. Any host with a public address should set the secret. Both WebSocket endpoints reject a browser `Origin` that is not allowlisted, so a page you merely visit cannot reach them; a process on the same network still can, which is what worker authentication is for. Tracked in #245.
-- **`AUTH_MODE=none` is the shipped default** and resolves every request to one local user. Only that mode exists; `local` and `oauth` are seams, not implementations. Tracked in #5 and #9.
+- **`AUTH_MODE=none` is the shipped default** and resolves every request to one local user. Setting `local` or `oauth` now refuses to start rather than silently behaving as `none`; they are seams, not implementations. Tracked in #5 and #9.
 - **There is no rate limiting.** Deferred by recorded decision, see [docs/decisions.md](docs/decisions.md).
 - **Pull requests execute contributor code on a self-hosted runner.** Accepted for a solo org and documented in [docs/self-hosted-runner.md](docs/self-hosted-runner.md).
 

@@ -32,6 +32,16 @@ from app.telemetry import router as telemetry_router
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    if settings.auth_mode != "none":
+        # Refusing to boot is deliberate rather than a warning, because a
+        # warning is exactly what an operator misses while the API resolves
+        # every request to the local admin user.
+        raise RuntimeError(
+            f"AUTH_MODE={settings.auth_mode} is not implemented and "
+            "authenticates nobody, so every request would resolve to the local "
+            "admin user. Unset AUTH_MODE or set it to none (local is tracked "
+            "in #5, oauth in #9)."
+        )
     setup_logging(settings.log_format)
     if not settings.fleet_token_key:
         logging.getLogger("potocolom.realtime").warning(

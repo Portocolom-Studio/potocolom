@@ -1,11 +1,59 @@
-"""Self-hosted SPA static serving."""
+"""Self-hosted SPA static serving and the AUTH_MODE startup gate."""
 
 from pathlib import Path
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from app.main import SPAStaticFiles
+from app.main import SPAStaticFiles, app
+from app.settings import get_settings
+
+
+@pytest.mark.parametrize("mode", ["local", "oauth"])
+def test_unimplemented_auth_mode_refuses_to_start(monkeypatch, mode):
+    """An unimplemented AUTH_MODE must fail startup loudly, not silently downgrade.
+
+    current_user never reads the mode and resolves every request to the local
+    admin user, so leaving local or oauth configured would serve the API with
+    no authentication at all. The lifespan raises on entry, before the rest of
+    the process comes up.
+    """
+    monkeypatch.setenv("AUTH_MODE", mode)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+            with TestClient(app):
+                pass
+    finally:
+        get_settings.cache_clear()
+
+
+def test_auth_mode_none_starts(monkeypatch):
+    """AUTH_MODE=none is the only implemented mode and must not be refused.
+
+    The full lifespan can run here without a database: an unreachable one
+    degrades startup (app/db.py) instead of raising, so entering the lifespan
+    asserts the gate itself.
+    """
+    monkeypatch.setenv("AUTH_MODE", "none")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app):
+            pass
+    finally:
+        get_settings.cache_clear()
+
+
+def test_auth_mode_unset_starts(monkeypatch):
+    """An unset AUTH_MODE falls back to the shipped none default, not a refusal."""
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    get_settings.cache_clear()
+    try:
+        with TestClient(app):
+            pass
+    finally:
+        get_settings.cache_clear()
 
 
 def test_spa_static_files_fallback_to_index(tmp_path: Path):
