@@ -397,12 +397,8 @@ async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> 
         gpu_requests.pop(request_id, None)
 
 
-def pick_worker(model_id: str, *, exclude: set[str] | None = None) -> Worker | None:
-    candidates = [
-        w for w in workers.values()
-        if model_id in w.models and w.free_slots > 0
-        and (exclude is None or w.id not in exclude)
-    ]
+def pick_worker(model_id: str) -> Worker | None:
+    candidates = [w for w in workers.values() if model_id in w.models and w.free_slots > 0]
     return max(candidates, key=lambda w: w.free_slots, default=None)
 
 
@@ -478,26 +474,26 @@ async def reassign(session: Session) -> None:
     if not session.is_live:  # browser already gone
         return
     await safe_send(session.browser.send_json({"type": "interrupted"}))
-    tried: set[str] = set()
-    placed: Worker | None = None
-    while placed is None and session.is_live:
-        replacement = pick_worker(session.model_id, exclude=tried)
-        if replacement is None:
-            break
-        tried.add(replacement.id)
-        if await assign(session, replacement):
-            placed = replacement
-            break
-        # assign compensated its slot; a failure on one worker is not a
-        # failure of the fleet, so the next candidate gets its turn.
-    if placed is None:
-        logger.warning("session %s lost its worker and no replacement was available", session.id)
+    # One attempt, as before the refusal work: retrying other candidates here
+    # widened a race this module cannot yet win. Two reassign tasks for one
+    # session share its worker and its ready event, so a stale attempt that
+    # places a second worker is then woken by the first worker's readiness and
+    # believes it succeeded: two workers open the session, one keeps a slot and
+    # an unreachable runner, and the browser is told resumed twice. Retrying
+    # made that reachable by giving the stale attempt somewhere else to go.
+    # The fix is an attempt identity that readiness and refusal carry, which is
+    # session lifecycle design tracked by issue #270; until then this stays as
+    # narrow as main has it.
+    replacement = pick_worker(session.model_id)
+    if replacement is None or not await assign(session, replacement):
+        logger.warning("session %s lost its worker and no replacement was available",
+                       session.id)
         await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
         return
     if not session.is_live:  # browser disconnected while we assigned
         await release(session)
         return
-    logger.info("session %s resumed on worker %s", session.id, placed.id)
+    logger.info("session %s resumed on worker %s", session.id, replacement.id)
     await safe_send(session.browser.send_json({"type": "resumed"}))
 
 
@@ -849,8 +845,12 @@ async def realtime(ws: WebSocket) -> None:
                             continue
                         # Later keys win, so a second update of the same
                         # parameter overwrites the first. The merged dict is
-                        # what the worker replaces its params with, and what
-                        # the browser confirms as actually applied.
+                        # what the session holds from here on, what a worker
+                        # replaces its params with, and what the browser is
+                        # told. Not "what applied": this acknowledges even
+                        # while a reassignment leaves the session without a
+                        # worker, and a worker fills in manifest defaults for
+                        # keys nobody set, which never appear here.
                         session.params.update(params)
                         if session.worker is not None:
                             await safe_send(session.worker.ws.send_json({

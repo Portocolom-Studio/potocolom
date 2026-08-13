@@ -1199,9 +1199,17 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_reassign_tries_another_worker_after_a_failure(monkeypatch):
-    """A failure on one worker is not a failure of the fleet: reassign must
-    place the session on the next candidate instead of closing 4003."""
+def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
+    """One attempt per reassignment, and a failure closes the session 4003.
+
+    Retrying other candidates reads as an obvious improvement and is not one
+    yet: two reassign tasks for a session share its worker and its ready
+    event, so a stale attempt with somewhere else to go can place a second
+    worker and then be woken by the first one's readiness, leaving two workers
+    holding the session. Until an assignment carries an identity that
+    readiness answers to (issue #270), this stays as narrow as main has it,
+    and this test is what stops the retry from creeping back in.
+    """
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
 
     async def scenario():
@@ -1210,33 +1218,30 @@ def test_reassign_tries_another_worker_after_a_failure(monkeypatch):
         first = realtime.Worker(id="w-first", ws=first_ws,
                                 manifests=[Manifest.model_validate(manifest())],
                                 realtime_slots=1)
-        acceptor_ws = FakeSocket()
-        acceptor = realtime.Worker(id="w-acceptor", ws=acceptor_ws,
-                                   manifests=[Manifest.model_validate(manifest())],
-                                   realtime_slots=1)
-        realtime.workers.update({first.id: first, acceptor.id: acceptor})
+        spare_ws = FakeSocket()
+        spare = realtime.Worker(id="w-spare", ws=spare_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
+        realtime.workers.update({first.id: first, spare.id: spare})
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
         try:
-            task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted sent, first open in flight
+            # pick_worker takes the worker with the most free slots, and both
+            # have one, so pin which one is tried to keep this deterministic.
+            monkeypatch.setattr(realtime, "pick_worker", lambda model_id: first)
+            await realtime.reassign(session)
             assert first_ws.sent[0]["type"] == "open_session"
-            # The first worker never answers, so its assign times out,
-            # compensates, and the next candidate gets its turn.
-            while not acceptor_ws.sent:
-                await asyncio.sleep(0.005)
+            # The chosen worker never answers: the session ends rather than
+            # being offered to the spare.
+            assert spare_ws.sent == []
             assert first.slots_in_use == 0
-            assert acceptor_ws.sent[0]["type"] == "open_session"
-            assert acceptor_ws.sent[0]["session_id"] == str(session.id)
-            session.ready.set()  # what the fleet handler does on session_ready
-            await task
-            assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
-            assert session.worker is acceptor
-            assert acceptor.slots_in_use == 1
-            assert browser.close_code is None  # the session survived
+            assert session.worker is None
+            assert [m["type"] for m in browser.sent] == ["interrupted", "error"]
+            assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
+            assert browser.close_code == realtime.CLOSE_NO_CAPACITY
         finally:
             realtime.workers.pop(first.id, None)
-            realtime.workers.pop(acceptor.id, None)
+            realtime.workers.pop(spare.id, None)
             realtime.sessions.pop(session.id, None)
 
     asyncio.run(scenario())
