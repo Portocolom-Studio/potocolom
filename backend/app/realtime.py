@@ -329,6 +329,12 @@ class Session:
     # session (session_refused): lets the assign waiter tell a refusal from
     # a readiness instead of waiting out the ready timeout.
     refused: str | None = None
+    # One assignment at a time. `ready` and `refused` are single-attempt
+    # state: one readiness (or refusal) completing two concurrent
+    # assignments is the double-open defect, so concurrent attempts are
+    # excluded rather than merely tolerated. reassign holds this across its
+    # whole retry loop (realtime.py).
+    assign_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def is_live(self) -> bool:
@@ -458,32 +464,51 @@ async def release(session: Session) -> None:
 
 
 async def reassign(session: Session) -> None:
-    """The session's worker vanished: interrupted, new worker, resumed."""
-    session.worker = None
-    if not session.is_live:  # browser already gone
-        return
-    await safe_send(session.browser.send_json({"type": "interrupted"}))
-    tried: set[str] = set()
-    placed: Worker | None = None
-    while placed is None and session.is_live:
-        replacement = pick_worker(session.model_id, exclude=tried)
-        if replacement is None:
-            break
-        tried.add(replacement.id)
-        if await assign(session, replacement):
-            placed = replacement
-            break
-        # assign compensated its slot; a refusal from one worker is not a
-        # refusal from the fleet, so the next candidate gets its turn.
-    if placed is None:
-        logger.warning("session %s lost its worker and no replacement was available", session.id)
-        await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
-        return
-    if not session.is_live:  # browser disconnected while we assigned
-        await release(session)
-        return
-    logger.info("session %s resumed on worker %s", session.id, placed.id)
-    await safe_send(session.browser.send_json({"type": "resumed"}))
+    """The session's worker vanished: interrupted, new worker, resumed.
+
+    The lock serializes attempts: cascading worker disconnects can spawn
+    two reassign tasks for one session, and without it both would assign a
+    replacement and share the session's ready/refused state, so one
+    readiness would complete two assignments (two opens, two resumed
+    messages, and a slot left in use after the session's single release).
+    """
+    async with session.assign_lock:
+        if (
+            session.worker is not None
+            and workers.get(session.worker.id) is session.worker
+        ):
+            # A concurrent reassign placed this session first, on a worker
+            # that is still this one's: a stale attempt must do nothing at
+            # all, not decrement a slot, not send, not mark the session
+            # resumed. session.ready and session.refused are single-attempt
+            # state, which is why concurrent attempts cannot be allowed
+            # rather than merely tolerated.
+            return
+        session.worker = None
+        if not session.is_live:  # browser already gone
+            return
+        await safe_send(session.browser.send_json({"type": "interrupted"}))
+        tried: set[str] = set()
+        placed: Worker | None = None
+        while placed is None and session.is_live:
+            replacement = pick_worker(session.model_id, exclude=tried)
+            if replacement is None:
+                break
+            tried.add(replacement.id)
+            if await assign(session, replacement):
+                placed = replacement
+                break
+            # assign compensated its slot; a refusal from one worker is not a
+            # refusal from the fleet, so the next candidate gets its turn.
+        if placed is None:
+            logger.warning("session %s lost its worker and no replacement was available", session.id)
+            await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+            return
+        if not session.is_live:  # browser disconnected while we assigned
+            await release(session)
+            return
+        logger.info("session %s resumed on worker %s", session.id, placed.id)
+        await safe_send(session.browser.send_json({"type": "resumed"}))
 
 
 async def reap_once() -> None:
@@ -618,7 +643,20 @@ async def fleet(ws: WebSocket) -> None:
                             # The session is live: its worker can no longer
                             # serve frames. Closing the browser ends it, and
                             # the realtime handler's teardown releases the
-                            # slot exactly once.
+                            # slot exactly once. The accounting is armed
+                            # here too, the second of two places (the other
+                            # is that teardown): a session that ends itself
+                            # sends session_closed immediately after the
+                            # refusal, which arrives before the teardown has
+                            # run, so arming only there would drop the
+                            # event. Same tuple, same conditions as the
+                            # teardown: only a user id, and a worker that
+                            # is still this connection's. The session_closed
+                            # handler pops the entry, so a later duplicate
+                            # finds nothing and cannot double-bill.
+                            if session.user_id is not None and workers.get(worker.id) is worker:
+                                closing_sessions[session.id] = (
+                                    session.user_id, session.model_id, worker)
                             await refuse(session.browser, CLOSE_NO_CAPACITY,
                                          "worker could not serve the session")
                         else:
@@ -713,7 +751,10 @@ def session_seed(value: object) -> int | None:
     or `seed: true` would survive as a seed. Anything else (a fractional
     float, a string, null) is refused too: a manifest that does not declare
     a seed property lets such a value through validation entirely, and the
-    engine then builds no generator.
+    engine then builds no generator. Mirrors the worker's normalise_seed
+    (worker/client.py): the two packages have no shared import, so each
+    boundary writes its own, with this comment pointing at the other the
+    way SESSION_SEED_BOUND and SEED_BOUND already do.
     """
     if isinstance(value, bool):
         return None
@@ -776,7 +817,15 @@ async def realtime(ws: WebSocket) -> None:
         user_id=db.local_user_id)
     sessions[session.id] = session
     try:
-        if not await assign(session, worker):
+        # Under the same lock reassign holds: this worker can disconnect while
+        # its open_session is in flight, and the cleanup would then reassign
+        # the session concurrently with this attempt. The compensation guards
+        # keep the slot count honest either way, but overlapping attempts can
+        # still send the browser a "resumed" for a session that never became
+        # ready, so one attempt at a time is the invariant here too.
+        async with session.assign_lock:
+            accepted = await assign(session, worker)
+        if not accepted:
             await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
         await ws.send_json({"type": "ready", "session_id": str(session.id)})

@@ -36,6 +36,28 @@ def test_ensure_seed_keeps_explicit_integer_seed():
     assert params["seed"] == 42
 
 
+def test_ensure_seed_keeps_a_whole_float_seed_as_an_integer():
+    # JSON Schema calls 42.0 an integer, so an older API forwards it; the
+    # boundary must hand the engine an int, or the conditioned frame path
+    # builds no generator and every frame re-rolls.
+    params = ensure_seed({"prompt": "x", "seed": 42.0})
+    assert params["seed"] == 42
+    assert isinstance(params["seed"], int)
+
+
+def test_ensure_seed_replaces_a_boolean_seed():
+    # bool subclasses int, so `seed: true` must not survive as a seed.
+    params = ensure_seed({"prompt": "x", "seed": True})
+    assert isinstance(params["seed"], int) and not isinstance(params["seed"], bool)
+    assert 0 <= params["seed"] < SEED_BOUND
+
+
+def test_ensure_seed_replaces_a_fractional_float_seed():
+    params = ensure_seed({"prompt": "x", "seed": 1.5})
+    assert isinstance(params["seed"], int)
+    assert 0 <= params["seed"] < SEED_BOUND
+
+
 def test_ensure_seed_adds_integer_seed_within_bound():
     params = ensure_seed({"prompt": "x"})
     assert isinstance(params["seed"], int)
@@ -135,6 +157,45 @@ def test_update_session_carries_the_authoritative_seed(monkeypatch):
     # worker drew at open, or the params_updated acknowledgement would claim
     # a value the runner never used.
     assert runner.params == {"prompt": "a blue house", "seed": 22}
+    assert socket.close_code is None
+
+
+def test_update_session_carrying_a_whole_float_seed_normalises_it(monkeypatch):
+    # JSON Schema calls 42.0 an integer, so an older API forwards it; the
+    # update path must normalise it like the open path, or the runner's
+    # params hold a float and the conditioned frame path builds no
+    # generator, re-rolling every frame.
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house", "seed": 11}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house", "seed": 42.0}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    assert runner.params == {"prompt": "a blue house", "seed": 42}
+    assert isinstance(runner.params["seed"], int)
+    assert socket.close_code is None
+
+
+def test_update_session_with_a_boolean_seed_keeps_the_runners_seed(monkeypatch):
+    # A seed that is not a seed (a bool, subtyping int) is treated like no
+    # seed: the session's own value from open survives, because the
+    # session's seed is fixed for its life.
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house", "seed": 11}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house", "seed": True}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    assert runner.params == {"prompt": "a blue house", "seed": 11}
+    assert isinstance(runner.params["seed"], int)
     assert socket.close_code is None
 
 
@@ -274,6 +335,43 @@ def test_open_session_sends_session_ready_when_the_model_can_be_prepared():
         if m.get("type") == "session_ready" and m["session_id"] == session_id
     )
     assert ready["session_id"] == session_id
+
+
+def test_open_session_for_a_live_session_id_closes_the_existing_runner(
+        monkeypatch):
+    # A stale assignment racing or retrying can re-open a session id this
+    # worker already serves. The first runner must be closed before being
+    # replaced: an abandoned task keeps rendering into a socket for a
+    # session the API has moved on from.
+    session_id = str(uuid.uuid4())
+    created = []
+    closed = []
+
+    class RecordingRunner(SessionRunner):
+        def __init__(self, *args):
+            created.append(self)
+            super().__init__(*args)
+
+        def close(self):
+            closed.append(self)
+            super().close()
+
+    monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
+    socket = RecordingSocket([
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "x", "seed": 1}}),
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "x", "seed": 2}}),
+    ])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-reopen"),
+                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    assert len(created) == 2
+    # The first runner was closed by the replacement open, before the
+    # second ever existed; the connection teardown closes the survivor.
+    assert closed[0] is created[0]
+    assert closed[1] is created[1]
+    assert created[0]._task.cancelled()
+    assert socket.close_code is None
 
 
 def test_malformed_control_closes_and_returns_for_reconnect():

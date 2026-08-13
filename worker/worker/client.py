@@ -87,6 +87,29 @@ def default_steps(manifest: Manifest) -> object | None:
     return steps.get("default")
 
 
+def normalise_seed(value: object) -> int | None:
+    """The seed a session's params must hold, normalised at the worker's
+    boundary so everything downstream sees an integer.
+
+    An integer is kept as-is. A float that is a whole number is kept as an
+    integer: JSON Schema accepts 42.0 as an integer, so an older API that
+    only validates shapes forwards it, and the engine's generator wants an
+    int. A bool is refused even though it subclasses int, or `seed: true`
+    would survive as a seed. Anything else (a fractional float, a string,
+    null) is refused too: the caller draws a fresh seed. Mirrors the API's
+    session_seed (app/realtime.py): the two packages have no shared import,
+    so each boundary writes its own, with this comment pointing at the
+    other the way SEED_BOUND and SESSION_SEED_BOUND already do.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def ensure_seed(params: dict) -> dict:
     """Return params with a session-stable seed, honoring an explicit one.
 
@@ -98,10 +121,14 @@ def ensure_seed(params: dict) -> dict:
     this module's SEED_BOUND), so this is the fallback for a params dict
     that arrives without one: an older API will not send it.
     """
-    if isinstance(params.get("seed"), int):
+    raw = params.get("seed")
+    seed = normalise_seed(raw)
+    if seed is None:
+        seed = random.randrange(SEED_BOUND)
+    if isinstance(raw, int) and not isinstance(raw, bool):
         return params
     seeded = dict(params)
-    seeded["seed"] = random.randrange(SEED_BOUND)
+    seeded["seed"] = seed
     return seeded
 
 
@@ -505,6 +532,17 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         session_id = uuid.UUID(control["session_id"])
                         manifest = by_id[control["model_id"]]
                         if await engine.prepare_realtime(manifest):
+                            previous = runners.get(session_id)
+                            if previous is not None:
+                                # A second open for a live session id (a
+                                # stale assignment racing or retrying)
+                                # replaces the first runner. Close it before
+                                # replacing it: an abandoned task keeps
+                                # rendering into a socket for a session the
+                                # API has moved on from, so its frames would
+                                # reach a browser that no longer waits for
+                                # them.
+                                previous.close()
                             runners[session_id] = SessionRunner(
                                 session_id, ws, engine, manifest,
                                 ensure_seed(manifest.with_defaults(control.get("params") or {})))
@@ -545,8 +583,19 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             # cannot leave the engine's hardcoded fallbacks
                             # in charge of settings the manifest declares.
                             updated = runner.manifest.with_defaults(control["params"])
-                            if "seed" not in updated:
-                                updated["seed"] = runner.params["seed"]
+                            seed = normalise_seed(updated.get("seed"))
+                            if seed is None:
+                                # An update without a seed, or with one that
+                                # is not a seed (a bool, a fractional float):
+                                # the runner's own value from open is the
+                                # fallback - the session's seed is fixed for
+                                # its life, and an older API never fills one,
+                                # so replacing the params would delete the
+                                # only seed there is and the conditioned path
+                                # would build no generator, re-rolling every
+                                # frame.
+                                seed = runner.params["seed"]
+                            updated["seed"] = seed
                             runner.params = updated
                     elif control["type"] == "close_session":
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)

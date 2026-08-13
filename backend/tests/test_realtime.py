@@ -1207,6 +1207,86 @@ def test_session_refused_for_a_live_session_closes_the_browser_and_releases_the_
         assert uuid.UUID(opened["session_id"]) not in realtime.sessions
 
 
+@pytest.mark.db
+def test_live_session_refused_by_its_worker_records_exactly_one_usage_event():
+    """A session that ends itself sends session_closed immediately after
+    session_refused, which arrives before the browser teardown arms the
+    accounting; the refusal handler arms it itself, so the event is
+    recorded. One event in all: the popped entry makes a duplicate
+    session_closed find nothing, and the close_session the teardown sends
+    produces nothing because the runner already ended itself. Asserted on
+    the persisted events, not on message counts."""
+    with TestClient(app) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-refused-usage"))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = worker_ws.receive_json()
+                session_id = opened["session_id"]
+                worker_ws.send_json({"type": "session_ready",
+                                     "session_id": session_id})
+                assert browser_ws.receive_json()["type"] == "ready"
+                worker_ws.send_json({
+                    "type": "session_refused",
+                    "session_id": session_id,
+                    "reason": "model sd-sim could not be kept fully resident",
+                })
+                refusal = browser_ws.receive_json()
+                assert refusal["type"] == "error"
+                assert refusal["code"] == 4003
+                # The accounting rides out with the refusal; the browser's
+                # teardown has not run yet, so only the refusal handler's
+                # arming could have accepted this.
+                worker_ws.send_json({
+                    "type": "session_closed",
+                    "session_id": session_id,
+                    "frames": 5, "gpu_ms": 150, "duration_ms": 5000,
+                    "category": "other",
+                })
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    browser_ws.receive_json()
+                assert closed.value.code == 4003
+
+                async def frames_with(value):
+                    assert db.session_factory is not None
+                    async with db.session_factory() as session:
+                        rows = (await session.execute(
+                            select(UsageEvent).where(
+                                UsageEvent.kind == "realtime",
+                                UsageEvent.frames == value,
+                            )
+                        )).scalars().all()
+                        return [row.frames for row in rows]
+
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not asyncio.run(frames_with(5)):
+                    time.sleep(0.05)
+                assert asyncio.run(frames_with(5)) == [5]
+
+                # A duplicate finds the entry already popped: the refusal
+                # path must not bill twice.
+                worker_ws.send_json({
+                    "type": "session_closed",
+                    "session_id": session_id,
+                    "frames": 9, "gpu_ms": 900, "duration_ms": 999,
+                    "category": "other",
+                })
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    assert not asyncio.run(frames_with(9))
+                    time.sleep(0.05)
+                assert asyncio.run(frames_with(5)) == [5]
+
+                # The browser answers the server's close; the teardown
+                # releases the slot and sends close_session, which produces
+                # no second accounting for a session that ended itself.
+                browser_ws.close(4003)
+                assert worker_ws.receive_json()["type"] == "close_session"
+            assert realtime.workers["w-refused-usage"].slots_in_use == 0
+            assert asyncio.run(frames_with(5)) == [5]
+
+
 def test_session_refused_from_a_worker_that_does_not_own_the_session_is_ignored():
     """A stale worker's word, as with session_closed: only the assigned
     worker's refusal may end the session."""
@@ -1282,6 +1362,70 @@ def test_reassign_tries_another_worker_after_a_refusal():
         finally:
             realtime.workers.pop(refuser.id, None)
             realtime.workers.pop(acceptor.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_reassigns_place_the_session_exactly_once(monkeypatch):
+    """Cascading worker disconnects leave two reassign tasks alive for one
+    session. Both used to share the session's ready/refused state, so a
+    single readiness completed both assignments: measured as two opens on
+    the survivor, two resumed messages, and a two-slot worker left at one
+    slot in use after the session's single release. The session's assign
+    lock serializes the attempts, and the stale one finds the session
+    placed and does nothing at all."""
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+
+    async def scenario():
+        browser = FakeSocket()
+        doomed_ws = FakeSocket()
+        doomed = realtime.Worker(id="w-doomed", ws=doomed_ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=2)
+        survivor_ws = FakeSocket()
+        survivor = realtime.Worker(id="w-survivor", ws=survivor_ws,
+                                   manifests=[Manifest.model_validate(manifest())],
+                                   realtime_slots=2)
+        realtime.workers.update({doomed.id: doomed, survivor.id: survivor})
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
+        realtime.sessions[session.id] = session
+        try:
+            first = asyncio.create_task(realtime.reassign(session))
+            await asyncio.sleep(0.01)  # interrupted sent; open in flight on doomed
+            assert doomed_ws.sent[0]["type"] == "open_session"
+            # The doomed worker dies mid-assignment: what the fleet
+            # handler's cleanup does, and it spawns a second reassign.
+            realtime.workers.pop(doomed.id, None)
+            second = asyncio.create_task(realtime.reassign(session))
+            # The doomed assignment times out and the first attempt moves
+            # to the survivor; answer it as soon as its open lands, so the
+            # attempt completes instead of timing out too.
+            deadline = time.monotonic() + 3
+            while not survivor_ws.sent and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert survivor_ws.sent[0]["type"] == "open_session"
+            assert survivor_ws.sent[0]["session_id"] == str(session.id)
+            # The first attempt compensated the doomed slot before moving
+            # on; the stale attempt changed nothing so far.
+            assert doomed.slots_in_use == 0
+            session.ready.set()  # what the fleet handler does on session_ready
+            await first
+            await second
+            assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
+            # One open and one slot on the worker that served the session:
+            # the stale attempt did not assign or resume.
+            assert len(survivor_ws.sent) == 1
+            assert survivor.slots_in_use == 1
+            assert session.worker is survivor
+            # The session's single release frees the slot: the survivor
+            # advertises both again, not one.
+            await realtime.release(session)
+            assert survivor.slots_in_use == 0
+            assert survivor.free_slots == 2
+        finally:
+            realtime.workers.pop(doomed.id, None)
+            realtime.workers.pop(survivor.id, None)
             realtime.sessions.pop(session.id, None)
 
     asyncio.run(scenario())
