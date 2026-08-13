@@ -25,10 +25,10 @@
 		formatParamValue,
 		normToValue,
 		stepsSpec,
-		strengthSpec,
+		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
-	import { modelIsRemoved, studio } from '$lib/studio.svelte';
+	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
 		FAST_INTERVAL_MS,
 		IDLE_TICKS_BEFORE_STOP,
@@ -38,6 +38,7 @@
 		parseGeneratedFrame,
 		shouldSendFrame,
 		stateForCloseCode,
+		updateParamsMessage,
 		type ConnectionState
 	} from '$lib/realtime-canvas';
 
@@ -62,6 +63,13 @@
 	let notice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
+	// The params the current session last applied, from the open message and
+	// from params_updated confirmations. The Update button and the slider
+	// debounce compare against these, so they reflect what the worker runs,
+	// not what the inputs hope for.
+	let appliedPrompt = $state('');
+	let appliedStructure = $state(0);
+	let appliedSteps = $state(0);
 
 	let socket: WebSocket | null = null;
 	let sessionId: string | null = null;
@@ -81,6 +89,22 @@
 	let strokePointer: number | null = null;
 	let lastPoint: { x: number; y: number } | null = null;
 	let userClosing = false;
+	// Slider updates are debounced so a drag does not send one message per
+	// pixel: the timer is re-armed on every movement and fires once the slider
+	// has settled, mirroring how armCapture/stopTimer time the capture loop.
+	const SLIDER_UPDATE_MS = 300;
+	let structureTimer: ReturnType<typeof setTimeout> | null = null;
+	let stepsTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// The tool in use on the canvas. A forward contract for issue #54's
+	// replayable stroke journal: for its replay to stay faithful, erase must be
+	// recorded as a stroke operation carrying a mode flag, not as a separate
+	// kind of event.
+	let tool = $state<'draw' | 'erase'>('draw');
+	// Erase paints the paper back on: the canvas stays opaque, because a
+	// transparent pixel would reach the model as transparency rather than as
+	// blank paper, and the conditioning path assumes dark strokes on white.
+	const strokeColour = $derived(tool === 'erase' ? PAPER : INK);
 
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
@@ -98,15 +122,15 @@
 	let modelId = $state('');
 	const selectedModel = $derived(realtimeModels.find((model) => model.id === modelId));
 	const stepsRange = $derived(stepsSpec(selectedModel));
-	const strengthRange = $derived(strengthSpec(selectedModel));
+	const structureRange = $derived(structureStrengthSpec(selectedModel));
 	// Norm positions for the sliders. The defaults belong to the model, so a
 	// model change re-seeds them rather than carrying old positions into a range
 	// that does not share them.
 	let stepsNorm = $state(0);
-	let strengthNorm = $state(0);
+	let structureNorm = $state(0);
 	let normForModelId = $state('');
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
-	const strengthValue = $derived(normToValue(strengthNorm, strengthRange));
+	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	// Frames only go out while a worker is actually attached. During a reassign
 	// the socket is open and the session is alive, but the API has no worker to
@@ -114,6 +138,9 @@
 	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
+	// The prompt differs from what the session last applied; whitespace around
+	// it does not count, because openMessage and updateParamsMessage both trim.
+	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
 
 	const STATUS_KEYS = {
 		idle: 'app.realtime_canvas.status_idle',
@@ -127,15 +154,16 @@
 	const statusLabel = $derived(t(STATUS_KEYS[connection]));
 
 	$effect(() => {
-		// Fall back to the first realtime model when the chosen one is gone, and
-		// to no model at all when the list is empty. The picker can then write a
-		// modelId that survives until the list changes under it.
+		// Fall back to the declared default, else the first realtime model, when
+		// the chosen one is gone, and to no model at all when the list is empty.
+		// The picker can then write a modelId that survives until the list
+		// changes under it.
 		if (realtimeModels.length === 0) {
 			modelId = '';
 			return;
 		}
 		if (!realtimeModels.some((model) => model.id === modelId)) {
-			modelId = realtimeModels[0].id;
+			modelId = fallbackModelId(realtimeModels);
 		}
 	});
 
@@ -143,8 +171,37 @@
 		// Re-seed the slider positions for the model the picker now shows.
 		if (!selectedModel || normForModelId === modelId) return;
 		stepsNorm = valueToNorm(stepsRange.default, stepsRange);
-		strengthNorm = valueToNorm(strengthRange.default, strengthRange);
+		structureNorm = valueToNorm(structureRange.default, structureRange);
 		normForModelId = modelId;
+	});
+
+	// Each effect clears the slider's timer on any of its dependencies
+	// changing and re-arms it, so a drag that keeps moving never sends: the
+	// update goes out once the value has held still for SLIDER_UPDATE_MS.
+	// While the session is not connected nothing is armed, and a value that
+	// already applied never sends, so reconnects and confirmations stay quiet.
+	$effect(() => {
+		if (structureTimer !== null) {
+			clearTimeout(structureTimer);
+			structureTimer = null;
+		}
+		if (!connected || structureValue === appliedStructure) return;
+		structureTimer = setTimeout(() => {
+			structureTimer = null;
+			sendUpdate({ structure_strength: structureValue });
+		}, SLIDER_UPDATE_MS);
+	});
+
+	$effect(() => {
+		if (stepsTimer !== null) {
+			clearTimeout(stepsTimer);
+			stepsTimer = null;
+		}
+		if (!connected || stepsValue === appliedSteps) return;
+		stepsTimer = setTimeout(() => {
+			stepsTimer = null;
+			sendUpdate({ steps: stepsValue });
+		}, SLIDER_UPDATE_MS);
 	});
 
 	$effect(() => {
@@ -166,6 +223,8 @@
 	$effect(() => () => {
 		userClosing = true;
 		stopTimer();
+		if (structureTimer !== null) clearTimeout(structureTimer);
+		if (stepsTimer !== null) clearTimeout(stepsTimer);
 		socket?.close(1000);
 		socket = null;
 	});
@@ -191,6 +250,7 @@
 	/** One segment per move, so a long stroke does not restroke its whole path. */
 	function drawSegment(from: { x: number; y: number }, to: { x: number; y: number }): void {
 		if (!paint) return;
+		paint.strokeStyle = strokeColour;
 		paint.beginPath();
 		paint.moveTo(from.x, from.y);
 		paint.lineTo(to.x, to.y);
@@ -210,7 +270,7 @@
 		if (!paint) return;
 		paint.beginPath();
 		paint.arc(at.x, at.y, STROKE_WIDTH / 2, 0, Math.PI * 2);
-		paint.fillStyle = INK;
+		paint.fillStyle = strokeColour;
 		paint.fill();
 	}
 
@@ -264,6 +324,23 @@
 	function stopTimer(): void {
 		if (timer !== null) clearTimeout(timer);
 		timer = null;
+	}
+
+	/**
+	 * Send an update_params message for a subset of the session's params.
+	 * Only while the session is live and the socket is open: everything else
+	 * silently drops, and the params_updated confirmation records what the
+	 * API actually merged rather than what was sent.
+	 */
+	function sendUpdate(params: Record<string, string | number>): void {
+		if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+		socket.send(updateParamsMessage(params));
+	}
+
+	function applyPrompt(): void {
+		if (!promptDirty) return;
+		// updateParamsMessage trims, so the untrimmed text is sent.
+		sendUpdate({ prompt });
 	}
 
 	function armCapture(delay: number): void {
@@ -388,7 +465,12 @@
 	}
 
 	function handleControl(text: string): void {
-		let control: { type?: string; session_id?: string; code?: number };
+		let control: {
+			type?: string;
+			session_id?: string;
+			code?: number;
+			params?: unknown;
+		};
 		try {
 			control = JSON.parse(text) as typeof control;
 		} catch {
@@ -430,7 +512,23 @@
 			changed = true;
 			idleTicks = 0;
 			armCapture(FAST_INTERVAL_MS);
+		} else if (control.type === 'params_updated' && control.params) {
+			// Record what actually applied. A rejected update leaves these
+			// untouched, so the Update button and the slider debounce keep
+			// comparing against the last confirmed params rather than optimism.
+			const params = control.params as {
+				prompt?: unknown;
+				structure_strength?: unknown;
+				steps?: unknown;
+			};
+			if (typeof params.prompt === 'string') appliedPrompt = params.prompt;
+			if (typeof params.structure_strength === 'number') {
+				appliedStructure = params.structure_strength;
+			}
+			if (typeof params.steps === 'number') appliedSteps = params.steps;
 		} else if (control.type === 'error') {
+			// A rejected update reports through the notice and leaves the
+			// session alone; the socket stays open either way.
 			notice = refusalNotice(control.code ?? 0);
 		}
 	}
@@ -441,6 +539,15 @@
 		if (code === 4002) return 'app.realtime_canvas.refused_version';
 		if (code === 4000) return 'app.realtime_canvas.refused_protocol';
 		return 'app.realtime_canvas.socket_error';
+	}
+
+	/** The picker's option label: the model's measured frame cost when its
+	 * worker reported one, so the vega-rt versus sdxl-turbo trade-off is
+	 * visible before a session starts. */
+	function modelOptionLabel(model: Model): string {
+		return model.realtime_p95_ms != null
+			? `${model.name} - ${Math.round(model.realtime_p95_ms)} ${t('app.realtime_canvas.latency_ms')}`
+			: model.name;
 	}
 
 	function onMessage(event: MessageEvent): void {
@@ -477,7 +584,7 @@
 		// between.
 		const sessionModelId = modelId;
 		const sessionPrompt = prompt;
-		const sessionStrength = strengthValue;
+		const sessionStructure = structureValue;
 		const sessionSteps = stepsValue;
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const opening = new WebSocket(`${scheme}//${location.host}/api/v1/realtime`);
@@ -486,15 +593,19 @@
 		opening.onopen = () => {
 			// openMessage carries the params every shipped realtime model
 			// declares: the prompt is required (an open without it is refused
-			// 4000 before a worker is assigned), and strength and steps are
-			// declared by every shipped realtime model too. The simulated
-			// manifest declares only the prompt and accepts the other two as
-			// extra properties, which JSON Schema allows. It is built in
-			// $lib/realtime-canvas so a test holds it. The params are sent once
-			// at open and cannot change mid-session.
+			// 4000 before a worker is assigned), and structure_strength and
+			// steps are declared by every shipped realtime model too. The
+			// simulated manifest declares only the prompt and accepts the other
+			// two as extra properties, which JSON Schema allows. It is built in
+			// $lib/realtime-canvas so a test holds it. What opens is what is
+			// applied, so the same values seed the applied state that the
+			// Update button and the slider debounce compare against.
+			appliedPrompt = sessionPrompt.trim();
+			appliedStructure = sessionStructure;
+			appliedSteps = sessionSteps;
 			opening.send(
 				openMessage(sessionModelId, sessionPrompt, {
-					strength: sessionStrength,
+					structure_strength: sessionStructure,
 					steps: sessionSteps
 				})
 			);
@@ -543,6 +654,17 @@
 					<Card.Description>{t('app.realtime_canvas.input_sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+					<div class="flex flex-col gap-2">
+						<Label for="realtime-tool">{t('app.realtime_canvas.tool')}</Label>
+						<select
+							id="realtime-tool"
+							bind:value={tool}
+							class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
+							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
+						</select>
+					</div>
 					<canvas
 						bind:this={drawCanvas}
 						width={CANVAS_SIZE}
@@ -599,30 +721,31 @@
 								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{#each realtimeModels as model (model.id)}
-									<option value={model.id}>{model.name}</option>
+									<option value={model.id}>{modelOptionLabel(model)}</option>
 								{/each}
 							</select>
 						{:else}
 							<p class="text-sm font-medium">{t('app.realtime_canvas.model')}</p>
 							<p class="text-muted-foreground text-sm">{realtimeModels[0]?.name}</p>
 						{/if}
+						{#if selectedModel?.requires_attribution}
+							<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
+						{/if}
 					</div>
 					{#if selectedModel}
 						<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 							<ParamSliderField
-								id="realtime-strength"
-								label={t('app.realtime_canvas.strength')}
-								bind:norm={strengthNorm}
-								disabled={busy}
-								minLabel={formatParamValue(strengthRange.min, strengthRange)}
-								maxLabel={formatParamValue(strengthRange.max, strengthRange)}
-								valueLabel={formatParamValue(strengthValue, strengthRange)}
+								id="realtime-structure"
+								label={t('app.realtime_canvas.structure')}
+								bind:norm={structureNorm}
+								minLabel={formatParamValue(structureRange.min, structureRange)}
+								maxLabel={formatParamValue(structureRange.max, structureRange)}
+								valueLabel={formatParamValue(structureValue, structureRange)}
 							/>
 							<ParamSliderField
 								id="realtime-steps"
 								label={t('app.realtime_canvas.steps')}
 								bind:norm={stepsNorm}
-								disabled={busy}
 								minLabel={formatParamValue(stepsRange.min, stepsRange)}
 								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
 								valueLabel={formatParamValue(stepsValue, stepsRange)}
@@ -631,12 +754,17 @@
 					{/if}
 					<div class="flex flex-col gap-2">
 						<Label for="realtime-prompt">{t('app.gen.prompt')}</Label>
-						<Input
-							id="realtime-prompt"
-							bind:value={prompt}
-							disabled={busy}
-							placeholder={t('app.realtime_canvas.prompt_placeholder')}
-						/>
+						<div class="flex gap-2">
+							<Input
+								id="realtime-prompt"
+								bind:value={prompt}
+								class="min-w-0"
+								placeholder={t('app.realtime_canvas.prompt_placeholder')}
+							/>
+							<Button variant="outline" size="sm" disabled={!promptDirty} onclick={applyPrompt}>
+								{t('app.realtime_canvas.update')}
+							</Button>
+						</div>
 						<p class="text-muted-foreground text-xs">
 							{busy
 								? t('app.realtime_canvas.prompt_locked')

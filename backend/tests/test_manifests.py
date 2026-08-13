@@ -2,12 +2,22 @@ from app.manifests import (
     Manifest,
     _params_validator,
     parse_manifests,
+    validate_param_update,
     validate_params,
 )
 
 SCHEMA = {
     "type": "object",
     "properties": {"prompt": {"type": "string"}},
+    "required": ["prompt"],
+}
+
+SUBSET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "prompt": {"type": "string"},
+        "steps": {"type": "integer", "minimum": 1, "maximum": 50},
+    },
     "required": ["prompt"],
 }
 
@@ -22,6 +32,46 @@ def test_validate_params_rejects_invalid_request():
     manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
                         parameters=SCHEMA)
     assert validate_params(manifest, {}) == "'prompt' is a required property"
+
+
+def test_validate_param_update_accepts_a_subset_without_the_required_key():
+    """An update carries a subset, so the open's required list must not bind."""
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters=SUBSET_SCHEMA)
+    assert validate_param_update(manifest, {"prompt": "hello"}) is None
+    assert validate_param_update(manifest, {"steps": 4}) is None
+    # The open path still requires the prompt; the update must be laxer.
+    assert validate_params(manifest, {"steps": 4}) == "'prompt' is a required property"
+
+
+def test_validate_param_update_rejects_a_bound_violation():
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters=SUBSET_SCHEMA)
+    message = validate_param_update(manifest, {"steps": 999})
+    assert message is not None
+    assert "999" in message
+
+
+def test_validate_param_update_rejects_an_empty_update():
+    """An update that changes nothing is a client bug, not a no-op."""
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters=SCHEMA)
+    assert "empty" in (validate_param_update(manifest, {}) or "")
+
+
+def test_validate_param_update_unknown_property_matches_open_behavior():
+    """jsonschema allows undeclared properties unless the schema forbids them,
+    and validate_params relies on that at open; the update must not be stricter
+    than the open it extends."""
+    loose = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                     parameters=SCHEMA)
+    assert validate_param_update(loose, {"unknown": 1}) is None
+    assert validate_params(loose, {"prompt": "x", "unknown": 1}) is None
+
+    strict = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                      parameters={**SCHEMA, "additionalProperties": False})
+    assert validate_param_update(strict, {"unknown": 1}) is not None
+    assert validate_params(strict, {"prompt": "x", "unknown": 1}) is not None
 
 
 def test_params_validator_is_cached():

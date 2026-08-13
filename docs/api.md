@@ -104,6 +104,8 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
     "prompt_token_limit": 77,
     "default": true,
     "benchmark_only": false,
+    "studio_capabilities": null,
+    "realtime_p95_ms": null,
     "estimated_gpu_ms_default": 4200,
     "parameters": {
       "type": "object",
@@ -117,7 +119,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 ]
 ```
 
-`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown.
+`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown. `studio_capabilities` is the subset of `capabilities` the studio offers; null when every capability is offered. On this endpoint it is informational only: the narrowing has already been applied to `capabilities`, so the two are identical whenever it is non-null, and a client should not filter on it again. `realtime_p95_ms` is the measured single-frame p95 on the reporting worker's card, which the realtime picker labels models with; null until a worker has measured it, and a live heartbeat measurement supersedes the value from hello.
 
 <!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
 

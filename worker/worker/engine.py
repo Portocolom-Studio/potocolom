@@ -15,13 +15,14 @@ import math
 import os
 import time
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageOps
 
 from worker.manifests import Manifest
 from worker.memory_ladder import (
@@ -47,6 +48,13 @@ POISON_EVICT_COOLDOWN_S = 30.0
 # Timing samples after the discarded warmup pass; nearest-rank p95 over
 # these tolerates one outlier (19th of 20) instead of becoming the max.
 CALIBRATION_SAMPLES = 20
+# Live frame observations supersede the calibration estimate once a session
+# has produced enough to mean anything: a handful of frames is not a
+# distribution, and the first frames of a session are the least
+# representative ones. The window is bounded so a slow early session cannot
+# keep dragging a model's advertised p95 after it speeds up.
+OBSERVED_FRAME_SAMPLES = 20
+OBSERVED_FRAME_WINDOW = 120
 # Pillow work was implicitly bounded to one operation by the GPU lock before
 # this change moved it outside that lock. Use half the logical CPUs so codec
 # work leaves room in the shared default executor, with a floor of one for
@@ -85,6 +93,12 @@ class Engine(Protocol):
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int: ...
 
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None: ...
+
+    def realtime_p95_ms(self, model_id: str) -> int | None: ...
+
+    def p95_model_ids(self) -> list[str]: ...
+
     async def load_model(self, manifest: Manifest) -> int: ...
 
     async def unload_model(self, model_id: str) -> None: ...
@@ -105,6 +119,30 @@ def encode_webp(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=80)
     return buffer.getvalue()
+
+
+def _canvas_to_sketch_map(canvas: Image.Image, threshold: int = 128) -> Image.Image:
+    """Canvas (dark strokes on white) to the adapter's conditioning-map
+    convention (light strokes on black), with no learned preprocessor. The
+    threshold variant (the prototype's stream default) binarizes at the
+    midpoint, which kills WebP ring halos while the antialiased stroke cores
+    stay (scripts/prototype-canvas-conditioning.py)."""
+    gray = canvas.convert("L")
+    inverted = ImageOps.invert(gray)
+    sketch = inverted.point(lambda value: 255 if value >= threshold else 0)
+    return sketch.convert("RGB")
+
+
+def _sparse_sketch_map(size: int = REALTIME_SIZE) -> Image.Image:
+    """A representative sparse sketch map (light strokes on black) for
+    realtime calibration. Flat gray is wrong here: a uniform map gives the
+    T2I-Adapter nothing to condition on and would time an unrealistically
+    easy frame, sizing realtime_slots against a workload no session runs."""
+    sketch = Image.new("RGB", (size, size), (0, 0, 0))
+    draw = ImageDraw.Draw(sketch)
+    draw.line((0, 0, size, size), fill=(255, 255, 255), width=8)
+    draw.line((size, 0, 0, size), fill=(255, 255, 255), width=8)
+    return sketch
 
 
 def encode_png(image: Image.Image) -> bytes:
@@ -152,6 +190,19 @@ class SimulatedEngine:
         return self.effective_realtime_slots(
             self.measured_manifests([manifest]), configured,
         )
+
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
+        # Simulated engine has no meaningful timings to learn from; a no-op
+        # keeps its realtime_p95_ms advertising nothing forever.
+        return None
+
+    def realtime_p95_ms(self, model_id: str) -> int | None:
+        # Simulated engine never measured a frame; nothing to advertise.
+        return None
+
+    def p95_model_ids(self) -> list[str]:
+        # Simulated engine never measured a frame; nothing to advertise.
+        return []
 
     async def load_model(self, manifest: Manifest) -> int:
         start = time.monotonic()
@@ -256,6 +307,8 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._realtime_p95_ms: dict[str, int] = {}
+        self._observed_frame_ms: dict[str, deque[float]] = {}
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
 
@@ -523,6 +576,12 @@ class DiffusersEngine:
     def _load(self, manifest: Manifest, mode: str) -> Any:
         if mode.startswith("upscale-"):
             return self._load_upscale(manifest, int(mode.split("-", 1)[1]))
+        if mode == "realtime":
+            if not manifest.t2i_adapter:
+                raise ValueError(
+                    f"manifest {manifest.id} has no t2i_adapter for realtime conditioning"
+                )
+            return self._load_realtime(manifest)
         from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 
         cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
@@ -613,7 +672,40 @@ class DiffusersEngine:
                 # and never let a boot-time inference error kill the worker.
                 logger.exception("realtime calibration failed for %s", manifest.id)
                 self._calibrated_slots = 0
+                self._realtime_p95_ms.pop(manifest.id, None)
                 return 0
+
+    def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
+        """Record a completed realtime frame's worker-side inference time.
+
+        The window is bounded, so a slow early session stops affecting the
+        advertised p95 once newer frames fill it (OBSERVED_FRAME_WINDOW).
+        """
+        window = self._observed_frame_ms.setdefault(
+            model_id, deque(maxlen=OBSERVED_FRAME_WINDOW))
+        window.append(gpu_ms)
+
+    def realtime_p95_ms(self, model_id: str) -> int | None:
+        window = self._observed_frame_ms.get(model_id)
+        if window is not None and len(window) >= OBSERVED_FRAME_SAMPLES:
+            # Real frames supersede the calibration estimate: a handful of
+            # frames is not a distribution, and the first frames of a
+            # session are the least representative ones.
+            return round(_percentile_nearest(list(window), 95.0))
+        return self._realtime_p95_ms.get(model_id)
+
+    def p95_model_ids(self) -> list[str]:
+        """Model ids this engine can report a frame p95 for, resident or not.
+
+        A model evicted from VRAM still holds its measurements, and residency
+        has nothing to do with whether a past measurement is valid: the
+        heartbeat must keep advertising it until the window fills with
+        newer frames.
+        """
+        return sorted(
+            model_id for model_id in set(self._realtime_p95_ms) | set(self._observed_frame_ms)
+            if self.realtime_p95_ms(model_id) is not None
+        )
 
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.
@@ -624,19 +716,40 @@ class DiffusersEngine:
         if self.device != "cuda":
             # CPU diffusion cannot hold the bar; skip the frames, advertise nothing.
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             return 0
         if self._select_rung(manifest) != "full":
             self._calibrated_slots = 0
+            self._realtime_p95_ms.pop(manifest.id, None)
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
             )
             return 0
-        canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
-        strength = 0.7
-        params = {"prompt": "calibration", "strength": strength}
+        if manifest.t2i_adapter:
+            # A manifest with a sketch adapter never runs img2img frames, so
+            # timing that path would size realtime_slots against a mode no
+            # session uses. Calibrate the conditioned path on the manifest's
+            # declared defaults, with a sparse sketch map rather than flat
+            # gray: a uniform map gives the adapter nothing to condition on
+            # and would time an unrealistically easy frame.
+            canvas = _sparse_sketch_map()
+            properties = manifest.parameters.get("properties", {})
+            strength = 0.0
+            params = {
+                "prompt": "calibration",
+                "structure_strength": float(
+                    properties.get("structure_strength", {}).get("default", 1.0)
+                ),
+                "steps": int(properties.get("steps", {}).get("default", 2)),
+            }
+        else:
+            canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
+            strength = 0.7
+            params = {"prompt": "calibration", "strength": strength}
         samples: list[float] = []
         # One discarded pass absorbs remaining compile/warmup cost.
         for index in range(CALIBRATION_SAMPLES + 1):
@@ -650,11 +763,56 @@ class DiffusersEngine:
         p95 = _percentile_nearest(samples, 95.0)
         slots = slots_from_frame_ms(p95, configured, bar_ms=REALTIME_BAR_MS)
         self._calibrated_slots = slots
+        self._realtime_p95_ms[manifest.id] = round(p95)
         logger.info(
             "realtime calibration model=%s p95_ms=%.1f slots=%d (cap=%d)",
             manifest.id, p95, slots, configured,
         )
         return slots
+
+    def _load_realtime(self, manifest: Manifest) -> Any:
+        """The sketch-conditioned realtime pipeline: the ordinary text-to-image
+        pipeline composed with the manifest's T2I-Adapter, so the UNet, text
+        encoders and VAE are the same objects, never re-loaded."""
+        from diffusers import StableDiffusionXLAdapterPipeline, T2IAdapter
+
+        base = self._pipelines.get((manifest.id, "t2i"))
+        if base is None:
+            base = self._load(manifest, "t2i")
+            # Registered directly rather than through _pipeline, which would
+            # re-enter the loader's own eviction and demotion logic from
+            # inside a load; the rung for this model has already been chosen
+            # by the caller. This does not make eviction free: the two cache
+            # entries share their UNet, text encoders and VAE, so evicting
+            # one of them frees nothing while the other is alive. Eviction
+            # accounting does not model shared components; this at least
+            # makes the base visible to the cache rather than invisible to
+            # it, so a later text-to-image job reuses it instead of loading
+            # a second copy.
+            self._pipelines[(manifest.id, "t2i")] = base
+        # T2IAdapter computes its conditioning features once before the
+        # denoising loop, so the conditioned path's cost is roughly constant
+        # in step count (scripts/prototype-canvas-conditioning.py).
+        adapter = T2IAdapter.from_pretrained(
+            manifest.t2i_adapter, torch_dtype=self.dtype,
+        )
+        pipeline = StableDiffusionXLAdapterPipeline.from_pipe(
+            base,
+            adapter=adapter,
+            # from_pipe defaults to float32 and would upcast the shared UNet.
+            torch_dtype=self.dtype,
+        )
+        if pipeline.unet is not base.unet:
+            # Loading a second pipeline from the base repository would
+            # duplicate the UNet and both text encoders.
+            raise RuntimeError(
+                f"from_pipe duplicated the UNet for {manifest.id}: the "
+                "realtime conditioning pipeline must share weights with the "
+                "base text-to-image pipeline"
+            )
+        pipeline.to(self.device)
+        pipeline.set_progress_bar_config(disable=True)
+        return pipeline
 
     def _load_upscale(self, manifest: Manifest, factor: int) -> Any:
         from worker.upscale import ensure_weights, load_upscale_model
@@ -1156,7 +1314,12 @@ class DiffusersEngine:
 
         def prepare_canvas() -> Image.Image:
             canvas = Image.open(io.BytesIO(payload)).convert("RGB")
-            return canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
+            canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
+            if manifest.t2i_adapter:
+                # Sketch-map conversion is Pillow work: keep it outside the
+                # GPU lock, where canvas decoding already happens.
+                return _canvas_to_sketch_map(canvas)
+            return canvas
 
         async with self._codec:
             canvas = await asyncio.to_thread(prepare_canvas)
@@ -1192,6 +1355,50 @@ class DiffusersEngine:
         canvas: Image.Image,
         strength: float,
     ) -> tuple[Image.Image, int]:
+        if manifest.t2i_adapter:
+            # Conditioned text-to-image: the canvas (already converted to the
+            # adapter's sketch map, outside the GPU lock in frame())
+            # conditions a fresh latent instead of an init image. img2img has
+            # no useful middle strength here: sweeps return the line drawing
+            # until 1.0, where the scene ignores it.
+            pipeline = self._pipeline(manifest, "realtime")
+            negative_prompt = params.get("negative_prompt")
+            prompt_kwargs = self._prompt_kwargs(
+                pipeline,
+                manifest,
+                str(params.get("prompt", "")),
+                str(negative_prompt) if negative_prompt is not None else None,
+            )
+            properties = manifest.parameters.get("properties", {})
+            structure_strength = float(params.get(
+                "structure_strength",
+                properties.get("structure_strength", {}).get("default", 1.0),
+            ))
+            steps = int(params.get(
+                "steps", properties.get("steps", {}).get("default", 2),
+            ))
+            generator = None
+            if isinstance(params.get("seed"), int):
+                # A fresh latent per frame makes an unchanged canvas re-roll
+                # the whole image (measured at 85.9 percent of pixels); the
+                # session's seed keeps it stable. Seed policy lives in the
+                # worker's session layer (client.ensure_seed), so a missing
+                # or non-integer seed means no generator, not one invented
+                # here.
+                generator = self.torch.Generator(self.device).manual_seed(
+                    int(params["seed"])
+                )
+            started = time.monotonic()
+            image = pipeline(
+                **prompt_kwargs,
+                image=canvas,
+                num_inference_steps=steps,
+                adapter_conditioning_scale=structure_strength,
+                guidance_scale=0.0,
+                generator=generator,
+            ).images[0]
+            gpu_ms = int((time.monotonic() - started) * 1000)
+            return image, gpu_ms
         pipeline = self._pipeline(manifest, "i2i")
         negative_prompt = params.get("negative_prompt")
         prompt_kwargs = self._prompt_kwargs(

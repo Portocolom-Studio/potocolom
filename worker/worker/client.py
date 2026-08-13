@@ -43,6 +43,59 @@ BACKOFF_INITIAL = 1.0
 BACKOFF_CAP = 30.0
 BACKOFF_JITTER = 0.25
 
+# One bound for every session seed: large enough that torch.Generator accepts
+# it comfortably, small enough that consecutive sessions never collide by luck.
+# Mirrors the API's SESSION_SEED_BOUND (app/realtime.py), which fills the seed
+# at session open; the two packages have no shared import, so the number is
+# written twice with this comment binding them.
+SEED_BOUND = 2**31 - 1
+
+
+def frame_p95_payload(engine: Engine) -> dict[str, int]:
+    """The live per-model frame p95s for a heartbeat; models with no
+    measurement (never calibrated, or not yet enough observed frames) are
+    omitted. Built from the engine's measured ids, not its residency: a model
+    evicted from VRAM still holds a valid past measurement, and dropping it
+    would make the advertised number flap with memory pressure."""
+    return {
+        model_id: p95
+        for model_id in engine.p95_model_ids()
+        if (p95 := engine.realtime_p95_ms(model_id)) is not None
+    }
+
+
+def default_steps(manifest: Manifest) -> object | None:
+    """The manifest's declared default step count, or None if it declares none.
+
+    A worker-supplied schema is not guaranteed to be the shape it should be,
+    so every level is checked rather than assumed.
+    """
+    properties = manifest.parameters.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    steps = properties.get("steps")
+    if not isinstance(steps, dict):
+        return None
+    return steps.get("default")
+
+
+def ensure_seed(params: dict) -> dict:
+    """Return params with a session-stable seed, honoring an explicit one.
+
+    A realtime session renders the same canvas the same way on every frame:
+    a fresh latent per frame would re-roll the whole image when nothing
+    changed (measured at 85.9 percent of pixels). An explicit seed from the
+    client is kept as-is so a session can be reproduced exactly. The API
+    fills the seed at session open (app/realtime.py, SESSION_SEED_BOUND is
+    this module's SEED_BOUND), so this is the fallback for a params dict
+    that arrives without one: an older API will not send it.
+    """
+    if isinstance(params.get("seed"), int):
+        return params
+    seeded = dict(params)
+    seeded["seed"] = random.randrange(SEED_BOUND)
+    return seeded
+
 
 class LockedWebSocket:
     """Serialize ws.send calls; cheap insurance against concurrent writers."""
@@ -107,13 +160,15 @@ class SessionRunner:
     def __init__(self, session_id: uuid.UUID, ws, engine: Engine, manifest: Manifest,
                  params: dict):
         self.session_id = session_id
+        self.manifest = manifest
+        self.params = params
         self.pending: bytes | None = None
         self.arrived = asyncio.Event()
         self.dropped = 0
         self.frames = 0
         self.gpu_ms = 0
         self.started_at = time.monotonic()
-        self._task = asyncio.create_task(self._run(ws, engine, manifest, params))
+        self._task = asyncio.create_task(self._run(ws, engine, manifest))
 
     def submit(self, payload: bytes) -> None:
         if self.pending is not None:
@@ -121,7 +176,8 @@ class SessionRunner:
         self.pending = payload
         self.arrived.set()
 
-    async def _run(self, ws, engine: Engine, manifest: Manifest, params: dict) -> None:
+    async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
+        steps_default = default_steps(manifest)
         while True:
             await self.arrived.wait()
             self.arrived.clear()
@@ -129,7 +185,9 @@ class SessionRunner:
             if payload is None:  # unreachable today; narrows the Optional for mypy
                 continue
             try:
-                generated = await engine.frame(manifest, params, payload)
+                # self.params is read per frame, so an update_session lands on
+                # the next frame while one in flight finishes on the old dict.
+                generated = await engine.frame(manifest, self.params, payload)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -138,6 +196,18 @@ class SessionRunner:
                 continue
             self.frames += 1
             self.gpu_ms += generated.gpu_ms
+            # The same quantity calibration measures: worker-side inference
+            # time per frame, and the number the 500 ms bar is defined
+            # against. Real frames supersede the calibration estimate, but
+            # only when the session rendered at the manifest's declared
+            # defaults: the advertised number claims the model's cost at
+            # defaults, so a session at other settings (steps is the
+            # cost-determining parameter; width and height are fixed enums)
+            # measures something else and must not overwrite it. The default
+            # is fixed for the session; self.params is not, so an update to
+            # steps stops the observing from the next frame on.
+            if steps_default is not None and self.params.get("steps") == steps_default:
+                engine.observe_frame_ms(manifest.id, generated.gpu_ms)
             try:
                 await ws.send(
                     bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)
@@ -305,6 +375,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
     await warmup_realtime(engine, manifests, settings.realtime_slots)
     wire_manifests = engine.measured_manifests(manifests)
+    # A measurement from this worker on this card, not a property of the
+    # model: attach it at the wire edge so the API can advertise what a real
+    # frame costs without Manifest.wire() growing a field of its own.
+    for wire in wire_manifests:
+        p95 = engine.realtime_p95_ms(wire["id"])
+        if p95 is not None:
+            wire["realtime_p95_ms"] = p95
     await ws.send(json.dumps({
         "type": "hello",
         "protocol_version": PROTOCOL_VERSION,
@@ -345,6 +422,11 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 "slots_in_use": len(runners),
                 "loaded_models": engine.loaded_models(),
                 "gpu": gpu,
+                # The API overwrites the calibration estimate with these,
+                # for every model the engine has measured; residency is
+                # irrelevant to a past measurement, so an evicted model
+                # keeps reporting its number.
+                "frame_p95_ms": frame_p95_payload(engine),
             }))
 
     heartbeat_task = asyncio.create_task(heartbeats())
@@ -364,9 +446,30 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         manifest = by_id[control["model_id"]]
                         runners[session_id] = SessionRunner(
                             session_id, ws, engine, manifest,
-                            manifest.with_defaults(control.get("params") or {}))
+                            ensure_seed(manifest.with_defaults(control.get("params") or {})))
                         await ws.send(json.dumps({"type": "session_ready",
                                                   "session_id": control["session_id"]}))
+                    elif control["type"] == "update_session":
+                        # Ignored for an unknown session rather than raised:
+                        # the API may send an update for a session this
+                        # worker has just torn down, and the teardown and the
+                        # update cross on the wire without either side being
+                        # wrong.
+                        runner = runners.get(uuid.UUID(control["session_id"]))
+                        if runner is not None:
+                            # The API's stored params are the browser's keys
+                            # merged over the session's, and they now carry
+                            # the authoritative seed: the API fills one at
+                            # open and forwards browser seed updates through,
+                            # so an update here must apply as-is rather than
+                            # be reverted to the seed this worker drew at
+                            # open, or the params_updated acknowledgement
+                            # would claim a value the runner never used.
+                            # with_defaults restores what open_session did,
+                            # filling only absent keys, so a subset update
+                            # cannot leave the engine's hardcoded fallbacks
+                            # in charge of settings the manifest declares.
+                            runner.params = runner.manifest.with_defaults(control["params"])
                     elif control["type"] == "close_session":
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
                         if runner is not None:

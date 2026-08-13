@@ -12,6 +12,7 @@
   "vae": "madebyollin/sdxl-vae-fp16-fix",
   "scheduler": "lcm",
   "lora": "segmind/Segmind-VegaRT/pytorch_lora_weights.safetensors",
+  "t2i_adapter": "TencentARC/t2i-adapter-sketch-sdxl-1.0",
   "license_id": "apache-2.0",
   "license_url": "https://huggingface.co/segmind/Segmind-VegaRT/blob/main/README.md",
   "parameters": {
@@ -26,11 +27,17 @@
         "maximum": 1,
         "default": 0.7
       },
+      "structure_strength": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1.5,
+        "default": 0.7
+      },
       "steps": {
         "type": "integer",
         "minimum": 2,
         "maximum": 8,
-        "default": 2
+        "default": 4
       },
       "guidance": {
         "type": "number",

@@ -32,6 +32,7 @@ class Manifest(BaseModel):
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
     scheduler: str = ""  # optional scheduler override, worker side only
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
+    t2i_adapter: str = ""  # optional sketch adapter for realtime conditioning, worker side only
     quantize: str = Field(
         default="",
         pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:int8)?$",
@@ -42,9 +43,13 @@ class Manifest(BaseModel):
     license_registration_url: str = ""
     requires_attribution: str = ""  # e.g. "Powered by Stability AI"
     benchmark_only: bool = False  # benchmark reference; hidden from GET /api/v1/models
+    # Studio-visible subset of capabilities; None means all of them. A model
+    # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
+    # of the queued pickers while its verified path stays offered.
+    studio_capabilities: list[str] | None = None
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "quantize"})
+        return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "quantize", "t2i_adapter"})
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare

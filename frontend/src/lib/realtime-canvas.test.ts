@@ -19,6 +19,7 @@ import {
 	parseGeneratedFrame,
 	shouldSendFrame,
 	stateForCloseCode,
+	updateParamsMessage,
 	uuidBytes
 } from './realtime-canvas.ts';
 
@@ -142,17 +143,35 @@ test('the open message carries the prompt every realtime manifest requires', () 
 	// The regression this whole module exists to prevent: an open with no params
 	// is refused 4000 by the API before a worker is assigned.
 	const message = JSON.parse(
-		openMessage('vega-rt', '  a red house  ', { strength: 0.5, steps: 10 })
+		openMessage('vega-rt', '  a red house  ', { structure_strength: 0.5, steps: 10 })
 	);
 	assert.equal(message.type, 'open');
 	assert.equal(message.model_id, 'vega-rt');
-	assert.deepEqual(message.params, { prompt: 'a red house', strength: 0.5, steps: 10 });
+	assert.deepEqual(message.params, {
+		prompt: 'a red house',
+		structure_strength: 0.5,
+		steps: 10
+	});
 });
 
-test('the open message carries the strength and steps passed to it', () => {
-	const message = JSON.parse(openMessage('vega-rt', 'a cat', { strength: 0.25, steps: 30 }));
-	assert.equal(message.params.strength, 0.25);
+test('the open message carries the structure strength and steps passed to it', () => {
+	const message = JSON.parse(
+		openMessage('vega-rt', 'a cat', { structure_strength: 0.25, steps: 30 })
+	);
+	assert.equal(message.params.structure_strength, 0.25);
 	assert.equal(message.params.steps, 30);
+});
+
+test('the update message carries a subset of the session params', () => {
+	const message = JSON.parse(updateParamsMessage({ structure_strength: 0.3 }));
+	assert.equal(message.type, 'update_params');
+	assert.deepEqual(message.params, { structure_strength: 0.3 });
+});
+
+test('the update message trims the prompt exactly like the open message', () => {
+	const message = JSON.parse(updateParamsMessage({ prompt: '  a blue house  ', steps: 6 }));
+	assert.equal(message.params.prompt, 'a blue house');
+	assert.equal(message.params.steps, 6);
 });
 
 test('a refusal fails the session and anything else invites a reconnect', () => {
