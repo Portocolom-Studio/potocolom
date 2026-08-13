@@ -199,7 +199,19 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     # benchmark_only models are excluded above: the studio never offers one, so
     # warming it would leave whatever the picker does open cold and unlabelled.
     pick = declared[0] if declared else candidates[0]
-    slots = await engine.calibrate_realtime(pick, configured_slots)
+    # Capacity is measured for one model and then advertised for every realtime
+    # model this worker serves, because hello carries one realtime_slots and
+    # admission checks it whatever model a session asks for. So with more than
+    # one realtime model on offer, a number above one would promise a bar for a
+    # model nobody measured: two sessions serialise on the GPU lock, and the
+    # slower model's frame time is what they would serialise into. Capping the
+    # bound at a single session keeps the promise honest, because one session
+    # never serialises against another and the bar then depends only on the
+    # model that session chose (issue #285). Measuring every realtime model
+    # instead would cost a cold load each at boot, and per-model capacity is a
+    # wire change; both are recorded there.
+    bound = configured_slots if len(candidates) == 1 else min(configured_slots, 1)
+    slots = await engine.calibrate_realtime(pick, bound)
     logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 
 
