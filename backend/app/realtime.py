@@ -423,15 +423,25 @@ async def assign(session: Session, worker: Worker) -> bool:
         )
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
-        worker.slots_in_use -= 1
-        session.worker = None
+        if session.worker is worker:
+            # release() and assign() are two writers of one counter, so the
+            # compensation is ownership-checked rather than assumed: the
+            # browser may have left mid-assignment, and its teardown's
+            # release() has already decremented the slot this call
+            # incremented and cleared the session's worker. Decrementing
+            # again would underflow the counter and advertise a free slot
+            # that does not exist.
+            worker.slots_in_use -= 1
+            session.worker = None
         return False
     if session.refused is not None:
         # The worker said no (its model could not be made fully resident);
         # the refusal was recorded before ready was set, so this is the
-        # failure path, compensated exactly once.
-        worker.slots_in_use -= 1
-        session.worker = None
+        # failure path, compensated exactly once for the same reason as the
+        # timeout above: only when the increment is still ours.
+        if session.worker is worker:
+            worker.slots_in_use -= 1
+            session.worker = None
         return False
     return True
 
@@ -693,6 +703,27 @@ async def fleet(ws: WebSocket) -> None:
             asyncio.ensure_future(reassign(session))
 
 
+def session_seed(value: object) -> int | None:
+    """The seed a session opens with, normalised where the API owns it.
+
+    Returns an integer seed, or None when the caller must draw a fresh one.
+    An integer is kept as-is. A float that is a whole number is kept as an
+    integer: JSON Schema accepts 42.0 as an integer, and the engine's
+    generator wants an int. A bool is refused even though it subclasses int,
+    or `seed: true` would survive as a seed. Anything else (a fractional
+    float, a string, null) is refused too: a manifest that does not declare
+    a seed property lets such a value through validation entirely, and the
+    engine then builds no generator.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
     if not origin_allowed(ws):
@@ -721,16 +752,19 @@ async def realtime(ws: WebSocket) -> None:
         if validate_params(manifest, params) is not None:
             await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
             return
-    if not isinstance(params.get("seed"), int):
-        # The API owns the session seed, not the worker: a session outlives
-        # its worker, so reassign re-opens with session.params and the value
-        # must ride on it, and a browser seed update must be able to replace
-        # it. An explicit client seed is kept as-is so a session can be
-        # reproduced exactly; a missing one is filled here so the worker
-        # always receives one (worker/client.py's ensure_seed is only the
-        # fallback for an older API). SESSION_SEED_BOUND matches the
-        # worker's SEED_BOUND.
-        params = {**params, "seed": random.randrange(SESSION_SEED_BOUND)}
+    seed = session_seed(params.get("seed"))
+    # The API owns the session seed, not the worker: a session outlives
+    # its worker, so reassign re-opens with session.params and the value
+    # must ride on it. An explicit client seed is kept so a session can be
+    # reproduced exactly (normalised above: a whole float is an integer in
+    # JSON Schema); a missing, boolean or non-numeric one is filled here so
+    # the worker always receives an int (worker/client.py's ensure_seed is
+    # only the fallback for an older API). SESSION_SEED_BOUND matches the
+    # worker's SEED_BOUND. This coercion lives only here, on the open path:
+    # the update path refuses a seed outright (a session's seed is fixed
+    # for its life), so it must not be repeated there.
+    params = {**params, "seed": seed if seed is not None
+              else random.randrange(SESSION_SEED_BOUND)}
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
@@ -767,6 +801,26 @@ async def realtime(ws: WebSocket) -> None:
                         params = control.get("params")
                         if not isinstance(params, dict):
                             raise ProtocolError("params must be an object")
+                        if "seed" in params:
+                            # A session's seed is fixed for its life: that is
+                            # the invariant the rest of the seed work
+                            # assumes, and it is the only version-safe
+                            # answer, because a mixed-version fleet cannot
+                            # agree on a mid-session change (an N-1 worker
+                            # overwrites it with the seed it drew at open,
+                            # so the browser and the API would acknowledge a
+                            # value no frame used). A deliberate reroll is a
+                            # feature and needs its own design (a new
+                            # session or an explicit protocol message), not
+                            # a silent parameter update; reject it like an
+                            # out-of-range parameter and leave the session
+                            # running.
+                            await safe_send(ws.send_json({
+                                "type": "error",
+                                "code": CLOSE_PROTOCOL_VIOLATION,
+                                "message": "seed is fixed at session open and cannot be changed",
+                            }))
+                            continue
                         manifest = registry.available().get(session.model_id)
                         if manifest is not None:
                             invalid = validate_param_update(manifest, params)

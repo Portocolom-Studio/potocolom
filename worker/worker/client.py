@@ -179,6 +179,11 @@ class SessionRunner:
         self._task = asyncio.create_task(self._run(ws, engine, manifest))
 
     def submit(self, payload: bytes) -> None:
+        if self._task.done():
+            # The runner ended itself (the consecutive-failure threshold) or
+            # was closed: nobody will render this frame, so queueing it would
+            # leave a payload in pending that no task ever reads.
+            return
         if self.pending is not None:
             self.dropped += 1
         self.pending = payload
@@ -208,12 +213,21 @@ class SessionRunner:
                     # that changed under the live session), not a bad frame:
                     # end the session and say so, or the browser would sit on
                     # an Active session forever with only this log to show it.
+                    # The accounting rides along with the refusal: an API
+                    # that understands it closes the session and needs the
+                    # numbers, and an older one ignores the unknown type and
+                    # would otherwise never record that the session ran.
+                    # submit() drops frames for this runner from now on,
+                    # because the task's own state answers whether it is
+                    # finished: no new attribute is needed.
                     with suppress(websockets.WebSocketException):
                         await ws.send(json.dumps({
                             "type": "session_refused",
                             "session_id": str(self.session_id),
                             "reason": f"model {manifest.id} could not be kept fully resident",
                         }))
+                        await ws.send(json.dumps(session_closed_payload(
+                            self, str(self.session_id))))
                     return
                 continue
             consecutive_failures = 0
@@ -239,8 +253,31 @@ class SessionRunner:
                                self.session_id)
                 return
 
+    @property
+    def ended_itself(self) -> bool:
+        """True once the run loop returned on its own, which today means it hit
+        the consecutive-failure threshold and already sent its accounting."""
+        return self._task.done()
+
     def close(self) -> None:
         self._task.cancel()
+
+
+def session_closed_payload(runner: "SessionRunner", session_id: str) -> dict:
+    """The session_closed accounting both close_session and a self-ended
+    session send, built once so the two cannot drift."""
+    category, score = categorize_output(None)
+    closed = {
+        "type": "session_closed",
+        "session_id": session_id,
+        "frames": runner.frames,
+        "gpu_ms": runner.gpu_ms,
+        "duration_ms": int((time.monotonic() - runner.started_at) * 1000),
+        "category": category,
+    }
+    if score is not None:
+        closed["category_score"] = score
+    return closed
 
 
 async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None:
@@ -493,36 +530,35 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         # wrong.
                         runner = runners.get(uuid.UUID(control["session_id"]))
                         if runner is not None:
-                            # The API's stored params are the browser's keys
-                            # merged over the session's, and they now carry
-                            # the authoritative seed: the API fills one at
-                            # open and forwards browser seed updates through,
-                            # so an update here must apply as-is rather than
-                            # be reverted to the seed this worker drew at
-                            # open, or the params_updated acknowledgement
-                            # would claim a value the runner never used.
+                            # The API owns the seed when an update carries
+                            # one: its stored params are the browser's keys
+                            # merged over the session's, and applying the
+                            # update as-is is what keeps the params_updated
+                            # acknowledgement honest. When the update has no
+                            # seed, the runner's own value from open is the
+                            # fallback: an older API never fills a seed, so
+                            # replacing the params would delete the only
+                            # seed there is and the conditioned path would
+                            # build no generator, re-rolling every frame.
                             # with_defaults restores what open_session did,
                             # filling only absent keys, so a subset update
                             # cannot leave the engine's hardcoded fallbacks
                             # in charge of settings the manifest declares.
-                            runner.params = runner.manifest.with_defaults(control["params"])
+                            updated = runner.manifest.with_defaults(control["params"])
+                            if "seed" not in updated:
+                                updated["seed"] = runner.params["seed"]
+                            runner.params = updated
                     elif control["type"] == "close_session":
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
-                        if runner is not None:
+                        if runner is not None and not runner.ended_itself:
+                            # A runner whose task is done ended itself: its
+                            # accounting went out with the session_refused, so
+                            # this close is a no-op, not a second
+                            # session_closed. A missing runner is equally a
+                            # no-op, never an error.
                             runner.close()
-                            category, score = categorize_output(None)
-                            closed = {
-                                "type": "session_closed",
-                                "session_id": control["session_id"],
-                                "frames": runner.frames,
-                                "gpu_ms": runner.gpu_ms,
-                                "duration_ms": int(
-                                    (time.monotonic() - runner.started_at) * 1000),
-                                "category": category,
-                            }
-                            if score is not None:
-                                closed["category_score"] = score
-                            await ws.send(json.dumps(closed))
+                            await ws.send(json.dumps(
+                                session_closed_payload(runner, control["session_id"])))
                     elif control["type"] == "dispatch_job":
                         task = asyncio.create_task(run_job(
                             ws, engine, by_id[control["model_id"]], control))

@@ -138,6 +138,33 @@ def test_update_session_carries_the_authoritative_seed(monkeypatch):
     assert socket.close_code is None
 
 
+class _FixedSeedRandom:
+    def randrange(self, _bound):
+        return 12345
+
+
+def test_update_session_without_a_seed_carries_the_runners_seed(monkeypatch):
+    # An older API never fills a seed: the runner drew its own at open
+    # (ensure_seed), and a subset update that does not mention the seed must
+    # carry that value forward rather than replace it with a dict that has
+    # no seed at all, or the conditioned path builds no generator and every
+    # frame rerolls.
+    session_id = str(uuid.uuid4())
+    monkeypatch.setattr("worker.client.random", _FixedSeedRandom())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house"}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    # The update carried no seed, so the runner's own value from open
+    # survived the replacement instead of being deleted.
+    assert runner.params == {"prompt": "a blue house", "seed": 12345}
+    assert socket.close_code is None
+
+
 def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch):
     # The API's stored params are the browser's keys plus the seed it filled
     # at open, so an update carries that subset and nothing else. Without
@@ -494,16 +521,62 @@ def test_three_consecutive_frame_failures_end_the_session():
             runner.submit(b"canvas")
             await asyncio.sleep(0.03)
         assert runner._task.done(), "three consecutive failures must end the session"
-        refused = json.loads(socket.sent[-1])
-        assert refused["type"] == "session_refused"
+        sent = [json.loads(m) for m in socket.sent]
+        refused = next(m for m in sent if m["type"] == "session_refused")
         assert refused["session_id"] == str(runner.session_id)
         assert "vega-rt" in refused["reason"]
-        # A later frame changes nothing: the loop has ended.
+        # The accounting rides along with the refusal, so usage is recorded
+        # whether or not the API understands the unknown message type.
+        closed = next(m for m in sent if m["type"] == "session_closed")
+        assert closed["session_id"] == str(runner.session_id)
+        assert closed["frames"] == 0
+        # A later frame is dropped rather than queued for a finished runner:
+        # nobody will render it, so it must not sit in pending.
         runner.submit(b"canvas")
         await asyncio.sleep(0.03)
-        assert len(socket.sent) == 1
+        assert runner.pending is None
+        assert not runner.arrived.is_set()
+        assert len(socket.sent) == 2  # the late frame changed nothing
 
     asyncio.run(scenario())
+
+
+def test_close_session_for_a_self_ended_session_sends_no_second_accounting():
+    """A session that ended itself (consecutive failures) sent its
+    accounting with the refusal; a close_session arriving later must not
+    send a second session_closed and must not raise on the runner that
+    already finished."""
+    session_id = str(uuid.uuid4())
+
+    class FailingEngine(SimulatedEngine):
+        async def frame(self, manifest, params, payload):
+            raise ValueError("model is not fully resident for realtime")
+
+    class PacedSocket(RecordingSocket):
+        async def __anext__(self):
+            if not self.messages:
+                raise StopAsyncIteration
+            # Yield to the event loop between messages so the runner's task
+            # renders and fails each frame before the next one arrives, and
+            # ends itself before the close_session below.
+            await asyncio.sleep(0.05)
+            return self.messages.pop(0)
+
+    socket = PacedSocket([
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "x"}}),
+        *[bytes([1]) + uuid.UUID(session_id).bytes + b"canvas" for _ in range(3)],
+        json.dumps({"type": "close_session", "session_id": session_id}),
+    ])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-self-end"),
+                                 [SIMULATED_MANIFEST], FailingEngine(0.01)))
+    payloads = [json.loads(m) for m in socket.sent]
+    assert sum(1 for p in payloads if p["type"] == "session_refused") == 1
+    closed = [p for p in payloads if p["type"] == "session_closed"]
+    # The self-end accounting, and no second one from the late close_session.
+    assert len(closed) == 1
+    assert closed[0]["session_id"] == session_id
+    assert socket.close_code is None  # the late close did not raise
 
 
 def test_two_failures_then_a_success_reset_the_failure_count():
@@ -538,8 +611,11 @@ def test_two_failures_then_a_success_reset_the_failure_count():
             runner.submit(b"canvas")
             await asyncio.sleep(0.03)
         assert runner._task.done()
-        refused = json.loads(socket.sent[-1])
-        assert refused["type"] == "session_refused"
+        sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+        refused = next(m for m in sent if m["type"] == "session_refused")
+        assert refused["session_id"] == str(runner.session_id)
+        # The accounting went out with the refusal, not instead of it.
+        assert any(m["type"] == "session_closed" for m in sent)
 
     asyncio.run(scenario())
 
