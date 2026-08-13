@@ -173,9 +173,21 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     live_ids = {
         item["id"] for item in wire if "realtime" in item.get("capabilities", [])
     }
-    candidates = [manifest for manifest in manifests if manifest.id in live_ids]
+    candidates = [manifest for manifest in manifests
+                  if manifest.id in live_ids and not manifest.benchmark_only]
     if not candidates:
         return
+    declared = [manifest for manifest in candidates if manifest.default]
+    if len(declared) > 1:
+        # The studio's picker takes the first default in ITS order, which is by
+        # model id, while manifests arrive here in filename order. With one
+        # default the two agree; with several they can disagree and the warm
+        # model is not the opened one. Say so rather than pick silently.
+        logger.warning(
+            "several realtime models declare default (%s); warming %s, which the "
+            "studio may not be the one it preselects",
+            ", ".join(sorted(m.id for m in declared)), declared[0].id,
+        )
     # Warm what the studio opens: the manifest declaring `default` is the one
     # its picker preselects (fallbackModelId in studio.svelte.ts), so warming
     # anything else leaves the first session on a fresh worker paying a cold
@@ -184,7 +196,9 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     # only realtime model and then became wrong in silence (issue #283). The
     # choice also decides what calibrate_realtime measures, so the p95 the
     # picker labels a model with is now the default model's own.
-    pick = next((m for m in candidates if m.default), candidates[0])
+    # benchmark_only models are excluded above: the studio never offers one, so
+    # warming it would leave whatever the picker does open cold and unlabelled.
+    pick = declared[0] if declared else candidates[0]
     slots = await engine.calibrate_realtime(pick, configured_slots)
     logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 

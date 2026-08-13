@@ -615,12 +615,21 @@ class WarmupEngine:
 
     torch_compile = False
 
-    def __init__(self):
+    def __init__(self, strip_realtime: tuple[str, ...] = ()):
         self._calibrated_slots = None
         self.calibrated: list[str] = []
+        self.strip_realtime = set(strip_realtime)
 
     def measured_manifests(self, manifests):
-        return [{"id": m.id, "capabilities": m.capabilities} for m in manifests]
+        # What the memory ladder does on a card that cannot hold a model: the
+        # capability is stripped from the wire copy while the manifest itself
+        # still declares it (capabilities_for_rung in memory_ladder.py).
+        return [
+            {"id": m.id,
+             "capabilities": [c for c in m.capabilities
+                              if not (c == "realtime" and m.id in self.strip_realtime)]}
+            for m in manifests
+        ]
 
     async def calibrate_realtime(self, manifest, configured):
         self.calibrated.append(manifest.id)
@@ -650,21 +659,51 @@ def test_warmup_calibrates_the_manifest_declaring_default(order):
 
 
 def test_warmup_without_a_declared_default_picks_the_first_candidate():
+    """Deterministic when nothing declares default, and vega-rt is not special.
+
+    vega-rt is present precisely because the code this replaced named it: if
+    that hardcoding came back, this would calibrate vega-rt instead of the
+    first candidate, so the test fails rather than passing either way.
+    """
     engine = WarmupEngine()
     asyncio.run(warmup_realtime(engine, [realtime_manifest("first"),
-                                         realtime_manifest("second")], 1))
+                                         realtime_manifest("vega-rt")], 1))
     assert engine.calibrated == ["first"]
 
 
-def test_warmup_ignores_a_default_that_cannot_serve_realtime():
-    """capabilities come from measured_manifests, which the memory ladder may
-    have stripped realtime from, so a default the card cannot hold is not a
-    candidate and the realtime model that can is warmed instead."""
-    engine = WarmupEngine()
-    too_big = Manifest(id="too-big", name="too-big",
-                       capabilities=["text_to_image"], default=True, parameters={})
-    asyncio.run(warmup_realtime(engine, [too_big, realtime_manifest("fits")], 1))
+def test_warmup_ignores_a_default_the_card_cannot_hold():
+    """A default whose realtime capability the memory ladder stripped is not a
+    candidate, so the model the card can actually serve is warmed instead.
+
+    The manifest still declares realtime; only the measured wire copy does not,
+    which is what a card too small for it produces.
+    """
+    engine = WarmupEngine(strip_realtime=("too-big",))
+    asyncio.run(warmup_realtime(engine, [realtime_manifest("too-big", default=True),
+                                         realtime_manifest("fits")], 1))
     assert engine.calibrated == ["fits"]
+
+
+def test_warmup_skips_a_benchmark_only_default():
+    """The studio never offers a benchmark_only model, so warming one would
+    leave whatever the picker does open cold and unlabelled."""
+    engine = WarmupEngine()
+    anchor = Manifest(id="anchor", name="anchor", capabilities=["realtime"],
+                      default=True, benchmark_only=True, parameters={})
+    asyncio.run(warmup_realtime(engine, [anchor, realtime_manifest("offered")], 1))
+    assert engine.calibrated == ["offered"]
+
+
+def test_warmup_warns_when_several_models_declare_default(caplog):
+    """Warmup orders manifests by filename and the picker by model id, so with
+    one default they agree and with several they can disagree: say so."""
+    engine = WarmupEngine()
+    with caplog.at_level("WARNING"):
+        asyncio.run(warmup_realtime(engine, [realtime_manifest("zeta", default=True),
+                                             realtime_manifest("alpha", default=True)], 1))
+    assert engine.calibrated == ["zeta"]
+    assert "several realtime models declare default" in caplog.text
+    assert "alpha, zeta" in caplog.text
 
 
 def test_rejected_registration_raises_cleanly():
