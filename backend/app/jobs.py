@@ -1265,14 +1265,31 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             return
         if (image is None or image.size <= 0
                 or image.content_type != "image/png"):
-            entry = inflight.pop(job_id, None)
-            if entry is None:
+            try:
+                committed = await mark_failed(
+                    job_id, "worker output was missing or invalid",
+                    expected_attempt=current.attempt,
+                )
+            except Exception:
+                # Nothing was committed and the entry stays tracked, so the
+                # stall sweeper or the worker-loss handler recovers the job.
+                logger.exception("could not mark job %s failed", job_id)
                 return
-            live_progress.pop(job_id, None)
-            last_progress_at.pop(job_id, None)
-            release_job_slot(worker)
-            await mark_failed(job_id, "worker output was missing or invalid")
-            await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
+            if not committed:
+                return  # a requeue or another verdict owns the row now
+            # Only the attempt that still owns the entry may clear it: a
+            # requeue that replaced it while the transaction was open keeps
+            # both.
+            if inflight.get(job_id) is current:
+                inflight.pop(job_id, None)
+                live_progress.pop(job_id, None)
+                last_progress_at.pop(job_id, None)
+                # Released only now, after the failure is durable: a process
+                # that dies between the two leaks the slot until the worker
+                # reconnects and rebuilds the state, which is the accepted
+                # trade (issue #248).
+                release_job_slot(worker)
+            await purge_attempt_blobs(current.user_id, job_id, current.attempt)
             return
         image_dimensions = (image.width, image.height)
         if has_thumbnail:
@@ -1297,79 +1314,114 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 thumb = None
                 has_thumbnail = False
 
-    entry = inflight.pop(job_id, None)
-    live_progress.pop(job_id, None)
-    last_progress_at.pop(job_id, None)
-    if entry is None:
-        return  # finished concurrently
-    release_job_slot(worker)
     if db.session_factory is None:
         logger.warning("job %s finished on the worker but the database is unavailable",
                        job_id)
         return
     if control["type"] == "job_done":
-        async with db.session_factory() as session:
-            job = await locked_job(session, job_id)
-            if job is None:
-                return
-            job.state = "succeeded"
-            job.gpu_ms = gpu_ms
-            for field, value in phase_ms.items():
-                setattr(job, field, value)
-            job.finished_at = datetime.now(timezone.utc)
-            width, height = image_dimensions
-            full = Asset(
-                user_id=entry.user_id,
-                job_id=job_id,
-                parent_asset_id=job.source_asset_id,
-                storage_key=entry.storage_key,
-                mime="image/png",
-                width=width,
-                height=height,
-            )
-            session.add(full)
-            await session.flush()
-            if thumb is not None:
-                # The inspected dimensions are the truth: the edge cap above
-                # has already admitted them, and the master's scaled-down
-                # numbers would only contradict what the object is.
-                session.add(Asset(
-                    user_id=entry.user_id,
+        try:
+            async with db.session_factory() as session:
+                job = await locked_job(session, job_id)
+                # A requeue or another verdict may have transitioned the row
+                # while this verdict was in flight; the entry now belongs to
+                # whichever attempt won, so refuse instead of overwriting it.
+                # The row's attempt only ever grows, so anything past this
+                # entry's attempt means a requeue got there first.
+                if (job is None or job.state in TERMINAL_STATES
+                        or job.attempt > current.attempt):
+                    return
+                job.state = "succeeded"
+                job.gpu_ms = gpu_ms
+                for field, value in phase_ms.items():
+                    setattr(job, field, value)
+                job.finished_at = datetime.now(timezone.utc)
+                width, height = image_dimensions
+                full = Asset(
+                    user_id=current.user_id,
                     job_id=job_id,
-                    parent_asset_id=full.id,
-                    storage_key=entry.thumb_storage_key,
-                    mime="image/webp",
-                    width=thumb.width,
-                    height=thumb.height,
-                ))
-            await session.commit()
+                    parent_asset_id=job.source_asset_id,
+                    storage_key=current.storage_key,
+                    mime="image/png",
+                    width=width,
+                    height=height,
+                )
+                session.add(full)
+                await session.flush()
+                if thumb is not None:
+                    # The inspected dimensions are the truth: the edge cap above
+                    # has already admitted them, and the master's scaled-down
+                    # numbers would only contradict what the object is.
+                    session.add(Asset(
+                        user_id=current.user_id,
+                        job_id=job_id,
+                        parent_asset_id=full.id,
+                        storage_key=current.thumb_storage_key,
+                        mime="image/webp",
+                        width=thumb.width,
+                        height=thumb.height,
+                    ))
+                await session.commit()
+        except Exception:
+            # Nothing was committed and the entry stays tracked, so the stall
+            # sweeper or the worker-loss handler recovers the job.
+            logger.exception("could not mark job %s succeeded", job_id)
+            return
+        # Only the attempt that still owns the entry may clear it: a requeue
+        # that replaced it while the transaction was open keeps both.
+        if inflight.get(job_id) is current:
+            inflight.pop(job_id, None)
+            live_progress.pop(job_id, None)
+            last_progress_at.pop(job_id, None)
+            # Released only now, after the commit is durable: a process that
+            # dies between the two leaks the slot until the worker reconnects
+            # and rebuilds the state, which is the accepted trade (issue #248).
+            release_job_slot(worker)
         orphans = []
         if not has_thumbnail:
             # This attempt may have uploaded a thumbnail it did not report, or
             # reported one the inspection below rejected.
-            orphans.append(entry.thumb_storage_key)
+            orphans.append(current.thumb_storage_key)
         # Attempts no longer share one key, so a retry leaves the earlier
         # attempt's blobs behind instead of overwriting them. Nothing else
         # collects them: the asset row only ever names the winning key.
-        for earlier in range(1, entry.attempt):
-            orphans.extend(storage_keys_for_attempt(entry.user_id, job_id, earlier))
+        for earlier in range(1, current.attempt):
+            orphans.extend(storage_keys_for_attempt(current.user_id, job_id, earlier))
         for orphan in orphans:
             try:
                 await get_storage().delete(orphan)
             except Exception:
                 logger.warning("could not remove orphaned blob %s for job %s", orphan,
                                job_id, exc_info=True)
-        url = await get_storage().url(entry.storage_key)
+        url = await get_storage().url(current.storage_key)
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
         from app import usage_events
         usage_events.schedule_job(job_id, control)
     else:
         reason = str(control.get("reason", "worker reported failure"))
-        await mark_failed(job_id, reason)
+        try:
+            committed = await mark_failed(job_id, reason,
+                                          expected_attempt=current.attempt)
+        except Exception:
+            # Nothing was committed and the entry stays tracked, so the stall
+            # sweeper or the worker-loss handler recovers the job.
+            logger.exception("could not mark job %s failed", job_id)
+            return
+        if not committed:
+            return  # a requeue or another verdict owns the row now
+        # Only the attempt that still owns the entry may clear it: a requeue
+        # that replaced it while the transaction was open keeps both.
+        if inflight.get(job_id) is current:
+            inflight.pop(job_id, None)
+            live_progress.pop(job_id, None)
+            last_progress_at.pop(job_id, None)
+            # Released only now, after the failure is durable: a process that
+            # dies between the two leaks the slot until the worker reconnects
+            # and rebuilds the state, which is the accepted trade (issue #248).
+            release_job_slot(worker)
         # A reported failure can still have uploaded: nothing downstream names
         # those objects, so this is their only collector.
-        await purge_attempt_blobs(entry.user_id, job_id, entry.attempt)
+        await purge_attempt_blobs(current.user_id, job_id, current.attempt)
 
 
 async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> None:
@@ -1395,18 +1447,28 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
                                exc_info=True)
 
 
-async def mark_failed(job_id: uuid.UUID, reason: str) -> None:
+async def mark_failed(job_id: uuid.UUID, reason: str,
+                      expected_attempt: int | None = None) -> bool:
+    """Transition to failed and report whether it happened.
+
+    False means the row is gone, already terminal, or - when expected_attempt
+    is given - owned by a later attempt: the caller's in-memory state then
+    belongs to whoever won and must not be cleared.
+    """
     assert db.session_factory is not None
     async with db.session_factory() as session:
         job = await locked_job(session, job_id)
         if job is None or job.state in TERMINAL_STATES:
-            return
+            return False
+        if expected_attempt is not None and job.attempt > expected_attempt:
+            return False
         job.state = "failed"
         job.failure_reason = reason
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
     publish(job_id, {"state": "failed", "reason": reason})
     logger.warning("job %s failed: %s", job_id, reason)
+    return True
 
 
 async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:

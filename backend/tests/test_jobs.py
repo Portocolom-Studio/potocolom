@@ -557,6 +557,119 @@ def poll_until_attempt(client, job_id, attempt: int, timeout=5.0):
     raise AssertionError(f"job {job_id} never reached attempt {attempt}")
 
 
+def _wait_for_slots(worker, expected: int, timeout=5.0):
+    """The slot release follows the committed row in the handler, so an API
+    poll can observe the row before the slot moves; wait for the count."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and worker.jobs_in_flight != expected:
+        time.sleep(0.02)
+    assert worker.jobs_in_flight == expected
+
+
+def _dirty_for_job(session, job_id) -> bool:
+    """Whether this session is mid-transaction for the job. Scopes a test
+    seam to the terminal transaction: every other writer touches other rows."""
+    return any(isinstance(obj, Job) and obj.id == job_id for obj in session.dirty)
+
+
+class _FailingCommitSession:
+    """Wraps a session so the commit of this job's terminal transaction raises
+    once, as a lock timeout or flush error would; later commits pass through,
+    which is what lets the recovery path run."""
+
+    def __init__(self, real, owner):
+        self._real = real
+        self._owner = owner
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def __aenter__(self):
+        await self._real.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self._real.__aexit__(exc_type, exc, tb)
+
+    async def _fail_once(self):
+        if not self._owner.fired and _dirty_for_job(self._real, self._owner.job_id):
+            self._owner.fired = True
+            self._owner.failure.set()
+            raise RuntimeError("simulated commit failure")
+
+    async def flush(self):
+        # The success path flushes before it commits, so the terminal write is
+        # pending at either call; fail whichever comes first.
+        await self._fail_once()
+        await self._real.flush()
+
+    async def commit(self):
+        await self._fail_once()
+        await self._real.commit()
+
+
+class _FailingCommitFactory:
+    def __init__(self, real, job_id, failure):
+        self._real = real
+        self.job_id = job_id
+        self.failure = failure
+        self.fired = False
+
+    def __call__(self):
+        return _FailingCommitSession(self._real(), self)
+
+
+class _SweepingSession:
+    """Wraps a session so the commit of this job's terminal transaction first
+    does what the stall sweeper would: pop the entry and release the slot,
+    then let the verdict's commit complete."""
+
+    def __init__(self, real, owner):
+        self._real = real
+        self._owner = owner
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def __aenter__(self):
+        await self._real.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self._real.__aexit__(exc_type, exc, tb)
+
+    async def _sweep_once(self):
+        if not self._owner.swept and _dirty_for_job(self._real, self._owner.job_id):
+            self._owner.swept = True
+            jobs.inflight.pop(self._owner.job_id, None)
+            jobs.live_progress.pop(self._owner.job_id, None)
+            jobs.last_progress_at.pop(self._owner.job_id, None)
+            jobs.release_job_slot(self._owner.worker)
+            self._owner.swept_event.set()
+
+    async def flush(self):
+        # The success path flushes before it commits, so the race lands at
+        # whichever call carries the pending terminal write.
+        await self._sweep_once()
+        await self._real.flush()
+
+    async def commit(self):
+        await self._sweep_once()
+        await self._real.commit()
+
+
+class _SweepingFactory:
+    def __init__(self, real, job_id, worker, swept_event):
+        self._real = real
+        self.job_id = job_id
+        self.worker = worker
+        self.swept_event = swept_event
+        self.swept = False
+
+    def __call__(self):
+        return _SweepingSession(self._real(), self)
+
+
 @pytest.mark.db
 def test_stalled_job_requeues_once(monkeypatch):
     monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
@@ -756,6 +869,250 @@ def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
                               "width": 512, "height": 512,
                               "dispatch_token": dispatch["dispatch_token"]})
             poll_until(client, job_id, "succeeded")
+
+
+@pytest.mark.db
+def test_a_success_commit_failure_leaves_the_job_recoverable(monkeypatch):
+    """The success transaction now precedes the in-memory de-tracking, so a
+    commit failure must leave the row running and the entry tracked, and the
+    stall sweeper must then requeue it (issue #248)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-commit-fail")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "commit fail"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes()).status_code == 200
+
+            key = uuid.UUID(job_id)
+            entry = jobs.inflight[key]
+            real_factory = db.session_factory
+            assert real_factory is not None
+            failed = threading.Event()
+            monkeypatch.setattr(
+                db, "session_factory", _FailingCommitFactory(real_factory, key, failed)
+            )
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": dispatch["dispatch_token"]})
+            assert failed.wait(timeout=5), "the terminal commit never ran"
+
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
+            assert jobs.inflight.get(key) is entry
+            assert realtime.workers["w-commit-fail"].jobs_in_flight == 1
+
+            # Recovery: the entry is still tracked with a stale progress stamp,
+            # so the sweeper requeues it and the retry reaches a terminal state.
+            jobs.last_progress_at[key] = 0.0
+            asyncio.run(jobs.sweep_stalled_jobs())
+            poll_until_attempt(client, job_id, 2, timeout=3.0)
+            redispatch = worker.receive_json()
+            assert redispatch["type"] == "dispatch_job"
+            assert redispatch["job_id"] == job_id
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "boom",
+                              "dispatch_token": redispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed")
+
+
+@pytest.mark.db
+def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
+    """The failure path keeps the same ordering: mark_failed's commit precedes
+    the de-tracking, so a commit failure leaves the job recoverable."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-fail-commit")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "fail commit"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+
+            key = uuid.UUID(job_id)
+            entry = jobs.inflight[key]
+            real_factory = db.session_factory
+            assert real_factory is not None
+            failed = threading.Event()
+            monkeypatch.setattr(
+                db, "session_factory", _FailingCommitFactory(real_factory, key, failed)
+            )
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "boom",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            assert failed.wait(timeout=5), "the terminal commit never ran"
+
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
+            assert jobs.inflight.get(key) is entry
+            assert realtime.workers["w-fail-commit"].jobs_in_flight == 1
+
+            jobs.last_progress_at[key] = 0.0
+            asyncio.run(jobs.sweep_stalled_jobs())
+            poll_until_attempt(client, job_id, 2, timeout=3.0)
+            redispatch = worker.receive_json()
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "boom again",
+                              "dispatch_token": redispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed")
+
+
+@pytest.mark.db
+def test_a_requeue_during_a_terminal_transaction_keeps_its_entry(monkeypatch):
+    """A stall requeue can land while the verdict's transaction is open: the
+    row check must refuse the late verdict, which then must not take the
+    replacement's entry or slot (issue #248)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-verdict-race")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "verdict race"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes()).status_code == 200
+
+            key = uuid.UUID(job_id)
+            superseded = jobs.inflight[key]
+            second_keys = jobs.storage_keys_for_attempt(superseded.user_id, key, 2)
+            replacement = jobs.InFlight(
+                worker=superseded.worker, storage_key=second_keys[0],
+                thumb_storage_key=second_keys[1], user_id=superseded.user_id,
+                dispatch_token="second-attempt-token", attempt=2,
+            )
+            real_factory = db.session_factory
+            assert real_factory is not None
+            real_locked_job = jobs.locked_job
+            settled = threading.Event()
+            state = {"replayed": False, "in_replay": False}
+
+            async def replay_requeue() -> None:
+                # The sweeper's DB half: attempt two owns the row before the
+                # verdict's transaction reads it.
+                async with real_factory() as session:
+                    job = await real_locked_job(session, key)
+                    assert job is not None
+                    job.attempt = 2
+                    job.state = "queued"
+                    await session.commit()
+                jobs.inflight[key] = replacement
+
+            async def locked_job_after_requeue(session, job_id):
+                # Only the verdict's own transaction for this job: the
+                # requeue lands between the transaction opening and its read
+                # of the row, exactly when a sweeper that won the race would.
+                if (job_id == key and not state["replayed"]
+                        and not state["in_replay"]):
+                    state["replayed"] = True
+                    state["in_replay"] = True
+                    try:
+                        await replay_requeue()
+                    finally:
+                        state["in_replay"] = False
+                    settled.set()
+                return await real_locked_job(session, job_id)
+
+            monkeypatch.setattr(jobs, "locked_job", locked_job_after_requeue)
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": dispatch["dispatch_token"]})
+            assert settled.wait(timeout=5), "the verdict never settled"
+
+            assert jobs.inflight.get(key) is replacement
+            assert realtime.workers["w-verdict-race"].jobs_in_flight == 1
+            row = client.get(f"/api/v1/generations/{job_id}").json()
+            assert row["state"] == "queued"
+            assert row["attempt"] == 2
+
+            # Let the job finish so it does not sit queued in the shared
+            # database and starve the dispatch loop for every test after this.
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "cleanup",
+                              "dispatch_token": "second-attempt-token"})
+            poll_until(client, job_id, "failed")
+
+
+@pytest.mark.db
+def test_terminal_verdicts_clear_inflight_exactly_once(monkeypatch):
+    """The clearing moved after the commit and must still run exactly once per
+    job: the slot count is the canary, because a release that runs twice on a
+    two-job worker steals the other job's slot."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-exact-once")
+            real_worker = realtime.workers["w-exact-once"]
+
+            first_id = _post_generation(client, "exact-one")
+            second_id = _post_generation(client, "exact-two")
+            expected = {first_id, second_id}
+            time.sleep(0.35)
+            first = _wait_for_dispatch(worker, expected)
+            second = _wait_for_dispatch(worker, expected - {first["job_id"]})
+            _wait_for_slots(real_worker, 2)
+            worker.send_json({"type": "job_progress", "job_id": first["job_id"],
+                              "progress": 0.5,
+                              "dispatch_token": first["dispatch_token"]})
+            worker.send_json({"type": "job_progress", "job_id": second["job_id"],
+                              "progress": 0.5,
+                              "dispatch_token": second["dispatch_token"]})
+
+            assert put_upload(client, first["upload"], png_bytes()).status_code == 200
+            worker.send_json({"type": "job_done", "job_id": first["job_id"], "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": first["dispatch_token"]})
+            poll_until(client, first["job_id"], "succeeded")
+            _wait_for_slots(real_worker, 1)
+            first_key = uuid.UUID(first["job_id"])
+            assert first_key not in jobs.inflight
+            assert first_key not in jobs.live_progress
+            assert first_key not in jobs.last_progress_at
+
+            worker.send_json({"type": "job_failed", "job_id": second["job_id"],
+                              "reason": "boom",
+                              "dispatch_token": second["dispatch_token"]})
+            poll_until(client, second["job_id"], "failed")
+            _wait_for_slots(real_worker, 0)
+            second_key = uuid.UUID(second["job_id"])
+            assert second_key not in jobs.inflight
+            assert second_key not in jobs.live_progress
+            assert second_key not in jobs.last_progress_at
+
+            # A sweep that pops the entry while the verdict's transaction is
+            # open must not double-release the slot: the post-commit clearing
+            # only runs for the entry that still owns the job.
+            third_id = _post_generation(client, "exact-three")
+            fourth_id = _post_generation(client, "exact-four")
+            expected = {third_id, fourth_id}
+            time.sleep(0.35)
+            third = _wait_for_dispatch(worker, expected)
+            fourth = _wait_for_dispatch(worker, expected - {third["job_id"]})
+            _wait_for_slots(real_worker, 2)
+            assert put_upload(client, third["upload"], png_bytes()).status_code == 200
+
+            third_key = uuid.UUID(third["job_id"])
+            real_factory = db.session_factory
+            assert real_factory is not None
+            swept = threading.Event()
+            monkeypatch.setattr(
+                db, "session_factory",
+                _SweepingFactory(real_factory, third_key, real_worker, swept),
+            )
+            worker.send_json({"type": "job_done", "job_id": third["job_id"], "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": third["dispatch_token"]})
+            assert swept.wait(timeout=5), "the sweeper never raced the verdict"
+            poll_until(client, third["job_id"], "succeeded")
+            _wait_for_slots(real_worker, 1)
+            assert third_key not in jobs.inflight
+            assert uuid.UUID(fourth["job_id"]) in jobs.inflight
+
+            _finish_job(client, worker, fourth)
 
 
 @pytest.mark.db
