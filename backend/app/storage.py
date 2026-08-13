@@ -63,7 +63,7 @@ class ImageInfo:
 # width and height is a ceiling the peer sets. 4096 is the real maximum, a
 # factor-4 upscale of the largest shipped generation size.
 MAX_IMAGE_EDGE = 4096
-# Enough for any real encoder, and it bounds the walk below.
+# Enough for any real encoder, and it bounds both walks below.
 MAX_PNG_CHUNKS = 4096
 
 # Bit depths each PNG colour type allows (PNG spec, table 11.1).
@@ -141,32 +141,77 @@ def _webp_dimensions(data: bytes) -> tuple[int, int]:
 
     Thumbnails are the only WebP the fleet uploads, and until now nothing read
     them: job_done created the thumbnail row on the worker's word alone. This
-    reads the RIFF container and the first chunk header, which is all three
-    WebP flavours need to state their canvas, and like the PNG walk above it
-    never decodes a pixel.
+    walks the chunk list like the PNG walk above and never decodes a pixel: a
+    simple file is one VP8 or VP8L frame, an extended one starts with a VP8X
+    header that states the canvas, and a chunk whose declared length does not
+    fit the RIFF payload is a fabricated container, not a thumbnail.
     """
-    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
         raise ValueError("stored object is not a WebP")
     # The RIFF length counts everything after it, so it must fit the object.
-    if struct.unpack_from("<I", data, 4)[0] + 8 > len(data):
+    riff_size = struct.unpack_from("<I", data, 4)[0]
+    if riff_size + 8 > len(data):
         raise ValueError("stored WebP is truncated")
-    kind = data[12:16]
-    if kind == b"VP8X":
-        width = int.from_bytes(data[24:27], "little") + 1
-        height = int.from_bytes(data[27:30], "little") + 1
-    elif kind == b"VP8 ":
-        if data[23:26] != b"\x9d\x01\x2a":
-            raise ValueError("stored WebP has no lossy keyframe")
-        width = struct.unpack_from("<H", data, 26)[0] & 0x3fff
-        height = struct.unpack_from("<H", data, 28)[0] & 0x3fff
-    elif kind == b"VP8L":
-        if data[20] != 0x2f:
-            raise ValueError("stored WebP has no lossless signature")
-        bits = int.from_bytes(data[21:25], "little")
-        width = (bits & 0x3fff) + 1
-        height = ((bits >> 14) & 0x3fff) + 1
-    else:
-        raise ValueError("stored WebP has an unknown first chunk")
+    view = memoryview(data)
+    payload_end = riff_size + 8
+    position = 12
+    width = height = 0
+    chunks = 0
+    saw_vp8x = False
+    saw_image = False
+    while position + 8 <= payload_end:
+        chunks += 1
+        if chunks > MAX_PNG_CHUNKS:
+            raise ValueError("stored WebP has too many chunks")
+        length = struct.unpack_from("<I", view, position + 4)[0]
+        # Chunk payloads are padded to an even length.
+        end = position + 8 + length + (length & 1)
+        if end > payload_end:
+            raise ValueError("stored WebP has a truncated chunk")
+        kind = bytes(view[position:position + 4])
+        if kind == b"VP8X":
+            # The extended form only exists as the first chunk, declared
+            # exactly 10 bytes, and its header states the canvas for the file.
+            if chunks != 1 or length != 10:
+                raise ValueError("stored WebP has a misplaced VP8X header")
+            saw_vp8x = True
+            width = int.from_bytes(view[position + 12:position + 15], "little") + 1
+            height = int.from_bytes(view[position + 15:position + 18], "little") + 1
+        else:
+            # A simple file is exactly one VP8 or VP8L chunk; any chunk after
+            # one is neither simple nor extended.
+            if not saw_vp8x and chunks != 1:
+                raise ValueError("stored WebP has a chunk after a simple image")
+            if kind == b"VP8 ":
+                if length < 10:
+                    raise ValueError("stored WebP has a truncated frame")
+                if bytes(view[position + 11:position + 14]) != b"\x9d\x01\x2a":
+                    raise ValueError("stored WebP has no lossy keyframe")
+                if width == 0:
+                    width = struct.unpack_from("<H", view, position + 14)[0] & 0x3fff
+                    height = struct.unpack_from("<H", view, position + 16)[0] & 0x3fff
+                saw_image = True
+            elif kind == b"VP8L":
+                if length < 5:
+                    raise ValueError("stored WebP has a truncated lossless frame")
+                if view[position + 8] != 0x2f:
+                    raise ValueError("stored WebP has no lossless signature")
+                bits = int.from_bytes(view[position + 9:position + 13], "little")
+                if bits >> 29:
+                    raise ValueError("stored WebP has an unknown lossless version")
+                if width == 0:
+                    width = (bits & 0x3fff) + 1
+                    height = ((bits >> 14) & 0x3fff) + 1
+                saw_image = True
+            elif kind == b"ANMF":
+                saw_image = True
+            elif kind not in (b"ALPH", b"ICCP", b"EXIF", b"XMP"):
+                raise ValueError("stored WebP has an unknown chunk")
+        position = end
+    if position != payload_end:
+        raise ValueError("stored WebP has a truncated chunk")
+    if not saw_image:
+        raise ValueError("stored WebP carries no image data")
     if width == 0 or height == 0:
         raise ValueError("stored WebP has empty dimensions")
     if width > MAX_IMAGE_EDGE or height > MAX_IMAGE_EDGE:

@@ -12,6 +12,8 @@ the object the API verified must still be that object when a client reads it
 
 import asyncio
 import logging
+import os
+import tempfile
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -58,12 +60,29 @@ async def upload(key: str, request: Request) -> dict:
             raise HTTPException(status_code=413, detail="upload too large")
         body.extend(chunk)
 
+    # The first check ran before the body arrived and reading it can take a
+    # long time, so a stall could hold this request open while a retry
+    # supersedes it; re-check now that the bytes are in hand, before anything
+    # is published.
+    if not jobs.upload_authorized(key, request.headers.get(UPLOAD_TOKEN_HEADER)):
+        raise HTTPException(status_code=403, detail="upload not authorized")
+
     def write_file() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Exclusive: a second PUT to a key must not replace bytes the API has
-        # already inspected and committed an asset row for.
-        with open(path, "xb") as handle:
-            handle.write(body)
+        # Publish atomically: writing the key directly would expose a truncated
+        # prefix while the body is still landing, and a job_done racing its own
+        # PUT could have that prefix inspected and approved. The temporary is
+        # linked into place, and link refuses to replace an existing key, which
+        # also keeps a second PUT from overwriting bytes the API verified.
+        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+            os.link(temporary, path)
+        finally:
+            # Only the temporary this request created is removed; the
+            # destination may belong to a different upload.
+            os.unlink(temporary)
 
     try:
         await asyncio.to_thread(write_file)
@@ -73,9 +92,6 @@ async def upload(key: str, request: Request) -> dict:
         # retry is a new attempt and writes to a new key.
         logger.warning("refused a second upload of %s", key)
         raise HTTPException(status_code=409, detail="already uploaded") from None
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
 
     return {"stored": key}
 

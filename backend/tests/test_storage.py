@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import struct
 import zlib
 from urllib.parse import parse_qs, urlsplit
@@ -121,7 +122,11 @@ class _FakeS3Client:
         return {
             "Body": _FakeBody(self.data),
             "ContentLength": len(self.data),
-            "ContentType": "image/png",
+            # Deliberately not the type of the bytes: an uploader declares its
+            # own Content-Type on a presigned PUT, so image_info must report
+            # what the bytes are, and a fake that agreed with them could not
+            # tell the difference.
+            "ContentType": "text/plain",
         }
 
     def get_paginator(self, name):
@@ -396,6 +401,53 @@ def test_max_image_edge_matches_the_largest_real_output():
     # A factor-4 upscale of the largest shipped generation size. Anything more
     # only moves the memory question to whatever decodes the file later.
     assert MAX_IMAGE_EDGE == 4096
+
+
+# The real lossless 320x200 WebP from test_jobs, embedded here too so the
+# rejections below are mutations of real encoded bytes rather than headers
+# built to please the reader.
+_WEBP_BYTES = base64.b64decode(
+    "UklGRiQAAABXRUJQVlA4TBcAAAAvP8ExAAcQ9Y/+BwAU6f9/iuh/6v+fAQA="
+)
+
+
+def test_image_info_requires_a_complete_webp(tmp_path):
+    """The WebP reader is a bounded chunk walk like the PNG one.
+
+    Reading the RIFF header and the first chunk header let a fabricated VP8X
+    prefix pass as a thumbnail no matter what followed it, so the walk must
+    demand an image chunk after VP8X, keep every chunk inside the RIFF payload
+    and reject a lossless frame that claims an unknown version.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+
+    def chunk(kind, payload):
+        padded = payload + (b"\x00" if len(payload) & 1 else b"")
+        return kind + struct.pack("<I", len(payload)) + padded
+
+    def container(*chunks):
+        body = b"".join(chunks)
+        return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+
+    vp8x = chunk(b"VP8X", b"\x00" * 4 + (319).to_bytes(3, "little")
+                 + (199).to_bytes(3, "little"))
+    (tmp_path / "vp8x-only.webp").write_bytes(container(vp8x))
+    assert asyncio.run(storage.image_info("vp8x-only.webp")) is None
+
+    # The real file's VP8L chunk declares 23 bytes; a declared 100 runs past
+    # the RIFF payload even though all 44 bytes are present.
+    overlong = bytearray(_WEBP_BYTES)
+    struct.pack_into("<I", overlong, 16, 100)
+    (tmp_path / "overlong.webp").write_bytes(overlong)
+    assert asyncio.run(storage.image_info("overlong.webp")) is None
+
+    # The top three bits of the fourth byte after the 0x2f signature are the
+    # version; the encoder emitted zero there and a nonzero one is a frame
+    # this walk does not understand.
+    bad_version = bytearray(_WEBP_BYTES)
+    bad_version[24] |= 0x80
+    (tmp_path / "bad-version.webp").write_bytes(bad_version)
+    assert asyncio.run(storage.image_info("bad-version.webp")) is None
 
 
 def test_s3_delete_removes_every_version_of_exactly_that_key():

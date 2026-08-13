@@ -107,7 +107,9 @@ def upload_authorized(key: str, token: object) -> bool:
     what attempt two uploaded. The token is minted per dispatch and only the
     worker that received that dispatch has it.
     """
-    if not isinstance(token, str) or not token:
+    # compare_digest raises TypeError on a non-ASCII str, which a caller
+    # presents as a worker-supplied header; such a token is wrong, not a bug.
+    if not isinstance(token, str) or not token or not token.isascii():
         return False
     for entry in inflight.values():
         if key not in (entry.storage_key, entry.thumb_storage_key):
@@ -1198,7 +1200,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     # (docs/connection-handling.md), which is the compatibility floor.
     presented = control.get("dispatch_token")
     if presented is not None:
-        if (not isinstance(presented, str)
+        # compare_digest raises TypeError on a non-ASCII str, and TypeError is
+        # not in the fleet handler's except tuple; such a token is stale, not
+        # a crash.
+        if (not isinstance(presented, str) or not presented.isascii()
                 or not hmac.compare_digest(presented, current.dispatch_token)):
             logger.warning("worker %s sent a stale dispatch token for job %s; ignored",
                            worker.id, job_id)
@@ -1222,6 +1227,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         return
     image_dimensions = (0, 0)
     has_thumbnail = control.get("has_thumbnail") is True
+    thumb = None
     if control["type"] == "job_done":
         gpu_ms = _worker_int(control.get("gpu_ms"))
         phase_ms = {
@@ -1273,9 +1279,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 thumb = None
             if inflight.get(job_id) is not current:
                 return  # a requeue replaced this attempt during the inspection
-            if thumb is None or thumb.size <= 0 or thumb.content_type != "image/webp":
+            # The edge cap is enforced here, not by derivation from the master
+            # below: a 4096 px WebP would otherwise be recorded as a small
+            # thumbnail and served to gallery views as one.
+            if (thumb is None or thumb.size <= 0 or thumb.content_type != "image/webp"
+                    or max(thumb.width, thumb.height) > THUMBNAIL_MAX_EDGE):
                 logger.warning("worker %s claimed a thumbnail for job %s that is not a "
                                "usable WebP; dropping it", worker.id, job_id)
+                thumb = None
                 has_thumbnail = False
 
     entry = inflight.pop(job_id, None)
@@ -1310,22 +1321,18 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             )
             session.add(full)
             await session.flush()
-            if has_thumbnail:
-                edge = THUMBNAIL_MAX_EDGE
-                thumb_width = min(width, edge) if width else 0
-                thumb_height = min(height, edge) if height else 0
-                if width and height and max(width, height) > edge:
-                    scale = edge / max(width, height)
-                    thumb_width = int(width * scale)
-                    thumb_height = int(height * scale)
+            if thumb is not None:
+                # The inspected dimensions are the truth: the edge cap above
+                # has already admitted them, and the master's scaled-down
+                # numbers would only contradict what the object is.
                 session.add(Asset(
                     user_id=entry.user_id,
                     job_id=job_id,
                     parent_asset_id=full.id,
                     storage_key=entry.thumb_storage_key,
                     mime="image/webp",
-                    width=thumb_width,
-                    height=thumb_height,
+                    width=thumb.width,
+                    height=thumb.height,
                 ))
             await session.commit()
         orphans = []

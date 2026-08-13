@@ -2,6 +2,7 @@
 real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
+import base64
 import struct
 import threading
 import time
@@ -47,11 +48,22 @@ MANIFEST_WITH_RT = {
 HOSTILE_PROMPT = 'A "lighthouse"\n; ../../ caf\u00e9'
 
 
-def webp_bytes(width=64, height=64):
-    """The extended (VP8X) form, which carries the canvas size in its header."""
-    body = (b"VP8X" + struct.pack("<I", 10) + b"\x00" * 4
-            + (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little"))
-    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body + b"\x00" * 10
+# A real lossless 320x200 WebP, encoded with
+# `ffmpeg -f lavfi -i color=c=red:s=320x200 -lossless 1` and embedded as
+# base64 so the module stays ASCII: CI has no ffmpeg, and a hand-built header
+# is a replica of the parser, so it proves nothing about real files.
+_WEBP_BYTES = base64.b64decode(
+    "UklGRiQAAABXRUJQVlA4TBcAAAAvP8ExAAcQ9Y/+BwAU6f9/iuh/6v+fAQA="
+)
+
+# The same red canvas at 400x300: past THUMBNAIL_MAX_EDGE on its longest edge.
+_WEBP_BIG_BYTES = base64.b64decode(
+    "UklGRiYAAABXRUJQVlA4TBoAAAAvj8FKAAcQ9Y/+BwQkSf//kxH9z/jPf/6fKQ=="
+)
+
+
+def webp_bytes():
+    return _WEBP_BYTES
 
 
 def dispatch_for(worker, job_id, limit=5):
@@ -379,6 +391,19 @@ def test_generation_end_to_end():
             assert client.get(urlsplit(asset["url"]).path).content == png_bytes(320, 240)
             assert client.get(urlsplit(asset["thumbnail_url"]).path).content == webp_bytes()
 
+            async def recorded_thumb_dimensions() -> tuple[int, int]:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    row = await session.scalar(
+                        select(Asset).where(Asset.parent_asset_id == uuid.UUID(asset["id"]))
+                    )
+                    assert row is not None
+                    return row.width, row.height
+
+            # The thumbnail row carries the inspected dimensions, not a
+            # derivation from the master's: the object is the truth.
+            assert asyncio.run(recorded_thumb_dimensions()) == (320, 200)
+
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
 
@@ -540,13 +565,18 @@ def test_stalled_job_requeues_once(monkeypatch):
                 job_id = client.post("/api/v1/generations",
                                      json={"model_id": "sd-test",
                                            "params": {"prompt": "stall"}}).json()["job_id"]
-                assert worker.receive_json()["job_id"] == job_id
+                first = worker.receive_json()
+                assert first["job_id"] == job_id
                 # Worker stays connected but sends no progress; stall requeues once
                 # and the retry is dispatched back to the same connected worker.
                 poll_until_attempt(client, job_id, 2, timeout=3.0)
                 redispatch = worker.receive_json()
                 assert redispatch["type"] == "dispatch_job"
                 assert redispatch["job_id"] == job_id
+                # A requeue that reused the token would let attempt one publish
+                # to attempt two's keys, so the token must be fresh per
+                # dispatch (issue #247).
+                assert redispatch["dispatch_token"] != first["dispatch_token"]
     finally:
         monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
         get_settings.cache_clear()
@@ -2422,3 +2452,175 @@ def test_a_thumbnail_that_is_not_a_webp_is_dropped_rather_than_served():
             assert job["assets"][0]["thumbnail_url"] is None
             # The rejected object is collected, not left addressable.
             assert client.get(urlsplit(dispatch["thumb_upload"]["url"]).path).status_code == 404
+
+
+@pytest.mark.db
+def test_an_oversized_thumbnail_is_dropped_rather_than_scaled_down():
+    """An oversized WebP used to pass inspection and was then recorded with
+    the master's dimensions scaled to the thumbnail cap, so a huge object was
+    served to gallery views as a small thumbnail."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-big-thumb")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "big thumb"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["thumb_upload"],
+                              _WEBP_BIG_BYTES).status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 4, "width": 512, "height": 512,
+                              "has_thumbnail": True})
+
+            job = poll_until(client, job_id, "succeeded")
+            assert len(job["assets"]) == 1
+            assert job["assets"][0]["thumbnail_url"] is None
+            assert client.get(urlsplit(dispatch["thumb_upload"]["url"]).path).status_code == 404
+
+
+def test_a_non_ascii_dispatch_token_is_ignored():
+    """compare_digest raises TypeError on a non-ASCII str, and TypeError is
+    not in the fleet handler's except tuple, so such a token used to raise out
+    of the socket; it is stale, not a crash."""
+    worker = realtime.Worker(id="w-non-ascii", ws=None, manifests=[], realtime_slots=1)
+    job_id = uuid.uuid4()
+    jobs.inflight[job_id] = jobs.InFlight(
+        worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+        dispatch_token="token",
+    )
+    try:
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
+            "dispatch_token": "caf\u00e9",
+        }))
+        assert job_id in jobs.inflight
+        assert job_id not in jobs.live_progress
+    finally:
+        jobs.inflight.pop(job_id, None)
+        jobs.live_progress.pop(job_id, None)
+        jobs.last_progress_at.pop(job_id, None)
+
+
+def test_a_non_ascii_upload_token_fails_closed():
+    """compare_digest raises TypeError on a non-ASCII str, which used to make
+    the upload route answer 500; a token that cannot be compared is wrong, not
+    a bug (TestClient cannot even send such a header, so the guard itself is
+    exercised here)."""
+    worker = realtime.Worker(id="w-non-ascii-upload", ws=None, manifests=[],
+                             realtime_slots=1)
+    job_id = uuid.uuid4()
+    jobs.inflight[job_id] = jobs.InFlight(
+        worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+        dispatch_token="token",
+    )
+    try:
+        assert not jobs.upload_authorized("k", "caf\u00e9")
+        # The ASCII token of its own dispatch is still believed.
+        assert jobs.upload_authorized("k", "token")
+    finally:
+        jobs.inflight.pop(job_id, None)
+
+
+@pytest.mark.db
+def test_authorization_is_rechecked_after_the_body(monkeypatch):
+    """The first check runs before the body arrives, and reading it can take
+    long enough for a retry to supersede this attempt; the second check must
+    stop the stale bytes from being published under the winning key."""
+    from starlette.requests import Request
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-recheck")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "recheck"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            key = uuid.UUID(job_id)
+            current = jobs.inflight[key]
+            replacement = jobs.InFlight(
+                worker=current.worker, storage_key=current.storage_key,
+                thumb_storage_key=current.thumb_storage_key,
+                user_id=current.user_id, dispatch_token="replacement-token",
+                attempt=2,
+            )
+            real_stream = Request.stream
+
+            def superseding_stream(self):
+                # The requeue lands while the body is being read, between the
+                # two checks.
+                jobs.inflight[key] = replacement
+                return real_stream(self)
+
+            monkeypatch.setattr(Request, "stream", superseding_stream)
+            response = client.put(urlsplit(dispatch["upload"]["url"]).path,
+                                  content=png_bytes(),
+                                  headers=dispatch["upload"]["headers"])
+            assert response.status_code == 403
+            storage = jobs.get_storage()
+            assert not storage.path(current.storage_key).exists()
+            assert jobs.inflight.get(key) is replacement
+
+            # Finish the job so it does not sit running in the shared database.
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+            poll_until(client, job_id, "failed")
+
+
+@pytest.mark.db
+def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
+    """Publishing is atomic: a write that fails partway must not leave a
+    truncated object at the key, because nothing would replace it (uploads are
+    write-once) and the API could inspect and approve a prefix."""
+    import os
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-partial-write")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "partial"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            path = urlsplit(dispatch["upload"]["url"]).path
+            key = path.rsplit("/api/v1/files/", 1)[-1]
+            storage = jobs.get_storage()
+
+            real_fdopen = os.fdopen
+
+            def failing_fdopen(fd, mode):
+                handle = real_fdopen(fd, mode)
+
+                class Failing:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return handle.__exit__(*args)
+
+                    def write(self, data):
+                        handle.write(data[:16])
+                        raise OSError("simulated disk failure")
+
+                return Failing()
+
+            monkeypatch.setattr("app.files.os.fdopen", failing_fdopen)
+            assert client.put(path, content=png_bytes(),
+                              headers=dispatch["upload"]["headers"]).status_code == 500
+            assert not storage.path(key).exists(), "a failed write left a partial object"
+            leftovers = [
+                entry.name for entry in storage.path(key).parent.iterdir()
+                if entry.name.startswith(storage.path(key).name)
+            ]
+            assert not leftovers, "a failed write left temporary files behind"
+
+            monkeypatch.undo()
+            # The retry is a fresh attempt on the same key here, and it must
+            # not find a corpse from the failed write.
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+            poll_until(client, job_id, "succeeded")
