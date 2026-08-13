@@ -69,6 +69,45 @@ def test_measured_wire_manifests_per_model():
     assert "realtime" not in by_id["big"]["capabilities"]
 
 
+def named_manifest(model_id: str, *, benchmark_only: bool = False,
+                   capabilities: tuple[str, ...] = ("realtime",)) -> Manifest:
+    return Manifest(id=model_id, name=model_id, capabilities=list(capabilities),
+                    min_vram_gb=8, benchmark_only=benchmark_only)
+
+
+def test_two_realtime_models_advertise_one_slot():
+    """Calibration times one model but hello carries one realtime_slots for all
+    of them, so a number above one would promise the bar for a model nobody
+    measured: two slots earned at 240 ms become 560 ms per cycle once a session
+    runs a 280 ms model (issue #285). One session cannot serialise against
+    another, so a single slot is honest whichever model is chosen."""
+    pair = [measured_wire_manifest(named_manifest("fast"), "full"),
+            measured_wire_manifest(named_manifest("slow"), "full")]
+    assert effective_realtime_slots(pair, 2) == 1
+    assert effective_realtime_slots(pair, 1) == 1
+    assert effective_realtime_slots(pair, 0) == 0
+
+
+def test_one_realtime_model_keeps_the_configured_capacity():
+    """Nothing is unmeasured then, so the measured model's own capacity stands
+    even beside models that only take queued jobs."""
+    queued_only = measured_wire_manifest(
+        named_manifest("queued", capabilities=("text_to_image",)), "full")
+    solo = measured_wire_manifest(named_manifest("only"), "full")
+    assert effective_realtime_slots([solo, queued_only], 2) == 2
+
+
+def test_a_benchmark_only_realtime_model_still_counts():
+    """The studio never offers it, but the realtime endpoint opens any model in
+    available(), and the repository ships sd-turbo as benchmark_only with
+    realtime. A session on it would serialise unmeasured frames, so it counts
+    towards the cap even though warmup would never warm it."""
+    offered = measured_wire_manifest(named_manifest("offered"), "full")
+    anchor = measured_wire_manifest(
+        named_manifest("anchor", benchmark_only=True), "full")
+    assert effective_realtime_slots([offered, anchor], 2) == 1
+
+
 def test_effective_realtime_slots():
     full = measured_wire_manifest(manifest(), "full")
     offload = measured_wire_manifest(manifest(), "model_offload")

@@ -618,7 +618,6 @@ class WarmupEngine:
     def __init__(self, strip_realtime: tuple[str, ...] = ()):
         self._calibrated_slots = None
         self.calibrated: list[str] = []
-        self.bounds: list[int] = []
         self.strip_realtime = set(strip_realtime)
 
     def measured_manifests(self, manifests):
@@ -634,7 +633,6 @@ class WarmupEngine:
 
     async def calibrate_realtime(self, manifest, configured):
         self.calibrated.append(manifest.id)
-        self.bounds.append(configured)
         self._calibrated_slots = 1
         return 1
 
@@ -708,42 +706,6 @@ def test_warmup_warns_when_several_models_declare_default(caplog):
     assert "alpha, zeta" in caplog.text
 
 
-
-def test_warmup_caps_capacity_when_a_second_realtime_model_is_unmeasured():
-    """One model is calibrated but hello advertises one realtime_slots for all
-    of them, so a bound above one would promise a bar for a model nobody
-    measured: two sessions serialise into the slower model's frame time.
-
-    A single session never serialises against another, so capping the bound
-    keeps the promise true whichever model a session chooses (issue #285).
-    """
-    engine = WarmupEngine()
-    asyncio.run(warmup_realtime(engine, [realtime_manifest("default-one", default=True),
-                                         realtime_manifest("other")], 2))
-    assert engine.calibrated == ["default-one"]
-    assert engine.bounds == [1]
-
-
-def test_warmup_keeps_the_configured_bound_with_one_realtime_model():
-    """Nothing is unmeasured then, so the measured model's own capacity stands
-    and a worker configured for two sessions may still advertise two."""
-    engine = WarmupEngine()
-    asyncio.run(warmup_realtime(engine, [realtime_manifest("only")], 2))
-    assert engine.bounds == [2]
-
-
-def test_warmup_does_not_count_a_model_it_would_never_warm():
-    """The cap follows the candidates, not the manifest list: a benchmark_only
-    model and one the ladder stripped realtime from are not sessions this
-    worker can serve, so neither turns a single-model card into a capped one."""
-    engine = WarmupEngine(strip_realtime=("too-big",))
-    anchor = Manifest(id="anchor", name="anchor", capabilities=["realtime"],
-                      benchmark_only=True, parameters={})
-    asyncio.run(warmup_realtime(engine, [realtime_manifest("only", default=True),
-                                         anchor,
-                                         realtime_manifest("too-big")], 2))
-    assert engine.calibrated == ["only"]
-    assert engine.bounds == [2]
 
 
 def test_rejected_registration_raises_cleanly():

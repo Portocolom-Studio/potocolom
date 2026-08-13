@@ -451,6 +451,32 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
         assert engine.effective_realtime_slots(wire, 2) == 0
 
 
+def test_calibration_cannot_outvote_the_wire_cap_after_a_reconnect():
+    """Calibration bounds capacity from below, the wire from above.
+
+    warmup calibrates once per process and a reconnect skips it, while the wire
+    is recomputed at every hello from current free VRAM. So a worker that
+    calibrated two slots when only one model fitted must not keep advertising
+    two once a second realtime model fits: that number was measured for one
+    model and admission checks it for both (issue #285).
+    """
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine._rungs = {"fast": "full", "slow": "full"}
+    engine._calibrated_slots = 2  # measured when only "fast" fitted
+    pair = [
+        Manifest(id="fast", name="Fast", capabilities=["realtime"], min_vram_gb=4),
+        Manifest(id="slow", name="Slow", capabilities=["realtime"], min_vram_gb=4),
+    ]
+    with patch.object(DiffusersEngine, "_free_vram_bytes", return_value=64 * 1024**3):
+        wire = engine.measured_manifests(pair)
+        assert engine.effective_realtime_slots(wire, 2) == 1
+        # Alone again, the measured capacity stands: nothing is unmeasured.
+        solo = engine.measured_manifests(pair[:1])
+        assert engine.effective_realtime_slots(solo, 2) == 2
+
+
 def test_diffusers_effective_realtime_slots_uses_calibration():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
