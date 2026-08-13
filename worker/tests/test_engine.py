@@ -1092,6 +1092,38 @@ def test_evict_cold_removes_oldest_first():
     assert "b" not in engine._rungs
 
 
+def test_evicting_the_last_pipeline_forgets_the_cached_rung():
+    """A cached rung must not outlive its conditions: with the model evicted,
+    the next load decides against the VRAM that exists then, not the VRAM
+    that existed when the rung was chosen (issue #270)."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._evict_model("m")
+
+    assert engine._pipelines == {}
+    assert engine.model_rung("m") is None
+
+
+def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
+    """The realtime and t2i entries share every weight, so removing one of
+    them leaves the model resident and the rung it was loaded at is still
+    the truth; only the removal of the last entry may forget it."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object(), ("m", "realtime"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._drop_pipeline(("m", "t2i"))
+    assert engine.model_rung("m") == "full"
+    engine._drop_pipeline(("m", "realtime"))
+    assert engine.model_rung("m") is None
+
+
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
@@ -1105,6 +1137,7 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     engine._rungs = {}
     engine._last_used = {}
     engine._free_gpu_cache = MagicMock()
+    engine._gpu = asyncio.Lock()
     engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
     engine._select_rung = MagicMock(return_value="full")
     attempts: list[str] = []

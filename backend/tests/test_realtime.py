@@ -496,6 +496,58 @@ def test_update_params_reaches_the_worker_and_browser():
             assert session.params == {"prompt": "a blue house", "seed": seed}
 
 
+@pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 1])
+def test_update_params_follows_the_workers_advertised_version(version):
+    """The version the worker advertised in hello is what decides, not the
+    API's own: the API is always at PROTOCOL_VERSION, so refusing an N-1
+    worker proves the check reads the advertised number, and a worker newer
+    than the API still takes updates. An N-1 worker predates update_session
+    and would silently drop it, so acknowledging an update it cannot apply
+    would be worse than refusing it: the user cannot tell a silent no-op
+    from a model that ignored their prompt.
+    """
+    refused = version < realtime.UPDATE_SESSION_PROTOCOL_VERSION
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=version, worker_id=f"w-ver-{version}",
+                                  parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            if refused:
+                refused_msg = browser_ws.receive_json()
+                assert refused_msg["type"] == "error"
+                assert refused_msg["code"] == 4000
+                assert "support" in refused_msg["message"]
+                session = realtime.sessions[uuid.UUID(opened["session_id"])]
+                assert session.params["prompt"] == "a red house"
+            else:
+                updated = worker_ws.receive_json()
+                assert updated["type"] == "update_session"
+                assert updated["session_id"] == opened["session_id"]
+                acknowledged = browser_ws.receive_json()
+                assert acknowledged["type"] == "params_updated"
+                session = realtime.sessions[uuid.UUID(opened["session_id"])]
+                assert session.params["prompt"] == "a blue house"
+
+            # Either way the worker's next message is the canvas frame, not
+            # an update_session it would have dropped, and the session is
+            # still rendering.
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-live"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            assert worker_ws.receive_json()["type"] == "close_session"
+
+
 def test_session_open_without_a_seed_fills_one_in_the_session_params():
     # The API owns the seed: session.params must carry one from the first
     # open, because reassign re-opens a live session with that dict and a
@@ -536,6 +588,74 @@ def test_session_open_keeps_an_explicit_seed():
             assert browser_ws.receive_json()["type"] == "ready"
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
             assert session.params["seed"] == 42
+
+
+def test_update_params_refuses_a_seed_change_and_keeps_the_session():
+    # A session's seed is fixed for its life: a mixed-version fleet cannot
+    # agree on a mid-session change (an older worker overwrites it with the
+    # seed it drew at open), so the API refuses it like an out-of-range
+    # parameter instead of acknowledging a value no frame will use.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-locked", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            session_id = opened["session_id"]
+            worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+            assert browser_ws.receive_json()["type"] == "ready"
+            seed = realtime.sessions[uuid.UUID(session_id)].params["seed"]
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house", "seed": seed + 1}})
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            assert "seed" in refused["message"]
+
+            # The refusal left the session running: the seed and the prompt
+            # are untouched, nothing reached the worker, and a frame still
+            # flows.
+            params = realtime.sessions[uuid.UUID(session_id)].params
+            assert params["seed"] == seed
+            assert params["prompt"] == "a red house"
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"still-live"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            assert worker_ws.receive_json()["type"] == "close_session"
+
+
+def test_open_normalises_the_seed_across_shapes():
+    # The manifest declares no seed property, so every shape below passes
+    # the schema's validation; the open normalises them where the API takes
+    # ownership: an integer is kept, a whole float is kept as an integer, a
+    # bool is replaced (bool subclasses int, so `seed: true` must not
+    # survive as a seed), and a non-numeric value is replaced rather than
+    # passed to an engine that would build no generator.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-shapes"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        for sent, expected in ((42, 42), (42.0, 42), (True, None), (1.5, None),
+                               ("seven", None)):
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                      "params": {"prompt": "a red house", "seed": sent}})
+                opened = worker_ws.receive_json()
+                assert opened["type"] == "open_session"
+                seed = opened["params"]["seed"]
+                if expected is None:
+                    assert isinstance(seed, int) and not isinstance(seed, bool)
+                    assert 0 <= seed < realtime.SESSION_SEED_BOUND
+                else:
+                    assert seed == expected
+                worker_ws.send_json({"type": "session_ready",
+                                     "session_id": opened["session_id"]})
+                assert browser_ws.receive_json()["type"] == "ready"
+            # The browser teardown released the session; drain the
+            # close_session so the next open reads its own open_session.
+            assert worker_ws.receive_json()["type"] == "close_session"
 
 
 def test_invalid_update_params_keeps_the_session_open():
@@ -1006,6 +1126,131 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
             assert refusal["type"] == "error"
             assert refusal["code"] == 4003
         assert realtime.workers["w-silent"].slots_in_use == 0
+
+
+def test_assign_timeout_sends_close_session(monkeypatch):
+    """A give-up tells the worker the session is dead, so it discards the
+    runner instead of waiting for frames nobody will ever send.
+
+    Driven directly rather than through a TestClient websocket: asserting on
+    the wire there means blocking on receive_json, so a regression would hang
+    the suite instead of failing it, and a hang costs a whole CI job.
+    """
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+
+    async def scenario():
+        ws = FakeSocket()
+        worker = realtime.Worker(id="w-give-up", ws=ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=1)
+        realtime.workers[worker.id] = worker
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
+        realtime.sessions[session.id] = session
+        try:
+            # The worker never answers, so the open times out.
+            assert not await realtime.assign(session, worker)
+            kinds = [message["type"] for message in ws.sent]
+            assert kinds == ["open_session", "close_session"], ws.sent
+            closed = ws.sent[-1]
+            assert closed["session_id"] == str(session.id)
+            assert worker.slots_in_use == 0
+        finally:
+            realtime.workers.pop(worker.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
+    """The browser leaves mid-assignment: the realtime handler's teardown
+    calls release(), which decrements the slot and clears the session's
+    worker, so the assignment's own failure compensation must be
+    ownership-checked rather than assumed, or the worker underflows to minus
+    one and is advertised as having a free slot it does not have."""
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+
+    async def scenario():
+        ws = FakeSocket()
+        worker = realtime.Worker(id="w-left-mid", ws=ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=1)
+        realtime.workers[worker.id] = worker
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.assign(session, worker))
+            await asyncio.sleep(0.01)  # the open is in flight
+            assert worker.slots_in_use == 1
+            # What the realtime handler's teardown does when the browser
+            # leaves while the assignment is in flight.
+            await realtime.release(session)
+            assert worker.slots_in_use == 0
+            # The worker never answers: the open times out.
+            assert not await task
+            # The failure must not be compensated twice: release already
+            # accounted for this slot, and reassign moves the session on.
+            assert worker.slots_in_use == 0
+            assert worker.free_slots == worker.realtime_slots
+            assert session.worker is None
+        finally:
+            realtime.workers.pop(worker.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
+    """One attempt per reassignment, and a failure closes the session 4003.
+
+    Retrying other candidates reads as an obvious improvement and is not one
+    yet: two reassign tasks for a session share its worker and its ready
+    event, so a stale attempt with somewhere else to go can place a second
+    worker and then be woken by the first one's readiness, leaving two workers
+    holding the session. Until an assignment carries an identity that
+    readiness answers to (issue #270), this stays as narrow as main has it,
+    and this test is what stops the retry from creeping back in.
+    """
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
+
+    async def scenario():
+        browser = FakeSocket()
+        first_ws = FakeSocket()
+        first = realtime.Worker(id="w-first", ws=first_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
+        spare_ws = FakeSocket()
+        spare = realtime.Worker(id="w-spare", ws=spare_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
+        realtime.workers.update({first.id: first, spare.id: spare})
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
+        realtime.sessions[session.id] = session
+        try:
+            # pick_worker takes the worker with the most free slots, and both
+            # have one, so pin which one is tried to keep this deterministic.
+            monkeypatch.setattr(realtime, "pick_worker", lambda model_id: first)
+            await realtime.reassign(session)
+            # Exactly one attempt, and the give-up tells the worker: a retry
+            # against the same candidate would show as a second open here while
+            # still leaving the spare untouched, so the whole sequence is
+            # pinned rather than just the first message.
+            assert [m["type"] for m in first_ws.sent] == [
+                "open_session", "close_session",
+            ], first_ws.sent
+            # The chosen worker never answers: the session ends rather than
+            # being offered to the spare.
+            assert spare_ws.sent == []
+            assert first.slots_in_use == 0
+            assert session.worker is None
+            assert [m["type"] for m in browser.sent] == ["interrupted", "error"]
+            assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
+            assert browser.close_code == realtime.CLOSE_NO_CAPACITY
+        finally:
+            realtime.workers.pop(first.id, None)
+            realtime.workers.pop(spare.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
 
 
 def test_reassign_moves_the_session_with_correct_accounting():

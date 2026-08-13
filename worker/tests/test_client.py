@@ -36,6 +36,28 @@ def test_ensure_seed_keeps_explicit_integer_seed():
     assert params["seed"] == 42
 
 
+def test_ensure_seed_keeps_a_whole_float_seed_as_an_integer():
+    # JSON Schema calls 42.0 an integer, so an older API forwards it; the
+    # boundary must hand the engine an int, or the conditioned frame path
+    # builds no generator and every frame re-rolls.
+    params = ensure_seed({"prompt": "x", "seed": 42.0})
+    assert params["seed"] == 42
+    assert isinstance(params["seed"], int)
+
+
+def test_ensure_seed_replaces_a_boolean_seed():
+    # bool subclasses int, so `seed: true` must not survive as a seed.
+    params = ensure_seed({"prompt": "x", "seed": True})
+    assert isinstance(params["seed"], int) and not isinstance(params["seed"], bool)
+    assert 0 <= params["seed"] < SEED_BOUND
+
+
+def test_ensure_seed_replaces_a_fractional_float_seed():
+    params = ensure_seed({"prompt": "x", "seed": 1.5})
+    assert isinstance(params["seed"], int)
+    assert 0 <= params["seed"] < SEED_BOUND
+
+
 def test_ensure_seed_adds_integer_seed_within_bound():
     params = ensure_seed({"prompt": "x"})
     assert isinstance(params["seed"], int)
@@ -138,6 +160,72 @@ def test_update_session_carries_the_authoritative_seed(monkeypatch):
     assert socket.close_code is None
 
 
+def test_update_session_carrying_a_whole_float_seed_normalises_it(monkeypatch):
+    # JSON Schema calls 42.0 an integer, so an older API forwards it; the
+    # update path must normalise it like the open path, or the runner's
+    # params hold a float and the conditioned frame path builds no
+    # generator, re-rolling every frame.
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house", "seed": 11}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house", "seed": 42.0}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    assert runner.params == {"prompt": "a blue house", "seed": 42}
+    assert isinstance(runner.params["seed"], int)
+    assert socket.close_code is None
+
+
+def test_update_session_with_a_boolean_seed_keeps_the_runners_seed(monkeypatch):
+    # A seed that is not a seed (a bool, subtyping int) is treated like no
+    # seed: the session's own value from open survives, because the
+    # session's seed is fixed for its life.
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house", "seed": 11}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house", "seed": True}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    assert runner.params == {"prompt": "a blue house", "seed": 11}
+    assert isinstance(runner.params["seed"], int)
+    assert socket.close_code is None
+
+
+class _FixedSeedRandom:
+    def randrange(self, _bound):
+        return 12345
+
+
+def test_update_session_without_a_seed_carries_the_runners_seed(monkeypatch):
+    # An older API never fills a seed: the runner drew its own at open
+    # (ensure_seed), and a subset update that does not mention the seed must
+    # carry that value forward rather than replace it with a dict that has
+    # no seed at all, or the conditioned path builds no generator and every
+    # frame rerolls.
+    session_id = str(uuid.uuid4())
+    monkeypatch.setattr("worker.client.random", _FixedSeedRandom())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "update_session", "session_id": session_id,
+                    "params": {"prompt": "a blue house"}}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    # The update carried no seed, so the runner's own value from open
+    # survived the replacement instead of being deleted.
+    assert runner.params == {"prompt": "a blue house", "seed": 12345}
+    assert socket.close_code is None
+
+
 def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch):
     # The API's stored params are the browser's keys plus the seed it filled
     # at open, so an update carries that subset and nothing else. Without
@@ -200,6 +288,67 @@ def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
     # The unknown session was ignored, so the live runner kept its params and
     # the connection stayed open instead of closing 4000.
     assert runner.params == {"prompt": "a red house", "seed": seed}
+    assert socket.close_code is None
+
+
+def test_open_session_sends_session_ready():
+    session_id = str(uuid.uuid4())
+    socket = RecordingSocket([
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+    ])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-ready"),
+                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    messages = [json.loads(m) for m in socket.sent]
+    ready = next(
+        m for m in messages
+        if m.get("type") == "session_ready" and m["session_id"] == session_id
+    )
+    assert ready["session_id"] == session_id
+
+
+def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
+    """A close that arrives right after its open must not leave a runner
+    behind.
+
+    The message loop is sequential: the open is handled before the close is
+    read, so the ordinary pop discards the runner the open created. This
+    asserts that outcome rather than the ordering, so it still holds if the
+    open ever stops blocking the loop.
+    """
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "close_session", "session_id": session_id}),
+    ])
+    assert len(created) == 1  # the open created one runner
+    sent = [json.loads(message) for message in socket.sent]
+    # The accounting close is the wire evidence that the runner was popped and
+    # torn down rather than left waiting for frames nobody will send.
+    closed = [m for m in sent if m["type"] == "session_closed"]
+    assert [m["session_id"] for m in closed] == [session_id], sent
+    assert len([m for m in sent if m["type"] == "session_ready"]) == 1, sent
+    assert socket.close_code is None  # the connection survives
+
+
+def test_close_session_after_the_runner_exists_closes_it(monkeypatch):
+    """A close for a live session behaves exactly as it always has: the
+    runner is popped and closed and the accounting reply goes out."""
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "close_session", "session_id": session_id}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    closed = json.loads(socket.sent[-1])
+    assert closed["type"] == "session_closed"
+    assert closed["session_id"] == session_id
+    assert closed["frames"] == runner.frames == 0
+    assert closed["gpu_ms"] == 0
+    assert "duration_ms" in closed
     assert socket.close_code is None
 
 

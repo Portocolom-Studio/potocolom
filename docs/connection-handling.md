@@ -47,6 +47,7 @@ Fleet connection, API to worker:
 | `registered` | | hello accepted |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
+| `update_session` | `session_id`, `params` | replace the session's params with the merged set (the browser's keys merged over the session's, the seed riding along); protocol version 3 and up, so the API refuses an update whose assigned worker predates the message instead of sending it |
 | `close_session` | `session_id` | release the slot |
 | `dispatch_job` | `job_id`, `model_id`, `params`, `dispatch_token`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. `dispatch_token` identifies this dispatch: it is echoed on the messages below and, on the local storage backend, rides in `upload.headers` as `X-Upload-Token` because the key alone is derivable by any worker that ever held the job. Older workers ignore the optional fields (N-1 safe). |
 
@@ -55,6 +56,7 @@ Realtime connection, browser to API:
 | type | Fields | Notes |
 |---|---|---|
 | `open` | `model_id`, `params` (optional) | first message after connect; params follow the model's schema |
+| `update_params` | `params` | a subset of the session's params to change live. The API validates against the manifest's schema with `required` removed; a `seed` is refused (fixed at session open) and so is an update whose assigned worker predates `update_session`; both are answered with an `error` that leaves the session running |
 | `close` | | end the session cleanly |
 
 Realtime connection, API to browser:
@@ -62,11 +64,12 @@ Realtime connection, API to browser:
 | type | Fields | Notes |
 |---|---|---|
 | `ready` | `session_id` | frames may flow |
+| `params_updated` | `params` | the merged parameters the API holds for the session: the browser's keys merged over the session's, the seed riding along. That is what later frames are rendered with once a worker has them; the worker may fill in the manifest's declared defaults for keys nobody has set, so what it applies can be a superset. Sent even when no worker holds the session at that moment (a reassignment in flight); the worker picks the update up when it arrives |
 | `interrupted` | | worker lost; hold frames, reassignment in progress |
 | `resumed` | | new worker ready; re-send the current canvas |
-| `error` | `code`, `message` | terminal; the API closes after sending |
+| `error` | `code`, `message` | terminal; the API closes after sending. The one exception is a rejected `update_params` (invalid params, a `seed` change, or an assigned worker that predates `update_session`): that error is a refusal and the session keeps running |
 
-Messages later issues add to this catalogue (queued position, prompt updates, credits ticks, drain) extend these tables; nothing here is expected to change shape.
+Messages later issues add to this catalogue (queued position, credits ticks, drain) extend these tables; nothing here is expected to change shape.
 
 ## Connection establishment
 

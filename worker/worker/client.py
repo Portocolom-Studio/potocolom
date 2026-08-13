@@ -36,6 +36,7 @@ UPLOAD_TIMEOUT = 60.0
 PROGRESS_KEEPALIVE_SECONDS = 60.0
 
 
+
 class RegistrationRejected(Exception):
     """The API refused this worker's protocol version; do not retry."""
 
@@ -79,6 +80,29 @@ def default_steps(manifest: Manifest) -> object | None:
     return steps.get("default")
 
 
+def normalise_seed(value: object) -> int | None:
+    """The seed a session's params must hold, normalised at the worker's
+    boundary so everything downstream sees an integer.
+
+    An integer is kept as-is. A float that is a whole number is kept as an
+    integer: JSON Schema accepts 42.0 as an integer, so an older API that
+    only validates shapes forwards it, and the engine's generator wants an
+    int. A bool is refused even though it subclasses int, or `seed: true`
+    would survive as a seed. Anything else (a fractional float, a string,
+    null) is refused too: the caller draws a fresh seed. Mirrors the API's
+    session_seed (app/realtime.py): the two packages have no shared import,
+    so each boundary writes its own, with this comment pointing at the
+    other the way SEED_BOUND and SESSION_SEED_BOUND already do.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def ensure_seed(params: dict) -> dict:
     """Return params with a session-stable seed, honoring an explicit one.
 
@@ -90,10 +114,14 @@ def ensure_seed(params: dict) -> dict:
     this module's SEED_BOUND), so this is the fallback for a params dict
     that arrives without one: an older API will not send it.
     """
-    if isinstance(params.get("seed"), int):
+    raw = params.get("seed")
+    seed = normalise_seed(raw)
+    if seed is None:
+        seed = random.randrange(SEED_BOUND)
+    if isinstance(raw, int) and not isinstance(raw, bool):
         return params
     seeded = dict(params)
-    seeded["seed"] = random.randrange(SEED_BOUND)
+    seeded["seed"] = seed
     return seeded
 
 
@@ -191,6 +219,12 @@ class SessionRunner:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # A failed frame is logged and the loop continues: one bad
+                # frame must not end a session, and ending one is unbuilt
+                # work. A session whose model stops being resident renders
+                # nothing until the browser leaves, which issue #270 tracks
+                # as unfinished, so nobody reads the bare continue as
+                # considered.
                 logger.exception("session %s dropped a frame on an inference error",
                                  self.session_id)
                 continue
@@ -446,9 +480,11 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         manifest = by_id[control["model_id"]]
                         runners[session_id] = SessionRunner(
                             session_id, ws, engine, manifest,
-                            ensure_seed(manifest.with_defaults(control.get("params") or {})))
-                        await ws.send(json.dumps({"type": "session_ready",
-                                                  "session_id": control["session_id"]}))
+                            ensure_seed(manifest.with_defaults(
+                                control.get("params") or {})))
+                        await ws.send(json.dumps({
+                            "type": "session_ready",
+                            "session_id": control["session_id"]}))
                     elif control["type"] == "update_session":
                         # Ignored for an unknown session rather than raised:
                         # the API may send an update for a session this
@@ -457,21 +493,41 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         # wrong.
                         runner = runners.get(uuid.UUID(control["session_id"]))
                         if runner is not None:
-                            # The API's stored params are the browser's keys
-                            # merged over the session's, and they now carry
-                            # the authoritative seed: the API fills one at
-                            # open and forwards browser seed updates through,
-                            # so an update here must apply as-is rather than
-                            # be reverted to the seed this worker drew at
-                            # open, or the params_updated acknowledgement
-                            # would claim a value the runner never used.
+                            # The API owns the seed when an update carries
+                            # one: its stored params are the browser's keys
+                            # merged over the session's, and applying the
+                            # update as-is is what keeps the params_updated
+                            # acknowledgement honest. When the update has no
+                            # seed, the runner's own value from open is the
+                            # fallback: an older API never fills a seed, so
+                            # replacing the params would delete the only
+                            # seed there is and the conditioned path would
+                            # build no generator, re-rolling every frame.
                             # with_defaults restores what open_session did,
                             # filling only absent keys, so a subset update
                             # cannot leave the engine's hardcoded fallbacks
                             # in charge of settings the manifest declares.
-                            runner.params = runner.manifest.with_defaults(control["params"])
+                            updated = runner.manifest.with_defaults(control["params"])
+                            seed = normalise_seed(updated.get("seed"))
+                            if seed is None:
+                                # An update without a seed, or with one that
+                                # is not a seed (a bool, a fractional float):
+                                # the runner's own value from open is the
+                                # fallback - the session's seed is fixed for
+                                # its life, and an older API never fills one,
+                                # so replacing the params would delete the
+                                # only seed there is and the conditioned path
+                                # would build no generator, re-rolling every
+                                # frame.
+                                seed = runner.params["seed"]
+                            updated["seed"] = seed
+                            runner.params = updated
                     elif control["type"] == "close_session":
-                        runner = runners.pop(uuid.UUID(control["session_id"]), None)
+                        session_id = uuid.UUID(control["session_id"])
+                        # A missing runner is a no-op, never an error: the
+                        # API may close a session this worker has already
+                        # torn down, or one that never opened here.
+                        runner = runners.pop(session_id, None)
                         if runner is not None:
                             runner.close()
                             category, score = categorize_output(None)
@@ -480,8 +536,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                                 "session_id": control["session_id"],
                                 "frames": runner.frames,
                                 "gpu_ms": runner.gpu_ms,
-                                "duration_ms": int(
-                                    (time.monotonic() - runner.started_at) * 1000),
+                                "duration_ms": int((time.monotonic() - runner.started_at) * 1000),
                                 "category": category,
                             }
                             if score is not None:

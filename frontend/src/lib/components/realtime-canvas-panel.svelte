@@ -63,10 +63,11 @@
 	let notice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
-	// The params the current session last applied, from the open message and
-	// from params_updated confirmations. The Update button and the slider
-	// debounce compare against these, so they reflect what the worker runs,
-	// not what the inputs hope for.
+	// The params the API last confirmed for this session, from the open message
+	// and from params_updated. The Update button and the slider debounce compare
+	// against these rather than against the inputs, so a rejected update leaves
+	// the control dirty. They are what the API holds, not proof a worker ran
+	// them: a confirmation can arrive while a reassignment is in flight.
 	let appliedPrompt = $state('');
 	let appliedStructure = $state(0);
 	let appliedSteps = $state(0);
@@ -138,7 +139,7 @@
 	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
-	// The prompt differs from what the session last applied; whitespace around
+	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
 
@@ -178,8 +179,9 @@
 	// Each effect clears the slider's timer on any of its dependencies
 	// changing and re-arms it, so a drag that keeps moving never sends: the
 	// update goes out once the value has held still for SLIDER_UPDATE_MS.
-	// While the session is not connected nothing is armed, and a value that
-	// already applied never sends, so reconnects and confirmations stay quiet.
+	// While the session is not connected nothing is armed, and a value the API
+	// has already confirmed never sends, so reconnects and confirmations stay
+	// quiet.
 	$effect(() => {
 		if (structureTimer !== null) {
 			clearTimeout(structureTimer);
@@ -513,7 +515,7 @@
 			idleTicks = 0;
 			armCapture(FAST_INTERVAL_MS);
 		} else if (control.type === 'params_updated' && control.params) {
-			// Record what actually applied. A rejected update leaves these
+			// Record what the API confirmed. A rejected update leaves these
 			// untouched, so the Update button and the slider debounce keep
 			// comparing against the last confirmed params rather than optimism.
 			const params = control.params as {

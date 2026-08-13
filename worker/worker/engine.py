@@ -868,10 +868,26 @@ class DiffusersEngine:
     def _evict_except(self, model_id: str) -> None:
         self._evict_cold(except_model_id=model_id)
 
+    def _forget_rung_if_unloaded(self, model_id: str) -> None:
+        """Forget a cached rung once the model holds no resident pipeline.
+
+        The rung describes the model, not one mode: while any of its
+        pipelines is loaded (the realtime and t2i entries share every
+        weight) the rung it was loaded at is still the truth. Only the
+        removal that empties the model may clear it, or the cached answer
+        outlives its conditions and the next decision is made against VRAM
+        that once existed (issue #270).
+        """
+        if not any(key[0] == model_id for key in self._pipelines):
+            self._rungs.pop(model_id, None)
+
+    def _drop_pipeline(self, key: tuple[str, str]) -> None:
+        del self._pipelines[key]
+        self._forget_rung_if_unloaded(key[0])
+
     def _evict_model(self, model_id: str) -> None:
         for key in [key for key in self._pipelines if key[0] == model_id]:
-            del self._pipelines[key]
-        self._rungs.pop(model_id, None)
+            self._drop_pipeline(key)
         self._last_used.pop(model_id, None)
         self._free_gpu_cache()
 
