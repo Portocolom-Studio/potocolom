@@ -3,17 +3,27 @@
 With STORAGE_BACKEND=s3 these routes answer 404: uploads go straight to the
 bucket via presigned URLs and never pass through the API.
 
-Keys are minted server side at dispatch time and contain a job UUID, so an
-upload URL is unguessable; fleet authentication tightens this further when it
-lands (docs/blueprint.md, FLEET_TOKEN_KEY).
+Keys are minted server side at dispatch time, but a key is not authority: every
+part of it is derivable by any worker that was ever dispatched the job, so the
+PUT carries the dispatch token as well (issue #247). Uploads are write-once:
+the object the API verified must still be that object when a client reads it
+(issue #249). The local backend publishes by linking a temporary into place,
+so STORAGE_LOCAL_PATH must be on a filesystem that supports hard links.
 """
 
 import asyncio
+import logging
+import os
+import tempfile
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.storage import LocalStorage, get_storage, validate_download_name
+from app.storage import (
+    UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -36,7 +46,7 @@ def local_storage() -> LocalStorage:
 async def upload(key: str, request: Request) -> dict:
     from app import jobs
 
-    if not jobs.storage_key_in_flight(key):
+    if not jobs.upload_authorized(key, request.headers.get(UPLOAD_TOKEN_HEADER)):
         raise HTTPException(status_code=403, detail="upload not authorized")
 
     storage = local_storage()
@@ -51,15 +61,47 @@ async def upload(key: str, request: Request) -> dict:
             raise HTTPException(status_code=413, detail="upload too large")
         body.extend(chunk)
 
-    def write_file() -> None:
+    def write_file() -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
+        # A process death between write and link leaves this file behind; the
+        # .upload- prefix marks it as debris, and nothing collects it,
+        # deliberately.
+        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".upload-")
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+        except BaseException:
+            os.unlink(temporary)
+            raise
+        return temporary
 
+    temporary = await asyncio.to_thread(write_file)
     try:
-        await asyncio.to_thread(write_file)
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
+        # The first check ran before the body arrived and reading it can take
+        # a long time, so a stall could hold this request open while a retry
+        # supersedes it; re-check now that the bytes are on disk, and link
+        # with no await in between so the authority cannot change under the
+        # publication.
+        if not jobs.upload_authorized(key, request.headers.get(UPLOAD_TOKEN_HEADER)):
+            raise HTTPException(status_code=403, detail="upload not authorized")
+        # Publish atomically: writing the key directly would expose a truncated
+        # prefix while the body is still landing, and a job_done racing its own
+        # PUT could have that prefix inspected and approved. Link refuses to
+        # replace an existing key, which also keeps a second PUT from
+        # overwriting bytes the API verified. One syscall does not need a
+        # thread, and a thread here would reopen the window the re-check just
+        # closed.
+        os.link(temporary, path)
+    except FileExistsError:
+        # Either a retry whose first upload actually landed, which is benign,
+        # or a replay. Refusing costs the caller nothing either way: a real
+        # retry is a new attempt and writes to a new key.
+        logger.warning("refused a second upload of %s", key)
+        raise HTTPException(status_code=409, detail="already uploaded") from None
+    finally:
+        # Only the temporary this request created is removed; the
+        # destination may belong to a different upload.
+        os.unlink(temporary)
 
     return {"stored": key}
 

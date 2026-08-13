@@ -226,6 +226,9 @@ GET  /api/v1/telemetry/preview        admin only; 403 for viewer or user; 200 ex
                                         503 when the database is unavailable
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
+                                        AND an X-Upload-Token header matching that dispatch, which
+                                        the worker echoes from upload.headers; 403 otherwise, and
+                                        409 on a second write, since outputs are write-once
 GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)
 ```
 

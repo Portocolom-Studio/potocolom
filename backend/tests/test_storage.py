@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import struct
 import zlib
 from urllib.parse import parse_qs, urlsplit
@@ -43,8 +44,9 @@ def test_local_storage_urls(tmp_path):
     target = asyncio.run(storage.upload_target("u/j.png"))
     assert target.url == "http://worker/api/v1/files/u/j.png"
     assert target.headers == {"Content-Type": "image/png"}
-    thumb_target = asyncio.run(storage.upload_target("u/j-thumb.webp"))
-    assert thumb_target.headers == {"Content-Type": "image/webp"}
+    # The dispatch token rides in the headers the worker echoes (issue #247).
+    tokened = asyncio.run(storage.upload_target("u/j.png", "tok"))
+    assert tokened.headers == {"Content-Type": "image/png", "X-Upload-Token": "tok"}
     assert asyncio.run(storage.url("u/j.webp")) == "http://browser/api/v1/files/u/j.webp"
     download_url = asyncio.run(
         storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
@@ -120,7 +122,11 @@ class _FakeS3Client:
         return {
             "Body": _FakeBody(self.data),
             "ContentLength": len(self.data),
-            "ContentType": "image/png",
+            # Deliberately not the type of the bytes: an uploader declares its
+            # own Content-Type on a presigned PUT, so image_info must report
+            # what the bytes are, and a fake that agreed with them could not
+            # tell the difference.
+            "ContentType": "text/plain",
         }
 
     def get_paginator(self, name):
@@ -154,9 +160,14 @@ def test_s3_storage_presigns_offline():
     assert target.url.startswith("http://localhost:9100/")
     assert "u/j.png" in target.url
     assert "X-Amz-Signature" in target.url
-    assert target.headers == {"Content-Type": "image/png"}
+    # If-None-Match is signed as well as sent: the bucket refuses a second
+    # write with 412, so a presigned PUT cannot be replayed over an object the
+    # API has already verified (issue #249).
+    assert target.headers == {"Content-Type": "image/png", "If-None-Match": "*"}
+    signed = parse_qs(urlsplit(target.url).query)["X-Amz-SignedHeaders"][0]
+    assert "if-none-match" in signed
     thumb_target = asyncio.run(storage.upload_target("u/j-thumb.webp"))
-    assert thumb_target.headers == {"Content-Type": "image/webp"}
+    assert thumb_target.headers == {"Content-Type": "image/webp", "If-None-Match": "*"}
     # Browser-facing image URL (SPA <img src>), not the worker upload target.
     view = asyncio.run(storage.url("u/j.png"))
     assert view.startswith("http://localhost:9100/")
@@ -390,6 +401,136 @@ def test_max_image_edge_matches_the_largest_real_output():
     # A factor-4 upscale of the largest shipped generation size. Anything more
     # only moves the memory question to whatever decodes the file later.
     assert MAX_IMAGE_EDGE == 4096
+
+
+# The real lossless 320x200 WebP from test_jobs, embedded here too so the
+# rejections below are mutations of real encoded bytes rather than headers
+# built to please the reader.
+_WEBP_BYTES = base64.b64decode(
+    "UklGRiQAAABXRUJQVlA4TBcAAAAvP8ExAAcQ9Y/+BwAU6f9/iuh/6v+fAQA="
+)
+
+# A real extended 320x200 WebP with an alpha channel, ffmpeg output
+# (VP8X + ALPH + VP8): the only shape a real encoder here gives a VP8X
+# canvas, and the frame inside carries its own 320x200 header.
+_WEBP_EXTENDED_BYTES = base64.b64decode(
+    "UklGRpIEAABXRUJQVlA4WAoAAAAQAAAAPwEAxwAAQUxQSAACAAABGYBIan/0ASL6nxI4bNtGkuKyrv/e9pkdxxkbB0RMACQ1kiRJ1Kk3I81ggpx4wm95/8AzUgEeUoHeRL94PpPiMOQQpXo0BV8royn4BqKEwRVjJhR8qQX4DjPG4M7CLDqxhzBFOIa/JXgaI8bw8VHFBNeNgcPErHXSFHwD0b2D2+aa9XZsBhTzNrjBMP/BG1uI6MZ2rZqm4BuI7h3cPdesx2Mzp5jHwX2HaT84oaH7Nrbwh7WxFWfIlKEXQ2C+X5romnWfIa6Ye3/fYdoPzmuY243tncXhYJQZwn/wxhYuMqQWc+HvO0z7wekN07uxhQbG5pnuetaKiglOKNpGBjh4THZ3PXCRIb0Y8B2m/eBdGNpoYzt9TDkOTN+Gn4iqCM4ryp8BXICBsWG8tetZKgrDwxTfYS4y+A7zH7yxLe0H5xXlzwA2wKgITijqhv8S+ZPC1DDFd5j7M0YSs0jNPRvbuWPu/ZkwZtj1lPaD84ryZ4D0YBSPzdncLxtIqiI4n2jxHebxUXOKuT9jXDe2zH/Tx77rUTWgeUX5M4AbMO0HJxRVPDbbuV96CFN8h3l74hBiPlFL78a2UAQ/9l2PqgHNK8rfHdKDUTw2J32//FJ0XmPTfZiSW8zbE6d3Y1v2Dh6bXc9aGYYMEBvMPq/Hh4HZYMYY3FmYRQfPJ6Yox1A8BVZQOCBsAgAA8BYAnQEqQAHIAD6RSKFNJaQjIiAoALASCWdu4THVbG65TW/0CmA8fz/90/z/d35AFZu14uTkPfgCAe+2hFNEA5zIPCDXlNrYjorBpuVeTCYZdNVfzP2gTR/F11u/qUBYzLMiUoT3sD7ZO5F33uCuzFarQgjeeo34gOu1iJJV+fIo8SoYESwV2XnL2IQ4iiCDTiVAvI8+AVXCQpeGL9Vq68iq7ZpMvAHw6L9+Svfsh2CK+VbSogaif8nKYP81AZAAAP7b7X6ip5li//roH/66B/+ugf7aLHUQK5GBaGeY1jBB8/zlsKHAJMgi8V6jhupi6e0N1L6cHQx+DRDn4QgWC8Ji3ywdEprD7LhLfGS8q2QVh+YBI56Sfaad3u9ahXlAu384pO9QE2mDo5MJ1URn1RX1tnmWAOBoNglC7TvjeuHJZBp9LQZx0HHrfDchWI9H0s4h1gRLfPCi9WrwQrX3nsQQufyGx4wq0hkBcuqAsz+I8C83DjcfrLW7f9oVqismwoF8ebOkqNIEtYjogSfShoC7J5shYJlXSZaHyelTBWx8C+5GoOHFgkl8RV8vS1SUhxDsBazFUnMz+40CICNzCQFSsqLlwrsC9EtuLtB39+ykQ0OvHR2aoaGXw6QbAeHWn7FkIJwEl/UEcoEoPFBMlIRre9C59fnf7fmizmw0Vv2w9hVl3O2fRXT/oyIS88Msq3Jt0whWGwjnNQZeduLbcc6ECTlEw3D0qBIc+q5A+70nxoOhb3s3w1MhxLGU7N2rFwwaCizjFAAETx90qVLM0O4Rdiva6cjjCWJX+RbzZULLEU89ikXh2kTAAAA="
+)
+
+
+def _webp_chunk(kind, payload):
+    padded = payload + (b"\x00" if len(payload) & 1 else b"")
+    return kind + struct.pack("<I", len(payload)) + padded
+
+
+def _webp_container(*chunks):
+    body = b"".join(chunks)
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+
+
+def _webp_payload(blob, kind):
+    """Payload of the first chunk of this kind in a real WebP blob."""
+    position = 12
+    while position + 8 <= len(blob):
+        if blob[position:position + 4] == kind:
+            length = struct.unpack_from("<I", blob, position + 4)[0]
+            return bytes(blob[position + 8:position + 8 + length])
+        position += 8 + struct.unpack_from("<I", blob, position + 4)[0]
+    raise AssertionError(f"{kind!r} missing from the fixture")
+
+
+def test_image_info_requires_a_complete_webp(tmp_path):
+    """The WebP reader is a bounded chunk walk like the PNG one.
+
+    Reading the RIFF header and the first chunk header let a fabricated VP8X
+    prefix pass as a thumbnail no matter what followed it, so the walk must
+    demand an image chunk after VP8X, keep every chunk inside the RIFF payload
+    and reject a lossless frame that claims an unknown version.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+
+    vp8x = _webp_chunk(b"VP8X", b"\x00" * 4 + (319).to_bytes(3, "little")
+                       + (199).to_bytes(3, "little"))
+    (tmp_path / "vp8x-only.webp").write_bytes(_webp_container(vp8x))
+    assert asyncio.run(storage.image_info("vp8x-only.webp")) is None
+
+    # The real file's VP8L chunk declares 23 bytes; a declared 100 runs past
+    # the RIFF payload even though all 44 bytes are present.
+    overlong = bytearray(_WEBP_BYTES)
+    struct.pack_into("<I", overlong, 16, 100)
+    (tmp_path / "overlong.webp").write_bytes(overlong)
+    assert asyncio.run(storage.image_info("overlong.webp")) is None
+
+    # The top three bits of the fourth byte after the 0x2f signature are the
+    # version; the encoder emitted zero there and a nonzero one is a frame
+    # this walk does not understand.
+    bad_version = bytearray(_WEBP_BYTES)
+    bad_version[24] |= 0x80
+    (tmp_path / "bad-version.webp").write_bytes(bad_version)
+    assert asyncio.run(storage.image_info("bad-version.webp")) is None
+
+
+def test_image_info_refuses_an_animated_webp(tmp_path):
+    """An ANMF chunk is refused, not treated as image data.
+
+    What the fleet uploads is a still thumbnail; accepting an animation would
+    mean validating the whole nested frame structure for no use case, and an
+    empty frame must not count as the one image a container needs.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    vp8x = _webp_chunk(b"VP8X", b"\x00" * 4 + (319).to_bytes(3, "little")
+                       + (199).to_bytes(3, "little"))
+    (tmp_path / "animated.webp").write_bytes(
+        _webp_container(vp8x, _webp_chunk(b"ANMF", b""))
+    )
+    assert asyncio.run(storage.image_info("animated.webp")) is None
+
+
+def test_image_info_requires_the_frame_to_match_the_canvas(tmp_path):
+    """The VP8X canvas is a claim, not the object.
+
+    The frame carries its own dimensions, and a canvas edited down to 1x1
+    over a real 320x200 frame would otherwise be recorded as 1x1 and dodge
+    the thumbnail edge check that trusts these numbers.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    lying_canvas = bytearray(_WEBP_EXTENDED_BYTES)
+    # The canvas is the four flags plus width-1 and height-1, three
+    # little-endian bytes each, in the VP8X payload.
+    lying_canvas[24:27] = b"\x00\x00\x00"
+    lying_canvas[27:30] = b"\x00\x00\x00"
+    (tmp_path / "lying-canvas.webp").write_bytes(lying_canvas)
+    assert asyncio.run(storage.image_info("lying-canvas.webp")) is None
+
+
+def test_image_info_refuses_a_second_bitstream(tmp_path):
+    """A static WebP carries exactly one frame chunk.
+
+    A second bitstream in an extended container is not a thumbnail the fleet
+    can produce, so it is a fabricated file rather than one to keep.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    frame = _webp_chunk(b"VP8 ", _webp_payload(_WEBP_EXTENDED_BYTES, b"VP8 "))
+    vp8x = _webp_chunk(b"VP8X", _webp_payload(_WEBP_EXTENDED_BYTES, b"VP8X"))
+    (tmp_path / "two-frames.webp").write_bytes(
+        _webp_container(vp8x, frame, frame)
+    )
+    assert asyncio.run(storage.image_info("two-frames.webp")) is None
+
+
+def test_image_info_accepts_a_real_webp_with_xmp(tmp_path):
+    """The XMP whitelist entry is the four-byte kind: the trailing space is
+    part of the chunk code, so a real XMP chunk must not fall into the
+    unknown-chunk branch."""
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    frame = _webp_chunk(b"VP8 ", _webp_payload(_WEBP_EXTENDED_BYTES, b"VP8 "))
+    vp8x = _webp_chunk(b"VP8X", _webp_payload(_WEBP_EXTENDED_BYTES, b"VP8X"))
+    xmp = _webp_chunk(b"XMP ", b'<x:xmpmeta xmlns:x="adobe:ns:meta/">')
+    (tmp_path / "with-xmp.webp").write_bytes(
+        _webp_container(vp8x, frame, xmp)
+    )
+    info = asyncio.run(storage.image_info("with-xmp.webp"))
+    assert (info.width, info.height) == (320, 200)
 
 
 def test_s3_delete_removes_every_version_of_exactly_that_key():
