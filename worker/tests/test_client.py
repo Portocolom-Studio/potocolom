@@ -714,14 +714,21 @@ class SlotsEngine(WarmupEngine):
     """Answers the two questions advertised_realtime_slots asks: what the wire
     says, and which models have been measured."""
 
-    def __init__(self, measured: tuple[str, ...] = (), calibrated: int | None = None,
+    def __init__(self, measured: dict[str, int] | None = None,
+                 calibrated: int | None = None,
                  strip_realtime: tuple[str, ...] = ()):
         super().__init__(strip_realtime=strip_realtime)
-        self.measured = list(measured)
+        # Model id to measured frame p95, whether that came from calibration or
+        # from observed session frames: advertised_realtime_slots must derive
+        # capacity from the number, not merely from its existence.
+        self.measured = dict(measured or {})
         self._calibrated_slots = calibrated
 
     def p95_model_ids(self):
-        return self.measured
+        return sorted(self.measured)
+
+    def realtime_p95_ms(self, model_id):
+        return self.measured.get(model_id)
 
     def effective_realtime_slots(self, wire_manifests, configured):
         if not any("realtime" in m["capabilities"] for m in wire_manifests):
@@ -736,9 +743,22 @@ def slots_for(manifests, **kwargs) -> int:
 
 def test_one_measured_realtime_model_advertises_its_measured_capacity():
     """Nothing is unmeasured, so the measurement speaks for every session the
-    worker can be asked to serve."""
-    assert slots_for([realtime_manifest("only")], measured=("only",),
+    worker can be asked to serve: 240 ms earns two of the 500 ms bar."""
+    assert slots_for([realtime_manifest("only")], measured={"only": 240},
                      calibrated=2) == 2
+
+
+def test_capacity_comes_from_the_measurement_not_from_its_existence():
+    """A sole benchmark_only model is never warmed, so calibration never runs and
+    the engine falls back to the configured limit. Once a session has supplied
+    twenty frames the model is measured, but at 400 ms it earns one slot, not
+    the configured two: asking only whether a timing exists advertised two.
+    """
+    anchor = Manifest(id="anchor", name="anchor", capabilities=["realtime"],
+                      benchmark_only=True, parameters={})
+    assert slots_for([anchor], measured={"anchor": 400}, calibrated=None) == 1
+    # The same model measured fast enough earns the capacity honestly.
+    assert slots_for([anchor], measured={"anchor": 240}, calibrated=None) == 2
 
 
 def test_a_second_realtime_model_costs_the_capacity_it_did_not_measure():
@@ -746,7 +766,7 @@ def test_a_second_realtime_model_costs_the_capacity_it_did_not_measure():
     asks for, so two slots earned at 240 ms become 560 ms per cycle once a
     session runs a 280 ms model (issue #285)."""
     pair = [realtime_manifest("measured", default=True), realtime_manifest("other")]
-    assert slots_for(pair, measured=("measured",), calibrated=2) == 1
+    assert slots_for(pair, measured={"measured": 240}, calibrated=2) == 1
 
 
 def test_an_unmeasured_sole_model_advertises_one_slot():
@@ -755,7 +775,7 @@ def test_an_unmeasured_sole_model_advertises_one_slot():
     capacity for frames nobody has timed."""
     anchor = Manifest(id="anchor", name="anchor", capabilities=["realtime"],
                       benchmark_only=True, parameters={})
-    assert slots_for([anchor], measured=(), calibrated=None) == 1
+    assert slots_for([anchor], measured={}, calibrated=None) == 1
 
 
 def test_capacity_follows_the_manifests_not_what_is_resident():
@@ -765,7 +785,7 @@ def test_capacity_follows_the_manifests_not_what_is_resident():
     realtime model still costs the capacity even while the ladder has stripped
     its realtime from the wire."""
     pair = [realtime_manifest("measured", default=True), realtime_manifest("offloaded")]
-    assert slots_for(pair, measured=("measured",), calibrated=2,
+    assert slots_for(pair, measured={"measured": 240}, calibrated=2,
                      strip_realtime=("offloaded",)) == 1
 
 

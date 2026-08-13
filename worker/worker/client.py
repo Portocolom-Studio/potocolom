@@ -228,15 +228,25 @@ def advertised_realtime_slots(engine: Engine, manifests: list[Manifest],
     the wire. Until one of those, a second realtime model costs the fleet the
     difference, which is one session per worker.
     """
+    from worker.memory_ladder import slots_from_frame_ms
+
     slots = engine.effective_realtime_slots(engine.measured_manifests(manifests),
                                             settings.realtime_slots)
     if slots <= 1:
         return slots
     realtime = {m.id for m in manifests if "realtime" in m.capabilities}
-    measured = set(engine.p95_model_ids())
-    if len(realtime) == 1 and realtime <= measured:
-        return slots
-    return 1
+    if len(realtime) != 1:
+        return 1
+    # Derive the number from the measurement rather than merely requiring one to
+    # exist. p95_model_ids also holds models timed from observed session frames
+    # rather than from calibration, and effective_realtime_slots falls back to
+    # the configured limit when calibration never ran (a sole benchmark_only
+    # model, which warmup refuses to warm), so asking only whether a timing
+    # exists advertised the configured capacity for a model measured at 400 ms.
+    p95 = engine.realtime_p95_ms(next(iter(realtime)))
+    if p95 is None:
+        return 1
+    return min(slots, slots_from_frame_ms(p95, settings.realtime_slots))
 
 class SessionRunner:
     """Holds at most one pending canvas frame; newer input overwrites older."""
