@@ -39,6 +39,12 @@ logger = logging.getLogger("potocolom.realtime")
 # Wire constants; keep in sync with worker/worker/client.py.
 PROTOCOL_VERSION = 3
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
+# The protocol version that introduced the update_session message. An N-1
+# worker is deliberately welcome (MIN_SUPPORTED_VERSION), but it predates
+# this message and would silently drop it, so the API refuses an update
+# whose assigned worker speaks an older protocol rather than acknowledge
+# one the worker cannot apply.
+UPDATE_SESSION_PROTOCOL_VERSION = 3
 
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
@@ -299,6 +305,10 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
+    # Advertised in hello. The update_params handler compares it against
+    # UPDATE_SESSION_PROTOCOL_VERSION to refuse an update an N-1 worker would
+    # silently drop. None for a Worker built without a registration, which is
+    # read as predating every version.
     protocol_version: int | None = None
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
@@ -404,6 +414,22 @@ def model_known(model_id: str) -> bool:
     return any(model_id in w.models for w in workers.values())
 
 
+async def close_abandoned_session(worker: Worker, session: Session) -> None:
+    """Best-effort notice that the API has given up on an open.
+
+    The worker may still be inside prepare_realtime when the API stops
+    waiting, and a close_session is what lets it discard the runner it is
+    about to create instead of serving a session nobody will ever feed
+    frames to. Only while the worker is still the same registered
+    incarnation, like release(): a departed incarnation dies with its
+    connection, so there is nothing left to close.
+    """
+    if workers.get(worker.id) is worker:
+        await safe_send(
+            worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
+        )
+
+
 async def assign(session: Session, worker: Worker) -> bool:
     """Open the session on a worker and wait for its slot. True when ready.
 
@@ -411,6 +437,12 @@ async def assign(session: Session, worker: Worker) -> bool:
     leak a slot by abandoning the session mid-assignment. A refusal
     (session_refused) is a failure like a timeout, but it is recorded before
     the event is set so the waiter can tell the two apart.
+
+    Giving up on either failure also tells the worker the session is dead
+    (close_abandoned_session): the worker may still be preparing the model,
+    and a worker that knows nothing would create a runner for a session
+    nobody will ever close and wait for frames that cannot arrive for the
+    life of the process.
     """
     session.worker = worker
     session.ready.clear()
@@ -433,6 +465,7 @@ async def assign(session: Session, worker: Worker) -> bool:
             # that does not exist.
             worker.slots_in_use -= 1
             session.worker = None
+            await close_abandoned_session(worker, session)
         return False
     if session.refused is not None:
         # The worker said no (its model could not be made fully resident);
@@ -442,6 +475,7 @@ async def assign(session: Session, worker: Worker) -> bool:
         if session.worker is worker:
             worker.slots_in_use -= 1
             session.worker = None
+            await close_abandoned_session(worker, session)
         return False
     return True
 
@@ -533,9 +567,9 @@ async def fleet(ws: WebSocket) -> None:
             raise ProtocolError(str(error)) from error
         worker = Worker(id=hello["worker_id"], ws=ws, manifests=worker_manifests,
                         realtime_slots=hello["realtime_slots"],
+                        protocol_version=version,
                         device=hello.get("device"),
-                        memory_mode=hello.get("memory_mode"),
-                        protocol_version=version)
+                        memory_mode=hello.get("memory_mode"))
         if not (isinstance(version, int) and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
                 and (worker.device is None or isinstance(worker.device, str))
@@ -838,6 +872,27 @@ async def realtime(ws: WebSocket) -> None:
                                     "message": invalid,
                                 }))
                                 continue
+                        # None means no registration recorded a version, which
+                        # is read as predating every one of them.
+                        if (session.worker is not None
+                                and (session.worker.protocol_version or 0)
+                                < UPDATE_SESSION_PROTOCOL_VERSION):
+                            # The assigned worker predates update_session (an
+                            # N-1 worker is deliberately welcome) and would
+                            # silently drop it, leaving the browser told the
+                            # update applied while every later frame still
+                            # renders the old prompt. Acknowledging an update
+                            # the worker cannot apply is worse than refusing
+                            # it: the user cannot tell a silent no-op from a
+                            # model that ignored their prompt. Refuse, and
+                            # leave the session rendering what it renders.
+                            await safe_send(ws.send_json({
+                                "type": "error",
+                                "code": CLOSE_PROTOCOL_VIOLATION,
+                                "message": "the assigned worker does not "
+                                           "support live parameter updates",
+                            }))
+                            continue
                         # Later keys win, so a second update of the same
                         # parameter overwrites the first. The merged dict is
                         # what the worker replaces its params with, and what

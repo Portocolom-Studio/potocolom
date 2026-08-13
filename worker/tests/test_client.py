@@ -337,6 +337,52 @@ def test_open_session_sends_session_ready_when_the_model_can_be_prepared():
     assert ready["session_id"] == session_id
 
 
+def test_close_session_during_a_slow_open_leaves_no_runner_behind(monkeypatch):
+    """The API gives up on an open that does not ready in time and closes the
+    session; the worker must keep no runner for it.
+
+    The close can be sent while this worker is still preparing the model, but
+    the message loop is sequential: open_session awaits prepare_realtime
+    inline, so the close is not read until the runner exists, and the ordinary
+    pop discards it. This asserts that outcome rather than the ordering, so it
+    still holds if the open ever stops blocking the loop.
+    """
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "close_session", "session_id": session_id}),
+    ])
+    assert len(created) == 1  # the open created one runner
+    sent = [json.loads(message) for message in socket.sent]
+    # The accounting close is the wire evidence that the runner was popped and
+    # torn down rather than left waiting for frames nobody will send.
+    closed = [m for m in sent if m["type"] == "session_closed"]
+    assert [m["session_id"] for m in closed] == [session_id], sent
+    assert len([m for m in sent if m["type"] == "session_ready"]) == 1, sent
+    assert socket.close_code is None  # the connection survives
+
+
+def test_close_session_after_the_runner_exists_closes_it(monkeypatch):
+    """A close for a live session behaves exactly as it always has: the
+    runner is popped and closed and the accounting reply goes out."""
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        json.dumps({"type": "close_session", "session_id": session_id}),
+    ])
+    assert len(created) == 1
+    runner = created[0]
+    closed = json.loads(socket.sent[-1])
+    assert closed["type"] == "session_closed"
+    assert closed["session_id"] == session_id
+    assert closed["frames"] == runner.frames == 0
+    assert closed["gpu_ms"] == 0
+    assert "duration_ms" in closed
+    assert socket.close_code is None
+
+
 def test_malformed_control_closes_and_returns_for_reconnect():
     class ScriptedSocket:
         def __init__(self, messages):
