@@ -1230,7 +1230,13 @@ def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
             # have one, so pin which one is tried to keep this deterministic.
             monkeypatch.setattr(realtime, "pick_worker", lambda model_id: first)
             await realtime.reassign(session)
-            assert first_ws.sent[0]["type"] == "open_session"
+            # Exactly one attempt, and the give-up tells the worker: a retry
+            # against the same candidate would show as a second open here while
+            # still leaving the spare untouched, so the whole sequence is
+            # pinned rather than just the first message.
+            assert [m["type"] for m in first_ws.sent] == [
+                "open_session", "close_session",
+            ], first_ws.sent
             # The chosen worker never answers: the session ends rather than
             # being offered to the spare.
             assert spare_ws.sent == []

@@ -139,7 +139,7 @@
 	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
-	// The prompt differs from what the session last applied; whitespace around
+	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
 
@@ -179,8 +179,9 @@
 	// Each effect clears the slider's timer on any of its dependencies
 	// changing and re-arms it, so a drag that keeps moving never sends: the
 	// update goes out once the value has held still for SLIDER_UPDATE_MS.
-	// While the session is not connected nothing is armed, and a value that
-	// already applied never sends, so reconnects and confirmations stay quiet.
+	// While the session is not connected nothing is armed, and a value the API
+	// has already confirmed never sends, so reconnects and confirmations stay
+	// quiet.
 	$effect(() => {
 		if (structureTimer !== null) {
 			clearTimeout(structureTimer);
