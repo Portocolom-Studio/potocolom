@@ -85,8 +85,6 @@ class Engine(Protocol):
 
     async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame: ...
 
-    async def prepare_realtime(self, manifest: Manifest) -> bool: ...
-
     def loaded_models(self) -> list[str]: ...
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]: ...
@@ -279,11 +277,6 @@ class SimulatedEngine:
         started = time.monotonic()
         await asyncio.sleep(self.inference_seconds)
         return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
-
-    async def prepare_realtime(self, manifest: Manifest) -> bool:
-        # Nothing to load: the simulated engine has no residency, so every
-        # session it opens can be served.
-        return True
 
 
 class DiffusersEngine:
@@ -1370,35 +1363,6 @@ class DiffusersEngine:
         async with self._codec:
             data = await asyncio.to_thread(encode_webp, image)
         return GeneratedFrame(data, gpu_ms)
-
-    async def prepare_realtime(self, manifest: Manifest) -> bool:
-        """Bring the model to full residency for realtime frames, or say no.
-
-        Loads the realtime pipeline through the ordinary path so eviction
-        gets its chance to make room, but with demotion refused: a demoted
-        rung is exactly the state that makes every frame raise, so a load
-        that could only succeed demoted is a failure for this purpose. The
-        rung is confirmed afterwards rather than assumed: a model whose
-        cached rung is below full loads successfully and still cannot
-        serve frames.
-        """
-        async with self._gpu:
-            try:
-                await self._run_to_completion(self._prepare_realtime, manifest)
-            except self.torch.OutOfMemoryError:
-                logger.warning(
-                    "realtime session refused for %s: could not load fully resident",
-                    manifest.id,
-                )
-                return False
-            except Exception:
-                logger.exception("realtime session refused for %s: prepare failed",
-                                 manifest.id)
-                return False
-        return self._pick_rung(manifest) == "full"
-
-    def _prepare_realtime(self, manifest: Manifest) -> None:
-        self._pipeline(manifest, "realtime", allow_demotion=False)
 
     def _frame(
         self,

@@ -478,26 +478,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                     if control["type"] == "open_session":
                         session_id = uuid.UUID(control["session_id"])
                         manifest = by_id[control["model_id"]]
-                        if await engine.prepare_realtime(manifest):
-                            runners[session_id] = SessionRunner(
-                                session_id, ws, engine, manifest,
-                                ensure_seed(manifest.with_defaults(
-                                    control.get("params") or {})))
-                            await ws.send(json.dumps({
-                                "type": "session_ready",
-                                "session_id": control["session_id"]}))
-                        else:
-                            # The model cannot serve frames on this worker
-                            # right now; refuse rather than open a session
-                            # whose every frame would fail. An API that does
-                            # not know this message ignores it and falls back
-                            # to the ready timeout, which ends the same open
-                            # with 4003.
-                            await ws.send(json.dumps({
-                                "type": "session_refused",
-                                "session_id": control["session_id"],
-                                "reason": f"model {manifest.id} could not be made fully resident",
-                            }))
+                        runners[session_id] = SessionRunner(
+                            session_id, ws, engine, manifest,
+                            ensure_seed(manifest.with_defaults(
+                                control.get("params") or {})))
+                        await ws.send(json.dumps({
+                            "type": "session_ready",
+                            "session_id": control["session_id"]}))
                     elif control["type"] == "update_session":
                         # Ignored for an unknown session rather than raised:
                         # the API may send an update for a session this
@@ -540,18 +527,6 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         # A missing runner is a no-op, never an error: the
                         # API may close a session this worker has already
                         # torn down, or one that never opened here.
-                        #
-                        # A close for a session whose open is still preparing
-                        # needs nothing extra, because this loop is
-                        # sequential: open_session awaits prepare_realtime
-                        # inline, so a close sent meanwhile is not read until
-                        # the runner exists, and this pop is what discards it.
-                        # Measured with a slow prepare and a close arriving
-                        # during it: session_ready, then session_closed, and
-                        # no runner left behind. That also means a cold load
-                        # blocks this loop for its duration, measured at 14 s
-                        # for sdxl-turbo, so nothing here may assume messages
-                        # are read promptly.
                         runner = runners.pop(session_id, None)
                         if runner is not None:
                             runner.close()

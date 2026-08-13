@@ -291,37 +291,7 @@ def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
     assert socket.close_code is None
 
 
-def test_open_session_for_an_unpreparable_model_refuses_without_a_runner(
-        monkeypatch):
-    class RefusingEngine(SimulatedEngine):
-        async def prepare_realtime(self, manifest):
-            return False
-
-    session_id = str(uuid.uuid4())
-    created = []
-
-    class RecordingRunner(SessionRunner):
-        def __init__(self, *args):
-            created.append(self)
-            super().__init__(*args)
-
-    monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
-    socket = RecordingSocket([
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
-    ])
-    asyncio.run(serve_connection(socket, Settings(worker_id="w-refuse"),
-                                 [SIMULATED_MANIFEST], RefusingEngine(0.01)))
-    refused = json.loads(socket.sent[-1])
-    assert refused["type"] == "session_refused"
-    assert refused["session_id"] == session_id
-    # The reason names the model for the operator reading the API log.
-    assert "sd-sim" in refused["reason"]
-    assert created == []  # no runner exists for a session that cannot run
-    assert socket.close_code is None  # the connection survives the refusal
-
-
-def test_open_session_sends_session_ready_when_the_model_can_be_prepared():
+def test_open_session_sends_session_ready():
     session_id = str(uuid.uuid4())
     socket = RecordingSocket([
         json.dumps({"type": "open_session", "session_id": session_id,
@@ -337,15 +307,14 @@ def test_open_session_sends_session_ready_when_the_model_can_be_prepared():
     assert ready["session_id"] == session_id
 
 
-def test_close_session_during_a_slow_open_leaves_no_runner_behind(monkeypatch):
-    """The API gives up on an open that does not ready in time and closes the
-    session; the worker must keep no runner for it.
+def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
+    """A close that arrives right after its open must not leave a runner
+    behind.
 
-    The close can be sent while this worker is still preparing the model, but
-    the message loop is sequential: open_session awaits prepare_realtime
-    inline, so the close is not read until the runner exists, and the ordinary
-    pop discards it. This asserts that outcome rather than the ordering, so it
-    still holds if the open ever stops blocking the loop.
+    The message loop is sequential: the open is handled before the close is
+    read, so the ordinary pop discards the runner the open created. This
+    asserts that outcome rather than the ordering, so it still holds if the
+    open ever stops blocking the loop.
     """
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [

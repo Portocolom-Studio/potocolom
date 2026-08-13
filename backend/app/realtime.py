@@ -335,10 +335,6 @@ class Session:
     user_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
-    # The worker's reason, set together with `ready` when it refuses the
-    # session (session_refused): lets the assign waiter tell a refusal from
-    # a readiness instead of waiting out the ready timeout.
-    refused: str | None = None
 
     @property
     def is_live(self) -> bool:
@@ -417,12 +413,11 @@ def model_known(model_id: str) -> bool:
 async def close_abandoned_session(worker: Worker, session: Session) -> None:
     """Best-effort notice that the API has given up on an open.
 
-    The worker may still be inside prepare_realtime when the API stops
-    waiting, and a close_session is what lets it discard the runner it is
-    about to create instead of serving a session nobody will ever feed
-    frames to. Only while the worker is still the same registered
-    incarnation, like release(): a departed incarnation dies with its
-    connection, so there is nothing left to close.
+    The open may still be in flight when the API stops waiting, and a
+    close_session is what lets the worker discard the runner instead of
+    serving a session nobody will ever feed frames to. Only while the worker
+    is still the same registered incarnation, like release(): a departed
+    incarnation dies with its connection, so there is nothing left to close.
     """
     if workers.get(worker.id) is worker:
         await safe_send(
@@ -434,19 +429,15 @@ async def assign(session: Session, worker: Worker) -> bool:
     """Open the session on a worker and wait for its slot. True when ready.
 
     On any failure the slot increment is compensated here, so no caller can
-    leak a slot by abandoning the session mid-assignment. A refusal
-    (session_refused) is a failure like a timeout, but it is recorded before
-    the event is set so the waiter can tell the two apart.
+    leak a slot by abandoning the session mid-assignment.
 
-    Giving up on either failure also tells the worker the session is dead
-    (close_abandoned_session): the worker may still be preparing the model,
-    and a worker that knows nothing would create a runner for a session
-    nobody will ever close and wait for frames that cannot arrive for the
-    life of the process.
+    Giving up also tells the worker the session is dead
+    (close_abandoned_session): a worker that knows nothing would create a
+    runner for a session nobody will ever close and wait for frames that
+    cannot arrive for the life of the process.
     """
     session.worker = worker
     session.ready.clear()
-    session.refused = None
     worker.slots_in_use += 1
     try:
         await worker.ws.send_json(
@@ -463,16 +454,6 @@ async def assign(session: Session, worker: Worker) -> bool:
             # incremented and cleared the session's worker. Decrementing
             # again would underflow the counter and advertise a free slot
             # that does not exist.
-            worker.slots_in_use -= 1
-            session.worker = None
-            await close_abandoned_session(worker, session)
-        return False
-    if session.refused is not None:
-        # The worker said no (its model could not be made fully resident);
-        # the refusal was recorded before ready was set, so this is the
-        # failure path, compensated exactly once for the same reason as the
-        # timeout above: only when the increment is still ours.
-        if session.worker is worker:
             worker.slots_in_use -= 1
             session.worker = None
             await close_abandoned_session(worker, session)
@@ -507,8 +488,8 @@ async def reassign(session: Session) -> None:
         if await assign(session, replacement):
             placed = replacement
             break
-        # assign compensated its slot; a refusal from one worker is not a
-        # refusal from the fleet, so the next candidate gets its turn.
+        # assign compensated its slot; a failure on one worker is not a
+        # failure of the fleet, so the next candidate gets its turn.
     if placed is None:
         logger.warning("session %s lost its worker and no replacement was available", session.id)
         await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
@@ -634,33 +615,6 @@ async def fleet(ws: WebSocket) -> None:
                         session = sessions.get(peer_uuid(control["session_id"]))
                         if session is not None and session.worker is worker:
                             session.ready.set()
-                    elif control["type"] == "session_refused":
-                        session = sessions.get(peer_uuid(control["session_id"]))
-                        # A worker's word is only valid for its own session,
-                        # as with session_closed: a stale worker still knows
-                        # an old session's id.
-                        if session is None or session.worker is not worker:
-                            continue
-                        reason = control.get("reason")
-                        if not isinstance(reason, str):
-                            reason = ""
-                        if session.ready.is_set():
-                            # The session is already live and the worker no
-                            # longer sends a refusal for one: ending a live
-                            # session correctly (accounting, slot, browser
-                            # close) is unbuilt work tracked by issue #270,
-                            # so a refusal that cannot arrive is ignored
-                            # rather than acted on by a half-built path.
-                            continue
-                        logger.warning(
-                            "session %s refused by worker %s (model %s): %s",
-                            session.id, worker.id, session.model_id, reason,
-                        )
-                        # Assignment in flight: record the refusal before
-                        # waking the waiter, so assign can tell it from a
-                        # readiness and compensate instead of accepting.
-                        session.refused = reason
-                        session.ready.set()
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)

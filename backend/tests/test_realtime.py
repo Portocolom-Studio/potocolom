@@ -1129,9 +1129,8 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
 
 
 def test_assign_timeout_sends_close_session(monkeypatch):
-    """A give-up tells the worker the session is dead, so a worker still
-    inside prepare_realtime can discard the runner it is about to create
-    instead of waiting for frames nobody will ever send.
+    """A give-up tells the worker the session is dead, so it discards the
+    runner instead of waiting for frames nobody will ever send.
 
     Driven directly rather than through a TestClient websocket: asserting on
     the wire there means blocking on receive_json, so a regression would hang
@@ -1200,94 +1199,33 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_assign_does_not_decrement_again_on_a_refusal_after_release():
-    """The same double-decrement hazard on the refusal path: the worker
-    refuses while the teardown's release() has already freed the slot."""
-    async def scenario():
-        ws = FakeSocket()
-        worker = realtime.Worker(id="w-left-refused", ws=ws,
-                                 manifests=[Manifest.model_validate(manifest())],
-                                 realtime_slots=1)
-        realtime.workers[worker.id] = worker
-        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
-        realtime.sessions[session.id] = session
-        try:
-            task = asyncio.create_task(realtime.assign(session, worker))
-            await asyncio.sleep(0.01)
-            # The browser leaves mid-assignment, so release() has already
-            # accounted for this slot before the worker's word arrives.
-            await realtime.release(session)
-            session.refused = "model sd-sim could not be made fully resident"
-            session.ready.set()
-            assert not await task
-            assert worker.slots_in_use == 0
-            assert worker.free_slots == worker.realtime_slots
-            assert session.worker is None
-        finally:
-            realtime.workers.pop(worker.id, None)
-            realtime.sessions.pop(session.id, None)
+def test_reassign_tries_another_worker_after_a_failure(monkeypatch):
+    """A failure on one worker is not a failure of the fleet: reassign must
+    place the session on the next candidate instead of closing 4003."""
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
 
-    asyncio.run(scenario())
-
-
-def test_session_refused_during_assignment_fails_the_open_promptly(monkeypatch):
-    """A worker that cannot make the model fully resident says so instead of
-    letting the open sit out the ready timeout (issue #270)."""
-    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 5.0)
-    with client.websocket_connect("/api/v1/fleet") as worker_ws:
-        worker_ws.send_json(hello(worker_id="w-refused-assign", slots=1))
-        assert worker_ws.receive_json()["type"] == "registered"
-        with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
-            opened = worker_ws.receive_json()
-            assert opened["type"] == "open_session"
-            worker_ws.send_json({
-                "type": "session_refused",
-                "session_id": opened["session_id"],
-                "reason": "model sd-sim could not be made fully resident",
-            })
-            # The refusal, not the five second timeout, answers the open.
-            refusal = browser_ws.receive_json()
-            assert refusal["type"] == "error"
-            assert refusal["code"] == 4003
-            with pytest.raises(WebSocketDisconnect) as closed:
-                browser_ws.receive_json()
-            assert closed.value.code == 4003
-        # The give-up also told the worker the session is dead, so a worker
-        # mid-prepare can discard the runner it is about to create.
-        closed = worker_ws.receive_json()
-        assert closed["type"] == "close_session"
-        assert closed["session_id"] == opened["session_id"]
-        # The failed assignment compensated the slot exactly once.
-        assert realtime.workers["w-refused-assign"].slots_in_use == 0
-        assert uuid.UUID(opened["session_id"]) not in realtime.sessions
-
-
-def test_reassign_tries_another_worker_after_a_refusal():
-    """A refusal from one worker is not a refusal from the fleet: reassign
-    must place the session on the next candidate instead of closing 4003."""
     async def scenario():
         browser = FakeSocket()
-        refuser_ws = FakeSocket()
-        refuser = realtime.Worker(id="w-refuser", ws=refuser_ws,
-                                  manifests=[Manifest.model_validate(manifest())],
-                                  realtime_slots=1)
+        first_ws = FakeSocket()
+        first = realtime.Worker(id="w-first", ws=first_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
         acceptor_ws = FakeSocket()
         acceptor = realtime.Worker(id="w-acceptor", ws=acceptor_ws,
                                    manifests=[Manifest.model_validate(manifest())],
                                    realtime_slots=1)
-        realtime.workers.update({refuser.id: refuser, acceptor.id: acceptor})
+        realtime.workers.update({first.id: first, acceptor.id: acceptor})
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.reassign(session))
             await asyncio.sleep(0.01)  # interrupted sent, first open in flight
-            assert refuser_ws.sent[0]["type"] == "open_session"
-            # What the fleet handler does on session_refused from this worker.
-            session.refused = "model sd-sim could not be made fully resident"
-            session.ready.set()
-            await asyncio.sleep(0.01)  # assign compensates; next worker picked
-            assert refuser.slots_in_use == 0
+            assert first_ws.sent[0]["type"] == "open_session"
+            # The first worker never answers, so its assign times out,
+            # compensates, and the next candidate gets its turn.
+            while not acceptor_ws.sent:
+                await asyncio.sleep(0.005)
+            assert first.slots_in_use == 0
             assert acceptor_ws.sent[0]["type"] == "open_session"
             assert acceptor_ws.sent[0]["session_id"] == str(session.id)
             session.ready.set()  # what the fleet handler does on session_ready
@@ -1297,7 +1235,7 @@ def test_reassign_tries_another_worker_after_a_refusal():
             assert acceptor.slots_in_use == 1
             assert browser.close_code is None  # the session survived
         finally:
-            realtime.workers.pop(refuser.id, None)
+            realtime.workers.pop(first.id, None)
             realtime.workers.pop(acceptor.id, None)
             realtime.sessions.pop(session.id, None)
 
