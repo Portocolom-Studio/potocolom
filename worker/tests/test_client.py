@@ -15,6 +15,7 @@ from worker.client import (
     frame_p95_payload,
     run,
     run_job,
+    advertised_realtime_slots,
     serve_connection,
     warmup_realtime,
 )
@@ -706,6 +707,71 @@ def test_warmup_warns_when_several_models_declare_default(caplog):
     assert "alpha, zeta" in caplog.text
 
 
+
+
+
+class SlotsEngine(WarmupEngine):
+    """Answers the two questions advertised_realtime_slots asks: what the wire
+    says, and which models have been measured."""
+
+    def __init__(self, measured: tuple[str, ...] = (), calibrated: int | None = None,
+                 strip_realtime: tuple[str, ...] = ()):
+        super().__init__(strip_realtime=strip_realtime)
+        self.measured = list(measured)
+        self._calibrated_slots = calibrated
+
+    def p95_model_ids(self):
+        return self.measured
+
+    def effective_realtime_slots(self, wire_manifests, configured):
+        if not any("realtime" in m["capabilities"] for m in wire_manifests):
+            return 0
+        return self._calibrated_slots if self._calibrated_slots is not None else configured
+
+
+def slots_for(manifests, **kwargs) -> int:
+    return advertised_realtime_slots(SlotsEngine(**kwargs), manifests,
+                                     Settings(worker_id="w-slots", realtime_slots=2))
+
+
+def test_one_measured_realtime_model_advertises_its_measured_capacity():
+    """Nothing is unmeasured, so the measurement speaks for every session the
+    worker can be asked to serve."""
+    assert slots_for([realtime_manifest("only")], measured=("only",),
+                     calibrated=2) == 2
+
+
+def test_a_second_realtime_model_costs_the_capacity_it_did_not_measure():
+    """hello carries one number and admission checks it whatever model a session
+    asks for, so two slots earned at 240 ms become 560 ms per cycle once a
+    session runs a 280 ms model (issue #285)."""
+    pair = [realtime_manifest("measured", default=True), realtime_manifest("other")]
+    assert slots_for(pair, measured=("measured",), calibrated=2) == 1
+
+
+def test_an_unmeasured_sole_model_advertises_one_slot():
+    """Warmup skips a benchmark_only model, so a directory holding only that one
+    reaches hello with nothing measured: it must not promise the configured
+    capacity for frames nobody has timed."""
+    anchor = Manifest(id="anchor", name="anchor", capabilities=["realtime"],
+                      benchmark_only=True, parameters={})
+    assert slots_for([anchor], measured=(), calibrated=None) == 1
+
+
+def test_capacity_follows_the_manifests_not_what_is_resident():
+    """A rung recomputed from free VRAM, or an eviction during a queued job,
+    changes which model is full without changing what this worker can be asked
+    to serve, and it is the asking the number promises against. So the second
+    realtime model still costs the capacity even while the ladder has stripped
+    its realtime from the wire."""
+    pair = [realtime_manifest("measured", default=True), realtime_manifest("offloaded")]
+    assert slots_for(pair, measured=("measured",), calibrated=2,
+                     strip_realtime=("offloaded",)) == 1
+
+
+def test_no_realtime_model_advertises_nothing():
+    assert slots_for([Manifest(id="queued", name="queued",
+                               capabilities=["text_to_image"], parameters={})]) == 0
 
 
 def test_rejected_registration_raises_cleanly():

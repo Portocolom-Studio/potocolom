@@ -341,14 +341,7 @@ class DiffusersEngine:
         if base == 0:
             return 0
         if self._calibrated_slots is not None:
-            # The measurement bounds capacity from below and the wire bounds it
-            # from above: calibration timed one model, while base counts every
-            # realtime model this hello advertises, so returning the calibrated
-            # number raw would advertise capacity for models nobody measured
-            # (issue #285). Taking the smaller also means a reconnect that
-            # advertises a second realtime model, because free VRAM changed,
-            # re-applies the cap without recalibrating.
-            return min(self._calibrated_slots, base)
+            return self._calibrated_slots
         return base
 
     def model_rung(self, model_id: str) -> MemoryRung | None:

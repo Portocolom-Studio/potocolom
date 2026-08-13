@@ -88,29 +88,11 @@ def measured_wire_manifests(
 
 
 def effective_realtime_slots(wire_manifests: list[dict], configured: int) -> int:
-    """Slots to advertise for the realtime models on this wire.
-
-    Capacity is measured for one model, because calibration times one, but
-    `hello` carries a single `realtime_slots` and admission checks it whatever
-    model a session asks for. So with more than one realtime model on the wire,
-    a number above one would promise the 500 ms bar for a model nobody
-    measured: sessions serialise on the GPU lock, and two slots earned at
-    240 ms become 560 ms per cycle once one of those sessions runs a model at
-    280 ms. Capping at a single session keeps the promise honest, because a
-    session that never serialises against another meets the bar of whichever
-    model it chose (issue #285).
-
-    Counted from the wire rather than from what warmup chose to load, so it is
-    recomputed on every reconnect and counts every model admission can serve,
-    including a benchmark_only one the studio never offers but the realtime
-    endpoint still opens.
-    """
     if configured <= 0:
         return 0
-    realtime = [m for m in wire_manifests if "realtime" in m["capabilities"]]
-    if not realtime:
-        return 0
-    return configured if len(realtime) == 1 else min(configured, 1)
+    if any("realtime" in manifest["capabilities"] for manifest in wire_manifests):
+        return configured
+    return 0
 
 
 def slots_from_frame_ms(

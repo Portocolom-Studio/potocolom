@@ -203,6 +203,41 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 
 
+
+def advertised_realtime_slots(engine: Engine, manifests: list[Manifest],
+                              settings: Settings) -> int:
+    """Capacity to promise, which is capacity that was measured.
+
+    `hello` carries one number and admission checks it whatever model a session
+    asks for, while calibration times exactly one model. So more than one slot
+    is only ever honest when there is exactly one realtime model to serve and
+    that model is the one that was measured. Otherwise sessions serialise on
+    the GPU lock against a frame time nobody timed: two slots earned at 240 ms
+    become 560 ms per cycle once a session runs a model at 280 ms (issue #285).
+
+    Counted from the manifests rather than from the wire or from what is
+    resident, because both of those move without a reconnect. A rung recomputed
+    from current free VRAM, or an eviction during a queued job, changes which
+    model is full without changing what this worker can be asked to serve, and
+    it is the asking that the number promises against. A benchmark_only model
+    counts too: the studio never offers one, but the realtime endpoint resolves
+    through available() and `sd-turbo` ships benchmark_only with realtime.
+
+    Full capacity therefore needs every realtime model measured, which is the
+    calibrate-all option recorded in docs/decisions.md, or per-model slots on
+    the wire. Until one of those, a second realtime model costs the fleet the
+    difference, which is one session per worker.
+    """
+    slots = engine.effective_realtime_slots(engine.measured_manifests(manifests),
+                                            settings.realtime_slots)
+    if slots <= 1:
+        return slots
+    realtime = {m.id for m in manifests if "realtime" in m.capabilities}
+    measured = set(engine.p95_model_ids())
+    if len(realtime) == 1 and realtime <= measured:
+        return slots
+    return 1
+
 class SessionRunner:
     """Holds at most one pending canvas frame; newer input overwrites older."""
 
@@ -442,8 +477,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         "protocol_version": PROTOCOL_VERSION,
         "worker_id": settings.worker_id,
         "models": wire_manifests,
-        "realtime_slots": engine.effective_realtime_slots(wire_manifests,
-                                                           settings.realtime_slots),
+        "realtime_slots": advertised_realtime_slots(engine, manifests, settings),
         "device": settings.device,
         "memory_mode": settings.memory_mode,
     }))
