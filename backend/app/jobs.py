@@ -1089,7 +1089,11 @@ async def dispatch_step() -> None:
     if db.session_factory is None:
         return
     while lost_jobs:
-        await requeue_or_fail(lost_jobs.pop(0), "worker disconnected")
+        # Take the head without removing it: this list is the only reference
+        # to the job, so a failed recovery must leave it here for the next
+        # tick to retry, and a raise must not destroy it (issue #248).
+        await requeue_or_fail(lost_jobs[0], "worker disconnected")
+        lost_jobs.pop(0)
     await sweep_stalled_jobs()
     while True:
         job_id = await queues.pop(JOB_QUEUE)
@@ -1392,7 +1396,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             except Exception:
                 logger.warning("could not remove orphaned blob %s for job %s", orphan,
                                job_id, exc_info=True)
-        url = await get_storage().url(current.storage_key)
+        try:
+            url = await get_storage().url(current.storage_key)
+        except Exception:
+            # The commit is durable and nothing tracks the job, so a signing
+            # failure must not swallow the terminal event; the studio refetches
+            # on it and gets the URL then.
+            logger.exception("could not sign output url for job %s", job_id)
+            url = None
         publish(job_id, {"state": "succeeded", "url": url})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
         from app import usage_events

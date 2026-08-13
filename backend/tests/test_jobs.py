@@ -961,6 +961,157 @@ def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
+    """A failed requeue_or_fail must leave the job at the head of lost_jobs:
+    the pop used to precede the await, so the raise destroyed the only
+    reference to the row and nothing retried it (issue #248)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            job_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test",
+                        name="SD Test",
+                        capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"],
+                        min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add(Job(
+                    id=job_id,
+                    user_id=db.local_user_id,
+                    model_id="sd-test",
+                    params={"prompt": "lost job"},
+                    state="running",
+                    # Past the one retry, so the recovery fails the row and the
+                    # test sees a terminal state rather than a requeue.
+                    attempt=2,
+                ))
+                await session.commit()
+            return job_id
+
+        job_id = asyncio.run(seed())
+        lost = [job_id]
+        real_requeue_or_fail = jobs.requeue_or_fail
+        real_dispatch_step = jobs.dispatch_step
+        reasons = []
+
+        async def flaky_requeue(job_id, reason):
+            reasons.append(reason)
+            if len(reasons) == 1:
+                raise RuntimeError("simulated lock timeout")
+            await real_requeue_or_fail(job_id, reason)
+
+        async def parked():
+            # The live dispatch loop drains lost_jobs on its own tick and
+            # would race the assertions below; park it for the duration.
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        monkeypatch.setattr(jobs, "lost_jobs", lost)
+        monkeypatch.setattr(jobs, "requeue_or_fail", flaky_requeue)
+        try:
+            asyncio.run(real_dispatch_step())
+        except RuntimeError:
+            pass  # the first recovery failed; the job must stay at the head
+        assert lost == [job_id], "a failed recovery dropped the only reference"
+
+        asyncio.run(real_dispatch_step())
+        assert lost == []
+        assert reasons == ["worker disconnected", "worker disconnected"]
+        assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+
+
+@pytest.mark.db
+def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
+    """The URL is signed after the commit and the de-tracking, so a signing
+    failure must not swallow the terminal event or the usage event: nothing
+    tracks the job any more and nothing would retry either (issue #248)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-sign-fail")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "sign fail"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            assert put_upload(client, dispatch["upload"],
+                              png_bytes()).status_code == 200
+
+            async def job_events() -> int:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return int(await session.scalar(
+                        select(func.count()).select_from(UsageEvent).where(
+                            UsageEvent.model_id == "sd-test",
+                            UsageEvent.kind == "job",
+                            UsageEvent.action == "generate",
+                        )
+                    ) or 0)
+
+            # usage_events carries no job id, and the database is truncated once
+            # per session, so this job's row is identified by the count rising.
+            events_before = asyncio.run(job_events())
+            published = []
+            monkeypatch.setattr(
+                jobs, "publish",
+                lambda job_id, event: published.append((job_id, event)),
+            )
+            master_key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1
+            )[-1]
+            real_storage = jobs.get_storage()
+
+            class FailingUrl:
+                """Fails the first signing of the master key: the success path
+                is its first caller, and the studio's later refetch still works."""
+
+                def __init__(self):
+                    self.fired = False
+
+                def __getattr__(self, name):
+                    return getattr(real_storage, name)
+
+                async def url(self, key, download_name=None):
+                    if not self.fired and key == master_key:
+                        self.fired = True
+                        raise RuntimeError("simulated signing failure")
+                    return await real_storage.url(key, download_name)
+
+            # get_storage() is called once per request, so one shared instance
+            # carries the fired flag across the success path and the refetch.
+            failing_url = FailingUrl()
+            monkeypatch.setattr(jobs, "get_storage", lambda: failing_url)
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": dispatch["dispatch_token"]})
+            poll_until(client, job_id, "succeeded")
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not any(
+                event.get("state") == "succeeded" for _, event in published
+            ):
+                time.sleep(0.05)
+            succeeded = next(
+                event for _, event in published if event.get("state") == "succeeded"
+            )
+            assert succeeded.get("url") is None
+
+            def usage_written() -> bool:
+                return asyncio.run(job_events()) > events_before
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not usage_written():
+                time.sleep(0.05)
+            assert usage_written()
+
+
+@pytest.mark.db
 def test_a_requeue_during_a_terminal_transaction_keeps_its_entry(monkeypatch):
     """A stall requeue can land while the verdict's transaction is open: the
     row check must refuse the late verdict, which then must not take the
