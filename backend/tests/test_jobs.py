@@ -2571,6 +2571,60 @@ def test_authorization_is_rechecked_after_the_body(monkeypatch):
 
 
 @pytest.mark.db
+def test_authorization_is_rechecked_between_write_and_link(monkeypatch):
+    """The write happens in a thread, and the re-check only counts if the
+    link follows it on the loop: a requeue that lands while the temporary is
+    being written must leave nothing behind and publish nothing."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-write-link")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "write-link"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            key = uuid.UUID(job_id)
+            current = jobs.inflight[key]
+            replacement = jobs.InFlight(
+                worker=current.worker, storage_key=current.storage_key,
+                thumb_storage_key=current.thumb_storage_key,
+                user_id=current.user_id, dispatch_token="replacement-token",
+                attempt=2,
+            )
+            real_to_thread = asyncio.to_thread
+
+            def superseding_to_thread(function):
+                def swap_after_write():
+                    try:
+                        return function()
+                    finally:
+                        # The requeue lands once the temporary exists, between
+                        # the off-thread write and the on-loop link.
+                        jobs.inflight[key] = replacement
+
+                return real_to_thread(swap_after_write)
+
+            monkeypatch.setattr(asyncio, "to_thread", superseding_to_thread)
+            response = client.put(urlsplit(dispatch["upload"]["url"]).path,
+                                  content=png_bytes(),
+                                  headers=dispatch["upload"]["headers"])
+            assert response.status_code == 403
+            storage = jobs.get_storage()
+            assert not storage.path(current.storage_key).exists()
+            leftovers = [
+                entry.name for entry in storage.path(current.storage_key).parent.iterdir()
+                if entry.name.startswith(".upload-")
+            ]
+            assert not leftovers, "a refused upload left its temporary behind"
+            assert jobs.inflight.get(key) is replacement
+
+            # Finish the job so it does not sit running in the shared database.
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512})
+            poll_until(client, job_id, "failed")
+
+
+@pytest.mark.db
 def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
     """Publishing is atomic: a write that fails partway must not leave a
     truncated object at the key, because nothing would replace it (uploads are
@@ -2613,7 +2667,7 @@ def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
             assert not storage.path(key).exists(), "a failed write left a partial object"
             leftovers = [
                 entry.name for entry in storage.path(key).parent.iterdir()
-                if entry.name.startswith(storage.path(key).name)
+                if entry.name.startswith(".upload-")
             ]
             assert not leftovers, "a failed write left temporary files behind"
 
@@ -2624,3 +2678,30 @@ def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
             worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
                               "width": 512, "height": 512})
             poll_until(client, job_id, "succeeded")
+
+
+@pytest.mark.db
+def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
+    """A process death between write and link leaves the temporary behind, so
+    its name must read as debris rather than content; the destination names
+    itself, and the directory is already per user and per job."""
+    import tempfile
+
+    real_mkstemp = tempfile.mkstemp
+    prefixes = []
+
+    def recording_mkstemp(*args, **kwargs):
+        prefixes.append(kwargs.get("prefix"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-temp-prefix")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "temp prefix"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            assert prefixes == [".upload-"]

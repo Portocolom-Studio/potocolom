@@ -143,8 +143,9 @@ def _webp_dimensions(data: bytes) -> tuple[int, int]:
     them: job_done created the thumbnail row on the worker's word alone. This
     walks the chunk list like the PNG walk above and never decodes a pixel: a
     simple file is one VP8 or VP8L frame, an extended one starts with a VP8X
-    header that states the canvas, and a chunk whose declared length does not
-    fit the RIFF payload is a fabricated container, not a thumbnail.
+    header whose canvas the frame must match, and a chunk whose declared
+    length does not fit the RIFF payload is a fabricated container, not a
+    thumbnail.
     """
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
         raise ValueError("stored object is not a WebP")
@@ -187,9 +188,13 @@ def _webp_dimensions(data: bytes) -> tuple[int, int]:
                     raise ValueError("stored WebP has a truncated frame")
                 if bytes(view[position + 11:position + 14]) != b"\x9d\x01\x2a":
                     raise ValueError("stored WebP has no lossy keyframe")
-                if width == 0:
-                    width = struct.unpack_from("<H", view, position + 14)[0] & 0x3fff
-                    height = struct.unpack_from("<H", view, position + 16)[0] & 0x3fff
+                frame_width = struct.unpack_from("<H", view, position + 14)[0] & 0x3fff
+                frame_height = struct.unpack_from("<H", view, position + 16)[0] & 0x3fff
+                if saw_image:
+                    raise ValueError("stored WebP has a second bitstream")
+                if saw_vp8x and (width != frame_width or height != frame_height):
+                    raise ValueError("stored WebP frame contradicts its VP8X canvas")
+                width, height = frame_width, frame_height
                 saw_image = True
             elif kind == b"VP8L":
                 if length < 5:
@@ -199,14 +204,20 @@ def _webp_dimensions(data: bytes) -> tuple[int, int]:
                 bits = int.from_bytes(view[position + 9:position + 13], "little")
                 if bits >> 29:
                     raise ValueError("stored WebP has an unknown lossless version")
-                if width == 0:
-                    width = (bits & 0x3fff) + 1
-                    height = ((bits >> 14) & 0x3fff) + 1
+                frame_width = (bits & 0x3fff) + 1
+                frame_height = ((bits >> 14) & 0x3fff) + 1
+                if saw_image:
+                    raise ValueError("stored WebP has a second bitstream")
+                if saw_vp8x and (width != frame_width or height != frame_height):
+                    raise ValueError("stored WebP frame contradicts its VP8X canvas")
+                width, height = frame_width, frame_height
                 saw_image = True
-            elif kind == b"ANMF":
-                saw_image = True
-            elif kind not in (b"ALPH", b"ICCP", b"EXIF", b"XMP"):
-                raise ValueError("stored WebP has an unknown chunk")
+            else:
+                # Animations are refused as well: the fleet uploads a still
+                # thumbnail, and accepting an animation would mean validating
+                # the whole nested frame structure for no use case.
+                if kind not in (b"ALPH", b"ICCP", b"EXIF", b"XMP "):
+                    raise ValueError("stored WebP has an unknown chunk")
         position = end
     if position != payload_end:
         raise ValueError("stored WebP has a truncated chunk")
