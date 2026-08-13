@@ -98,6 +98,10 @@ def test_hello_carries_manifests():
     assert "source" not in manifest  # weight locations stay worker side
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
+    # A version 3 API requires the dispatch token on every job message and
+    # ignores one that omits it, so announcing the wrong version here would
+    # have this worker's results silently dropped.
+    assert hello["protocol_version"] == 3
 
 
 def test_rejected_registration_raises_cleanly():
@@ -214,6 +218,7 @@ def dispatch_control():
             "url": "http://api/api/v1/files/u/j-1-thumb.webp",
             "headers": {"Content-Type": "image/webp"},
         },
+        "dispatch_token": "dispatch-token",
     }
 
 
@@ -248,6 +253,9 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     assert done["category"] == "other"
     assert "category_score" not in done
     assert done["has_thumbnail"] is True
+    # Every message about this job carries the token back, or a version 3 API
+    # treats it as a report from a superseded attempt and ignores it.
+    assert all(r["dispatch_token"] == "dispatch-token" for r in reports)
 
 
 def test_run_job_delivers_without_thumbnail_when_thumb_upload_fails(monkeypatch):
@@ -301,3 +309,34 @@ def test_run_job_downloads_input_image(monkeypatch):
     assert len(FakeUpload.puts) == 2
     reports = [json.loads(m) for m in socket.sent]
     assert any(r["type"] == "job_done" for r in reports)
+
+
+def test_job_failure_carries_the_dispatch_token(monkeypatch):
+    """job_failed is the one report a worker sends without having uploaded, so
+    it is the easiest to forget to stamp."""
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = True
+    socket = FakeSocket()
+    try:
+        asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST,
+                            dispatch_control()))
+    finally:
+        FakeUpload.fail = False
+
+    failed = [json.loads(m) for m in socket.sent if json.loads(m)["type"] == "job_failed"]
+    assert len(failed) == 1
+    assert failed[0]["dispatch_token"] == "dispatch-token"
+
+
+def test_an_api_that_sends_no_dispatch_token_gets_none_back():
+    """The N-1 direction: a version 2 API sends no token, and stamping an empty
+    one would be a field it does not know."""
+    control = dispatch_control()
+    del control["dispatch_token"]
+    socket = FakeSocket()
+    asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, control))
+
+    reports = [json.loads(m) for m in socket.sent]
+    assert reports
+    assert not any("dispatch_token" in r for r in reports)
