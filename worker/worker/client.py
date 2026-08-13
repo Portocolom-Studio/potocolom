@@ -34,14 +34,6 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 UPLOAD_TIMEOUT = 60.0
 # Heartbeat interval while a job runs without denoising progress (model load).
 PROGRESS_KEEPALIVE_SECONDS = 60.0
-# One bad frame must not end a session: transient GPU errors (an allocation
-# spike, a bad weight read) fail a single frame and recover on the next, and
-# ending the session on one would turn a hiccup into an interruption. Three
-# in a row mean the condition is permanent (a rung that changed under the
-# live session makes every frame raise), and a session that keeps failing
-# must end visibly instead of looping forever with only the worker log
-# showing it (issue #270).
-MAX_CONSECUTIVE_FRAME_FAILURES = 3
 
 
 class RegistrationRejected(Exception):
@@ -206,11 +198,6 @@ class SessionRunner:
         self._task = asyncio.create_task(self._run(ws, engine, manifest))
 
     def submit(self, payload: bytes) -> None:
-        if self._task.done():
-            # The runner ended itself (the consecutive-failure threshold) or
-            # was closed: nobody will render this frame, so queueing it would
-            # leave a payload in pending that no task ever reads.
-            return
         if self.pending is not None:
             self.dropped += 1
         self.pending = payload
@@ -218,7 +205,6 @@ class SessionRunner:
 
     async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
         steps_default = default_steps(manifest)
-        consecutive_failures = 0
         while True:
             await self.arrived.wait()
             self.arrived.clear()
@@ -232,32 +218,15 @@ class SessionRunner:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # A failed frame is logged and the loop continues: one bad
+                # frame must not end a session, and ending one is unbuilt
+                # work. A session whose model stops being resident renders
+                # nothing until the browser leaves, which issue #270 tracks
+                # as unfinished, so nobody reads the bare continue as
+                # considered.
                 logger.exception("session %s dropped a frame on an inference error",
                                  self.session_id)
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FRAME_FAILURES:
-                    # Consecutive failures are a permanent condition (a rung
-                    # that changed under the live session), not a bad frame:
-                    # end the session and say so, or the browser would sit on
-                    # an Active session forever with only this log to show it.
-                    # The accounting rides along with the refusal: an API
-                    # that understands it closes the session and needs the
-                    # numbers, and an older one ignores the unknown type and
-                    # would otherwise never record that the session ran.
-                    # submit() drops frames for this runner from now on,
-                    # because the task's own state answers whether it is
-                    # finished: no new attribute is needed.
-                    with suppress(websockets.WebSocketException):
-                        await ws.send(json.dumps({
-                            "type": "session_refused",
-                            "session_id": str(self.session_id),
-                            "reason": f"model {manifest.id} could not be kept fully resident",
-                        }))
-                        await ws.send(json.dumps(session_closed_payload(
-                            self, str(self.session_id))))
-                    return
                 continue
-            consecutive_failures = 0
             self.frames += 1
             self.gpu_ms += generated.gpu_ms
             # The same quantity calibration measures: worker-side inference
@@ -280,31 +249,8 @@ class SessionRunner:
                                self.session_id)
                 return
 
-    @property
-    def ended_itself(self) -> bool:
-        """True once the run loop returned on its own, which today means it hit
-        the consecutive-failure threshold and already sent its accounting."""
-        return self._task.done()
-
     def close(self) -> None:
         self._task.cancel()
-
-
-def session_closed_payload(runner: "SessionRunner", session_id: str) -> dict:
-    """The session_closed accounting both close_session and a self-ended
-    session send, built once so the two cannot drift."""
-    category, score = categorize_output(None)
-    closed = {
-        "type": "session_closed",
-        "session_id": session_id,
-        "frames": runner.frames,
-        "gpu_ms": runner.gpu_ms,
-        "duration_ms": int((time.monotonic() - runner.started_at) * 1000),
-        "category": category,
-    }
-    if score is not None:
-        closed["category_score"] = score
-    return closed
 
 
 async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None:
@@ -532,17 +478,6 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                         session_id = uuid.UUID(control["session_id"])
                         manifest = by_id[control["model_id"]]
                         if await engine.prepare_realtime(manifest):
-                            previous = runners.get(session_id)
-                            if previous is not None:
-                                # A second open for a live session id (a
-                                # stale assignment racing or retrying)
-                                # replaces the first runner. Close it before
-                                # replacing it: an abandoned task keeps
-                                # rendering into a socket for a session the
-                                # API has moved on from, so its frames would
-                                # reach a browser that no longer waits for
-                                # them.
-                                previous.close()
                             runners[session_id] = SessionRunner(
                                 session_id, ws, engine, manifest,
                                 ensure_seed(manifest.with_defaults(control.get("params") or {})))
@@ -598,16 +533,24 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             updated["seed"] = seed
                             runner.params = updated
                     elif control["type"] == "close_session":
+                        # A missing runner is a no-op, never an error: the
+                        # API may close a session this worker has already
+                        # torn down, or one that never opened here.
                         runner = runners.pop(uuid.UUID(control["session_id"]), None)
-                        if runner is not None and not runner.ended_itself:
-                            # A runner whose task is done ended itself: its
-                            # accounting went out with the session_refused, so
-                            # this close is a no-op, not a second
-                            # session_closed. A missing runner is equally a
-                            # no-op, never an error.
+                        if runner is not None:
                             runner.close()
-                            await ws.send(json.dumps(
-                                session_closed_payload(runner, control["session_id"])))
+                            category, score = categorize_output(None)
+                            closed = {
+                                "type": "session_closed",
+                                "session_id": control["session_id"],
+                                "frames": runner.frames,
+                                "gpu_ms": runner.gpu_ms,
+                                "duration_ms": int((time.monotonic() - runner.started_at) * 1000),
+                                "category": category,
+                            }
+                            if score is not None:
+                                closed["category_score"] = score
+                            await ws.send(json.dumps(closed))
                     elif control["type"] == "dispatch_job":
                         task = asyncio.create_task(run_job(
                             ws, engine, by_id[control["model_id"]], control))
