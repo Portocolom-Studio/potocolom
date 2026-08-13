@@ -38,7 +38,7 @@ Fleet connection, worker to API:
 | `job_done` | `job_id`, `dispatch_token`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
 | `job_failed` | `job_id`, `dispatch_token`, `reason` | the job fails visibly; only worker death triggers the one retry |
 
-`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. A message that omits the field is accepted, because an N-1 worker does not send it; that acceptance goes away when the compatibility floor next moves.
+`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. The field is required from a protocol 3 worker, which is believed only with a matching token: a message that omits it is ignored exactly like one carrying a wrong token. A protocol 2 (N-1) worker is the one exception, accepted without it because that version does not send the field; the acceptance disappears when the compatibility floor moves to 3.
 
 Fleet connection, API to worker:
 

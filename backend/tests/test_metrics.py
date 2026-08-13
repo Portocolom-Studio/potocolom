@@ -425,6 +425,7 @@ def test_job_dispatch_and_finish_timestamps():
             worker.send_json({
                 "type": "job_done",
                 "job_id": str(job_id),
+                "dispatch_token": dispatch["dispatch_token"],
                 "gpu_ms": 900,
                 "width": 512,
                 "height": 512,

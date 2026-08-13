@@ -30,7 +30,7 @@ from app import db
 logger = logging.getLogger("potocolom.realtime")
 
 # Wire constants; keep in sync with worker/worker/client.py.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
 
 CANVAS_FRAME = 0x01
@@ -253,6 +253,7 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
+    protocol_version: int | None = None
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
@@ -445,7 +446,8 @@ async def fleet(ws: WebSocket) -> None:
         worker = Worker(id=hello["worker_id"], ws=ws, manifests=worker_manifests,
                         realtime_slots=hello["realtime_slots"],
                         device=hello.get("device"),
-                        memory_mode=hello.get("memory_mode"))
+                        memory_mode=hello.get("memory_mode"),
+                        protocol_version=version)
         if not (isinstance(version, int) and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
                 and (worker.device is None or isinstance(worker.device, str))

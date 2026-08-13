@@ -26,7 +26,7 @@ from worker.settings import Settings, get_settings
 logger = logging.getLogger("potocolom.worker")
 
 # Wire constants; keep in sync with backend/app/realtime.py.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
 CLOSE_PROTOCOL_VIOLATION = 4000

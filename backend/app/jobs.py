@@ -1196,9 +1196,17 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     # The identity check alone cannot separate two attempts: a stall requeue
     # can hand the job back to the same Worker object, and then attempt one's
     # late job_done is indistinguishable from attempt two's. The token is per
-    # dispatch, so it can. An N-1 worker sends none and is still believed
-    # (docs/connection-handling.md), which is the compatibility floor.
+    # dispatch, so it can. A protocol 2 worker sends none and is still
+    # believed (docs/connection-handling.md), which is the compatibility
+    # floor; that acceptance disappears when the floor moves to 3.
     presented = control.get("dispatch_token")
+    if (presented is None and worker.protocol_version is not None
+            and worker.protocol_version >= 3):
+        # A current worker omitting the token is as stale as one presenting a
+        # wrong token, and gets the same warning.
+        logger.warning("worker %s sent a stale dispatch token for job %s; ignored",
+                       worker.id, job_id)
+        return
     if presented is not None:
         # compare_digest raises TypeError on a non-ASCII str, and TypeError is
         # not in the fleet handler's except tuple; such a token is stale, not
