@@ -176,8 +176,15 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     candidates = [manifest for manifest in manifests if manifest.id in live_ids]
     if not candidates:
         return
-    # Prefer the dedicated realtime draft model when present.
-    pick = next((m for m in candidates if m.id == "vega-rt"), candidates[0])
+    # Warm what the studio opens: the manifest declaring `default` is the one
+    # its picker preselects (fallbackModelId in studio.svelte.ts), so warming
+    # anything else leaves the first session on a fresh worker paying a cold
+    # load, measured at 15.4 s against 0.3 s warm, while a model nobody
+    # selected sits ready. This named vega-rt, which was right while it was the
+    # only realtime model and then became wrong in silence (issue #283). The
+    # choice also decides what calibrate_realtime measures, so the p95 the
+    # picker labels a model with is now the default model's own.
+    pick = next((m for m in candidates if m.default), candidates[0])
     slots = await engine.calibrate_realtime(pick, configured_slots)
     logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
 

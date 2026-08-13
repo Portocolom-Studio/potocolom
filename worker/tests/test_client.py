@@ -16,6 +16,7 @@ from worker.client import (
     run,
     run_job,
     serve_connection,
+    warmup_realtime,
 )
 from worker.engine import GeneratedFrame, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
@@ -605,6 +606,65 @@ def test_heartbeat_advertises_only_frames_at_default_steps():
     # Only the default-steps session was observed, and only it is advertised.
     assert engine.observed == [("sdxl-turbo", 200), ("sdxl-turbo", 200)]
     assert frame_p95_payload(engine) == {"sdxl-turbo": 200}
+
+
+
+class WarmupEngine:
+    """Enough engine for warmup_realtime: it gates on torch_compile existing
+    and on _calibrated_slots being unset, then calibrates one model."""
+
+    torch_compile = False
+
+    def __init__(self):
+        self._calibrated_slots = None
+        self.calibrated: list[str] = []
+
+    def measured_manifests(self, manifests):
+        return [{"id": m.id, "capabilities": m.capabilities} for m in manifests]
+
+    async def calibrate_realtime(self, manifest, configured):
+        self.calibrated.append(manifest.id)
+        self._calibrated_slots = 1
+        return 1
+
+
+def realtime_manifest(model_id, *, default=False):
+    return Manifest(id=model_id, name=model_id, capabilities=["realtime"],
+                    default=default, parameters={})
+
+
+@pytest.mark.parametrize("order", [("plain", "chosen"), ("chosen", "plain")])
+def test_warmup_calibrates_the_manifest_declaring_default(order):
+    """Warm what the studio opens, whatever order the manifests arrive in.
+
+    The picker preselects the manifest declaring `default`, so warming another
+    leaves the first session on a fresh worker paying a cold load while a model
+    nobody selected sits ready (issue #283). This used to name vega-rt, which
+    was right until it was not, and nothing caught the change.
+    """
+    manifests = [realtime_manifest(name, default=(name == "chosen"))
+                 for name in order]
+    engine = WarmupEngine()
+    asyncio.run(warmup_realtime(engine, manifests, 1))
+    assert engine.calibrated == ["chosen"]
+
+
+def test_warmup_without_a_declared_default_picks_the_first_candidate():
+    engine = WarmupEngine()
+    asyncio.run(warmup_realtime(engine, [realtime_manifest("first"),
+                                         realtime_manifest("second")], 1))
+    assert engine.calibrated == ["first"]
+
+
+def test_warmup_ignores_a_default_that_cannot_serve_realtime():
+    """capabilities come from measured_manifests, which the memory ladder may
+    have stripped realtime from, so a default the card cannot hold is not a
+    candidate and the realtime model that can is warmed instead."""
+    engine = WarmupEngine()
+    too_big = Manifest(id="too-big", name="too-big",
+                       capabilities=["text_to_image"], default=True, parameters={})
+    asyncio.run(warmup_realtime(engine, [too_big, realtime_manifest("fits")], 1))
+    assert engine.calibrated == ["fits"]
 
 
 def test_rejected_registration_raises_cleanly():
