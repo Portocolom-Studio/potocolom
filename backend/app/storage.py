@@ -431,6 +431,8 @@ class S3Storage:
         """
         def purge() -> None:
             paginator = self.client.get_paginator("list_object_versions")
+            failed = 0
+            first_code = None
             for page in paginator.paginate(Bucket=self.bucket, Prefix=key):
                 doomed = [
                     {"Key": entry["Key"], "VersionId": entry["VersionId"]}
@@ -445,13 +447,19 @@ class S3Storage:
                     )
                     # Quiet suppresses the successes, not the failures, and the
                     # call answers 200 either way. Discarding this reports a
-                    # reclaim that did not happen.
+                    # reclaim that did not happen. Counting instead of raising
+                    # here keeps the traversal going: a key past a thousand
+                    # versions takes several batches, and one transient error
+                    # in the first would otherwise abandon all of the rest.
                     errors = response.get("Errors") or []
                     if errors:
-                        raise RuntimeError(
-                            f"could not delete {len(errors)} version(s) of {key}: "
-                            f"{errors[0].get('Code')}"
-                        )
+                        failed += len(errors)
+                        if first_code is None:
+                            first_code = errors[0].get("Code")
+            if failed:
+                raise RuntimeError(
+                    f"could not delete {failed} version(s) of {key}: {first_code}"
+                )
 
         await asyncio.to_thread(purge)
 
