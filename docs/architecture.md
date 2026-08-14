@@ -182,7 +182,7 @@ GPU seconds are the scarce and expensive resource, so how work maps onto workers
 
 ### Capacity and the real time bar
 
-The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Each worker advertises its real time slots in its registration, and the count is measured, not configured: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the bar (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS; sessions serialize on the worker GPU lock until cross-session batching lands. The scheduler admits sessions against slots, never against hope: it does not oversubscribe. Density beyond calibration - batching frames from concurrent sessions inside the worker, StreamDiffusion-class pipeline optimizations - is designed and deferred with an explicit trigger in [decisions.md](decisions.md) ("GPU session density"); it all lives below the slot abstraction, so the scheduler never changes.
+The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. On the reference RX 7600 XT at 512 px, the shipped defaults measure `sdxl-turbo` at 278 ms per frame on its single default step and `vega-rt` at 337 ms on its four. Each worker advertises its real time slots in its registration, and the count is measured, not configured: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the bar (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS; sessions serialize on the worker GPU lock until cross-session batching lands. The ceiling on concurrent sessions per GPU is a batching question, tracked as issue #294, not a slot count: two serialised sessions double each frame cycle and miss the bar. The scheduler admits sessions against slots, never against hope: it does not oversubscribe. Density beyond calibration - batching frames from concurrent sessions inside the worker, StreamDiffusion-class pipeline optimizations - is designed and deferred with an explicit trigger in [decisions.md](decisions.md) ("GPU session density"); it all lives below the slot abstraction, so the scheduler never changes.
 
 ### One pool, real time first
 
@@ -340,7 +340,7 @@ sequenceDiagram
     loop while the user draws
         B->>A: canvas frame and prompt
         A->>W: relay, latest input wins
-        W-->>A: generated frame, few-step img2img
+        W-->>A: generated frame, conditioned few-step text-to-image
         A-->>B: generated frame
     end
     B->>A: close
@@ -489,33 +489,49 @@ Every model the worker can serve is described by a manifest. Example:
 
 ```json
 {
-  "id": "sd-turbo",
-  "name": "SD Turbo",
-  "capabilities": ["image_to_image", "realtime"],
-  "tier": "draft",
-  "min_vram_gb": 8,
+  "id": "sdxl-turbo",
+  "name": "SDXL Turbo",
+  "capabilities": ["text_to_image", "image_to_image", "realtime"],
+  "studio_capabilities": ["realtime"],
+  "default": true,
+  "benchmark_only": false,
+  "min_vram_gb": 10,
   "prompt_token_limit": 77,
+  "license_id": "stability-ai-community",
+  "license_url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md",
+  "commercial_max_revenue_usd": 1000000,
+  "license_registration_url": "https://stability.ai/community-license",
+  "requires_attribution": "Powered by Stability AI",
   "parameters": {
     "type": "object",
     "properties": {
       "prompt": { "type": "string" },
-      "strength": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 }
+      "structure_strength": { "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0 },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512], "default": 512 },
+      "height": { "type": "integer", "enum": [512], "default": 512 }
     },
     "required": ["prompt"]
   }
 }
 ```
 
-`min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. `tier` feeds model routing: requests that do not pin a model resolve to the cheapest tier that satisfies them.
+`min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. A request that pins a `model_id` gets that model; one that does not is resolved by the API.
+
+> Shipped status (2026-08-14): **not yet implemented.** The wire `Manifest` has no `tier` field in either the worker's or the API's model, so tier-based routing is a recorded design and not behavior today (see Model routing under GPU scheduling and [decisions.md](decisions.md)).
 
 `prompt_token_limit` is the model's native text encoder window in tokens, so the studio warns when a prompt runs past it (issue #148). The shipped CLIP based manifests declare 77. For those models, the worker encodes longer prompts in successive native-size chunks and concatenates their embeddings instead of letting diffusers truncate the prompt. Positive and negative embeddings are padded to the same number of chunks; SDXL applies the same strategy to both text encoders and takes its pooled embedding from the first chunk. This does not make the weights native to a larger window: text in later chunks influences the image more weakly. A model with a different encoder declares its own figure, which is why the field is not a constant in the frontend. Omitting it means the window is unknown and the studio says nothing, so a manifest that forgets the field stays quiet rather than claiming a limit its encoder does not have. Upscale manifests take no prompt and leave it unset.
 
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
 
-Loading fields such as `source`, `vae`, `scheduler`, `lora` and `quantize`
-stay inside the worker and never cross the wire. `quantize` names exactly one
-pipeline component and scheme as `component:scheme`; the only shipped use is
-`text_encoder_3:int8` on `sd35-medium`.
+Loading fields such as `source`, `vae`, `scheduler`, `lora`, `quantize` and
+`t2i_adapter` stay inside the worker and never cross the wire. `quantize` names
+exactly one pipeline component and scheme as `component:scheme`; the only
+shipped use is `text_encoder_3:int8` on `sd35-medium`. Two manifest fields do
+cross the wire: `studio_capabilities`, which narrows what the studio offers
+per capability, and `realtime_p95_ms`, the worker's measured single-frame p95
+on its own card, refreshed from live heartbeat timings as sessions render.
 
 Manifests are operator controlled. User uploaded models (fine tunes, LoRAs) are explicitly out of scope for this architecture: nothing in the registry, storage or scheduler accommodates them, deliberately, so a future decision to support them starts from a clean sheet instead of leftover seams.
 
