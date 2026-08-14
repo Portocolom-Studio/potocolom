@@ -90,7 +90,7 @@ verify: verify-backend verify-worker verify-frontend ## everything CI runs, loca
 
 test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the shared dev one
 	@docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
-		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
+		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}(_[0-9]+)?$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
 		| xargs -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
 			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
 
