@@ -6,6 +6,7 @@
 		id,
 		label,
 		norm = $bindable(0),
+		steps = 100,
 		minLabel,
 		maxLabel,
 		valueLabel,
@@ -14,17 +15,22 @@
 		id: string;
 		label: string;
 		norm?: number;
+		steps?: number;
 		minLabel: string;
 		maxLabel: string;
 		valueLabel: string;
 		disabled?: boolean;
 	} = $props();
 
-	// Slider track is always 0-100 so bar length stays constant across models.
-	const sliderPosition = $derived(Math.round(Math.min(1, Math.max(0, norm)) * 100));
+	// The track carries one notch per parameter step, so an arrow key moves the
+	// parameter by one of its own steps rather than by one percent of a fixed
+	// track (issue #250). The bar still spans the same width whatever the model
+	// declares, which is what the old fixed 0-100 track was protecting.
+	const notches = $derived(Math.max(1, Math.round(steps)));
+	const sliderPosition = $derived(Math.round(Math.min(1, Math.max(0, norm)) * notches));
 
 	function onValueChange(value: number): void {
-		norm = value / 100;
+		norm = value / notches;
 	}
 </script>
 
@@ -37,7 +43,7 @@
 		{id}
 		type="single"
 		min={0}
-		max={100}
+		max={notches}
 		step={1}
 		{disabled}
 		value={sliderPosition}
