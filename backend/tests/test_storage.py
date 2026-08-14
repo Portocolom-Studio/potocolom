@@ -554,8 +554,9 @@ def test_s3_delete_removes_every_version_of_exactly_that_key():
     storage.client = _FakeS3Client(b"", pages=[
         {"Versions": [{"Key": key, "VersionId": "v1"},
                       {"Key": key, "VersionId": "v2"},
-                      # Same prefix, different object: attempt 10, not attempt 1.
-                      {"Key": "u/j-attempt-10.png", "VersionId": "other"}],
+                      # Under this key's prefix, and a different object: a
+                      # prefix listing returns anything that extends the key.
+                      {"Key": f"{key}.bak", "VersionId": "other"}],
          "DeleteMarkers": [{"Key": key, "VersionId": "marker"}]},
         {"Versions": [{"Key": key, "VersionId": "v3"}]},
     ])

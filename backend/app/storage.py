@@ -426,8 +426,9 @@ class S3Storage:
         that can upload whatever it likes, so hiding is not enough.
 
         Listing by exact prefix and filtering is deliberate: list_object_versions
-        takes a prefix, not a key, and a bucket with u/j-attempt-1.png also has
-        u/j-attempt-10.png under that prefix.
+        takes a prefix, not a key, so anything that extends this key, such as a
+        u/j-attempt-1.png.bak left by an operator, lists under it and must not
+        be deleted with it.
         """
         def purge() -> None:
             paginator = self.client.get_paginator("list_object_versions")
