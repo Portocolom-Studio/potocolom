@@ -1,19 +1,29 @@
 """Shared test environment, set before app.settings is first read: a test
-database of this checkout's own (created here if the dev PostgreSQL is up) and a
+database of this run's own (created here if the dev PostgreSQL is up) and a
 temporary storage root, so a developer's dev data stays untouched.
 
-The database name carries a hash of the checkout path. Worktrees are routine
-here, they sit at different migrations, and one shared database means whichever
-ran last decides what the others find: alembic refuses a revision it cannot
-resolve and every db test then fails for a reason that looks like broken
-application code. A database each removes the contention rather than arbitrating
-it. Set DATABASE_URL to override.
+The database name carries a hash of the checkout path and this process's id.
+The checkout part is for worktrees, which are routine here, sit at different
+migrations, and would otherwise let whichever ran last decide what the others
+find: alembic refuses a revision it cannot resolve and every db test then fails
+for a reason that looks like broken application code.
 
-Switching branches in one checkout hits the same problem without any worktree
-involved, so the stamp check stays: if this database is stamped at a revision
-this tree cannot resolve, rebuild it. Dropping is safe now that the database is
-nobody else's - the objection to it was that it terminated another worktree's
-connections mid-run.
+The process part is for two runs of one checkout, which is just as ordinary: an
+editor test runner beside a terminal run, or an agent probing while the suite
+goes. They shared job and attempt rows, so the retry tests failed with a 403 on
+an upload key that had just been issued, or waited for an attempt another run
+had already advanced. Every one of those failures pointed at the application
+rather than at the harness, which is what made them expensive (issue #280). The
+storage root was already per process.
+
+The cost is a migration chain per run rather than per checkout, which is a
+second or two, and a database that has to be dropped afterwards: it goes at
+exit, and `make test-db-clean` collects whatever a hard kill leaves behind. Set
+DATABASE_URL to override the whole scheme.
+
+Switching branches hits the stamp problem without any worktree involved, so the
+stamp check stays: if this database is stamped at a revision this tree cannot
+resolve, rebuild it.
 
 Tests marked db skip when PostgreSQL is unreachable; `make deps` starts it.
 """
@@ -32,10 +42,14 @@ import pytest
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
 _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
+_RUN = f"{_SUFFIX}_{os.getpid()}"
 
+# Only a database this file named may be dropped at exit; an exported
+# DATABASE_URL belongs to the developer.
+_OURS = "DATABASE_URL" not in os.environ
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/"
-                      f"potocolom_test_{_SUFFIX}")
+                      f"potocolom_test_{_RUN}")
 os.environ.setdefault("TELEMETRY", "false")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
@@ -114,11 +128,45 @@ def _prepare_database() -> bool:
         return False
 
 
+def _drop_database() -> None:
+    """Give the run's database back when the session ends.
+
+    Called from pytest_sessionfinish rather than atexit: asyncpg needs an event
+    loop and a thread pool, and at interpreter shutdown scheduling one raises
+    "cannot schedule new futures". A hard kill skips this either way and leaves
+    the database behind, which is what `make test-db-clean` collects, so the
+    name stays matchable.
+    """
+    import asyncpg
+
+    url = urlsplit(os.environ["DATABASE_URL"])
+    database = url.path.lstrip("/")
+
+    async def drop() -> None:
+        conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
+                                     user=url.username, password=url.password,
+                                     database="postgres", timeout=3)
+        try:
+            await conn.execute(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+        finally:
+            await conn.close()
+
+    try:
+        asyncio.run(drop())
+    except (OSError, asyncio.TimeoutError, asyncpg.PostgresError):
+        pass  # nothing to report at exit; test-db-clean sweeps the leftovers
+
+
 DATABASE_AVAILABLE = _prepare_database()
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "db: needs the development PostgreSQL")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if DATABASE_AVAILABLE and _OURS:
+        _drop_database()
 
 
 def pytest_collection_modifyitems(config, items):
