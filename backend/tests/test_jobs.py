@@ -2848,9 +2848,12 @@ def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
 def test_a_worker_built_without_a_registration_is_not_lenient():
     """protocol_version defaults to the current protocol, not to None.
 
-    Both gates that read it (the dispatch token here, update_session in
-    realtime.py) must refuse rather than grant an unregistered worker the
-    leniency that exists only for an older one (issue #282).
+    Two gates read it. This one requires the token from a worker at 3 or
+    newer, so an unregistered worker must be held to it rather than handed
+    the leniency that exists only for an older one (issue #282). The
+    update_session gate in realtime.py reads the same field the other way
+    round, and the same default is right there: it sends the update rather
+    than withholding it, which is what a current worker should get.
     """
     worker = realtime.Worker(id="w-default", ws=None, manifests=[], realtime_slots=1)
     assert worker.protocol_version == realtime.PROTOCOL_VERSION
