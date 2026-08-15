@@ -403,8 +403,10 @@ UnlimitedQuota   # default: reserve always succeeds, commit records a metering e
 BillingQuota     # HTTP calls to QUOTA_SERVICE_URL (the private billing service)
 
 class Storage(Protocol):
-    async def upload_target(self, key) -> UploadTarget   # presigned S3 PUT, or an internal API route
-    async def url(self, key, ttl) -> str                 # signed CloudFront URL, or /files/{key}
+    async def upload_target(self, key, token) -> UploadTarget  # presigned S3 PUT, or an internal API
+                                                               # route; the token authorises the
+                                                               # local PUT, S3 signs instead
+    async def url(self, key, ttl) -> str                       # signed CloudFront URL, or /files/{key}
     async def delete(self, key) -> None
 
 LocalStorage     # files under STORAGE_LOCAL_PATH
