@@ -33,6 +33,7 @@ import atexit
 import hashlib
 import os
 import pathlib
+import secrets
 import shutil
 import tempfile
 from urllib.parse import urlsplit
@@ -42,14 +43,20 @@ import pytest
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
 _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
-_RUN = f"{_SUFFIX}_{os.getpid()}"
+# The pid names the run for whoever is watching pg_database during it; the
+# random tail is what makes the name unique, since pids are recycled and two
+# containers sharing this checkout can hold the same one.
+_RUN = f"{_SUFFIX}_{os.getpid()}_{secrets.token_hex(2)}"
 
-# Only a database this file named may be dropped at exit; an exported
-# DATABASE_URL belongs to the developer.
+# Only a database this file named is ever created, dropped or rebuilt. An
+# exported DATABASE_URL belongs to the developer or to CI: this suite reads it
+# and leaves it alone, so the two paths are separated once, here, rather than
+# re-derived at each use.
 _OURS = "DATABASE_URL" not in os.environ
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/"
                       f"potocolom_test_{_RUN}")
+_DATABASE_URL = os.environ["DATABASE_URL"]
 os.environ.setdefault("TELEMETRY", "false")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
@@ -66,7 +73,7 @@ def _local_revisions() -> set[str]:
 def _prepare_database() -> bool:
     import asyncpg
 
-    url = urlsplit(os.environ["DATABASE_URL"])
+    url = urlsplit(_DATABASE_URL)
     database = url.path.lstrip("/")
 
     async def stamped_ahead() -> bool:
@@ -95,6 +102,15 @@ def _prepare_database() -> bool:
             # cannot resolve; alembic then refuses to start and every db test
             # fails for a reason that looks like broken application code.
             if exists and await stamped_ahead():
+                if not _OURS:
+                    # A supplied database is not this suite's to rebuild. Say
+                    # what is wrong instead of destroying someone's data to
+                    # make the run convenient.
+                    raise RuntimeError(
+                        f"{database} is stamped at a revision this tree cannot resolve, "
+                        "and DATABASE_URL was supplied, so it is not mine to drop; "
+                        "point DATABASE_URL elsewhere or migrate it yourself"
+                    )
                 await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
                 exists = None
             if not exists:
@@ -124,8 +140,21 @@ def _prepare_database() -> bool:
     try:
         asyncio.run(prepare())
         return True
-    except (OSError, asyncio.TimeoutError, asyncpg.PostgresError):
+    except (OSError, asyncio.TimeoutError) as error:
+        # The dev PostgreSQL is simply not up, which is the case the db marker
+        # exists for. A supplied DATABASE_URL is a deliberate act, so a failure
+        # to reach it is a broken run rather than an absent dependency: CI sets
+        # one, and skipping every db test there would be a green run with no
+        # database coverage in it.
+        if not _OURS:
+            raise RuntimeError(f"DATABASE_URL was supplied but unusable: {error}") from error
         return False
+    except asyncpg.PostgresError as error:
+        # Reachable but refusing: no CREATE DATABASE right, a failed truncate,
+        # two runs racing the same name. None of that is "PostgreSQL is not
+        # running", and skipping 74 tests under that message hides it.
+        raise RuntimeError(f"could not prepare {urlsplit(_DATABASE_URL).path.lstrip('/')}: "
+                           f"{error}") from error
 
 
 def _drop_database() -> None:
@@ -139,7 +168,7 @@ def _drop_database() -> None:
     """
     import asyncpg
 
-    url = urlsplit(os.environ["DATABASE_URL"])
+    url = urlsplit(_DATABASE_URL)
     database = url.path.lstrip("/")
 
     async def drop() -> None:
