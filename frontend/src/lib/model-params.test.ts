@@ -35,6 +35,12 @@ test('a degenerate spec yields a track rather than a division by zero', () => {
 	assert.equal(trackSteps({ min: 0, max: 10, default: 0, step: 0, integer: false }), 1);
 });
 
+test('a pathological range cannot grow the track without bound', () => {
+	// The slider holds an array with one entry per notch, and a manifest
+	// declares the range, so the count is capped at the old fixed track.
+	assert.equal(trackSteps({ min: 0, max: 100000, default: 0, step: 0.001, integer: false }), 100);
+});
+
 test('a value sits on the notch that reproduces it', () => {
 	const notches = trackSteps(steps);
 	assert.equal(Math.round(valueToNorm(5, steps) * notches), 3);

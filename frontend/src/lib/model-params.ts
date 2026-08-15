@@ -149,7 +149,12 @@ export function trackSteps(spec: ParamRange): number {
 	// number in normToValue anyway, so this changes how many presses a value
 	// costs, not which values are reachable.
 	if (spec.step <= 0 || spec.max <= spec.min) return 1;
-	return Math.max(1, Math.round((spec.max - spec.min) / spec.step));
+	// Capped at the old fixed track. The slider builds an array with one entry
+	// per notch, so a manifest declaring a wide range against a tiny step would
+	// otherwise hand it an arbitrarily large one; at the cap the keyboard is no
+	// worse than it was before this function existed. No shipped model comes
+	// close: the widest is guidance at 38.
+	return Math.min(100, Math.max(1, Math.round((spec.max - spec.min) / spec.step)));
 }
 
 export function formatParamValue(value: number, spec: ParamRange): string {
