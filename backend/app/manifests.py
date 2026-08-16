@@ -12,11 +12,19 @@ from functools import lru_cache
 import jsonschema
 from jsonschema import Draft202012Validator
 from referencing.exceptions import Unresolvable
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger("potocolom.manifests")
 
 DIFFUSION_CAPABILITIES = frozenset({"text_to_image", "image_to_image"})
+
+# One bound for both wire sources of a per-model p95: hello carries it on the
+# manifest and heartbeats carry it per model, and the two must agree on the
+# ceiling or the same measurement could be accepted in one and refused in the
+# other. The ceiling only needs to catch absurd values: a slow frame is still
+# an honest measurement, while a number past this means a broken or hostile
+# worker.
+FRAME_P95_MAX_MS = 60_000
 
 
 class Manifest(BaseModel):
@@ -39,6 +47,28 @@ class Manifest(BaseModel):
     license_registration_url: str = ""
     requires_attribution: str = ""
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
+    # Studio-visible subset of capabilities; None means all of them. A model
+    # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
+    # of the queued pickers while its verified path stays offered.
+    studio_capabilities: list[str] | None = None
+    # Measured single-frame p95 on the reporting worker's card; None until a
+    # worker has calibrated the model, absent on the simulated worker. The
+    # bounds match the heartbeat's ceiling (FRAME_P95_MAX_MS), so a value the
+    # manifest accepts is a value the heartbeat would accept too. The bound
+    # check is a validator that returns None rather than raising: a
+    # measurement is cosmetic (displayed, never persisted) while a manifest
+    # is not, so losing the label is the proportionate consequence of a bad
+    # measurement, and refusing the whole manifest would strand the worker in
+    # a reconnect loop over a number the heartbeat carrying the identical
+    # value would merely skip.
+    realtime_p95_ms: int | None = Field(default=None)
+
+    @field_validator("realtime_p95_ms")
+    @classmethod
+    def _normalise_realtime_p95_ms(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        return value if 1 <= value <= FRAME_P95_MAX_MS else None
 
 
 def validate_capability_exclusivity(manifest: Manifest) -> None:
@@ -91,6 +121,53 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
     try:
         # dumps walks the schema too, so it raises before check_schema can.
         schema_json = json.dumps(manifest.parameters, sort_keys=True)
+        validator = _params_validator(schema_json)
+    except jsonschema.SchemaError:
+        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
+                       manifest.id)
+        return None
+    except RecursionError:
+        # check_schema walks the schema, so it raises this before validate can.
+        return "schema nests too deeply to validate"
+    try:
+        validator.validate(params)
+    except jsonschema.ValidationError as error:
+        return error.message
+    except RecursionError:
+        # Returning None here would mean "params acceptable", so a schema too
+        # deep to walk would silently skip the only validation gate the API
+        # has. Fail closed: not validated is not the same as valid.
+        return "params or schema nest too deeply to validate"
+    except Unresolvable:
+        # A $ref naming something the schema does not define raises past
+        # ValidationError, so it would reach the request handler as a 500.
+        # A manifest is worker-supplied, not user-supplied, so treat it like
+        # the invalid-schema case above and blame the log, not the caller.
+        logger.warning("model %s has an unusable schema reference; "
+                       "accepting params unchecked", manifest.id)
+        return None
+    return None
+
+
+def validate_param_update(manifest: Manifest, params: dict) -> str | None:
+    """Return a validation error message, or None when an update is acceptable.
+
+    The same validation as validate_params, except that nothing is required:
+    an update carries a subset of the session's params, so the schema is the
+    manifest's with the `required` list removed rather than a second schema
+    the two could drift from. An empty update is a client bug, not a no-op.
+    """
+    if not params:
+        return "params update is empty"
+    if not json_finite(params):
+        return "params are too deeply nested or contain a value JSON storage cannot hold"
+    try:
+        # dumps walks the schema too, so it raises before check_schema can.
+        # The required list is dropped so a subset can validate; everything
+        # else about the schema, bounds and extras included, still applies.
+        schema = dict(manifest.parameters)
+        schema.pop("required", None)
+        schema_json = json.dumps(schema, sort_keys=True)
         validator = _params_validator(schema_json)
     except jsonschema.SchemaError:
         logger.warning("model %s has an invalid parameter schema; accepting params unchecked",

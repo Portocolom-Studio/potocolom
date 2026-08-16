@@ -89,6 +89,16 @@ export function strengthSpec(model: Model | undefined): ParamRange {
 	});
 }
 
+export function structureStrengthSpec(model: Model | undefined): ParamRange {
+	return numberSpec(modelProperty(model, 'structure_strength'), {
+		min: 0,
+		max: 1.5,
+		default: 0.7,
+		step: 0.1,
+		integer: false
+	});
+}
+
 export function countSpec(): ParamRange {
 	return COUNT_RANGE;
 }

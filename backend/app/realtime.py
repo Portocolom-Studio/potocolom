@@ -15,6 +15,7 @@ import ipaddress
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from collections.abc import Coroutine
@@ -23,7 +24,13 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from app.manifests import Manifest, parse_manifests, validate_params
+from app.manifests import (
+    FRAME_P95_MAX_MS,
+    Manifest,
+    parse_manifests,
+    validate_param_update,
+    validate_params,
+)
 from app.settings import get_settings
 from app import db
 
@@ -32,6 +39,12 @@ logger = logging.getLogger("potocolom.realtime")
 # Wire constants; keep in sync with worker/worker/client.py.
 PROTOCOL_VERSION = 3
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
+# The protocol version that introduced the update_session message. An N-1
+# worker is deliberately welcome (MIN_SUPPORTED_VERSION), but it predates
+# this message and would silently drop it, so the API refuses an update
+# whose assigned worker speaks an older protocol rather than acknowledge
+# one the worker cannot apply.
+UPDATE_SESSION_PROTOCOL_VERSION = 3
 
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
@@ -45,6 +58,14 @@ FLEET_TOKEN_HEADER = "x-fleet-token"
 
 SESSION_READY_TIMEOUT = 10.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
+
+# One bound for every session seed, shared with the worker's SEED_BOUND
+# (worker/worker/client.py): the API fills the seed at session open and the
+# worker's ensure_seed fallback must draw from the same range, so both sides
+# agree on what a seed is. The two packages have no shared import, so the
+# number is written twice with this comment binding them, like the wire
+# constants above.
+SESSION_SEED_BOUND = 2**31 - 1
 
 router = APIRouter()
 
@@ -245,6 +266,37 @@ def frame_session_id(data: bytes) -> uuid.UUID:
     return uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES])
 
 
+def parse_frame_p95(raw: object) -> dict[str, int] | None:
+    """Validate a heartbeat's live per-model frame p95s; None means drop it.
+
+    A payload that is not a dict at all is dropped whole: there is nothing to
+    salvage. Entries within a dict are independent: a malformed one is
+    skipped rather than discarding the valid entries beside it, so a worker
+    that appends one junk entry to every heartbeat cannot pin the last
+    accepted number. Accepts only string keys and integer values (or floats
+    that are whole numbers) greater than zero and below the ceiling, which
+    hello's realtime_p95_ms shares (FRAME_P95_MAX_MS). Anything unusable is
+    skipped silently rather than raised: a malformed heartbeat must not kill
+    the fleet connection.
+    """
+    if not isinstance(raw, dict):
+        return None
+    measured: dict[str, int] = {}
+    for model_id, value in raw.items():
+        if not isinstance(model_id, str):
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, float):
+            if not value.is_integer():
+                continue
+            value = int(value)
+        if not isinstance(value, int) or value <= 0 or value > FRAME_P95_MAX_MS:
+            continue
+        measured[model_id] = value
+    return measured
+
+
 @dataclass
 class Worker:
     id: str
@@ -253,10 +305,17 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
+    # Advertised in hello. The update_params handler compares it against
+    # UPDATE_SESSION_PROTOCOL_VERSION to refuse an update an N-1 worker would
+    # silently drop. None for a Worker built without a registration, which is
+    # read as predating every version.
     protocol_version: int | None = None
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
+    # Live per-model frame p95 from heartbeats; supersedes the calibration
+    # value the worker sent in hello (registry.available()).
+    frame_p95_ms: dict[str, int] = field(default_factory=dict)
 
     @property
     def models(self) -> list[str]:
@@ -347,11 +406,31 @@ def model_known(model_id: str) -> bool:
     return any(model_id in w.models for w in workers.values())
 
 
+async def close_abandoned_session(worker: Worker, session: Session) -> None:
+    """Best-effort notice that the API has given up on an open.
+
+    The open may still be in flight when the API stops waiting, and a
+    close_session is what lets the worker discard the runner instead of
+    serving a session nobody will ever feed frames to. Only while the worker
+    is still the same registered incarnation, like release(): a departed
+    incarnation dies with its connection, so there is nothing left to close.
+    """
+    if workers.get(worker.id) is worker:
+        await safe_send(
+            worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
+        )
+
+
 async def assign(session: Session, worker: Worker) -> bool:
     """Open the session on a worker and wait for its slot. True when ready.
 
     On any failure the slot increment is compensated here, so no caller can
     leak a slot by abandoning the session mid-assignment.
+
+    Giving up also tells the worker the session is dead
+    (close_abandoned_session): a worker that knows nothing would create a
+    runner for a session nobody will ever close and wait for frames that
+    cannot arrive for the life of the process.
     """
     session.worker = worker
     session.ready.clear()
@@ -363,8 +442,17 @@ async def assign(session: Session, worker: Worker) -> bool:
         )
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
-        worker.slots_in_use -= 1
-        session.worker = None
+        if session.worker is worker:
+            # release() and assign() are two writers of one counter, so the
+            # compensation is ownership-checked rather than assumed: the
+            # browser may have left mid-assignment, and its teardown's
+            # release() has already decremented the slot this call
+            # incremented and cleared the session's worker. Decrementing
+            # again would underflow the counter and advertise a free slot
+            # that does not exist.
+            worker.slots_in_use -= 1
+            session.worker = None
+            await close_abandoned_session(worker, session)
         return False
     return True
 
@@ -386,9 +474,20 @@ async def reassign(session: Session) -> None:
     if not session.is_live:  # browser already gone
         return
     await safe_send(session.browser.send_json({"type": "interrupted"}))
+    # One attempt, as before the refusal work: retrying other candidates here
+    # widened a race this module cannot yet win. Two reassign tasks for one
+    # session share its worker and its ready event, so a stale attempt that
+    # places a second worker is then woken by the first worker's readiness and
+    # believes it succeeded: two workers open the session, one keeps a slot and
+    # an unreachable runner, and the browser is told resumed twice. Retrying
+    # made that reachable by giving the stale attempt somewhere else to go.
+    # The fix is an attempt identity that readiness and refusal carry, which is
+    # session lifecycle design tracked by issue #270; until then this stays as
+    # narrow as main has it.
     replacement = pick_worker(session.model_id)
     if replacement is None or not await assign(session, replacement):
-        logger.warning("session %s lost its worker and no replacement was available", session.id)
+        logger.warning("session %s lost its worker and no replacement was available",
+                       session.id)
         await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
         return
     if not session.is_live:  # browser disconnected while we assigned
@@ -445,9 +544,9 @@ async def fleet(ws: WebSocket) -> None:
             raise ProtocolError(str(error)) from error
         worker = Worker(id=hello["worker_id"], ws=ws, manifests=worker_manifests,
                         realtime_slots=hello["realtime_slots"],
+                        protocol_version=version,
                         device=hello.get("device"),
-                        memory_mode=hello.get("memory_mode"),
-                        protocol_version=version)
+                        memory_mode=hello.get("memory_mode"))
         if not (isinstance(version, int) and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
                 and (worker.device is None or isinstance(worker.device, str))
@@ -539,6 +638,29 @@ async def fleet(ws: WebSocket) -> None:
                             memory_mode = control.get("memory_mode")
                             if isinstance(memory_mode, str):
                                 worker.memory_mode = memory_mode
+                        measured = parse_frame_p95(control.get("frame_p95_ms"))
+                        if measured is not None:
+                            # Merge, not replace: a skipped entry must leave
+                            # the value already held for that model in place,
+                            # or a worker that intermittently sends junk for
+                            # one model makes that model's label flap between
+                            # hello's value and the live one. Merging is safe
+                            # because measurements only accumulate for models
+                            # this worker has measured, and a stale entry is
+                            # a worse outcome than no entry only if it can
+                            # never be corrected, which a later heartbeat
+                            # does. The merge is bounded by the worker's own
+                            # manifest set: a measurement for a model this
+                            # worker does not serve is meaningless, and
+                            # admitting one would let the map grow with every
+                            # heartbeat for the worker's lifetime. The ids
+                            # come from the registered manifests, never from
+                            # anything the heartbeat carries.
+                            worker.frame_p95_ms.update({
+                                model_id: value
+                                for model_id, value in measured.items()
+                                if model_id in worker.models
+                            })
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )
@@ -563,6 +685,30 @@ async def fleet(ws: WebSocket) -> None:
                         worker.id, len(orphaned))
         for session in orphaned:
             asyncio.ensure_future(reassign(session))
+
+
+def session_seed(value: object) -> int | None:
+    """The seed a session opens with, normalised where the API owns it.
+
+    Returns an integer seed, or None when the caller must draw a fresh one.
+    An integer is kept as-is. A float that is a whole number is kept as an
+    integer: JSON Schema accepts 42.0 as an integer, and the engine's
+    generator wants an int. A bool is refused even though it subclasses int,
+    or `seed: true` would survive as a seed. Anything else (a fractional
+    float, a string, null) is refused too: a manifest that does not declare
+    a seed property lets such a value through validation entirely, and the
+    engine then builds no generator. Mirrors the worker's normalise_seed
+    (worker/client.py): the two packages have no shared import, so each
+    boundary writes its own, with this comment pointing at the other the
+    way SESSION_SEED_BOUND and SEED_BOUND already do.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
 
 
 @router.websocket("/api/v1/realtime")
@@ -593,6 +739,19 @@ async def realtime(ws: WebSocket) -> None:
         if validate_params(manifest, params) is not None:
             await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "invalid params")
             return
+    seed = session_seed(params.get("seed"))
+    # The API owns the session seed, not the worker: a session outlives
+    # its worker, so reassign re-opens with session.params and the value
+    # must ride on it. An explicit client seed is kept so a session can be
+    # reproduced exactly (normalised above: a whole float is an integer in
+    # JSON Schema); a missing, boolean or non-numeric one is filled here so
+    # the worker always receives an int (worker/client.py's ensure_seed is
+    # only the fallback for an older API). SESSION_SEED_BOUND matches the
+    # worker's SEED_BOUND. This coercion lives only here, on the open path:
+    # the update path refuses a seed outright (a session's seed is fixed
+    # for its life), so it must not be repeated there.
+    params = {**params, "seed": seed if seed is not None
+              else random.randrange(SESSION_SEED_BOUND)}
     worker = pick_worker(model_id)
     if worker is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
@@ -604,7 +763,8 @@ async def realtime(ws: WebSocket) -> None:
         user_id=db.local_user_id)
     sessions[session.id] = session
     try:
-        if not await assign(session, worker):
+        accepted = await assign(session, worker)
+        if not accepted:
             await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
         await ws.send_json({"type": "ready", "session_id": str(session.id)})
@@ -622,8 +782,86 @@ async def realtime(ws: WebSocket) -> None:
                     if session.worker is not None:  # a dead worker means reassign is in flight
                         await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
-                    if parse_control(message["text"])["type"] == "close":
+                    control = parse_control(message["text"])
+                    if control["type"] == "close":
                         break
+                    if control["type"] == "update_params":
+                        params = control.get("params")
+                        if not isinstance(params, dict):
+                            raise ProtocolError("params must be an object")
+                        if "seed" in params:
+                            # A session's seed is fixed for its life: that is
+                            # the invariant the rest of the seed work
+                            # assumes, and it is the only version-safe
+                            # answer, because a mixed-version fleet cannot
+                            # agree on a mid-session change (an N-1 worker
+                            # overwrites it with the seed it drew at open,
+                            # so the browser and the API would acknowledge a
+                            # value no frame used). A deliberate reroll is a
+                            # feature and needs its own design (a new
+                            # session or an explicit protocol message), not
+                            # a silent parameter update; reject it like an
+                            # out-of-range parameter and leave the session
+                            # running.
+                            await safe_send(ws.send_json({
+                                "type": "error",
+                                "code": CLOSE_PROTOCOL_VIOLATION,
+                                "message": "seed is fixed at session open and cannot be changed",
+                            }))
+                            continue
+                        manifest = registry.available().get(session.model_id)
+                        if manifest is not None:
+                            invalid = validate_param_update(manifest, params)
+                            if invalid is not None:
+                                # A bad update is a recoverable client mistake,
+                                # unlike a bad open, which happens before a
+                                # session exists: report it and keep the socket.
+                                await safe_send(ws.send_json({
+                                    "type": "error",
+                                    "code": CLOSE_PROTOCOL_VIOLATION,
+                                    "message": invalid,
+                                }))
+                                continue
+                        # None means no registration recorded a version, which
+                        # is read as predating every one of them.
+                        if (session.worker is not None
+                                and (session.worker.protocol_version or 0)
+                                < UPDATE_SESSION_PROTOCOL_VERSION):
+                            # The assigned worker predates update_session (an
+                            # N-1 worker is deliberately welcome) and would
+                            # silently drop it, leaving the browser told the
+                            # update applied while every later frame still
+                            # renders the old prompt. Acknowledging an update
+                            # the worker cannot apply is worse than refusing
+                            # it: the user cannot tell a silent no-op from a
+                            # model that ignored their prompt. Refuse, and
+                            # leave the session rendering what it renders.
+                            await safe_send(ws.send_json({
+                                "type": "error",
+                                "code": CLOSE_PROTOCOL_VIOLATION,
+                                "message": "the assigned worker does not "
+                                           "support live parameter updates",
+                            }))
+                            continue
+                        # Later keys win, so a second update of the same
+                        # parameter overwrites the first. The merged dict is
+                        # what the session holds from here on, what a worker
+                        # replaces its params with, and what the browser is
+                        # told. Not "what applied": this acknowledges even
+                        # while a reassignment leaves the session without a
+                        # worker, and a worker fills in manifest defaults for
+                        # keys nobody set, which never appear here.
+                        session.params.update(params)
+                        if session.worker is not None:
+                            await safe_send(session.worker.ws.send_json({
+                                "type": "update_session",
+                                "session_id": str(session.id),
+                                "params": session.params,
+                            }))
+                        await safe_send(ws.send_json({
+                            "type": "params_updated",
+                            "params": session.params,
+                        }))
             except ProtocolError:
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break
