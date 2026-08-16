@@ -86,9 +86,9 @@ The drawing tool's connection. Text messages are JSON control, binary messages a
 
 Both WebSocket endpoints refuse a handshake carrying an `Origin` that is not `PUBLIC_URL` or one of `ALLOWED_ORIGINS`; the connection fails as HTTP 403 before any close code applies (see [connection-handling.md](connection-handling.md)).
 
-Browser to API: `{"type": "open", "model_id": "sd-sim"}` first, then binary canvas frames carrying the session id, then `{"type": "close"}`.
+Browser to API: `{"type": "open", "model_id": "sd-sim", "params": {"prompt": "a red house"}}` first, then binary canvas frames carrying the session id, `{"type": "update_params", "params": {"prompt": "a blue house"}}` to change a subset of the session's parameters, then `{"type": "close"}`.
 
-API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). Terminal failures arrive as `error` messages before the close. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, prompt updates, `credits_tick`, and an out of credits close (an `error` message then the close) when a session's chunked reservation cannot be extended.
+API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). An accepted parameter update is confirmed with `{"type": "params_updated", "params": {...}}` carrying the merged parameters the API holds for the session (the browser's keys over the session's, the seed riding along) - what later frames are rendered with once a worker has them, though the worker may fill in the manifest's declared defaults for keys nobody has set, and the acknowledgement arrives even when no worker holds the session at that moment (a reassignment in flight). Terminal failures arrive as `error` messages before the close. A rejected `update_params` (invalid params, a `seed` change - a session's seed is fixed at open - or an assigned worker whose protocol predates `update_session`) also arrives as an `error` but leaves the session running. When no worker answers the `open` within the ready timeout, the browser sees `{"type": "error", "code": 4003, "message": "worker did not become ready"}` before the close. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, `credits_tick`, and an out of credits close (an `error` message then the close) when a session's chunked reservation cannot be extended.
 
 ### GET /api/v1/models
 
@@ -104,6 +104,8 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
     "prompt_token_limit": 77,
     "default": true,
     "benchmark_only": false,
+    "studio_capabilities": null,
+    "realtime_p95_ms": null,
     "estimated_gpu_ms_default": 4200,
     "parameters": {
       "type": "object",
@@ -117,7 +119,7 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 ]
 ```
 
-`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown.
+`parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown. `studio_capabilities` is the subset of `capabilities` the studio offers; null when every capability is offered. On this endpoint it is informational only: the narrowing has already been applied to `capabilities`, so the two are identical whenever it is non-null, and a client should not filter on it again. `realtime_p95_ms` is the measured single-frame p95 on the reporting worker's card, which the realtime picker labels models with; null until a worker has measured it, and a live heartbeat measurement supersedes the value from hello.
 
 <!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
 
@@ -226,6 +228,9 @@ GET  /api/v1/telemetry/preview        admin only; 403 for viewer or user; 200 ex
                                         503 when the database is unavailable
 PUT  /api/v1/files/{key}               local-storage upload target (self-hosted, non-S3); a PUT is
                                         authorized only for a storage key the API minted in-flight
+                                        AND an X-Upload-Token header matching that dispatch, which
+                                        the worker echoes from upload.headers; 403 otherwise, and
+                                        409 on a second write, since outputs are write-once
 GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)
 ```
 

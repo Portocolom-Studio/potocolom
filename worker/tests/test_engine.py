@@ -11,8 +11,11 @@ from worker.engine import (
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
     GeneratedFrame,
+    OBSERVED_FRAME_SAMPLES,
+    OBSERVED_FRAME_WINDOW,
     REALTIME_SIZE,
     SimulatedEngine,
+    _canvas_to_sketch_map,
     encode_webp,
 )
 from worker.manifests import Manifest, SIMULATED_MANIFEST
@@ -251,6 +254,68 @@ def test_sdxl_pooled_embedding_comes_from_first_chunk():
     assert kwargs["prompt_embeds"].shape == kwargs["negative_prompt_embeds"].shape
     assert kwargs["pooled_prompt_embeds"].shape == (1, 6)
     assert kwargs["pooled_prompt_embeds"].marker == 10
+
+
+def test_canvas_to_sketch_map_inverts_stroke_polarity():
+    """The T2I-Adapter wants light strokes on black; the canvas is dark
+    strokes on white. Sample a stroke pixel and a background pixel so an
+    inverted (or missing) conversion fails rather than passing by accident."""
+    from PIL import ImageDraw
+
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.line((0, 0, REALTIME_SIZE, REALTIME_SIZE), fill=(0, 0, 0), width=8)
+    draw.line((REALTIME_SIZE, 0, 0, REALTIME_SIZE), fill=(0, 0, 0), width=8)
+
+    sketch = _canvas_to_sketch_map(canvas)
+
+    assert sketch.size == (REALTIME_SIZE, REALTIME_SIZE)
+    assert sketch.mode == "RGB"
+    assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 2)) == (255, 255, 255)
+    assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 4)) == (0, 0, 0)
+
+
+def test_load_realtime_registers_the_base_under_the_t2i_key():
+    """The realtime pipeline's base must be visible to the cache.
+
+    A realtime session on a full-resident model holds the whole text-to-image
+    pipeline, and a queued text-to-image job for the same model afterwards
+    must reuse it: without the registration below, the cache has no entry and
+    the job loads a second complete pipeline while the first is still held.
+    """
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._pipelines = {}
+    base = MagicMock()
+    base.unet = object()
+    pipeline = MagicMock()
+    pipeline.unet = base.unet
+    adapter = MagicMock()
+    diffusers = ModuleType("diffusers")
+    diffusers.T2IAdapter = MagicMock()
+    diffusers.T2IAdapter.from_pretrained = MagicMock(return_value=adapter)
+    diffusers.StableDiffusionXLAdapterPipeline = MagicMock()
+    diffusers.StableDiffusionXLAdapterPipeline.from_pipe = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        t2i_adapter="org/vega-sketch",
+    )
+    engine._load = MagicMock(return_value=base)
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        loaded = engine._load_realtime(manifest)
+
+    assert loaded is pipeline
+    # The base is cached under the t2i key, and it is the very object the
+    # realtime pipeline was composed from: the job and the session share the
+    # UNet, text encoders and VAE.
+    assert engine._pipelines[(manifest.id, "t2i")] is base
+    assert diffusers.StableDiffusionXLAdapterPipeline.from_pipe.call_args.args[0] is base
+    engine._load.assert_called_once_with(manifest, "t2i")
 
 
 def test_simulated_gpu_lifecycle():
@@ -789,6 +854,8 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(
@@ -821,6 +888,93 @@ def test_calibrate_realtime_sets_slots_from_p95():
     canvases = [call.args[2] for call in engine._frame.call_args_list]
     assert all(canvas is canvases[0] for canvas in canvases)
     assert all(call.args[3] == 0.7 for call in engine._frame.call_args_list)
+    # The measured p95 is advertised per model: 200 ms samples -> 200.
+    assert engine.realtime_p95_ms("vega-rt") == 200
+    assert engine.realtime_p95_ms("sdxl-turbo") is None
+
+
+def test_realtime_p95_ms_none_before_any_calibration():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    assert engine.realtime_p95_ms("vega-rt") is None
+
+
+def test_observed_frames_below_threshold_keep_the_calibration_value():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {"vega-rt": 408}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES - 1):
+        engine.observe_frame_ms("vega-rt", 600.0)
+    assert engine.realtime_p95_ms("vega-rt") == 408
+
+
+def test_observed_frames_supersede_calibration_with_nearest_rank_p95():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {"vega-rt": 408}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES - 1):
+        engine.observe_frame_ms("vega-rt", 200.4)
+    engine.observe_frame_ms("vega-rt", 900.0)  # one outlier
+    # Nearest-rank p95 of 20 is the 19th ordered sample (200.4, rounded to
+    # 200), not the calibration number and not the outlier.
+    assert engine.realtime_p95_ms("vega-rt") == 200
+
+
+def test_observed_frame_window_drops_the_oldest():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_WINDOW):
+        engine.observe_frame_ms("vega-rt", 900.0)
+    for _ in range(OBSERVED_FRAME_WINDOW):
+        engine.observe_frame_ms("vega-rt", 300.0)
+    # The bounded window dropped the slow early session entirely: unbounded,
+    # the p95 of 240 samples would sit in the 900 ms tail.
+    assert engine.realtime_p95_ms("vega-rt") == 300
+
+
+def test_observed_frames_report_a_value_without_calibration():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES):
+        engine.observe_frame_ms("sdxl-turbo", 250.0)
+    assert engine.realtime_p95_ms("sdxl-turbo") == 250
+
+
+def test_p95_model_ids_covers_observed_and_calibrated_and_never_none():
+    # The headline case the feature exists for is a model with observed
+    # frames and no calibration entry: it must be advertised, and a test-local
+    # p95_model_ids cannot prove the real method does. The union is what
+    # matters: enough observations supersede calibration, a calibration entry
+    # advertises until observations catch up, and nothing whose realtime_p95
+    # is None is ever named.
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    for _ in range(OBSERVED_FRAME_SAMPLES):
+        engine.observe_frame_ms("vega-rt", 200.0)
+    engine._realtime_p95_ms["sdxl-turbo"] = 333
+    engine.observe_frame_ms("sd-turbo", 400.0)  # too few to supersede
+
+    ids = engine.p95_model_ids()
+
+    assert "vega-rt" in ids  # observed enough frames, no calibration entry
+    assert engine.realtime_p95_ms("vega-rt") == 200
+    assert "sdxl-turbo" in ids  # calibration entry, no observations
+    assert engine.realtime_p95_ms("sdxl-turbo") == 333
+    assert "sd-turbo" not in ids  # no calibration entry, too few observations
+    assert all(engine.realtime_p95_ms(model_id) is not None for model_id in ids)
+
+
+def test_simulated_engine_ignores_frame_observations():
+    engine = SimulatedEngine(0.01)
+    engine.observe_frame_ms("sd-sim", 123.0)
+    engine.observe_frame_ms("sd-sim", 456.0)
+    assert engine.realtime_p95_ms("sd-sim") is None
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
@@ -832,6 +986,8 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -869,6 +1025,8 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
@@ -897,6 +1055,8 @@ def test_calibrate_realtime_skips_cpu_without_frames():
     engine._rungs = {}
     engine._last_used = {}
     engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -912,6 +1072,7 @@ def test_calibrate_realtime_skips_cpu_without_frames():
 
     assert slots == 0
     assert engine._calibrated_slots == 0
+    assert engine.realtime_p95_ms("vega-rt") is None
     engine._frame.assert_not_called()
     engine._select_rung.assert_not_called()
 
@@ -931,6 +1092,38 @@ def test_evict_cold_removes_oldest_first():
     assert "b" not in engine._rungs
 
 
+def test_evicting_the_last_pipeline_forgets_the_cached_rung():
+    """A cached rung must not outlive its conditions: with the model evicted,
+    the next load decides against the VRAM that exists then, not the VRAM
+    that existed when the rung was chosen (issue #270)."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._evict_model("m")
+
+    assert engine._pipelines == {}
+    assert engine.model_rung("m") is None
+
+
+def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
+    """The realtime and t2i entries share every weight, so removing one of
+    them leaves the model resident and the rung it was loaded at is still
+    the truth; only the removal of the last entry may forget it."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("m", "t2i"): object(), ("m", "realtime"): object()}
+    engine._rungs = {"m": "full"}
+    engine._last_used = {"m": 1.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._drop_pipeline(("m", "t2i"))
+    assert engine.model_rung("m") == "full"
+    engine._drop_pipeline(("m", "realtime"))
+    assert engine.model_rung("m") is None
+
+
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
@@ -944,6 +1137,7 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     engine._rungs = {}
     engine._last_used = {}
     engine._free_gpu_cache = MagicMock()
+    engine._gpu = asyncio.Lock()
     engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
     engine._select_rung = MagicMock(return_value="full")
     attempts: list[str] = []

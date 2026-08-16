@@ -30,13 +30,15 @@ Fleet connection, worker to API:
 
 | type | Fields | Notes |
 |---|---|---|
-| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
-| `heartbeat` | `slots_in_use`, `loaded_models`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
+| `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). Each manifest may carry `realtime_p95_ms` (the measured single-frame p95 on this worker's card, absent until something has measured it) and `studio_capabilities` (narrows what the studio offers, absent when every capability is offered). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
+| `heartbeat` | `slots_in_use`, `loaded_models`, `frame_p95_ms`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. `frame_p95_ms` maps each model id to that worker's measured single-frame p95 on that card; the key is always present and is an empty object when nothing has been measured, and the API overwrites the hello value with it. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
 | `session_ready` | `session_id` | slot acquired, model warm |
 | `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
-| `job_progress` | `job_id`, `progress` | fraction of denoising steps done |
-| `job_done` | `job_id`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
-| `job_failed` | `job_id`, `reason` | the job fails visibly; only worker death triggers the one retry |
+| `job_progress` | `job_id`, `progress`, `dispatch_token` | fraction of denoising steps done |
+| `job_done` | `job_id`, `dispatch_token`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
+| `job_failed` | `job_id`, `dispatch_token`, `reason` | the job fails visibly; only worker death triggers the one retry |
+
+`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. The field is required from a protocol 3 worker, which is believed only with a matching token: a message that omits it is ignored exactly like one carrying a wrong token. A protocol 2 (N-1) worker is the one exception, accepted without it because that version does not send the field; the acceptance disappears when the compatibility floor moves to 3.
 
 Fleet connection, API to worker:
 
@@ -45,14 +47,16 @@ Fleet connection, API to worker:
 | `registered` | | hello accepted |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
+| `update_session` | `session_id`, `params` | replace the session's params with the merged set (the browser's keys merged over the session's, the seed riding along); protocol version 3 and up, so the API refuses an update whose assigned worker predates the message instead of sending it |
 | `close_session` | `session_id` | release the slot |
-| `dispatch_job` | `job_id`, `model_id`, `params`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. Older workers ignore the optional fields (N-1 safe). |
+| `dispatch_job` | `job_id`, `model_id`, `params`, `dispatch_token`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. `dispatch_token` identifies this dispatch: it is echoed on the messages below and, on the local storage backend, rides in `upload.headers` as `X-Upload-Token` because the key alone is derivable by any worker that ever held the job. Older workers ignore the optional fields (N-1 safe). |
 
 Realtime connection, browser to API:
 
 | type | Fields | Notes |
 |---|---|---|
 | `open` | `model_id`, `params` (optional) | first message after connect; params follow the model's schema |
+| `update_params` | `params` | a subset of the session's params to change live. The API validates against the manifest's schema with `required` removed; a `seed` is refused (fixed at session open) and so is an update whose assigned worker predates `update_session`; both are answered with an `error` that leaves the session running |
 | `close` | | end the session cleanly |
 
 Realtime connection, API to browser:
@@ -60,11 +64,12 @@ Realtime connection, API to browser:
 | type | Fields | Notes |
 |---|---|---|
 | `ready` | `session_id` | frames may flow |
+| `params_updated` | `params` | the merged parameters the API holds for the session: the browser's keys merged over the session's, the seed riding along. That is what later frames are rendered with once a worker has them; the worker may fill in the manifest's declared defaults for keys nobody has set, so what it applies can be a superset. Sent even when no worker holds the session at that moment (a reassignment in flight); the worker picks the update up when it arrives |
 | `interrupted` | | worker lost; hold frames, reassignment in progress |
 | `resumed` | | new worker ready; re-send the current canvas |
-| `error` | `code`, `message` | terminal; the API closes after sending |
+| `error` | `code`, `message` | terminal; the API closes after sending. The one exception is a rejected `update_params` (invalid params, a `seed` change, or an assigned worker that predates `update_session`): that error is a refusal and the session keeps running |
 
-Messages later issues add to this catalogue (queued position, prompt updates, credits ticks, drain) extend these tables; nothing here is expected to change shape.
+Messages later issues add to this catalogue (queued position, credits ticks, drain) extend these tables; nothing here is expected to change shape.
 
 ## Connection establishment
 
@@ -187,7 +192,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | Code | Meaning | Sent to |
 |---|---|---|
 | 1000 | normal close | either |
-| 4000 | protocol violation (first message was not hello or open, malformed JSON) | either |
+| 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse) | either |
 | 4002 | unsupported protocol version | worker |
 | 4003 | no worker capacity for the requested model | browser |
 | 4004 | unknown model | browser |

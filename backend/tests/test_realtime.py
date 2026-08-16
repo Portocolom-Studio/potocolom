@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
 from app.main import app
-from app.manifests import Manifest
+from app.manifests import FRAME_P95_MAX_MS, Manifest
 from app.realtime import (
     CANVAS_FRAME,
     GENERATED_FRAME,
@@ -19,6 +19,7 @@ from app.realtime import (
     fleet_token_allowed,
     forwarding_trusts_any_peer,
     origin_allowed,
+    parse_frame_p95,
     peer_is_unroutable,
 )
 from app.settings import get_settings
@@ -30,8 +31,21 @@ from app.tables import UsageEvent
 client = TestClient(app, client=("127.0.0.1", 50000))
 
 
-def manifest(model_id="sd-sim") -> dict:
-    return {"id": model_id, "name": model_id, "capabilities": ["realtime"], "parameters": {}}
+def manifest(model_id="sd-sim", parameters=None) -> dict:
+    return {"id": model_id, "name": model_id, "capabilities": ["realtime"],
+            "parameters": {} if parameters is None else parameters}
+
+
+# The default manifest above takes any params, which is more permissive than
+# every shipped realtime model: sd-turbo, sdxl-turbo and vega-rt all require a
+# prompt. A client built against the permissive shape opens sessions in the
+# tests and the simulator, then is refused 4000 by the real thing, so the
+# refusal is pinned here with a manifest shaped like the shipped ones.
+REQUIRES_PROMPT = {
+    "type": "object",
+    "properties": {"prompt": {"type": "string"}},
+    "required": ["prompt"],
+}
 
 
 class FakeHeaders:
@@ -88,12 +102,13 @@ class FakeSocket:
         self.close_code = code
 
 
-def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slots=1):
+def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slots=1,
+          parameters=None):
     return {
         "type": "hello",
         "protocol_version": version,
         "worker_id": worker_id,
-        "models": [manifest(m) for m in models],
+        "models": [manifest(m, parameters) for m in models],
         "realtime_slots": slots,
     }
 
@@ -104,6 +119,23 @@ def test_version_gate_rejects_older_than_n_minus_1():
         response = ws.receive_json()
         assert response["type"] == "rejected"
         assert response["min_supported_version"] == MIN_SUPPORTED_VERSION
+
+
+def test_hello_with_an_absurd_realtime_p95_ms_still_registers():
+    # A measurement is cosmetic; a manifest is not. An out-of-range p95
+    # costs the label (None), not the worker's registration: refusing the
+    # hello stranded the worker in a reconnect loop that only a process
+    # restart could end, over a number the heartbeat carrying the identical
+    # value would merely skip.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        hello_msg = hello(worker_id="w-absurd", models=("vega-rt",), slots=1)
+        hello_msg["models"][0]["realtime_p95_ms"] = FRAME_P95_MAX_MS + 1
+        worker_ws.send_json(hello_msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-absurd"]
+        # The model registered and its label came through as absent.
+        assert worker.manifests[0].id == "vega-rt"
+        assert worker.manifests[0].realtime_p95_ms is None
 
 
 def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
@@ -383,6 +415,302 @@ def test_unknown_model_is_refused():
         assert response["code"] == 4004
 
 
+def test_open_without_the_required_prompt_is_refused():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-prompt", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            response = browser_ws.receive_json()
+            assert response["type"] == "error"
+            assert response["code"] == 4000
+
+
+def test_open_carrying_the_required_prompt_opens_the_session():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-prompt-ok", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({
+                "type": "open",
+                "model_id": "sd-sim",
+                "params": {"prompt": "a red house on a hill"},
+            })
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            # The params have to reach the worker, not merely pass validation.
+            # Asserting only that the session opens would let the API forward an
+            # empty dict: the simulated engine ignores the prompt, so nothing
+            # here would notice, while a real model would generate from nothing.
+            assert opened["params"]["prompt"] == "a red house on a hill"
+            # The API filled the seed the client did not send, so the session
+            # carries one from the first open and reassignment can re-open
+            # with it.
+            seed = opened["params"]["seed"]
+            assert isinstance(seed, int)
+            assert 0 <= seed < realtime.SESSION_SEED_BOUND
+            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+
+def test_update_params_reaches_the_worker_and_browser():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-ok", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            updated = worker_ws.receive_json()
+            # The merged params: the update won because later keys win, and the
+            # session seed the API filled at open rides along.
+            assert updated["type"] == "update_session"
+            assert updated["session_id"] == opened["session_id"]
+            assert updated["params"]["prompt"] == "a blue house"
+            seed = updated["params"]["seed"]
+            assert isinstance(seed, int)
+            assert 0 <= seed < realtime.SESSION_SEED_BOUND
+            acknowledged = browser_ws.receive_json()
+            assert acknowledged["type"] == "params_updated"
+            assert acknowledged["params"] == {"prompt": "a blue house", "seed": seed}
+
+            # A subset update merges instead of replacing the whole dict.
+            browser_ws.send_json({"type": "update_params", "params": {}})
+            # An empty update is a client bug: reported, not applied.
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            assert "empty" in refused["message"]
+
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.params == {"prompt": "a blue house", "seed": seed}
+
+
+@pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 1])
+def test_update_params_follows_the_workers_advertised_version(version):
+    """The version the worker advertised in hello is what decides, not the
+    API's own: the API is always at PROTOCOL_VERSION, so refusing an N-1
+    worker proves the check reads the advertised number, and a worker newer
+    than the API still takes updates. An N-1 worker predates update_session
+    and would silently drop it, so acknowledging an update it cannot apply
+    would be worse than refusing it: the user cannot tell a silent no-op
+    from a model that ignored their prompt.
+    """
+    refused = version < realtime.UPDATE_SESSION_PROTOCOL_VERSION
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=version, worker_id=f"w-ver-{version}",
+                                  parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            if refused:
+                refused_msg = browser_ws.receive_json()
+                assert refused_msg["type"] == "error"
+                assert refused_msg["code"] == 4000
+                assert "support" in refused_msg["message"]
+                session = realtime.sessions[uuid.UUID(opened["session_id"])]
+                assert session.params["prompt"] == "a red house"
+            else:
+                updated = worker_ws.receive_json()
+                assert updated["type"] == "update_session"
+                assert updated["session_id"] == opened["session_id"]
+                acknowledged = browser_ws.receive_json()
+                assert acknowledged["type"] == "params_updated"
+                session = realtime.sessions[uuid.UUID(opened["session_id"])]
+                assert session.params["prompt"] == "a blue house"
+
+            # Either way the worker's next message is the canvas frame, not
+            # an update_session it would have dropped, and the session is
+            # still rendering.
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-live"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            assert worker_ws.receive_json()["type"] == "close_session"
+
+
+def test_session_open_without_a_seed_fills_one_in_the_session_params():
+    # The API owns the seed: session.params must carry one from the first
+    # open, because reassign re-opens a live session with that dict and a
+    # value missing from it would be re-rolled by the replacement worker,
+    # jumping the image in the middle of a session.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-fill", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            seed = opened["params"]["seed"]
+            assert isinstance(seed, int)
+            assert 0 <= seed < realtime.SESSION_SEED_BOUND
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.params["prompt"] == "a red house"
+            assert session.params["seed"] == seed
+
+
+def test_session_open_keeps_an_explicit_seed():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-explicit", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house", "seed": 42}})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            # The client's seed is kept so a session can be reproduced exactly.
+            assert opened["params"]["seed"] == 42
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.params["seed"] == 42
+
+
+def test_update_params_refuses_a_seed_change_and_keeps_the_session():
+    # A session's seed is fixed for its life: a mixed-version fleet cannot
+    # agree on a mid-session change (an older worker overwrites it with the
+    # seed it drew at open), so the API refuses it like an out-of-range
+    # parameter instead of acknowledging a value no frame will use.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-locked", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            session_id = opened["session_id"]
+            worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+            assert browser_ws.receive_json()["type"] == "ready"
+            seed = realtime.sessions[uuid.UUID(session_id)].params["seed"]
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house", "seed": seed + 1}})
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            assert "seed" in refused["message"]
+
+            # The refusal left the session running: the seed and the prompt
+            # are untouched, nothing reached the worker, and a frame still
+            # flows.
+            params = realtime.sessions[uuid.UUID(session_id)].params
+            assert params["seed"] == seed
+            assert params["prompt"] == "a red house"
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"still-live"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            assert worker_ws.receive_json()["type"] == "close_session"
+
+
+def test_open_normalises_the_seed_across_shapes():
+    # The manifest declares no seed property, so every shape below passes
+    # the schema's validation; the open normalises them where the API takes
+    # ownership: an integer is kept, a whole float is kept as an integer, a
+    # bool is replaced (bool subclasses int, so `seed: true` must not
+    # survive as a seed), and a non-numeric value is replaced rather than
+    # passed to an engine that would build no generator.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-seed-shapes"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        for sent, expected in ((42, 42), (42.0, 42), (True, None), (1.5, None),
+                               ("seven", None)):
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                      "params": {"prompt": "a red house", "seed": sent}})
+                opened = worker_ws.receive_json()
+                assert opened["type"] == "open_session"
+                seed = opened["params"]["seed"]
+                if expected is None:
+                    assert isinstance(seed, int) and not isinstance(seed, bool)
+                    assert 0 <= seed < realtime.SESSION_SEED_BOUND
+                else:
+                    assert seed == expected
+                worker_ws.send_json({"type": "session_ready",
+                                     "session_id": opened["session_id"]})
+                assert browser_ws.receive_json()["type"] == "ready"
+            # The browser teardown released the session; drain the
+            # close_session so the next open reads its own open_session.
+            assert worker_ws.receive_json()["type"] == "close_session"
+
+
+def test_invalid_update_params_keeps_the_session_open():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-bad", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params", "params": {"prompt": 123}})
+            refused = browser_ws.receive_json()
+            assert refused["type"] == "error"
+            assert refused["code"] == 4000
+            params = realtime.sessions[uuid.UUID(opened["session_id"])].params
+            assert params["prompt"] == "a red house"
+            assert isinstance(params["seed"], int)  # the rejected update left it alone
+
+            # The socket survived the rejection: a frame still flows, and the
+            # session closes normally afterwards.
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-alive"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            browser_ws.send_json({"type": "close"})
+            closed = worker_ws.receive_json()
+            assert closed["type"] == "close_session"
+
+
+def test_malformed_update_params_closes_as_a_protocol_violation():
+    """A wire-shape violation is not a recoverable client mistake: params that
+    are not an object are parsed with the same control parsing as everything
+    else, so they close 4000 like any other malformed message."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-update-mangled", parameters=REQUIRES_PROMPT))
+        assert worker_ws.receive_json()["type"] == "registered"
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+            browser_ws.send_json({"type": "update_params", "params": "not an object"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 4000
+
+
 def test_session_and_frame_relay_both_directions():
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello())
@@ -617,6 +945,174 @@ def test_heartbeat_does_not_free_committed_slots():
                 assert refusal["code"] == 4003
 
 
+def test_heartbeat_frame_p95_replaces_the_hello_measurement():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        hello_msg = hello(worker_id="w-live", models=("vega-rt",), slots=1)
+        hello_msg["models"][0]["realtime_p95_ms"] = 408
+        worker_ws.send_json(hello_msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        before = client.get("/api/v1/models").json()
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        worker = realtime.workers["w-live"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+        after = client.get("/api/v1/models").json()
+    entry = next(m for m in before if m["id"] == "vega-rt")
+    assert entry["realtime_p95_ms"] == 408
+    entry = next(m for m in after if m["id"] == "vega-rt")
+    assert entry["realtime_p95_ms"] == 333
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-dict",
+    None,
+    5,
+])
+def test_malformed_heartbeat_frame_p95_is_ignored_and_connection_survives(bad):
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-badp95", models=("vega-rt",), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 222}})
+        worker = realtime.workers["w-badp95"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 222}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 222}
+
+        # A non-dict payload is dropped whole, so the previous value stands
+        # until the valid heartbeat after it lands, and the malformed
+        # heartbeat must not close the fleet connection (messages process in
+        # order).
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": bad})
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+        assert "w-badp95" in realtime.workers
+
+
+def test_heartbeat_frame_p95_skips_a_bad_entry_and_keeps_the_good_one():
+    # Entries within a dict are independent: one junk entry must not discard
+    # the valid measurement beside it, or a worker that appends a bad entry
+    # to every heartbeat pins its last accepted number indefinitely.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-salvage",
+                                  models=("vega-rt", "sdxl-turbo"), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+            "vega-rt": "slow", "sdxl-turbo": 250,
+        }})
+        worker = realtime.workers["w-salvage"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"sdxl-turbo": 250}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"sdxl-turbo": 250}
+
+
+def test_heartbeat_junk_for_one_model_keeps_its_live_value():
+    # Merging (not replacing) is what makes per-entry salvage protect the
+    # value already held: a good value, then a heartbeat with junk for that
+    # same model and a good value for another, must leave the first model's
+    # live value in place rather than snap it back to hello's number.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-merge",
+                                  models=("vega-rt", "sdxl-turbo"), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 333}})
+        worker = realtime.workers["w-merge"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+            "vega-rt": "junk", "sdxl-turbo": 250,
+        }})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {
+            "vega-rt": 333, "sdxl-turbo": 250,
+        }:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 333, "sdxl-turbo": 250}
+
+
+def test_heartbeat_frame_p95_ignores_models_the_worker_never_advertised():
+    # The merge is bounded by the worker's own manifest set: a measurement
+    # for a model this worker does not serve is meaningless, and admitting
+    # one would let the map grow with every heartbeat for the worker's
+    # lifetime. The ids come from the registered manifests, never from the
+    # heartbeat.
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-foreign", models=("vega-rt",), slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+            "vega-rt": 333, "sd-turbo": 250,
+        }})
+        worker = realtime.workers["w-foreign"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 333}:
+            time.sleep(0.05)
+        # The advertised model was stored; the foreign one was ignored.
+        assert worker.frame_p95_ms == {"vega-rt": 333}
+
+        for index in range(5):
+            worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {
+                f"foreign-{index}": 200 + index,
+            }})
+        # Trailing barrier on the same socket: a connection processes its
+        # messages in order, so once this lands every foreign heartbeat above
+        # has been handled, and the map must still hold nothing beyond the
+        # advertised model. Fresh unknown ids cannot grow it.
+        worker_ws.send_json({"type": "heartbeat", "frame_p95_ms": {"vega-rt": 350}})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and worker.frame_p95_ms != {"vega-rt": 350}:
+            time.sleep(0.05)
+        assert worker.frame_p95_ms == {"vega-rt": 350}
+        assert "w-foreign" in realtime.workers
+
+
+def test_parse_frame_p95_accepts_whole_milliseconds():
+    assert parse_frame_p95({"vega-rt": 333}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": 333.0}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS}) == {"vega-rt": FRAME_P95_MAX_MS}
+    assert parse_frame_p95({}) == {}
+    assert parse_frame_p95({"vega-rt": 333, "sdxl-turbo": 250}) == {
+        "vega-rt": 333, "sdxl-turbo": 250,
+    }
+
+
+def test_parse_frame_p95_skips_bad_entries_and_keeps_good_ones():
+    assert parse_frame_p95({"vega-rt": 333, "sdxl-turbo": "slow"}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": 0, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": 1.5, "sdxl-turbo": 250.0}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": True, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": 333, 7: 100}) == {"vega-rt": 333}
+    assert parse_frame_p95({"vega-rt": None, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    assert parse_frame_p95({"vega-rt": -1, "sdxl-turbo": 250}) == {"sdxl-turbo": 250}
+    # The ceiling is the branch that keeps an absurd number out of a browser,
+    # so it is asserted at the boundary and far past it.
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS}) == {"vega-rt": FRAME_P95_MAX_MS}
+    assert parse_frame_p95({"vega-rt": FRAME_P95_MAX_MS + 1, "sdxl-turbo": 250}) == {
+        "sdxl-turbo": 250,
+    }
+    assert parse_frame_p95({"vega-rt": 10**30}) == {}
+    assert parse_frame_p95({"vega-rt": "slow"}) == {}
+    assert parse_frame_p95({7: 100}) == {}
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-dict",
+    None,
+    [],
+    5,
+])
+def test_parse_frame_p95_drops_whole_non_dict_payloads(bad):
+    assert parse_frame_p95(bad) is None, bad
+
+
 def test_assign_timeout_releases_the_slot(monkeypatch):
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
@@ -630,6 +1126,131 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
             assert refusal["type"] == "error"
             assert refusal["code"] == 4003
         assert realtime.workers["w-silent"].slots_in_use == 0
+
+
+def test_assign_timeout_sends_close_session(monkeypatch):
+    """A give-up tells the worker the session is dead, so it discards the
+    runner instead of waiting for frames nobody will ever send.
+
+    Driven directly rather than through a TestClient websocket: asserting on
+    the wire there means blocking on receive_json, so a regression would hang
+    the suite instead of failing it, and a hang costs a whole CI job.
+    """
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+
+    async def scenario():
+        ws = FakeSocket()
+        worker = realtime.Worker(id="w-give-up", ws=ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=1)
+        realtime.workers[worker.id] = worker
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
+        realtime.sessions[session.id] = session
+        try:
+            # The worker never answers, so the open times out.
+            assert not await realtime.assign(session, worker)
+            kinds = [message["type"] for message in ws.sent]
+            assert kinds == ["open_session", "close_session"], ws.sent
+            closed = ws.sent[-1]
+            assert closed["session_id"] == str(session.id)
+            assert worker.slots_in_use == 0
+        finally:
+            realtime.workers.pop(worker.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
+    """The browser leaves mid-assignment: the realtime handler's teardown
+    calls release(), which decrements the slot and clears the session's
+    worker, so the assignment's own failure compensation must be
+    ownership-checked rather than assumed, or the worker underflows to minus
+    one and is advertised as having a free slot it does not have."""
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+
+    async def scenario():
+        ws = FakeSocket()
+        worker = realtime.Worker(id="w-left-mid", ws=ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=1)
+        realtime.workers[worker.id] = worker
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.assign(session, worker))
+            await asyncio.sleep(0.01)  # the open is in flight
+            assert worker.slots_in_use == 1
+            # What the realtime handler's teardown does when the browser
+            # leaves while the assignment is in flight.
+            await realtime.release(session)
+            assert worker.slots_in_use == 0
+            # The worker never answers: the open times out.
+            assert not await task
+            # The failure must not be compensated twice: release already
+            # accounted for this slot, and reassign moves the session on.
+            assert worker.slots_in_use == 0
+            assert worker.free_slots == worker.realtime_slots
+            assert session.worker is None
+        finally:
+            realtime.workers.pop(worker.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
+    """One attempt per reassignment, and a failure closes the session 4003.
+
+    Retrying other candidates reads as an obvious improvement and is not one
+    yet: two reassign tasks for a session share its worker and its ready
+    event, so a stale attempt with somewhere else to go can place a second
+    worker and then be woken by the first one's readiness, leaving two workers
+    holding the session. Until an assignment carries an identity that
+    readiness answers to (issue #270), this stays as narrow as main has it,
+    and this test is what stops the retry from creeping back in.
+    """
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
+
+    async def scenario():
+        browser = FakeSocket()
+        first_ws = FakeSocket()
+        first = realtime.Worker(id="w-first", ws=first_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
+        spare_ws = FakeSocket()
+        spare = realtime.Worker(id="w-spare", ws=spare_ws,
+                                manifests=[Manifest.model_validate(manifest())],
+                                realtime_slots=1)
+        realtime.workers.update({first.id: first, spare.id: spare})
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
+        realtime.sessions[session.id] = session
+        try:
+            # pick_worker takes the worker with the most free slots, and both
+            # have one, so pin which one is tried to keep this deterministic.
+            monkeypatch.setattr(realtime, "pick_worker", lambda model_id: first)
+            await realtime.reassign(session)
+            # Exactly one attempt, and the give-up tells the worker: a retry
+            # against the same candidate would show as a second open here while
+            # still leaving the spare untouched, so the whole sequence is
+            # pinned rather than just the first message.
+            assert [m["type"] for m in first_ws.sent] == [
+                "open_session", "close_session",
+            ], first_ws.sent
+            # The chosen worker never answers: the session ends rather than
+            # being offered to the spare.
+            assert spare_ws.sent == []
+            assert first.slots_in_use == 0
+            assert session.worker is None
+            assert [m["type"] for m in browser.sent] == ["interrupted", "error"]
+            assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
+            assert browser.close_code == realtime.CLOSE_NO_CAPACITY
+        finally:
+            realtime.workers.pop(first.id, None)
+            realtime.workers.pop(spare.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
 
 
 def test_reassign_moves_the_session_with_correct_accounting():
@@ -657,6 +1278,38 @@ def test_reassign_moves_the_session_with_correct_accounting():
             assert session.worker is replacement
             assert replacement.slots_in_use == 1
             assert browser.close_code is None  # the session survived
+        finally:
+            realtime.workers.pop(replacement.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_reassign_sends_the_same_seed_to_the_replacement_worker():
+    # The defect: the seed lived only in worker-local state, so re-opening a
+    # live session on a replacement worker generated a new one and the image
+    # jumped mid-session. The API session owns the seed now, so the
+    # open_session the replacement receives carries the session's own value.
+    async def scenario():
+        browser = FakeSocket()
+        replacement_ws = FakeSocket()
+        replacement = realtime.Worker(id="w-seed-replacement", ws=replacement_ws,
+                                      manifests=[Manifest.model_validate(manifest())],
+                                      realtime_slots=1)
+        realtime.workers[replacement.id] = replacement
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+                                   params={"prompt": "a red house", "seed": 77})
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.reassign(session))
+            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            opened = replacement_ws.sent[0]
+            assert opened["type"] == "open_session"
+            assert opened["params"]["seed"] == 77
+            assert opened["params"]["prompt"] == "a red house"
+            session.ready.set()  # what the fleet handler does on session_ready
+            await task
+            assert session.worker is replacement
         finally:
             realtime.workers.pop(replacement.id, None)
             realtime.sessions.pop(session.id, None)
