@@ -873,9 +873,9 @@ So the number is not a property of the card. The studio's default model holds fo
 
 Reserved VRAM grows about 0.1 GiB per extra session, reaching 7.56 GiB for `sdxl-turbo` at four sessions and 4.03 GiB for `vega-rt` at five, so on this 15.98 GiB card the GPU cycle binds and memory does not. An earlier revision of this table reported only `vega-rt` at two steps and read five sessions off it as the ceiling, which overstated what anyone running defaults would see.
 
-A third saving is larger than batching and costs nothing at all. A realtime session re-encodes the same prompt on every frame, though the prompt changes only when the user types while the canvas changes constantly. Encoding it once per session and reusing the tensors removes 26 to 33 ms of every frame, 15.7 percent of `sdxl-turbo` at one step and 12.3 percent of `vega-rt` at four, and the output is bit identical: the maximum difference between a cached-embedding latent and a re-encoded one at the same seed is exactly zero, because they are the same tensors. It is the cheapest capacity in this entry and it was found only by measuring what a frame is made of.
+A third saving is larger than batching and is the only one that changes nothing about the image. A realtime session re-encodes the same prompt on every frame, though the prompt changes only when the user types while the canvas changes constantly. Encoding it once per session and reusing the tensors removes 26 to 33 ms of every frame, 15.7 percent of `sdxl-turbo` at one step and 12.3 percent of `vega-rt` at four, and the output is bit identical: the maximum difference between a cached-embedding latent and a re-encoded one at the same seed is exactly zero, because they are the same tensors. It is the cheapest capacity in this entry and it was found only by measuring what a frame is made of.
 
-With the tiny decoder and cached embeddings, which are both free of any quality trade:
+With the tiny decoder and cached embeddings, which are free in different senses: the cache is bit identical, so nothing about the image changes, while the decoder is a preview that was measured and accepted rather than one that costs nothing:
 
 | Sessions batched | sdxl-turbo, 1 step | vega-rt, 4 steps |
 |---|---|---|
