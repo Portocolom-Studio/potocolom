@@ -856,22 +856,24 @@ So capacity above one session per GPU is a decode problem before it is a batchin
 
 That margin is not enough to promise on, because the collection window a batching scheduler needs is 30 to 50 ms by the design above and is not in the 465 ms. Nor are the input decode and the real output encode, which the measurement substitutes with synthetic drawing and a faster encoder setting. So batching alone puts two sessions at the edge of the bar rather than inside it.
 
-The VAE is where the room is. Issue #214 measures `vega-rt`'s full VAE decode at 122.2 ms of a 265.8 ms frame and TAESDXL at 8.3 ms, and decode is per image, so a batch of two pays it twice. Substituting the tiny decoder for the live preview puts one session near 150 ms, two serialised near 300 ms, and a batch of two near 238 ms, all comfortably inside the bar and with room for a third and fourth session. Two people drawing at once therefore needs the tiny VAE and does not need batching at all; batching is what buys the sessions after that, and its modest seventeen percent is worth having only once the decode is no longer half the frame.
+The VAE is where the room is. Issue #214 measures `vega-rt`'s full VAE decode at 122.2 ms of a 265.8 ms frame and TAESDXL at 8.3 ms, and decode is per image, so a batch of two pays it twice. Substituting the tiny decoder for the live preview is therefore worth more than batching is, and the table below is what both together measure. Two people drawing at once needs the tiny decoder and does not need batching at all; batching is what buys the sessions after that, and its seventeen percent is worth having only once the decode is no longer half the frame.
 
-Measured together, both changes give this curve for `vega-rt` at two steps and 512 px with the tiny decoder, over 40 timed frames per point, reporting what every session in the batch waits rather than a per-image cost:
+Measured together, both changes give these curves at 512 px with the tiny decoder, over 40 timed frames per point, reporting the complete frame every session in the batch waits for rather than a per-image cost. Each model is at the step count its manifest ships, because that is what a user gets, and `vega-rt` is also shown at its two-step floor to price what turning steps down buys:
 
-| Sessions batched | p50 | p95 | fps each | Reserved VRAM |
-|---|---|---|---|---|
-| 1 | 145.5 ms | 156.5 ms | 6.4 | 3.68 GiB |
-| 2 | 220.3 ms | 223.9 ms | 4.5 | 3.86 GiB |
-| 3 | 306.1 ms | 310.1 ms | 3.2 | 3.92 GiB |
-| 4 | 391.9 ms | 396.2 ms | 2.5 | 4.06 GiB |
-| 5 | 489.3 ms | 494.3 ms | 2.0 | 4.19 GiB |
-| 6 | 567.4 ms | 576.1 ms | 1.7 | 4.29 GiB |
+| Sessions batched | sdxl-turbo, 1 step | vega-rt, 4 steps | vega-rt, 2 steps |
+|---|---|---|---|
+| 1 | 167.5 ms | 232.6 ms | 156.5 ms |
+| 2 | 260.5 ms | 356.8 ms | 223.9 ms |
+| 3 | 367.4 ms | 507.9 ms | 310.1 ms |
+| 4 | 473.5 ms | 645.2 ms | 396.2 ms |
+| 5 | 603.3 ms | 824.1 ms | 494.3 ms |
+| 6 | 707.3 ms | | 576.1 ms |
 
-Five sessions per GPU is the arithmetic ceiling and four is the number worth promising, because the fifth clears the bar by 6 ms and the collection window, real input decode and browser paint all come out of that. Reserved VRAM grows by about 0.12 GiB per extra session, so on this card memory is not what binds; the GPU cycle is.
+So the number is not a property of the card. The studio's default model holds four sessions inside the bar and three with real margin; `vega-rt` at the four steps its manifest asks for holds two, and the same model at two steps holds five. That is the compatibility class from further down this entry arriving as a measurement rather than an argument: step count is part of the class, so capacity belongs to the class and a single per-worker number cannot describe it. Three sessions is what this card supports on the shipped default with margin to spare, and any promise has to name the class it was measured for.
 
-The order of work follows from this rather than from the ceiling. Serialised sessions with the tiny decoder are 298 ms for two and 447 ms for three, so the product requirement of two, and probably three, is met with no scheduler change at all. Batching is what admits the fourth session and what makes a cloud GPU cheaper per user; it is not a prerequisite for concurrency, which is what this entry assumed before the decode measurement. Ship the serialised path once end-to-end testing confirms three users, and build batching for the fourth.
+Reserved VRAM grows about 0.1 GiB per extra session, reaching 7.56 GiB for `sdxl-turbo` at four sessions and 4.03 GiB for `vega-rt` at five, so on this 15.98 GiB card the GPU cycle binds and memory does not. An earlier revision of this table reported only `vega-rt` at two steps and read five sessions off it as the ceiling, which overstated what anyone running defaults would see.
+
+The order of work follows from this rather than from the ceiling. Serialised sessions with the tiny decoder are 335 ms for two on the studio default and 502 ms for three, so two users need no scheduler change at all and three sit just outside the bar. Batching is what admits the third and fourth session and what makes a cloud GPU cheaper per user; it is not a prerequisite for concurrency, which is what this entry assumed before the decode measurement. Ship the tiny decoder and the serialised path first, confirm two users end to end, and build batching for the third.
 
 Peak allocated VRAM was 4.15 GiB for `vega-rt` at batch two and 7.51 GiB for `sdxl-turbo`, with reserved at 4.71 GiB, so allocated memory did not bind anywhere in the measured matrix. That is a narrower claim than memory not constraining anything: other resident models, compiled graphs, desktop use and larger cloud batches were outside it.
 
@@ -885,7 +887,7 @@ Rejected alternatives: a second worker process on the same GPU, which is the obv
 
 Self-hosted and cloud share the mechanism and differ only in how many workers exist. A self-hosted box gets whatever the batch curve supports on its card, one session until the sweep says otherwise, and the cloud multiplies that by workers rather than by processes per GPU.
 
-Every number here stops at the worker, and the bar is end to end, so none of them is a capacity promise yet. The curve was measured with perfectly aligned inputs, no collection window, synthetic strokes and a fast encoder setting, which is the friendliest case a scheduler will ever see; real users draw at different moments, so realised batches will be smaller and less full than the sweep's. What has to be measured before admitting a second user is the whole path with stage timings, a sustained multi-user run rather than a burst, and a slow browser next to healthy ones, since the relay awaits each browser inline today and one that stops reading stalls the others. Issue #294 carries that program, and a quality acceptance pass on the tiny decoder gates all of it: if its preview is not good enough to draw against, its arithmetic is not capacity.
+Every number here stops at the worker, and the bar is end to end, so none of them is a capacity promise yet. The curve was measured with perfectly aligned inputs, no collection window, synthetic strokes and a fast encoder setting, which is the friendliest case a scheduler will ever see; real users draw at different moments, so realised batches will be smaller and less full than the sweep's. What has to be measured before admitting a second user is the whole path with stage timings, a sustained multi-user run rather than a burst, and a slow browser next to healthy ones, since the relay awaits each browser inline today and one that stops reading stalls the others. Issue #294 carries that program. The quality acceptance the arithmetic depends on has been done: decoding one denoised latent both ways, so nothing but the decoder differs, gives a mean absolute difference of 10 of 255 across four subjects at 22 to 28 dB PSNR, and the tiny decoder retains 108 percent of the full decode's local gradient, so it is not the softening that was expected of a distilled decoder. Side by side the two are hard to tell apart. That clears it for a live preview, which is what it is for; the final image a user keeps is a queued job through the full VAE, so this decision never trades the output away.
 
 ## The realtime session has states, a fencing generation, and one durable accounting owner
 
