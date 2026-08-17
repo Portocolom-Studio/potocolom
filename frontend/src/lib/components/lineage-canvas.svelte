@@ -40,6 +40,7 @@
 	import MoveIcon from '@lucide/svelte/icons/move';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -52,6 +53,7 @@
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
+		decideViewportScheduleAfterRootPage,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
@@ -347,6 +349,16 @@
 		const filterModeEpoch = rootsFilterModeEpoch;
 		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
+		// Every place below that acts on this request's outcome checks this: the
+		// finally block, the scheduling guard, and both frame callbacks. The
+		// guard covers the decision, the callback covers the frame delay, and a
+		// reload in between would otherwise let a superseded frame mark the
+		// viewport ready.
+		const stillCurrent = () =>
+			canvasActive &&
+			canvasEpoch === canvasEpochSequence &&
+			filterModeEpoch === rootsFilterModeEpoch &&
+			requestEpoch === rootsRequestEpoch;
 		rootsLoading = true;
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
@@ -376,22 +388,29 @@
 				rootsFailed = true;
 			}
 		} finally {
-			if (
-				canvasActive &&
-				canvasEpoch === canvasEpochSequence &&
-				filterModeEpoch === rootsFilterModeEpoch &&
-				requestEpoch === rootsRequestEpoch
-			) {
+			if (stillCurrent()) {
 				rootsLoading = false;
 			}
 		}
-		if (loaded && !viewportReady) {
-			initializeFrame = requestAnimationFrame(initializeViewport);
-		} else if (loaded && recenterAfterFilter) {
-			recenterAfterFilter = false;
-			initializeFrame = requestAnimationFrame(() => {
-				initialViewportAnchor = recenterNewest(false);
-			});
+		if (stillCurrent()) {
+			const schedule = decideViewportScheduleAfterRootPage(
+				loaded,
+				viewportReady,
+				recenterAfterFilter,
+				persistedRoots.length > 0
+			);
+			if (schedule === 'initialize') {
+				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
+					initializeViewport();
+				});
+			} else if (schedule === 'recenter') {
+				recenterAfterFilter = false;
+				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
+					initialViewportAnchor = recenterNewest(false);
+				});
+			}
 		}
 	}
 
@@ -993,7 +1012,8 @@
 			restoredViewport?.rootId &&
 			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
 			rootsHaveMore &&
-			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES
+			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES &&
+			!rootsFailed
 		) {
 			anchorSearchPages += 1;
 			void loadRoots();
@@ -1484,7 +1504,7 @@
 						class:is-missing={data.entry.missing || shownImage === null}
 						class:is-starred={starred}
 						style={`--tile-pull: ${proximityScale(item)}`}
-						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}`}
+						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
 						title={promptLabel(data)}
 						onfocus={() => (focusedNodeId = item.node.id)}
 						onblur={() => (focusedNodeId = null)}
@@ -1583,6 +1603,24 @@
 						>
 							<RotateCcwIcon />
 						</button>
+					{/if}
+					{#if item.isRoot && item.treeStatus === 'error'}
+						{@const root = persistedRoots.find((entry) => entry.id === item.rootId)}
+						{#if root}
+							<button
+								type="button"
+								class="retry-tree-load"
+								title={t('app.images.retry_tree_load')}
+								aria-label={t('app.images.retry_tree_load')}
+								onpointerdown={(event) => event.stopPropagation()}
+								onclick={(event) => {
+									event.stopPropagation();
+									scheduleTreeLoad(root, true);
+								}}
+							>
+								<RefreshCwIcon />
+							</button>
+						{/if}
 					{/if}
 					{#if item.isRoot && item.remainingCountLowerBound > 0}
 						<span class="truncated-count">
@@ -1934,6 +1972,38 @@
 		height: 13px;
 	}
 
+	.retry-tree-load {
+		position: absolute;
+		top: calc(50% - var(--visible-tile-half-height) - 10px);
+		right: calc(50% + var(--visible-tile-half-width) - 10px);
+		z-index: 2;
+		display: grid;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		place-items: center;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--foreground);
+		background: var(--card);
+		box-shadow: 0 2px 8px color-mix(in oklch, var(--foreground) 14%, transparent);
+		pointer-events: auto;
+	}
+
+	.retry-tree-load:hover {
+		background: var(--accent);
+	}
+
+	.retry-tree-load:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: 2px;
+	}
+
+	.retry-tree-load :global(svg) {
+		width: 13px;
+		height: 13px;
+	}
+
 	.truncated-count {
 		position: absolute;
 		top: calc(50% + var(--visible-tile-half-height) + 6px);
@@ -1988,6 +2058,10 @@
 		width: 100%;
 		height: 100%;
 		place-items: center;
+	}
+
+	.lod-constellation .retry-tree-load {
+		display: none;
 	}
 
 	.micro-content img,

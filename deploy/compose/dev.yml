@@ -6,7 +6,10 @@ services:
     image: postgres:16
     ports:
       # Override when 5432 is taken by another PostgreSQL on the host, and set
-      # DATABASE_URL to the same port for the backend and the tests.
+      # DATABASE_URL to the same port for the backend and the tests. Give the
+      # test URL a database name of its own: an exported DATABASE_URL is shared
+      # by every run in that shell, and the suite otherwise names one per run
+      # so two runs cannot collide (backend/tests/conftest.py).
       - "${DEV_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: potocolom

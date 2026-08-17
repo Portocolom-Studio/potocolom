@@ -1259,8 +1259,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     # believed (docs/connection-handling.md), which is the compatibility
     # floor; that acceptance disappears when the floor moves to 3.
     presented = control.get("dispatch_token")
-    if (presented is None and worker.protocol_version is not None
-            and worker.protocol_version >= 3):
+    if presented is None and worker.protocol_version >= 3:
         # A current worker omitting the token is as stale as one presenting a
         # wrong token, and gets the same warning.
         logger.warning("worker %s sent a stale dispatch token for job %s; ignored",
