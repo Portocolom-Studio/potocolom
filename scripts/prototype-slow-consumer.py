@@ -51,7 +51,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES  # noqa: E402
 
-PORT = 8907
+def free_port() -> int:
+    """A port this run owns. On a fixed port another service can answer the
+    health and models polls, and then the script measures that instead."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+PORT = free_port()
 FRAME_BYTES = 250_000  # deliberately past a WebP preview, to exceed socket buffers
 FPS = 4.0
 PHASE_SECONDS = 25.0
@@ -150,7 +158,19 @@ def summarise(label: str, values: list[float], frames: int) -> None:
           f"p95 {p95:7.1f} ms  max {values[-1]:7.1f} ms")
 
 
+def stop(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 async def main() -> None:
+    api = worker = None
     api = subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
          "--port", str(PORT), "--log-level", "warning"],
@@ -168,11 +188,15 @@ async def main() -> None:
     browsers: list[Browser] = []
     try:
         for _ in range(150):
+            if api.poll() is not None:
+                raise RuntimeError(f"the API exited during startup ({api.returncode})")
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/v1/health", timeout=1)
                 break
             except OSError:
                 await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("the API never answered its health check")
 
         # The worker registers a moment after the API listens, and /models
         # only advertises what a connected worker can serve.
@@ -285,10 +309,8 @@ async def main() -> None:
                 await b.ws.close()
             except Exception:
                 pass
-        worker.terminate()
-        api.terminate()
-        worker.wait(timeout=10)
-        api.wait(timeout=10)
+        stop(worker)
+        stop(api)
 
 
 asyncio.run(main())

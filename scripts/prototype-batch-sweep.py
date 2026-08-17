@@ -8,8 +8,8 @@ dominates (decisions.md, "Realtime concurrency comes from one GPU serving
 several sessions"). --tiny-vae is the larger one: the full VAE decode is about
 half the frame, and replacing it puts two serialized sessions inside the bar
 with no scheduler change at all, three once the prompt embeddings are cached
-per session too. Batching is the smaller one, worth about seventeen percent,
-and this script supplies its arithmetic: the cost of denoising N sessions'
+per session too. Batching is the smaller one, worth about sixteen percent
+of what the same sessions cost serialized, and this script supplies its arithmetic: the cost of denoising N sessions'
 frames as one batch, against N times the cost of one.
 
 It measures the batched pipeline call directly, without the worker or the API,
