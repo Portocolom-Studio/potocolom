@@ -255,7 +255,14 @@ def _no_inherited_jobs(request):
             # which hangs the run instead of cleaning it. These tables hold a
             # handful of rows, so the row-level path costs nothing, and the
             # lock timeout keeps a stuck connection from stalling the suite.
+            #
+            # Assets first: they carry the job_id foreign key, which TRUNCATE
+            # CASCADE used to absorb and DELETE does not. Nulling the other
+            # direction first (jobs.source_asset_id) is what lets the assets go
+            # while a job still points at one.
             await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await session.execute(text("UPDATE jobs SET source_asset_id = NULL"))
+            await session.execute(text("DELETE FROM assets"))
             await session.execute(text("DELETE FROM jobs"))
             await session.commit()
 
