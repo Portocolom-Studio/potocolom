@@ -76,7 +76,9 @@ The containerized applications are still exercised constantly: by the cloud simu
 # dependencies: PostgreSQL is the only one the native loop uses. Redis, MinIO
 # and Mailpit are cloud-profile substitutes; add --profile cloud-sim for them.
 # Host 5432 already taken? DEV_POSTGRES_PORT=5433 docker compose ... up -d, and
-# point DATABASE_URL at the same port for the backend and the tests.
+# point DATABASE_URL at the same port for the backend and the tests. Use a
+# database name of its own for the test URL: exporting one shares it with every
+# run in that shell, while the suite otherwise gives each run its own.
 docker compose -f deploy/compose/dev.yml up -d
 
 # Prefer `make setup` (picks a 3.11+ interpreter, installs into .venv only).

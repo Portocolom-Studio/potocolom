@@ -1,5 +1,7 @@
 """Model registry merge rules across concurrent workers."""
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -266,6 +268,107 @@ def test_public_omits_a_manifest_narrowed_to_nothing():
     finally:
         realtime.workers.clear()
         realtime.workers.update(saved)
+
+
+def test_public_logs_a_narrowed_to_nothing_drop_once(caplog):
+    # A model whose studio set intersects nothing vanishes from the studio,
+    # so the drop must be said out loud: the model id and both capability
+    # sets in one line an operator can grep for (issue #269).
+    worker = realtime.Worker(
+        id="w-drop", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="m-drop", name="Drop",
+                            capabilities=["text_to_image"],
+                            studio_capabilities=["upscale"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-drop"] = worker
+        with caplog.at_level(logging.WARNING, logger="potocolom.registry"):
+            assert "m-drop" not in registry.public()
+        assert "m-drop" in registry.available()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    records = [r for r in caplog.records if r.name == "potocolom.registry"]
+    assert len(records) == 1
+    assert records[0].message == (
+        "model m-drop dropped from the studio: advertised capabilities "
+        "['text_to_image'] narrow to nothing against studio_capabilities ['upscale']"
+    )
+
+
+def test_public_does_not_repeat_the_drop_log(caplog):
+    # public() runs on every /api/v1/models request and for_jobs() call, so
+    # a drop must be logged once, not once per poll of the studio.
+    worker = realtime.Worker(
+        id="w-repeat", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="m-repeat", name="Repeat",
+                            capabilities=["text_to_image"],
+                            studio_capabilities=["upscale"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-repeat"] = worker
+        with caplog.at_level(logging.WARNING, logger="potocolom.registry"):
+            for _ in range(3):
+                assert "m-repeat" not in registry.public()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    records = [r for r in caplog.records if r.name == "potocolom.registry"]
+    assert len(records) == 1
+
+
+def test_public_relogs_a_drop_after_the_model_recovers(caplog):
+    # The suppression is per state, not permanent: a model that recovers and
+    # then drops again is a second event an operator needs to see.
+    worker = realtime.Worker(
+        id="w-again", ws=None, realtime_slots=1,
+        manifests=[Manifest(id="m-again", name="Again",
+                            capabilities=["text_to_image", "realtime"],
+                            studio_capabilities=["upscale"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-again"] = worker
+        with caplog.at_level(logging.WARNING, logger="potocolom.registry"):
+            assert "m-again" not in registry.public()
+            worker.manifests[0].studio_capabilities = ["realtime"]
+            assert "m-again" in registry.public()
+            worker.manifests[0].studio_capabilities = ["upscale"]
+            assert "m-again" not in registry.public()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    records = [r for r in caplog.records if r.name == "potocolom.registry"]
+    assert len(records) == 2
+
+
+def test_public_does_not_log_a_benchmark_only_model(caplog):
+    # benchmark_only is the field doing its job, not a drop: a model absent
+    # for that reason must stay silent even when its studio set would narrow
+    # to nothing.
+    worker = realtime.Worker(
+        id="w-bench", ws=None, realtime_slots=0,
+        manifests=[Manifest(id="m-bench", name="Bench",
+                            capabilities=["text_to_image"],
+                            benchmark_only=True,
+                            studio_capabilities=["upscale"])],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-bench"] = worker
+        with caplog.at_level(logging.WARNING, logger="potocolom.registry"):
+            assert "m-bench" not in registry.public()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    records = [r for r in caplog.records if r.name == "potocolom.registry"]
+    assert not records
 
 
 @pytest.mark.db
