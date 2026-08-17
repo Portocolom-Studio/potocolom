@@ -98,10 +98,12 @@ class _FakeBody:
 
 
 class _FakePaginator:
-    def __init__(self, pages):
+    def __init__(self, pages, seen):
         self.pages = pages
+        self.seen = seen
 
     def paginate(self, **kwargs):
+        self.seen.append(kwargs)
         prefix = kwargs.get("Prefix", "")
         for page in self.pages:
             yield {
@@ -111,12 +113,17 @@ class _FakePaginator:
 
 
 class _FakeS3Client:
-    def __init__(self, data, pages=None, delete_response=None):
+    def __init__(self, data, pages=None, delete_response=None, delete_responses=None):
         self.data = data
         self.pages = pages or []
         self.deleted: list[dict] = []
+        self.delete_calls = 0
         # DeleteObjects answers 200 with an Errors list on partial failure.
+        # delete_responses gives one answer per call, so a batch can fail while
+        # the batches after it succeed.
         self.delete_response = delete_response or {}
+        self.delete_responses = delete_responses
+        self.paginated: list[dict] = []
 
     def get_object(self, **kwargs):
         return {
@@ -131,10 +138,18 @@ class _FakeS3Client:
 
     def get_paginator(self, name):
         assert name == "list_object_versions"
-        return _FakePaginator(self.pages)
+        return _FakePaginator(self.pages, self.paginated)
 
     def delete_objects(self, **kwargs):
+        # Quiet suppresses the successes and keeps the errors, which is what
+        # makes the response readable at all; without it every batch returns a
+        # thousand entries the caller does not use.
+        assert kwargs["Delete"]["Quiet"] is True
         self.deleted.extend(kwargs["Delete"]["Objects"])
+        self.delete_calls += 1
+        if self.delete_responses is not None:
+            index = min(self.delete_calls - 1, len(self.delete_responses) - 1)
+            return dict(self.delete_responses[index])
         return dict(self.delete_response)
 
 
@@ -546,13 +561,18 @@ def test_s3_delete_removes_every_version_of_exactly_that_key():
     storage.client = _FakeS3Client(b"", pages=[
         {"Versions": [{"Key": key, "VersionId": "v1"},
                       {"Key": key, "VersionId": "v2"},
-                      # Same prefix, different object: attempt 10, not attempt 1.
-                      {"Key": "u/j-attempt-10.png", "VersionId": "other"}],
+                      # Under this key's prefix, and a different object: a
+                      # prefix listing returns anything that extends the key.
+                      {"Key": f"{key}.bak", "VersionId": "other"}],
          "DeleteMarkers": [{"Key": key, "VersionId": "marker"}]},
         {"Versions": [{"Key": key, "VersionId": "v3"}]},
     ])
 
     asyncio.run(storage.delete(key))
+    # Listing by prefix is what keeps this from walking the whole bucket, and
+    # the exact-key filter is what keeps it from deleting a neighbour; without
+    # the prefix every test here would still pass.
+    assert storage.client.paginated == [{"Bucket": "bucket", "Prefix": key}]
     assert storage.client.deleted == [
         {"Key": key, "VersionId": "v1"},
         {"Key": key, "VersionId": "v2"},
@@ -595,4 +615,58 @@ def test_s3_delete_raises_when_a_version_could_not_be_removed():
                                      "Message": "Access Denied"}]},
     )
     with pytest.raises(RuntimeError, match="AccessDenied"):
+        asyncio.run(storage.delete(key))
+
+
+def test_s3_delete_finishes_every_batch_before_reporting_failures():
+    """A key past a thousand versions takes several DeleteObjects calls.
+
+    Raising on the first batch that reports an error abandoned every batch and
+    every page after it, and the caller only logs a warning, so the versions
+    stayed and nothing came back to them (issue #256).
+    """
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    key = "u/j-attempt-1.png"
+    first_page = [{"Key": key, "VersionId": f"v{n}"} for n in range(1500)]
+    second_page = [{"Key": key, "VersionId": "last"}]
+    storage.client = _FakeS3Client(
+        b"",
+        pages=[{"Versions": first_page}, {"Versions": second_page}],
+        # Batch one fails two objects, the rest succeed: the failure must not
+        # cost the 501 versions behind it.
+        delete_responses=[
+            {"Errors": [{"Key": key, "VersionId": "v1", "Code": "InternalError"},
+                        {"Key": key, "VersionId": "v2", "Code": "InternalError"}]},
+            {},
+            {},
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="could not delete 2 version"):
+        asyncio.run(storage.delete(key))
+    # Two batches for the first page, one for the second.
+    assert storage.client.delete_calls == 3
+    assert len(storage.client.deleted) == 1501
+    assert storage.client.deleted[-1] == {"Key": key, "VersionId": "last"}
+
+
+def test_s3_delete_counts_failures_from_every_batch():
+    """The message the caller logs must name the whole shortfall, not the
+    first batch's share of it."""
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    key = "u/j-attempt-1.png"
+    storage.client = _FakeS3Client(
+        b"",
+        pages=[{"Versions": [{"Key": key, "VersionId": f"v{n}"} for n in range(1200)]}],
+        delete_responses=[
+            {"Errors": [{"Key": key, "VersionId": "v1", "Code": "InternalError"}]},
+            {"Errors": [{"Key": key, "VersionId": "v1001", "Code": "AccessDenied"},
+                        {"Key": key, "VersionId": "v1002", "Code": "AccessDenied"}]},
+        ],
+    )
+
+    # Three failures across two batches, reported with the first code seen.
+    with pytest.raises(RuntimeError, match="could not delete 3 version\\(s\\).*InternalError"):
         asyncio.run(storage.delete(key))

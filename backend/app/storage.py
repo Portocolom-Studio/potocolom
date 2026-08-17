@@ -426,11 +426,20 @@ class S3Storage:
         that can upload whatever it likes, so hiding is not enough.
 
         Listing by exact prefix and filtering is deliberate: list_object_versions
-        takes a prefix, not a key, and a bucket with u/j-attempt-1.png also has
-        u/j-attempt-10.png under that prefix.
+        takes a prefix, not a key, so anything that extends this key, such as a
+        u/j-attempt-1.png.bak left by an operator, lists under it and must not
+        be deleted with it.
         """
         def purge() -> None:
+            # The walk runs to the end of the prefix rather than stopping at
+            # the first page carrying another key. Versions of one key are
+            # contiguous and this key sorts before anything extending it, so an
+            # early break is available, and it buys nothing here: the app's own
+            # keys diverge before the extension, so a purge sees one page.
             paginator = self.client.get_paginator("list_object_versions")
+            failed = 0
+            first_code = None
+            first_message = None
             for page in paginator.paginate(Bucket=self.bucket, Prefix=key):
                 doomed = [
                     {"Key": entry["Key"], "VersionId": entry["VersionId"]}
@@ -445,13 +454,24 @@ class S3Storage:
                     )
                     # Quiet suppresses the successes, not the failures, and the
                     # call answers 200 either way. Discarding this reports a
-                    # reclaim that did not happen.
+                    # reclaim that did not happen. Counting instead of raising
+                    # here keeps the traversal going: a key past a thousand
+                    # versions takes several batches, and one transient error
+                    # in the first would otherwise abandon all of the rest.
                     errors = response.get("Errors") or []
                     if errors:
-                        raise RuntimeError(
-                            f"could not delete {len(errors)} version(s) of {key}: "
-                            f"{errors[0].get('Code')}"
-                        )
+                        failed += len(errors)
+                        if first_code is None:
+                            # Both, because the caller only logs this line: the
+                            # code is what an operator greps for and the message
+                            # is what tells them which permission is missing.
+                            first_code = errors[0].get("Code")
+                            first_message = errors[0].get("Message")
+            if failed:
+                raise RuntimeError(
+                    f"could not delete {failed} version(s) of {key}: "
+                    f"{first_code} {first_message}".rstrip()
+                )
 
         await asyncio.to_thread(purge)
 
