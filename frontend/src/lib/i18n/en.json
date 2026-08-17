@@ -369,6 +369,8 @@
 	"app.images.load_failed": "Image history could not be loaded.",
 	"app.images.retry": "Retry",
 	"app.images.tree_loading": "Loading derivatives",
+	"app.images.tree_load_failed": "Derivatives could not be loaded",
+	"app.images.retry_tree_load": "Load this tree's derivatives again",
 	"app.images.truncated_more": "At least {count} more not loaded",
 	"app.images.drag_tree": "Drag to move this tree. Use arrow keys when focused.",
 	"app.images.reset_tree_position": "Reset this tree position",
