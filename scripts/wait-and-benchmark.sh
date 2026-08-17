@@ -7,6 +7,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# The stack this starts is `make stack-up`, so it listens on this checkout's
+# derived port, not the canonical one (scripts/checkout-ports.sh).
+API_PORT="${API_PORT:-$(scripts/checkout-ports.sh | sed -n 's/^API_PORT=//p')}"
 WAIT_SEC="${WAIT_SEC:-3600}"
 POLL_SEC="${POLL_SEC:-120}"
 MAX_IDLE_WAIT_SEC="${MAX_IDLE_WAIT_SEC:-7200}"
@@ -59,7 +62,7 @@ make stack-up WORKER=rocm >>"$LOG_FILE" 2>&1 || make dev-start WORKER=rocm >>"$L
 
 log "waiting for API"
 for _ in $(seq 1 60); do
-	if curl -sf http://127.0.0.1:8000/api/v1/models >/dev/null; then
+	if curl -sf "http://127.0.0.1:$API_PORT/api/v1/models" >/dev/null; then
 		break
 	fi
 	sleep 5
