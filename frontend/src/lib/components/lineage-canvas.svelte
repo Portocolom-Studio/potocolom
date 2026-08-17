@@ -348,10 +348,11 @@
 		const filterModeEpoch = rootsFilterModeEpoch;
 		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
-		// The scheduling block below and the frame callbacks it schedules both
-		// check this: the guard covers the decision, the callback covers the
-		// frame delay, and a reload in between would otherwise let a superseded
-		// frame mark the viewport ready.
+		// Every place below that acts on this request's outcome checks this: the
+		// finally block, the scheduling guard, and both frame callbacks. The
+		// guard covers the decision, the callback covers the frame delay, and a
+		// reload in between would otherwise let a superseded frame mark the
+		// viewport ready.
 		const stillCurrent = () =>
 			canvasActive &&
 			canvasEpoch === canvasEpochSequence &&
