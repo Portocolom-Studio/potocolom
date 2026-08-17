@@ -64,6 +64,7 @@ PENDING_DELETE_PASS_LIMIT = 100  # rows per pass, so one bad batch cannot hog a 
 PENDING_DELETE_MAX_ATTEMPTS = 8  # after this many failures the object stays
 PENDING_DELETE_BACKOFF_CAP = 60  # minutes; 2 ** 7 would already overshoot an hour
 MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
+PENDING_DELETE_TIMEOUT = 60.0  # seconds for one delete, so a wedged mount cannot stall the pass
 
 
 class Queues(Protocol):
@@ -1434,9 +1435,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         for orphan in orphans:
             try:
                 await get_storage().delete(orphan)
-            except Exception:
+            except Exception as error:
+                # The same leak purge_attempt_blobs had, one function away: the
+                # success path collects the earlier attempts and an unreported
+                # thumbnail, and nothing else ever names those keys.
                 logger.warning("could not remove orphaned blob %s for job %s", orphan,
                                job_id, exc_info=True)
+                await record_pending_delete(orphan, _trim_error(error))
         try:
             url = await get_storage().url(current.storage_key)
         except Exception:
@@ -1544,22 +1549,39 @@ async def retry_pending_deletes() -> None:
         rows = (
             await session.execute(
                 select(PendingDelete)
+                # A given-up row carries a null here, and null <= now is null,
+                # so this one comparison also skips it.
                 .where(PendingDelete.next_attempt_at <= now)
                 .order_by(PendingDelete.next_attempt_at)
                 .limit(PENDING_DELETE_PASS_LIMIT)
+                # The cloud profile runs this loop in every replica on the same
+                # cadence. Without the lock both select the same batch, both
+                # delete (idempotent, but twice the storage traffic), and the
+                # loser's commit fails on rows the winner already removed.
+                .with_for_update(skip_locked=True)
             )
         ).scalars()
         for row in rows:
             try:
-                await get_storage().delete(row.storage_key)
+                # LocalStorage.delete is an unlink, which blocks forever on a
+                # wedged mount: without the bound the pass never finishes, the
+                # loop never sleeps, and nothing raises to say so.
+                await asyncio.wait_for(get_storage().delete(row.storage_key),
+                                       PENDING_DELETE_TIMEOUT)
             except Exception as error:
                 message = _trim_error(error)
                 row.attempts += 1
                 row.last_error = message
                 if row.attempts >= PENDING_DELETE_MAX_ATTEMPTS:
+                    # Unscheduled, not deleted. Dropping the row loses the only
+                    # record that the object exists: the backoff spans about
+                    # three hours, which a storage outage can outlive with the
+                    # API still up, and an operator who fixes it afterwards
+                    # would have nothing to look at. A null next_attempt_at is
+                    # what the sweep skips.
                     logger.error("giving up on deleting %s after %s attempts: %s",
                                  row.storage_key, row.attempts, message)
-                    await session.delete(row)
+                    row.next_attempt_at = None
                     continue
                 minutes = min(2 ** row.attempts, PENDING_DELETE_BACKOFF_CAP)
                 row.next_attempt_at = now + timedelta(minutes=minutes)

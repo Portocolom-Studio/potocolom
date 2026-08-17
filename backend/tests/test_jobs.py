@@ -3527,6 +3527,48 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
+    """The success path collects the earlier attempts and an unreported
+    thumbnail, and its except swallowed the failure the same way
+    purge_attempt_blobs used to: same leak, one function away."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-orphan-record")
+            asyncio.run(_clear_pending_deletes())
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "orphan record"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+
+            real_storage = jobs.get_storage()
+            thumb_key = urlsplit(dispatch["thumb_upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1)[-1]
+
+            class RefusingOrphanDelete:
+                def __getattr__(self, name):
+                    return getattr(real_storage, name)
+
+                async def delete(self, storage_key):
+                    if storage_key == thumb_key:
+                        raise PermissionError(f"denied {storage_key}")
+                    await real_storage.delete(storage_key)
+
+            monkeypatch.setattr(jobs, "get_storage", lambda: RefusingOrphanDelete())
+            # No has_thumbnail, so the thumbnail key becomes an orphan the
+            # success path tries to collect.
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            poll_until(client, job_id, "succeeded")
+
+            row = asyncio.run(_pending_delete(thumb_key))
+            assert row is not None, "the failed orphan delete was not recorded"
+            assert "denied" in (row.last_error or "")
+
+
+@pytest.mark.db
 def test_the_sweep_deletes_the_object_and_drops_the_row():
     with TestClient(app):
         key = f"{db.local_user_id}/sweep-success.png"
@@ -3573,7 +3615,7 @@ def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
 
 
 @pytest.mark.db
-def test_eighth_failure_gives_up_and_drops_the_row(monkeypatch):
+def test_eighth_failure_stops_retrying_but_keeps_the_record(monkeypatch):
     with TestClient(app):
         key = f"{db.local_user_id}/give-up.png"
         asyncio.run(_clear_pending_deletes())
@@ -3600,16 +3642,19 @@ def test_eighth_failure_gives_up_and_drops_the_row(monkeypatch):
             monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
             asyncio.run(jobs.retry_pending_deletes())
 
-            assert asyncio.run(_pending_delete(key)) is None, "the given-up row survived"
+            row = asyncio.run(_pending_delete(key))
+            assert row is not None, "the record of the object was thrown away"
+            assert row.next_attempt_at is None, "a given-up row is still scheduled"
             assert storage.path(key).exists(), "giving up deleted the object it kept failing on"
             assert any("giving up on deleting" in message for message in messages)
 
-            # Nothing retries the object afterwards: the row is gone and a
-            # healthy sweep no longer touches it.
+            # Nothing retries it afterwards, even once storage recovers: the
+            # row is unscheduled, so a healthy sweep walks past it.
             monkeypatch.undo()
             asyncio.run(jobs.retry_pending_deletes())
-            assert asyncio.run(_pending_delete(key)) is None
-            assert storage.path(key).exists(), "a row thought to be gone was retried"
+            assert storage.path(key).exists(), "an unscheduled row was retried"
+            still = asyncio.run(_pending_delete(key))
+            assert still is not None and still.next_attempt_at is None
         finally:
             jobs.logger.removeHandler(handler)
 

@@ -20,7 +20,9 @@ def upgrade() -> None:
         sa.Column("attempts", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("first_failed_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),
+        # Nullable: the sweep sets it to null when it gives up, which is how a
+        # row stays as a record of the object without being retried again.
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
     )
 
 
