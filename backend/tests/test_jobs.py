@@ -606,6 +606,21 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     return queued_id, running_id
 
 
+def disarm_the_sweeper(monkeypatch) -> None:
+    """Stop the stall sweeper once a test has the retry it was waiting for.
+
+    These tests set JOB_STALL_SECONDS to 0.05 to force one requeue, and then
+    keep asserting against the attempt it produced. The sweeper is still armed
+    while they do, so on a loaded machine it fires again, fails the row past
+    its one retry, and the assertions see a 403 on an upload key that was just
+    issued: the #280 symptom, from load rather than from a second run.
+    """
+    from app.settings import get_settings
+
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    get_settings.cache_clear()
+
+
 def poll_until_attempt(client, job_id, attempt: int, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -633,6 +648,7 @@ def test_stalled_job_requeues_once(monkeypatch):
                 # Worker stays connected but sends no progress; stall requeues once
                 # and the retry is dispatched back to the same connected worker.
                 poll_until_attempt(client, job_id, 2, timeout=3.0)
+                disarm_the_sweeper(monkeypatch)
                 redispatch = worker.receive_json()
                 assert redispatch["type"] == "dispatch_job"
                 assert redispatch["job_id"] == job_id
@@ -662,6 +678,7 @@ def test_retried_attempt_uses_a_new_upload_key_and_rejects_the_old_key(monkeypat
                 first_path = urlsplit(first["upload"]["url"]).path
 
                 poll_until_attempt(client, job_id, 2, timeout=3.0)
+                disarm_the_sweeper(monkeypatch)
                 second = worker.receive_json()
                 second_path = urlsplit(second["upload"]["url"]).path
                 assert first_path != second_path
@@ -695,6 +712,7 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
                 first_thumb = urlsplit(first["thumb_upload"]["url"]).path
 
                 poll_until_attempt(client, job_id, 2, timeout=3.0)
+                disarm_the_sweeper(monkeypatch)
                 second = worker.receive_json()
                 # The first attempt uploaded before it stalled.
                 storage = jobs.get_storage()
@@ -873,6 +891,7 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
 
                 # The first attempt uploaded before it stalled.
                 poll_until_attempt(client, job_id, 2, timeout=3.0)
+                disarm_the_sweeper(monkeypatch)
                 second = worker.receive_json()
                 storage = jobs.get_storage()
                 first_key = first_path.rsplit("/api/v1/files/", 1)[-1]
@@ -939,6 +958,7 @@ def test_malformed_completion_is_recoverable_through_the_fleet_socket(monkeypatc
             })
 
             job = poll_until_attempt(client, job_id, 2, timeout=3.0)
+            disarm_the_sweeper(monkeypatch)
             assert job["state"] == "queued"
             assert uuid.UUID(job_id) not in jobs.inflight
 
