@@ -39,6 +39,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 import pytest
+from sqlalchemy import text
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
@@ -202,6 +203,63 @@ DATABASE_AVAILABLE = _prepare_database()
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "db: needs the development PostgreSQL")
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_jobs(request):
+    """Leave no job behind for the next test to be handed.
+
+    A job left running is requeued when its socket closes, so the next test to
+    open a fleet socket receives that dispatch before its own and waits for a
+    message that already went somewhere else. Tests used to work around it by
+    reading until they saw their own job id, which kept the leak and hid it
+    (issue #279).
+
+    Cleared after each test rather than before, so a failure leaves the state
+    that produced it visible to whoever is debugging, and the test that comes
+    after still starts clean.
+    """
+    yield
+    if "db" not in request.keywords or not DATABASE_AVAILABLE:
+        return
+    from app import db, jobs, realtime
+    from app.settings import get_settings
+
+    # monkeypatch puts the environment back, and the settings cache still holds
+    # what was read from it: a test that lowered JOB_STALL_SECONDS to force a
+    # requeue leaves every later test with a sweeper that fires in 50 ms, which
+    # requeues their jobs under them. Undoing the variable is not undoing the
+    # setting until this is cleared.
+    get_settings.cache_clear()
+    # A worker whose socket is gone stays in this registry, and the scheduler
+    # will hand it the next test's job and wait for a reply that cannot come.
+    realtime.workers.clear()
+    jobs.inflight.clear()
+    jobs.live_progress.clear()
+    jobs.last_progress_at.clear()
+    jobs.lost_jobs.clear()
+    jobs.subscribers.clear()
+
+    async def drain() -> None:
+        # The queue holds ids, not rows, so truncating the table does not empty
+        # it. A leftover id is dispatched to whichever worker is registered
+        # when the loop next runs, which is the next test's, and that test then
+        # reads a dispatch belonging to a job it never created.
+        while await jobs.queues.pop(jobs.JOB_QUEUE) is not None:
+            pass
+        if db.session_factory is None:
+            return  # the app never started here, so no rows of its making
+        async with db.session_factory() as session:
+            # DELETE rather than TRUNCATE: TRUNCATE takes an ACCESS EXCLUSIVE
+            # lock and waits behind any connection a finished test left open,
+            # which hangs the run instead of cleaning it. These tables hold a
+            # handful of rows, so the row-level path costs nothing, and the
+            # lock timeout keeps a stuck connection from stalling the suite.
+            await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await session.execute(text("DELETE FROM jobs"))
+            await session.commit()
+
+    asyncio.run(drain())
 
 
 def pytest_sessionfinish(session, exitstatus):

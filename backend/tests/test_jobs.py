@@ -78,10 +78,14 @@ def webp_bytes():
 
 
 def dispatch_for(worker, job_id, limit=5):
-    """The dispatch for this job, skipping any the suite left requeued.
+    """The dispatch for this job, skipping any that belongs to another test.
 
-    A job another test left running is requeued when its socket closes, so a
-    fresh socket can be handed that dispatch before this test's own.
+    The conftest fixture clears the job rows and the in-process dispatch state
+    after every db test, which removes the leak this used to paper over. What
+    survives is a dispatch already in flight when the fixture runs: the loop
+    picked the row before the delete and delivers it to whichever worker is
+    registered when it wakes, which is the next test's. Measured, removing this
+    helper fails about one run in four, all in the same cluster (issue #279).
     """
     for _ in range(limit):
         message = worker.receive_json()
