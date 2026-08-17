@@ -240,19 +240,21 @@ An open drawing session pins a slot and burns GPU money whether or not the user 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Queued: no slot free
-    [*] --> Active: slot acquired
-    Queued --> Active: slot freed or new worker
-    Active --> Idle: 60s without input, slot released
-    Idle --> Active: next stroke, slot reacquired
-    Active --> Reassigning: worker lost
-    Reassigning --> Active: new slot, canvas re-sent
-    Reassigning --> Queued: pool full
-    Active --> [*]: user closes
-    Idle --> [*]: user closes
+    [*] --> queued: no slot free
+    [*] --> assigning: slot acquired
+    queued --> assigning: slot freed or new worker
+    assigning --> live: worker ready
+    live --> idle: 60s without input, slot released
+    idle --> assigning: next stroke, slot reacquired
+    live --> assigning: worker lost, canvas re-sent
+    assigning --> queued: pool full
+    live --> [*]: user closes
+    idle --> [*]: user closes
+    queued --> [*]: user closes
+    assigning --> [*]: user closes
 ```
 
-Credits are metered only in the Active state.
+Credits are metered only in the live state. These are the states of the one machine specified in [connection-handling.md](connection-handling.md), named the same way on purpose: this diagram is the scheduler's view of it, and `ending` and `ended` are collapsed into the terminal node here because admission has nothing to decide once a session is over.
 
 > Shipped status (2026-07-30): **not yet implemented.** The browser handler does not track input idle time, release a slot after 60 seconds, or implement `idle` and `resuming` controls. Issue #19, "Real-Time Generation Protocol", owns the wire behavior and issue #20, "Multi-Worker Scheduling", owns release and reacquisition. The state diagram above is the designed policy.
 
@@ -371,7 +373,9 @@ sequenceDiagram
     B->>A: re-send current canvas frame
 ```
 
-Self-hosted installs have a single worker, so the session simply ends with an error the user can retry once the worker is back.
+Self-hosted installs have a single worker, so there is no second candidate: the session waits in `queued` for that worker to come back rather than ending, and it ends only when the browser gives up or authorization lapses. Losing the only worker is not a different kind of failure from losing one of many, which is why the state machine treats worker loss as an attempt failure everywhere.
+
+> Shipped status (2026-08-17): **not yet implemented.** The current handler ends the session with an error instead, which is what a single-worker install sees today; issue #295 owns the state machine that changes it.
 
 ### Authentication by deployment mode
 
@@ -620,7 +624,7 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Twelve of these tables exist at migration head 0011. Four are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` with the drawing loop's own history, and `metering_events` with billing.
+Twelve of these tables exist at migration head 0011. Five are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, and `metering_events` with billing.
 
 Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
 
@@ -725,10 +729,22 @@ erDiagram
         uuid user_id FK
         text model_id FK
         text worker_id FK
+        text state "queued, assigning, live, idle, ending, ended"
+        int control_generation "current attempt"
         int gpu_ms
         int frames
         timestamptz started_at
         timestamptz ended_at
+    }
+    realtime_session_attempts {
+        uuid session_id PK "with control_generation and worker_incarnation"
+        int control_generation PK
+        text worker_incarnation PK
+        text worker_id FK
+        int gpu_ms "largest reported cumulative total"
+        int frames "largest reported cumulative total"
+        int duration_ms "largest reported cumulative total"
+        timestamptz settled_at
     }
     metering_events {
         uuid id PK
