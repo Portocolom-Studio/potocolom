@@ -206,6 +206,23 @@ class TelemetryState(Base):
     last_report_day: Mapped[date | None] = mapped_column(Date)
 
 
+class PendingDelete(Base):
+    """One row per blob the terminal paths could not remove (issue #254).
+
+    purge_attempt_blobs swallows per-key failures so one bad key does not stop
+    the rest, and this is the list of keys it tried and failed. The sweep owns
+    attempts and next_attempt_at; every other writer only refreshes last_error.
+    """
+
+    __tablename__ = "pending_deletes"
+
+    storage_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    first_failed_at: Mapped[datetime]
+    next_attempt_at: Mapped[datetime]
+
+
 class WorkerIdentity(Base):
     __tablename__ = "workers"
 

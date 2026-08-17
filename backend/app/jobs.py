@@ -21,7 +21,7 @@ import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Literal, Protocol
 
@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -38,7 +39,7 @@ from app.auth import current_user, require_role
 from app.manifests import validate_params
 from app.settings import get_settings
 from app.storage import get_storage
-from app.tables import Asset, Job, User
+from app.tables import Asset, Job, PendingDelete, User
 
 logger = logging.getLogger("potocolom.jobs")
 
@@ -57,6 +58,12 @@ DOWNLOAD_SLUG_MAX_WORDS = 6
 LINEAGE_SUBTREE_MAX_DEPTH = 100
 # Six hundred matches the canvas tile ceiling and bounds unusually broad trees.
 LINEAGE_SUBTREE_MAX_NODES = 600
+# Sweep policy for blobs the terminal paths could not delete (issue #254).
+PENDING_DELETE_ERROR_MAX = 1000  # a last_error is a sentence, not a traceback
+PENDING_DELETE_PASS_LIMIT = 100  # rows per pass, so one bad batch cannot hog a tick
+PENDING_DELETE_MAX_ATTEMPTS = 8  # after this many failures the object stays
+PENDING_DELETE_BACKOFF_CAP = 60  # minutes; 2 ** 7 would already overshoot an hour
+MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
 
 
 class Queues(Protocol):
@@ -1475,12 +1482,106 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
         for key in storage_keys_for_attempt(user_id, job_id, earlier):
             try:
                 await get_storage().delete(key)
-            except Exception:
+            except Exception as error:
                 # Warning, not debug: a missing object does not normally make
                 # a delete raise, so this is a real cleanup failure such as a
-                # denied permission, and nothing retries it.
+                # denied permission, and the sweep is what retries it.
                 logger.warning("could not remove blob %s for job %s", key, job_id,
                                exc_info=True)
+                await record_pending_delete(key, _trim_error(error))
+
+
+async def record_pending_delete(storage_key: str, last_error: str) -> None:
+    """Best-effort note that a delete failed; the DB may be down (issue #254).
+
+    The insert carries attempts from its column default so a repeat failure
+    refreshes last_error and next_attempt_at without touching the counter the
+    sweep owns; a fresh key starts at zero attempts.
+    """
+    if db.session_factory is None:
+        logger.warning("could not record pending delete for %s: database unavailable",
+                       storage_key)
+        return
+    try:
+        async with db.session_factory() as session:
+            now = datetime.now(timezone.utc)
+            statement = insert(PendingDelete).values(
+                storage_key=storage_key,
+                last_error=last_error,
+                first_failed_at=now,
+                next_attempt_at=now,
+            )
+            excluded = statement.excluded
+            statement = statement.on_conflict_do_update(
+                index_elements=[PendingDelete.storage_key],
+                set_={
+                    "last_error": excluded.last_error,
+                    "next_attempt_at": excluded.next_attempt_at,
+                },
+            )
+            await session.execute(statement)
+            await session.commit()
+    except Exception:
+        # A delete failure that cannot even be recorded rates one line: unless
+        # an operator reads the logs at that moment, it is the last sight of
+        # the object.
+        logger.warning("could not record pending delete for %s", storage_key,
+                       exc_info=True)
+
+
+async def retry_pending_deletes() -> None:
+    """Delete the blobs the terminal paths could not (issue #254).
+
+    Selected by due time, oldest first, capped per pass so one batch that keeps
+    failing cannot dominate the tick. A row leaves the table only when its
+    object is gone or its eighth attempt failed: the error log line is then the
+    last word on that object, and the object is still there.
+    """
+    if db.session_factory is None:
+        return
+    now = datetime.now(timezone.utc)
+    async with db.session_factory() as session:
+        rows = (
+            await session.execute(
+                select(PendingDelete)
+                .where(PendingDelete.next_attempt_at <= now)
+                .order_by(PendingDelete.next_attempt_at)
+                .limit(PENDING_DELETE_PASS_LIMIT)
+            )
+        ).scalars()
+        for row in rows:
+            try:
+                await get_storage().delete(row.storage_key)
+            except Exception as error:
+                message = _trim_error(error)
+                row.attempts += 1
+                row.last_error = message
+                if row.attempts >= PENDING_DELETE_MAX_ATTEMPTS:
+                    logger.error("giving up on deleting %s after %s attempts: %s",
+                                 row.storage_key, row.attempts, message)
+                    await session.delete(row)
+                    continue
+                minutes = min(2 ** row.attempts, PENDING_DELETE_BACKOFF_CAP)
+                row.next_attempt_at = now + timedelta(minutes=minutes)
+            else:
+                await session.delete(row)
+        await session.commit()
+
+
+def _trim_error(error: Exception) -> str:
+    message = str(error)
+    if len(message) <= PENDING_DELETE_ERROR_MAX:
+        return message
+    return message[:PENDING_DELETE_ERROR_MAX]
+
+
+async def maintain_deletes_loop() -> None:
+    while True:
+        try:
+            await retry_pending_deletes()
+        except Exception:
+            logger.exception("pending delete maintenance failed")
+        await asyncio.sleep(MAINTAIN_DELETES_INTERVAL)
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str,

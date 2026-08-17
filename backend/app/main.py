@@ -16,7 +16,7 @@ from app.benchmark import router as benchmark_router
 from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
 from app.gpu_samples import maintain_loop
-from app.jobs import router as jobs_router
+from app.jobs import maintain_deletes_loop, router as jobs_router
 from app.logs import setup_logging
 from app.metrics import router as metrics_router
 from app.realtime import forwarding_trusts_any_peer, reap_dead_workers
@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(reap_dead_workers()),
         asyncio.create_task(jobs.dispatch_loop()),
         asyncio.create_task(maintain_loop()),
+        asyncio.create_task(maintain_deletes_loop()),
         asyncio.create_task(telemetry_loop()),
     ]
     yield
