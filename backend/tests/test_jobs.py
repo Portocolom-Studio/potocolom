@@ -610,19 +610,28 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     return queued_id, running_id
 
 
-def disarm_the_sweeper(monkeypatch) -> None:
-    """Stop the stall sweeper once a test has the retry it was waiting for.
+def force_one_requeue(client, job_id: str, timeout=5.0) -> dict:
+    """Stall this job once, on purpose, and wait for the attempt it produces.
 
-    These tests set JOB_STALL_SECONDS to 0.05 to force one requeue, and then
-    keep asserting against the attempt it produced. The sweeper is still armed
-    while they do, so on a loaded machine it fires again, fails the row past
-    its one retry, and the assertions see a 403 on an upload key that was just
-    issued: the #280 symptom, from load rather than from a second run.
+    Lowering JOB_STALL_SECONDS and waiting for the sweeper to notice was the
+    old way, and it leaves the sweeper armed while the test asserts: on a
+    loaded machine it fires again, fails the row past its one retry, and the
+    assertions see a 403 on an upload key that was just issued. That flake
+    outlived two attempts to time around it.
+
+    The stamp is what the sweeper reads, so backdating it and calling the sweep
+    once produces exactly one requeue, whatever the machine is doing.
     """
-    from app.settings import get_settings
-
-    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
-    get_settings.cache_clear()
+    key = uuid.UUID(job_id)
+    jobs.last_progress_at[key] = 0.0  # older than any stall the settings allow
+    asyncio.run(jobs.sweep_stalled_jobs())
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/v1/generations/{job_id}").json()
+        if job.get("attempt") == 2:
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} never reached attempt 2")
 
 
 def poll_until_attempt(client, job_id, attempt: int, timeout=5.0):
@@ -750,7 +759,7 @@ class _SweepingFactory:
 
 @pytest.mark.db
 def test_stalled_job_requeues_once(monkeypatch):
-    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
@@ -764,8 +773,7 @@ def test_stalled_job_requeues_once(monkeypatch):
                 assert first["job_id"] == job_id
                 # Worker stays connected but sends no progress; stall requeues once
                 # and the retry is dispatched back to the same connected worker.
-                poll_until_attempt(client, job_id, 2, timeout=3.0)
-                disarm_the_sweeper(monkeypatch)
+                force_one_requeue(client, job_id)
                 redispatch = worker.receive_json()
                 assert redispatch["type"] == "dispatch_job"
                 assert redispatch["job_id"] == job_id
@@ -780,7 +788,7 @@ def test_stalled_job_requeues_once(monkeypatch):
 
 @pytest.mark.db
 def test_retried_attempt_uses_a_new_upload_key_and_rejects_the_old_key(monkeypatch):
-    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
@@ -794,8 +802,7 @@ def test_retried_attempt_uses_a_new_upload_key_and_rejects_the_old_key(monkeypat
                 first = worker.receive_json()
                 first_path = urlsplit(first["upload"]["url"]).path
 
-                poll_until_attempt(client, job_id, 2, timeout=3.0)
-                disarm_the_sweeper(monkeypatch)
+                force_one_requeue(client, job_id)
                 second = worker.receive_json()
                 second_path = urlsplit(second["upload"]["url"]).path
                 assert first_path != second_path
@@ -813,7 +820,7 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
     leaking: the earlier attempt's blobs are no longer overwritten and nothing
     else collects them, because the asset row only ever names the winning key.
     """
-    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
@@ -828,8 +835,7 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
                 first_path = urlsplit(first["upload"]["url"]).path
                 first_thumb = urlsplit(first["thumb_upload"]["url"]).path
 
-                poll_until_attempt(client, job_id, 2, timeout=3.0)
-                disarm_the_sweeper(monkeypatch)
+                force_one_requeue(client, job_id)
                 second = worker.receive_json()
                 # The first attempt uploaded before it stalled.
                 storage = jobs.get_storage()
@@ -1422,7 +1428,7 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
     so it must walk every attempt, not just the rejected one; a first-attempt
     test proves only the loop's last iteration.
     """
-    monkeypatch.setenv("JOB_STALL_SECONDS", "0.05")
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
@@ -1438,8 +1444,7 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
                 first_thumb = urlsplit(first["thumb_upload"]["url"]).path
 
                 # The first attempt uploaded before it stalled.
-                poll_until_attempt(client, job_id, 2, timeout=3.0)
-                disarm_the_sweeper(monkeypatch)
+                force_one_requeue(client, job_id)
                 second = worker.receive_json()
                 storage = jobs.get_storage()
                 first_key = first_path.rsplit("/api/v1/files/", 1)[-1]
@@ -1505,8 +1510,7 @@ def test_malformed_completion_is_recoverable_through_the_fleet_socket(monkeypatc
                 "height": 512,
             })
 
-            job = poll_until_attempt(client, job_id, 2, timeout=3.0)
-            disarm_the_sweeper(monkeypatch)
+            job = force_one_requeue(client, job_id)
             assert job["state"] == "queued"
             assert uuid.UUID(job_id) not in jobs.inflight
 
