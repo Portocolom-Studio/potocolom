@@ -268,7 +268,6 @@ async def main() -> None:
         rss_after_b = rss_mb(api.pid)
         print(f"test client resident memory {mine_start:.0f} -> {rss_mb(os.getpid()):.0f} MB")
         rss_after_b_at = time.monotonic()
-        drain_from = victim.rendered
         victim.reading = True
         tasks[-1] = asyncio.create_task(victim.receiver())
         await asyncio.sleep(6.0)
