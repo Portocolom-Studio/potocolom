@@ -40,6 +40,7 @@
 	import MoveIcon from '@lucide/svelte/icons/move';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -1617,7 +1618,7 @@
 									scheduleTreeLoad(root, true);
 								}}
 							>
-								<RotateCcwIcon />
+								<RefreshCwIcon />
 							</button>
 						{/if}
 					{/if}
