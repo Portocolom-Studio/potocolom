@@ -4,7 +4,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { normToValue, trackSteps, valueToNorm, type ParamRange } from './model-params.ts';
+import {
+	MAX_TRACK_NOTCHES,
+	normToValue,
+	trackSteps,
+	valueToNorm,
+	type ParamRange
+} from './model-params.ts';
 
 const steps: ParamRange = { min: 2, max: 8, default: 4, step: 1, integer: true };
 const guidance: ParamRange = { min: 1, max: 20, default: 7, step: 0.5, integer: false };
@@ -37,8 +43,27 @@ test('a degenerate spec yields a track rather than a division by zero', () => {
 
 test('a pathological range cannot grow the track without bound', () => {
 	// The slider holds an array with one entry per notch, and a manifest
-	// declares the range, so the count is capped at the old fixed track.
-	assert.equal(trackSteps({ min: 0, max: 100000, default: 0, step: 0.001, integer: false }), 100);
+	// declares the range, so the count is bounded.
+	const absurd: ParamRange = { min: 0, max: 100000, default: 0, step: 0.001, integer: false };
+	assert.equal(trackSteps(absurd), MAX_TRACK_NOTCHES);
+});
+
+test('the cap clears every range a model could reasonably declare', () => {
+	// Past the cap a press moves more than one step, so the bound has to sit
+	// where that stops mattering. These are the shapes a manifest plausibly
+	// declares; each keeps one press to one step.
+	const cases: ParamRange[] = [
+		{ min: 0, max: 1, default: 0.5, step: 0.0005, integer: false },
+		{ min: 0, max: 100, default: 50, step: 0.05, integer: false },
+		{ min: 1, max: 150, default: 30, step: 1, integer: true },
+		{ min: 1, max: 20, default: 7, step: 0.5, integer: false }
+	];
+	for (const spec of cases) {
+		const notches = trackSteps(spec);
+		// At the cap exactly, a press is still one step; past it, it is not.
+		assert.ok(notches <= MAX_TRACK_NOTCHES, `${spec.max} by ${spec.step} exceeded the cap`);
+		assert.equal(normToValue(1 / notches, spec), spec.min + spec.step);
+	}
 });
 
 test('a value sits on the notch that reproduces it', () => {
