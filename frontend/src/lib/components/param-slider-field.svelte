@@ -45,6 +45,7 @@
 		min={0}
 		max={notches}
 		step={1}
+		valueText={valueLabel}
 		{disabled}
 		value={sliderPosition}
 		{onValueChange}

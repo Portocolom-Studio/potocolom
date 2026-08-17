@@ -7,8 +7,13 @@
 		value = $bindable(),
 		orientation = 'horizontal',
 		class: className,
+		// What a screen reader should announce instead of the raw position.
+		// The thumb carries role="slider", so this cannot ride on the root:
+		// a track measured in parameter steps would otherwise be read out as
+		// "4 of 6" for a value of 6 (issue #250).
+		valueText,
 		...restProps
-	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> = $props();
+	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> & { valueText?: string } = $props();
 </script>
 
 <!--
@@ -43,6 +48,7 @@ get along, so we shut typescript up by casting `value` to `never`.
 			<SliderPrimitive.Thumb
 				data-slot="slider-thumb"
 				index={thumb.index}
+				aria-valuetext={valueText}
 				class="border-primary ring-ring/50 size-4 rounded-4xl border bg-white shadow-sm transition-colors hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden block shrink-0 select-none disabled:pointer-events-none disabled:opacity-50"
 			/>
 		{/each}

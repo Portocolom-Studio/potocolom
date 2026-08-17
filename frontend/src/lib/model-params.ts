@@ -159,8 +159,8 @@ export function trackSteps(spec: ParamRange): number {
 	// press moves more than one step, which is the thing this function exists
 	// to prevent, so the bound is set where that stops being true for anything
 	// plausible rather than at a round number: 2000 notches covers a 0 to 1
-	// parameter at 0.0005, or 0 to 100 at 0.05, and the widest shipped model
-	// declares 38.
+	// parameter at 0.0005, or 0 to 100 at 0.05. The widest a shipped manifest
+	// asks for is 49 notches, from the steps fallback.
 	return Math.min(MAX_TRACK_NOTCHES, Math.max(1, Math.round((spec.max - spec.min) / spec.step)));
 }
 
