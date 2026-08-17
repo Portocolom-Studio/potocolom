@@ -22,6 +22,17 @@ what ships rather than a second description of it.
 
 from __future__ import annotations
 
+import os
+
+# Before torch is imported anywhere, because SDPA reads this at its first
+# dispatch and never again. RDNA 3 gates its fused attention kernels behind it,
+# and without it torch falls back to math attention: docs/gpu-performance.md
+# warns that any standalone ROCm script must set it, and this script did not,
+# which made its first sweep measure a slower pipeline than the worker runs.
+# DiffusersEngine sets the same variable for DEVICE=rocm; a script that builds
+# a pipeline directly bypasses that and has to do it itself.
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 import argparse
 import io
 import json
