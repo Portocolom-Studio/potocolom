@@ -275,6 +275,35 @@ def test_canvas_to_sketch_map_inverts_stroke_polarity():
     assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 4)) == (0, 0, 0)
 
 
+def test_eviction_releases_every_entry_a_model_shares_weights_across():
+    """A model's realtime and t2i entries share their UNet, text encoders and
+    VAE, so freeing its memory means dropping both.
+
+    Eviction works per model rather than per cache key, which is what makes
+    that true: _evict_cold collects model ids and _evict_model drops every key
+    for the one it picks. Pinned here because the sharing is deliberate and a
+    future per-key eviction would free nothing while reporting that it had.
+    """
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    shared = object()
+
+    class Pipe:
+        def __init__(self):
+            self.unet = shared
+
+    engine._pipelines = {("rt", "t2i"): Pipe(), ("rt", "realtime"): Pipe(),
+                         ("other", "t2i"): Pipe()}
+    engine._rungs = {"rt": "full", "other": "full"}
+    engine._last_used = {"rt": 1.0, "other": 2.0}
+    with patch.object(DiffusersEngine, "_free_gpu_cache", lambda self: None), \
+         patch.object(DiffusersEngine, "_free_vram_bytes", lambda self: 0):
+        engine._evict_cold(except_model_id="other")
+
+    assert not [key for key in engine._pipelines if key[0] == "rt"]
+    assert "rt" not in engine._rungs  # nothing resident, so the rung goes too
+    assert ("other", "t2i") in engine._pipelines
+
+
 def test_load_realtime_registers_the_base_under_the_t2i_key():
     """The realtime pipeline's base must be visible to the cache.
 
