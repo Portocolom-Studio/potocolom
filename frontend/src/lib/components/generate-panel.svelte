@@ -23,6 +23,7 @@
 		normToValue,
 		sizeOptions as modelSizeOptions,
 		stepsSpec,
+		trackSteps,
 		strengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
@@ -619,6 +620,7 @@
 									id="gen-steps"
 									label={t('app.gen.steps')}
 									bind:norm={stepsNorm}
+									steps={trackSteps(stepsRange)}
 									minLabel={formatParamValue(stepsRange.min, stepsRange)}
 									maxLabel={formatParamValue(stepsRange.max, stepsRange)}
 									valueLabel={formatParamValue(stepsValue, stepsRange)}
@@ -627,6 +629,7 @@
 									id="gen-guidance"
 									label={t('app.gen.guidance')}
 									bind:norm={guidanceNorm}
+									steps={trackSteps(guidanceRange)}
 									minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
 									maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
 									valueLabel={formatParamValue(guidanceValue, guidanceRange)}
@@ -636,6 +639,7 @@
 										id="gen-strength"
 										label={t('app.image_to_image.strength')}
 										bind:norm={strengthNorm}
+										steps={trackSteps(strengthRange)}
 										minLabel={formatParamValue(strengthRange.min, strengthRange)}
 										maxLabel={formatParamValue(strengthRange.max, strengthRange)}
 										valueLabel={formatParamValue(strengthValue, strengthRange)}

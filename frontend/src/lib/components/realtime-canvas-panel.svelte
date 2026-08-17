@@ -25,6 +25,7 @@
 		formatParamValue,
 		normToValue,
 		stepsSpec,
+		trackSteps,
 		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
@@ -740,6 +741,7 @@
 								id="realtime-structure"
 								label={t('app.realtime_canvas.structure')}
 								bind:norm={structureNorm}
+								steps={trackSteps(structureRange)}
 								minLabel={formatParamValue(structureRange.min, structureRange)}
 								maxLabel={formatParamValue(structureRange.max, structureRange)}
 								valueLabel={formatParamValue(structureValue, structureRange)}
@@ -748,6 +750,7 @@
 								id="realtime-steps"
 								label={t('app.realtime_canvas.steps')}
 								bind:norm={stepsNorm}
+								steps={trackSteps(stepsRange)}
 								minLabel={formatParamValue(stepsRange.min, stepsRange)}
 								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
 								valueLabel={formatParamValue(stepsValue, stepsRange)}

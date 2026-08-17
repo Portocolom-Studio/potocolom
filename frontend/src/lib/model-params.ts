@@ -140,6 +140,30 @@ export function normToEnumIndex(norm: number, count: number): number {
 	return Math.round(Math.min(1, Math.max(0, norm)) * (count - 1));
 }
 
+// One arrow key press moves one notch, so this is also the largest number of
+// presses it can take to cross a range. A slider is the wrong control past it.
+export const MAX_TRACK_NOTCHES = 2000;
+
+export function trackSteps(spec: ParamRange): number {
+	// How many presses of an arrow key cross the whole range. The slider runs
+	// on this many notches rather than on a fixed 0-100 track, so one press
+	// moves one parameter step: steps spans 2 to 8 on the realtime models, and
+	// one percent of that track was 0.06 of a step, about seventeen presses to
+	// advance by one (issue #250). Values below one step round to the same
+	// number in normToValue anyway, so this changes how many presses a value
+	// costs, not which values are reachable.
+	if (spec.step <= 0 || spec.max <= spec.min) return 1;
+	// The cap is a guard against a manifest, not a design choice: the slider
+	// builds an array with one entry per notch, so a wide range against a tiny
+	// step would hand it an unbounded one and freeze the page. Past the cap a
+	// press moves more than one step, which is the thing this function exists
+	// to prevent, so the bound is set where that stops being true for anything
+	// plausible rather than at a round number: 2000 notches covers a 0 to 1
+	// parameter at 0.0005, or 0 to 100 at 0.05. The widest a shipped manifest
+	// asks for is 49 notches, from the steps fallback.
+	return Math.min(MAX_TRACK_NOTCHES, Math.max(1, Math.round((spec.max - spec.min) / spec.step)));
+}
+
 export function formatParamValue(value: number, spec: ParamRange): string {
 	if (spec.integer) return String(Math.round(value));
 	if (spec.step < 1) return value.toFixed(1);
