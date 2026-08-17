@@ -42,6 +42,9 @@ import pytest
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
+# scripts/checkout-ports.sh names the dev database with the same idea (a hash
+# of the checkout path), but the two derivations are deliberately independent:
+# the test suite must never depend on a shell script being executable.
 _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
 # The pid names the run for whoever is watching pg_database during it; the
 # random tail is what makes the name unique, since pids are recycled and two

@@ -2,7 +2,7 @@
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
 #   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
-#   make web                   # terminal 3: the studio on :5173
+#   make web                   # terminal 3: the studio on the configured port
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
 #     make dev-status          # pid files, ports, workers, model list
 #     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
@@ -12,7 +12,7 @@
 
 .PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -88,11 +88,40 @@ verify-frontend:
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
 
-test-db-clean: ## drop every potocolom_test_* database (one per checkout, they accumulate)
+test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the shared dev one
 	@docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
-		"SELECT datname FROM pg_database WHERE datname LIKE 'potocolom\\_test%'" \
-		| xargs -r -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
+		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}(_[0-9]+_[0-9a-f]+)?$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
+		| xargs -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
 			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
+
+dev-db: ## create this checkout's dev database; no-op on the main worktree (make deps first)
+	@if [ -n "$(DEV_DB_SUPPLIED)" ]; then \
+		echo 'DATABASE_URL is set; this worktree uses that database, not its own'; \
+	elif [ -z "$(DB_SUFFIX)" ]; then \
+		: ; \
+	else \
+		i=0; \
+		while [ $$i -lt 10 ]; do \
+			if docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
+				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
+				exit 0; \
+			fi; \
+			if docker exec compose-postgres-1 psql -U potocolom -d postgres \
+				-c "CREATE DATABASE \"potocolom$(DB_SUFFIX)\""; then \
+				echo "created dev database potocolom$(DB_SUFFIX)"; \
+				exit 0; \
+			elif docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
+				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
+				exit 0; \
+			fi; \
+			sleep 1; \
+			i=$$((i+1)); \
+		done; \
+		echo 'dev database not created; is compose-postgres-1 running? (make deps)'; \
+		exit 1; \
+	fi
 
 dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
 	git config core.hooksPath .githooks
@@ -127,14 +156,41 @@ simulate: ## live connection-handling demo (docs/connection-handling.md)
 # Or use dev-start / dev-stop / dev-restart for API + frontend + worker in the background.
 PROMPT ?= a castle on a hill at sunset, oil painting
 DEV_DIR := $(CURDIR)/data/dev
-API_PORT ?= 8000
-WEB_PORT ?= 5173
+# One dev loop per checkout: the main worktree keeps the documented canonical
+# ports and database (docs/local-development.md), a linked worktree derives an
+# offset from its path. An explicit API_PORT=8000 make api still wins. Fail if
+# the derivation printed nothing: empty ports would silently rebuild commands
+# on the canonical ones, which is the collision this exists to prevent.
+CHECKOUT_PORTS := $(shell scripts/checkout-ports.sh)
+ifeq (,$(and $(filter API_PORT=%,$(CHECKOUT_PORTS)),$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
+$(error scripts/checkout-ports.sh printed no API_PORT= or WEB_PORT= line)
+endif
+# override + $(or ...) lets a non-empty API_PORT or WEB_PORT from the command
+# line or environment win while an empty one falls back to the derived value.
+# DB_SUFFIX is derived only: an override would break worktree isolation.
+override API_PORT := $(or $(strip $(API_PORT)),$(patsubst API_PORT=%,%,$(filter API_PORT=%,$(CHECKOUT_PORTS))))
+override WEB_PORT := $(or $(strip $(WEB_PORT)),$(patsubst WEB_PORT=%,%,$(filter WEB_PORT=%,$(CHECKOUT_PORTS))))
+override DB_SUFFIX := $(patsubst DB_SUFFIX=%,%,$(filter DB_SUFFIX=%,$(CHECKOUT_PORTS)))
+# Supply the derived database only when the developer exported nothing (the
+# alternate-port workflow in docs/local-development.md exports their own). Make
+# expands an environment value recursively and the recipe shell expands it
+# again, so a password containing $ arrives truncated if the value is passed
+# through a variable; an inherited one make never touches survives byte-exact.
+# Target-specific, never global: verify-backend must not see a dev database,
+# because conftest.py takes DATABASE_URL with setdefault and the whole suite
+# would then run against it.
+DEV_DB_SUPPLIED := $(if $(strip $(value DATABASE_URL)),1,)
+ifeq (,$(DEV_DB_SUPPLIED))
+api dev-start dev-restart cleanup-failed: export DATABASE_URL := \
+	postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)
+endif
 WORKER ?= rocm
 
-api: ## API server on :8000; assets under ./data (make deps first)
+api: dev-db ## API server on the configured port; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
-		ALLOWED_ORIGINS=http://localhost:5173 \
-		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port 8000
+		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
+		PUBLIC_URL=http://localhost:$(API_PORT) \
+		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT)
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	cd worker && MODELS_DIR=models DEVICE=rocm \
@@ -156,28 +212,29 @@ worker-sim: ## simulated worker: no GPU, echo frames, flat images
 		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
-web: ## studio dev server; proxies /api/v1 to localhost:8000
-	cd frontend && npm run dev
+web: ## studio dev server; proxies /api/v1 to the configured API port
+	cd frontend && API_PORT=$(API_PORT) WEB_PORT=$(WEB_PORT) npm run dev
 
 web-landing: ## dev server in landing mode: /app shows the Cloudflare variant
-	cd frontend && PUBLIC_WAITLIST_URL=$(WAITLIST_URL) PUBLIC_SITE_MODE=landing npm run dev
+	cd frontend && API_PORT=$(API_PORT) WEB_PORT=$(WEB_PORT) \
+		PUBLIC_WAITLIST_URL=$(WAITLIST_URL) PUBLIC_SITE_MODE=landing npm run dev
 
 site-preview: site-build ## serve the exact marketing-site artifact locally
 	cd frontend && npm run preview
 
 # Background stack: scripts/dev-stack.sh reaps workers by cwd (they have no
 # listen port, so fuser alone cannot stop them) and records real PIDs via exec.
-dev-stop: ## stop background API (:8000), frontend (:5173), and worker
+dev-stop: ## stop background API, frontend, and worker
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
 		bash "$(CURDIR)/scripts/dev-stack.sh" stop
 
-dev-start: ## start API, frontend, and worker in the background (make deps first)
-	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
-		bash "$(CURDIR)/scripts/dev-stack.sh" start
+dev-start: dev-db ## start API, frontend, and worker in the background (make deps first)
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" start
 
-dev-restart: ## restart background API, frontend, and worker
-	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" WORKER="$(WORKER)" \
-		bash "$(CURDIR)/scripts/dev-stack.sh" restart
+dev-restart: dev-db ## restart background API, frontend, and worker
+	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
+		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" restart
 
 dev-status: ## show pid files, ports, local workers, and /api/v1/models
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
@@ -217,11 +274,11 @@ ci-runner-status: ## show self-hosted runner service status
 		echo "runner not installed ($(CI_RUNNER_DIR))"; \
 	fi
 
-cleanup-failed: ## remove failed generation jobs from the database
+cleanup-failed: dev-db ## remove failed generation jobs from the database
 	backend/.venv/bin/python scripts/cleanup-failed-jobs.py
 
 generate: ## one image end to end: make generate PROMPT="..."
-	backend/.venv/bin/python scripts/generate.py "$(PROMPT)"
+	backend/.venv/bin/python scripts/generate.py --api http://localhost:$(API_PORT) "$(PROMPT)"
 
 # Full run: 24 prompts x 4 models x 5 variants = 480 images (~hours on GPU).
 BENCHMARK_DIR ?= $(CURDIR)/data/benchmark
@@ -237,6 +294,7 @@ BENCHMARK_PROMPTS ?=
 
 benchmark: ## multi-model suite: run API with BENCHMARK_API=1 first [BENCHMARK_IDS=1-3]
 	backend/.venv/bin/python scripts/benchmark.py \
+		--api http://localhost:$(API_PORT) \
 		--out-dir "$(BENCHMARK_OUT)" \
 		$(if $(BENCHMARK_PROMPTS),--prompts $(BENCHMARK_PROMPTS),) \
 		$(if $(BENCHMARK_IDS),--ids $(BENCHMARK_IDS),) \
