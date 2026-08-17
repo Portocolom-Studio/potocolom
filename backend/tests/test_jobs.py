@@ -2310,10 +2310,12 @@ def test_non_finite_progress_is_ignored():
         for unusable in (float("nan"), float("inf"), 10 ** 400, [1], {"a": 1}, None):
             asyncio.run(jobs.on_worker_message(worker, {
                 "type": "job_progress", "job_id": str(job_id), "progress": unusable,
+                "dispatch_token": "token",
             }))
             assert job_id not in jobs.live_progress, f"{unusable!r} was stored"
         asyncio.run(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
+            "dispatch_token": "token",
         }))
         assert jobs.live_progress[job_id] == 0.5
     finally:
@@ -2360,6 +2362,9 @@ def test_job_done_with_unusable_numbers_leaves_the_job_recoverable():
             asyncio.run(jobs.on_worker_message(worker, {
                 "type": "job_done", "job_id": str(job_id), "gpu_ms": unusable,
                 "width": unusable, "height": unusable,
+                # Without the token this worker is at the current protocol and
+                # the message is ignored, which would test nothing.
+                "dispatch_token": "token",
             }))
         except Exception as error:  # noqa: BLE001 - the point is that none escape
             raise AssertionError(f"gpu_ms={unusable!r} escaped as {type(error).__name__}")
@@ -2858,3 +2863,32 @@ def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
             dispatch = dispatch_for(worker, job_id)
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             assert prefixes == [".upload-"]
+
+
+def test_a_worker_built_without_a_registration_is_not_lenient():
+    """protocol_version defaults to the current protocol, not to None.
+
+    Two gates read it. This one requires the token from a worker at 3 or
+    newer, so an unregistered worker must be held to it rather than handed
+    the leniency that exists only for an older one (issue #282). The
+    update_session gate in realtime.py reads the same field the other way
+    round, and the same default is right there: it sends the update rather
+    than withholding it, which is what a current worker should get.
+    """
+    worker = realtime.Worker(id="w-default", ws=None, manifests=[], realtime_slots=1)
+    assert worker.protocol_version == realtime.PROTOCOL_VERSION
+
+    job_id = uuid.uuid4()
+    jobs.inflight[job_id] = jobs.InFlight(
+        worker=worker, storage_key="k", thumb_storage_key="t", user_id=uuid.uuid4(),
+        dispatch_token="token",
+    )
+    try:
+        asyncio.run(jobs.on_worker_message(worker, {
+            "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
+        }))
+        assert job_id not in jobs.live_progress
+    finally:
+        jobs.inflight.pop(job_id, None)
+        jobs.live_progress.pop(job_id, None)
+        jobs.last_progress_at.pop(job_id, None)
