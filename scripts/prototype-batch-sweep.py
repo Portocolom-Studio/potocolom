@@ -2,10 +2,15 @@
 
 Two realtime sessions on one worker serialize on the GPU lock today, so each
 sees twice a single frame: at the measured 278 ms for sdxl-turbo that is 556 ms
-per cycle, past the 500 ms bar. Cross-session batching is the recorded way out
-(decisions.md, "Realtime concurrency comes from batching one GPU"), and whether
-it works here is arithmetic this script supplies: the cost of denoising N
-sessions' frames as one batch, against N times the cost of one.
+per cycle, past the 500 ms bar. Two things buy the second session, and the
+sweep measures both, because the recorded order of work depends on which
+dominates (decisions.md, "Realtime concurrency comes from one GPU serving
+several sessions"). --tiny-vae is the larger one: the full VAE decode is about
+half the frame, and replacing it puts two and probably three serialized
+sessions inside the bar with no scheduler change at all. Batching is the
+smaller one, worth about seventeen percent, and this script supplies its
+arithmetic: the cost of denoising N sessions' frames as one batch, against N
+times the cost of one.
 
 It measures the batched pipeline call directly, without the worker or the API,
 because the question is about the GPU and not about the relay. Two regions are
@@ -145,7 +150,7 @@ def main() -> None:
 
         # Half the frame is the full VAE decode at these step counts, so the
         # preview decoder is what moves the concurrency curve (decisions.md,
-        # "Realtime concurrency comes from batching one GPU"). Latents go in
+        # "Realtime concurrency comes from one GPU"). Latents go in
         # unscaled: AutoencoderTiny expects the pipeline's own latent scale.
         tiny = AutoencoderTiny.from_pretrained(
             "madebyollin/taesdxl", torch_dtype=dtype).to(device)

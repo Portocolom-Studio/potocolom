@@ -240,19 +240,21 @@ An open drawing session pins a slot and burns GPU money whether or not the user 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Queued: no slot free
-    [*] --> Active: slot acquired
-    Queued --> Active: slot freed or new worker
-    Active --> Idle: 60s without input, slot released
-    Idle --> Active: next stroke, slot reacquired
-    Active --> Reassigning: worker lost
-    Reassigning --> Active: new slot, canvas re-sent
-    Reassigning --> Queued: pool full
-    Active --> [*]: user closes
-    Idle --> [*]: user closes
+    [*] --> queued: no slot free
+    [*] --> assigning: slot acquired
+    queued --> assigning: slot freed or new worker
+    assigning --> live: worker ready
+    live --> idle: 60s without input, slot released
+    idle --> assigning: next stroke, slot reacquired
+    live --> assigning: worker lost, canvas re-sent
+    assigning --> queued: pool full
+    live --> [*]: user closes
+    idle --> [*]: user closes
+    queued --> [*]: user closes
+    assigning --> [*]: user closes
 ```
 
-Credits are metered only in the Active state.
+Credits are metered only in the live state. These are the states of the one machine specified in [connection-handling.md](connection-handling.md), named the same way on purpose: this diagram is the scheduler's view of it, and `ending` and `ended` are collapsed into the terminal node here because admission has nothing to decide once a session is over.
 
 > Shipped status (2026-07-30): **not yet implemented.** The browser handler does not track input idle time, release a slot after 60 seconds, or implement `idle` and `resuming` controls. Issue #19, "Real-Time Generation Protocol", owns the wire behavior and issue #20, "Multi-Worker Scheduling", owns release and reacquisition. The state diagram above is the designed policy.
 
@@ -371,7 +373,9 @@ sequenceDiagram
     B->>A: re-send current canvas frame
 ```
 
-Self-hosted installs have a single worker, so the session simply ends with an error the user can retry once the worker is back.
+Self-hosted installs have a single worker, so there is no second candidate: the session waits in `queued` for that worker to come back rather than ending, and it ends only when the browser gives up or authorization lapses. Losing the only worker is not a different kind of failure from losing one of many, which is why the state machine treats worker loss as an attempt failure everywhere.
+
+> Shipped status (2026-08-17): **not yet implemented.** The current handler ends the session with an error instead, which is what a single-worker install sees today; issue #295 owns the state machine that changes it.
 
 ### Authentication by deployment mode
 
@@ -725,10 +729,21 @@ erDiagram
         uuid user_id FK
         text model_id FK
         text worker_id FK
+        text state "queued, assigning, live, idle, ending, ended"
+        int control_generation "current attempt"
         int gpu_ms
         int frames
         timestamptz started_at
         timestamptz ended_at
+    }
+    realtime_session_attempts {
+        uuid session_id FK
+        int control_generation
+        text worker_id FK
+        text worker_incarnation
+        int gpu_ms "largest acknowledged checkpoint"
+        int frames
+        timestamptz settled_at
     }
     metering_events {
         uuid id PK
