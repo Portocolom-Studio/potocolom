@@ -32,11 +32,14 @@ Fleet connection, worker to API:
 |---|---|---|
 | `hello` | `protocol_version`, `worker_id`, `models`, `realtime_slots`, `device`, `memory_mode` | first message after connect; `models` is the manifest list with capabilities as measured (the memory ladder in [architecture.md](architecture.md) may drop `realtime` on low VRAM workers). Each manifest may carry `realtime_p95_ms` (the measured single-frame p95 on this worker's card, absent until something has measured it) and `studio_capabilities` (narrows what the studio offers, absent when every capability is offered). `device` and `memory_mode` are static worker identity fields; the API accepts an N-1 worker that omits them |
 | `heartbeat` | `slots_in_use`, `loaded_models`, `frame_p95_ms`, `gpu` (device, util, VRAM, temperature, power) | every 30 seconds. `frame_p95_ms` maps each model id to that worker's measured single-frame p95 on that card; the key is always present and is an empty object when nothing has been measured, and the API overwrites the hello value with it. Corrected 2026-07-23: the wire also carries `loaded_models` and a `gpu` sample. An N-1 worker may still send `memory_mode` here |
-| `session_ready` | `session_id` | slot acquired, model warm |
-| `session_closed` | `session_id`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event |
+| `session_ready` | `session_id`, `control_generation` | slot acquired, model warm; answers the generation from `open_session` |
+| `session_refused` | `session_id`, `control_generation`, `reason` | this worker cannot serve the session (model evicted, out of memory, no slot); the attempt failed, not the session |
+| `session_closed` | `session_id`, `control_generation`, `frames`, `gpu_ms`, `duration_ms`, `category`, optional `category_score` | worker side accounting and completion-side usage event; a report for a stale generation is ignored |
 | `job_progress` | `job_id`, `progress`, `dispatch_token` | fraction of denoising steps done |
 | `job_done` | `job_id`, `dispatch_token`, `gpu_ms`, `duration_ms`, `category`, optional `category_score`, `width`, `height`, `input_fetch_ms` (optional), `load_ms` (optional), `postprocess_ms` (optional) | sent after the result uploaded to the dispatch target |
 | `job_failed` | `job_id`, `dispatch_token`, `reason` | the job fails visibly; only worker death triggers the one retry |
+
+`control_generation` is the realtime counterpart of `dispatch_token`, and it is a counter rather than a token because realtime needs ordering as well as identity. It starts at 1 for a session's first attempt and increases by one for every attempt after it, travelling on every lifecycle control and on frames in both directions. The API believes a message only for the current generation and the current worker connection; the worker accepts an open above the highest generation it has seen for that session, treats an equal one as idempotent and a lower one as stale, requires a match for updates, closes and frames, and keeps the highest generation as a tombstone after close so a delayed open cannot resurrect a finished session. A token could tell two attempts apart but not say which came later, which is what a delayed `close_session` to a still-connected worker needs. Designed with the session states below, not yet implemented.
 
 `dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. The field is required from a protocol 3 worker, which is believed only with a matching token: a message that omits it is ignored exactly like one carrying a wrong token. A protocol 2 (N-1) worker is the one exception, accepted without it because that version does not send the field; the acceptance disappears when the compatibility floor moves to 3.
 
@@ -46,9 +49,9 @@ Fleet connection, API to worker:
 |---|---|---|
 | `registered` | | hello accepted |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
-| `open_session` | `session_id`, `model_id`, `params` | acquire a slot and warm the model |
-| `update_session` | `session_id`, `params` | replace the session's params with the merged set (the browser's keys merged over the session's, the seed riding along); protocol version 3 and up, so the API refuses an update whose assigned worker predates the message instead of sending it |
-| `close_session` | `session_id` | release the slot |
+| `open_session` | `session_id`, `model_id`, `params`, `control_generation` | acquire a slot and warm the model. Accepted only when the generation is above the highest this worker has seen for the session, and an equal one is idempotent, so a delayed open from a superseded attempt cannot replace a live runner |
+| `update_session` | `session_id`, `params`, `control_generation` | replace the session's params with the merged set (the browser's keys merged over the session's, the seed riding along); protocol version 3 and up, so the API refuses an update whose assigned worker predates the message instead of sending it |
+| `close_session` | `session_id`, `control_generation` | release the slot. Ignored unless the generation matches the active runner, so a stale close cannot pop the runner a newer attempt installed |
 | `dispatch_job` | `job_id`, `model_id`, `params`, `dispatch_token`, `upload`, `thumb_upload` (optional), `input` (optional) | `upload.url` and `upload.headers`: where the worker PUTs the full result; `thumb_upload` is the same shape for a WebP thumbnail. `input.url`: presigned GET for the source image on image_to_image jobs. `dispatch_token` identifies this dispatch: it is echoed on the messages below and, on the local storage backend, rides in `upload.headers` as `X-Upload-Token` because the key alone is derivable by any worker that ever held the job. Older workers ignore the optional fields (N-1 safe). |
 
 Realtime connection, browser to API:
@@ -131,25 +134,38 @@ TCP-level disconnects are acted on immediately; the heartbeat timeout only matte
 
 ## Session states
 
-> Shipped status (2026-08-17): **designed, not yet implemented.** The states below are the accepted design (decisions.md, "The realtime session has states, an attempt identity, and one accounting owner"); today a session is a dataclass whose transitions are decided by whichever of four coroutines notices first, which is what issue #295 exists to replace.
+> Shipped status (2026-08-17): **designed, not yet implemented.** The states below are the accepted design (decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner"); today a session is a dataclass whose transitions are decided by whichever of four coroutines notices first, which is what issue #295 exists to replace. `queued` and `idle` also wait on the admission queue and idle release, designed above and unshipped.
 
-A realtime session is in exactly one state, and one place moves it between them. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
+A realtime session is in exactly one state, and one place moves it between them, comparing the expected state and transitioning atomically. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
 
 ```mermaid
 stateDiagram-v2
+    [*] --> queued: open accepted, no slot free
     [*] --> assigning: open accepted, slot taken
-    assigning --> live: session_ready for THIS attempt
-    assigning --> ending: refused, timed out, or worker lost
+    queued --> assigning: slot free, attempt starts
+    assigning --> live: session_ready for THIS generation
+    assigning --> assigning: refused or lost, next candidate
+    assigning --> queued: no candidate free
+    live --> idle: about 60 s without input, slot released
+    idle --> assigning: input returns, slot taken
+    idle --> queued: input returns, no slot free
     live --> assigning: worker lost, reassignment starts
-    live --> ending: close, browser gone, or worker cannot serve
-    ending --> ended: slot released, accounting emitted once
+    queued --> ending: browser gone or cancelled
+    live --> ending: close, browser gone, or unservable anywhere
+    idle --> ending: close or browser gone
+    ending --> ended: lease drained, settlement recorded
     ended --> [*]
 ```
 
-Two rules make those transitions safe, and both come from defects the design replaces:
+A failed attempt is not a failed session. A worker that evicts a model or runs out of memory has failed its attempt, so the session tries another candidate or waits for one; only the browser leaving, losing authorization, cancelling, or asking for what no worker can serve reaches `ending`. `ended` is absorbing.
 
-- An assignment attempt carries an identity, and `session_ready` and `session_refused` answer a specific attempt. A late answer from an earlier attempt is ignored rather than completing a newer one, which is why retrying another candidate after a failure is safe. Serialising attempts with a lock is not enough: the answer arrives from the network, not from the code holding the lock.
-- Accounting has one owner. One place decides a session has ended and emits its usage event, so no ordering produces two events or none. Arming it in a second place produced exactly that, two events for one interleaving and zero for another.
+Three rules make those transitions safe, and each comes from a defect the design replaces:
+
+- Assignment carries a monotonically increasing `control_generation`, and every lifecycle message carries it. `session_ready` and `session_refused` answer one generation, so a late answer from an earlier attempt is ignored rather than completing a newer one. A worker accepts an open only above the highest generation it has seen for that session, equal is idempotent, lower is stale, and a tombstone after close stops a delayed open from resurrecting a finished session. A counter rather than an opaque identity, because an identity cannot say which of two delayed messages is newer, and the failure needing that ordering is a stale `close_session` popping the runner a newer attempt just installed on the same worker. Serialising attempts with a lock is not enough either: the answer arrives from the network, not from the code holding the lock.
+- Accounting has one owner and that owner is durable. One place decides a session has ended, and terminal state commits together with an outbox record under a stable unique key, retried until acknowledged, duplicates a no-op, and sessions left `ending` reconciled after a restart. Deciding in one place only settles competing writers; it does not survive a crash between the decision and the commit. Arming the decision in a second place produced two events for one interleaving and zero for another.
+- Per-session mailboxes bound the relay. A shared reader never awaits delivery to one browser, a mailbox keeps only the latest frame, and lifecycle controls and heartbeats go ahead of frames, so a browser that stops reading cannot stall another session.
+
+Batch membership is not a session state. A batch is collected, executed and retired on its own, and a member that closes mid-batch ends alone while its mates finish; its slot is not free until the GPU cycle it joined completes.
 
 ## Reconnection and resume
 

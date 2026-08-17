@@ -119,6 +119,9 @@ def main() -> None:
                     help="timed frames per batch size; 12 gives a p85, not a p95")
     ap.add_argument("--size", type=int, default=512,
                     help="square edge in pixels; the bar is defined at 512")
+    ap.add_argument("--tiny-vae", action="store_true",
+                    help="decode the preview with TAESDXL instead of the full VAE, "
+                         "which is what the recorded capacity curve was measured with")
     args = ap.parse_args()
 
     import torch
@@ -133,8 +136,19 @@ def main() -> None:
     dtype = torch.float16
 
     print(f"{manifest['id']} at {steps} step(s), structure {scale}, {SIZE} px, "
-          f"bar {BAR_MS:.0f} ms")
+          f"{'TAESDXL' if args.tiny_vae else 'full'} decode, bar {BAR_MS:.0f} ms")
     pipeline = build(manifest, dtype, device)
+
+    tiny = None
+    if args.tiny_vae:
+        from diffusers import AutoencoderTiny
+
+        # Half the frame is the full VAE decode at these step counts, so the
+        # preview decoder is what moves the concurrency curve (decisions.md,
+        # "Realtime concurrency comes from batching one GPU"). Latents go in
+        # unscaled: AutoencoderTiny expects the pipeline's own latent scale.
+        tiny = AutoencoderTiny.from_pretrained(
+            "madebyollin/taesdxl", torch_dtype=dtype).to(device)
 
     # Does the adapter scale accept one value per sample? If it does not, every
     # session in a batch must share a Structure slider value, which narrows the
@@ -163,7 +177,12 @@ def main() -> None:
                 adapter_conditioning_scale=scale,
                 generator=generators,
                 height=SIZE, width=SIZE,
+                output_type="latent" if tiny else "pil",
             ).images
+            if tiny is not None:
+                with torch.inference_mode():
+                    decoded = tiny.decode(out, return_dict=False)[0]
+                out = pipeline.image_processor.postprocess(decoded, output_type="pil")
             torch.cuda.synchronize()
             call_ms = (time.perf_counter() - call_start) * 1000
             if timed_encode:
