@@ -132,10 +132,17 @@ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 .venv/bin/python -m worker.illusions \
 | `--sds-steps` | 500 | More helps monotonically (paper Fig. 12) but with diminishing returns after ~1000. |
 | `--sds-low-res` / `--sds-low-res-fraction` | 256 / 0 (off) | Early SDS at low resolution, then finish at 512. Cheaper per step, but 256px SDS stalls subject formation on SD 1.5 - use only for quick throwaway runs. |
 | `--dream-rounds` / `--dream-steps` | 8 x 300 | More rounds with a finer strength schedule = cleaner final subjects. The paper's full schedule walks 0.90 to 0.01. |
-| `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (LCM scheduler, at most a handful of denoise steps). Pass `none` to reuse `--model` with 25 steps / CFG 7.5. |
-| `--dream-joint` | off | Flip only: each round's Dream Targets are built jointly, so both views regress toward one consensus image instead of two fighting targets (issue #134). |
-| learning rate | 1e-3 (Adam) | In `IllusionConfig`; raise to 3e-3 for faster early structure at some stability cost. |
-| seed | 0 | Different seeds give genuinely different compositions; cherry-picking across 3-4 seeds is normal for showpieces. |
+| `--dream-model` | `lykon/dreamshaper-8-lcm` | Checkpoint used only for SDEdit Dream Targets (LCM scheduler, at most a handful of denoise steps). Pass `none` to reuse `--model` with the classic 25-step / CFG 7.5 schedule. |
+| `--dream-joint` | off | Flip only: each round's Dream Targets are built jointly, so both views regress toward one consensus image instead of two fighting targets (issue #134). Keep opt-in. |
+| `--sds-objective` | `legacy` | SDS residual: `legacy`, `weighted_sds`, `csd`, or `nfsd`. Experimental modes stay behind this flag. |
+| `--sds-lr` / `--dream-lr` | inherit `learning_rate` | Split Adam rates per phase. `--learning-rate` sets both when split flags are absent. |
+| `--hifa-schedule` | off | HiFA square-root timestep schedule. Opt in only after a measured quality win. |
+| `--round-robin` | off | Flip: alternate single-view SDS updates when conflict diagnostics warrant it. |
+| `--style` | none | Wrap each `--prompt` in `oil`, `pencil`, or `editorial`. |
+| `--view-batch-size` | full batch | SDS microbatching (chunk before VAE encode, backward per chunk). Use `1` for hidden on 16 GB. |
+| `--vae-slicing` / `--channels-last` | off | Capacity opts; enable only after measured effect. |
+| `--learning-rate` | 1e-3 | Legacy alias for both phase learning rates. |
+| seed | 0 | Different seeds give genuinely different compositions. |
 
 Failure modes: all-gray or single-color primes mean the SDS phase was too
 short or guidance too low; oversaturated neon means guidance too high or
@@ -161,6 +168,18 @@ Pairs: lion/penguin, fox/rabbit, cat/owl, elephant/swan,
 camel/octopus, moose/butterfly, otter/rooster, bison/jellyfish,
 lynx/peacock, kangaroo/woodpecker, hippo/dragonfly, badger/goldfish,
 polar-bear/honeybee, squirrel/pelican.
+
+## Reliability protocol
+
+Flip quality reliability experiments (objectives, screening funnel, blind
+A/B ratings, and the acceptance gate) are documented in
+[illusion-reliability.md](illusion-reliability.md). Defaults remain legacy
+until that gate passes. Failed experimental modes may stay behind flags for
+reproducibility; they do not become defaults merely because they exist.
+The 60-hour yield window that is the current primary axis is documented in
+[illusion-window.md](illusion-window.md); the author-reference
+campaign it replaced is in
+[illusion-reliability-60h.md](illusion-reliability-60h.md).
 
 ## Fabrication
 
