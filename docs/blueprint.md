@@ -319,14 +319,16 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 | worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
-| api to worker | `dispatch_job` | job id, model, params; `load_model` first if not loaded |
-| worker to api | `job_progress`, `job_done`, `job_failed` | done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
+| api to worker | `dispatch_job` | job id, model, params, dispatch_token, upload targets; `load_model` first if not loaded |
+| worker to api | `job_progress`, `job_done`, `job_failed` | each echoes dispatch_token; done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
 | worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
 
 > Shipped status (2026-07-30): **partially implemented.** The current 17-byte frame header is exactly the binary row above and has no revision or sequence field. `pause_job`, `drain`, `queued`, `prompt_update`, `idle`, `resuming`, and `credits_tick` are not implemented. Issue #19, "Real-Time Generation Protocol", owns frame revisions, output correlation, queue and resume controls, keepalive, and limits; issue #20, "Multi-Worker Scheduling", owns worker drain and scheduling controls.
+
+`dispatch_token` is minted per dispatch and is what separates one attempt of a job from the next, since a stall requeue can hand the job back to the same worker. A message carrying the wrong token is ignored, and so is one from a protocol 3 worker that omits it; a protocol 2 worker is believed without it, which is the N-1 exception and ends when the floor moves. On the local storage backend the same token authorises the upload, because the key alone is derivable by any worker that ever held the job. [connection-handling.md](connection-handling.md) is normative for the field.
 
 Version gate at registration, implementing the N-1 promise:
 
@@ -401,8 +403,10 @@ UnlimitedQuota   # default: reserve always succeeds, commit records a metering e
 BillingQuota     # HTTP calls to QUOTA_SERVICE_URL (the private billing service)
 
 class Storage(Protocol):
-    async def upload_target(self, key) -> UploadTarget   # presigned S3 PUT, or an internal API route
-    async def url(self, key, ttl) -> str                 # signed CloudFront URL, or /files/{key}
+    async def upload_target(self, key, token) -> UploadTarget  # presigned S3 PUT, or an internal API
+                                                               # route; the token authorises the
+                                                               # local PUT, S3 signs instead
+    async def url(self, key, ttl) -> str                       # signed CloudFront URL, or /files/{key}
     async def delete(self, key) -> None
 
 LocalStorage     # files under STORAGE_LOCAL_PATH
