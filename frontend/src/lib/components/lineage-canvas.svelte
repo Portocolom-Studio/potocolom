@@ -348,6 +348,15 @@
 		const filterModeEpoch = rootsFilterModeEpoch;
 		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
+		// The scheduling block below and the frame callbacks it schedules both
+		// check this: the guard covers the decision, the callback covers the
+		// frame delay, and a reload in between would otherwise let a superseded
+		// frame mark the viewport ready.
+		const stillCurrent = () =>
+			canvasActive &&
+			canvasEpoch === canvasEpochSequence &&
+			filterModeEpoch === rootsFilterModeEpoch &&
+			requestEpoch === rootsRequestEpoch;
 		rootsLoading = true;
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
@@ -377,21 +386,11 @@
 				rootsFailed = true;
 			}
 		} finally {
-			if (
-				canvasActive &&
-				canvasEpoch === canvasEpochSequence &&
-				filterModeEpoch === rootsFilterModeEpoch &&
-				requestEpoch === rootsRequestEpoch
-			) {
+			if (stillCurrent()) {
 				rootsLoading = false;
 			}
 		}
-		if (
-			canvasActive &&
-			canvasEpoch === canvasEpochSequence &&
-			filterModeEpoch === rootsFilterModeEpoch &&
-			requestEpoch === rootsRequestEpoch
-		) {
+		if (stillCurrent()) {
 			const schedule = decideViewportScheduleAfterRootPage(
 				loaded,
 				viewportReady,
@@ -399,10 +398,14 @@
 				persistedRoots.length > 0
 			);
 			if (schedule === 'initialize') {
-				initializeFrame = requestAnimationFrame(initializeViewport);
+				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
+					initializeViewport();
+				});
 			} else if (schedule === 'recenter') {
 				recenterAfterFilter = false;
 				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
 					initialViewportAnchor = recenterNewest(false);
 				});
 			}
