@@ -870,6 +870,26 @@ Rejected alternatives: a second worker process on the same GPU, which is the obv
 
 Self-hosted and cloud share the mechanism and differ only in how many workers exist. A self-hosted box gets whatever the batch curve supports on its card, one session until the sweep says otherwise, and the cloud multiplies that by workers rather than by processes per GPU.
 
+## The realtime session has states, an attempt identity, and one accounting owner
+
+A realtime session is currently a dataclass with a worker, an event and a membership test, and its transitions are decided by whichever coroutine notices first. Four can: the browser's handler, the fleet handler, `reassign`, and the worker. Three attempts to add one feature on that footing each produced a defect, all found by review rather than by tests, so the design comes before the feature this time. The feature is ending a live session whose model stops being fully resident, which today renders nothing until the browser leaves (issue #270).
+
+What each attempt broke is the specification. A worker-ended session stranded its runner, so later frames reached a finished task and the accounting never arrived against an API that did not know the new message. Arming that accounting in a second place made it worse: `session_closed` is accepted only once `closing_sessions` holds an entry, so two arming sites produced two usage events for one ordering and none for another, where fleet cleanup deleted the armed entry before the browser teardown could re-arm it. Serialising assignment with a per-session lock let a queued `reassign` resurrect a session whose open had already failed, sending `interrupted` and `resumed` where no `ready` was ever sent, because readiness carries no identity and any waiter accepts any answer. And retrying other candidates gave a stale attempt somewhere to go, so two workers held one session and one slot was never freed.
+
+Three things are therefore named, and nothing new is built on the old footing.
+
+**A session is in exactly one state, and one place moves it.** Assigning, live, ending, ended. Every writer calls that one place, so a refusal, a browser teardown, a reassignment and a worker disconnect cannot each half-end the same session. The states are worth naming rather than inferring, because `is_live` today means "still in the sessions dict", which is a fact about bookkeeping rather than about the session, and every defect above lived in the gap between the two.
+
+**An assignment attempt carries an identity, and readiness answers to it.** `ready` becomes an answer to a specific attempt rather than a signal any waiter may take, so a late `session_ready` or `session_refused` from an earlier attempt is ignored instead of completing a newer one. That is what a lock could not achieve: serialising attempts narrows the window and does not close it, because the answer arrives from the network rather than from the code holding the lock. With identity, retrying other candidates on reassignment becomes safe again and can be reinstated, which is the one thing the failed attempts got right in isolation.
+
+**Accounting has one owner.** One place decides a session is over and emits its usage event, so no ordering yields two events or none. The current shape cannot be made exactly-once by adding a second arming site, which is what the third attempt tried; it needs the decision to live in one place that every ending path routes through.
+
+What already works is kept and must survive the change: slot compensation is ownership-checked, `release` is idempotent, the seed lives on the API session so a reassignment does not re-roll the image, and a malformed worker message never closes the fleet socket.
+
+Rejected alternatives: adding the live-session refusal on the current footing, which is what three reviewed attempts did and where each new defect came from; a per-session assignment lock as the ordering mechanism, which the review showed resurrects terminal sessions and blocks failover when held across an unbounded send; inferring state from the `sessions` dict and the `ready` event as today, which is what makes four writers possible; and moving worker-side session state onto the engine, which is where a cached rung and a calibrated slot count already outlive what they describe.
+
+One consequence is worth stating because it changes an estimate rather than a design: a batching scheduler multiplies the number of things that can end a session, since a batch spans several of them, so issue #294 sits on this rather than beside it.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

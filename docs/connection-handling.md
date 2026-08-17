@@ -129,6 +129,28 @@ slot calibration in [decisions.md](decisions.md) is measured against.
 
 TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. Browser keepalive is an application-level control message because browser WebSocket APIs cannot send protocol pings.
 
+## Session states
+
+> Shipped status (2026-08-17): **designed, not yet implemented.** The states below are the accepted design (decisions.md, "The realtime session has states, an attempt identity, and one accounting owner"); today a session is a dataclass whose transitions are decided by whichever of four coroutines notices first, which is what issue #295 exists to replace.
+
+A realtime session is in exactly one state, and one place moves it between them. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
+
+```mermaid
+stateDiagram-v2
+    [*] --> assigning: open accepted, slot taken
+    assigning --> live: session_ready for THIS attempt
+    assigning --> ending: refused, timed out, or worker lost
+    live --> assigning: worker lost, reassignment starts
+    live --> ending: close, browser gone, or worker cannot serve
+    ending --> ended: slot released, accounting emitted once
+    ended --> [*]
+```
+
+Two rules make those transitions safe, and both come from defects the design replaces:
+
+- An assignment attempt carries an identity, and `session_ready` and `session_refused` answer a specific attempt. A late answer from an earlier attempt is ignored rather than completing a newer one, which is why retrying another candidate after a failure is safe. Serialising attempts with a lock is not enough: the answer arrives from the network, not from the code holding the lock.
+- Accounting has one owner. One place decides a session has ended and emits its usage event, so no ordering produces two events or none. Arming it in a second place produced exactly that, two events for one interleaving and zero for another.
+
 ## Reconnection and resume
 
 Both dialers reconnect with exponential backoff: 1 s doubling to a 30 s cap, with up to 25 percent random jitter so a restarted API is not hit by the whole fleet in the same second. Reconnection is a fresh `hello`; the API holds no memory of previous incarnations of a worker.
