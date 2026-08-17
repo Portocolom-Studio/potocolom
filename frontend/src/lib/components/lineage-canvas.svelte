@@ -386,18 +386,26 @@
 				rootsLoading = false;
 			}
 		}
-		const schedule = decideViewportScheduleAfterRootPage(
-			loaded,
-			viewportReady,
-			recenterAfterFilter
-		);
-		if (schedule === 'initialize') {
-			initializeFrame = requestAnimationFrame(initializeViewport);
-		} else if (schedule === 'recenter') {
-			recenterAfterFilter = false;
-			initializeFrame = requestAnimationFrame(() => {
-				initialViewportAnchor = recenterNewest(false);
-			});
+		if (
+			canvasActive &&
+			canvasEpoch === canvasEpochSequence &&
+			filterModeEpoch === rootsFilterModeEpoch &&
+			requestEpoch === rootsRequestEpoch
+		) {
+			const schedule = decideViewportScheduleAfterRootPage(
+				loaded,
+				viewportReady,
+				recenterAfterFilter,
+				persistedRoots.length > 0
+			);
+			if (schedule === 'initialize') {
+				initializeFrame = requestAnimationFrame(initializeViewport);
+			} else if (schedule === 'recenter') {
+				recenterAfterFilter = false;
+				initializeFrame = requestAnimationFrame(() => {
+					initialViewportAnchor = recenterNewest(false);
+				});
+			}
 		}
 	}
 

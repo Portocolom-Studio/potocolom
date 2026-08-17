@@ -213,15 +213,20 @@ export function retainedRetryBudget(
  *
  * `initialize` wins whether or not the page arrived: a failed page during the
  * anchor hunt must still reach the newest-tree fallback, or the canvas strands
- * uninitialised with nothing left to schedule it. `recenter` applies only to a
- * page that actually arrived, because recentring against content the canvas
- * never received would centre on stale roots. */
+ * uninitialised with nothing left to schedule it. A failed page on an account
+ * with no roots at all is the exception, because centring nothing while still
+ * marking the viewport ready would leave a successful retry no reason to run
+ * initialization again; staying unready is what keeps that retry's
+ * initialization on the table. `recenter` applies only to a page that actually
+ * arrived, because recentring against content the canvas never received would
+ * centre on stale roots. */
 export function decideViewportScheduleAfterRootPage(
 	pageLoaded: boolean,
 	viewportReady: boolean,
-	recenterPending: boolean
+	recenterPending: boolean,
+	hasRoots: boolean
 ): 'initialize' | 'recenter' | 'nothing' {
-	if (!viewportReady) return 'initialize';
+	if (!viewportReady && (pageLoaded || hasRoots)) return 'initialize';
 	if (pageLoaded && recenterPending) return 'recenter';
 	return 'nothing';
 }

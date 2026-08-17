@@ -284,15 +284,19 @@ test('viewport scheduling after a root page initialises even when the page fails
 	// hunt left the viewport uninitialised because scheduling ran only on a
 	// loaded page. Initialization must run whether or not the page arrived so
 	// the canvas reaches the newest-tree fallback instead of stranding.
-	assert.equal(decideViewportScheduleAfterRootPage(false, false, false), 'initialize');
+	assert.equal(decideViewportScheduleAfterRootPage(false, false, false, true), 'initialize');
 	// A successful page with the viewport still not ready schedules the same way.
-	assert.equal(decideViewportScheduleAfterRootPage(true, false, false), 'initialize');
+	assert.equal(decideViewportScheduleAfterRootPage(true, false, false, false), 'initialize');
+	// A failed page on an account with no roots at all must stay unready:
+	// that is what lets the successful retry initialise, instead of a wasted
+	// initialization marking the viewport ready and stranding the new roots.
+	assert.equal(decideViewportScheduleAfterRootPage(false, false, false, false), 'nothing');
 	// A ready viewport recentres only against a page that actually arrived.
-	assert.equal(decideViewportScheduleAfterRootPage(true, true, true), 'recenter');
+	assert.equal(decideViewportScheduleAfterRootPage(true, true, true, false), 'recenter');
 	// A failed page never triggers a recentre: it would centre on stale content.
-	assert.equal(decideViewportScheduleAfterRootPage(false, true, true), 'nothing');
+	assert.equal(decideViewportScheduleAfterRootPage(false, true, true, true), 'nothing');
 	// A ready viewport with no recentre pending needs nothing.
-	assert.equal(decideViewportScheduleAfterRootPage(true, true, false), 'nothing');
+	assert.equal(decideViewportScheduleAfterRootPage(true, true, false, true), 'nothing');
 });
 
 test('filtered root loads retain offsets for roots hidden by the filter', () => {
