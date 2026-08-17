@@ -52,6 +52,7 @@
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
+		decideViewportScheduleAfterRootPage,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
@@ -385,9 +386,14 @@
 				rootsLoading = false;
 			}
 		}
-		if (loaded && !viewportReady) {
+		const schedule = decideViewportScheduleAfterRootPage(
+			loaded,
+			viewportReady,
+			recenterAfterFilter
+		);
+		if (schedule === 'initialize') {
 			initializeFrame = requestAnimationFrame(initializeViewport);
-		} else if (loaded && recenterAfterFilter) {
+		} else if (schedule === 'recenter') {
 			recenterAfterFilter = false;
 			initializeFrame = requestAnimationFrame(() => {
 				initialViewportAnchor = recenterNewest(false);
@@ -993,7 +999,8 @@
 			restoredViewport?.rootId &&
 			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
 			rootsHaveMore &&
-			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES
+			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES &&
+			!rootsFailed
 		) {
 			anchorSearchPages += 1;
 			void loadRoots();

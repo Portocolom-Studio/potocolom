@@ -7,6 +7,7 @@ import {
 	decideInitialLineageViewportFollow,
 	decideLineageLiveArrival,
 	decideLineageTreeLoad,
+	decideViewportScheduleAfterRootPage,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
 	retainedLineageTreeOffsets,
@@ -276,6 +277,22 @@ test('expired viewport anchor falls back after root paging settles', () => {
 
 	assert.equal(decision.anchor, null);
 	assert.equal(decision.fallbackToNewest, true);
+});
+
+test('viewport scheduling after a root page initialises even when the page fails', () => {
+	// The contract this issue exists to fix: a failed page during the anchor
+	// hunt left the viewport uninitialised because scheduling ran only on a
+	// loaded page. Initialization must run whether or not the page arrived so
+	// the canvas reaches the newest-tree fallback instead of stranding.
+	assert.equal(decideViewportScheduleAfterRootPage(false, false, false), 'initialize');
+	// A successful page with the viewport still not ready schedules the same way.
+	assert.equal(decideViewportScheduleAfterRootPage(true, false, false), 'initialize');
+	// A ready viewport recentres only against a page that actually arrived.
+	assert.equal(decideViewportScheduleAfterRootPage(true, true, true), 'recenter');
+	// A failed page never triggers a recentre: it would centre on stale content.
+	assert.equal(decideViewportScheduleAfterRootPage(false, true, true), 'nothing');
+	// A ready viewport with no recentre pending needs nothing.
+	assert.equal(decideViewportScheduleAfterRootPage(true, true, false), 'nothing');
 });
 
 test('filtered root loads retain offsets for roots hidden by the filter', () => {
