@@ -164,7 +164,9 @@ def _worker_int(value: object, default: int = 0) -> int:
         return default
     number = int(value)
     # gpu_ms and the asset dimensions are int4; a unit mixup in a worker is
-    # enough to overflow one, and the commit below is not inside a try.
+    # enough to overflow one. The terminal commits are inside a try now, so an
+    # overflow would reach the recovery path rather than the handler, and the
+    # clamp is what keeps a worker's unit mixup from failing the job at all.
     return number if -2**31 <= number < 2**31 else default
 
 
@@ -1200,6 +1202,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             source = await session.get(Asset, job.source_asset_id)
             if source is None:
                 inflight.pop(job.id, None)
+                last_progress_at.pop(job.id, None)
                 release_job_slot(worker)
                 job.state = "failed"
                 await session.commit()
@@ -1223,6 +1226,23 @@ async def dispatch(job_id: uuid.UUID) -> bool:
     publish(job_id, {"state": "running"})
     logger.info("job %s dispatched to worker %s", job_id, worker.id)
     return True
+
+
+def clear_if_current(worker: realtime.Worker, job_id: uuid.UUID, current: InFlight) -> None:
+    """Give up the entry, its stamps and the slot, once, after a durable verdict.
+
+    Only the attempt that still owns the entry may clear it: a requeue that
+    replaced it while the transaction was open keeps both. The release comes
+    after the commit, so a process that dies between them leaks one slot until
+    that worker reconnects, which is the accepted trade (issue #248); there is
+    no await in here, so nothing but a kill can separate the two.
+    """
+    if inflight.get(job_id) is not current:
+        return
+    inflight.pop(job_id, None)
+    live_progress.pop(job_id, None)
+    last_progress_at.pop(job_id, None)
+    release_job_slot(worker)
 
 
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
@@ -1316,18 +1336,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 return
             if not committed:
                 return  # a requeue or another verdict owns the row now
-            # Only the attempt that still owns the entry may clear it: a
-            # requeue that replaced it while the transaction was open keeps
-            # both.
-            if inflight.get(job_id) is current:
-                inflight.pop(job_id, None)
-                live_progress.pop(job_id, None)
-                last_progress_at.pop(job_id, None)
-                # Released only now, after the failure is durable: a process
-                # that dies between the two leaks the slot until the worker
-                # reconnects and rebuilds the state, which is the accepted
-                # trade (issue #248).
-                release_job_slot(worker)
+            clear_if_current(worker, job_id, current)
             await purge_attempt_blobs(current.user_id, job_id, current.attempt)
             return
         image_dimensions = (image.width, image.height)
@@ -1405,16 +1414,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             # sweeper or the worker-loss handler recovers the job.
             logger.exception("could not mark job %s succeeded", job_id)
             return
-        # Only the attempt that still owns the entry may clear it: a requeue
-        # that replaced it while the transaction was open keeps both.
-        if inflight.get(job_id) is current:
-            inflight.pop(job_id, None)
-            live_progress.pop(job_id, None)
-            last_progress_at.pop(job_id, None)
-            # Released only now, after the commit is durable: a process that
-            # dies between the two leaks the slot until the worker reconnects
-            # and rebuilds the state, which is the accepted trade (issue #248).
-            release_job_slot(worker)
+        clear_if_current(worker, job_id, current)
         orphans = []
         if not has_thumbnail:
             # This attempt may have uploaded a thumbnail it did not report, or
@@ -1455,16 +1455,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             return
         if not committed:
             return  # a requeue or another verdict owns the row now
-        # Only the attempt that still owns the entry may clear it: a requeue
-        # that replaced it while the transaction was open keeps both.
-        if inflight.get(job_id) is current:
-            inflight.pop(job_id, None)
-            live_progress.pop(job_id, None)
-            last_progress_at.pop(job_id, None)
-            # Released only now, after the failure is durable: a process that
-            # dies between the two leaks the slot until the worker reconnects
-            # and rebuilds the state, which is the accepted trade (issue #248).
-            release_job_slot(worker)
+        clear_if_current(worker, job_id, current)
         # A reported failure can still have uploaded: nothing downstream names
         # those objects, so this is their only collector.
         await purge_attempt_blobs(current.user_id, job_id, current.attempt)
