@@ -52,6 +52,7 @@
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
+		decideViewportScheduleAfterRootPage,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
 		rebaseLineageViewport,
@@ -347,6 +348,16 @@
 		const filterModeEpoch = rootsFilterModeEpoch;
 		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
+		// Every place below that acts on this request's outcome checks this: the
+		// finally block, the scheduling guard, and both frame callbacks. The
+		// guard covers the decision, the callback covers the frame delay, and a
+		// reload in between would otherwise let a superseded frame mark the
+		// viewport ready.
+		const stillCurrent = () =>
+			canvasActive &&
+			canvasEpoch === canvasEpochSequence &&
+			filterModeEpoch === rootsFilterModeEpoch &&
+			requestEpoch === rootsRequestEpoch;
 		rootsLoading = true;
 		rootsFailed = false;
 		const cursor = roots.at(-1)?.id;
@@ -376,22 +387,29 @@
 				rootsFailed = true;
 			}
 		} finally {
-			if (
-				canvasActive &&
-				canvasEpoch === canvasEpochSequence &&
-				filterModeEpoch === rootsFilterModeEpoch &&
-				requestEpoch === rootsRequestEpoch
-			) {
+			if (stillCurrent()) {
 				rootsLoading = false;
 			}
 		}
-		if (loaded && !viewportReady) {
-			initializeFrame = requestAnimationFrame(initializeViewport);
-		} else if (loaded && recenterAfterFilter) {
-			recenterAfterFilter = false;
-			initializeFrame = requestAnimationFrame(() => {
-				initialViewportAnchor = recenterNewest(false);
-			});
+		if (stillCurrent()) {
+			const schedule = decideViewportScheduleAfterRootPage(
+				loaded,
+				viewportReady,
+				recenterAfterFilter,
+				persistedRoots.length > 0
+			);
+			if (schedule === 'initialize') {
+				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
+					initializeViewport();
+				});
+			} else if (schedule === 'recenter') {
+				recenterAfterFilter = false;
+				initializeFrame = requestAnimationFrame(() => {
+					if (!stillCurrent()) return;
+					initialViewportAnchor = recenterNewest(false);
+				});
+			}
 		}
 	}
 
@@ -993,7 +1011,8 @@
 			restoredViewport?.rootId &&
 			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
 			rootsHaveMore &&
-			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES
+			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES &&
+			!rootsFailed
 		) {
 			anchorSearchPages += 1;
 			void loadRoots();

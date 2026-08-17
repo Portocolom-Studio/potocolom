@@ -305,11 +305,15 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
-    # Advertised in hello. The update_params handler compares it against
-    # UPDATE_SESSION_PROTOCOL_VERSION to refuse an update an N-1 worker would
-    # silently drop. None for a Worker built without a registration, which is
-    # read as predating every version.
-    protocol_version: int | None = None
+    # Advertised in hello, and read by two gates: the update_params handler
+    # compares it against UPDATE_SESSION_PROTOCOL_VERSION to refuse an update
+    # an N-1 worker would silently drop, and the dispatch-token check in
+    # jobs.py requires the token from a worker at 3 or newer. A registration
+    # always sets it; the default covers a Worker built without one, and it is
+    # the current version rather than None so that gate fails closed rather
+    # than granting the leniency that exists only for an older worker
+    # (issue #282).
+    protocol_version: int = PROTOCOL_VERSION
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
@@ -822,10 +826,8 @@ async def realtime(ws: WebSocket) -> None:
                                     "message": invalid,
                                 }))
                                 continue
-                        # None means no registration recorded a version, which
-                        # is read as predating every one of them.
                         if (session.worker is not None
-                                and (session.worker.protocol_version or 0)
+                                and session.worker.protocol_version
                                 < UPDATE_SESSION_PROTOCOL_VERSION):
                             # The assigned worker predates update_session (an
                             # N-1 worker is deliberately welcome) and would

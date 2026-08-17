@@ -285,7 +285,7 @@ async def lead():
 
 async def step():
     # 1. Reconcile: forget workers whose heartbeat hash expired; their jobs
-    #    requeue (attempt 2) or fail; their sessions enter Reassigning.
+    #    requeue (attempt 2) or fail; their sessions go back to assigning.
     await reconcile_workers()
 
     # 2. Idle release: sessions with last_input_ms older than 60 s
