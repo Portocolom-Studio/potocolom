@@ -21,9 +21,9 @@ second or two, and a database that has to be dropped afterwards: it goes at
 exit, and `make test-db-clean` collects whatever a hard kill leaves behind. Set
 DATABASE_URL to override the whole scheme.
 
-Switching branches hits the stamp problem without any worktree involved, so the
-stamp check stays: if this database is stamped at a revision this tree cannot
-resolve, rebuild it.
+A name this file generates never exists beforehand, so the stamp check that
+used to rebuild a stale database now applies only to a supplied one, where it
+refuses rather than rebuilds.
 
 Tests marked db skip when PostgreSQL is unreachable; `make deps` starts it.
 """
@@ -48,10 +48,14 @@ _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
 # containers sharing this checkout can hold the same one.
 _RUN = f"{_SUFFIX}_{os.getpid()}_{secrets.token_hex(8)}"
 
-# Only a database this file named is ever created, dropped, rebuilt or emptied.
-# An exported DATABASE_URL belongs to the developer or to CI: this suite reads
-# it and leaves its contents alone, so the two paths are separated once, here,
-# rather than re-derived at each use.
+# What an exported DATABASE_URL buys: this suite never drops, rebuilds or
+# empties it, and never drops it at the end. It does create it when missing,
+# because CI supplies a name its PostgreSQL service has not created yet. And
+# the application itself still migrates it and writes to it, because that is
+# what starting the app does: alembic upgrades to head, the local user row is
+# inserted or promoted, leftover running jobs are requeued, and the tests
+# insert their own rows. Point it at a database you are willing to have the
+# application own; it is not a read-only borrow.
 _OURS = "DATABASE_URL" not in os.environ
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/"
@@ -61,6 +65,9 @@ os.environ.setdefault("TELEMETRY", "false")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
+
+
+_SKIP_REASON = "PostgreSQL unreachable; run make deps"
 
 
 def _local_revisions() -> set[str]:
@@ -98,52 +105,37 @@ def _prepare_database() -> bool:
         try:
             exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1",
                                          database)
-            # Switching branches leaves this stamped at a revision the tree
-            # cannot resolve; alembic then refuses to start and every db test
-            # fails for a reason that looks like broken application code.
+            # A name this file generated cannot already exist, so everything
+            # here is about a supplied one. Switching branches leaves a reused
+            # database stamped at a revision this tree cannot resolve; alembic
+            # then refuses to start and every db test fails for a reason that
+            # looks like broken application code. Saying so beats dropping
+            # someone else's database to make the run convenient.
             if exists and await stamped_ahead():
-                if not _OURS:
-                    # A supplied database is not this suite's to rebuild. Say
-                    # what is wrong instead of destroying someone's data to
-                    # make the run convenient.
-                    raise RuntimeError(
-                        f"{database} is stamped at a revision this tree cannot resolve, "
-                        "and DATABASE_URL was supplied, so it is not mine to drop; "
-                        "point DATABASE_URL elsewhere or migrate it yourself"
-                    )
-                await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
-                exists = None
+                raise RuntimeError(
+                    f"{database} is stamped at a revision this tree cannot resolve, "
+                    "and DATABASE_URL was supplied, so it is not mine to drop; "
+                    "point DATABASE_URL elsewhere or migrate it yourself"
+                )
             if not exists:
                 await conn.execute(f'CREATE DATABASE "{database}"')
         finally:
             await conn.close()
         if not _OURS:
-            # A supplied database is read, never emptied. Truncating one would
-            # contradict the promise above in the most expensive way available,
-            # and a developer who points DATABASE_URL at something with rows in
-            # it would lose them to a test run. A supplied database carrying
-            # leftover state can fail tests instead; that is the supplier's to
-            # notice, and it is recoverable.
-            return
-        # Leftover pending jobs from an interrupted run would be requeued on
-        # startup and reach a test's fake worker; start clean instead.
-        conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
-                                     user=url.username, password=url.password,
-                                     database=database, timeout=3)
-        try:
-            candidates = (
-                "telemetry_state", "usage_event_rollups", "usage_events",
-                "benchmark_measurements", "benchmark_sessions", "workers",
-                "gpu_samples", "gpu_sample_rollups", "assets", "jobs",
-            )
-            existing = [
-                name for name in candidates
-                if await conn.fetchval("SELECT to_regclass($1)", f"public.{name}") is not None
-            ]
-            if existing:
-                await conn.execute(f"TRUNCATE {', '.join(existing)} CASCADE")
-        finally:
-            await conn.close()
+            # Loud, because the alternative is finding out from mutated dev
+            # data: the application migrates and writes to whatever it is
+            # given, and rows here mean it was given something in use.
+            conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
+                                         user=url.username, password=url.password,
+                                         database=database, timeout=3)
+            try:
+                if await conn.fetchval("SELECT to_regclass($1)", "public.jobs") is not None:
+                    rows = await conn.fetchval("SELECT count(*) FROM jobs")
+                    if rows:
+                        print(f"\nWARNING: DATABASE_URL points at {database}, which holds "
+                              f"{rows} job(s). The tests will migrate it and write to it.\n")
+            finally:
+                await conn.close()
 
     try:
         asyncio.run(prepare())
@@ -158,11 +150,19 @@ def _prepare_database() -> bool:
             raise RuntimeError(f"DATABASE_URL was supplied but unusable: {error}") from error
         return False
     except asyncpg.PostgresError as error:
-        # Reachable but refusing: no CREATE DATABASE right, a failed truncate,
-        # two runs racing the same name. None of that is "PostgreSQL is not
-        # running", and skipping 74 tests under that message hides it.
-        raise RuntimeError(f"could not prepare {urlsplit(_DATABASE_URL).path.lstrip('/')}: "
-                           f"{error}") from error
+        # Reachable but refusing: no CREATE DATABASE right, a role that is
+        # gone, a broken pg_hba after an upgrade. For a supplied URL that is a
+        # broken run and must be loud, because CI going green with 74 tests
+        # skipped is worse than CI failing. For this file's own name it is the
+        # developer's local PostgreSQL being unusable, where killing the whole
+        # collection also takes away the tests that would have told them their
+        # application code is fine; those skip, with the real reason.
+        if not _OURS:
+            raise RuntimeError(f"could not prepare {urlsplit(_DATABASE_URL).path.lstrip('/')}: "
+                               f"{error}") from error
+        global _SKIP_REASON
+        _SKIP_REASON = f"PostgreSQL refused the test database: {error}"
+        return False
 
 
 def _drop_database() -> None:
@@ -209,7 +209,7 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_collection_modifyitems(config, items):
     if DATABASE_AVAILABLE:
         return
-    skip = pytest.mark.skip(reason="PostgreSQL unreachable; run make deps")
+    skip = pytest.mark.skip(reason=_SKIP_REASON)
     for item in items:
         if "db" in item.keywords:
             item.add_marker(skip)

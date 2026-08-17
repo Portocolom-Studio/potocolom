@@ -22,7 +22,10 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
 
     import conftest
 
-    supplied = "potocolom_test_supplied_probe"
+    # Named per run like every other database here: a fixed name inside the
+    # fix for shared names would let two runs of this test drop each other's
+    # probe, which is the defect the branch exists to remove.
+    supplied = f"potocolom_test_supplied_probe_{conftest._RUN}"
     admin = "postgresql://potocolom:potocolom@localhost:5432/postgres"
     url = f"postgresql://potocolom:potocolom@localhost:5432/{supplied}"
 
@@ -42,6 +45,15 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
         monkeypatch.setattr(conftest, "_OURS", False)
         monkeypatch.setattr(conftest, "_DATABASE_URL", url)
         assert conftest._prepare_database() is True
+        assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
+
+        # Stamped at a revision this tree cannot resolve: a database of this
+        # suite's own would be rebuilt, and a supplied one must be refused
+        # instead, which is the other half of the same promise.
+        asyncio.run(sql(url, "CREATE TABLE alembic_version (version_num varchar(32))",
+                        "INSERT INTO alembic_version VALUES ('9999')"))
+        with pytest.raises(RuntimeError, match="not mine to drop"):
+            conftest._prepare_database()
         assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
     finally:
         asyncio.run(sql(admin, f'DROP DATABASE IF EXISTS "{supplied}" WITH (FORCE)'))
