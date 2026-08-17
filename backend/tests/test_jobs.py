@@ -1021,9 +1021,10 @@ def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
 
 @pytest.mark.db
 def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
-    """A failed requeue_or_fail must leave the job at the head of lost_jobs:
-    the pop used to precede the await, so the raise destroyed the only
-    reference to the row and nothing retried it (issue #248)."""
+    """A failed requeue_or_fail must leave the job in lost_jobs: the pop used
+    to precede the await, so the raise destroyed the only reference to the row
+    and nothing retried it (issue #248). The entry rotates to the tail rather
+    than holding the head, which the second half of this test covers."""
     _stall_safe(monkeypatch)
     with TestClient(app) as client:
         async def seed() -> uuid.UUID:
@@ -1083,6 +1084,41 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
         assert lost == []
         assert reasons == ["worker disconnected", "worker disconnected"]
         assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+
+
+@pytest.mark.db
+def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
+    """Holding the head would stop the sweep and the dispatch behind it for as
+    long as one entry keeps raising, so a failure rotates to the tail."""
+    _stall_safe(monkeypatch)
+    with TestClient(app):
+        stuck, healthy = uuid.uuid4(), uuid.uuid4()
+        lost = [stuck, healthy]
+        recovered = []
+        swept = []
+
+        async def flaky_requeue(job_id, reason):
+            if job_id == stuck:
+                raise RuntimeError("simulated permanent lock timeout")
+            recovered.append(job_id)
+
+        async def counted_sweep():
+            swept.append(True)
+
+        async def parked():
+            return None
+
+        real_dispatch_step = jobs.dispatch_step
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        monkeypatch.setattr(jobs, "lost_jobs", lost)
+        monkeypatch.setattr(jobs, "requeue_or_fail", flaky_requeue)
+        monkeypatch.setattr(jobs, "sweep_stalled_jobs", counted_sweep)
+
+        asyncio.run(real_dispatch_step())
+
+        assert recovered == [healthy], "the job behind the failing one never ran"
+        assert lost == [stuck], "the failing entry must stay, at the tail"
+        assert swept == [True], "the tick stopped before the stall sweep"
 
 
 @pytest.mark.db

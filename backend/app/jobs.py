@@ -1115,12 +1115,20 @@ async def sweep_stalled_jobs() -> None:
 async def dispatch_step() -> None:
     if db.session_factory is None:
         return
-    while lost_jobs:
-        # Take the head without removing it: this list is the only reference
-        # to the job, so a failed recovery must leave it here for the next
-        # tick to retry, and a raise must not destroy it (issue #248).
-        await requeue_or_fail(lost_jobs[0], "worker disconnected")
-        lost_jobs.pop(0)
+    # One pass over what is here now: an entry appended while this runs waits
+    # for the next tick rather than extending this one.
+    for _ in range(len(lost_jobs)):
+        # The list is the only reference to a job whose worker vanished, so the
+        # entry stays until its recovery returns and a raise must not destroy
+        # it (issue #248). A failure rotates it to the tail instead of holding
+        # the head, because one entry that keeps raising would otherwise stop
+        # the sweep and the dispatch behind it for as long as it fails.
+        lost_id = lost_jobs.pop(0)
+        try:
+            await requeue_or_fail(lost_id, "worker disconnected")
+        except Exception:
+            logger.exception("could not recover lost job %s; retrying next tick", lost_id)
+            lost_jobs.append(lost_id)
     await sweep_stalled_jobs()
     while True:
         job_id = await queues.pop(JOB_QUEUE)
