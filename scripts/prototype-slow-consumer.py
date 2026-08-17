@@ -273,11 +273,19 @@ async def main() -> None:
         tasks[-1] = asyncio.create_task(victim.receiver())
         await asyncio.sleep(6.0)
         drained = [ms for at, ms in victim.latencies if at >= rss_after_b_at]
-        print(f"\ndrain: {victim.name} read again and {victim.rendered - drain_from} frames "
-              f"arrived; their age when they landed ranges "
-              f"{min(drained) / 1000:.1f} s to {max(drained) / 1000:.1f} s. "
-              f"Stale means they were buffered during the stall; fresh means they "
-              f"were generated after it. Controls seen: {victim.controls[-4:]}")
+        if drained:
+            print(f"\ndrain: {victim.name} read again and {len(drained)} frames "
+                  f"arrived; their age when they landed ranges "
+                  f"{min(drained) / 1000:.1f} s to {max(drained) / 1000:.1f} s. "
+                  f"Stale means they were buffered during the stall; fresh means they "
+                  f"were generated after it. Controls seen: {victim.controls[-4:]}")
+        else:
+            # Not an error and not nothing: it says the frames were dropped
+            # rather than held, which is the opposite finding and equally
+            # interesting.
+            print(f"\ndrain: {victim.name} read again and no frames arrived, so the "
+                  f"stalled session's frames were dropped rather than buffered. "
+                  f"Controls seen: {victim.controls[-4:]}")
         print(f"\nAPI resident memory {rss_start:.0f} -> {rss_after_a:.0f} -> {rss_after_b:.0f} MB "
               f"across the three points, against "
               f"{FRAME_BYTES * int(PHASE_SECONDS * FPS) / 1024**2:.0f} MB undelivered. Freed heap is "
