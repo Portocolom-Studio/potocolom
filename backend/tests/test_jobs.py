@@ -1499,6 +1499,16 @@ async def _clear_pending_deletes() -> None:
         await session.commit()
 
 
+async def _make_due(storage_key: str) -> None:
+    """Bring a waiting row forward, the way the clock would."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        row = await session.get(PendingDelete, storage_key)
+        assert row is not None
+        row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await session.commit()
+
+
 async def _seed_pending_delete(storage_key: str, attempts: int, due: datetime) -> None:
     assert db.session_factory is not None
     async with db.session_factory() as session:
@@ -3615,7 +3625,7 @@ def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
 
 
 @pytest.mark.db
-def test_eighth_failure_stops_retrying_but_keeps_the_record(monkeypatch):
+def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
     with TestClient(app):
         key = f"{db.local_user_id}/give-up.png"
         asyncio.run(_clear_pending_deletes())
@@ -3644,17 +3654,19 @@ def test_eighth_failure_stops_retrying_but_keeps_the_record(monkeypatch):
 
             row = asyncio.run(_pending_delete(key))
             assert row is not None, "the record of the object was thrown away"
-            assert row.next_attempt_at is None, "a given-up row is still scheduled"
-            assert storage.path(key).exists(), "giving up deleted the object it kept failing on"
-            assert any("giving up on deleting" in message for message in messages)
+            assert row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS
+            assert storage.path(key).exists(), "the failing delete removed the object"
+            assert any("still cannot delete" in message for message in messages)
 
-            # Nothing retries it afterwards, even once storage recovers: the
-            # row is unscheduled, so a healthy sweep walks past it.
+            # Still scheduled, because an outage can outlive the backoff and a
+            # row nothing retries is a leak with no way back. Due again within
+            # the hour cap, and the next healthy sweep collects it.
+            assert row.next_attempt_at is not None
+            asyncio.run(_make_due(key))
             monkeypatch.undo()
             asyncio.run(jobs.retry_pending_deletes())
-            assert storage.path(key).exists(), "an unscheduled row was retried"
-            still = asyncio.run(_pending_delete(key))
-            assert still is not None and still.next_attempt_at is None
+            assert not storage.path(key).exists(), "recovery never collected the object"
+            assert asyncio.run(_pending_delete(key)) is None
         finally:
             jobs.logger.removeHandler(handler)
 

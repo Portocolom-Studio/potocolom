@@ -20,11 +20,14 @@ def upgrade() -> None:
         sa.Column("attempts", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("first_failed_at", sa.DateTime(timezone=True), nullable=False),
-        # Nullable: the sweep sets it to null when it gives up, which is how a
-        # row stays as a record of the object without being retried again.
-        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),
     )
+    # The sweep reads by due time every five minutes and the table can hold
+    # thousands of rows while a bucket policy is broken, which is exactly when
+    # it runs hardest.
+    op.create_index("pending_deletes_due", "pending_deletes", ["next_attempt_at"])
 
 
 def downgrade() -> None:
+    op.drop_index("pending_deletes_due", table_name="pending_deletes")
     op.drop_table("pending_deletes")

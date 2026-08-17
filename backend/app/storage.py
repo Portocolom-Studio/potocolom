@@ -316,7 +316,11 @@ class LocalStorage:
         return f"{self.worker_url}/api/v1/files/{key}"
 
     async def delete(self, key: str) -> None:
-        self.path(key).unlink(missing_ok=True)
+        # Off the loop: unlink blocks forever on a wedged mount, and on the
+        # loop that stops every socket and request in the process, not just the
+        # caller. It is also what lets a caller bound this with wait_for, which
+        # cannot interrupt a coroutine that never suspends.
+        await asyncio.to_thread(self.path(key).unlink, missing_ok=True)
 
 
 class S3Storage:

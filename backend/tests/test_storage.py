@@ -670,3 +670,27 @@ def test_s3_delete_counts_failures_from_every_batch():
     # Three failures across two batches, reported with the first code seen.
     with pytest.raises(RuntimeError, match="could not delete 3 version\\(s\\).*InternalError"):
         asyncio.run(storage.delete(key))
+
+
+def test_local_delete_does_not_block_the_event_loop(tmp_path):
+    """unlink on a wedged mount would stop every socket in the process, and a
+    caller's wait_for cannot interrupt a coroutine that never suspends."""
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    (tmp_path / "u").mkdir()
+    (tmp_path / "u" / "j.png").write_bytes(b"x")
+
+    async def drive() -> list[str]:
+        order: list[str] = []
+
+        async def ticker() -> None:
+            # Runs only if delete yields the loop at least once.
+            order.append("loop kept running")
+
+        tick = asyncio.ensure_future(ticker())
+        await storage.delete("u/j.png")
+        order.append("delete returned")
+        await tick
+        return order
+
+    assert asyncio.run(drive()) == ["loop kept running", "delete returned"]
+    assert not (tmp_path / "u" / "j.png").exists()

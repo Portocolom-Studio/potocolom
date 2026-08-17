@@ -61,7 +61,7 @@ LINEAGE_SUBTREE_MAX_NODES = 600
 # Sweep policy for blobs the terminal paths could not delete (issue #254).
 PENDING_DELETE_ERROR_MAX = 1000  # a last_error is a sentence, not a traceback
 PENDING_DELETE_PASS_LIMIT = 100  # rows per pass, so one bad batch cannot hog a tick
-PENDING_DELETE_MAX_ATTEMPTS = 8  # after this many failures the object stays
+PENDING_DELETE_MAX_ATTEMPTS = 8  # failures before the one alert; retries continue
 PENDING_DELETE_BACKOFF_CAP = 60  # minutes; 2 ** 7 would already overshoot an hour
 MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
 PENDING_DELETE_TIMEOUT = 60.0  # seconds for one delete, so a wedged mount cannot stall the pass
@@ -1537,61 +1537,81 @@ async def record_pending_delete(storage_key: str, last_error: str) -> None:
 async def retry_pending_deletes() -> None:
     """Delete the blobs the terminal paths could not (issue #254).
 
-    Selected by due time, oldest first, capped per pass so one batch that keeps
-    failing cannot dominate the tick. A row leaves the table only when its
-    object is gone or its eighth attempt failed: the error log line is then the
-    last word on that object, and the object is still there.
+    Due rows oldest first, capped per pass so one batch that keeps failing
+    cannot dominate a tick, and one transaction per row: holding the pass open
+    across every storage call would pin a connection and a row lock for as long
+    as the storage takes to answer, and a process that died mid-pass would lose
+    every attempt it had counted.
+
+    A row leaves the table when its object is gone. Nothing gives up on it: the
+    backoff caps at an hour, so a permanently undeletable object costs one call
+    an hour and keeps a row saying so. Dropping it, or unscheduling it, makes an
+    outage longer than the backoff permanent, since nothing re-arms a row and
+    the log line has rotated by the time anyone reads it.
     """
     if db.session_factory is None:
         return
-    now = datetime.now(timezone.utc)
     async with db.session_factory() as session:
-        rows = (
+        due = (
             await session.execute(
-                select(PendingDelete)
-                # A given-up row carries a null here, and null <= now is null,
-                # so this one comparison also skips it.
-                .where(PendingDelete.next_attempt_at <= now)
+                select(PendingDelete.storage_key)
+                .where(PendingDelete.next_attempt_at <= datetime.now(timezone.utc))
                 .order_by(PendingDelete.next_attempt_at)
                 .limit(PENDING_DELETE_PASS_LIMIT)
-                # The cloud profile runs this loop in every replica on the same
-                # cadence. Without the lock both select the same batch, both
-                # delete (idempotent, but twice the storage traffic), and the
-                # loser's commit fails on rows the winner already removed.
+            )
+        ).scalars().all()
+
+    for storage_key in due:
+        await _retry_one_pending_delete(storage_key)
+
+
+async def _retry_one_pending_delete(storage_key: str) -> None:
+    """One delete, one transaction, taken under a lock another replica skips."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        # The cloud profile runs this loop in every replica on the same
+        # cadence. SKIP LOCKED hands each row to exactly one of them, and the
+        # row is re-read here because it may have been swept since the select.
+        row = (
+            await session.execute(
+                select(PendingDelete)
+                .where(PendingDelete.storage_key == storage_key)
                 .with_for_update(skip_locked=True)
             )
-        ).scalars()
-        for row in rows:
-            try:
-                # LocalStorage.delete is an unlink, which blocks forever on a
-                # wedged mount: without the bound the pass never finishes, the
-                # loop never sleeps, and nothing raises to say so.
-                await asyncio.wait_for(get_storage().delete(row.storage_key),
-                                       PENDING_DELETE_TIMEOUT)
-            except Exception as error:
-                message = _trim_error(error)
-                row.attempts += 1
-                row.last_error = message
-                if row.attempts >= PENDING_DELETE_MAX_ATTEMPTS:
-                    # Unscheduled, not deleted. Dropping the row loses the only
-                    # record that the object exists: the backoff spans about
-                    # three hours, which a storage outage can outlive with the
-                    # API still up, and an operator who fixes it afterwards
-                    # would have nothing to look at. A null next_attempt_at is
-                    # what the sweep skips.
-                    logger.error("giving up on deleting %s after %s attempts: %s",
-                                 row.storage_key, row.attempts, message)
-                    row.next_attempt_at = None
-                    continue
-                minutes = min(2 ** row.attempts, PENDING_DELETE_BACKOFF_CAP)
-                row.next_attempt_at = now + timedelta(minutes=minutes)
-            else:
-                await session.delete(row)
+        ).scalar_one_or_none()
+        if row is None or row.next_attempt_at is None:
+            return
+        if row.next_attempt_at > datetime.now(timezone.utc):
+            return  # another replica already rescheduled it
+        try:
+            # The bound is real now that both backends await off the loop, and
+            # it is what keeps a wedged mount from stalling the whole pass.
+            await asyncio.wait_for(get_storage().delete(storage_key),
+                                   PENDING_DELETE_TIMEOUT)
+        except Exception as error:
+            message = _trim_error(error)
+            row.attempts += 1
+            row.last_error = message
+            if row.attempts == PENDING_DELETE_MAX_ATTEMPTS:
+                # Once, as an alert. The row stays scheduled: an object nobody
+                # can delete costs one call an hour, and a row that stops being
+                # retried is a leak with no way back.
+                logger.error("still cannot delete %s after %s attempts: %s",
+                             storage_key, row.attempts, message)
+            minutes = min(2 ** row.attempts, PENDING_DELETE_BACKOFF_CAP)
+            # Stamped now rather than at the top of the pass: a slow pass would
+            # otherwise hand its tail a due time already in the past.
+            row.next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        else:
+            await session.delete(row)
         await session.commit()
 
 
 def _trim_error(error: Exception) -> str:
-    message = str(error)
+    # The type name always: str() is empty for asyncio.TimeoutError and for a
+    # few botocore and OS errors, and this string is the whole record of why an
+    # object is still there.
+    message = f"{type(error).__name__}: {error}".rstrip(": ")
     if len(message) <= PENDING_DELETE_ERROR_MAX:
         return message
     return message[:PENDING_DELETE_ERROR_MAX]

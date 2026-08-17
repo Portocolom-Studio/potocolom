@@ -212,17 +212,17 @@ class PendingDelete(Base):
     The terminal paths swallow per-key delete failures so one bad key does not
     stop the rest, and this is the list of keys they tried and failed. The
     sweep owns attempts; a failure elsewhere refreshes last_error and
-    reschedules. A null next_attempt_at means the sweep gave up: the row then
-    exists only to record that the object is still out there.
+    reschedules. A row leaves only when its object is gone, so a row here is
+    always either due or waiting out its backoff.
     """
 
     __tablename__ = "pending_deletes"
 
     storage_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
     first_failed_at: Mapped[datetime]
-    next_attempt_at: Mapped[datetime | None]
+    next_attempt_at: Mapped[datetime] = mapped_column(index=True)
 
 
 class WorkerIdentity(Base):
