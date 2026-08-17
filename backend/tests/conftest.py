@@ -46,12 +46,12 @@ _SUFFIX = hashlib.sha256(str(_CHECKOUT).encode()).hexdigest()[:8]
 # The pid names the run for whoever is watching pg_database during it; the
 # random tail is what makes the name unique, since pids are recycled and two
 # containers sharing this checkout can hold the same one.
-_RUN = f"{_SUFFIX}_{os.getpid()}_{secrets.token_hex(2)}"
+_RUN = f"{_SUFFIX}_{os.getpid()}_{secrets.token_hex(8)}"
 
-# Only a database this file named is ever created, dropped or rebuilt. An
-# exported DATABASE_URL belongs to the developer or to CI: this suite reads it
-# and leaves it alone, so the two paths are separated once, here, rather than
-# re-derived at each use.
+# Only a database this file named is ever created, dropped, rebuilt or emptied.
+# An exported DATABASE_URL belongs to the developer or to CI: this suite reads
+# it and leaves its contents alone, so the two paths are separated once, here,
+# rather than re-derived at each use.
 _OURS = "DATABASE_URL" not in os.environ
 os.environ.setdefault("DATABASE_URL",
                       "postgresql://potocolom:potocolom@localhost:5432/"
@@ -117,6 +117,14 @@ def _prepare_database() -> bool:
                 await conn.execute(f'CREATE DATABASE "{database}"')
         finally:
             await conn.close()
+        if not _OURS:
+            # A supplied database is read, never emptied. Truncating one would
+            # contradict the promise above in the most expensive way available,
+            # and a developer who points DATABASE_URL at something with rows in
+            # it would lose them to a test run. A supplied database carrying
+            # leftover state can fail tests instead; that is the supplier's to
+            # notice, and it is recoverable.
+            return
         # Leftover pending jobs from an interrupted run would be requeued on
         # startup and reach a test's fake worker; start clean instead.
         conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
