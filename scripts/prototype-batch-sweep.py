@@ -2,15 +2,18 @@
 
 Two realtime sessions on one worker serialize on the GPU lock today, so each
 sees twice a single frame: at the measured 278 ms for sdxl-turbo that is 556 ms
-per cycle, past the 500 ms bar. Two things buy the second session, and the
-sweep measures both, because the recorded order of work depends on which
-dominates (decisions.md, "Realtime concurrency comes from one GPU serving
-several sessions"). --tiny-vae is the larger one: the full VAE decode is about
+per cycle, past the 500 ms bar. Three things buy the sessions after the first,
+and this script measures two of them, because the recorded order of work
+depends on which dominates (decisions.md, "Realtime concurrency comes from one
+GPU serving several sessions"). --tiny-vae is the larger one: the full VAE decode is about
 half the frame, and replacing it puts two serialized sessions inside the bar
-with no scheduler change at all, and three sessions once the prompt
-embeddings are cached per session too. Batching is the smaller one, worth about sixteen percent
-of what the same sessions cost serialized, and this script supplies its arithmetic: the cost of denoising N sessions'
-frames as one batch, against N times the cost of one.
+with no scheduler change at all. A per-session prompt-embedding cache buys the
+third, and this script does not apply one: it passes prompts as strings, so the
+pipeline encodes them on every frame exactly as the worker does today, and these
+numbers carry that cost. Issue #301 measures the cache separately. Batching is
+the smaller win, worth about sixteen percent of what the same sessions cost
+serialized, and this script supplies its arithmetic: the cost of denoising N
+sessions' frames as one batch, against N times the cost of one.
 
 It measures the batched pipeline call directly, without the worker or the API,
 because the question is about the GPU and not about the relay. Two regions are

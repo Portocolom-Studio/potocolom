@@ -274,16 +274,23 @@ async def main() -> None:
         drained = [ms for at, ms in victim.latencies if at >= rss_after_b_at]
         if drained:
             print(f"\ndrain: {victim.name} read again and {len(drained)} frames "
-                  f"arrived; their age when they landed ranges "
+                  f"arrived; their age when they landed, measured from the input that asked "
+                  f"for them rather than from when they were generated, ranges "
                   f"{min(drained) / 1000:.1f} s to {max(drained) / 1000:.1f} s. "
                   f"Stale means they were buffered during the stall; fresh means they "
                   f"were generated after it. Controls seen: {victim.controls[-4:]}")
         else:
-            # Not an error and not nothing: it says the frames were dropped
-            # rather than held, which is the opposite finding and equally
-            # interesting.
-            print(f"\ndrain: {victim.name} read again and no frames arrived, so the "
-                  f"stalled session's frames were dropped rather than buffered. "
+            # Inconclusive on purpose. No binary frame in the drain window says
+            # only that this client received none: dropped, still queued,
+            # generated late, or a socket that died all look the same from here,
+            # and separating them needs connection health and server-side queue
+            # depth that this harness does not collect. Reporting it as loss
+            # would be the same overclaim the buffered branch was written to
+            # avoid.
+            print(f"\ndrain: {victim.name} read again and no frames arrived within "
+                  f"the drain window, which does not say why: dropped, still queued, "
+                  f"generated late and a dead socket are indistinguishable here. "
+                  f"Socket open: {not victim.ws.close_code}. "
                   f"Controls seen: {victim.controls[-4:]}")
         print(f"\nAPI resident memory {rss_start:.0f} -> {rss_after_a:.0f} -> {rss_after_b:.0f} MB "
               f"across the three points, against "
