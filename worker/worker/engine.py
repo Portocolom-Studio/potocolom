@@ -782,13 +782,17 @@ class DiffusersEngine:
             # Registered directly rather than through _pipeline, which would
             # re-enter the loader's own eviction and demotion logic from
             # inside a load; the rung for this model has already been chosen
-            # by the caller. This does not make eviction free: the two cache
-            # entries share their UNet, text encoders and VAE, so evicting
-            # one of them frees nothing while the other is alive. Eviction
-            # accounting does not model shared components; this at least
-            # makes the base visible to the cache rather than invisible to
-            # it, so a later text-to-image job reuses it instead of loading
-            # a second copy.
+            # by the caller. Registering makes the base visible to the cache
+            # rather than invisible to it, so a later text-to-image job reuses
+            # it instead of loading a second complete copy.
+            #
+            # Two entries for one model share their UNet, text encoders and
+            # VAE, and eviction handles that because it works per model:
+            # _evict_cold collects model ids and _evict_model drops every key
+            # for the one it picks, so the shared weights are released
+            # together and no path removes a single entry. Measured with a
+            # two-entry model beside another: both entries went, the cached
+            # rung was forgotten, the other model stayed.
             self._pipelines[(manifest.id, "t2i")] = base
         # T2IAdapter computes its conditioning features once before the
         # denoising loop, so the conditioned path's cost is roughly constant

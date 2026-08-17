@@ -17,6 +17,13 @@ from app.tables import Model
 
 logger = logging.getLogger("potocolom.registry")
 
+# public() runs on every /api/v1/models request and on every for_jobs()
+# call, so a drop logged naively would repeat for every poll of the studio.
+# Remembering the last-logged drop per model id logs a given drop once, and
+# only again when the reason changes or a recovery ends and the drop
+# returns; otherwise a pure function would not hold state.
+_last_dropped_reason: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+
 router = APIRouter()
 
 
@@ -48,6 +55,7 @@ def public() -> dict[str, Manifest]:
     public_models: dict[str, Manifest] = {}
     for model_id, manifest in published.items():
         if manifest.studio_capabilities is None:
+            _last_dropped_reason.pop(model_id, None)
             public_models[model_id] = manifest
             continue
         # The studio pickers filter on capabilities, so narrowing them here is
@@ -60,7 +68,16 @@ def public() -> dict[str, Manifest]:
             # studio would list it while no picker could ever offer it, which
             # reads as a removal the user never made. available() still serves
             # it to the benchmark page and the realtime session path.
+            reason = (tuple(manifest.capabilities), tuple(manifest.studio_capabilities))
+            if _last_dropped_reason.get(model_id) != reason:
+                logger.warning(
+                    "model %s dropped from the studio: advertised capabilities %s "
+                    "narrow to nothing against studio_capabilities %s",
+                    manifest.id, manifest.capabilities, manifest.studio_capabilities,
+                )
+                _last_dropped_reason[model_id] = reason
             continue
+        _last_dropped_reason.pop(model_id, None)
         public_models[model_id] = manifest.model_copy(update={"capabilities": narrowed})
     return public_models
 
