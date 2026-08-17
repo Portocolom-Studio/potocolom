@@ -431,9 +431,15 @@ class S3Storage:
         be deleted with it.
         """
         def purge() -> None:
+            # The walk runs to the end of the prefix rather than stopping at
+            # the first page carrying another key. Versions of one key are
+            # contiguous and this key sorts before anything extending it, so an
+            # early break is available, and it buys nothing here: the app's own
+            # keys diverge before the extension, so a purge sees one page.
             paginator = self.client.get_paginator("list_object_versions")
             failed = 0
             first_code = None
+            first_message = None
             for page in paginator.paginate(Bucket=self.bucket, Prefix=key):
                 doomed = [
                     {"Key": entry["Key"], "VersionId": entry["VersionId"]}
@@ -456,10 +462,15 @@ class S3Storage:
                     if errors:
                         failed += len(errors)
                         if first_code is None:
+                            # Both, because the caller only logs this line: the
+                            # code is what an operator greps for and the message
+                            # is what tells them which permission is missing.
                             first_code = errors[0].get("Code")
+                            first_message = errors[0].get("Message")
             if failed:
                 raise RuntimeError(
-                    f"could not delete {failed} version(s) of {key}: {first_code}"
+                    f"could not delete {failed} version(s) of {key}: "
+                    f"{first_code} {first_message}".rstrip()
                 )
 
         await asyncio.to_thread(purge)

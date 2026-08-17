@@ -98,10 +98,12 @@ class _FakeBody:
 
 
 class _FakePaginator:
-    def __init__(self, pages):
+    def __init__(self, pages, seen):
         self.pages = pages
+        self.seen = seen
 
     def paginate(self, **kwargs):
+        self.seen.append(kwargs)
         prefix = kwargs.get("Prefix", "")
         for page in self.pages:
             yield {
@@ -121,6 +123,7 @@ class _FakeS3Client:
         # the batches after it succeed.
         self.delete_response = delete_response or {}
         self.delete_responses = delete_responses
+        self.paginated: list[dict] = []
 
     def get_object(self, **kwargs):
         return {
@@ -135,9 +138,13 @@ class _FakeS3Client:
 
     def get_paginator(self, name):
         assert name == "list_object_versions"
-        return _FakePaginator(self.pages)
+        return _FakePaginator(self.pages, self.paginated)
 
     def delete_objects(self, **kwargs):
+        # Quiet suppresses the successes and keeps the errors, which is what
+        # makes the response readable at all; without it every batch returns a
+        # thousand entries the caller does not use.
+        assert kwargs["Delete"]["Quiet"] is True
         self.deleted.extend(kwargs["Delete"]["Objects"])
         self.delete_calls += 1
         if self.delete_responses is not None:
@@ -562,6 +569,10 @@ def test_s3_delete_removes_every_version_of_exactly_that_key():
     ])
 
     asyncio.run(storage.delete(key))
+    # Listing by prefix is what keeps this from walking the whole bucket, and
+    # the exact-key filter is what keeps it from deleting a neighbour; without
+    # the prefix every test here would still pass.
+    assert storage.client.paginated == [{"Bucket": "bucket", "Prefix": key}]
     assert storage.client.deleted == [
         {"Key": key, "VersionId": "v1"},
         {"Key": key, "VersionId": "v2"},
