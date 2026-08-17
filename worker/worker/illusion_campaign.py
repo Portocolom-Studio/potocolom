@@ -547,6 +547,39 @@ WINDOW3_BASE_ESTIMATE_S = 1_736.0
 WINDOW3_WORDINGS = ("charcoal",)
 WINDOW3_WORDING_PAIRS = WINDOW2_PROVEN
 WINDOW3_WORDING_SEEDS = WINDOW2_SEEDS
+# The 24 window 3 block A pairs that reached the clean-readable endpoint
+# (score >= 3 with the frame rated none or minor) on at least one Dream arm.
+# Seeds are a fixed triple rather than each pair's winning window 3 seed: a
+# seed chosen because it won regresses to the mean, and the same triple keeps
+# every pair on identical ground.
+WINDOW4_PAIRS = (
+    "censer_seedhead",
+    "crystalcluster_thistle",
+    "delta_treecrown",
+    "dune_snowdrift",
+    "esker_railembankment",
+    "fjordwall_glaciertongue",
+    "hoodoofield_chimneysmoke",
+    "icecave_marblehall",
+    "inkwell_inkcap",
+    "kingfisher_wisteria",
+    "lightningtree_rootweb",
+    "mangroveroots_lightning",
+    "mantis_orchid",
+    "mantisshrimp_bromeliad",
+    "marten_pinecone",
+    "meerkat_weavernest",
+    "mesa_anvilcloud",
+    "oryx_agaveflower",
+    "pangolin_bananaflower",
+    "reedbed_wheatfield",
+    "scythe_crescentdune",
+    "spindle_seedpod",
+    "urn_beehiveoven",
+    "yardang_shipwreck",
+)
+WINDOW4_STYLES = ("reference_sketch", "oil")
+WINDOW4_SEEDS = (11, 23, 37)
 
 
 def _window2_flags(
@@ -777,6 +810,34 @@ def build_window3() -> list[CampaignEntry]:
                         flags=_window3_flags(),
                         priority=priority,
                         style=wording,
+                        estimate_s=WINDOW3_BASE_ESTIMATE_S,
+                    )
+                )
+                priority += 1
+    return entries
+
+
+def build_window4() -> list[CampaignEntry]:
+    """24 winners x 2 wordings x 3 fixed seeds, one cell per base.
+
+    Seed-major ordering makes each seed a complete 48-base block, so a window
+    that runs short drops a whole seed rather than half the pairs, and both
+    wordings stay balanced at any truncation point.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in WINDOW4_SEEDS:
+        for pair_id in WINDOW4_PAIRS:
+            for style in WINDOW4_STYLES:
+                entries.append(
+                    _entry(
+                        tier="window4",
+                        profile=style,
+                        pair_id=pair_id,
+                        seed=seed,
+                        flags=_window3_flags(),
+                        priority=priority,
+                        style=style,
                         estimate_s=WINDOW3_BASE_ESTIMATE_S,
                     )
                 )
@@ -1373,6 +1434,8 @@ def build_phase_plan(
         entries = build_window2()
     elif phase == "window3":
         entries = build_window3()
+    elif phase == "window4":
+        entries = build_window4()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1468,6 +1531,7 @@ def main(argv: list[str] | None = None) -> int:
             "window",
             "window2",
             "window3",
+            "window4",
             "early-dream-backup",
         ),
         required=True,
@@ -1602,6 +1666,13 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window3", 0) not in (0, window3_expected):
             print(
                 f"FAIL: window3 expected {window3_expected} got {counts.get('window3')}",
+                file=sys.stderr,
+            )
+            return 1
+        window4_expected = len(WINDOW4_PAIRS) * len(WINDOW4_STYLES) * len(WINDOW4_SEEDS)
+        if counts.get("window4", 0) not in (0, window4_expected):
+            print(
+                f"FAIL: window4 expected {window4_expected} got {counts.get('window4')}",
                 file=sys.stderr,
             )
             return 1
