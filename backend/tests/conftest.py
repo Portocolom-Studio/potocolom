@@ -220,7 +220,14 @@ def _no_inherited_jobs(request):
     if "db" not in request.keywords or not DATABASE_AVAILABLE:
         return
     from app import db, jobs, realtime
+    from app.settings import get_settings
 
+    # monkeypatch puts the environment back, and the settings cache still holds
+    # what was read from it: a test that lowered JOB_STALL_SECONDS to force a
+    # requeue leaves every later test with a sweeper that fires in 50 ms, which
+    # requeues their jobs under them. Undoing the variable is not undoing the
+    # setting until this is cleared.
+    get_settings.cache_clear()
     # A worker whose socket is gone stays in this registry, and the scheduler
     # will hand it the next test's job and wait for a reply that cannot come.
     realtime.workers.clear()
