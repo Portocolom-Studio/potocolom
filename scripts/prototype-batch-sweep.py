@@ -6,11 +6,11 @@ per cycle, past the 500 ms bar. Two things buy the second session, and the
 sweep measures both, because the recorded order of work depends on which
 dominates (decisions.md, "Realtime concurrency comes from one GPU serving
 several sessions"). --tiny-vae is the larger one: the full VAE decode is about
-half the frame, and replacing it puts two and probably three serialized
-sessions inside the bar with no scheduler change at all. Batching is the
-smaller one, worth about seventeen percent, and this script supplies its
-arithmetic: the cost of denoising N sessions' frames as one batch, against N
-times the cost of one.
+half the frame, and replacing it puts two serialized sessions inside the bar
+with no scheduler change at all, three once the prompt embeddings are cached
+per session too. Batching is the smaller one, worth about seventeen percent,
+and this script supplies its arithmetic: the cost of denoising N sessions'
+frames as one batch, against N times the cost of one.
 
 It measures the batched pipeline call directly, without the worker or the API,
 because the question is about the GPU and not about the relay. Two regions are
