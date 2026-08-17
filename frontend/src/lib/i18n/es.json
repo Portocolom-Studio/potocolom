@@ -369,6 +369,8 @@
 	"app.images.load_failed": "No se pudo cargar el historial de imagenes.",
 	"app.images.retry": "Reintentar",
 	"app.images.tree_loading": "Cargando derivadas",
+	"app.images.tree_load_failed": "No se pudieron cargar las derivadas",
+	"app.images.retry_tree_load": "Cargar de nuevo las derivadas de este árbol",
 	"app.images.truncated_more": "Al menos {count} mas sin cargar",
 	"app.images.drag_tree": "Arrastra para mover este arbol. Usa las flechas al enfocarlo.",
 	"app.images.reset_tree_position": "Restablecer la posicion de este arbol",
