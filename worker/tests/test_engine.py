@@ -160,6 +160,57 @@ class _RenderPipeline:
         return SimpleNamespace(images=[Image.new("RGB", (32, 32))])
 
 
+class _JobPipeline:
+    """Records pipeline keyword arguments for job-path tests."""
+
+    def __init__(self, *, dual: bool = False):
+        fake = _fake_pipeline(dual=dual)
+        self.tokenizer = fake.tokenizer
+        self.text_encoder = fake.text_encoder
+        self.tokenizer_2 = fake.tokenizer_2
+        self.text_encoder_2 = fake.text_encoder_2
+        self.config = fake.config
+        self.call_kwargs: list[dict] = []
+
+    def __call__(self, **kwargs):
+        self.call_kwargs.append(kwargs)
+        return SimpleNamespace(images=[Image.new("RGB", (64, 48))])
+
+
+def _job_engine(pipeline: _JobPipeline) -> DiffusersEngine:
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine._pipelines = {}
+    engine._pipeline = MagicMock(return_value=pipeline)
+    return engine
+
+
+def _sdxl_job_manifest() -> Manifest:
+    return Manifest(
+        id="sdxl-base",
+        name="SDXL",
+        capabilities=["text_to_image", "image_to_image"],
+        prompt_token_limit=77,
+    )
+
+
+def _input_image_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (128, 96), (40, 80, 120)).save(buffer, "WEBP")
+    return buffer.getvalue()
+
+
+def _assert_negative_reachable(kwargs: dict) -> None:
+    if kwargs.get("negative_prompt_embeds") is not None:
+        return
+    if kwargs.get("negative_prompt") is not None:
+        return
+    raise AssertionError(
+        "pipeline kwargs lack negative_prompt_embeds or negative_prompt",
+    )
+
+
 def _frame_engine(pipeline: _RenderPipeline) -> DiffusersEngine:
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = _FakeTorch()
@@ -364,6 +415,53 @@ def test_realtime_sd3_frames_keep_the_string_prompt_path():
     assert pipeline.text_encoder.calls == 0
     assert all(kwargs.get("prompt") == "w0 w1" for kwargs in pipeline.render_kwargs)
     assert all("prompt_embeds" not in kwargs for kwargs in pipeline.render_kwargs)
+
+
+def test_generate_job_passes_negative_prompt_to_pipeline():
+    """Shipped sdxl-base guidance default is 6; a queued job at that value must
+    still reach _prompt_kwargs so the user's negative prompt is encoded, not
+    dropped by a zero-guidance shortcut that only forwards positive embeds."""
+    pipeline = _JobPipeline(dual=True)
+    engine = _job_engine(pipeline)
+    manifest = _sdxl_job_manifest()
+    params = {
+        "prompt": "w0 w1",
+        "negative_prompt": "w3 w4",
+        "guidance": 6.0,
+    }
+    loop = asyncio.new_event_loop()
+    try:
+        result = engine._generate(manifest, params, lambda _: None, loop)
+    finally:
+        loop.close()
+
+    _assert_negative_reachable(pipeline.call_kwargs[0])
+    assert result.width == 64
+    assert result.height == 48
+
+
+def test_generate_i2i_job_passes_negative_prompt_to_pipeline():
+    """Shipped ssd-1b guidance default is 7; img2img at that value must encode
+    the negative prompt the same way, not route through a helper that drops it."""
+    pipeline = _JobPipeline(dual=True)
+    engine = _job_engine(pipeline)
+    manifest = _sdxl_job_manifest()
+    params = {
+        "prompt": "w0 w1",
+        "negative_prompt": "w5 w6",
+        "guidance": 7.0,
+    }
+    loop = asyncio.new_event_loop()
+    try:
+        result = engine._generate_i2i(
+            manifest, params, lambda _: None, loop, _input_image_bytes(),
+        )
+    finally:
+        loop.close()
+
+    _assert_negative_reachable(pipeline.call_kwargs[0])
+    assert result.width == 64
+    assert result.height == 48
 
 
 def test_sdxl_pooled_embedding_comes_from_first_chunk():
