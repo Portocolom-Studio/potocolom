@@ -1490,6 +1490,18 @@ async def _pending_delete(storage_key: str) -> PendingDelete | None:
         return await session.get(PendingDelete, storage_key)
 
 
+def _await_pending_delete(storage_key: str, timeout=3.0) -> PendingDelete:
+    """The recording happens after the commit that publishes the terminal
+    state, so a test that polled for the state can arrive first."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = asyncio.run(_pending_delete(storage_key))
+        if row is not None:
+            return row
+        time.sleep(0.05)
+    raise AssertionError(f"no pending delete recorded for {storage_key}")
+
+
 async def _clear_pending_deletes() -> None:
     """No autouse fixture empties this table, so sweep tests start at zero."""
     if db.session_factory is None:
@@ -3574,8 +3586,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
                               "gpu_ms": 1, "width": 512, "height": 512})
             poll_until(client, job_id, "succeeded")
 
-            row = asyncio.run(_pending_delete(thumb_key))
-            assert row is not None, "the failed orphan delete was not recorded"
+            row = _await_pending_delete(thumb_key)
             assert "denied" in (row.last_error or "")
 
 
