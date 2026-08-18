@@ -128,7 +128,9 @@ class _FakePipeline:
 
     def __call__(self, **kwargs):
         self.call_kwargs.append(kwargs)
-        return SimpleNamespace(images=[object()])
+        # The job paths encode the rendered image with encode_png, which needs
+        # a real PIL image, not the object() the frame paths can get away with.
+        return SimpleNamespace(images=[Image.new("RGB", (8, 8))])
 
     def encode_prompt(self, prompt, *, device, do_classifier_free_guidance,
                       num_images_per_prompt):
@@ -422,6 +424,77 @@ def test_realtime_frame_i2i_path_encodes_prompt():
     call_kwargs = pipeline.call_kwargs[0]
     assert "prompt" not in call_kwargs
     assert call_kwargs["prompt_embeds"].shape == (1, 2, 4)
+
+
+def test_generate_job_encodes_both_conditionings_at_positive_guidance():
+    """The text-to-image job call site must keep handing the pipeline both
+    conditionings. If it were switched to the realtime prompt helper without
+    a guidance argument, the helper's zero-guidance shortcut returns
+    positive-only embeddings, and diffusers 0.39.0 encodes an empty negative
+    rather than raising: every negative-prompted job would silently render
+    with the negative dropped. It is reachable on shipped defaults because
+    run_job applies manifest.with_defaults and sdxl-base declares guidance 6,
+    above diffusers' CFG threshold of 1.0.
+    """
+    engine = _fake_prompt_engine()
+    engine._pipelines = {}
+    pipeline = _fake_pipeline()
+    engine._pipeline = MagicMock(return_value=pipeline)
+    manifest = _clip_manifest()
+    loop = asyncio.new_event_loop()
+    try:
+        engine._generate(
+            manifest,
+            {"prompt": "w0 w1", "guidance": 6.0, "negative_prompt": "w3"},
+            lambda _: None,
+            loop,
+        )
+    finally:
+        loop.close()
+
+    call_kwargs = pipeline.call_kwargs[0]
+    if "negative_prompt" in call_kwargs:
+        assert call_kwargs["prompt"] == "w0 w1"
+        assert call_kwargs["negative_prompt"] == "w3"
+    else:
+        assert "negative_prompt_embeds" in call_kwargs
+
+
+def test_generate_i2i_job_encodes_both_conditionings_at_positive_guidance():
+    """The image-to-image job call site is the same regression surface:
+    ssd-1b declares guidance 7, so the pipeline must receive both
+    conditionings here too, never the realtime helper's positive-only
+    shortcut.
+    """
+    engine = _fake_prompt_engine()
+    engine._pipelines = {}
+    pipeline = _fake_pipeline()
+    engine._pipeline = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (40, 80, 120)).save(buffer, "PNG")
+    loop = asyncio.new_event_loop()
+    try:
+        engine._generate_i2i(
+            manifest,
+            {"prompt": "w0 w1", "guidance": 7.0, "negative_prompt": "w3"},
+            lambda _: None,
+            loop,
+            buffer.getvalue(),
+        )
+    finally:
+        loop.close()
+
+    call_kwargs = pipeline.call_kwargs[0]
+    if "negative_prompt" in call_kwargs:
+        assert call_kwargs["prompt"] == "w0 w1"
+        assert call_kwargs["negative_prompt"] == "w3"
+    else:
+        assert "negative_prompt_embeds" in call_kwargs
 
 
 def test_sdxl_pooled_embedding_comes_from_first_chunk():
