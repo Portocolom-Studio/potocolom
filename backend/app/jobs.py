@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import math
+import random
 import re
 import secrets
 import time
@@ -1434,7 +1435,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             orphans.extend(storage_keys_for_attempt(current.user_id, job_id, earlier))
         for orphan in orphans:
             try:
-                await get_storage().delete(orphan)
+                await _bounded_delete(orphan)
             except Exception as error:
                 # The same leak purge_attempt_blobs had, one function away: the
                 # success path collects the earlier attempts and an unreported
@@ -1486,7 +1487,7 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     for earlier in range(1, attempt + 1):
         for key in storage_keys_for_attempt(user_id, job_id, earlier):
             try:
-                await get_storage().delete(key)
+                await _bounded_delete(key)
             except Exception as error:
                 # Warning, not debug: a missing object does not normally make
                 # a delete raise, so this is a real cleanup failure such as a
@@ -1494,6 +1495,13 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
                 logger.warning("could not remove blob %s for job %s", key, job_id,
                                exc_info=True)
                 await record_pending_delete(key, _trim_error(error))
+
+
+async def _bounded_delete(storage_key: str) -> None:
+    """One delete, bounded. Every caller is on a path that must not hang: a
+    terminal verdict, or the sweep. A wedged mount answers never, and without
+    this the task waits with it, silently, for the life of the process."""
+    await asyncio.wait_for(get_storage().delete(storage_key), PENDING_DELETE_TIMEOUT)
 
 
 async def record_pending_delete(storage_key: str, last_error: str) -> None:
@@ -1519,10 +1527,10 @@ async def record_pending_delete(storage_key: str, last_error: str) -> None:
             excluded = statement.excluded
             statement = statement.on_conflict_do_update(
                 index_elements=[PendingDelete.storage_key],
-                set_={
-                    "last_error": excluded.last_error,
-                    "next_attempt_at": excluded.next_attempt_at,
-                },
+                # last_error only: the sweep owns the schedule, and this
+                # upsert can be waiting on its row lock, so writing a due time
+                # from before that wait would undo the backoff it just set.
+                set_={"last_error": excluded.last_error},
             )
             await session.execute(statement)
             await session.commit()
@@ -1579,15 +1587,12 @@ async def _retry_one_pending_delete(storage_key: str) -> None:
                 .with_for_update(skip_locked=True)
             )
         ).scalar_one_or_none()
-        if row is None or row.next_attempt_at is None:
-            return
+        if row is None:
+            return  # another replica holds it, or its object is already gone
         if row.next_attempt_at > datetime.now(timezone.utc):
             return  # another replica already rescheduled it
         try:
-            # The bound is real now that both backends await off the loop, and
-            # it is what keeps a wedged mount from stalling the whole pass.
-            await asyncio.wait_for(get_storage().delete(storage_key),
-                                   PENDING_DELETE_TIMEOUT)
+            await _bounded_delete(storage_key)
         except Exception as error:
             message = _trim_error(error)
             row.attempts += 1
@@ -1623,7 +1628,10 @@ async def maintain_deletes_loop() -> None:
             await retry_pending_deletes()
         except Exception:
             logger.exception("pending delete maintenance failed")
-        await asyncio.sleep(MAINTAIN_DELETES_INTERVAL)
+        # Jittered: replicas deployed together would otherwise run this in
+        # phase forever, and every loser then spends a pass taking locks that
+        # are already held.
+        await asyncio.sleep(MAINTAIN_DELETES_INTERVAL * random.uniform(0.9, 1.1))
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str,

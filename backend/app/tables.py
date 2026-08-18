@@ -222,7 +222,12 @@ class PendingDelete(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
     first_failed_at: Mapped[datetime]
-    next_attempt_at: Mapped[datetime] = mapped_column(index=True)
+    next_attempt_at: Mapped[datetime]
+
+    # Named to match migration 0013: mapped_column(index=True) would call it
+    # ix_pending_deletes_next_attempt_at, so a create_all schema and a migrated
+    # one would differ and the next autogenerate would emit a spurious pair.
+    __table_args__ = (Index("pending_deletes_due", "next_attempt_at"),)
 
 
 class WorkerIdentity(Base):

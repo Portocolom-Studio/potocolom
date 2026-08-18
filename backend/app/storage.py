@@ -10,6 +10,7 @@ import re
 import struct
 import zlib
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
@@ -18,6 +19,10 @@ from urllib.parse import urlencode
 from app.settings import Settings, get_settings
 
 SIGNED_URL_TTL = 3600
+# Deletes get their own small pool: a wedged filesystem leaks one thread per
+# attempt for good, and the default executor is shared with every other
+# off-loop read this app makes.
+DELETE_THREADS = 4
 # Carries the dispatch token on a local upload (app/files.py, issue #247).
 UPLOAD_TOKEN_HEADER = "X-Upload-Token"
 PNG_CONTENT_TYPE = "image/png"
@@ -26,6 +31,11 @@ DOWNLOAD_NAME_MAX_LENGTH = 96
 DOWNLOAD_NAME_PATTERN = re.compile(
     r"[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+",
 )
+
+
+@lru_cache
+def _delete_threads() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=DELETE_THREADS, thread_name_prefix="storage-delete")
 
 
 def validate_download_name(name: str) -> str:
@@ -316,11 +326,14 @@ class LocalStorage:
         return f"{self.worker_url}/api/v1/files/{key}"
 
     async def delete(self, key: str) -> None:
-        # Off the loop: unlink blocks forever on a wedged mount, and on the
-        # loop that stops every socket and request in the process, not just the
-        # caller. It is also what lets a caller bound this with wait_for, which
-        # cannot interrupt a coroutine that never suspends.
-        await asyncio.to_thread(self.path(key).unlink, missing_ok=True)
+        # Off the loop, and in a pool of its own. unlink blocks forever on a
+        # wedged mount; on the loop that stops every socket in the process, and
+        # in the default executor it eventually starves every other to_thread
+        # call the app makes, because a caller's timeout abandons the await
+        # while the thread stays wedged for good. Here the damage is bounded to
+        # DELETE_THREADS stuck threads and deletes failing.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_delete_threads(), self.path(key).unlink, True)
 
 
 class S3Storage:

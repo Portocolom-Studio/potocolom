@@ -3493,6 +3493,7 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-purge-recorded")
+            asyncio.run(_clear_pending_deletes())
             job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "record"}},
@@ -3656,7 +3657,15 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
             assert row is not None, "the record of the object was thrown away"
             assert row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS
             assert storage.path(key).exists(), "the failing delete removed the object"
-            assert any("still cannot delete" in message for message in messages)
+            assert sum("still cannot delete" in message for message in messages) == 1
+
+            # Ninth failure: still retried, and silent. Alerting on every
+            # failure past the eighth would bury the one line that matters.
+            asyncio.run(_make_due(key))
+            asyncio.run(jobs.retry_pending_deletes())
+            assert sum("still cannot delete" in message for message in messages) == 1
+            row = asyncio.run(_pending_delete(key))
+            assert row is not None and row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS + 1
 
             # Still scheduled, because an outage can outlive the backoff and a
             # row nothing retries is a leak with no way back. Due again within
@@ -3669,6 +3678,25 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
             assert asyncio.run(_pending_delete(key)) is None
         finally:
             jobs.logger.removeHandler(handler)
+
+
+@pytest.mark.db
+def test_recording_a_key_again_does_not_undo_its_backoff():
+    """The upsert can be waiting on the sweep's row lock, so writing its own
+    due time would hand back a key the sweep had just pushed an hour out."""
+    with TestClient(app):
+        key = f"{db.local_user_id}/re-record.png"
+        asyncio.run(_clear_pending_deletes())
+        later = datetime.now(timezone.utc) + timedelta(minutes=30)
+        asyncio.run(_seed_pending_delete(key, attempts=3, due=later))
+
+        asyncio.run(jobs.record_pending_delete(key, "denied again"))
+
+        row = asyncio.run(_pending_delete(key))
+        assert row is not None
+        assert row.last_error == "denied again", "the new error was not recorded"
+        assert row.next_attempt_at == later, "the backoff was reset by a re-recording"
+        assert row.attempts == 3, "the sweep's counter was touched by a recording"
 
 
 @pytest.mark.db
