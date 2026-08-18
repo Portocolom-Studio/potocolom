@@ -1191,6 +1191,7 @@ class DiffusersEngine:
         manifest: Manifest,
         prompt: str,
         negative_prompt: str | None,
+        guidance_scale: float = 0.0,
     ) -> dict[str, Any]:
         # A realtime session re-encodes its prompt for every frame, and encoding
         # is a full pass through the text encoder: measured at 26 to 33 ms off
@@ -1203,6 +1204,19 @@ class DiffusersEngine:
         # cache lives on the pipeline for the same reason _prompt_kwargs's does:
         # a model switch drops it with the weights instead of pinning embeddings
         # for weights no longer loaded.
+        # The single-embedding shortcut is only valid at zero guidance.
+        # diffusers 0.39.0, the pinned version, does not raise when
+        # prompt_embeds is supplied without negative_prompt_embeds: its
+        # encode_prompt builds zero or empty negatives itself, so a future
+        # change that enables guidance on this path would silently render with
+        # the wrong conditioning. Degrade instead of misleading: return
+        # _prompt_kwargs's result unchanged, which hands the pipeline the
+        # string prompt and makes it encode both conditionings itself. A
+        # correct slower frame beats a crashed or wrong one, and this path is
+        # not cached because the string is not the tensors that make it fast.
+        if guidance_scale > 0:
+            return self._prompt_kwargs(
+                pipeline, manifest, prompt, negative_prompt)
         cache_key = (manifest.id, prompt, negative_prompt)
         cached = getattr(pipeline, "_potocolom_realtime_prompt_cache", None)
         if cached is not None and cached[0] == cache_key:
@@ -1312,7 +1326,7 @@ class DiffusersEngine:
         width = params.get("width")
         height = params.get("height")
         negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._prompt_kwargs(
+        prompt_kwargs = self._realtime_prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
@@ -1359,7 +1373,7 @@ class DiffusersEngine:
             return kwargs
 
         negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._prompt_kwargs(
+        prompt_kwargs = self._realtime_prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
@@ -1470,11 +1484,13 @@ class DiffusersEngine:
             # until 1.0, where the scene ignores it.
             pipeline = self._pipeline(manifest, "realtime")
             negative_prompt = params.get("negative_prompt")
+            guidance_scale = 0.0
             prompt_kwargs = self._realtime_prompt_kwargs(
                 pipeline,
                 manifest,
                 str(params.get("prompt", "")),
                 str(negative_prompt) if negative_prompt is not None else None,
+                guidance_scale,
             )
             properties = manifest.parameters.get("properties", {})
             structure_strength = float(params.get(
@@ -1501,18 +1517,20 @@ class DiffusersEngine:
                 image=canvas,
                 num_inference_steps=steps,
                 adapter_conditioning_scale=structure_strength,
-                guidance_scale=0.0,
+                guidance_scale=guidance_scale,
                 generator=generator,
             ).images[0]
             gpu_ms = int((time.monotonic() - started) * 1000)
             return image, gpu_ms
         pipeline = self._pipeline(manifest, "i2i")
         negative_prompt = params.get("negative_prompt")
+        guidance_scale = 0.0
         prompt_kwargs = self._realtime_prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
             str(negative_prompt) if negative_prompt is not None else None,
+            guidance_scale,
         )
         started = time.monotonic()
         image = pipeline(
@@ -1522,7 +1540,7 @@ class DiffusersEngine:
             # so keep the product at one or above.
             num_inference_steps=max(2, math.ceil(1 / strength)),
             strength=strength,
-            guidance_scale=0.0,
+            guidance_scale=guidance_scale,
         ).images[0]
         gpu_ms = int((time.monotonic() - started) * 1000)
         return image, gpu_ms

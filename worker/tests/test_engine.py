@@ -341,6 +341,26 @@ def test_realtime_sd3_keeps_string_prompt_path():
     assert pipeline.encode_calls == 0
 
 
+def test_realtime_guidance_degrades_to_string_prompt():
+    """Above-zero guidance cannot use the single unconditional embedding the
+    zero-guidance path caches. diffusers 0.39.0, the pinned version, does not
+    raise when prompt_embeds is supplied without negative_prompt_embeds: its
+    encode_prompt builds zero or empty negatives itself, so the frame would
+    silently render with the wrong conditioning. The helper must hand the
+    pipeline the string prompt, which makes it encode both conditionings
+    itself, and must not call encode_prompt for the degraded path.
+    """
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    manifest = _clip_manifest()
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline, manifest, "w0 w1", "w3", guidance_scale=3.0)
+
+    assert kwargs == {"prompt": "w0 w1", "negative_prompt": "w3"}
+    assert pipeline.encode_calls == 0
+
+
 def test_realtime_long_prompt_chunking_is_not_double_encoded():
     engine = _fake_prompt_engine()
     pipeline = _fake_pipeline()
