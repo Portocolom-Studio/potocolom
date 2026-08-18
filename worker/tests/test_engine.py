@@ -1206,6 +1206,26 @@ def test_adapter_frame_uses_preview_decoder():
     assert setup.decode_inference_states == [True]
 
 
+def test_adapter_second_frame_after_decode_failure_makes_one_full_vae_call():
+    """After a decode failure the retry window keeps the fast path off until it
+    expires: the failing frame pays for latent denoise plus full VAE, and every
+    later frame in that window must not."""
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+    setup.decoder.decode.side_effect = RuntimeError("decode broke")
+
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+        setup.pipeline.reset_mock()
+        setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+
+    assert setup.pipeline.call_count == 1
+    assert "output_type" not in setup.pipeline.call_args.kwargs
+
+
 def test_adapter_frame_preview_decode_failure_falls_back():
     import worker.engine as engine_module
 

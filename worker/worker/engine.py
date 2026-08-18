@@ -889,6 +889,21 @@ class DiffusersEngine:
 
         Returning None means this frame decodes with the model's full VAE. That is
         slower but correct, so no failure here may stop a frame rendering.
+
+        Loading here holds the GPU lock, which frame() took, so a cold Hugging
+        Face cache stalls every session on this worker. That is narrower than it
+        sounds: warmup_realtime calibrates by rendering frames before hello, so
+        the default realtime model's decoder is built before the worker registers
+        and before any session exists. Only a realtime model that was not the
+        warmed default, or the retry after a deferral, can pay a cold fetch here.
+
+        Prefetching at load time was tried and removed. Building the realtime
+        pipeline there to hold the decoder cost 0.15 GiB and an extra pipeline
+        that a queued job on the same model never uses; vega-rt serves jobs too.
+        A snapshot_download prefetch instead put a network round trip on every
+        model load, and could not be made conditional on a warm cache, because a
+        repo snapshot is never complete when from_pretrained fetches only the
+        files it needs, so a local-only probe always misses and refetches.
         """
         if not manifest.preview_decoder:
             return None
@@ -928,9 +943,11 @@ class DiffusersEngine:
             state.pop(_PREVIEW_DECODER_ATTR, None)
             state[_PREVIEW_DECODER_RETRY_ATTR] = time.monotonic() + PREVIEW_DECODER_RETRY_S
         # Slots were measured with the distilled decoder and overstate full-VAE
-        # capacity. Clearing them recalibrates at the next registration, which is
-        # when realtime_slots is next sent; a live connection keeps the old number
-        # until it reconnects, because heartbeats do not carry slot counts.
+        # capacity. Clearing them only takes effect at the next registration, when
+        # realtime_slots is sent again; until a worker reconnects, the API may
+        # keep two sessions on a path that now serves one. Closing that gap needs
+        # slot counts on the heartbeat or a worker-side refusal, which is other
+        # work. The clear is still worth doing so the next registration is honest.
         self._calibrated_slots = None
         logger.warning(
             "preview decoder %s %s failed for %s; using full VAE, retrying in %.0fs: %s",
@@ -963,6 +980,9 @@ class DiffusersEngine:
                 # frame while the decoder failed identically each time.
                 self._defer_preview_decoder(pipeline, manifest, "decode", error)
         if image is None:
+            # pipeline_kwargs still carries the generator from the latent pass,
+            # which already advanced it, so this image is not what a clean
+            # full-VAE render at this seed would be; the next frame re-seeds.
             image = pipeline(**pipeline_kwargs).images[0]
         return image
 
