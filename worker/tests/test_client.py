@@ -994,3 +994,34 @@ def test_an_api_that_sends_no_dispatch_token_gets_none_back():
     reports = [json.loads(m) for m in socket.sent]
     assert reports
     assert not any("dispatch_token" in r for r in reports)
+
+
+def test_session_runner_survives_a_residency_load_failure(caplog):
+    # A load that fails outside the rung ladder, missing weights or a bad
+    # import, must not take the session task with it. Dying here would leave
+    # the session open with no runner behind it and nothing logged after that
+    # point, which is quieter than the per-frame refusal it replaced. The task
+    # has to reach the frame loop so the frame guard still speaks.
+    socket = FakeSocket()
+    engine = RecordingEngine()
+
+    async def boom(_manifest):
+        raise RuntimeError("weights missing")
+
+    engine.ensure_realtime_resident = boom
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+    session_id = uuid.uuid4()
+
+    async def scenario():
+        runner = SessionRunner(session_id, socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(scenario())
+
+    # Reached the frame loop rather than dying at the residency call.
+    assert len(socket.sent) == 1
+    assert "could not make model vega-rt resident" in caplog.text

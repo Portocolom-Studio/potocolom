@@ -233,7 +233,24 @@ class SessionRunner:
         # socket until the load finished. A False answer is logged once, not
         # per frame: what follows would raise and log on every frame for the
         # non-resident model, and the per-frame noise buried the cause.
-        if not await engine.ensure_realtime_resident(manifest):
+        try:
+            resident = await engine.ensure_realtime_resident(manifest)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A load that fails for a reason the rung ladder does not cover,
+            # missing weights or a bad import, must not take this task with
+            # it. Dying here would leave the session open with no runner
+            # behind it and nothing logged after this line, which is quieter
+            # than the per-frame refusal it replaced. Fall through instead:
+            # frame still refuses a non-resident model, and the operator sees
+            # the load failure here.
+            logger.exception(
+                "session %s could not make model %s resident",
+                self.session_id, manifest.id,
+            )
+            resident = False
+        if not resident:
             logger.warning(
                 "session %s cannot render: model %s is not fully resident",
                 self.session_id, manifest.id,
