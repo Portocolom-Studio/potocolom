@@ -749,9 +749,9 @@ erDiagram
         timestamptz settled_at
     }
     settlement_outbox {
-        text settlement_key PK "one row per settled session"
+        text source_key PK "session settlement, or that plus a generation for a correction"
         uuid session_id FK
-        jsonb payload "the aggregated usage event"
+        jsonb payload "the aggregated event, or one attempt's correction"
         int attempts "delivery attempts, not session attempts"
         timestamptz created_at
         timestamptz delivered_at "null until acknowledged"
@@ -759,6 +759,7 @@ erDiagram
     metering_events {
         uuid id PK
         uuid user_id FK
+        text source_key UK "the outbox key this row settled; a repeat is discarded"
         text kind "job or realtime"
         int gpu_ms
         int images
