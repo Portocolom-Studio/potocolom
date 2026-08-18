@@ -113,18 +113,40 @@ def _fake_prompt_engine():
     return engine
 
 
+class _FakePipeline:
+    def __init__(self, *, dual=False):
+        self.tokenizer = _FakeTokenizer()
+        self.text_encoder = _FakeTextEncoder(4)
+        self.tokenizer_2 = None
+        self.text_encoder_2 = None
+        self.config = SimpleNamespace(force_zeros_for_empty_prompt=True)
+        self.encode_calls = 0
+        self.call_kwargs = []
+        if dual:
+            self.tokenizer_2 = _FakeTokenizer()
+            self.text_encoder_2 = _FakeTextEncoder(6)
+
+    def __call__(self, **kwargs):
+        self.call_kwargs.append(kwargs)
+        return SimpleNamespace(images=[object()])
+
+    def encode_prompt(self, prompt, *, device, do_classifier_free_guidance,
+                      num_images_per_prompt):
+        assert device == "cpu"
+        assert do_classifier_free_guidance is False
+        assert num_images_per_prompt == 1
+        self.encode_calls += 1
+        token_ids = self.tokenizer(
+            prompt, add_special_tokens=False, truncation=False)["input_ids"]
+        embeds = _FakeTensor((1, len(token_ids), 4))
+        if self.text_encoder_2 is not None:
+            pooled = _FakeTensor((1, 6))
+            return embeds, _FakeTensor((1, len(token_ids), 4)), pooled, pooled
+        return embeds, _FakeTensor((1, len(token_ids), 4))
+
+
 def _fake_pipeline(*, dual=False):
-    pipeline = SimpleNamespace(
-        tokenizer=_FakeTokenizer(),
-        text_encoder=_FakeTextEncoder(4),
-        tokenizer_2=None,
-        text_encoder_2=None,
-        config=SimpleNamespace(force_zeros_for_empty_prompt=True),
-    )
-    if dual:
-        pipeline.tokenizer_2 = _FakeTokenizer()
-        pipeline.text_encoder_2 = _FakeTextEncoder(6)
-    return pipeline
+    return _FakePipeline(dual=dual)
 
 
 def _clip_manifest():
@@ -237,6 +259,149 @@ def test_repeated_frames_reuse_the_encoded_prompt():
     # A changed prompt has to be encoded again rather than served stale.
     engine._prompt_kwargs(pipeline, manifest, prompt + " w99", None)
     assert pipeline.text_encoder.calls > after_first
+
+
+def test_realtime_short_prompt_is_encoded_not_passed_as_string():
+    """A short prompt falls out of _prompt_kwargs as a raw string, which the
+    pipeline's encode_prompt would then run on every frame; the realtime path
+    encodes it once and hands back the tensor instead."""
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    manifest = _clip_manifest()
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline, manifest, "w0 w1", None)
+
+    assert "prompt" not in kwargs
+    assert kwargs["prompt_embeds"].shape == (1, 2, 4)
+
+
+def test_realtime_prompt_encoded_once_across_frames():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    manifest = _clip_manifest()
+    prompt = "w0 w1"
+
+    first = engine._realtime_prompt_kwargs(pipeline, manifest, prompt, None)
+    second = engine._realtime_prompt_kwargs(pipeline, manifest, prompt, None)
+
+    assert pipeline.encode_calls == 1
+    assert second is first
+
+
+def test_realtime_prompt_or_negative_edit_reencodes():
+    """The negative prompt is unused at zero guidance, but it still keys the
+    cache: two sessions that differ only in their negative text must not share
+    an entry, because guidance will become settable."""
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    manifest = _clip_manifest()
+    prompt = "w0 w1"
+
+    engine._realtime_prompt_kwargs(pipeline, manifest, prompt, None)
+    after_first = pipeline.encode_calls
+    engine._realtime_prompt_kwargs(pipeline, manifest, prompt + " w2", None)
+    after_prompt_edit = pipeline.encode_calls
+    engine._realtime_prompt_kwargs(pipeline, manifest, prompt, "w3")
+
+    assert after_first == 1
+    assert after_prompt_edit == 2
+    assert pipeline.encode_calls == 3
+
+
+def test_realtime_sd15_kwargs_have_no_pooled_embedding():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline, _clip_manifest(), "w0 w1", None)
+
+    assert "pooled_prompt_embeds" not in kwargs
+
+
+def test_realtime_sdxl_kwargs_include_pooled_embedding():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline(dual=True)
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline, _clip_manifest(), "w0 w1", None)
+
+    assert kwargs["pooled_prompt_embeds"].shape == (1, 6)
+
+
+def test_realtime_sd3_keeps_string_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    pipeline.text_encoder_3 = object()
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline, _clip_manifest(), "w0 w1", "w3")
+
+    assert kwargs == {"prompt": "w0 w1", "negative_prompt": "w3"}
+    assert pipeline.encode_calls == 0
+
+
+def test_realtime_long_prompt_chunking_is_not_double_encoded():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+
+    kwargs = engine._realtime_prompt_kwargs(
+        pipeline,
+        _clip_manifest(),
+        " ".join(f"w{index}" for index in range(80)),
+        None,
+    )
+
+    assert kwargs["prompt_embeds"].shape == (1, 154, 4)
+    assert pipeline.encode_calls == 0
+
+
+def test_realtime_frame_adapter_path_encodes_prompt_once():
+    """The helper-level tests above pass even if _frame still calls
+    _prompt_kwargs and never reaches the helper, so this one drives the
+    adapter call site itself. A raw string prompt would be re-encoded by the
+    pipeline on every frame, and the second frame below must not pay for it:
+    the assertion holds only when both the call site and the cache are wired.
+    """
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    engine._pipeline = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        t2i_adapter="org/vega-sketch",
+    )
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (255, 255, 255))
+
+    engine._frame(manifest, {"prompt": "w0 w1"}, canvas, 0.7)
+    engine._frame(manifest, {"prompt": "w0 w1"}, canvas, 0.7)
+
+    call_kwargs = pipeline.call_kwargs[0]
+    assert "prompt" not in call_kwargs
+    assert call_kwargs["prompt_embeds"].shape == (1, 2, 4)
+    assert pipeline.encode_calls == 1
+
+
+def test_realtime_frame_i2i_path_encodes_prompt():
+    """The image-to-image call site, reached when the manifest has no adapter,
+    is the second place _frame must route through the helper; the tests above
+    would all pass if only this site were reverted to _prompt_kwargs."""
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    engine._pipeline = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (255, 255, 255))
+
+    engine._frame(manifest, {"prompt": "w0 w1"}, canvas, 0.7)
+
+    call_kwargs = pipeline.call_kwargs[0]
+    assert "prompt" not in call_kwargs
+    assert call_kwargs["prompt_embeds"].shape == (1, 2, 4)
 
 
 def test_sdxl_pooled_embedding_comes_from_first_chunk():

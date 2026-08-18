@@ -1185,6 +1185,61 @@ class DiffusersEngine:
         pipeline._potocolom_prompt_cache = (cache_key, result)
         return result
 
+    def _realtime_prompt_kwargs(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        prompt: str,
+        negative_prompt: str | None,
+    ) -> dict[str, Any]:
+        # A realtime session re-encodes its prompt for every frame, and encoding
+        # is a full pass through the text encoder: measured at 26 to 33 ms off
+        # every frame on the reference card (sdxl-turbo at one step from 165.5
+        # to 139.5 ms p95, vega-rt at four steps from 233.9 to 205.1). The
+        # output is bit identical because they are the same tensors. Guidance is
+        # fixed at zero on this path, so one unconditional embedding is all the
+        # pipeline needs and the negative prompt is not encoded; it still keys
+        # the cache because it will matter once guidance becomes settable. The
+        # cache lives on the pipeline for the same reason _prompt_kwargs's does:
+        # a model switch drops it with the weights instead of pinning embeddings
+        # for weights no longer loaded.
+        cache_key = (manifest.id, prompt, negative_prompt)
+        cached = getattr(pipeline, "_potocolom_realtime_prompt_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline, manifest, prompt, negative_prompt)
+        if "prompt_embeds" in prompt_kwargs:
+            # The chunked long-prompt path already encoded; do not encode twice.
+            return prompt_kwargs
+
+        if getattr(pipeline, "text_encoder_3", None) is not None:
+            # SD3 requires joint CLIP+T5 prompt embeddings; for the same reason
+            # _prompt_kwargs defers to diffusers there, so does this path.
+            return prompt_kwargs
+
+        encoded = pipeline.encode_prompt(
+            prompt,
+            device=self.device,
+            do_classifier_free_guidance=False,
+            num_images_per_prompt=1,
+        )
+        if getattr(pipeline, "text_encoder_2", None) is not None:
+            # SDXL-class encode_prompt returns pooled embeddings alongside the
+            # prompt embeddings; SD1.5-class returns only the two and must not
+            # be passed a pooled argument it does not accept.
+            prompt_embeds, _, pooled_prompt_embeds, _ = encoded
+            prompt_kwargs = {
+                "prompt_embeds": prompt_embeds,
+                "pooled_prompt_embeds": pooled_prompt_embeds,
+            }
+        else:
+            prompt_embeds, _ = encoded
+            prompt_kwargs = {"prompt_embeds": prompt_embeds}
+        pipeline._potocolom_realtime_prompt_cache = (cache_key, prompt_kwargs)
+        return prompt_kwargs
+
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
@@ -1415,7 +1470,7 @@ class DiffusersEngine:
             # until 1.0, where the scene ignores it.
             pipeline = self._pipeline(manifest, "realtime")
             negative_prompt = params.get("negative_prompt")
-            prompt_kwargs = self._prompt_kwargs(
+            prompt_kwargs = self._realtime_prompt_kwargs(
                 pipeline,
                 manifest,
                 str(params.get("prompt", "")),
@@ -1453,7 +1508,7 @@ class DiffusersEngine:
             return image, gpu_ms
         pipeline = self._pipeline(manifest, "i2i")
         negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._prompt_kwargs(
+        prompt_kwargs = self._realtime_prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
