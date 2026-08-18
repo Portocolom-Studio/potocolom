@@ -3,6 +3,7 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
 import base64
+import logging
 import struct
 import threading
 import time
@@ -19,7 +20,7 @@ from app import db, jobs, realtime, registry
 from app.jobs import generation_download_name
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
-from app.tables import Asset, Job, Model, UsageEvent, User
+from app.tables import Asset, Job, Model, PendingDelete, UsageEvent, User
 
 MANIFEST = {
     "id": "sd-test",
@@ -1481,6 +1482,56 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
 async def _write_blob(storage, key, data):
     storage.path(key).parent.mkdir(parents=True, exist_ok=True)
     storage.path(key).write_bytes(data)
+
+
+async def _pending_delete(storage_key: str) -> PendingDelete | None:
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        return await session.get(PendingDelete, storage_key)
+
+
+def _await_pending_delete(storage_key: str, timeout=3.0) -> PendingDelete:
+    """The recording happens after the commit that publishes the terminal
+    state, so a test that polled for the state can arrive first."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = asyncio.run(_pending_delete(storage_key))
+        if row is not None:
+            return row
+        time.sleep(0.05)
+    raise AssertionError(f"no pending delete recorded for {storage_key}")
+
+
+async def _clear_pending_deletes() -> None:
+    """No autouse fixture empties this table, so sweep tests start at zero."""
+    if db.session_factory is None:
+        return
+    async with db.session_factory() as session:
+        await session.execute(delete(PendingDelete))
+        await session.commit()
+
+
+async def _make_due(storage_key: str) -> None:
+    """Bring a waiting row forward, the way the clock would."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        row = await session.get(PendingDelete, storage_key)
+        assert row is not None
+        row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await session.commit()
+
+
+async def _seed_pending_delete(storage_key: str, attempts: int, due: datetime) -> None:
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        session.add(PendingDelete(
+            storage_key=storage_key,
+            attempts=attempts,
+            last_error="seeded",
+            first_failed_at=due,
+            next_attempt_at=due,
+        ))
+        await session.commit()
 
 
 @pytest.mark.db
@@ -3444,3 +3495,237 @@ def test_a_worker_built_without_a_registration_is_not_lenient():
         jobs.inflight.pop(job_id, None)
         jobs.live_progress.pop(job_id, None)
         jobs.last_progress_at.pop(job_id, None)
+
+
+@pytest.mark.db
+def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
+    """A delete that fails during purge_attempt_blobs leaves a pending_deletes
+    row naming that key, and the job still reaches its terminal state: the
+    cleanup failure must never fail the job or block the commit."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-purge-recorded")
+            asyncio.run(_clear_pending_deletes())
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "record"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            key = upload_path.rsplit("/api/v1/files/", 1)[-1]
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+
+            real_storage = jobs.get_storage()
+
+            class RefusingDelete:
+                """Stands in for storage; only deletes fail, like a denied
+                permission that is sticky for the whole attempt's cleanup."""
+
+                def __getattr__(self, name):
+                    return getattr(real_storage, name)
+
+                async def delete(self, storage_key):
+                    raise PermissionError(f"denied {storage_key}")
+
+            monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed")
+
+            def recorded() -> PendingDelete | None:
+                return asyncio.run(_pending_delete(key))
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and recorded() is None:
+                time.sleep(0.05)
+            row = recorded()
+            assert row is not None, "the failed delete was not recorded"
+            assert row.storage_key == key
+            assert row.attempts == 0  # the sweep owns the counter, not the purge
+            assert row.last_error is not None
+            assert row.first_failed_at is not None
+            assert row.next_attempt_at is not None
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+
+
+@pytest.mark.db
+def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
+    """The success path collects the earlier attempts and an unreported
+    thumbnail, and its except swallowed the failure the same way
+    purge_attempt_blobs used to: same leak, one function away."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-orphan-record")
+            asyncio.run(_clear_pending_deletes())
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "orphan record"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+
+            real_storage = jobs.get_storage()
+            thumb_key = urlsplit(dispatch["thumb_upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1)[-1]
+
+            class RefusingOrphanDelete:
+                def __getattr__(self, name):
+                    return getattr(real_storage, name)
+
+                async def delete(self, storage_key):
+                    if storage_key == thumb_key:
+                        raise PermissionError(f"denied {storage_key}")
+                    await real_storage.delete(storage_key)
+
+            monkeypatch.setattr(jobs, "get_storage", lambda: RefusingOrphanDelete())
+            # No has_thumbnail, so the thumbnail key becomes an orphan the
+            # success path tries to collect.
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            poll_until(client, job_id, "succeeded")
+
+            row = _await_pending_delete(thumb_key)
+            assert "denied" in (row.last_error or "")
+
+
+@pytest.mark.db
+def test_the_sweep_deletes_the_object_and_drops_the_row():
+    with TestClient(app):
+        key = f"{db.local_user_id}/sweep-success.png"
+        asyncio.run(_clear_pending_deletes())
+        asyncio.run(_seed_pending_delete(
+            key, attempts=0, due=datetime.now(timezone.utc) - timedelta(hours=1),
+        ))
+        storage = jobs.get_storage()
+        asyncio.run(_write_blob(storage, key, png_bytes()))
+
+        asyncio.run(jobs.retry_pending_deletes())
+
+        assert not storage.path(key).exists(), "the sweep left the object behind"
+        assert asyncio.run(_pending_delete(key)) is None, "the row survived its delete"
+
+
+@pytest.mark.db
+def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
+    with TestClient(app):
+        key = f"{db.local_user_id}/sweep-backoff.png"
+        asyncio.run(_clear_pending_deletes())
+        asyncio.run(_seed_pending_delete(
+            key, attempts=0, due=datetime.now(timezone.utc) - timedelta(hours=1),
+        ))
+        storage = jobs.get_storage()
+        asyncio.run(_write_blob(storage, key, png_bytes()))
+
+        class RefusingDelete:
+            def __getattr__(self, name):
+                return getattr(storage, name)
+
+            async def delete(self, storage_key):
+                raise PermissionError(f"denied {storage_key}")
+
+        monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
+        asyncio.run(jobs.retry_pending_deletes())
+
+        row = asyncio.run(_pending_delete(key))
+        assert row is not None, "a failed sweep dropped the row"
+        assert row.attempts == 1
+        assert row.last_error is not None
+        assert row.next_attempt_at > datetime.now(timezone.utc) + timedelta(minutes=1)
+        assert storage.path(key).exists(), "the sweep deleted an object it could not"
+
+
+@pytest.mark.db
+def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
+    with TestClient(app):
+        key = f"{db.local_user_id}/give-up.png"
+        asyncio.run(_clear_pending_deletes())
+        asyncio.run(_seed_pending_delete(
+            key, attempts=7, due=datetime.now(timezone.utc) - timedelta(minutes=1),
+        ))
+        storage = jobs.get_storage()
+        asyncio.run(_write_blob(storage, key, png_bytes()))
+
+        class RefusingDelete:
+            def __getattr__(self, name):
+                return getattr(storage, name)
+
+            async def delete(self, storage_key):
+                raise PermissionError(f"denied {storage_key}")
+
+        # setup_logging(force=True) replaces root handlers at app startup, so
+        # caplog misses app logs; this handler on the module logger survives.
+        messages = []
+        handler = logging.Handler()
+        handler.emit = lambda record: messages.append(record.getMessage())
+        jobs.logger.addHandler(handler)
+        try:
+            monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
+            asyncio.run(jobs.retry_pending_deletes())
+
+            row = asyncio.run(_pending_delete(key))
+            assert row is not None, "the record of the object was thrown away"
+            assert row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS
+            assert storage.path(key).exists(), "the failing delete removed the object"
+            assert sum("still cannot delete" in message for message in messages) == 1
+
+            # Ninth failure: still retried, and silent. Alerting on every
+            # failure past the eighth would bury the one line that matters.
+            asyncio.run(_make_due(key))
+            asyncio.run(jobs.retry_pending_deletes())
+            assert sum("still cannot delete" in message for message in messages) == 1
+            row = asyncio.run(_pending_delete(key))
+            assert row is not None and row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS + 1
+
+            # Still scheduled, because an outage can outlive the backoff and a
+            # row nothing retries is a leak with no way back. Due again within
+            # the hour cap, and the next healthy sweep collects it.
+            assert row.next_attempt_at is not None
+            asyncio.run(_make_due(key))
+            monkeypatch.undo()
+            asyncio.run(jobs.retry_pending_deletes())
+            assert not storage.path(key).exists(), "recovery never collected the object"
+            assert asyncio.run(_pending_delete(key)) is None
+        finally:
+            jobs.logger.removeHandler(handler)
+
+
+@pytest.mark.db
+def test_recording_a_key_again_does_not_undo_its_backoff():
+    """The upsert can be waiting on the sweep's row lock, so writing its own
+    due time would hand back a key the sweep had just pushed an hour out."""
+    with TestClient(app):
+        key = f"{db.local_user_id}/re-record.png"
+        asyncio.run(_clear_pending_deletes())
+        later = datetime.now(timezone.utc) + timedelta(minutes=30)
+        asyncio.run(_seed_pending_delete(key, attempts=3, due=later))
+
+        asyncio.run(jobs.record_pending_delete(key, "denied again"))
+
+        row = asyncio.run(_pending_delete(key))
+        assert row is not None
+        assert row.last_error == "denied again", "the new error was not recorded"
+        assert row.next_attempt_at == later, "the backoff was reset by a re-recording"
+        assert row.attempts == 3, "the sweep's counter was touched by a recording"
+
+
+@pytest.mark.db
+def test_a_sweep_retries_only_rows_that_are_due():
+    with TestClient(app):
+        due_key = f"{db.local_user_id}/due.png"
+        future_key = f"{db.local_user_id}/not-due.png"
+        now = datetime.now(timezone.utc)
+        asyncio.run(_clear_pending_deletes())
+        asyncio.run(_seed_pending_delete(due_key, attempts=0, due=now - timedelta(minutes=5)))
+        asyncio.run(_seed_pending_delete(future_key, attempts=0, due=now + timedelta(hours=1)))
+        storage = jobs.get_storage()
+        asyncio.run(_write_blob(storage, due_key, png_bytes()))
+        asyncio.run(_write_blob(storage, future_key, png_bytes()))
+
+        asyncio.run(jobs.retry_pending_deletes())
+
+        assert not storage.path(due_key).exists(), "the due key was not retried"
+        assert storage.path(future_key).exists(), "a key that was not due got deleted"
+        assert asyncio.run(_pending_delete(due_key)) is None
+        assert asyncio.run(_pending_delete(future_key)) is not None

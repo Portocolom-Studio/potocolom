@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import math
+import random
 import re
 import secrets
 import time
@@ -21,7 +22,7 @@ import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Literal, Protocol
 
@@ -29,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -38,7 +40,7 @@ from app.auth import current_user, require_role
 from app.manifests import validate_params
 from app.settings import get_settings
 from app.storage import get_storage
-from app.tables import Asset, Job, User
+from app.tables import Asset, Job, PendingDelete, User
 
 logger = logging.getLogger("potocolom.jobs")
 
@@ -57,6 +59,13 @@ DOWNLOAD_SLUG_MAX_WORDS = 6
 LINEAGE_SUBTREE_MAX_DEPTH = 100
 # Six hundred matches the canvas tile ceiling and bounds unusually broad trees.
 LINEAGE_SUBTREE_MAX_NODES = 600
+# Sweep policy for blobs the terminal paths could not delete (issue #254).
+PENDING_DELETE_ERROR_MAX = 1000  # a last_error is a sentence, not a traceback
+PENDING_DELETE_PASS_LIMIT = 100  # rows per pass, so one bad batch cannot hog a tick
+PENDING_DELETE_MAX_ATTEMPTS = 8  # failures before the one alert; retries continue
+PENDING_DELETE_BACKOFF_CAP = 60  # minutes; 2 ** 7 would already overshoot an hour
+MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
+PENDING_DELETE_TIMEOUT = 60.0  # seconds for one delete, so a wedged mount cannot stall the pass
 
 
 class Queues(Protocol):
@@ -1426,10 +1435,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             orphans.extend(storage_keys_for_attempt(current.user_id, job_id, earlier))
         for orphan in orphans:
             try:
-                await get_storage().delete(orphan)
-            except Exception:
+                await _bounded_delete(orphan)
+            except Exception as error:
+                # The same leak purge_attempt_blobs had, one function away: the
+                # success path collects the earlier attempts and an unreported
+                # thumbnail, and nothing else ever names those keys.
                 logger.warning("could not remove orphaned blob %s for job %s", orphan,
                                job_id, exc_info=True)
+                await record_pending_delete(orphan, _trim_error(error))
         try:
             url = await get_storage().url(current.storage_key)
         except Exception:
@@ -1474,13 +1487,151 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     for earlier in range(1, attempt + 1):
         for key in storage_keys_for_attempt(user_id, job_id, earlier):
             try:
-                await get_storage().delete(key)
-            except Exception:
+                await _bounded_delete(key)
+            except Exception as error:
                 # Warning, not debug: a missing object does not normally make
                 # a delete raise, so this is a real cleanup failure such as a
-                # denied permission, and nothing retries it.
+                # denied permission, and the sweep is what retries it.
                 logger.warning("could not remove blob %s for job %s", key, job_id,
                                exc_info=True)
+                await record_pending_delete(key, _trim_error(error))
+
+
+async def _bounded_delete(storage_key: str) -> None:
+    """One delete, bounded. Every caller is on a path that must not hang: a
+    terminal verdict, or the sweep. A wedged mount answers never, and without
+    this the task waits with it, silently, for the life of the process."""
+    await asyncio.wait_for(get_storage().delete(storage_key), PENDING_DELETE_TIMEOUT)
+
+
+async def record_pending_delete(storage_key: str, last_error: str) -> None:
+    """Best-effort note that a delete failed; the DB may be down (issue #254).
+
+    The insert carries attempts from its column default so a repeat failure
+    refreshes last_error and next_attempt_at without touching the counter the
+    sweep owns; a fresh key starts at zero attempts.
+    """
+    if db.session_factory is None:
+        logger.warning("could not record pending delete for %s: database unavailable",
+                       storage_key)
+        return
+    try:
+        async with db.session_factory() as session:
+            now = datetime.now(timezone.utc)
+            statement = insert(PendingDelete).values(
+                storage_key=storage_key,
+                last_error=last_error,
+                first_failed_at=now,
+                next_attempt_at=now,
+            )
+            excluded = statement.excluded
+            statement = statement.on_conflict_do_update(
+                index_elements=[PendingDelete.storage_key],
+                # last_error only: the sweep owns the schedule, and this
+                # upsert can be waiting on its row lock, so writing a due time
+                # from before that wait would undo the backoff it just set.
+                set_={"last_error": excluded.last_error},
+            )
+            await session.execute(statement)
+            await session.commit()
+    except Exception:
+        # A delete failure that cannot even be recorded rates one line: unless
+        # an operator reads the logs at that moment, it is the last sight of
+        # the object.
+        logger.warning("could not record pending delete for %s", storage_key,
+                       exc_info=True)
+
+
+async def retry_pending_deletes() -> None:
+    """Delete the blobs the terminal paths could not (issue #254).
+
+    Due rows oldest first, capped per pass so one batch that keeps failing
+    cannot dominate a tick, and one transaction per row: holding the pass open
+    across every storage call would pin a connection and a row lock for as long
+    as the storage takes to answer, and a process that died mid-pass would lose
+    every attempt it had counted.
+
+    A row leaves the table when its object is gone. Nothing gives up on it: the
+    backoff caps at an hour, so a permanently undeletable object costs one call
+    an hour and keeps a row saying so. Dropping it, or unscheduling it, makes an
+    outage longer than the backoff permanent, since nothing re-arms a row and
+    the log line has rotated by the time anyone reads it.
+    """
+    if db.session_factory is None:
+        return
+    async with db.session_factory() as session:
+        due = (
+            await session.execute(
+                select(PendingDelete.storage_key)
+                .where(PendingDelete.next_attempt_at <= datetime.now(timezone.utc))
+                .order_by(PendingDelete.next_attempt_at)
+                .limit(PENDING_DELETE_PASS_LIMIT)
+            )
+        ).scalars().all()
+
+    for storage_key in due:
+        await _retry_one_pending_delete(storage_key)
+
+
+async def _retry_one_pending_delete(storage_key: str) -> None:
+    """One delete, one transaction, taken under a lock another replica skips."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        # The cloud profile runs this loop in every replica on the same
+        # cadence. SKIP LOCKED hands each row to exactly one of them, and the
+        # row is re-read here because it may have been swept since the select.
+        row = (
+            await session.execute(
+                select(PendingDelete)
+                .where(PendingDelete.storage_key == storage_key)
+                .with_for_update(skip_locked=True)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return  # another replica holds it, or its object is already gone
+        if row.next_attempt_at > datetime.now(timezone.utc):
+            return  # another replica already rescheduled it
+        try:
+            await _bounded_delete(storage_key)
+        except Exception as error:
+            message = _trim_error(error)
+            row.attempts += 1
+            row.last_error = message
+            if row.attempts == PENDING_DELETE_MAX_ATTEMPTS:
+                # Once, as an alert. The row stays scheduled: an object nobody
+                # can delete costs one call an hour, and a row that stops being
+                # retried is a leak with no way back.
+                logger.error("still cannot delete %s after %s attempts: %s",
+                             storage_key, row.attempts, message)
+            minutes = min(2 ** row.attempts, PENDING_DELETE_BACKOFF_CAP)
+            # Stamped now rather than at the top of the pass: a slow pass would
+            # otherwise hand its tail a due time already in the past.
+            row.next_attempt_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        else:
+            await session.delete(row)
+        await session.commit()
+
+
+def _trim_error(error: Exception) -> str:
+    # The type name always: str() is empty for asyncio.TimeoutError and for a
+    # few botocore and OS errors, and this string is the whole record of why an
+    # object is still there.
+    message = f"{type(error).__name__}: {error}".rstrip(": ")
+    if len(message) <= PENDING_DELETE_ERROR_MAX:
+        return message
+    return message[:PENDING_DELETE_ERROR_MAX]
+
+
+async def maintain_deletes_loop() -> None:
+    while True:
+        try:
+            await retry_pending_deletes()
+        except Exception:
+            logger.exception("pending delete maintenance failed")
+        # Jittered: replicas deployed together would otherwise run this in
+        # phase forever, and every loser then spends a pass taking locks that
+        # are already held.
+        await asyncio.sleep(MAINTAIN_DELETES_INTERVAL * random.uniform(0.9, 1.1))
 
 
 async def mark_failed(job_id: uuid.UUID, reason: str,

@@ -944,6 +944,16 @@ Two limits are deliberate. Proving an image decodes means decoding it, and both 
 Rejected alternatives: publishing the local upload straight into its key with `O_EXCL`, which was written first and replaced, because the key exists and is readable while the body is still landing, so a `job_done` racing its own PUT could have a truncated prefix inspected and approved; signing the upload URL with the attempt so the key carries its own authority, which puts a secret in a path that is logged by every proxy and cannot be revoked when an attempt is superseded; making the worker send a nonce it chooses, which authenticates nothing the API can check; keeping the key-only authorisation and relying on per-attempt keys alone, which is what shipped and is exactly what a previously dispatched worker can derive; refusing a message with no token from every worker, which is correct at the next floor move and breaks every N-1 worker today; and verifying uploads by decoding them, which is the denial of service the PNG reader already learned to avoid.
 
 
+## Failed cleanup deletes retry forever rather than giving up
+
+Issue #254 asked for a bounded number of retries and one error log, so a permanently undeletable key would not retry forever. It ships without the give-up, and this entry records why the requirement was reversed rather than leaving a future reader to re-file it.
+
+A delete that fails on the terminal path is recorded in `pending_deletes` and retried by a five-minute sweep, backing off by doubling minutes to an hour. Giving up was tried twice. Dropping the row destroys the only record that the object exists: the log line has rotated by the time anyone looks, and nothing else names the key, since the asset row only ever names the winning attempt. Keeping the row but unscheduling it is worse in a different way, because nothing re-arms one: the backoff spans under three hours, and a bucket policy broken at nine and fixed at two leaves every key recorded in between permanently unreachable, recoverable only by hand-written SQL nobody knows to run.
+
+Retrying forever costs one delete call an hour per stuck key, and the row is the record an operator needs. The alert at eight attempts stays, once, because that is the signal; the retries after it are cheap and are what makes the fix arrive on its own when the permission is repaired. The table is bounded by the number of distinct undeletable keys rather than by time.
+
+Rejected alternatives: dropping the row at a bounded attempt count, which is what the issue asked for and which loses the object silently; unscheduling the row and re-arming it at startup, which makes recovery depend on a restart nobody will perform for a cleanup failure; an operator endpoint to re-arm, which is a surface with one caller for a case that a retry already handles; and an S3 lifecycle rule instead of any of this, which is the better answer for the cloud profile and covers only it, so it belongs with issue #278 rather than replacing the retry a self-hosted install needs.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
