@@ -268,16 +268,33 @@ async def main() -> None:
         rss_after_b = rss_mb(api.pid)
         print(f"test client resident memory {mine_start:.0f} -> {rss_mb(os.getpid()):.0f} MB")
         rss_after_b_at = time.monotonic()
-        drain_from = victim.rendered
         victim.reading = True
         tasks[-1] = asyncio.create_task(victim.receiver())
         await asyncio.sleep(6.0)
         drained = [ms for at, ms in victim.latencies if at >= rss_after_b_at]
-        print(f"\ndrain: {victim.name} read again and {victim.rendered - drain_from} frames "
-              f"arrived; their age when they landed ranges "
-              f"{min(drained) / 1000:.1f} s to {max(drained) / 1000:.1f} s. "
-              f"Stale means they were buffered during the stall; fresh means they "
-              f"were generated after it. Controls seen: {victim.controls[-4:]}")
+        if drained:
+            print(f"\ndrain: {victim.name} read again and {len(drained)} frames "
+                  f"arrived; their age when they landed, measured from the input that asked "
+                  f"for them rather than from when they were generated, ranges "
+                  f"{min(drained) / 1000:.1f} s to {max(drained) / 1000:.1f} s. "
+                  f"Stale means they were buffered during the stall; fresh means they "
+                  f"were generated after it. Controls seen: {victim.controls[-4:]}")
+        else:
+            # Inconclusive on purpose. No binary frame in the drain window says
+            # only that this client received none: dropped, still queued,
+            # generated late, or a socket that died all look the same from here,
+            # and separating them needs connection health and server-side queue
+            # depth that this harness does not collect. Reporting it as loss
+            # would be the same overclaim the buffered branch was written to
+            # avoid. The state is reported rather than a liveness boolean:
+            # close_code is None while a connection is open and also while it is
+            # closing, so its absence proves nothing on its own.
+            print(f"\ndrain: {victim.name} read again and no frames arrived within "
+                  f"the drain window, which does not say why: dropped, still queued, "
+                  f"generated late and a dead socket are indistinguishable here. "
+                  f"WebSocket state: {victim.ws.state.name}, close code "
+                  f"{victim.ws.close_code}. "
+                  f"Controls seen: {victim.controls[-4:]}")
         print(f"\nAPI resident memory {rss_start:.0f} -> {rss_after_a:.0f} -> {rss_after_b:.0f} MB "
               f"across the three points, against "
               f"{FRAME_BYTES * int(PHASE_SECONDS * FPS) / 1024**2:.0f} MB undelivered. Freed heap is "

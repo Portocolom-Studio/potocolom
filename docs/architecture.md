@@ -624,7 +624,7 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Twelve of these tables exist at migration head 0011. Five are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, and `metering_events` with billing.
+Twelve of these tables exist at migration head 0011. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
 Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
 
@@ -744,11 +744,22 @@ erDiagram
         int gpu_ms "largest reported cumulative total"
         int frames "largest reported cumulative total"
         int duration_ms "largest reported cumulative total"
+        text category "from this attempt's close, null while live"
+        float category_score "null unless classified"
         timestamptz settled_at
+    }
+    settlement_outbox {
+        text source_key PK "session settlement, or that plus a generation for a correction"
+        uuid session_id FK
+        jsonb payload "the aggregated event, or one attempt's correction"
+        int attempts "delivery attempts, not session attempts"
+        timestamptz created_at
+        timestamptz delivered_at "null until acknowledged"
     }
     metering_events {
         uuid id PK
         uuid user_id FK
+        text source_key UK "the outbox key this row settled; a repeat is discarded"
         text kind "job or realtime"
         int gpu_ms
         int images
