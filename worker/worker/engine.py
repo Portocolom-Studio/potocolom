@@ -77,13 +77,31 @@ class GeneratedFrame:
     gpu_ms: int
 
 
+@dataclass
+class PromptCache:
+    """One cached prompt encoding, owned by the realtime session (issue #301).
+
+    The session creates the holder and passes it to every frame; the engine
+    never retains it, so there is no release path to forget and the entry is
+    dropped with the runner. The key is what was encoded, so an edited prompt
+    misses and re-encodes once, which is exactly what update_session carrying
+    a new prompt is; seed, canvas and structure strength never reach the text
+    encoders, so nothing else invalidates the entry.
+    """
+
+    entry: tuple[tuple[Any, Any, Any], dict[str, Any]] | None = None
+
+
 class Engine(Protocol):
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
     ) -> GeneratedImage: ...
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame: ...
+    async def frame(
+        self, manifest: Manifest, params: dict, payload: bytes,
+        *, prompt_cache: PromptCache | None = None,
+    ) -> GeneratedFrame: ...
 
     def loaded_models(self) -> list[str]: ...
 
@@ -279,7 +297,10 @@ class SimulatedEngine:
         gpu_ms = int((time.monotonic() - start) * 1000)
         return GeneratedImage(encode_png(image), width, height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+    async def frame(
+        self, manifest: Manifest, params: dict, payload: bytes,
+        *, prompt_cache: PromptCache | None = None,
+    ) -> GeneratedFrame:
         started = time.monotonic()
         await asyncio.sleep(self.inference_seconds)
         return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
@@ -1051,17 +1072,19 @@ class DiffusersEngine:
         manifest: Manifest,
         prompt: str,
         negative_prompt: str | None,
+        *,
+        prompt_cache: PromptCache | None = None,
     ) -> dict[str, Any]:
         # A realtime session calls this for every frame with the same prompt, and
-        # chunked encoding is a full pass through each text encoder: measured at
-        # 322 ms on CPU for a two chunk prompt, against a frame budget of 250 ms.
-        # Only the encoded result is worth keeping, so the cache holds one entry
-        # and lives on the pipeline, which means a model switch drops it with the
-        # pipeline instead of pinning embeddings for weights no longer loaded.
+        # encoding is a full pass through each text encoder: measured at 322 ms
+        # on CPU for a two chunk prompt, against a frame budget of 250 ms. Only
+        # the encoded result is worth keeping, so the cache holds one entry and
+        # lives on the session's holder, which the caller drops with the session
+        # instead of pinning embeddings for weights no longer loaded.
         cache_key = (manifest.id, prompt, negative_prompt)
-        cached = getattr(pipeline, "_potocolom_prompt_cache", None)
-        if cached is not None and cached[0] == cache_key:
-            return cached[1]
+        if prompt_cache is not None:
+            if prompt_cache.entry is not None and prompt_cache.entry[0] == cache_key:
+                return prompt_cache.entry[1]
 
         prompt_kwargs: dict[str, Any] = {"prompt": prompt}
         if negative_prompt is not None:
@@ -1118,8 +1141,6 @@ class DiffusersEngine:
                 raise ValueError(f"prompt token limit {window} leaves no content tokens")
             for token_ids in token_lists:
                 chunk_count = max(chunk_count, math.ceil(len(token_ids) / content_size))
-        if chunk_count == 1:
-            return prompt_kwargs
 
         positive_embeddings = []
         positive_pooled = None
@@ -1182,7 +1203,8 @@ class DiffusersEngine:
         if dual_encoder:
             result["pooled_prompt_embeds"] = positive_pooled
             result["negative_pooled_prompt_embeds"] = negative_pooled
-        pipeline._potocolom_prompt_cache = (cache_key, result)
+        if prompt_cache is not None:
+            prompt_cache.entry = (cache_key, result)
         return result
 
     async def generate(
@@ -1357,7 +1379,10 @@ class DiffusersEngine:
         loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
-    async def frame(self, manifest: Manifest, params: dict, payload: bytes) -> GeneratedFrame:
+    async def frame(
+        self, manifest: Manifest, params: dict, payload: bytes,
+        *, prompt_cache: PromptCache | None = None,
+    ) -> GeneratedFrame:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
         if self._pick_rung(manifest) != "full":
@@ -1382,7 +1407,8 @@ class DiffusersEngine:
             frame_result: tuple[Image.Image, int] | None = None
             try:
                 frame_result = await self._run_to_completion(
-                    self._frame, manifest, frame_params, canvas, strength)
+                    self._frame, manifest, frame_params, canvas, strength,
+                    prompt_cache=prompt_cache)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
             except (ValueError, TypeError):
@@ -1394,7 +1420,8 @@ class DiffusersEngine:
                 # The eviction mutates GPU residency, so it remains serialized.
                 self._evict_except(manifest.id)
                 frame_result = await self._run_to_completion(
-                    self._frame, manifest, frame_params, canvas, strength)
+                    self._frame, manifest, frame_params, canvas, strength,
+                    prompt_cache=prompt_cache)
             image, gpu_ms = frame_result
         async with self._codec:
             data = await asyncio.to_thread(encode_webp, image)
@@ -1406,6 +1433,8 @@ class DiffusersEngine:
         params: dict,
         canvas: Image.Image,
         strength: float,
+        *,
+        prompt_cache: PromptCache | None = None,
     ) -> tuple[Image.Image, int]:
         if manifest.t2i_adapter:
             # Conditioned text-to-image: the canvas (already converted to the
@@ -1420,6 +1449,7 @@ class DiffusersEngine:
                 manifest,
                 str(params.get("prompt", "")),
                 str(negative_prompt) if negative_prompt is not None else None,
+                prompt_cache=prompt_cache,
             )
             properties = manifest.parameters.get("properties", {})
             structure_strength = float(params.get(
@@ -1458,6 +1488,7 @@ class DiffusersEngine:
             manifest,
             str(params.get("prompt", "")),
             str(negative_prompt) if negative_prompt is not None else None,
+            prompt_cache=prompt_cache,
         )
         started = time.monotonic()
         image = pipeline(

@@ -18,7 +18,7 @@ from worker.client import (
     serve_connection,
     warmup_realtime,
 )
-from worker.engine import GeneratedFrame, SimulatedEngine
+from worker.engine import GeneratedFrame, PromptCache, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 
@@ -542,7 +542,7 @@ class RecordingEngine(SimulatedEngine):
         super().__init__(0.01)
         self.observed = []
 
-    async def frame(self, manifest, params, payload):
+    async def frame(self, manifest, params, payload, *, prompt_cache=None):
         await asyncio.sleep(0.01)
         return GeneratedFrame(payload, 200)
 
@@ -577,6 +577,40 @@ def test_session_runner_observes_each_rendered_frame_for_its_model():
     asyncio.run(scenario())
     assert engine.observed == [("vega-rt", 200), ("vega-rt", 200)]
     assert len(socket.sent) == 2
+
+
+def test_session_runner_passes_the_same_prompt_cache_to_every_frame():
+    """The prompt embedding cache is owned by the session: the runner must
+    hand every frame the same holder, so concurrent sessions each encode
+    their own prompt once instead of evicting each other (issue #301)."""
+    socket = FakeSocket()
+    received: list = []
+
+    class CacheRecordingEngine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+
+        async def frame(self, manifest, params, payload, *, prompt_cache=None):
+            received.append(prompt_cache)
+            await asyncio.sleep(0.01)
+            return GeneratedFrame(payload, 200)
+
+    engine = CacheRecordingEngine()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    asyncio.run(scenario())
+    assert len(received) == 2
+    assert received[0] is received[1]
+    assert isinstance(received[0], PromptCache)
 
 
 def test_session_runner_logs_a_non_resident_model_once_and_keeps_rendering(caplog):
