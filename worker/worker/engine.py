@@ -1326,7 +1326,7 @@ class DiffusersEngine:
         width = params.get("width")
         height = params.get("height")
         negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._realtime_prompt_kwargs(
+        prompt_kwargs = self._prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
@@ -1373,7 +1373,7 @@ class DiffusersEngine:
             return kwargs
 
         negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._realtime_prompt_kwargs(
+        prompt_kwargs = self._prompt_kwargs(
             pipeline,
             manifest,
             str(params.get("prompt", "")),
