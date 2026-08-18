@@ -13,6 +13,7 @@ from worker.engine import (
     GeneratedFrame,
     OBSERVED_FRAME_SAMPLES,
     OBSERVED_FRAME_WINDOW,
+    PromptCache,
     REALTIME_SIZE,
     SimulatedEngine,
     _canvas_to_sketch_map,
@@ -29,6 +30,8 @@ class _FakeTensor:
 
 
 class _FakeTorch:
+    OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+
     class _NoGrad:
         def __enter__(self):
             return None
@@ -136,6 +139,55 @@ def _clip_manifest():
     )
 
 
+class _RenderPipeline:
+    """A diffusers-style pipeline that renders and records what it was given.
+
+    Composed from the shared tokenizer/encoder fakes so the prompt encoding
+    counts are observable across frames, exactly like a real pipeline's
+    text encoders are.
+    """
+
+    def __init__(self):
+        self.tokenizer = _FakeTokenizer()
+        self.text_encoder = _FakeTextEncoder(4)
+        self.tokenizer_2 = None
+        self.text_encoder_2 = None
+        self.config = SimpleNamespace(force_zeros_for_empty_prompt=True)
+        self.render_kwargs: list[dict] = []
+
+    def __call__(self, **kwargs):
+        self.render_kwargs.append(kwargs)
+        return SimpleNamespace(images=[Image.new("RGB", (32, 32))])
+
+
+def _frame_engine(pipeline: _RenderPipeline) -> DiffusersEngine:
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    engine._pipeline = MagicMock(return_value=pipeline)
+    return engine
+
+
+def _realtime_manifest() -> Manifest:
+    return Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        prompt_token_limit=77,
+    )
+
+
+def _canvas_payload() -> bytes:
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+    return source.getvalue()
+
+
 def test_long_prompt_embeddings_span_multiple_clip_windows():
     engine = _fake_prompt_engine()
     pipeline = _fake_pipeline()
@@ -167,14 +219,20 @@ def test_long_positive_and_short_negative_embeddings_have_matching_shapes():
     assert kwargs["negative_prompt_embeds"].shape == (1, 154, 4)
 
 
-def test_short_prompt_keeps_existing_pipeline_prompt_path():
+def test_short_prompt_embeds_without_chunking():
+    """A short prompt must produce embeddings too, or the realtime cache
+    never engages for the common case: the string path is re-encoded inside
+    diffusers on every frame."""
     engine = _fake_prompt_engine()
     pipeline = _fake_pipeline()
 
     kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), "w0 w1", None)
 
-    assert kwargs == {"prompt": "w0 w1"}
-    assert pipeline.text_encoder.calls == 0
+    assert "prompt" not in kwargs
+    assert kwargs["prompt_embeds"].shape == (1, 77, 4)
+    # One encode is two calls on the single CLIP: the positive prompt and the
+    # empty-string negative prompt both pass through the encoder.
+    assert pipeline.text_encoder.calls == 2
 
 
 def test_third_text_encoder_keeps_pipeline_prompt_path():
@@ -215,28 +273,97 @@ def test_fake_tokenizer_only_offers_what_a_real_one_does():
     assert real.num_special_tokens_to_add(pair=False) == 2
 
 
-def test_repeated_frames_reuse_the_encoded_prompt():
-    """A realtime session encodes the same prompt for every frame, and chunked
-    encoding is a full pass through each text encoder, so the second frame must
-    not pay for it again. Measured at 322 ms on CPU for two chunks against a
-    250 ms frame budget.
-    """
-    engine = _fake_prompt_engine()
-    pipeline = _fake_pipeline()
-    manifest = _clip_manifest()
-    prompt = " ".join(f"w{index}" for index in range(80))
+def test_realtime_session_encodes_its_prompt_once_across_frames():
+    """A realtime session encodes the same prompt for every frame, and
+    encoding is a full pass through each text encoder, so the second frame
+    must not pay for it again (measured at 322 ms on CPU for two chunks
+    against a 250 ms frame budget). The holder is per session, and the two
+    renders receive the very same tensors: nothing else about a frame (seed,
+    canvas, structure strength) reaches the text encoders."""
+    pipeline = _RenderPipeline()
+    engine = _frame_engine(pipeline)
+    manifest = _realtime_manifest()
+    cache = PromptCache()
 
-    first = engine._prompt_kwargs(pipeline, manifest, prompt, None)
-    after_first = pipeline.text_encoder.calls
-    second = engine._prompt_kwargs(pipeline, manifest, prompt, None)
+    async def scenario():
+        await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload(),
+                           prompt_cache=cache)
+        await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload(),
+                           prompt_cache=cache)
 
-    assert after_first > 0
-    assert pipeline.text_encoder.calls == after_first  # no re-encode
-    assert second is first
+    asyncio.run(scenario())
+    # One encode across both frames: the positive and the empty-string
+    # negative each pass through the single CLIP once on the first frame,
+    # and the second frame renders the cached tensors untouched.
+    assert pipeline.text_encoder.calls == 2
+    assert len(pipeline.render_kwargs) == 2
+    assert pipeline.render_kwargs[0]["prompt_embeds"] is pipeline.render_kwargs[1]["prompt_embeds"]
 
-    # A changed prompt has to be encoded again rather than served stale.
-    engine._prompt_kwargs(pipeline, manifest, prompt + " w99", None)
-    assert pipeline.text_encoder.calls > after_first
+
+def test_editing_the_prompt_between_frames_reencodes():
+    """The key is the encoded text, so an edited prompt misses and encodes
+    once, which is exactly what update_session carrying a new prompt is."""
+    pipeline = _RenderPipeline()
+    engine = _frame_engine(pipeline)
+    manifest = _realtime_manifest()
+    cache = PromptCache()
+
+    async def scenario():
+        await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload(),
+                           prompt_cache=cache)
+        await engine.frame(manifest, {"prompt": "w7 w8"}, _canvas_payload(),
+                           prompt_cache=cache)
+
+    asyncio.run(scenario())
+    # Each distinct prompt is encoded once (positive + empty negative).
+    assert pipeline.text_encoder.calls == 4
+
+
+def test_two_sessions_with_different_prompts_do_not_evict_each_other():
+    """The cache belongs to the session, so interleaved sessions with
+    different prompts each encode theirs once. A single pipeline-level entry
+    fails this: every frame from the other session evicts it, so each frame
+    re-encodes (eight encoder calls here)."""
+    pipeline = _RenderPipeline()
+    engine = _frame_engine(pipeline)
+    manifest = _realtime_manifest()
+    first = PromptCache()
+    second = PromptCache()
+
+    async def scenario():
+        for _ in range(2):
+            await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload(),
+                               prompt_cache=first)
+            await engine.frame(manifest, {"prompt": "w7 w8"}, _canvas_payload(),
+                               prompt_cache=second)
+
+    asyncio.run(scenario())
+    # One encode per session, four frames rendered: each session's second
+    # frame is a cache hit, so only two encodes (four encoder calls) happen.
+    assert pipeline.text_encoder.calls == 4
+    assert len(pipeline.render_kwargs) == 4
+
+
+def test_realtime_sd3_frames_keep_the_string_prompt_path():
+    """SD3 requires joint CLIP and T5 prompt embeddings; this CLIP-only
+    chunker cannot satisfy that contract, so its frames must keep passing the
+    raw prompt to diffusers rather than embeddings, cached or not."""
+    pipeline = _RenderPipeline()
+    pipeline.tokenizer_3 = object()
+    pipeline.text_encoder_3 = object()
+    engine = _frame_engine(pipeline)
+    manifest = _realtime_manifest()
+    cache = PromptCache()
+
+    async def scenario():
+        for _ in range(2):
+            await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload(),
+                               prompt_cache=cache)
+
+    asyncio.run(scenario())
+    assert pipeline.text_encoder.calls == 0
+    assert all(kwargs.get("prompt") == "w0 w1" for kwargs in pipeline.render_kwargs)
+    assert all("prompt_embeds" not in kwargs for kwargs in pipeline.render_kwargs)
 
 
 def test_sdxl_pooled_embedding_comes_from_first_chunk():
@@ -702,7 +829,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
         events.append(("pipeline", engine._gpu.locked()))
         return pipeline
 
-    def prompt_kwargs(*_args):
+    def prompt_kwargs(*_args, **_kwargs):
         events.append(("prompt", engine._gpu.locked()))
         return {"prompt": "frame"}
 
@@ -844,7 +971,7 @@ def test_frame_oom_retries_once_without_decoding_twice():
     rendered = Image.new("RGB", (32, 32), (12, 34, 56))
     canvases: list[Image.Image] = []
 
-    def run_frame(_manifest, _params, canvas, _strength):
+    def run_frame(_manifest, _params, canvas, _strength, **_kwargs):
         canvases.append(canvas)
         if len(canvases) == 1:
             raise torch_stub.OutOfMemoryError

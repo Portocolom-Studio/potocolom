@@ -17,7 +17,12 @@ from contextlib import suppress
 import httpx
 import websockets
 
-from worker.engine import Engine, SimulatedEngine, make_thumbnail_webp
+from worker.engine import (
+    Engine,
+    PromptCache,
+    SimulatedEngine,
+    make_thumbnail_webp,
+)
 from worker.categorize import categorize_output
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
 from worker.gpu_metrics import sample_gpu
@@ -217,6 +222,10 @@ class SessionRunner:
         self.frames = 0
         self.gpu_ms = 0
         self.started_at = time.monotonic()
+        # One holder for the session's prompt embeddings, passed to every
+        # frame: the cache lives and dies with the runner, so an engine-held
+        # cache would never have a release path to forget.
+        self.prompt_cache = PromptCache()
         self._task = asyncio.create_task(self._run(ws, engine, manifest))
 
     def submit(self, payload: bytes) -> None:
@@ -265,7 +274,9 @@ class SessionRunner:
             try:
                 # self.params is read per frame, so an update_session lands on
                 # the next frame while one in flight finishes on the old dict.
-                generated = await engine.frame(manifest, self.params, payload)
+                generated = await engine.frame(
+                    manifest, self.params, payload, prompt_cache=self.prompt_cache,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
