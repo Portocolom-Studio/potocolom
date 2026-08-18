@@ -201,11 +201,72 @@ def _input_image_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def _assert_negative_reachable(kwargs: dict) -> None:
-    if kwargs.get("negative_prompt_embeds") is not None:
+def _fake_content_token_ids(text: str) -> list[int]:
+    return list(
+        _FakeTokenizer()(
+            text, add_special_tokens=False, truncation=False,
+        )["input_ids"],
+    )
+
+
+def _expected_pooled_marker(text: str) -> int:
+    token_ids = _fake_content_token_ids(text)
+    if token_ids:
+        return token_ids[0]
+    return _FakeTokenizer.eos_token_id
+
+
+def _assert_negative_reachable(
+    kwargs: dict,
+    expected_negative: str,
+    *,
+    expected_positive: str | None = None,
+) -> None:
+    negative_embeds = kwargs.get("negative_prompt_embeds")
+    if negative_embeds is not None:
+        prompt_embeds = kwargs["prompt_embeds"]
+        if negative_embeds is prompt_embeds:
+            raise AssertionError(
+                "negative_prompt_embeds is the same object as prompt_embeds",
+            )
+        negative_pooled = kwargs.get("negative_pooled_prompt_embeds")
+        if negative_pooled is not None:
+            expected_marker = _expected_pooled_marker(expected_negative)
+            if negative_pooled.marker != expected_marker:
+                raise AssertionError(
+                    "negative_pooled_prompt_embeds marker does not match "
+                    "the expected negative text",
+                )
+            pooled_prompt = kwargs.get("pooled_prompt_embeds")
+            if pooled_prompt is not None and negative_pooled is pooled_prompt:
+                raise AssertionError(
+                    "negative_pooled_prompt_embeds is the same object as "
+                    "pooled_prompt_embeds",
+                )
+            if expected_positive is not None:
+                if negative_pooled.marker == _expected_pooled_marker(
+                    expected_positive,
+                ):
+                    raise AssertionError(
+                        "negative pooled marker matches the positive text",
+                    )
+        else:
+            negative_tokens = len(_fake_content_token_ids(expected_negative))
+            if negative_embeds.shape[1] != negative_tokens:
+                raise AssertionError(
+                    "negative_prompt_embeds sequence length does not match "
+                    "the expected negative token count",
+                )
         return
-    if kwargs.get("negative_prompt") is not None:
+
+    negative_text = kwargs.get("negative_prompt")
+    if negative_text is not None:
+        if negative_text != expected_negative:
+            raise AssertionError(
+                "negative_prompt does not match the expected negative text",
+            )
         return
+
     raise AssertionError(
         "pipeline kwargs lack negative_prompt_embeds or negative_prompt",
     )
@@ -426,7 +487,7 @@ def test_generate_job_passes_negative_prompt_to_pipeline():
     manifest = _sdxl_job_manifest()
     params = {
         "prompt": "w0 w1",
-        "negative_prompt": "w3 w4",
+        "negative_prompt": "w3",
         "guidance": 6.0,
     }
     loop = asyncio.new_event_loop()
@@ -435,7 +496,9 @@ def test_generate_job_passes_negative_prompt_to_pipeline():
     finally:
         loop.close()
 
-    _assert_negative_reachable(pipeline.call_kwargs[0])
+    _assert_negative_reachable(
+        pipeline.call_kwargs[0], "w3", expected_positive="w0 w1",
+    )
     assert result.width == 64
     assert result.height == 48
 
@@ -448,7 +511,7 @@ def test_generate_i2i_job_passes_negative_prompt_to_pipeline():
     manifest = _sdxl_job_manifest()
     params = {
         "prompt": "w0 w1",
-        "negative_prompt": "w5 w6",
+        "negative_prompt": "w5 w6 w7",
         "guidance": 7.0,
     }
     loop = asyncio.new_event_loop()
@@ -459,7 +522,9 @@ def test_generate_i2i_job_passes_negative_prompt_to_pipeline():
     finally:
         loop.close()
 
-    _assert_negative_reachable(pipeline.call_kwargs[0])
+    _assert_negative_reachable(
+        pipeline.call_kwargs[0], "w5 w6 w7", expected_positive="w0 w1",
+    )
     assert result.width == 64
     assert result.height == 48
 
