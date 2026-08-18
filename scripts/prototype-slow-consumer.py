@@ -286,11 +286,14 @@ async def main() -> None:
             # and separating them needs connection health and server-side queue
             # depth that this harness does not collect. Reporting it as loss
             # would be the same overclaim the buffered branch was written to
-            # avoid.
+            # avoid. The state is reported rather than a liveness boolean:
+            # close_code is None while a connection is open and also while it is
+            # closing, so its absence proves nothing on its own.
             print(f"\ndrain: {victim.name} read again and no frames arrived within "
                   f"the drain window, which does not say why: dropped, still queued, "
                   f"generated late and a dead socket are indistinguishable here. "
-                  f"Socket open: {not victim.ws.close_code}. "
+                  f"WebSocket state: {victim.ws.state.name}, close code "
+                  f"{victim.ws.close_code}. "
                   f"Controls seen: {victim.controls[-4:]}")
         print(f"\nAPI resident memory {rss_start:.0f} -> {rss_after_a:.0f} -> {rss_after_b:.0f} MB "
               f"across the three points, against "
