@@ -579,6 +579,58 @@ def test_session_runner_observes_each_rendered_frame_for_its_model():
     assert len(socket.sent) == 2
 
 
+def test_session_runner_logs_a_non_resident_model_once_and_keeps_rendering(caplog):
+    # The residency decision happens once, before the frame loop, and a False
+    # answer is logged once: the frames that follow would log an exception on
+    # every draw, and the per-frame noise buried the cause. The session stays
+    # up either way, so the frame fallback still renders here.
+    socket = FakeSocket()
+    engine = RecordingEngine()
+
+    async def not_resident(_manifest):
+        return False
+
+    engine.ensure_realtime_resident = not_resident
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+    session_id = uuid.uuid4()
+
+    async def scenario():
+        runner = SessionRunner(session_id, socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(scenario())
+
+    assert len(socket.sent) == 2
+    assert f"session {session_id} cannot render" in caplog.text
+    assert "model vega-rt is not fully resident" in caplog.text
+    assert caplog.text.count("not fully resident") == 1
+
+
+def test_session_runner_renders_without_warning_when_resident(caplog):
+    socket = FakeSocket()
+    engine = RecordingEngine()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(scenario())
+
+    assert len(socket.sent) == 1
+    assert "not fully resident" not in caplog.text
+
+
 def test_heartbeat_advertises_only_frames_at_default_steps():
     # The advertised number claims the model's cost at its declared defaults,
     # so a session at other settings must not supersede it: frames rendered

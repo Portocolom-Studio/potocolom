@@ -101,6 +101,8 @@ class Engine(Protocol):
 
     async def load_model(self, manifest: Manifest) -> int: ...
 
+    async def ensure_realtime_resident(self, manifest: Manifest) -> bool: ...
+
     async def unload_model(self, model_id: str) -> None: ...
 
     async def unload_all(self) -> None: ...
@@ -209,6 +211,10 @@ class SimulatedEngine:
         await asyncio.sleep(self.inference_seconds / 4)
         self._loaded = {manifest.id}
         return int((time.monotonic() - start) * 1000)
+
+    async def ensure_realtime_resident(self, manifest: Manifest) -> bool:
+        # The simulated engine renders without residency; nothing to make resident.
+        return True
 
     async def unload_model(self, model_id: str) -> None:
         self._loaded.discard(model_id)
@@ -939,6 +945,32 @@ class DiffusersEngine:
             mode = "t2i"
         self._pipeline(manifest, mode)
         return int((time.monotonic() - start) * 1000)
+
+    async def ensure_realtime_resident(self, manifest: Manifest) -> bool:
+        """Make the model fully resident if realtime needs it, and say whether
+        it is.
+
+        A realtime frame runs against a 500 ms bar, so a model on an offload
+        rung cannot serve one: frame refuses it, and a session would log that
+        refusal on every frame it never renders. The rung answer is cached
+        per model, and only the load path ever decides it again, because the
+        eviction that frees the VRAM lives there and frame never reaches it
+        once the cached answer says offload (issue #270). The way to turn a
+        stale offload into full is to evict everyone and choose again against
+        the freed VRAM, which is exactly what load_model already does under
+        the GPU lock, so that is the path reused here rather than a second
+        eviction implementation. A pinned memory mode is an operator choice
+        and is left alone: pins are never demoted, and nothing here second-
+        guesses a pin that placed the model off-GPU; such a session gets the
+        per-frame fallback instead of an eviction the operator did not ask
+        for.
+        """
+        if self._pick_rung(manifest) == "full":
+            return True
+        if self.memory_mode != "auto":
+            return False
+        await self.load_model(manifest)
+        return self._pick_rung(manifest) == "full"
 
     async def unload_model(self, model_id: str) -> None:
         async with self._gpu:

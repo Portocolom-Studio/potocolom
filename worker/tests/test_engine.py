@@ -1153,6 +1153,101 @@ def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
     assert engine.model_rung("m") is None
 
 
+def test_ensure_realtime_resident_returns_true_without_evicting_when_full():
+    """The common path must stay cheap: a full-resident model is answered
+    from the cached rung and the load path, which is what evicts, runs."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._rungs = {"vega-rt": "full"}
+    resident = object()
+    engine._pipelines = {("vega-rt", "t2i"): resident}
+    engine.load_model = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    result = asyncio.run(engine.ensure_realtime_resident(manifest))
+
+    assert result is True
+    engine.load_model.assert_not_called()
+    assert engine._pipelines[("vega-rt", "t2i")] is resident
+    assert engine.model_rung("vega-rt") == "full"
+
+
+def test_ensure_realtime_resident_reloads_full_when_the_rung_was_cached_offload():
+    """A queued job on another model can consume VRAM between sessions and
+    leave a stale "model_offload" cached answer behind (issue #270). Resident
+    means deciding against the VRAM that exists once that job is evicted,
+    which is the load path, not re-reading the stale cache."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    torch_stub = MagicMock()
+    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+    engine.torch = torch_stub
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.models_dir = ""
+    engine.torch_compile = False
+    engine.attention_backend = ""
+    engine._pipelines = {("other", "t2i"): object()}
+    engine._rungs = {"vega-rt": "model_offload", "other": "full"}
+    engine._last_used = {}
+    engine._free_gpu_cache = MagicMock()
+    engine._gpu = asyncio.Lock()
+    engine._from_pretrained = MagicMock(return_value=MagicMock())
+
+    def free_vram():
+        # Before the load path evicts the job, the card cannot hold full
+        # residency for the session's model; afterwards it can.
+        return 1 if ("other", "t2i") in engine._pipelines else 64 * 1024**3
+
+    engine._free_vram_bytes = MagicMock(side_effect=free_vram)
+
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = object()
+    diffusers.AutoPipelineForImage2Image = object()
+
+    async def scenario():
+        with patch.dict(sys.modules, {"diffusers": diffusers}):
+            return await engine.ensure_realtime_resident(manifest)
+
+    assert asyncio.run(scenario()) is True
+    assert engine.model_rung("vega-rt") == "full"
+    assert ("other", "t2i") not in engine._pipelines
+    assert ("vega-rt", "t2i") in engine._pipelines
+
+
+def test_ensure_realtime_resident_leaves_a_pinned_mode_alone():
+    """A pinned memory mode is an operator choice; the load path, which
+    evicts everyone, is not entered for it. The session gets the per-frame
+    fallback instead and nothing resident is dropped."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.memory_mode = "model_offload"
+    engine._rungs = {"vega-rt": "model_offload"}
+    resident = object()
+    engine._pipelines = {("vega-rt", "t2i"): resident}
+    engine.load_model = MagicMock()
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    result = asyncio.run(engine.ensure_realtime_resident(manifest))
+
+    assert result is False
+    engine.load_model.assert_not_called()
+    assert engine._pipelines[("vega-rt", "t2i")] is resident
+
+
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})

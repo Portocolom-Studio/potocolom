@@ -226,6 +226,18 @@ class SessionRunner:
         self.arrived.set()
 
     async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
+        # Residency is decided once, before any frame waits on a stale rung
+        # answer. This cannot live in the open_session handler in the control
+        # loop: that loop also reads every heartbeat and every frame from
+        # every session, and awaiting a model load there would stall the
+        # socket until the load finished. A False answer is logged once, not
+        # per frame: what follows would raise and log on every frame for the
+        # non-resident model, and the per-frame noise buried the cause.
+        if not await engine.ensure_realtime_resident(manifest):
+            logger.warning(
+                "session %s cannot render: model %s is not fully resident",
+                self.session_id, manifest.id,
+            )
         steps_default = default_steps(manifest)
         while True:
             await self.arrived.wait()
