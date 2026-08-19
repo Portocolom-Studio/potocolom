@@ -30,6 +30,7 @@ class Manifest(BaseModel):
     default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
+    preview_decoder: str = ""  # optional distilled frame decoder, worker side only
     scheduler: str = ""  # optional scheduler override, worker side only
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
     t2i_adapter: str = ""  # optional sketch adapter for realtime conditioning, worker side only
@@ -49,7 +50,10 @@ class Manifest(BaseModel):
     studio_capabilities: list[str] | None = None
 
     def wire(self) -> dict:
-        return self.model_dump(exclude={"source", "vae", "scheduler", "lora", "quantize", "t2i_adapter"})
+        return self.model_dump(exclude={
+            "source", "vae", "preview_decoder", "scheduler", "lora", "quantize",
+            "t2i_adapter",
+        })
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare

@@ -60,6 +60,13 @@ OBSERVED_FRAME_WINDOW = 120
 # work leaves room in the shared default executor, with a floor of one for
 # small hosts and a ceiling of four to limit CPU and memory pressure.
 CODEC_CONCURRENCY_LIMIT = max(1, min(4, (os.cpu_count() or 1) // 2))
+_PREVIEW_DECODER_ATTR = "_potocolom_preview_decoder"
+_PREVIEW_DECODER_RETRY_ATTR = "_potocolom_preview_decoder_retry_after"
+# A failed preview decoder never disables the fast path permanently. Loads fail
+# for transient reasons: an out-of-memory card that later frees, a cold cache
+# behind a network blip, a rate-limited registry. Falling back for this frame and
+# retrying after a pause keeps frames rendering without reloading every frame.
+PREVIEW_DECODER_RETRY_S = 60.0
 
 
 @dataclass
@@ -877,6 +884,116 @@ class DiffusersEngine:
             return LCMScheduler.from_config(config)
         raise ValueError(f"unknown scheduler override: {name}")
 
+    def _preview_decoder(self, pipeline: Any, manifest: Manifest) -> Any | None:
+        """Load and retain a realtime-only decoder on its owning pipeline.
+
+        Returning None means this frame decodes with the model's full VAE. That is
+        slower but correct, so no failure here may stop a frame rendering.
+
+        Loading here holds the GPU lock, which frame() took, so a cold Hugging
+        Face cache stalls every session on this worker. That is narrower than it
+        sounds: warmup_realtime calibrates by rendering frames before hello, so
+        the default realtime model's decoder is built before the worker registers
+        and before any session exists. Only a realtime model that was not the
+        warmed default, or the retry after a deferral, can pay a cold fetch here.
+
+        Prefetching at load time was tried and removed. Building the realtime
+        pipeline there to hold the decoder cost 0.15 GiB and an extra pipeline
+        that a queued job on the same model never uses; vega-rt serves jobs too.
+        A snapshot_download prefetch instead put a network round trip on every
+        model load, and could not be made conditional on a warm cache, because a
+        repo snapshot is never complete when from_pretrained fetches only the
+        files it needs, so a local-only probe always misses and refetches.
+        """
+        if not manifest.preview_decoder:
+            return None
+        pipeline_state = vars(pipeline)
+        cached = pipeline_state.get(_PREVIEW_DECODER_ATTR)
+        if cached is not None:
+            return cached
+        retry_after = pipeline_state.get(_PREVIEW_DECODER_RETRY_ATTR)
+        if retry_after is not None and time.monotonic() < retry_after:
+            return None
+        try:
+            from diffusers import AutoencoderTiny
+
+            decoder = AutoencoderTiny.from_pretrained(
+                manifest.preview_decoder, torch_dtype=self.dtype,
+            ).to(self.device)
+        except Exception as error:
+            # Every failure is treated as transient. frame()'s evict-and-retry
+            # cannot help here: it evicts other models, and a realtime worker
+            # usually holds only this one, so there is nothing to evict.
+            self._defer_preview_decoder(pipeline, manifest, "load", error)
+            return None
+        pipeline_state[_PREVIEW_DECODER_ATTR] = decoder
+        pipeline_state.pop(_PREVIEW_DECODER_RETRY_ATTR, None)
+        logger.info("loaded preview decoder %s for %s", manifest.preview_decoder, manifest.id)
+        return decoder
+
+    def _defer_preview_decoder(
+        self, pipeline: Any, manifest: Manifest, phase: str, error: BaseException,
+    ) -> None:
+        """Fall back to the full VAE and try the decoder again after a pause."""
+        try:
+            state = vars(pipeline)
+        except TypeError:
+            state = None
+        if state is not None:
+            state.pop(_PREVIEW_DECODER_ATTR, None)
+            state[_PREVIEW_DECODER_RETRY_ATTR] = time.monotonic() + PREVIEW_DECODER_RETRY_S
+        # Slots were measured with the distilled decoder and overstate full-VAE
+        # capacity. Clearing them only takes effect at the next registration, when
+        # realtime_slots is sent again; until a worker reconnects, the API may
+        # keep two sessions on a path that now serves one. Closing that gap needs
+        # slot counts on the heartbeat or a worker-side refusal, which is other
+        # work. The clear is still worth doing so the next registration is honest.
+        self._calibrated_slots = None
+        logger.warning(
+            "preview decoder %s %s failed for %s; using full VAE, retrying in %.0fs: %s",
+            manifest.preview_decoder, phase, manifest.id, PREVIEW_DECODER_RETRY_S, error,
+        )
+
+    def _render_with_preview_decoder(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        pipeline_kwargs: dict[str, Any],
+        *,
+        preview_decoder: Any | None = None,
+    ) -> Image.Image:
+        if preview_decoder is None:
+            preview_decoder = self._preview_decoder(pipeline, manifest)
+        image = None
+        if preview_decoder is not None:
+            latents = pipeline(**pipeline_kwargs, output_type="latent").images
+            try:
+                # AutoencoderTiny is trained to take the pipeline's SDXL latents
+                # directly. Unlike the full VAE path, dividing by
+                # pipeline.vae.config.scaling_factor here produces clipped noise.
+                with self.torch.inference_mode():
+                    decoded = preview_decoder.decode(latents, return_dict=False)[0]
+                image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
+            except Exception as error:
+                # A bad decoder is not a poisoned pipeline. Letting this reach
+                # frame()'s handler would evict and reload the whole model on every
+                # frame while the decoder failed identically each time.
+                self._defer_preview_decoder(pipeline, manifest, "decode", error)
+        if image is None:
+            # pipeline_kwargs still carries the generator from the latent pass,
+            # which already advanced it, so this image is not what a clean
+            # full-VAE render at this seed would be; the next frame re-seeds.
+            image = pipeline(**pipeline_kwargs).images[0]
+        return image
+
+    @staticmethod
+    def _detach_preview_decoder(pipeline: Any) -> None:
+        try:
+            vars(pipeline).pop(_PREVIEW_DECODER_ATTR, None)
+        except TypeError:
+            # Some test and upscale runtimes are opaque objects with no state.
+            pass
+
     def loaded_models(self) -> list[str]:
         return sorted({key[0] for key in self._pipelines})
 
@@ -913,6 +1030,10 @@ class DiffusersEngine:
             self._rungs.pop(model_id, None)
 
     def _drop_pipeline(self, key: tuple[str, str]) -> None:
+        # Detach here rather than at each caller: a preview decoder outliving the
+        # pipeline it was loaded for would pin VRAM for weights already gone, and
+        # every drop path routes through this one.
+        self._detach_preview_decoder(self._pipelines[key])
         del self._pipelines[key]
         self._forget_rung_if_unloaded(key[0])
 
@@ -946,6 +1067,8 @@ class DiffusersEngine:
         return True
 
     def _evict_all(self) -> None:
+        for pipeline in self._pipelines.values():
+            self._detach_preview_decoder(pipeline)
         self._pipelines.clear()
         self._rungs.clear()
         self._last_used.clear()
@@ -1399,7 +1522,10 @@ class DiffusersEngine:
             return canvas
 
         async with self._codec:
-            canvas = await asyncio.to_thread(prepare_canvas)
+            # Same reason the GPU lock uses this: a cancelled await would release
+            # the codec slot while its thread still ran, so the bound would be
+            # exceeded by exactly the frames being torn down (issue #202).
+            canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
             # _pipeline can load or evict GPU weights, _prompt_kwargs can run
@@ -1424,7 +1550,7 @@ class DiffusersEngine:
                     prompt_cache=prompt_cache)
             image, gpu_ms = frame_result
         async with self._codec:
-            data = await asyncio.to_thread(encode_webp, image)
+            data = await self._run_to_completion(encode_webp, image)
         return GeneratedFrame(data, gpu_ms)
 
     def _frame(
@@ -1470,15 +1596,20 @@ class DiffusersEngine:
                 generator = self.torch.Generator(self.device).manual_seed(
                     int(params["seed"])
                 )
+            preview_decoder = self._preview_decoder(pipeline, manifest)
             started = time.monotonic()
-            image = pipeline(
+            pipeline_kwargs = {
                 **prompt_kwargs,
-                image=canvas,
-                num_inference_steps=steps,
-                adapter_conditioning_scale=structure_strength,
-                guidance_scale=0.0,
-                generator=generator,
-            ).images[0]
+                "image": canvas,
+                "num_inference_steps": steps,
+                "adapter_conditioning_scale": structure_strength,
+                "guidance_scale": 0.0,
+                "generator": generator,
+            }
+            image = self._render_with_preview_decoder(
+                pipeline, manifest, pipeline_kwargs,
+                preview_decoder=preview_decoder,
+            )
             gpu_ms = int((time.monotonic() - started) * 1000)
             return image, gpu_ms
         pipeline = self._pipeline(manifest, "i2i")
@@ -1490,15 +1621,20 @@ class DiffusersEngine:
             str(negative_prompt) if negative_prompt is not None else None,
             prompt_cache=prompt_cache,
         )
+        preview_decoder = self._preview_decoder(pipeline, manifest)
         started = time.monotonic()
-        image = pipeline(
+        pipeline_kwargs = {
             **prompt_kwargs,
-            image=canvas,
+            "image": canvas,
             # Few-step img2img: diffusers runs ceil(steps * strength) steps,
             # so keep the product at one or above.
-            num_inference_steps=max(2, math.ceil(1 / strength)),
-            strength=strength,
-            guidance_scale=0.0,
-        ).images[0]
+            "num_inference_steps": max(2, math.ceil(1 / strength)),
+            "strength": strength,
+            "guidance_scale": 0.0,
+        }
+        image = self._render_with_preview_decoder(
+            pipeline, manifest, pipeline_kwargs,
+            preview_decoder=preview_decoder,
+        )
         gpu_ms = int((time.monotonic() - started) * 1000)
         return image, gpu_ms

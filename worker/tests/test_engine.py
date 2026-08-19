@@ -1,6 +1,7 @@
 import asyncio
 import io
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -22,11 +23,30 @@ from worker.engine import (
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 
 
+def _fake_oom() -> type[BaseException]:
+    """torch.OutOfMemoryError subclasses RuntimeError, and the preview decoder's
+    failure handling treats RuntimeError as recoverable. A fake based on Exception
+    would hide that interaction, so these tests must mirror the real hierarchy.
+    """
+    return type("OutOfMemoryError", (RuntimeError,), {})
+
+
 class _FakeTensor:
     def __init__(self, shape, *, values=None, marker=None):
         self.shape = tuple(shape)
         self.values = values
         self.marker = marker
+
+    @property
+    def ndim(self):
+        return len(self.shape)
+
+    def __getitem__(self, index):
+        if type(index) is not int:
+            raise TypeError("fake tensor only implements integer indexing")
+        if not self.shape or not -self.shape[0] <= index < self.shape[0]:
+            raise IndexError("fake tensor index out of range")
+        return _FakeTensor(self.shape[1:], marker=self.marker)
 
 
 class _FakeTorch:
@@ -961,10 +981,483 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     )
 
 
+def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    inference_state = {"active": False, "entries": 0}
+
+    class InferenceContext:
+        def __enter__(self):
+            assert inference_state["active"] is False
+            inference_state["active"] = True
+            inference_state["entries"] += 1
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            inference_state["active"] = False
+
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=_fake_oom(),
+        inference_mode=InferenceContext,
+    )
+    engine.device = "cpu"
+    dtype = object()
+    engine.dtype = dtype
+    engine._pipelines = {}
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
+
+    latents = _FakeTensor((1, 4, 64, 64), marker="pipeline-latents")
+    decoded = object()
+    preview_image = Image.new("RGB", (32, 32), (12, 34, 56))
+    stored_image = Image.new("RGB", (32, 32), (78, 90, 123))
+
+    def run_pipeline(**kwargs):
+        if kwargs.get("output_type") == "latent":
+            return SimpleNamespace(images=latents)
+        return SimpleNamespace(images=[stored_image])
+
+    pipeline = MagicMock(side_effect=run_pipeline)
+    pipeline.image_processor = SimpleNamespace(
+        postprocess=MagicMock(return_value=[preview_image]),
+    )
+    engine._pipeline = MagicMock(return_value=pipeline)
+
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    decode_inference_states = []
+
+    def decode_latents(received, *, return_dict):
+        decode_inference_states.append(inference_state["active"])
+        assert return_dict is False
+        assert received.ndim == 4, (
+            f"preview decoder requires 4D latents, got shape {received.shape}"
+        )
+        assert received.shape == (1, 4, 64, 64)
+        return (decoded,)
+
+    decoder.decode.side_effect = decode_latents
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        preview_decoder="madebyollin/taesdxl",
+    )
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+
+    async def scenario():
+        frame = await engine.frame(
+            manifest, {"prompt": "frame"}, source.getvalue(),
+        )
+        stored = await engine.generate(
+            manifest, {"prompt": "stored"}, lambda _fraction: None,
+        )
+        stored_i2i = await engine.generate(
+            manifest,
+            {"prompt": "stored edit"},
+            lambda _fraction: None,
+            input_image=source.getvalue(),
+        )
+        return frame, stored, stored_i2i
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with (
+        patch.dict(sys.modules, {"diffusers": diffusers}),
+        patch("asyncio.to_thread", side_effect=run_inline),
+    ):
+        frame, stored, stored_i2i = asyncio.run(scenario())
+
+    autoencoder_tiny.from_pretrained.assert_called_once_with(
+        "madebyollin/taesdxl", torch_dtype=dtype,
+    )
+    decoder.to.assert_called_once_with("cpu")
+    # Identity proves the tiny decoder receives the pipeline latents directly,
+    # while the fake decoder enforces the real batched tensor shape.
+    decoder.decode.assert_called_once_with(latents, return_dict=False)
+    pipeline.image_processor.postprocess.assert_called_once_with(
+        decoded, output_type="pil",
+    )
+    assert pipeline.call_args_list[0].kwargs["output_type"] == "latent"
+    assert "output_type" not in pipeline.call_args_list[1].kwargs
+    assert "output_type" not in pipeline.call_args_list[2].kwargs
+    assert decoder.decode.call_count == 1
+    assert inference_state == {"active": False, "entries": 1}
+    assert decode_inference_states == [True]
+    with Image.open(io.BytesIO(frame.data)) as opened:
+        pixel = opened.resize((1, 1)).getpixel((0, 0))
+        assert all(abs(actual - expected) <= 3 for actual, expected in zip(pixel, (12, 34, 56)))
+    with Image.open(io.BytesIO(stored.data)) as opened:
+        assert opened.getpixel((0, 0)) == (78, 90, 123)
+    with Image.open(io.BytesIO(stored_i2i.data)) as opened:
+        assert opened.getpixel((0, 0)) == (78, 90, 123)
+    engine._evict_except.assert_not_called()
+    engine._evict_poisoned.assert_not_called()
+
+
+def _preview_decoder_frame_setup(*, t2i_adapter: str | None = None):
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    inference_state = {"active": False, "entries": 0}
+
+    class InferenceContext:
+        def __enter__(self):
+            assert inference_state["active"] is False
+            inference_state["active"] = True
+            inference_state["entries"] += 1
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            inference_state["active"] = False
+
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=_fake_oom(),
+        inference_mode=InferenceContext,
+    )
+    engine.device = "cpu"
+    dtype = object()
+    engine.dtype = dtype
+    engine._calibrated_slots = 3
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
+
+    latents = _FakeTensor((1, 4, 64, 64), marker="pipeline-latents")
+    decoded = object()
+    preview_image = Image.new("RGB", (32, 32), (12, 34, 56))
+    fallback_image = Image.new("RGB", (32, 32), (78, 90, 123))
+
+    def run_pipeline(**kwargs):
+        if kwargs.get("output_type") == "latent":
+            return SimpleNamespace(images=latents)
+        return SimpleNamespace(images=[fallback_image])
+
+    pipeline = MagicMock(side_effect=run_pipeline)
+    pipeline.image_processor = SimpleNamespace(
+        postprocess=MagicMock(return_value=[preview_image]),
+    )
+    engine._pipeline = MagicMock(return_value=pipeline)
+
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    decode_inference_states = []
+
+    def decode_latents(received, *, return_dict):
+        decode_inference_states.append(inference_state["active"])
+        assert return_dict is False
+        assert received.ndim == 4
+        assert received.shape == (1, 4, 64, 64)
+        return (decoded,)
+
+    decoder.decode.side_effect = decode_latents
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest_kwargs = {
+        "id": "vega-rt",
+        "name": "VegaRT",
+        "capabilities": ["text_to_image", "image_to_image", "realtime"],
+        "preview_decoder": "madebyollin/taesdxl",
+    }
+    if t2i_adapter is not None:
+        manifest_kwargs["t2i_adapter"] = t2i_adapter
+    manifest = Manifest(**manifest_kwargs)
+    return SimpleNamespace(
+        engine=engine,
+        manifest=manifest,
+        pipeline=pipeline,
+        decoder=decoder,
+        latents=latents,
+        decoded=decoded,
+        preview_image=preview_image,
+        fallback_image=fallback_image,
+        autoencoder_tiny=autoencoder_tiny,
+        diffusers=diffusers,
+        dtype=dtype,
+        inference_state=inference_state,
+        decode_inference_states=decode_inference_states,
+    )
+
+
+def test_adapter_frame_uses_preview_decoder():
+    """Realtime models declare t2i_adapter, so the preview decoder must run on
+    that branch or it is never used at all."""
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        image, _ = setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+
+    setup.engine._pipeline.assert_called_once_with(setup.manifest, "realtime")
+    setup.decoder.decode.assert_called_once_with(setup.latents, return_dict=False)
+    setup.pipeline.image_processor.postprocess.assert_called_once_with(
+        setup.decoded, output_type="pil",
+    )
+    assert setup.pipeline.call_args_list[0].kwargs["output_type"] == "latent"
+    assert setup.pipeline.call_count == 1
+    assert image is setup.preview_image
+    assert setup.inference_state == {"active": False, "entries": 1}
+    assert setup.decode_inference_states == [True]
+
+
+def test_adapter_second_frame_after_decode_failure_makes_one_full_vae_call():
+    """After a decode failure the retry window keeps the fast path off until it
+    expires: the failing frame pays for latent denoise plus full VAE, and every
+    later frame in that window must not."""
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+    setup.decoder.decode.side_effect = RuntimeError("decode broke")
+
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+        setup.pipeline.reset_mock()
+        setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+
+    assert setup.pipeline.call_count == 1
+    assert "output_type" not in setup.pipeline.call_args.kwargs
+
+
+def test_adapter_frame_preview_decode_failure_falls_back():
+    import worker.engine as engine_module
+
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+    setup.decoder.decode.side_effect = RuntimeError("decode broke")
+
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        image, _ = setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+
+    assert image is setup.fallback_image
+    assert setup.pipeline.call_count == 2
+    assert setup.pipeline.call_args_list[0].kwargs["output_type"] == "latent"
+    assert "output_type" not in setup.pipeline.call_args_list[1].kwargs
+    assert setup.engine._calibrated_slots is None
+    assert engine_module._PREVIEW_DECODER_ATTR not in vars(setup.pipeline)
+    assert engine_module._PREVIEW_DECODER_RETRY_ATTR in vars(setup.pipeline)
+
+
+def test_i2i_frame_uses_preview_decoder():
+    setup = _preview_decoder_frame_setup()
+
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        image, _ = setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+
+    setup.engine._pipeline.assert_called_once_with(setup.manifest, "i2i")
+    setup.decoder.decode.assert_called_once_with(setup.latents, return_dict=False)
+    setup.pipeline.image_processor.postprocess.assert_called_once_with(
+        setup.decoded, output_type="pil",
+    )
+    assert setup.pipeline.call_args_list[0].kwargs["output_type"] == "latent"
+    assert setup.pipeline.call_count == 1
+    assert image is setup.preview_image
+
+
+def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(
+        OutOfMemoryError=_fake_oom(),
+    )
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._calibrated_slots = 3
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "frame"})
+    rendered = Image.new("RGB", (32, 32), (12, 34, 56))
+    pipeline = MagicMock(return_value=SimpleNamespace(images=[rendered]))
+    engine._pipeline = MagicMock(return_value=pipeline)
+
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.side_effect = OSError("weights unavailable")
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_decoder="missing/preview-vae",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        first, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+        assert engine._calibrated_slots is None
+        # A later full-VAE calibration is valid and must survive cached fallback.
+        engine._calibrated_slots = 1
+        second, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+
+    assert first is rendered
+    assert second is rendered
+    assert engine._calibrated_slots == 1
+    assert autoencoder_tiny.from_pretrained.call_count == 1
+    assert all("output_type" not in call.kwargs for call in pipeline.call_args_list)
+
+
+def test_preview_decoder_failure_falls_back_and_retries_after_cooldown():
+    """No decoder failure may stop a frame rendering.
+
+    frame() cannot recover an out-of-memory decoder load by evicting: it evicts
+    other models, and a realtime worker usually holds only this one. So the load
+    falls back to the full VAE for this frame and retries after a pause, rather
+    than propagating or disabling the fast path for the pipeline's lifetime.
+    """
+    import worker.engine as engine_module
+
+    for failure in (
+        _fake_oom()("no room"),
+        OSError("registry unreachable"),
+        RuntimeError("HIP error: out of memory"),
+    ):
+        engine = DiffusersEngine.__new__(DiffusersEngine)
+        engine.torch = SimpleNamespace(OutOfMemoryError=type(failure))
+        engine.device = "cpu"
+        engine.dtype = object()
+        engine._calibrated_slots = 3
+        pipeline = SimpleNamespace()
+        decoder = MagicMock()
+        decoder.to.return_value = decoder
+        autoencoder_tiny = MagicMock()
+        autoencoder_tiny.from_pretrained.side_effect = [failure, decoder]
+        diffusers = ModuleType("diffusers")
+        diffusers.AutoencoderTiny = autoencoder_tiny
+        manifest = Manifest(
+            id="vega-rt",
+            name="VegaRT",
+            capabilities=["image_to_image", "realtime"],
+            preview_decoder="madebyollin/taesdxl",
+        )
+
+        with patch.dict(sys.modules, {"diffusers": diffusers}):
+            assert engine._preview_decoder(pipeline, manifest) is None, failure
+            # Capacity measured with the fast decoder no longer describes this path.
+            assert engine._calibrated_slots is None
+            # Within the cooldown it does not hammer the loader every frame.
+            assert engine._preview_decoder(pipeline, manifest) is None
+            assert autoencoder_tiny.from_pretrained.call_count == 1
+            # After the cooldown the failure is treated as transient.
+            vars(pipeline)[engine_module._PREVIEW_DECODER_RETRY_ATTR] = 0.0
+            assert engine._preview_decoder(pipeline, manifest) is decoder
+            assert autoencoder_tiny.from_pretrained.call_count == 2
+
+
+def test_preview_decoder_loads_once_across_frames():
+    """Constraint: load once, not per frame. A mutant that drops the cache passes
+    a single-frame test, so this one runs two."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._calibrated_slots = 3
+    pipeline = SimpleNamespace()
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_decoder="madebyollin/taesdxl",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        first = engine._preview_decoder(pipeline, manifest)
+        second = engine._preview_decoder(pipeline, manifest)
+
+    assert first is decoder and second is decoder
+    assert autoencoder_tiny.from_pretrained.call_count == 1
+
+
+def test_preview_decoder_does_not_outlive_its_pipeline():
+    """Constraint: the decoder must not survive eviction. A mutant that stores it
+    on the engine instead of the pipeline passes if the test plants the attribute
+    itself, so this one loads it through the real path first."""
+    import worker.engine as engine_module
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._calibrated_slots = 3
+    pipeline = SimpleNamespace()
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["image_to_image", "realtime"],
+        preview_decoder="madebyollin/taesdxl",
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        assert engine._preview_decoder(pipeline, manifest) is decoder
+    assert engine_module._PREVIEW_DECODER_ATTR in vars(pipeline)
+
+    engine._detach_preview_decoder(pipeline)
+    assert engine_module._PREVIEW_DECODER_ATTR not in vars(pipeline)
+
+    # And nothing kept a second reference that would resurrect it.
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        engine._preview_decoder(pipeline, manifest)
+    assert autoencoder_tiny.from_pretrained.call_count == 2
+
+
+def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    model_id = "madebyollin/taesdxl"
+    cached_config = huggingface_hub.try_to_load_from_cache(model_id, "config.json")
+    if not isinstance(cached_config, str):
+        pytest.skip("madebyollin/taesdxl is not cached")
+    snapshot = Path(cached_config).parent
+    weight_names = (
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.bin",
+    )
+    if not any((snapshot / name).is_file() for name in weight_names):
+        pytest.skip("madebyollin/taesdxl weights are not cached")
+
+    decoder = diffusers.AutoencoderTiny.from_pretrained(
+        snapshot, torch_dtype=torch.float32, local_files_only=True,
+    ).to("cpu")
+    latents = torch.linspace(
+        -0.5, 0.5, steps=4 * 16 * 16, dtype=torch.float32, device="cpu",
+    ).reshape(1, 4, 16, 16)
+
+    with torch.inference_mode():
+        decoded = decoder.decode(latents, return_dict=False)[0]
+
+    assert decoded.shape == (1, 3, 128, 128)
+    assert decoded.device.type == "cpu"
+    assert decoded.dtype == torch.float32
+    assert torch.isfinite(decoded).all().item()
+    assert decoded.amin().item() >= -1.1
+    assert decoded.amax().item() <= 1.1
+    assert decoded.std().item() > 0.01
+
+
 def test_frame_keeps_pillow_work_outside_gpu_lock():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
@@ -984,6 +1477,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
     def run_pipeline(**kwargs):
         events.append(("diffusion", engine._gpu.locked()))
         assert kwargs["image"].size == (512, 512)
+        assert "output_type" not in kwargs
         return SimpleNamespace(images=[rendered])
 
     pipeline = MagicMock(side_effect=run_pipeline)
@@ -1038,7 +1532,7 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
 def test_frame_bounds_codec_concurrency():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine._gpu = asyncio.Lock()
     engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
@@ -1118,7 +1612,7 @@ def test_frame_bounds_codec_concurrency():
 def test_frame_oom_retries_once_without_decoding_twice():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     torch_stub = SimpleNamespace(
-        OutOfMemoryError=type("OutOfMemoryError", (Exception,), {}),
+        OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
     engine._gpu = asyncio.Lock()
@@ -1538,9 +2032,36 @@ def test_ensure_realtime_resident_leaves_a_pinned_mode_alone():
     assert engine._pipelines[("vega-rt", "t2i")] is resident
 
 
+def test_evict_detaches_preview_decoders():
+    # Keyed by the constant, not the literal, so this asserts the behaviour
+    # rather than a spelling: whatever attribute the engine actually stores the
+    # decoder under is the one eviction has to remove. With the literal, renaming
+    # the constant in production would fail this test for the wrong reason.
+    import worker.engine as engine_module
+
+    attr = engine_module._PREVIEW_DECODER_ATTR
+    first = SimpleNamespace(**{attr: object()})
+    second = SimpleNamespace(**{attr: object()})
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._pipelines = {("a", "i2i"): first, ("b", "i2i"): second}
+    engine._rungs = {"a": "full", "b": "full"}
+    engine._last_used = {"a": 1.0, "b": 2.0}
+    engine._free_gpu_cache = MagicMock()
+
+    engine._evict_model("a")
+
+    assert not hasattr(first, attr)
+    assert hasattr(second, attr)
+
+    engine._evict_all()
+
+    assert not hasattr(second, attr)
+    assert engine._pipelines == {}
+
+
 def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str]]:
     torch_stub = MagicMock()
-    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+    torch_stub.OutOfMemoryError = _fake_oom()
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch_stub
@@ -1631,7 +2152,7 @@ def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     # CI worker venv has no torch; only OutOfMemoryError must be a real type
     # so `except self.torch.OutOfMemoryError` stays valid.
     torch_stub = MagicMock()
-    torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+    torch_stub.OutOfMemoryError = _fake_oom()
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch_stub
