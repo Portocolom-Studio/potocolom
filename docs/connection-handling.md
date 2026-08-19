@@ -102,7 +102,7 @@ sequenceDiagram
     end
 ```
 
-The version gate implements the N-1 promise: with current protocol version N, versions N and N-1 register, anything older is rejected. The browser side is symmetric but simpler: connect, `open`, then either `ready` or `error`.
+The version gate implements the N-1 promise: with current protocol version N, versions N and N-1 register, anything older is rejected. That promise covers an API at or ahead of its workers. A worker one version ahead of its API may publish fields the older API drops with `extra="ignore"`. Narrowing fields such as `studio_capabilities` are the concrete case: an older API drops the field, honours `benchmark_only: false`, and offers a realtime-only model in queued generate, which the recorded narrowing refuses. Self-hosted upgrade order is therefore API first, then the worker. Compose brings both from one image, so operators who follow compose do not hit this. Leave the field on the wire; do not gate it on protocol version. The browser side is symmetric but simpler: connect, `open`, then either `ready` or `error`.
 
 ### Browser authentication and authorization
 

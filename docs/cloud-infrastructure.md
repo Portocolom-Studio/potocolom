@@ -114,7 +114,8 @@ Rented GPU machines sit on untrusted networks outside the VPC. The rules:
 
 ## Image delivery and retention
 
-- The images bucket is private. The API mints short lived CloudFront signed URLs when it lists a user's history or completes a job, so an asset URL leaking does not leak the asset for long.
+- The images bucket is private. The API mints short lived CloudFront signed URLs when it lists a user's history or completes a job, so an asset URL leaking does not leak the asset for long. The images distribution is a different CloudFront domain from the API, so a browser that sniffed those bytes could not steal API cookies.
+- That images distribution must attach a response-headers policy sending `X-Content-Type-Options: nosniff`. S3 and MinIO GET do not emit that header; object `Content-Type` (signed on PUT, and repeated as `ResponseContentType` on the presigned GET) is what the store itself can promise.
 - Share links are served from a `/shared/{token}` behavior on the images distribution with a short cache lifetime; revoking a share deletes the token, and the short TTL bounds how long a revoked link keeps working at the edge.
 - Retention: subscribers keep their library indefinitely. Trial assets carry an `expires_at` 30 days out; a nightly job deletes expired database rows and their objects, with an S3 lifecycle rule on the trial prefix as a backstop.
 

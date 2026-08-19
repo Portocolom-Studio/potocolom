@@ -162,6 +162,14 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   rebuild the image) and restart the worker; see
   [third-party-models.md](third-party-models.md) for licensing notes.
 
+## Upgrading
+
+The worker protocol's N-1 promise is API-at-or-ahead of its workers. Upgrade
+the API first, then the worker. A worker one version ahead of its API may
+publish fields the older API drops, and narrowing fields such as
+`studio_capabilities` then fail open. Compose brings both from one image, so
+operators who follow compose do not hit this.
+
 ## Accounts
 
 There are none yet. `AUTH_MODE` defaults to `none`, every request resolves to a single local

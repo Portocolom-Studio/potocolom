@@ -188,12 +188,47 @@ def test_s3_storage_presigns_offline():
     assert view.startswith("http://localhost:9100/")
     assert "u/j.png" in view
     assert "X-Amz-Signature" in view
+    assert parse_qs(urlsplit(view).query)["response-content-type"] == ["image/png"]
+    thumb_view = asyncio.run(storage.url("u/j-thumb.webp"))
+    assert parse_qs(urlsplit(thumb_view).query)["response-content-type"] == [
+        "image/webp",
+    ]
     download = asyncio.run(
         storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
     )
     assert parse_qs(urlsplit(download).query)["response-content-disposition"] == [
         'attachment; filename="potocolom-20260729-142530-castle.png"',
     ]
+
+
+def test_s3_presign_params_declare_stored_content_type():
+    # PUT already signed ContentType. GET must too: a store that dropped
+    # object metadata still tells the browser this is an image (issue #324).
+    storage = S3Storage(Settings(storage_backend="s3",
+                                 storage_s3_endpoint="http://localhost:9100",
+                                 storage_s3_access_key="key",
+                                 storage_s3_secret_key="secret"))
+    recorded: list[tuple[str, dict]] = []
+    real = storage.client.generate_presigned_url
+
+    def capture(operation, Params, ExpiresIn):
+        recorded.append((operation, dict(Params)))
+        return real(operation, Params=Params, ExpiresIn=ExpiresIn)
+
+    storage.client.generate_presigned_url = capture
+    asyncio.run(storage.upload_target("u/j.png"))
+    asyncio.run(storage.upload_target("u/j-thumb.webp"))
+    asyncio.run(storage.url("u/j.png"))
+    asyncio.run(storage.url("u/j-thumb.webp"))
+    by_op = {}
+    for operation, params in recorded:
+        by_op.setdefault(operation, []).append(params)
+    put_png, put_webp = by_op["put_object"]
+    get_png, get_webp = by_op["get_object"]
+    assert put_png["ContentType"] == "image/png"
+    assert put_webp["ContentType"] == "image/webp"
+    assert get_png["ResponseContentType"] == "image/png"
+    assert get_webp["ResponseContentType"] == "image/webp"
 
 
 def test_storage_rejects_unsafe_download_name(tmp_path):
