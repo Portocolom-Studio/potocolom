@@ -9,18 +9,63 @@ first run, and what persists where.
 
 | Component | Minimum | Comfortable |
 |---|---|---|
-| GPU VRAM | 6 GB (SD-class models at 512 px) | 12-16 GB (SDXL-class at 1024 px, model switching without eviction) |
+| GPU VRAM | 8 GB (`ssd-1b`, `vega-rt`) | 12-16 GB (SDXL-class at 1024 px, model switching without eviction) |
 | Disk | 20 GB free (weights are 2-7 GB per model, plus your images) | 50 GB+ |
 | RAM | 8 GB | 16 GB |
 
-Each model manifest declares its floor in `min_vram_gb`; the shipped set
-spans 6 GB (`dreamshaper-lcm`) to 10 GB (`sdxl-base`, `sdxl-fast`). A machine
-without a supported GPU can still run the full stack against the simulated
-worker (flat colored images, real protocol): `scripts/compose-smoke.sh`.
+Each model manifest declares its floor in `min_vram_gb`. The models a
+self-hoster can actually select span 8 GB (`ssd-1b`, `ssd-1b-lightning`,
+`vega-rt`) to 14 GB (`sd35-medium`), with the SDXL class at 10 GB and the
+upscalers at 1-4 GB.
+
+Manifests marked `benchmark_only` (`dreamshaper-lcm`, `sd-turbo`,
+`sdxl-hypersd`) are excluded from `GET /api/v1/models` by
+`registry.public()` and never appear in the studio, so their lower floors are
+not capacity you can plan around. `dreamshaper-lcm` in particular declares
+6 GB but is not selectable.
+
+The floor is not a gate. A card below a model's floor still loads it: the
+worker measures free VRAM and steps down a memory ladder (full residency ->
+model offload -> group offload, `worker/worker/memory_ladder.py`). What you
+lose is the `realtime` capability, which only full residency advertises - so
+below the floor you get working stills, but not the live draw-and-render loop
+the product is built around. `scripts/preflight.sh` prints which shipped
+models clear the bar on your card.
+
+Measured on a 4 GB RTX 3050 Laptop (well under every text-to-image floor, so
+every model lands on the bottom rung): `ssd-1b-lightning` at 768 px, 8 steps
+takes about 7.7 s of GPU time per still, plus a one-off multi-minute weight
+download on the first job for that model. Correct output, nowhere near the
+500 ms realtime bar - which is what dropping to group offload means in
+practice.
+
+A machine without a supported GPU can still run the full stack against the
+simulated worker (flat colored images, real protocol):
+`scripts/compose-smoke.sh`.
+
+Every command on this page is `docker compose`, because self-hosting requires
+Docker and nothing else. `make compose-up`, `make compose-down` and
+`make compose-logs` wrap the same commands and detect the profile, for hosts
+that already have `make`; they are a shortcut and never a requirement.
+
+## Checking a machine before you start
+
+`scripts/preflight.sh` (or `make preflight`) checks everything on this page
+against the machine you are on, names the compose profile it can run, and
+prints the fix for anything missing. It is read-only: it starts no containers
+and installs nothing. Run it first; everything below is what it checks.
 
 ## GPU passthrough
 
-NVIDIA (default images):
+Both profiles need your user in the `docker` group
+(`sudo usermod -aG docker $USER`, then log out and back in), otherwise every
+`docker compose` command fails with `permission denied ... /var/run/docker.sock`.
+
+NVIDIA (default images). The worker image is built on CUDA 12.8, so the host
+driver must be 525.60.13 or newer. CUDA minor version compatibility carries the
+12.8 runtime on any 12.x driver above that floor, so a 535 driver reporting
+"CUDA Version: 12.2" in `nvidia-smi` is fine and does not need upgrading; below
+525.60.13 the worker fails at import with a CUDA error.
 
 1. Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
    and restart the docker daemon.
@@ -44,6 +89,19 @@ AMD (ROCm):
 
 The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
 run one or the other, never both, since they share the model volumes.
+
+Checking whether an NVIDIA driver is installed: use `nvidia-smi`, or the
+presence of `/proc/driver/nvidia/version`. Do not use `lsmod | grep nvidia`.
+On laptops with switchable graphics the discrete GPU sits in `D3cold` with its
+modules unloaded until something touches it, so `lsmod` prints nothing on a
+perfectly working install. `nvidia-smi` wakes the device.
+
+The one command that proves the whole chain (driver, toolkit, runtime
+registration) works before you build anything:
+
+```bash
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
+```
 
 ## First run
 

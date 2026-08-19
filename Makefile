@@ -1,16 +1,17 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
-#   make worker-rocm           # terminal 2 (worker-cuda on NVIDIA, worker-sim without a GPU)
+#   make worker-cuda           # terminal 2 (worker-rocm on AMD, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on the configured port
 # Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
 #     make dev-status          # pid files, ports, workers, model list
-#     WORKER=rocm|cuda|sim|off (default rocm; cuda on NVIDIA, sim without a GPU)
+#     WORKER=rocm|cuda|sim|off (detected from the GPU present; set to override)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
-.PHONY: setup setup-rocm setup-cuda check-python check-worker-venv \
+.PHONY: preflight compose-up compose-down compose-logs \
+	setup setup-rocm setup-cuda check-python check-worker-venv \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
@@ -30,6 +31,35 @@ VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
 PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
 
+preflight: ## check this machine against the self-hosting requirements (read-only)
+	@bash "$(CURDIR)/scripts/preflight.sh"
+
+# Self-hosting convenience wrappers. The docker compose commands in the README
+# stay canonical: self-hosting requires Docker and nothing else, and make is
+# not on every container host. These are for people who already have it, and
+# must not become the documented path.
+COMPOSE_FILE := $(CURDIR)/deploy/compose/compose.yml
+# gpu on NVIDIA, rocm on AMD, smoke (simulated worker) without either. Detected
+# the same way scripts/preflight.sh reports it; override with PROFILE=.
+# nvidia-smi must actually enumerate a GPU: driver files alone do not prove
+# CUDA can run, so the query is the gate, not /proc/driver/nvidia/version.
+PROFILE ?= $(shell if [ -e /dev/kfd ]; then echo rocm; \
+	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; \
+	then echo gpu; else echo smoke; fi)
+
+compose-up: ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
+	@test -f deploy/compose/.env || { \
+		echo 'error: deploy/compose/.env is missing.' >&2; \
+		echo '  cp deploy/compose/.env.example deploy/compose/.env' >&2; \
+		echo '  then set POSTGRES_PASSWORD in it' >&2; exit 1; }
+	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" up -d --build
+
+compose-down: ## stop the self-hosted stack; named volumes are left intact
+	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" down
+
+compose-logs: ## follow the self-hosted stack's logs
+	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" logs -f
+
 check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 	@test -n "$(PYTHON)" || { \
 		echo 'error: Python 3.11 or newer is required for backend/ and worker/.' >&2; \
@@ -38,6 +68,15 @@ check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 		exit 1; }
 	@$(PYTHON) $(VENV_OK) 2>/dev/null || { \
 		echo 'error: $(PYTHON) is missing or older than Python 3.11.' >&2; exit 1; }
+	@# Debian and Ubuntu ship venv separately, so a new enough interpreter can
+	@# still fail to create one. Without this the failure arrives as a raw
+	@# ensurepip traceback from inside python -m venv, several lines from the
+	@# fix, rather than as the package to install.
+	@$(PYTHON) -c 'import ensurepip' 2>/dev/null || { \
+		echo 'error: $(PYTHON) cannot create virtualenvs: ensurepip is missing.' >&2; \
+		echo 'Debian/Ubuntu ship it separately, for example' >&2; \
+		echo '  sudo apt install $(shell $(PYTHON) -c "import sys; print(\"python%d.%d-venv\" % sys.version_info[:2])" 2>/dev/null || echo python3-venv)' >&2; \
+		exit 1; }
 	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
 		% ((sys.executable,) + sys.version_info[:3]))'
 
@@ -184,7 +223,9 @@ ifeq (,$(DEV_DB_SUPPLIED))
 api dev-start dev-restart cleanup-failed: export DATABASE_URL := \
 	postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)
 endif
-WORKER ?= rocm
+# Empty by default so scripts/dev-stack.sh detects the GPU this machine has.
+# Set it explicitly (WORKER=sim, WORKER=off, ...) to override the detection.
+WORKER ?=
 
 api: dev-db ## API server on the configured port; assets under ./data (make deps first)
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \

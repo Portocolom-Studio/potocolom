@@ -25,9 +25,9 @@ To run potocolom on your own machine. Contributing to it instead needs a differe
 | What | Needed | Notes |
 |---|---|---|
 | OS | Linux | What the project is developed, tested and released on. Docker Desktop hosts are untested. |
-| Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. |
+| Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. Your user must be in the `docker` group (`sudo usermod -aG docker $USER`, then log back in) or every command below needs `sudo`. |
 | GPU | NVIDIA or AMD, or none | NVIDIA needs the [Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html); AMD needs the ROCm kernel driver, so `/dev/kfd` and `/dev/dri` exist. Without a GPU the stack still runs against the simulated worker. |
-| VRAM | 6 GB minimum, 12-16 GB comfortable | 6 GB covers SD-class models at 512 px, 12-16 GB covers SDXL-class at 1024 px. Each model manifest declares its own floor. |
+| VRAM | 8 GB minimum, 12-16 GB comfortable | 8 GB is the floor of the lowest selectable model (`ssd-1b`, `vega-rt`); 12-16 GB covers the SDXL class at 1024 px, and `sd35-medium` wants 14 GB. Each manifest declares its own floor. Below it the worker still loads the model, offloaded, but drops the `realtime` capability: you get stills, not the live loop. |
 | RAM | 8 GB, 16 GB comfortable | |
 | Disk | 20 GB free, 50 GB+ comfortable | Model weights are 2-7 GB each, plus your generated images. |
 | Network | Port 8080 free, outbound HTTPS | The studio is served on 8080; weights download from Hugging Face on first use of each model. |
@@ -36,12 +36,26 @@ No account, no API key and no telemetry endpoint are required. [docs/self-hostin
 
 ## Self-hosting
 
+Docker is the only thing this needs. Everything here is `docker compose` on
+purpose, so nothing beyond the table above has to be installed on the host -
+the `make` targets further down are for working *on* potocolom, not running it.
+
 ```bash
+scripts/preflight.sh          # what this machine has, what it is missing, which profile to use
 cp deploy/compose/.env.example deploy/compose/.env
 # edit POSTGRES_PASSWORD and FLEET_SECRET (openssl rand -hex 32)
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
 ```
+
+`scripts/preflight.sh` is read-only - it starts nothing and installs nothing. It
+checks the table above against the running machine, names the profile you can
+run, and prints the fix for anything missing.
+
+If you happen to have `make`, `make compose-up`, `make compose-down` and
+`make compose-logs` wrap exactly the commands above and pick the profile from
+the GPU they find. They are a shortcut, never a requirement: the `docker
+compose` lines are the supported path.
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment; set it. Left empty it stays unauthenticated for compatibility with existing installs, and then only a worker whose address cannot route from the internet is accepted. Treat that as a safety net, not a boundary: it refuses a direct IPv4 connection from the internet, but a connection arriving over IPv6 reaches the IPv4-only container through Docker's userland proxy and so looks local, and anything else that re-originates traffic, a reverse proxy included, can look local too. If the host has a public address, set `FLEET_SECRET`. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
@@ -72,11 +86,15 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 ### Prerequisites
 
 - Docker with Compose v2, for the development dependencies.
-- Python 3.11 or newer, for the backend and the worker. `make setup` uses `python3` when it is new enough and otherwise falls back to `python3.13` / `python3.12` / `python3.11` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
+- Python 3.11 or newer, for the backend and the worker, with its `venv` module: Debian and Ubuntu ship that separately, as `python3.11-venv` or equivalent. `make setup` uses `python3` when it is new enough and otherwise falls back to `python3.13` / `python3.12` / `python3.11` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
 - Node.js 24 or newer, for the frontend. `frontend/package.json` declares it and `engine-strict` is on, so npm refuses to install on an older Node rather than failing later in the build.
-- A GPU is optional until inference lands (issue #15). Both NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets; machines without a supported GPU run the worker on CPU. Machine specific setup, including AMD desktops, is documented in [Local development and testing](docs/local-development.md).
+- A GPU is optional until inference lands (issue #15). Both NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets; machines without a supported GPU run the simulated worker (flat images, real protocol). Machine-specific setup, including AMD desktops, is documented in [Local development and testing](docs/local-development.md).
 
 ### Common tasks
+
+Unlike self-hosting above, this is where `make` earns its place: these targets
+drive a native toolchain, not containers, so they need the prerequisites listed
+above rather than Docker alone.
 
 ```
 make setup      # create virtualenvs, install all dependencies
