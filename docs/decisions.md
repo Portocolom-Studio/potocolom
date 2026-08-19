@@ -938,6 +938,52 @@ Self-hosted and cloud share the mechanism and differ only in how many workers ex
 
 Every number here stops at the worker, and the bar is end to end, so none of them is a capacity promise yet. The curve was measured with perfectly aligned inputs, no collection window, synthetic strokes and a fast encoder setting, which is the friendliest case a scheduler will ever see; real users draw at different moments, so realised batches will be smaller and less full than the sweep's. What has to be measured before admitting a second user is the whole path with stage timings, a sustained multi-user run rather than a burst, and a slow browser next to healthy ones, which has since been measured: a session stalled for 25 seconds does not slow its neighbours, but it does resume to a 25-second-stale backlog. Issue #294 carries that program. The quality acceptance the arithmetic depends on has been done: decoding one denoised latent both ways, so nothing but the decoder differs, gives a mean absolute difference of 10 of 255 across four subjects at 22 to 28 dB PSNR, and the tiny decoder retains 108 percent of the full decode's local gradient, so it is not the softening that was expected of a distilled decoder. Side by side the two are hard to tell apart. That clears it for a live preview, which is what it is for; the final image a user keeps is a queued job through the full VAE, so this decision never trades the output away.
 
+## Realtime admission is per-model cost, not one worker slot count
+
+Closes the honesty gap in issues #285 and #234. A worker still serializes
+realtime sessions on one GPU lock. Independent per-model slot counters would
+admit three sdxl-turbo sessions and two vega-rt sessions at once and miss the
+500 ms bar. Capacity is therefore a budget of serialized frame cost, not a
+pair of counters.
+
+Each realtime model has a measured p95 at its declared defaults. A session's
+cost is that p95. An unmeasured realtime model cannot be admitted. Admit a
+new session when the sum of live session costs on that worker plus the new
+cost is at most 500 ms. slots_from_frame_ms remains the human-readable form
+of the same arithmetic: floor(500 / p95) for a homogeneous batch of that
+model.
+
+Wire: no protocol bump. Protocol 4 stays reserved for control_generation.
+Keep scalar realtime_slots on hello. A current worker sets it to the minimum
+of floor(500 / p95) across measured realtime models, so an older API that
+only reads the scalar stays pessimistic and honest. Add optional
+realtime_p95_ms on hello, a map of model id to p95. Heartbeat already carries
+frame_p95_ms; the API stores the map and admits from it when present. An N-1
+worker that omits the map keeps today's shared integer pool.
+
+Heartbeat may raise a model's p95 (decoder fallback, slower observations),
+which lowers new admissions. It must not lower a model's p95 in a way that
+raises capacity on that live connection.
+
+Warmup calibrates every non-benchmark_only realtime model that still advertises
+realtime after measured_manifests, not only the default. Boot pays one extra
+cold load.
+
+GeneratedFrame.gpu_ms and calibration time the same region: the _frame call
+that holds the GPU lock. The picker and admission then read one quantity
+(issue #288). After twenty observations, a higher p95 may lower admission. A
+lower p95 must not raise it on that connection.
+
+Ending a live session that no longer fits still needs session_refused
+(protocol 4, issue #270 / remainder of #317).
+
+Rejected alternatives: independent per-model counters, which over-admit mixed
+load; calibrating only the default and applying that count to every model,
+which is the defect this entry closes; admitting only the calibrated model,
+which is honest and wastes the second realtime model; bumping the protocol
+for an optional map, which spends protocol 4 on a field an older API can
+ignore.
+
 ## The realtime session has states, a fencing generation, and one durable accounting owner
 
 A realtime session is currently a dataclass with a worker, an event and a membership test, and its transitions are decided by whichever coroutine notices first. Four can: the browser's handler, the fleet handler, `reassign`, and the worker. Three attempts to add one feature on that footing each produced a defect, all found by review rather than by tests, so the design comes before the feature this time. The feature is ending a live session whose model stops being fully resident, which today renders nothing until the browser leaves (issue #270).

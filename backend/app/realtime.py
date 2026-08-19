@@ -54,6 +54,9 @@ CLOSE_UNSUPPORTED_VERSION = 4002
 CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
 FLEET_TOKEN_HEADER = "x-fleet-token"
+# Same 500 ms bar the worker uses in slots_from_frame_ms. Duplicated rather
+# than imported: the two packages have no shared module.
+REALTIME_BAR_MS = 500
 
 SESSION_READY_TIMEOUT = 10.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
@@ -313,6 +316,10 @@ class Worker:
     # Live per-model frame p95 from heartbeats; supersedes the calibration
     # value the worker sent in hello (registry.available()).
     frame_p95_ms: dict[str, int] = field(default_factory=dict)
+    # Admission costs from hello's optional top-level realtime_p95_ms map.
+    # None means the worker omitted the map (N-1 integer pool). Heartbeat
+    # may raise entries; it must not lower them on this connection.
+    admission_p95_ms: dict[str, int] | None = None
 
     @property
     def models(self) -> list[str]:
@@ -394,9 +401,38 @@ async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> 
         gpu_requests.pop(request_id, None)
 
 
+def live_admission_cost(worker: Worker) -> int:
+    """Serialized frame cost of sessions currently on this worker."""
+    if worker.admission_p95_ms is None:
+        return 0
+    total = 0
+    for session in sessions.values():
+        if session.worker is not worker:
+            continue
+        cost = worker.admission_p95_ms.get(session.model_id)
+        if cost:
+            total += cost
+    return total
+
+
 def pick_worker(model_id: str) -> Worker | None:
-    candidates = [w for w in workers.values() if model_id in w.models and w.free_slots > 0]
-    return max(candidates, key=lambda w: w.free_slots, default=None)
+    ranked: list[tuple[int, Worker]] = []
+    for worker in workers.values():
+        if model_id not in worker.models:
+            continue
+        if worker.admission_p95_ms is None:
+            if worker.free_slots > 0:
+                ranked.append((worker.free_slots, worker))
+            continue
+        cost = worker.admission_p95_ms.get(model_id)
+        if not cost:
+            continue
+        leftover = REALTIME_BAR_MS - live_admission_cost(worker) - cost
+        if leftover >= 0:
+            ranked.append((leftover, worker))
+    if not ranked:
+        return None
+    return max(ranked, key=lambda item: item[0])[1]
 
 
 def model_known(model_id: str) -> bool:
@@ -540,6 +576,15 @@ async def fleet(ws: WebSocket) -> None:
                         protocol_version=version,
                         device=hello.get("device"),
                         memory_mode=hello.get("memory_mode"))
+        if "realtime_p95_ms" in hello:
+            parsed = parse_frame_p95(hello.get("realtime_p95_ms"))
+            worker.admission_p95_ms = parsed if parsed is not None else {}
+            if worker.admission_p95_ms:
+                worker.admission_p95_ms = {
+                    model_id: value
+                    for model_id, value in worker.admission_p95_ms.items()
+                    if model_id in worker.models
+                }
         if not (isinstance(version, int) and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
                 and (worker.device is None or isinstance(worker.device, str))
@@ -654,6 +699,15 @@ async def fleet(ws: WebSocket) -> None:
                                 for model_id, value in measured.items()
                                 if model_id in worker.models
                             })
+                            if worker.admission_p95_ms is not None:
+                                for model_id, value in measured.items():
+                                    if model_id not in worker.models:
+                                        continue
+                                    held = worker.admission_p95_ms.get(model_id)
+                                    if held is None:
+                                        continue
+                                    if value > held:
+                                        worker.admission_p95_ms[model_id] = value
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )

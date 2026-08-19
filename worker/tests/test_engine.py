@@ -1,6 +1,7 @@
 import asyncio
 import io
 import sys
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -22,6 +23,7 @@ from worker.engine import (
     reject_degenerate_output,
 )
 from worker.manifests import Manifest, SIMULATED_MANIFEST
+from worker.memory_ladder import slots_from_frame_ms
 
 
 def _fake_oom() -> type[BaseException]:
@@ -2402,3 +2404,89 @@ def test_gpu_lock_survives_a_second_cancellation():
     locked, thread_finished = asyncio.run(scenario())
     assert thread_finished, "second cancellation released the lock mid-thread"
     assert not locked
+
+
+def test_calibrated_slots_are_the_min_across_models():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._calibration_cap = 8
+    engine._realtime_p95_ms = {"fast": 100, "slow": 400}
+    engine._calibrated_slots = None
+    # 100 ms would be 5 slots; 400 ms is 1. Last-write-wins advertised
+    # whichever ran last. The honest scalar is the min.
+    assert engine._recompute_calibrated_slots() == 1
+    assert engine._calibrated_slots == 1
+
+
+def test_calibrate_failure_does_not_zero_a_sibling():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "full"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._calibration_cap = 4
+    engine._calibrated_slots = 2
+    engine._realtime_p95_ms = {"ok": 200}
+    engine._observed_frame_ms = {}
+    engine._gpu = asyncio.Lock()
+    engine._select_rung = MagicMock(return_value="full")
+    engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
+
+    boom = Manifest(
+        id="boom",
+        name="Boom",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+    slots = asyncio.run(engine.calibrate_realtime(boom, 4))
+    assert slots == 0
+    assert engine._realtime_p95_ms == {"ok": 200}
+    assert engine._calibrated_slots == 2
+
+
+def test_frame_gpu_ms_includes_work_before_the_pipeline_call():
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+    real_pipeline = setup.engine._pipeline
+
+    def slow_pipeline(*args, **kwargs):
+        time.sleep(0.05)
+        return real_pipeline(*args, **kwargs)
+
+    setup.engine._pipeline = slow_pipeline
+    with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+        _image, gpu_ms = setup.engine._frame(
+            setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
+        )
+    assert gpu_ms >= 50
+
+
+def test_calibrate_elapsed_includes_the_frame_call():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "full"
+    engine.models_dir = ""
+    engine._pipelines = {}
+    engine._rungs = {}
+    engine._last_used = {}
+    engine._calibration_cap = 4
+    engine._calibrated_slots = None
+    engine._realtime_p95_ms = {}
+    engine._observed_frame_ms = {}
+    engine._gpu = asyncio.Lock()
+    engine._select_rung = MagicMock(return_value="full")
+
+    def slow_frame(*_args, **_kwargs):
+        time.sleep(0.05)
+        return Image.new("RGB", (32, 32)), 1
+
+    engine._frame = slow_frame
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+    slots = engine._calibrate_realtime(manifest, configured=4)
+    assert engine.realtime_p95_ms("vega-rt") >= 50
+    assert slots == slots_from_frame_ms(engine.realtime_p95_ms("vega-rt"), 4)

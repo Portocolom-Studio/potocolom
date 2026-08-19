@@ -1482,3 +1482,129 @@ def test_session_closed_from_another_worker_is_ignored():
             while time.monotonic() < deadline and 7 not in asyncio.run(recorded()):
                 time.sleep(0.05)
             assert 7 in asyncio.run(recorded()), "the owner's close was not recorded"
+
+
+def test_cost_admission_keeps_mixed_load_inside_the_bar():
+    cheap = Manifest.model_validate(manifest("cheap"))
+    expensive = Manifest.model_validate(manifest("expensive"))
+    worker = realtime.Worker(
+        id="w-cost", ws=FakeSocket(), manifests=[cheap, expensive],
+        realtime_slots=1, admission_p95_ms={"cheap": 200, "expensive": 400},
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        assert realtime.pick_worker("cheap") is worker
+        assert realtime.pick_worker("expensive") is worker
+        live = realtime.Session(
+            id=uuid.uuid4(), model_id="cheap", browser=FakeSocket(), worker=worker,
+        )
+        realtime.sessions[live.id] = live
+        assert realtime.pick_worker("cheap") is worker
+        assert realtime.pick_worker("expensive") is None
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_map_bearing_worker_refuses_an_unmeasured_model():
+    worker = realtime.Worker(
+        id="w-unmeasured", ws=FakeSocket(),
+        manifests=[Manifest.model_validate(manifest("known")),
+                   Manifest.model_validate(manifest("ghost"))],
+        realtime_slots=4, admission_p95_ms={"known": 200},
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers[worker.id] = worker
+        assert realtime.pick_worker("known") is worker
+        assert realtime.pick_worker("ghost") is None
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+
+
+def test_hello_without_the_p95_map_keeps_the_integer_pool():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-n1-pool", slots=1))
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-n1-pool"]
+        assert worker.admission_p95_ms is None
+        assert realtime.pick_worker("sd-sim") is worker
+        worker.slots_in_use = 1
+        assert realtime.pick_worker("sd-sim") is None
+
+
+def test_hello_map_admits_from_cost_not_the_scalar():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-map-hello", models=("cheap", "slow"), slots=1)
+        msg["realtime_p95_ms"] = {"cheap": 200, "slow": 400}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-map-hello"]
+        assert worker.admission_p95_ms == {"cheap": 200, "slow": 400}
+        assert realtime.pick_worker("cheap") is worker
+        live = realtime.Session(
+            id=uuid.uuid4(), model_id="cheap", browser=FakeSocket(), worker=worker,
+        )
+        realtime.sessions[live.id] = live
+        try:
+            assert realtime.pick_worker("cheap") is worker
+            assert realtime.pick_worker("slow") is None
+        finally:
+            realtime.sessions.pop(live.id, None)
+
+
+def test_heartbeat_p95_increase_reduces_new_admissions():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-ratchet-up", slots=2)
+        msg["realtime_p95_ms"] = {"sd-sim": 200}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        live = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+            worker=realtime.workers["w-ratchet-up"],
+        )
+        realtime.sessions[live.id] = live
+        try:
+            assert realtime.pick_worker("sd-sim") is realtime.workers["w-ratchet-up"]
+            worker_ws.send_json({
+                "type": "heartbeat", "slots_in_use": 1, "loaded_models": [],
+                "frame_p95_ms": {"sd-sim": 400}, "gpu": {},
+            })
+            client.get("/api/v1/health")
+            assert realtime.workers["w-ratchet-up"].admission_p95_ms["sd-sim"] == 400
+            assert realtime.pick_worker("sd-sim") is None
+        finally:
+            realtime.sessions.pop(live.id, None)
+
+
+def test_heartbeat_p95_decrease_does_not_raise_admissions():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-ratchet-down", slots=1)
+        msg["realtime_p95_ms"] = {"sd-sim": 400}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        live = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+            worker=realtime.workers["w-ratchet-down"],
+        )
+        realtime.sessions[live.id] = live
+        try:
+            assert realtime.pick_worker("sd-sim") is None
+            worker_ws.send_json({
+                "type": "heartbeat", "slots_in_use": 1, "loaded_models": [],
+                "frame_p95_ms": {"sd-sim": 200}, "gpu": {},
+            })
+            client.get("/api/v1/health")
+            assert realtime.workers["w-ratchet-down"].admission_p95_ms["sd-sim"] == 400
+            assert realtime.workers["w-ratchet-down"].frame_p95_ms["sd-sim"] == 200
+            assert realtime.pick_worker("sd-sim") is None
+        finally:
+            realtime.sessions.pop(live.id, None)
