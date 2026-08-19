@@ -652,6 +652,32 @@ async def reassign(session: Session) -> None:
     await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
 
 
+_reassign_tasks: set[asyncio.Task] = set()
+
+
+def schedule_reassign(session: Session) -> None:
+    """Hold one reassign task so the loop cannot drop it.
+
+    Only a won live -> assigning transition starts a task. Shed, a live
+    session_refused, and worker-loss cleanup all call this, so two of
+    those in one recv batch cannot start two placement loops.
+    """
+    if not transition(session, "live", "assigning"):
+        return
+
+    async def guarded() -> None:
+        try:
+            await reassign(session)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            logger.exception("reassign failed for session %s", session.id)
+
+    task = asyncio.create_task(guarded())
+    _reassign_tasks.add(task)
+    task.add_done_callback(_reassign_tasks.discard)
+
+
 def over_capacity_sessions(worker: Worker) -> list[Session]:
     """Newest live protocol-4 sessions on this worker until the live sum fits.
 
@@ -682,8 +708,7 @@ def over_capacity_sessions(worker: Worker) -> list[Session]:
 
 def schedule_shed_over_capacity(worker: Worker) -> None:
     for session in over_capacity_sessions(worker):
-        if transition(session, "live", "assigning"):
-            asyncio.ensure_future(reassign(session))
+        schedule_reassign(session)
 
 
 async def reap_once() -> None:
@@ -822,7 +847,7 @@ async def fleet(ws: WebSocket) -> None:
                             session.attempt_ok = False
                             session.ready.set()
                         elif session.state == "live":
-                            asyncio.ensure_future(reassign(session))
+                            schedule_reassign(session)
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
@@ -913,7 +938,7 @@ async def fleet(ws: WebSocket) -> None:
                 session.attempt_ok = False
                 session.ready.set()
             elif session.state == "live":
-                asyncio.ensure_future(reassign(session))
+                schedule_reassign(session)
 
 
 def session_seed(value: object) -> int | None:

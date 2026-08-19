@@ -3246,9 +3246,10 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
             dispatch_for(worker, job_id)
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
-            worker.send_json({"type": "job_done", "job_id": job_id,
-                              "gpu_ms": 7, "width": 512, "height": 512})
-            time.sleep(0.2)
+            asyncio.run(jobs.on_worker_message(current.worker, {
+                "type": "job_done", "job_id": job_id,
+                "gpu_ms": 7, "width": 512, "height": 512,
+            }))
             assert jobs.inflight.get(key) is current
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
             assert client.put(

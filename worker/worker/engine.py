@@ -111,6 +111,10 @@ class GeneratedFrame:
     gpu_ms: int
 
 
+class NotResidentError(ValueError):
+    """The model is not on the full realtime rung, so a frame cannot run."""
+
+
 @dataclass
 class PromptCache:
     """One cached prompt encoding, owned by the realtime session (issue #301).
@@ -1564,7 +1568,8 @@ class DiffusersEngine:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
         if self._pick_rung(manifest) != "full":
-            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
+            raise NotResidentError(
+                f"model {manifest.id} is not fully resident for realtime")
         frame_params = dict(params)
 
         def prepare_canvas() -> Image.Image:

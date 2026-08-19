@@ -19,6 +19,7 @@ import websockets
 
 from worker.engine import (
     Engine,
+    NotResidentError,
     PromptCache,
     SimulatedEngine,
     make_thumbnail_webp,
@@ -334,10 +335,11 @@ class SessionRunner:
                 # A one-off bad frame is logged and the loop continues. The
                 # same residency refusal repeating is an attempt failure:
                 # stay here and the browser looks Active while nothing
-                # renders (issue #270).
+                # renders (issue #270). Match the engine's type, not its
+                # message: rewording the raise must not disable refusal.
                 logger.exception("session %s dropped a frame on an inference error",
                                  self.session_id)
-                if "not fully resident" in str(error):
+                if isinstance(error, NotResidentError):
                     residency_failures += 1
                     if residency_failures >= 2:
                         await self._refuse(ws, "not_resident")

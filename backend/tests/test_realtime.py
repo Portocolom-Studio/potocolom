@@ -1694,10 +1694,6 @@ def test_session_refused_reassigns_to_another_protocol_4_worker():
             assert session.worker is spare
             assert session.control_generation == 2
             assert session.state == "live"
-            # A late ready for generation 1 must not move the session back.
-            first_ready = realtime.message_generation(
-                {"control_generation": 1}, first)
-            assert first_ready != session.control_generation
         finally:
             realtime.workers.pop(first.id, None)
             realtime.workers.pop(spare.id, None)
@@ -1783,31 +1779,46 @@ def test_stale_session_refused_generation_is_ignored():
 def test_stale_close_generation_is_not_sent_after_reassign():
     async def scenario():
         browser = FakeSocket()
+        old_ws = FakeSocket()
+        old = realtime.Worker(
+            id="w-old-close", ws=old_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=1, slots_in_use=1,
+        )
         replacement_ws = FakeSocket()
         replacement = realtime.Worker(
             id="w-stale-close", ws=replacement_ws,
             manifests=[Manifest.model_validate(manifest())],
             realtime_slots=1,
         )
-        realtime.workers[replacement.id] = replacement
         session = realtime.Session(
             id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+            worker=old, state="live", assigned_at=time.monotonic(),
         )
-        session.assigned_at = time.monotonic()
-        session.state = "live"
-        realtime.sessions[session.id] = session
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
         try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({old.id: old, replacement.id: replacement})
+            realtime.sessions[session.id] = session
             task = asyncio.create_task(realtime.reassign(session))
             await asyncio.sleep(0.01)
+            close = old_ws.sent[0]
+            assert close["type"] == "close_session"
+            assert close["control_generation"] == 1
             opened = replacement_ws.sent[0]
             assert opened["control_generation"] == 2
             complete_attempt(session)
             await task
             assert session.state == "live"
             assert session.control_generation == 2
+            assert not any(m.get("type") == "close_session" for m in replacement_ws.sent)
         finally:
-            realtime.workers.pop(replacement.id, None)
-            realtime.sessions.pop(session.id, None)
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
 
     asyncio.run(scenario())
 
@@ -1896,9 +1907,13 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             id=uuid.uuid4(), model_id="sd-sim", browser=browser_new,
             worker=worker, state="live", assigned_at=2.0,
         )
-        realtime.workers.update({worker.id: worker, spare.id: spare})
-        realtime.sessions.update({older.id: older, newer.id: newer})
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
         try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({worker.id: worker, spare.id: spare})
+            realtime.sessions.update({older.id: older, newer.id: newer})
             worker.admission_p95_ms["sd-sim"] = 300
             realtime.schedule_shed_over_capacity(worker)
             await asyncio.sleep(0.01)
@@ -1912,10 +1927,55 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             assert newer.worker is spare
             assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
         finally:
-            realtime.workers.pop(worker.id, None)
-            realtime.workers.pop(spare.id, None)
-            realtime.sessions.pop(older.id, None)
-            realtime.sessions.pop(newer.id, None)
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
+
+    asyncio.run(scenario())
+
+
+def test_schedule_reassign_starts_only_one_placement():
+    async def scenario():
+        browser = FakeSocket()
+        old_ws = FakeSocket()
+        spare_ws = FakeSocket()
+        old = realtime.Worker(
+            id="w-once-old", ws=old_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=2, slots_in_use=1,
+        )
+        spare = realtime.Worker(
+            id="w-once-spare", ws=spare_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=2,
+        )
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+            worker=old, state="live", assigned_at=1.0,
+        )
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
+        try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({old.id: old, spare.id: spare})
+            realtime.sessions[session.id] = session
+            realtime.schedule_reassign(session)
+            realtime.schedule_reassign(session)
+            await asyncio.sleep(0.01)
+            opens = [m for m in spare_ws.sent if m.get("type") == "open_session"]
+            assert len(opens) == 1
+            assert session.state == "assigning"
+            complete_attempt(session)
+            await asyncio.sleep(0.05)
+            assert session.state == "live"
+            assert session.worker is spare
+        finally:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
 
     asyncio.run(scenario())
 

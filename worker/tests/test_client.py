@@ -19,7 +19,7 @@ from worker.client import (
     serve_connection,
     warmup_realtime,
 )
-from worker.engine import GeneratedFrame, PromptCache, SimulatedEngine
+from worker.engine import GeneratedFrame, NotResidentError, PromptCache, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 
@@ -495,7 +495,7 @@ def test_hello_carries_manifests():
     # A version 4 API requires control_generation on lifecycle messages, so
     # announcing the wrong version here would have this worker's answers
     # silently dropped.
-    assert hello["protocol_version"] == PROTOCOL_VERSION
+    assert hello["protocol_version"] == PROTOCOL_VERSION == 4
 
 
 def test_hello_carries_measured_realtime_p95_ms():
@@ -1167,7 +1167,7 @@ def test_session_runner_keeps_going_after_one_residency_frame_failure():
         async def frame(self, manifest, params, payload, *, prompt_cache=None):
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError("model is not fully resident")
+                raise NotResidentError("cached offload")
             return await super().frame(manifest, params, payload,
                                        prompt_cache=prompt_cache)
 
@@ -1196,7 +1196,7 @@ def test_session_runner_refuses_repeated_residency_frame_failures():
 
     class AlwaysResidentFail(RecordingEngine):
         async def frame(self, manifest, params, payload, *, prompt_cache=None):
-            raise RuntimeError("model is not fully resident")
+            raise NotResidentError("cached offload")
 
     engine = AlwaysResidentFail()
     manifest = _realtime_manifest("vega-rt", steps_default=4)
@@ -1218,3 +1218,28 @@ def test_session_runner_refuses_repeated_residency_frame_failures():
     assert len(refused) == 1
     assert refused[0]["reason"] == "not_resident"
     assert frames == []
+
+
+def test_session_runner_ignores_resident_wording_on_other_errors():
+    socket = FakeSocket()
+
+    class WordingFail(RecordingEngine):
+        async def frame(self, manifest, params, payload, *, prompt_cache=None):
+            raise RuntimeError("model is not fully resident")
+
+    engine = WordingFail()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    asyncio.run(scenario())
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    assert any(m.get("type") == "session_ready" for m in controls)
+    assert not any(m.get("type") == "session_refused" for m in controls)
