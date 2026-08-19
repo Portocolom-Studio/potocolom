@@ -91,7 +91,7 @@ Messages later issues add to this catalogue (queued position, credits ticks, dra
 sequenceDiagram
     participant W as Worker
     participant A as API server
-    W->>A: WS connect /api/v1/fleet (X-Fleet-Token when FLEET_TOKEN_KEY is set)
+    W->>A: WS connect /api/v1/fleet (X-Fleet-Token)
     W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
@@ -237,7 +237,7 @@ This is a boundary control, not authentication. WebSocket handshakes ignore the 
 
 A worker presents the shared secret as an `X-Fleet-Token` request header on the upgrade. The API compares it against `FLEET_TOKEN_KEY` before accepting, so a missing or wrong token fails the handshake with HTTP 403 and no close code applies. Header names are case-insensitive; send it however you like.
 
-When `FLEET_TOKEN_KEY` is unset the socket stays permissive only for a peer whose address cannot route from the public internet, and the API warns at startup. The restriction does not cover a connection arriving through a proxy or Docker's userland proxy. Issue #245 tracks closing the socket by default. That keeps the one-command self-hosted start working, and [README.md](../README.md) explains why an unkeyed install still needs a private network or a secret. The secret is ASCII: it travels in an HTTP header.
+When `FLEET_TOKEN_KEY` is unset the handshake is refused with HTTP 403. The API also refuses to start, with a message that names `scripts/preflight.sh`. Issues #245 and #260 are the implementation. The secret is ASCII: it travels in an HTTP header.
 
 Signed short-lived tokens are the cloud shape and are not implemented here; their minting side lives in the private repository (`docs/repository-boundary.md`).
 

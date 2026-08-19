@@ -843,7 +843,7 @@ The same step is where accounts begin when issues #5 and #9 land. A self-hosted 
 
 Rejected alternatives: keeping permissive-when-unset and relying on the address restriction, which the measurement in the entry above shows does not close IPv6 on the shipped compose topology and was explicitly called a mitigation rather than a boundary; generating the secret inside the API at startup and persisting it, which hides a credential the operator needs in order to configure a worker on another machine and makes the compose file and the running process disagree; shipping a fixed default secret, which is a published credential; and prompting interactively, which breaks the unattended install that scripted deployments depend on.
 
-This is the decision; the implementation lands in #260. Until then the shipped first-run flow still copies `deploy/compose/.env.example` with an empty `FLEET_SECRET`, so the fleet socket stays permissive and closed-by-default is the target state from #260, not the current state. An operator who wants it sooner sets `FLEET_SECRET` by hand today.
+This is the decision. Preflight writes the secrets on first run. An unset `FLEET_TOKEN_KEY` refuses the handshake and refuses to start. An existing install that still has an empty `FLEET_SECRET` must fill that file before the API will start.
 
 ## Realtime canvas conditioning: a sketch T2I-Adapter on VegaRT, not img2img
 

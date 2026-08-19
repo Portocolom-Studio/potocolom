@@ -19,7 +19,7 @@ from app.gpu_samples import maintain_loop
 from app.jobs import maintain_deletes_loop, router as jobs_router
 from app.logs import setup_logging
 from app.metrics import router as metrics_router
-from app.realtime import forwarding_trusts_any_peer, reap_dead_workers
+from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
@@ -44,6 +44,19 @@ def _reject_unimplemented_auth_mode(mode: str) -> None:
     )
 
 
+FLEET_TOKEN_KEY_UNSET = (
+    "FLEET_TOKEN_KEY is unset; refusing fleet handshakes. "
+    "Run scripts/preflight.sh to write deploy/compose/.env, "
+    "then set FLEET_TOKEN_KEY from FLEET_SECRET."
+)
+
+
+def _reject_unset_fleet_token_key(key: str) -> None:
+    if key:
+        return
+    raise RuntimeError(FLEET_TOKEN_KEY_UNSET)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -51,29 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # import, and get_settings caches per process, so startup re-checks with
     # the settings this process actually runs under.
     _reject_unimplemented_auth_mode(settings.auth_mode)
+    _reject_unset_fleet_token_key(settings.fleet_token_key)
     setup_logging(settings.log_format)
-    if not settings.fleet_token_key:
-        logging.getLogger("potocolom.realtime").warning(
-            "FLEET_TOKEN_KEY is unset; fleet authentication is permissive for "
-            "workers whose address cannot route from the internet"
-        )
-        # Permissive mode decides on the peer address, and uvicorn overwrites
-        # that from X-Forwarded-For for any peer it is told to trust. Trusting
-        # every peer hands the decision to the client, which can then claim a
-        # loopback address and register from anywhere. The pair is what is
-        # dangerous, so warn only when both halves are present.
-        #
-        # The environment variable is what the shipped Docker command uses, and
-        # it is all this can see: a --forwarded-allow-ips flag or a programmatic
-        # Config would set the same thing somewhere unreachable from here, so
-        # this warning can miss a dangerous launch and cannot be the control.
-        if forwarding_trusts_any_peer(os.environ.get("FORWARDED_ALLOW_IPS", "")):
-            logging.getLogger("potocolom.realtime").warning(
-                "FORWARDED_ALLOW_IPS trusts forwarded headers from every peer while "
-                "FLEET_TOKEN_KEY is unset: a client can present any address and "
-                "register as a worker. Set FLEET_TOKEN_KEY."
-            )
-    elif not settings.fleet_token_key.isascii():
+    if not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
         # survive the trip intact. Say so here rather than let the operator
         # debug a worker that reconnects forever against a correct secret.
@@ -112,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # app without it, so a lifespan-only check is bypassable. No server flag or
 # embedder can avoid importing the module that defines app.
 _reject_unimplemented_auth_mode(get_settings().auth_mode)
+_reject_unset_fleet_token_key(get_settings().fleet_token_key)
 
 app = FastAPI(
     title="potocolom",

@@ -121,6 +121,17 @@ cmd_start() {
 		;;
 	esac
 
+	if [[ -f "$REPO/deploy/compose/.env" ]]; then
+		set -a
+		# shellcheck disable=SC1091
+		. "$REPO/deploy/compose/.env"
+		set +a
+		if [[ -n "${FLEET_SECRET:-}" ]]; then
+			export FLEET_TOKEN_KEY="${FLEET_TOKEN_KEY:-$FLEET_SECRET}"
+			export FLEET_TOKEN="${FLEET_TOKEN:-$FLEET_SECRET}"
+		fi
+	fi
+
 	cmd_stop
 	: >"$DEV_DIR/api.log"
 	: >"$DEV_DIR/web.log"

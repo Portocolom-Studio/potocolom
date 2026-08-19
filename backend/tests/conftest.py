@@ -66,6 +66,7 @@ os.environ.setdefault("DATABASE_URL",
                       f"potocolom_test_{_RUN}")
 _DATABASE_URL = os.environ["DATABASE_URL"]
 os.environ.setdefault("TELEMETRY", "false")
+os.environ.setdefault("FLEET_TOKEN_KEY", "test-fleet-token")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)

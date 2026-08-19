@@ -52,8 +52,10 @@ that already have `make`; they are a shortcut and never a requirement.
 
 `scripts/preflight.sh` (or `make preflight`) checks everything on this page
 against the machine you are on, names the compose profile it can run, and
-prints the fix for anything missing. It is read-only: it starts no containers
-and installs nothing. Run it first; everything below is what it checks.
+prints the fix for anything missing. It starts no containers and installs
+nothing. When `deploy/compose/.env` is missing it writes one from the
+example with generated hex secrets. It refuses to overwrite a file that
+already exists. Run it first; everything below is what it checks.
 
 ## GPU passthrough
 
@@ -106,11 +108,14 @@ docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
 ## First run
 
 ```bash
-cp deploy/compose/.env.example deploy/compose/.env
-# edit POSTGRES_PASSWORD and FLEET_SECRET
+scripts/preflight.sh
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 ```
 
+- Preflight writes `deploy/compose/.env` when that file is missing, with
+  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. It
+  prints `FLEET_SECRET` once. Copy that value to a worker on another
+  machine. An existing `.env` is left alone.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with
@@ -120,43 +125,12 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 - The fleet WebSocket (`/api/v1/fleet`) accepts the shared `FLEET_SECRET` from
   the compose environment. The API receives it as `FLEET_TOKEN_KEY` and the
   worker receives it as `FLEET_TOKEN`; the worker sends it in the handshake
-  header. Generate it with `openssl rand -hex 32` and keep it private. Hex is
-  not arbitrary advice: an HTTP header carries ASCII only, and Compose expands
-  `$NAME` inside an unquoted `.env` value, so a secret containing a dollar sign
-  can be altered or emptied, and an emptied one puts the API back in permissive
-  mode. Compose and the API both warn, but the run continues. Single-quote any
-  value containing a dollar sign. The API warns at startup when the secret is
-  unset or not ASCII.
-- If `FLEET_SECRET` is empty, the API logs a warning and keeps the fleet socket
-  permissive for compatibility with existing installs, but only for a worker
-  whose address cannot route from the internet: loopback, private, carrier-grade
-  NAT and link-local ranges, and IPv6 ULA. That covers the compose network, a
-  worker on an IPv4 LAN address, and one reached over a mesh VPN such as
-  Tailscale. It does not cover a worker on a global IPv6 address, even on your
-  own LAN, because nothing distinguishes that from a remote one; give such a
-  worker the secret. Set `FLEET_SECRET` to run a worker from anywhere else.
-- That check is a safety net, not a boundary, and it does not cover every path.
-  Published IPv4 ports are forwarded by iptables and keep the client's address,
-  so a direct IPv4 connection from the internet is refused. A connection
-  arriving over IPv6 reaches the IPv4-only container through Docker's userland
-  proxy, which opens a fresh connection from the bridge gateway, so the client
-  becomes indistinguishable from a worker on the compose network and is
-  admitted. Measured on Docker 29.6.1. Anything else that re-originates traffic
-  has the same effect, including a reverse proxy, rootless or Docker Desktop
-  port forwarding, and load balancers that do not preserve the client source.
-  The check only works where the server sees the original source address.
-- So if the host has a public address of either family, set `FLEET_SECRET`. It is
-  the only thing here that closes the IPv6 path; a host firewall, a network ACL,
-  or publishing the port on a chosen interface rather than all of them will also
-  keep the socket away from the internet, and are worth doing regardless.
-- One combination is unsafe and easy to reach by accident: `FLEET_SECRET` empty
-  together with a `FORWARDED_ALLOW_IPS` that trusts everything, which means `*`
-  or a zero-length prefix such as `0.0.0.0/0` or `::/0`. It tells uvicorn to
-  believe the `X-Forwarded-For` header from any client, and the address in that
-  header is what the permissive check then sees, so a client can claim to be on
-  your network and register as a worker from anywhere. Setting a trust-all value is
-  ordinary advice when running behind a proxy, so the API warns about the pair
-  at startup. Set `FLEET_SECRET` in that setup.
+  header. Hex is mandatory: an HTTP header carries ASCII only, and Compose
+  expands `$NAME` inside an unquoted `.env` value.
+- An unset `FLEET_TOKEN_KEY` refuses fleet handshakes and refuses to start.
+  The error names `scripts/preflight.sh`. An existing install that still has
+  an empty `FLEET_SECRET` will fail to start until that file is filled.
+- Origin check stays. Signed cloud tokens remain issue #225.
 - Models are JSON manifests in the `models` volume, seeded from
   `worker/models/` on first boot. Add or edit manifests in the volume (or
   rebuild the image) and restart the worker; see

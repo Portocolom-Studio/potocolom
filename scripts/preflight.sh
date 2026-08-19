@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Check this machine against the self-hosting requirements and name the
-# compose profile it can actually run. Read-only: starts nothing, installs
-# nothing, changes nothing.
+# compose profile it can actually run. Writes deploy/compose/.env from the
+# example when the file is missing (hex secrets); never overwrites one that
+# already exists. Starts nothing and installs nothing.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -236,6 +237,36 @@ if ((vram_mb > 0)); then
   fi
 fi
 
+# -------------------------------------------------------------- secrets
+
+head_ "Compose secrets"
+
+ENV_FILE="$ROOT/deploy/compose/.env"
+ENV_EXAMPLE="$ROOT/deploy/compose/.env.example"
+
+if [[ -e "$ENV_FILE" ]]; then
+  pass "deploy/compose/.env already exists (left alone)"
+else
+  if [[ ! -f "$ENV_EXAMPLE" ]]; then
+    fail "deploy/compose/.env.example is missing; cannot write .env"
+  elif ! command -v openssl >/dev/null 2>&1; then
+    fail "openssl is required to generate POSTGRES_PASSWORD and FLEET_SECRET"
+  else
+    pg="$(openssl rand -hex 32)"
+    fleet="$(openssl rand -hex 32)"
+    tmp="$(mktemp)"
+    awk -v pg="$pg" -v fleet="$fleet" '
+      /^POSTGRES_PASSWORD=/ { print "POSTGRES_PASSWORD=" pg; next }
+      /^FLEET_SECRET=/ { print "FLEET_SECRET=" fleet; next }
+      { print }
+    ' "$ENV_EXAMPLE" > "$tmp"
+    mv "$tmp" "$ENV_FILE"
+    pass "wrote $ENV_FILE"
+    note "FLEET_SECRET=$fleet"
+    note "A worker on another machine needs a copy of FLEET_SECRET."
+  fi
+fi
+
 # ------------------------------------------------------------- verdict
 
 head_ "Verdict"
@@ -248,7 +279,7 @@ fi
 ((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"
 
 case "$profile" in
-  gpu)   printf '  Ready. NVIDIA worker:\n\n    cp deploy/compose/.env.example deploy/compose/.env   # set POSTGRES_PASSWORD\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
-  rocm)  printf '  Ready. AMD worker:\n\n    cp deploy/compose/.env.example deploy/compose/.env   # set POSTGRES_PASSWORD\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
+  gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
+  rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
   smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    scripts/compose-smoke.sh\n' ;;
 esac
