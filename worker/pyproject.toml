@@ -28,7 +28,12 @@ inference = [
     "diffusers>=0.39,<1",
     "transformers>=5,<6",
     "accelerate>=1,<2",
-    "torchao>=0.17,<1",
+    # Cap below 0.18 until the worker images move to torch 2.10
+    # (Dockerfile.worker-cuda and Dockerfile.worker-rocm). torchao 0.18 imports
+    # torch.nn.functional.ScalingType, which lands in torch 2.10, so an
+    # unpinned resolve installs a torchao that cannot import against 2.9 and
+    # every generation fails at diffusers import time. Raise both together.
+    "torchao>=0.17,<0.18",
     "peft>=0.13,<1",
     "spandrel>=0.4,<1",
 ]

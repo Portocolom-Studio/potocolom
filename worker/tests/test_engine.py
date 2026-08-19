@@ -19,6 +19,7 @@ from worker.engine import (
     SimulatedEngine,
     _canvas_to_sketch_map,
     encode_webp,
+    reject_degenerate_output,
 )
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 
@@ -194,7 +195,9 @@ class _JobPipeline:
 
     def __call__(self, **kwargs):
         self.call_kwargs.append(kwargs)
-        return SimpleNamespace(images=[Image.new("RGB", (64, 48))])
+        image = Image.new("RGB", (64, 48))
+        image.putpixel((1, 0), (1, 0, 0))
+        return SimpleNamespace(images=[image])
 
 
 def _job_engine(pipeline: _JobPipeline) -> DiffusersEngine:
@@ -975,7 +978,10 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
     engine._apply_rung(pipeline, manifest, "group_offload")
 
     kwargs = pipeline.enable_group_offload.call_args.kwargs
-    assert kwargs["use_stream"] is True
+    # Streaming stays off for every model on this rung: diffusers' lazy
+    # prefetch skips leaves and the run decodes to solid black. Only the
+    # disk offload path is conditional on quantization.
+    assert kwargs["use_stream"] is False
     assert kwargs["offload_to_disk_path"] == str(
         tmp_path / ".offload" / "unquantized"
     )
@@ -1013,6 +1019,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
     decoded = object()
     preview_image = Image.new("RGB", (32, 32), (12, 34, 56))
     stored_image = Image.new("RGB", (32, 32), (78, 90, 123))
+    stored_image.putpixel((1, 0), (79, 90, 123))
 
     def run_pipeline(**kwargs):
         if kwargs.get("output_type") == "latent":
@@ -2233,6 +2240,56 @@ def test_generate_value_error_does_not_evict():
     asyncio.run(scenario())
     assert ("m", "t2i") in engine._pipelines
     assert engine._poison_evict_count == {}
+
+
+def test_reject_degenerate_output_raises_on_a_flat_image():
+    """A saturated denoise decodes to one colour; it must not be stored."""
+    for colour in ((0, 0, 0), (255, 255, 255), (12, 34, 56)):
+        try:
+            reject_degenerate_output(Image.new("RGB", (32, 32), colour), "ssd-1b")
+        except RuntimeError as error:
+            assert "ssd-1b" in str(error)
+            assert "flat colour" in str(error)
+        else:
+            raise AssertionError(f"expected RuntimeError for {colour}")
+
+
+def test_reject_degenerate_output_passes_real_output():
+    """One varying band is enough; VAE noise means real output is never flat."""
+    image = Image.new("RGB", (32, 32), (10, 20, 30))
+    image.putpixel((0, 0), (10, 20, 31))
+    reject_degenerate_output(image, "ssd-1b")
+
+    gradient = Image.linear_gradient("L")
+    reject_degenerate_output(gradient, "ssd-1b")
+
+
+def test_generate_rejects_a_flat_render_and_evicts_the_resident():
+    """The guard fails the job and drops the pipeline that produced it."""
+    engine = _poison_engine()
+    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"])
+    flat = Image.new("RGB", (32, 32), (0, 0, 0))
+
+    engine._pipeline = MagicMock(return_value=MagicMock(
+        return_value=SimpleNamespace(images=[flat]),
+    ))
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "x"})
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def scenario():
+        with patch("asyncio.to_thread", side_effect=run_inline):
+            try:
+                await engine.generate(manifest, {"prompt": "x", "steps": 1}, lambda _: None)
+            except RuntimeError as error:
+                assert "flat colour" in str(error)
+            else:
+                raise AssertionError("expected RuntimeError")
+
+    asyncio.run(scenario())
+    assert engine._pipelines == {}
+    assert engine._poison_evict_count["m"] == 1
 
 
 def test_generation_oom_demotes_once_and_retries_once():

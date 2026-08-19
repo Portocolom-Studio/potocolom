@@ -8,7 +8,22 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEV_DIR="${DEV_DIR:-$REPO/data/dev}"
 API_PORT="${API_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-5173}"
-WORKER="${WORKER:-rocm}"
+# Default to whatever this machine can actually run. A hardcoded default sends
+# every contributor without that vendor's GPU into a worker that cannot start.
+# /dev/kfd is the AMD compute device, absent on display-only amdgpu; NVIDIA
+# requires nvidia-smi to actually enumerate a GPU, not just driver files:
+# a laptop dGPU idles in D3cold with its modules unloaded, so lsmod is
+# silent on a working install, but nvidia-smi must still report a device.
+detect_worker() {
+	if [[ -e /dev/kfd ]]; then
+		echo rocm
+	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+		echo cuda
+	else
+		echo sim
+	fi
+}
+WORKER="${WORKER:-$(detect_worker)}"
 DATABASE_URL="${DATABASE_URL:-postgresql://potocolom:potocolom@localhost:5432/potocolom}"
 
 mkdir -p "$DEV_DIR"
@@ -190,7 +205,7 @@ cmd_status() {
 
 usage() {
 	echo "Usage: $0 {start|stop|restart|status}" >&2
-	echo "  WORKER=rocm|cuda|sim|off (default rocm)" >&2
+	echo "  WORKER=rocm|cuda|sim|off (detected: $(detect_worker))" >&2
 	echo "  API_PORT WEB_PORT DEV_DIR optional" >&2
 	exit 1
 }
