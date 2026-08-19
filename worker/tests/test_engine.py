@@ -2033,8 +2033,15 @@ def test_ensure_realtime_resident_leaves_a_pinned_mode_alone():
 
 
 def test_evict_detaches_preview_decoders():
-    first = SimpleNamespace(_potocolom_preview_decoder=object())
-    second = SimpleNamespace(_potocolom_preview_decoder=object())
+    # Keyed by the constant, not the literal, so this asserts the behaviour
+    # rather than a spelling: whatever attribute the engine actually stores the
+    # decoder under is the one eviction has to remove. With the literal, renaming
+    # the constant in production would fail this test for the wrong reason.
+    import worker.engine as engine_module
+
+    attr = engine_module._PREVIEW_DECODER_ATTR
+    first = SimpleNamespace(**{attr: object()})
+    second = SimpleNamespace(**{attr: object()})
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("a", "i2i"): first, ("b", "i2i"): second}
     engine._rungs = {"a": "full", "b": "full"}
@@ -2043,12 +2050,12 @@ def test_evict_detaches_preview_decoders():
 
     engine._evict_model("a")
 
-    assert not hasattr(first, "_potocolom_preview_decoder")
-    assert hasattr(second, "_potocolom_preview_decoder")
+    assert not hasattr(first, attr)
+    assert hasattr(second, attr)
 
     engine._evict_all()
 
-    assert not hasattr(second, "_potocolom_preview_decoder")
+    assert not hasattr(second, attr)
     assert engine._pipelines == {}
 
 
