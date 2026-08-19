@@ -1173,6 +1173,11 @@ class DiffusersEngine:
         await self.load_model(manifest)
         return self._pick_rung(manifest) == "full"
 
+    def _require_realtime_resident(self, manifest: Manifest) -> None:
+        if self._pick_rung(manifest) != "full":
+            raise NotResidentError(
+                f"model {manifest.id} is not fully resident for realtime")
+
     async def unload_model(self, model_id: str) -> None:
         async with self._gpu:
             await self._run_to_completion(self._evict_model, model_id)
@@ -1567,9 +1572,7 @@ class DiffusersEngine:
     ) -> GeneratedFrame:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
-        if self._pick_rung(manifest) != "full":
-            raise NotResidentError(
-                f"model {manifest.id} is not fully resident for realtime")
+        self._require_realtime_resident(manifest)
         frame_params = dict(params)
 
         def prepare_canvas() -> Image.Image:
@@ -1588,6 +1591,10 @@ class DiffusersEngine:
             canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
+            # Recheck after the codec wait: another task can demote or
+            # unload while we decoded the canvas, and _frame would then
+            # load an offload pipeline instead of refusing (issue #270).
+            self._require_realtime_resident(manifest)
             # _pipeline can load or evict GPU weights, _prompt_kwargs can run
             # GPU text encoders for long prompts, and diffusion uses the GPU.
             frame_result: tuple[Image.Image, int] | None = None
@@ -1605,6 +1612,7 @@ class DiffusersEngine:
             if frame_result is None:
                 # The eviction mutates GPU residency, so it remains serialized.
                 self._evict_except(manifest.id)
+                self._require_realtime_resident(manifest)
                 frame_result = await self._run_to_completion(
                     self._frame, manifest, frame_params, canvas, strength,
                     prompt_cache=prompt_cache)

@@ -13,6 +13,7 @@ from worker.engine import (
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
     GeneratedFrame,
+    NotResidentError,
     OBSERVED_FRAME_SAMPLES,
     OBSERVED_FRAME_WINDOW,
     PromptCache,
@@ -1536,6 +1537,43 @@ def test_frame_keeps_pillow_work_outside_gpu_lock():
     assert run.call_count == 3
     engine._evict_except.assert_not_called()
     engine._evict_poisoned.assert_not_called()
+
+
+def test_frame_refuses_if_the_rung_drops_while_waiting_for_the_gpu():
+    """The early residency check is before the codec wait. Another task can
+    demote the model in that window; _frame must not then load an offload
+    pipeline (issue #270).
+    """
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._evict_except = MagicMock()
+    engine._evict_poisoned = MagicMock()
+    engine._frame = MagicMock()
+
+    def pick(_manifest):
+        return "model_offload" if engine._gpu.locked() else "full"
+
+    engine._pick_rung = pick
+    manifest = Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+    )
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    pytest = __import__("pytest")
+    with patch("asyncio.to_thread", side_effect=run_inline):
+        with pytest.raises(NotResidentError):
+            asyncio.run(engine.frame(
+                manifest, {"prompt": "frame"}, source.getvalue()))
+
+    engine._frame.assert_not_called()
 
 
 def test_frame_bounds_codec_concurrency():
