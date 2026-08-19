@@ -3751,6 +3751,40 @@ def test_a_hung_delete_does_not_delay_the_verdict(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_cancelled_cleanup_is_recorded_for_the_sweep(monkeypatch):
+    """Shutdown cancel must not drop remaining keys: pending_deletes is the
+    backstop (issue #313 follow-up)."""
+    hang = threading.Event()
+
+    async def hung_delete(storage_key):
+        while not hang.is_set():
+            await asyncio.sleep(0.05)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-cancel-cleanup")
+            asyncio.run(_clear_pending_deletes())
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "cancel"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1)[-1]
+            monkeypatch.setattr(jobs, "_bounded_delete", hung_delete)
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed", timeout=1.0)
+            for task in list(jobs._blob_cleanup_tasks):
+                task.cancel()
+            hang.set()
+            row = _await_pending_delete(key, client=client)
+            assert row.storage_key == key
+            assert row.last_error == "cleanup cancelled"
+
+
+@pytest.mark.db
 def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
     """A delete that fails during requeue_or_fail's collection leaves a
     pending_deletes row naming that key, exactly as the verdict paths do, and

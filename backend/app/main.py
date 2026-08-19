@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(telemetry_loop()),
     ]
     yield
+    await jobs.drain_blob_cleanup()
     for task in tasks:
         task.cancel()
         with suppress(asyncio.CancelledError):
