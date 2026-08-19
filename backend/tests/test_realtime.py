@@ -113,6 +113,29 @@ def hello(version=PROTOCOL_VERSION, worker_id="w-test", models=("sd-sim",), slot
     }
 
 
+def answer_ready(ws, opened, generation=None):
+    """Echo session_ready for the open the worker just received."""
+    if isinstance(opened, dict):
+        session_id = opened["session_id"]
+        if generation is None:
+            generation = opened.get("control_generation", 1)
+    else:
+        session_id = opened
+        if generation is None:
+            generation = 1
+    ws.send_json({
+        "type": "session_ready",
+        "session_id": session_id,
+        "control_generation": generation,
+    })
+
+
+def complete_attempt(session):
+    """What a unit test uses in place of the fleet handler's session_ready."""
+    session.attempt_ok = True
+    session.ready.set()
+
+
 def test_version_gate_rejects_older_than_n_minus_1():
     with client.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(version=MIN_SUPPORTED_VERSION - 1))
@@ -444,6 +467,7 @@ def test_open_carrying_the_required_prompt_opens_the_session():
             })
             opened = worker_ws.receive_json()
             assert opened["type"] == "open_session"
+            assert opened["control_generation"] == 1
             # The params have to reach the worker, not merely pass validation.
             # Asserting only that the session opens would let the API forward an
             # empty dict: the simulated engine ignores the prompt, so nothing
@@ -455,7 +479,7 @@ def test_open_carrying_the_required_prompt_opens_the_session():
             seed = opened["params"]["seed"]
             assert isinstance(seed, int)
             assert 0 <= seed < realtime.SESSION_SEED_BOUND
-            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
 
@@ -469,8 +493,7 @@ def test_update_params_reaches_the_worker_and_browser():
                                   "params": {"prompt": "a red house"}})
             opened = worker_ws.receive_json()
             assert opened["type"] == "open_session"
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             browser_ws.send_json({"type": "update_params",
@@ -479,6 +502,7 @@ def test_update_params_reaches_the_worker_and_browser():
             # The merged params: the update won because later keys win, and the
             # session seed the API filled at open rides along.
             assert updated["type"] == "update_session"
+            assert updated["control_generation"] == 1
             assert updated["session_id"] == opened["session_id"]
             assert updated["params"]["prompt"] == "a blue house"
             seed = updated["params"]["seed"]
@@ -503,12 +527,9 @@ def test_update_params_reaches_the_worker_and_browser():
 @pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 1])
 def test_update_params_follows_the_workers_advertised_version(version):
     """The version the worker advertised in hello is what decides, not the
-    API's own: the API is always at PROTOCOL_VERSION, so refusing an N-1
-    worker proves the check reads the advertised number, and a worker newer
-    than the API still takes updates. An N-1 worker predates update_session
-    and would silently drop it, so acknowledging an update it cannot apply
-    would be worse than refusing it: the user cannot tell a silent no-op
-    from a model that ignored their prompt.
+    API's own. Protocol 3 already speaks unfenced update_session; a worker
+    below that would silently drop it. Both N-1 (3) and a worker newer than
+    the API still take updates.
     """
     refused = version < realtime.UPDATE_SESSION_PROTOCOL_VERSION
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
@@ -520,8 +541,7 @@ def test_update_params_follows_the_workers_advertised_version(version):
                                   "params": {"prompt": "a red house"}})
             opened = worker_ws.receive_json()
             assert opened["type"] == "open_session"
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             browser_ws.send_json({"type": "update_params",
@@ -537,6 +557,10 @@ def test_update_params_follows_the_workers_advertised_version(version):
                 updated = worker_ws.receive_json()
                 assert updated["type"] == "update_session"
                 assert updated["session_id"] == opened["session_id"]
+                if version >= realtime.CONTROL_GENERATION_PROTOCOL_VERSION:
+                    assert updated["control_generation"] == 1
+                else:
+                    assert "control_generation" not in updated
                 acknowledged = browser_ws.receive_json()
                 assert acknowledged["type"] == "params_updated"
                 session = realtime.sessions[uuid.UUID(opened["session_id"])]
@@ -568,8 +592,7 @@ def test_session_open_without_a_seed_fills_one_in_the_session_params():
             seed = opened["params"]["seed"]
             assert isinstance(seed, int)
             assert 0 <= seed < realtime.SESSION_SEED_BOUND
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
             assert session.params["prompt"] == "a red house"
@@ -587,8 +610,7 @@ def test_session_open_keeps_an_explicit_seed():
             assert opened["type"] == "open_session"
             # The client's seed is kept so a session can be reproduced exactly.
             assert opened["params"]["seed"] == 42
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
             assert session.params["seed"] == 42
@@ -607,7 +629,7 @@ def test_update_params_refuses_a_seed_change_and_keeps_the_session():
                                   "params": {"prompt": "a red house"}})
             opened = worker_ws.receive_json()
             session_id = opened["session_id"]
-            worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+            answer_ready(worker_ws, session_id)
             assert browser_ws.receive_json()["type"] == "ready"
             seed = realtime.sessions[uuid.UUID(session_id)].params["seed"]
 
@@ -654,8 +676,7 @@ def test_open_normalises_the_seed_across_shapes():
                     assert 0 <= seed < realtime.SESSION_SEED_BOUND
                 else:
                     assert seed == expected
-                worker_ws.send_json({"type": "session_ready",
-                                     "session_id": opened["session_id"]})
+                answer_ready(worker_ws, opened)
                 assert browser_ws.receive_json()["type"] == "ready"
             # The browser teardown released the session; drain the
             # close_session so the next open reads its own open_session.
@@ -671,8 +692,7 @@ def test_invalid_update_params_keeps_the_session_open():
             browser_ws.send_json({"type": "open", "model_id": "sd-sim",
                                   "params": {"prompt": "a red house"}})
             opened = worker_ws.receive_json()
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             browser_ws.send_json({"type": "update_params", "params": {"prompt": 123}})
@@ -705,8 +725,7 @@ def test_malformed_update_params_closes_as_a_protocol_violation():
             browser_ws.send_json({"type": "open", "model_id": "sd-sim",
                                   "params": {"prompt": "a red house"}})
             opened = worker_ws.receive_json()
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             browser_ws.send_json({"type": "update_params", "params": "not an object"})
@@ -725,7 +744,7 @@ def test_session_and_frame_relay_both_directions():
 
             opened = worker_ws.receive_json()
             assert opened["type"] == "open_session"
-            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
 
             ready = browser_ws.receive_json()
             assert ready["type"] == "ready"
@@ -753,7 +772,7 @@ def test_worker_relay_requires_its_session_and_generated_frames():
                 session_id = opened["session_id"]
                 session = realtime.sessions[uuid.UUID(session_id)]
 
-                other_worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+                answer_ready(other_worker_ws, session_id)
                 other_worker_ws.send_bytes(
                     bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"foreign"
                 )
@@ -767,7 +786,7 @@ def test_worker_relay_requires_its_session_and_generated_frames():
                 assert closed.value.code == realtime.CLOSE_PROTOCOL_VIOLATION
                 assert not session.ready.is_set(), "a stranger readied the session"
 
-                worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+                answer_ready(worker_ws, session_id)
                 assert browser_ws.receive_json()["type"] == "ready"
                 generated = bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"owned"
                 worker_ws.send_bytes(generated)
@@ -791,7 +810,7 @@ def test_assigned_worker_sending_a_canvas_frame_is_a_protocol_violation():
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             session_id = worker_ws.receive_json()["session_id"]
-            worker_ws.send_json({"type": "session_ready", "session_id": session_id})
+            answer_ready(worker_ws, session_id)
             assert browser_ws.receive_json()["type"] == "ready"
             worker_ws.send_bytes(
                 bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"wrong-direction"
@@ -814,10 +833,7 @@ def test_closed_session_persists_usage_event():
             with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
                 browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
                 opened = worker_ws.receive_json()
-                worker_ws.send_json({
-                    "type": "session_ready",
-                    "session_id": opened["session_id"],
-                })
+                answer_ready(worker_ws, opened)
                 assert browser_ws.receive_json()["type"] == "ready"
                 browser_ws.send_json({"type": "close"})
             closed = worker_ws.receive_json()
@@ -859,10 +875,7 @@ def test_closing_session_is_removed_when_worker_is_lost():
             with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
                 browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
                 opened = worker_ws.receive_json()
-                worker_ws.send_json({
-                    "type": "session_ready",
-                    "session_id": opened["session_id"],
-                })
+                answer_ready(worker_ws, opened)
                 assert browser_ws.receive_json()["type"] == "ready"
                 browser_ws.send_json({"type": "close"})
             assert worker_ws.receive_json()["type"] == "close_session"
@@ -903,7 +916,7 @@ def test_frame_for_another_session_closes_with_protocol_violation():
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             opened = worker_ws.receive_json()
-            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             foreign = bytes([CANVAS_FRAME]) + uuid.uuid4().bytes + b"not-my-session"
@@ -920,7 +933,7 @@ def test_short_binary_frame_closes_browser_with_protocol_violation():
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             opened = worker_ws.receive_json()
-            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             browser_ws.send_bytes(b"\x01tiny")
@@ -936,7 +949,7 @@ def test_heartbeat_does_not_free_committed_slots():
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             opened = worker_ws.receive_json()
-            worker_ws.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             assert browser_ws.receive_json()["type"] == "ready"
 
             # A stale self-report must not undo the server-side accounting.
@@ -1203,16 +1216,9 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
-    """One attempt per reassignment, and a failure closes the session 4003.
-
-    Retrying other candidates reads as an obvious improvement and is not one
-    yet: two reassign tasks for a session share its worker and its ready
-    event, so a stale attempt with somewhere else to go can place a second
-    worker and then be woken by the first one's readiness, leaving two workers
-    holding the session. Until an assignment carries an identity that
-    readiness answers to (issue #270), this stays as narrow as main has it,
-    and this test is what stops the retry from creeping back in.
+def test_reassign_retries_another_protocol_4_worker(monkeypatch):
+    """A failed attempt tries the next protocol 4 candidate; generation fences
+    the two opens so a late ready from the first cannot complete the second.
     """
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
 
@@ -1230,21 +1236,17 @@ def test_reassign_gives_up_after_one_failed_candidate(monkeypatch):
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
         try:
-            # pick_worker takes the worker with the most free slots, and both
-            # have one, so pin which one is tried to keep this deterministic.
-            monkeypatch.setattr(realtime, "pick_worker", lambda model_id: first)
             await realtime.reassign(session)
-            # Exactly one attempt, and the give-up tells the worker: a retry
-            # against the same candidate would show as a second open here while
-            # still leaving the spare untouched, so the whole sequence is
-            # pinned rather than just the first message.
             assert [m["type"] for m in first_ws.sent] == [
                 "open_session", "close_session",
             ], first_ws.sent
-            # The chosen worker never answers: the session ends rather than
-            # being offered to the spare.
-            assert spare_ws.sent == []
+            assert [m["type"] for m in spare_ws.sent] == [
+                "open_session", "close_session",
+            ], spare_ws.sent
+            assert first_ws.sent[0]["control_generation"] == 2
+            assert spare_ws.sent[0]["control_generation"] == 3
             assert first.slots_in_use == 0
+            assert spare.slots_in_use == 0
             assert session.worker is None
             assert [m["type"] for m in browser.sent] == ["interrupted", "error"]
             assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
@@ -1276,7 +1278,7 @@ def test_reassign_moves_the_session_with_correct_accounting():
             await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
             assert replacement_ws.sent[0]["type"] == "open_session"
             assert replacement_ws.sent[0]["session_id"] == str(session.id)
-            session.ready.set()  # what the fleet handler does on session_ready
+            complete_attempt(session)
             await task
             assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
             assert session.worker is replacement
@@ -1311,7 +1313,7 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
             assert opened["type"] == "open_session"
             assert opened["params"]["seed"] == 77
             assert opened["params"]["prompt"] == "a red house"
-            session.ready.set()  # what the fleet handler does on session_ready
+            complete_attempt(session)
             await task
             assert session.worker is replacement
         finally:
@@ -1450,7 +1452,7 @@ def test_session_closed_from_another_worker_is_ignored():
             with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
                 browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
                 session_id = owner_ws.receive_json()["session_id"]
-                owner_ws.send_json({"type": "session_ready", "session_id": session_id})
+                answer_ready(owner_ws, session_id)
                 assert browser_ws.receive_json()["type"] == "ready"
             assert owner_ws.receive_json()["type"] == "close_session"
 
@@ -1608,3 +1610,382 @@ def test_heartbeat_p95_decrease_does_not_raise_admissions():
             assert realtime.pick_worker("sd-sim") is None
         finally:
             realtime.sessions.pop(live.id, None)
+
+
+def test_protocol_3_open_has_no_generation_and_first_attempt_still_works():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION,
+                                  worker_id="w-p3-first"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            assert "control_generation" not in opened
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            assert browser_ws.receive_json()["type"] == "ready"
+
+
+def test_protocol_3_worker_is_skipped_on_reassignment():
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        old = realtime.Worker(
+            id="w-p3", ws=FakeSocket(),
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=4, protocol_version=MIN_SUPPORTED_VERSION,
+        )
+        new = realtime.Worker(
+            id="w-p4", ws=FakeSocket(),
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=1, protocol_version=PROTOCOL_VERSION,
+        )
+        realtime.workers[old.id] = old
+        realtime.workers[new.id] = new
+        assert realtime.pick_worker("sd-sim", generation=1) is old
+        assert realtime.pick_worker("sd-sim", generation=2) is new
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_session_refused_reassigns_to_another_protocol_4_worker():
+    """TestClient cannot drive two fleet sockets and the browser assign wait
+    on one loop, so this calls place_session directly like the reassign
+    tests.
+    """
+    async def scenario():
+        browser = FakeSocket()
+        first_ws = FakeSocket()
+        first = realtime.Worker(
+            id="w-refuse-first", ws=first_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=2,
+        )
+        spare_ws = FakeSocket()
+        spare = realtime.Worker(
+            id="w-refuse-spare", ws=spare_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=1,
+        )
+        realtime.workers.update({first.id: first, spare.id: spare})
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+        )
+        realtime.sessions[session.id] = session
+        try:
+            task = asyncio.create_task(realtime.place_session(session))
+            await asyncio.sleep(0.01)
+            assert first_ws.sent[0]["type"] == "open_session"
+            assert first_ws.sent[0]["control_generation"] == 1
+            session.attempt_ok = False
+            session.ready.set()
+            await asyncio.sleep(0.01)
+            assert spare_ws.sent[0]["type"] == "open_session"
+            assert spare_ws.sent[0]["session_id"] == str(session.id)
+            assert spare_ws.sent[0]["control_generation"] == 2
+            complete_attempt(session)
+            assert await task
+            assert session.worker is spare
+            assert session.control_generation == 2
+            assert session.state == "live"
+        finally:
+            realtime.workers.pop(first.id, None)
+            realtime.workers.pop(spare.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    asyncio.run(scenario())
+
+
+def test_session_refused_with_no_other_worker_closes_4003():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-only-refuse"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            assert opened["type"] == "open_session"
+            worker_ws.send_json({
+                "type": "session_refused",
+                "session_id": opened["session_id"],
+                "control_generation": opened["control_generation"],
+                "reason": "not_resident",
+            })
+            refusal = browser_ws.receive_json()
+            assert refusal["type"] == "error"
+            assert refusal["code"] == 4003
+
+
+def test_unfenced_protocol_4_ready_is_ignored(monkeypatch):
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-unfenced"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({
+                "type": "session_ready",
+                "session_id": opened["session_id"],
+            })
+            refusal = browser_ws.receive_json()
+            assert refusal["type"] == "error"
+            assert refusal["code"] == 4003
+
+
+def test_stale_session_ready_generation_is_ignored(monkeypatch):
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-stale-ready"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            worker_ws.send_json({
+                "type": "session_ready",
+                "session_id": opened["session_id"],
+                "control_generation": opened["control_generation"] + 1,
+            })
+            refusal = browser_ws.receive_json()
+            assert refusal["type"] == "error"
+            assert refusal["code"] == 4003
+
+
+def test_stale_session_refused_generation_is_ignored():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-stale-refuse"))
+        assert worker_ws.receive_json()["type"] == "registered"
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = worker_ws.receive_json()
+            answer_ready(worker_ws, opened)
+            assert browser_ws.receive_json()["type"] == "ready"
+            worker_ws.send_json({
+                "type": "session_refused",
+                "session_id": opened["session_id"],
+                "control_generation": opened["control_generation"] + 1,
+                "reason": "not_resident",
+            })
+            client.get("/api/v1/health")
+            browser_ws.send_json({"type": "update_params", "params": {"prompt": "x"}})
+            assert browser_ws.receive_json()["type"] == "params_updated"
+
+
+def test_stale_close_generation_is_not_sent_after_reassign():
+    async def scenario():
+        browser = FakeSocket()
+        old_ws = FakeSocket()
+        old = realtime.Worker(
+            id="w-old-close", ws=old_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=1, slots_in_use=1,
+        )
+        replacement_ws = FakeSocket()
+        replacement = realtime.Worker(
+            id="w-stale-close", ws=replacement_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=1,
+        )
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+            worker=old, state="live", assigned_at=time.monotonic(),
+        )
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
+        try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({old.id: old, replacement.id: replacement})
+            realtime.sessions[session.id] = session
+            task = asyncio.create_task(realtime.reassign(session))
+            await asyncio.sleep(0.01)
+            close = old_ws.sent[0]
+            assert close["type"] == "close_session"
+            assert close["control_generation"] == 1
+            opened = replacement_ws.sent[0]
+            assert opened["control_generation"] == 2
+            complete_attempt(session)
+            await task
+            assert session.state == "live"
+            assert session.control_generation == 2
+            assert not any(m.get("type") == "close_session" for m in replacement_ws.sent)
+        finally:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
+
+    asyncio.run(scenario())
+
+
+def test_over_capacity_drops_newest_protocol_4_session():
+    cheap = Manifest.model_validate(manifest("sd-sim"))
+    worker = realtime.Worker(
+        id="w-shed", ws=FakeSocket(), manifests=[cheap],
+        realtime_slots=4, admission_p95_ms={"sd-sim": 300},
+    )
+    older = realtime.Session(
+        id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+        worker=worker, state="live", assigned_at=1.0,
+    )
+    newer = realtime.Session(
+        id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+        worker=worker, state="live", assigned_at=2.0,
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        realtime.sessions[older.id] = older
+        realtime.sessions[newer.id] = newer
+        assert realtime.live_admission_cost(worker) == 600
+        victims = realtime.over_capacity_sessions(worker)
+        assert victims == [newer]
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_over_capacity_leaves_protocol_3_sessions():
+    worker = realtime.Worker(
+        id="w-p3-shed", ws=FakeSocket(),
+        manifests=[Manifest.model_validate(manifest())],
+        realtime_slots=4, protocol_version=MIN_SUPPORTED_VERSION,
+        admission_p95_ms={"sd-sim": 300},
+    )
+    live = realtime.Session(
+        id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+        worker=worker, state="live", assigned_at=1.0,
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        realtime.sessions[live.id] = live
+        worker.admission_p95_ms["sd-sim"] = 600
+        assert realtime.live_admission_cost(worker) == 600
+        assert realtime.over_capacity_sessions(worker) == []
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
+    async def scenario():
+        browser_old = FakeSocket()
+        browser_new = FakeSocket()
+        worker_ws = FakeSocket()
+        spare_ws = FakeSocket()
+        worker = realtime.Worker(
+            id="w-shed-live", ws=worker_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=4, admission_p95_ms={"sd-sim": 200},
+        )
+        spare = realtime.Worker(
+            id="w-shed-spare", ws=spare_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=4, admission_p95_ms={"sd-sim": 200},
+        )
+        older = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser_old,
+            worker=worker, state="live", assigned_at=1.0,
+        )
+        newer = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser_new,
+            worker=worker, state="live", assigned_at=2.0,
+        )
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
+        try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({worker.id: worker, spare.id: spare})
+            realtime.sessions.update({older.id: older, newer.id: newer})
+            worker.admission_p95_ms["sd-sim"] = 300
+            realtime.schedule_shed_over_capacity(worker)
+            await asyncio.sleep(0.01)
+            assert newer.state == "assigning"
+            assert older.state == "live"
+            assert spare_ws.sent[0]["type"] == "open_session"
+            assert spare_ws.sent[0]["session_id"] == str(newer.id)
+            complete_attempt(newer)
+            await asyncio.sleep(0.05)
+            assert newer.state == "live"
+            assert newer.worker is spare
+            assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
+        finally:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
+
+    asyncio.run(scenario())
+
+
+def test_schedule_reassign_starts_only_one_placement():
+    async def scenario():
+        browser = FakeSocket()
+        old_ws = FakeSocket()
+        spare_ws = FakeSocket()
+        old = realtime.Worker(
+            id="w-once-old", ws=old_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=2, slots_in_use=1,
+        )
+        spare = realtime.Worker(
+            id="w-once-spare", ws=spare_ws,
+            manifests=[Manifest.model_validate(manifest())],
+            realtime_slots=2,
+        )
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=browser,
+            worker=old, state="live", assigned_at=1.0,
+        )
+        saved_workers = dict(realtime.workers)
+        saved_sessions = dict(realtime.sessions)
+        try:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update({old.id: old, spare.id: spare})
+            realtime.sessions[session.id] = session
+            realtime.schedule_reassign(session)
+            realtime.schedule_reassign(session)
+            await asyncio.sleep(0.01)
+            opens = [m for m in spare_ws.sent if m.get("type") == "open_session"]
+            assert len(opens) == 1
+            assert session.state == "assigning"
+            complete_attempt(session)
+            await asyncio.sleep(0.05)
+            assert session.state == "live"
+            assert session.worker is spare
+        finally:
+            realtime.workers.clear()
+            realtime.sessions.clear()
+            realtime.workers.update(saved_workers)
+            realtime.sessions.update(saved_sessions)
+
+    asyncio.run(scenario())
+
+
+def test_ended_absorbs_transitions():
+    session = realtime.Session(
+        id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+        state="ended",
+    )
+    assert not realtime.transition(session, "ended", "assigning")
+    assert session.state == "ended"
+    assert not realtime.transition(session, "live", "ending")
+    assert session.state == "ended"

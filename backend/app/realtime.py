@@ -19,6 +19,7 @@ import time
 import uuid
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -36,14 +37,18 @@ from app import db
 logger = logging.getLogger("potocolom.realtime")
 
 # Wire constants; keep in sync with worker/worker/client.py.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
 # The protocol version that introduced the update_session message. An N-1
-# worker is deliberately welcome (MIN_SUPPORTED_VERSION), but it predates
-# this message and would silently drop it, so the API refuses an update
-# whose assigned worker speaks an older protocol rather than acknowledge
-# one the worker cannot apply.
+# worker is deliberately welcome (MIN_SUPPORTED_VERSION). Protocol 3 already
+# speaks that message unfenced; protocol 4 adds control_generation on it.
+# The API still refuses an update whose assigned worker predates the
+# message entirely rather than acknowledge one the worker cannot apply.
 UPDATE_SESSION_PROTOCOL_VERSION = 3
+# Lifecycle fencing: control_generation on open/update/close and on
+# session_ready / session_refused. A protocol 3 worker has no generation
+# and may serve a session's first attempt only.
+CONTROL_GENERATION_PROTOCOL_VERSION = 4
 
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
@@ -301,10 +306,11 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
-    # Advertised in hello, and read by two gates: the update_params handler
+    # Advertised in hello, and read by three gates: the update_params handler
     # compares it against UPDATE_SESSION_PROTOCOL_VERSION to refuse an update
-    # an N-1 worker would silently drop, and the dispatch-token check in
-    # jobs.py requires the token from a worker at 3 or newer. A registration
+    # an older worker would silently drop, the dispatch-token check in
+    # jobs.py requires the token from a worker at 3 or newer, and assign /
+    # reassign send control_generation only to protocol 4. A registration
     # always sets it; the default covers a Worker built without one, and it is
     # the current version rather than None so that gate fails closed rather
     # than granting the leniency that exists only for an older worker
@@ -330,6 +336,9 @@ class Worker:
         return self.realtime_slots - self.slots_in_use
 
 
+SessionState = Literal["queued", "assigning", "live", "idle", "ending", "ended"]
+
+
 @dataclass
 class Session:
     id: uuid.UUID
@@ -339,11 +348,60 @@ class Session:
     user_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # queued and idle are in the enum so later work does not widen it;
+    # this protocol does not ship the admission queue or idle release.
+    state: SessionState = "assigning"
+    control_generation: int = 1
+    attempt_ok: bool = False
+    assigned_at: float = 0.0
 
     @property
     def is_live(self) -> bool:
         """False once the browser handler's teardown has removed the session."""
         return self.id in sessions
+
+
+def transition(session: Session, expected: SessionState | set[SessionState],
+               new: SessionState) -> bool:
+    """Compare expected state and move. False if the session is ended or elsewhere.
+
+    ended absorbs: a transition out of it is a no-op rather than an error,
+    because a late message is exactly what fencing expects to see.
+    """
+    if session.state == "ended":
+        return False
+    allowed = {expected} if isinstance(expected, str) else expected
+    if session.state not in allowed:
+        return False
+    session.state = new
+    return True
+
+
+def speaks_generation(worker: Worker) -> bool:
+    return worker.protocol_version >= CONTROL_GENERATION_PROTOCOL_VERSION
+
+
+def message_generation(control: dict, worker: Worker) -> int | None:
+    """Generation this lifecycle message answers, or None if it must be ignored.
+
+    Protocol 4 requires a positive int. An unfenced protocol 4 message is
+    not believed: that is the race fencing exists to prevent, and it is
+    deliberately not the jobs-path exception for a missing dispatch_token.
+    Protocol 3 has no generations; extra fields are ignored and the
+    message is generation 1 (first attempt only).
+    """
+    raw = control.get("control_generation")
+    if speaks_generation(worker):
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+            return None
+        return raw
+    return 1
+
+
+def with_generation(payload: dict, worker: Worker, generation: int) -> dict:
+    if speaks_generation(worker):
+        payload["control_generation"] = generation
+    return payload
 
 
 workers: dict[str, Worker] = {}
@@ -415,10 +473,18 @@ def live_admission_cost(worker: Worker) -> int:
     return total
 
 
-def pick_worker(model_id: str) -> Worker | None:
+def pick_worker(model_id: str, *, generation: int = 1,
+                exclude_ids: set[str] | None = None) -> Worker | None:
     ranked: list[tuple[int, Worker]] = []
     for worker in workers.values():
+        if exclude_ids is not None and worker.id in exclude_ids:
+            continue
         if model_id not in worker.models:
+            continue
+        # A protocol 3 worker may serve a session's first attempt only and
+        # is never a reassignment candidate: it has no generation with which
+        # to tell two attempts apart.
+        if generation > 1 and not speaks_generation(worker):
             continue
         if worker.admission_p95_ms is None:
             if worker.free_slots > 0:
@@ -439,7 +505,8 @@ def model_known(model_id: str) -> bool:
     return any(model_id in w.models for w in workers.values())
 
 
-async def close_abandoned_session(worker: Worker, session: Session) -> None:
+async def close_abandoned_session(worker: Worker, session: Session,
+                                  generation: int | None = None) -> None:
     """Best-effort notice that the API has given up on an open.
 
     The open may still be in flight when the API stops waiting, and a
@@ -448,10 +515,12 @@ async def close_abandoned_session(worker: Worker, session: Session) -> None:
     is still the same registered incarnation, like release(): a departed
     incarnation dies with its connection, so there is nothing left to close.
     """
-    if workers.get(worker.id) is worker:
-        await safe_send(
-            worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
-        )
+    if workers.get(worker.id) is not worker:
+        return
+    payload = {"type": "close_session", "session_id": str(session.id)}
+    if generation is None:
+        generation = session.control_generation
+    await safe_send(worker.ws.send_json(with_generation(payload, worker, generation)))
 
 
 async def assign(session: Session, worker: Worker) -> bool:
@@ -467,12 +536,17 @@ async def assign(session: Session, worker: Worker) -> bool:
     """
     session.worker = worker
     session.ready.clear()
+    session.attempt_ok = False
     worker.slots_in_use += 1
+    sent_generation = session.control_generation
     try:
-        await worker.ws.send_json(
-            {"type": "open_session", "session_id": str(session.id),
-             "model_id": session.model_id, "params": session.params}
-        )
+        payload = {
+            "type": "open_session",
+            "session_id": str(session.id),
+            "model_id": session.model_id,
+            "params": session.params,
+        }
+        await worker.ws.send_json(with_generation(payload, worker, sent_generation))
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
         if session.worker is worker:
@@ -485,9 +559,49 @@ async def assign(session: Session, worker: Worker) -> bool:
             # that does not exist.
             worker.slots_in_use -= 1
             session.worker = None
-            await close_abandoned_session(worker, session)
+            await close_abandoned_session(worker, session, sent_generation)
         return False
-    return True
+    if session.control_generation != sent_generation:
+        # Another waiter (reassign) advanced the generation. Do not
+        # compensate: that attempt owns the slot now.
+        return session.state == "live"
+    if session.attempt_ok and session.worker is worker:
+        if session.state == "assigning":
+            transition(session, "assigning", "live")
+            session.assigned_at = time.monotonic()
+        return True
+    if session.worker is worker:
+        worker.slots_in_use -= 1
+        session.worker = None
+        await close_abandoned_session(worker, session, sent_generation)
+    return False
+
+
+async def place_session(session: Session, *, exclude_ids: set[str] | None = None) -> bool:
+    """Try workers until one answers ready, or none remain.
+
+    A failed attempt (timeout or session_refused) is not a failed session:
+    generation increases and the next protocol 4 candidate is tried.
+    """
+    skipped: set[str] = set(exclude_ids or ())
+    while session.is_live and session.state == "assigning":
+        worker = pick_worker(
+            session.model_id,
+            generation=session.control_generation,
+            exclude_ids=skipped,
+        )
+        if worker is None:
+            return False
+        started = session.control_generation
+        ok = await assign(session, worker)
+        if ok or session.state == "live":
+            return True
+        if not session.is_live or session.state != "assigning":
+            return False
+        skipped.add(worker.id)
+        if not ok and session.control_generation == started:
+            session.control_generation += 1
+    return session.state == "live"
 
 
 async def release(session: Session) -> None:
@@ -495,39 +609,106 @@ async def release(session: Session) -> None:
         return
     worker, session.worker = session.worker, None
     worker.slots_in_use -= 1
+    generation = session.control_generation
     if workers.get(worker.id) is worker:  # still connected, same incarnation
-        await safe_send(
-            worker.ws.send_json({"type": "close_session", "session_id": str(session.id)})
-        )
+        await safe_send(worker.ws.send_json(with_generation(
+            {"type": "close_session", "session_id": str(session.id)},
+            worker, generation,
+        )))
 
 
 async def reassign(session: Session) -> None:
-    """The session's worker vanished: interrupted, new worker, resumed."""
-    session.worker = None
-    if not session.is_live:  # browser already gone
+    """The session's worker vanished or refused: interrupted, new worker, resumed."""
+    if session.state == "ended":
+        return
+    if session.state == "live":
+        if not transition(session, "live", "assigning"):
+            return
+    elif session.state != "assigning":
+        return
+    worker = session.worker
+    generation = session.control_generation
+    if worker is not None:
+        if session.worker is worker:
+            worker.slots_in_use -= 1
+            session.worker = None
+        await close_abandoned_session(worker, session, generation)
+    if not session.is_live:
         return
     await safe_send(session.browser.send_json({"type": "interrupted"}))
-    # One attempt, as before the refusal work: retrying other candidates here
-    # widened a race this module cannot yet win. Two reassign tasks for one
-    # session share its worker and its ready event, so a stale attempt that
-    # places a second worker is then woken by the first worker's readiness and
-    # believes it succeeded: two workers open the session, one keeps a slot and
-    # an unreachable runner, and the browser is told resumed twice. Retrying
-    # made that reachable by giving the stale attempt somewhere else to go.
-    # The fix is an attempt identity that readiness and refusal carry, which is
-    # session lifecycle design tracked by issue #270; until then this stays as
-    # narrow as main has it.
-    replacement = pick_worker(session.model_id)
-    if replacement is None or not await assign(session, replacement):
-        logger.warning("session %s lost its worker and no replacement was available",
-                       session.id)
-        await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+    session.control_generation += 1
+    exclude_ids = {worker.id} if worker is not None else set()
+    if await place_session(session, exclude_ids=exclude_ids):
+        if not session.is_live:
+            await release(session)
+            return
+        logger.info("session %s resumed on worker %s", session.id,
+                    session.worker.id if session.worker else "?")
+        await safe_send(session.browser.send_json({"type": "resumed"}))
         return
-    if not session.is_live:  # browser disconnected while we assigned
-        await release(session)
+    logger.warning("session %s lost its worker and no replacement was available",
+                   session.id)
+    transition(session, "assigning", "ending")
+    await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+
+
+_reassign_tasks: set[asyncio.Task] = set()
+
+
+def schedule_reassign(session: Session) -> None:
+    """Hold one reassign task so the loop cannot drop it.
+
+    Only a won live -> assigning transition starts a task. Shed, a live
+    session_refused, and worker-loss cleanup all call this, so two of
+    those in one recv batch cannot start two placement loops.
+    """
+    if not transition(session, "live", "assigning"):
         return
-    logger.info("session %s resumed on worker %s", session.id, replacement.id)
-    await safe_send(session.browser.send_json({"type": "resumed"}))
+
+    async def guarded() -> None:
+        try:
+            await reassign(session)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            logger.exception("reassign failed for session %s", session.id)
+
+    task = asyncio.create_task(guarded())
+    _reassign_tasks.add(task)
+    task.add_done_callback(_reassign_tasks.discard)
+
+
+def over_capacity_sessions(worker: Worker) -> list[Session]:
+    """Newest live protocol-4 sessions on this worker until the live sum fits.
+
+    Protocol 3 sessions stay: that worker cannot fence a replacement, and
+    new admissions are already blocked. Newest-first keeps the sessions that
+    were honest when admitted.
+    """
+    if worker.admission_p95_ms is None or not speaks_generation(worker):
+        return []
+    overflow = live_admission_cost(worker) - REALTIME_BAR_MS
+    if overflow <= 0:
+        return []
+    live = [
+        session for session in sessions.values()
+        if session.worker is worker and session.state == "live"
+    ]
+    live.sort(key=lambda item: item.assigned_at, reverse=True)
+    victims: list[Session] = []
+    shed = 0
+    for session in live:
+        if shed >= overflow:
+            break
+        cost = worker.admission_p95_ms.get(session.model_id) or 0
+        victims.append(session)
+        shed += cost
+    return victims
+
+
+def schedule_shed_over_capacity(worker: Worker) -> None:
+    for session in over_capacity_sessions(worker):
+        schedule_reassign(session)
 
 
 async def reap_once() -> None:
@@ -647,8 +828,26 @@ async def fleet(ws: WebSocket) -> None:
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
-                        if session is not None and session.worker is worker:
+                        generation = message_generation(control, worker)
+                        if (session is not None and session.worker is worker
+                                and generation is not None
+                                and generation == session.control_generation
+                                and transition(session, "assigning", "live")):
+                            session.assigned_at = time.monotonic()
+                            session.attempt_ok = True
                             session.ready.set()
+                    elif control["type"] == "session_refused":
+                        session = sessions.get(peer_uuid(control["session_id"]))
+                        generation = message_generation(control, worker)
+                        if (session is None or session.worker is not worker
+                                or generation is None
+                                or generation != session.control_generation):
+                            pass
+                        elif session.state == "assigning":
+                            session.attempt_ok = False
+                            session.ready.set()
+                        elif session.state == "live":
+                            schedule_reassign(session)
                     elif control["type"] in ("job_progress", "job_done", "job_failed"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
@@ -700,6 +899,7 @@ async def fleet(ws: WebSocket) -> None:
                                 if model_id in worker.models
                             })
                             if worker.admission_p95_ms is not None:
+                                raised = False
                                 for model_id, value in measured.items():
                                     if model_id not in worker.models:
                                         continue
@@ -708,6 +908,9 @@ async def fleet(ws: WebSocket) -> None:
                                         continue
                                     if value > held:
                                         worker.admission_p95_ms[model_id] = value
+                                        raised = True
+                                if raised:
+                                    schedule_shed_over_capacity(worker)
                         gpu_samples.schedule_heartbeat_sample(
                             worker.id, control, worker.device, worker.memory_mode
                         )
@@ -731,7 +934,11 @@ async def fleet(ws: WebSocket) -> None:
             logger.info("worker %s disconnected with %d sessions to reassign",
                         worker.id, len(orphaned))
         for session in orphaned:
-            asyncio.ensure_future(reassign(session))
+            if session.state == "assigning":
+                session.attempt_ok = False
+                session.ready.set()
+            elif session.state == "live":
+                schedule_reassign(session)
 
 
 def session_seed(value: object) -> int | None:
@@ -799,8 +1006,7 @@ async def realtime(ws: WebSocket) -> None:
     # for its life), so it must not be repeated there.
     params = {**params, "seed": seed if seed is not None
               else random.randrange(SESSION_SEED_BOUND)}
-    worker = pick_worker(model_id)
-    if worker is None:
+    if pick_worker(model_id) is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
         return
     session = Session(
@@ -810,8 +1016,9 @@ async def realtime(ws: WebSocket) -> None:
         user_id=db.local_user_id)
     sessions[session.id] = session
     try:
-        accepted = await assign(session, worker)
+        accepted = await place_session(session)
         if not accepted:
+            transition(session, "assigning", "ending")
             await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
         await ws.send_json({"type": "ready", "session_id": str(session.id)})
@@ -898,11 +1105,11 @@ async def realtime(ws: WebSocket) -> None:
                         # keys nobody set, which never appear here.
                         session.params.update(params)
                         if session.worker is not None:
-                            await safe_send(session.worker.ws.send_json({
+                            await safe_send(session.worker.ws.send_json(with_generation({
                                 "type": "update_session",
                                 "session_id": str(session.id),
                                 "params": session.params,
-                            }))
+                            }, session.worker, session.control_generation)))
                         await safe_send(ws.send_json({
                             "type": "params_updated",
                             "params": session.params,
@@ -912,6 +1119,8 @@ async def realtime(ws: WebSocket) -> None:
                 break
     finally:
         sessions.pop(session.id, None)
+        transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
+        transition(session, "ending", "ended")
         worker = session.worker
         if (
             worker is not None

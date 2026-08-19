@@ -111,6 +111,10 @@ class GeneratedFrame:
     gpu_ms: int
 
 
+class NotResidentError(ValueError):
+    """The model is not on the full realtime rung, so a frame cannot run."""
+
+
 @dataclass
 class PromptCache:
     """One cached prompt encoding, owned by the realtime session (issue #301).
@@ -1169,6 +1173,15 @@ class DiffusersEngine:
         await self.load_model(manifest)
         return self._pick_rung(manifest) == "full"
 
+    def _require_realtime_resident(self, manifest: Manifest) -> None:
+        """Raise unless the model is on the full realtime rung.
+
+        Callers must hold `_gpu`: `_pick_rung` writes `self._rungs`.
+        """
+        if self._pick_rung(manifest) != "full":
+            raise NotResidentError(
+                f"model {manifest.id} is not fully resident for realtime")
+
     async def unload_model(self, model_id: str) -> None:
         async with self._gpu:
             await self._run_to_completion(self._evict_model, model_id)
@@ -1563,8 +1576,6 @@ class DiffusersEngine:
     ) -> GeneratedFrame:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
-        if self._pick_rung(manifest) != "full":
-            raise ValueError(f"model {manifest.id} is not fully resident for realtime")
         frame_params = dict(params)
 
         def prepare_canvas() -> Image.Image:
@@ -1583,6 +1594,10 @@ class DiffusersEngine:
             canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         async with self._gpu:
+            # Recheck after the codec wait: another task can demote or
+            # unload while we decoded the canvas, and _frame would then
+            # load an offload pipeline instead of refusing (issue #270).
+            self._require_realtime_resident(manifest)
             # _pipeline can load or evict GPU weights, _prompt_kwargs can run
             # GPU text encoders for long prompts, and diffusion uses the GPU.
             frame_result: tuple[Image.Image, int] | None = None
@@ -1600,9 +1615,15 @@ class DiffusersEngine:
             if frame_result is None:
                 # The eviction mutates GPU residency, so it remains serialized.
                 self._evict_except(manifest.id)
-                frame_result = await self._run_to_completion(
-                    self._frame, manifest, frame_params, canvas, strength,
-                    prompt_cache=prompt_cache)
+                self._require_realtime_resident(manifest)
+                try:
+                    frame_result = await self._run_to_completion(
+                        self._frame, manifest, frame_params, canvas, strength,
+                        prompt_cache=prompt_cache)
+                except self.torch.OutOfMemoryError as error:
+                    raise NotResidentError(
+                        f"model {manifest.id} is not fully resident for realtime"
+                    ) from error
             image, gpu_ms = frame_result
         async with self._codec:
             data = await self._run_to_completion(encode_webp, image)
@@ -1627,7 +1648,9 @@ class DiffusersEngine:
             # conditions a fresh latent instead of an init image. img2img has
             # no useful middle strength here: sweeps return the line drawing
             # until 1.0, where the scene ignores it.
-            pipeline = self._pipeline(manifest, "realtime")
+            pipeline = self._pipeline(
+                manifest, "realtime", allow_demotion=False,
+            )
             negative_prompt = params.get("negative_prompt")
             prompt_kwargs = self._prompt_kwargs(
                 pipeline,
@@ -1670,7 +1693,9 @@ class DiffusersEngine:
             )
             gpu_ms = int((time.monotonic() - started) * 1000)
             return image, gpu_ms
-        pipeline = self._pipeline(manifest, "i2i")
+        pipeline = self._pipeline(
+            manifest, "i2i", allow_demotion=False,
+        )
         negative_prompt = params.get("negative_prompt")
         prompt_kwargs = self._prompt_kwargs(
             pipeline,

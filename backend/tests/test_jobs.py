@@ -2208,7 +2208,10 @@ def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
                                    "params": {"prompt": "live drawing"}})
                 opened = worker.receive_json()
                 assert opened["type"] == "open_session"
-                worker.send_json({"type": "session_ready", "session_id": opened["session_id"]})
+                ready = {"type": "session_ready", "session_id": opened["session_id"]}
+                if "control_generation" in opened:
+                    ready["control_generation"] = opened["control_generation"]
+                worker.send_json(ready)
                 assert browser.receive_json()["type"] == "ready"
 
                 first_id = _post_generation(client, "during-session-1")
@@ -3229,9 +3232,10 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
 
 
 @pytest.mark.db
-def test_a_worker_that_sends_no_dispatch_token_is_still_believed():
-    """The N-1 promise: a protocol 2 worker echoes no token and must still be
-    able to finish a job (docs/connection-handling.md)."""
+def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
+    """The floor is 3: a protocol 3 worker omitting the token is ignored,
+    same as a current worker (docs/connection-handling.md).
+    """
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-no-token", version=PROTOCOL_VERSION - 1)
@@ -3239,9 +3243,21 @@ def test_a_worker_that_sends_no_dispatch_token_is_still_believed():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "n-1"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
-            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            dispatch_for(worker, job_id)
+            key = uuid.UUID(job_id)
+            current = jobs.inflight[key]
+            asyncio.run(jobs.on_worker_message(current.worker, {
+                "type": "job_done", "job_id": job_id,
+                "gpu_ms": 7, "width": 512, "height": 512,
+            }))
+            assert jobs.inflight.get(key) is current
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
+            assert client.put(
+                f"/api/v1/files/{current.storage_key}", content=png_bytes(),
+                headers={"X-Upload-Token": current.dispatch_token},
+            ).status_code == 200
             worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": current.dispatch_token,
                               "gpu_ms": 7, "width": 512, "height": 512})
             assert poll_until(client, job_id, "succeeded")["gpu_ms"] == 7
 
@@ -3729,7 +3745,7 @@ def test_a_hung_delete_does_not_delay_the_verdict(monkeypatch):
         while not hang.is_set():
             await asyncio.sleep(0.05)
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-hung-delete")
             job_id = client.post(
@@ -3762,7 +3778,7 @@ def test_a_cancelled_cleanup_is_recorded_for_the_sweep(monkeypatch):
         while not hang.is_set():
             await asyncio.sleep(0.05)
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-cancel-cleanup")
             asyncio.run(_clear_pending_deletes())
