@@ -1174,6 +1174,10 @@ class DiffusersEngine:
         return self._pick_rung(manifest) == "full"
 
     def _require_realtime_resident(self, manifest: Manifest) -> None:
+        """Raise unless the model is on the full realtime rung.
+
+        Callers must hold `_gpu`: `_pick_rung` writes `self._rungs`.
+        """
         if self._pick_rung(manifest) != "full":
             raise NotResidentError(
                 f"model {manifest.id} is not fully resident for realtime")
@@ -1572,7 +1576,6 @@ class DiffusersEngine:
     ) -> GeneratedFrame:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
-        self._require_realtime_resident(manifest)
         frame_params = dict(params)
 
         def prepare_canvas() -> Image.Image:
@@ -1613,9 +1616,14 @@ class DiffusersEngine:
                 # The eviction mutates GPU residency, so it remains serialized.
                 self._evict_except(manifest.id)
                 self._require_realtime_resident(manifest)
-                frame_result = await self._run_to_completion(
-                    self._frame, manifest, frame_params, canvas, strength,
-                    prompt_cache=prompt_cache)
+                try:
+                    frame_result = await self._run_to_completion(
+                        self._frame, manifest, frame_params, canvas, strength,
+                        prompt_cache=prompt_cache)
+                except self.torch.OutOfMemoryError as error:
+                    raise NotResidentError(
+                        f"model {manifest.id} is not fully resident for realtime"
+                    ) from error
             image, gpu_ms = frame_result
         async with self._codec:
             data = await self._run_to_completion(encode_webp, image)
@@ -1640,7 +1648,9 @@ class DiffusersEngine:
             # conditions a fresh latent instead of an init image. img2img has
             # no useful middle strength here: sweeps return the line drawing
             # until 1.0, where the scene ignores it.
-            pipeline = self._pipeline(manifest, "realtime")
+            pipeline = self._pipeline(
+                manifest, "realtime", allow_demotion=False,
+            )
             negative_prompt = params.get("negative_prompt")
             prompt_kwargs = self._prompt_kwargs(
                 pipeline,
@@ -1683,7 +1693,9 @@ class DiffusersEngine:
             )
             gpu_ms = int((time.monotonic() - started) * 1000)
             return image, gpu_ms
-        pipeline = self._pipeline(manifest, "i2i")
+        pipeline = self._pipeline(
+            manifest, "i2i", allow_demotion=False,
+        )
         negative_prompt = params.get("negative_prompt")
         prompt_kwargs = self._prompt_kwargs(
             pipeline,
