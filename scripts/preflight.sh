@@ -262,7 +262,6 @@ else
     ' "$ENV_EXAMPLE" > "$tmp"
     mv "$tmp" "$ENV_FILE"
     pass "wrote $ENV_FILE"
-    note "POSTGRES_PASSWORD=$pg"
     note "FLEET_SECRET=$fleet"
     note "A worker on another machine needs a copy of FLEET_SECRET."
   fi

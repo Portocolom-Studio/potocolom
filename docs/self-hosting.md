@@ -114,7 +114,7 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 
 - Preflight writes `deploy/compose/.env` when that file is missing, with
   `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. It
-  prints both values once. Copy `FLEET_SECRET` to a worker on another
+  prints `FLEET_SECRET` once. Copy that value to a worker on another
   machine. An existing `.env` is left alone.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see

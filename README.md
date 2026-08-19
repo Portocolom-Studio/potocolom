@@ -54,8 +54,9 @@ refuses to overwrite an existing `.env`. Copy `FLEET_SECRET` to a worker on
 another machine.
 
 If you happen to have `make`, `make compose-up`, `make compose-down` and
-`make compose-logs` wrap exactly the commands above and pick the profile from
-the GPU they find. They are a shortcut, never a requirement: the `docker
+`make compose-logs` wrap the compose commands and pick the profile from the
+GPU they find. They do not run preflight. Run `scripts/preflight.sh` first if
+`.env` is missing. They are a shortcut, never a requirement: the `docker
 compose` lines are the supported path.
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment. An unset key refuses the handshake; preflight is what writes the secret on a fresh install. Signed cloud tokens remain issue #225. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).

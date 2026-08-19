@@ -50,8 +50,7 @@ PROFILE ?= $(shell if [ -e /dev/kfd ]; then echo rocm; \
 compose-up: ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
 	@test -f deploy/compose/.env || { \
 		echo 'error: deploy/compose/.env is missing.' >&2; \
-		echo '  cp deploy/compose/.env.example deploy/compose/.env' >&2; \
-		echo '  then set POSTGRES_PASSWORD in it' >&2; exit 1; }
+		echo '  run scripts/preflight.sh to write it' >&2; exit 1; }
 	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" up -d --build
 
 compose-down: ## stop the self-hosted stack; named volumes are left intact

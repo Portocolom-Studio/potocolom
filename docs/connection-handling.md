@@ -91,7 +91,7 @@ Messages later issues add to this catalogue (queued position, credits ticks, dra
 sequenceDiagram
     participant W as Worker
     participant A as API server
-    W->>A: WS connect /api/v1/fleet (X-Fleet-Token when FLEET_TOKEN_KEY is set)
+    W->>A: WS connect /api/v1/fleet (X-Fleet-Token)
     W->>A: hello (protocol_version, worker_id, models, realtime_slots, device, memory_mode)
     alt version supported
         A-->>W: registered
