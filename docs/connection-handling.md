@@ -49,9 +49,9 @@ Fleet connection, worker to API:
 
 Adding required fields to existing messages changes the protocol, so the generation arrives with protocol version 4 rather than quietly under 3, which two implementations would otherwise both claim while meaning different things. The N-1 rule cannot be the one jobs use for a missing `dispatch_token`: believing an unfenced message reintroduces exactly the race fencing exists to prevent. A protocol 3 worker instead gets a narrower contract. It may serve a session's first attempt, where there is no earlier attempt to confuse it with, and it is never a reassignment candidate. It does keep the unfenced `update_session` it already implements, because withholding that would take a shipped feature away from an N-1 worker to solve a problem it cannot have: holding exactly one attempt, it has no second one an update could be misapplied to, and an update that arrives after its runner is gone is already a no-op. The refusal that ships today is for a worker below 3, which does not know the message at all. Once the floor moves to 4 the exception disappears.
 
-Designed with the session states below, not yet implemented; the shipped protocol version is 3.
+Designed with the session states below. Protocol version 4 ships `control_generation` fencing and `session_refused`. Checkpoints, durable outbox, and per-session mailboxes do not.
 
-`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. The field is required from a protocol 3 worker, which is believed only with a matching token: a message that omits it is ignored exactly like one carrying a wrong token. A protocol 2 (N-1) worker is the one exception, accepted without it because that version does not send the field; the acceptance disappears when the compatibility floor moves to 3.
+`dispatch_token` is the value the API sent in `dispatch_job`, echoed back on every message about that job. A message carrying the wrong token is ignored: a stall requeue can hand a job back to the same worker, and without the token attempt one's late `job_done` is indistinguishable from attempt two's. The field is required from every registered worker. Protocol 2 cannot connect once the compatibility floor is 3, so a message that omits the token is ignored exactly like one carrying a wrong token.
 
 Fleet connection, API to worker:
 
@@ -145,7 +145,7 @@ TCP-level disconnects are acted on immediately; the heartbeat timeout only matte
 
 ## Session states
 
-> Shipped status (2026-08-17): **designed, not yet implemented.** The states below are the accepted design (decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner"); today a session is a dataclass whose transitions are decided by whichever of four coroutines notices first, which is what issue #295 exists to replace. `queued` and `idle` also wait on the admission queue and idle release, designed above and unshipped.
+> Shipped status (2026-08-19): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). `queued` and `idle` still wait on the admission queue and idle release. Checkpoints, durable outbox, and per-session mailboxes do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
 
 A realtime session is in exactly one state, and one place moves it between them, comparing the expected state and transitioning atomically. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
 
@@ -189,7 +189,7 @@ Both dialers reconnect with exponential backoff: 1 s doubling to a 30 s cap, wit
 
 Session recovery is asymmetric by design:
 
-- Worker lost: the API keeps the browser connection, sends `interrupted`, picks another worker with a free slot, sends it `open_session`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost.
+- Worker lost, or this worker sends `session_refused`: the API keeps the browser connection, sends `interrupted` when the session was already live, picks another protocol 4 worker, sends it `open_session` with the next `control_generation`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost. A protocol 3 worker is never a reassignment candidate. If no candidate remains, the browser is closed 4003.
 - Browser lost: the API closes the worker side of the session (`close_session`) and releases the slot. The canvas lives in the browser, so there is nothing to recover server side; a returning browser opens a new session.
 
 > Shipped status (2026-07-30): **partially implemented.** Worker reconnect backoff and process-local worker-loss reassignment ship; browser reconnect remains design. Recovery cannot cross replicas, survive loss of the owning API process, or queue when no replacement slot is free; that last case closes with 4003. "Redis-optional Queues and FrameBus contracts", issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern cross-owner recovery and resume priority. The diagram below shows the designed successful path.
@@ -209,6 +209,25 @@ sequenceDiagram
     A-->>B: resumed
     B->>A: current canvas frame
     A->>W2: relay resumes
+```
+
+A worker that cannot make the model resident sends `session_refused` instead of `session_ready`. That fails the attempt, not the session:
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant API
+    participant Worker
+    Browser->>API: open
+    API->>Worker: open_session generation N
+    alt resident
+        Worker-->>API: session_ready N
+        API-->>Browser: ready
+    else cannot serve
+        Worker-->>API: session_refused N reason
+        API->>Worker: close_session N
+        API->>API: assign generation N+1 or close 4003
+    end
 ```
 
 ## Latest input wins

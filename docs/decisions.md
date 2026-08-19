@@ -953,11 +953,12 @@ cost is at most 500 ms. slots_from_frame_ms remains the human-readable form
 of the same arithmetic: floor(500 / p95) for a homogeneous batch of that
 model.
 
-Wire: no protocol bump. Protocol 4 stays reserved for control_generation.
+Wire: optional top-level `realtime_p95_ms` on hello, a map of model id to p95.
+No protocol bump was spent on that map. Protocol 4 is `control_generation`
+and `session_refused` (the session-lifecycle entry below).
 Keep scalar realtime_slots on hello. A current worker sets it to the minimum
 of floor(500 / p95) across measured realtime models, so an older API that
-only reads the scalar stays pessimistic and honest. Add optional
-realtime_p95_ms on hello, a map of model id to p95. Heartbeat already carries
+only reads the scalar stays pessimistic and honest. Heartbeat already carries
 frame_p95_ms; the API stores the map and admits from it when present. An N-1
 worker that omits the map keeps today's shared integer pool.
 
@@ -974,8 +975,10 @@ that holds the GPU lock. The picker and admission then read one quantity
 (issue #288). After twenty observations, a higher p95 may lower admission. A
 lower p95 must not raise it on that connection.
 
-Ending a live session that no longer fits still needs session_refused
-(protocol 4, issue #270 / remainder of #317).
+Ending a live session that no longer fits ships in protocol 4: after a
+heartbeat raises a model's admission p95, if live cost on that worker
+exceeds 500 ms the API closes the newest protocol 4 sessions until the
+sum fits and reassigns them (issue #270 / remainder of #317).
 
 Rejected alternatives: independent per-model counters, which over-admit mixed
 load; calibrating only the default and applying that count to every model,
@@ -985,6 +988,8 @@ for an optional map, which spends protocol 4 on a field an older API can
 ignore.
 
 ## The realtime session has states, a fencing generation, and one durable accounting owner
+
+> Shipped status (2026-08-19): **partially implemented.** Protocol 4, named states (`assigning` / `live` / `ending` / `ended`; `queued` and `idle` remain in the enum), `control_generation` fencing, and `session_refused` as an attempt failure all ship. Checkpoints, durable outbox, unique settlement keys, and per-session mailboxes do not. Accounting is still `session_closed` after browser teardown via `closing_sessions`.
 
 A realtime session is currently a dataclass with a worker, an event and a membership test, and its transitions are decided by whichever coroutine notices first. Four can: the browser's handler, the fleet handler, `reassign`, and the worker. Three attempts to add one feature on that footing each produced a defect, all found by review rather than by tests, so the design comes before the feature this time. The feature is ending a live session whose model stops being fully resident, which today renders nothing until the browser leaves (issue #270).
 

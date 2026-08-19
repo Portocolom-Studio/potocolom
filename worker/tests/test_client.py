@@ -8,6 +8,7 @@ from PIL import Image
 
 from worker.client import (
     FRAME_HEADER_BYTES,
+    PROTOCOL_VERSION,
     RegistrationRejected,
     SEED_BOUND,
     SessionRunner,
@@ -91,8 +92,9 @@ def test_latest_input_wins():
     runner = asyncio.run(scenario())
     assert runner.dropped == 2
     assert not hasattr(runner, "last_output")
-    assert len(socket.sent) == 1
-    assert socket.sent[0][FRAME_HEADER_BYTES:] == b"third"
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert len(frames) == 1
+    assert frames[0][FRAME_HEADER_BYTES:] == b"third"
 
 
 class RecordingSocket:
@@ -114,11 +116,42 @@ class RecordingSocket:
 
     async def __anext__(self):
         if not self.messages:
+            # Let SessionRunner send session_ready after residency before
+            # the connection loop ends. A raise with no await would cancel
+            # that task before it ran.
+            await asyncio.sleep(0.05)
             raise StopAsyncIteration
         return self.messages.pop(0)
 
     async def close(self, code=1000):
         self.close_code = code
+
+
+def open_msg(session_id, params=None, model_id="sd-sim", generation=1):
+    return json.dumps({
+        "type": "open_session",
+        "session_id": session_id,
+        "model_id": model_id,
+        "params": {} if params is None else params,
+        "control_generation": generation,
+    })
+
+
+def update_msg(session_id, params, generation=1):
+    return json.dumps({
+        "type": "update_session",
+        "session_id": session_id,
+        "params": params,
+        "control_generation": generation,
+    })
+
+
+def close_msg(session_id, generation=1):
+    return json.dumps({
+        "type": "close_session",
+        "session_id": session_id,
+        "control_generation": generation,
+    })
 
 
 def drive_update_session(monkeypatch, messages, manifests=None):
@@ -145,11 +178,8 @@ def drive_update_session(monkeypatch, messages, manifests=None):
 def test_update_session_carries_the_authoritative_seed(monkeypatch):
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim",
-                    "params": {"prompt": "a red house", "seed": 11}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "a blue house", "seed": 22}}),
+        open_msg(session_id, {"prompt": "a red house", "seed": 11}),
+        update_msg(session_id, {"prompt": "a blue house", "seed": 22}),
     ])
     assert len(created) == 1
     runner = created[0]
@@ -168,11 +198,8 @@ def test_update_session_carrying_a_whole_float_seed_normalises_it(monkeypatch):
     # generator, re-rolling every frame.
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim",
-                    "params": {"prompt": "a red house", "seed": 11}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "a blue house", "seed": 42.0}}),
+        open_msg(session_id, {"prompt": "a red house", "seed": 11}),
+        update_msg(session_id, {"prompt": "a blue house", "seed": 42.0}),
     ])
     assert len(created) == 1
     runner = created[0]
@@ -187,11 +214,8 @@ def test_update_session_with_a_boolean_seed_keeps_the_runners_seed(monkeypatch):
     # session's seed is fixed for its life.
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim",
-                    "params": {"prompt": "a red house", "seed": 11}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "a blue house", "seed": True}}),
+        open_msg(session_id, {"prompt": "a red house", "seed": 11}),
+        update_msg(session_id, {"prompt": "a blue house", "seed": True}),
     ])
     assert len(created) == 1
     runner = created[0]
@@ -214,10 +238,8 @@ def test_update_session_without_a_seed_carries_the_runners_seed(monkeypatch):
     session_id = str(uuid.uuid4())
     monkeypatch.setattr("worker.client.random", _FixedSeedRandom())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "a blue house"}}),
+        open_msg(session_id, {"prompt": "a red house"}),
+        update_msg(session_id, {"prompt": "a blue house"}),
     ])
     assert len(created) == 1
     runner = created[0]
@@ -236,11 +258,8 @@ def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch)
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "vega-rt",
-                    "params": {"prompt": "x", "seed": 7}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "y", "seed": 7}}),
+        open_msg(session_id, {"prompt": "x", "seed": 7}, model_id="vega-rt"),
+        update_msg(session_id, {"prompt": "y", "seed": 7}),
     ], manifests=[manifest])
     assert len(created) == 1
     runner = created[0]
@@ -262,11 +281,9 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default(
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "vega-rt",
-                    "params": {"prompt": "x", "steps": 8, "seed": 5}}),
-        json.dumps({"type": "update_session", "session_id": session_id,
-                    "params": {"prompt": "y", "steps": 8, "seed": 5}}),
+        open_msg(session_id, {"prompt": "x", "steps": 8, "seed": 5},
+                 model_id="vega-rt"),
+        update_msg(session_id, {"prompt": "y", "steps": 8, "seed": 5}),
     ], manifests=[manifest])
     assert len(created) == 1
     runner = created[0]
@@ -277,11 +294,8 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default(
 def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
-        json.dumps({"type": "update_session",
-                    "session_id": str(uuid.uuid4()),
-                    "params": {"prompt": "a blue house"}}),
+        open_msg(session_id, {"prompt": "a red house"}),
+        update_msg(str(uuid.uuid4()), {"prompt": "a blue house"}),
     ])
     assert len(created) == 1
     runner = created[0]
@@ -295,8 +309,7 @@ def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
 def test_open_session_sends_session_ready():
     session_id = str(uuid.uuid4())
     socket = RecordingSocket([
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
+        open_msg(session_id, {"prompt": "a red house"}),
     ])
     asyncio.run(serve_connection(socket, Settings(worker_id="w-ready"),
                                  [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
@@ -306,6 +319,78 @@ def test_open_session_sends_session_ready():
         if m.get("type") == "session_ready" and m["session_id"] == session_id
     )
     assert ready["session_id"] == session_id
+    assert ready["control_generation"] == 1
+
+
+def test_open_session_without_generation_is_ignored(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        json.dumps({"type": "open_session", "session_id": session_id,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": "a red house"}}),
+    ])
+    assert created == []
+    sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    assert not any(m.get("type") in ("session_ready", "session_refused")
+                   for m in sent)
+
+
+def test_stale_open_does_not_replace_a_newer_runner(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        open_msg(session_id, {"prompt": "new", "seed": 2}, generation=2),
+        open_msg(session_id, {"prompt": "old", "seed": 1}, generation=1),
+    ])
+    assert len(created) == 1
+    assert created[0].generation == 2
+    assert created[0].params["seed"] == 2
+
+
+def test_equal_generation_open_is_idempotent(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        open_msg(session_id, {"prompt": "first", "seed": 1}, generation=1),
+        open_msg(session_id, {"prompt": "again", "seed": 9}, generation=1),
+    ])
+    assert len(created) == 1
+    assert created[0].params["seed"] == 1
+
+
+def test_newer_open_cancels_the_runner_it_replaces(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
+        open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
+    ])
+    assert len(created) == 2
+    assert created[0]._task.cancelled() or created[0]._ended
+    assert created[1].generation == 2
+    assert created[1].params["seed"] == 2
+
+
+def test_stale_close_does_not_pop_a_newer_runner(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
+        open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
+        close_msg(session_id, generation=1),
+    ])
+    assert len(created) == 2
+    sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    assert not any(m.get("type") == "session_closed" for m in sent)
+    assert created[1].generation == 2
+
+
+def test_tombstone_rejects_a_delayed_open_after_close(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket, created = drive_update_session(monkeypatch, [
+        open_msg(session_id, {"prompt": "x", "seed": 1}, generation=1),
+        close_msg(session_id, generation=1),
+        open_msg(session_id, {"prompt": "resurrect", "seed": 2}, generation=1),
+    ])
+    assert len(created) == 1
+    sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    assert any(m.get("type") == "session_closed" for m in sent)
 
 
 def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
@@ -319,9 +404,8 @@ def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
     """
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
-        json.dumps({"type": "close_session", "session_id": session_id}),
+        open_msg(session_id, {"prompt": "a red house"}),
+        close_msg(session_id),
     ])
     assert len(created) == 1  # the open created one runner
     sent = [json.loads(message) for message in socket.sent]
@@ -329,7 +413,8 @@ def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
     # torn down rather than left waiting for frames nobody will send.
     closed = [m for m in sent if m["type"] == "session_closed"]
     assert [m["session_id"] for m in closed] == [session_id], sent
-    assert len([m for m in sent if m["type"] == "session_ready"]) == 1, sent
+    # Ready is sent from the runner after residency, which may not have run
+    # before this close cancelled it. The close itself is the contract.
     assert socket.close_code is None  # the connection survives
 
 
@@ -338,17 +423,17 @@ def test_close_session_after_the_runner_exists_closes_it(monkeypatch):
     runner is popped and closed and the accounting reply goes out."""
     session_id = str(uuid.uuid4())
     socket, created = drive_update_session(monkeypatch, [
-        json.dumps({"type": "open_session", "session_id": session_id,
-                    "model_id": "sd-sim", "params": {"prompt": "a red house"}}),
-        json.dumps({"type": "close_session", "session_id": session_id}),
+        open_msg(session_id, {"prompt": "a red house"}),
+        close_msg(session_id),
     ])
     assert len(created) == 1
     runner = created[0]
-    closed = json.loads(socket.sent[-1])
-    assert closed["type"] == "session_closed"
+    sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    closed = next(m for m in sent if m["type"] == "session_closed")
     assert closed["session_id"] == session_id
     assert closed["frames"] == runner.frames == 0
     assert closed["gpu_ms"] == 0
+    assert closed["control_generation"] == 1
     assert "duration_ms" in closed
     assert socket.close_code is None
 
@@ -407,10 +492,10 @@ def test_hello_carries_manifests():
     assert "realtime_p95_ms" not in hello
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
-    # A version 3 API requires the dispatch token on every job message and
-    # ignores one that omits it, so announcing the wrong version here would
-    # have this worker's results silently dropped.
-    assert hello["protocol_version"] == 3
+    # A version 4 API requires control_generation on lifecycle messages, so
+    # announcing the wrong version here would have this worker's answers
+    # silently dropped.
+    assert hello["protocol_version"] == PROTOCOL_VERSION
 
 
 def test_hello_carries_measured_realtime_p95_ms():
@@ -578,7 +663,8 @@ def test_session_runner_observes_each_rendered_frame_for_its_model():
 
     asyncio.run(scenario())
     assert engine.observed == [("vega-rt", 200), ("vega-rt", 200)]
-    assert len(socket.sent) == 2
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert len(frames) == 2
 
 
 def test_session_runner_passes_the_same_prompt_cache_to_every_frame():
@@ -615,11 +701,9 @@ def test_session_runner_passes_the_same_prompt_cache_to_every_frame():
     assert isinstance(received[0], PromptCache)
 
 
-def test_session_runner_logs_a_non_resident_model_once_and_keeps_rendering(caplog):
-    # The residency decision happens once, before the frame loop, and a False
-    # answer is logged once: the frames that follow would log an exception on
-    # every draw, and the per-frame noise buried the cause. The session stays
-    # up either way, so the frame fallback still renders here.
+def test_session_runner_refuses_a_non_resident_model(caplog):
+    # Residency is decided before any frame. A False answer is an attempt
+    # failure: session_refused, not a silent frame loop (issue #270).
     socket = FakeSocket()
     engine = RecordingEngine()
 
@@ -635,17 +719,21 @@ def test_session_runner_logs_a_non_resident_model_once_and_keeps_rendering(caplo
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
         runner.submit(b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
-        await asyncio.sleep(0.03)
         runner.close()
 
     with caplog.at_level("WARNING"):
         asyncio.run(scenario())
 
-    assert len(socket.sent) == 2
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert frames == []
+    refused = [m for m in controls if m.get("type") == "session_refused"]
+    assert len(refused) == 1
+    assert refused[0]["reason"] == "not_resident"
+    assert refused[0]["control_generation"] == 1
+    assert not any(m.get("type") == "session_ready" for m in controls)
     assert f"session {session_id} cannot render" in caplog.text
     assert "model vega-rt is not fully resident" in caplog.text
-    assert caplog.text.count("not fully resident") == 1
 
 
 def test_session_runner_renders_without_warning_when_resident(caplog):
@@ -663,7 +751,8 @@ def test_session_runner_renders_without_warning_when_resident(caplog):
     with caplog.at_level("WARNING"):
         asyncio.run(scenario())
 
-    assert len(socket.sent) == 1
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert len(frames) == 1
     assert "not fully resident" not in caplog.text
 
 
@@ -1035,12 +1124,9 @@ def test_an_api_that_sends_no_dispatch_token_gets_none_back():
     assert not any("dispatch_token" in r for r in reports)
 
 
-def test_session_runner_survives_a_residency_load_failure(caplog):
-    # A load that fails outside the rung ladder, missing weights or a bad
-    # import, must not take the session task with it. Dying here would leave
-    # the session open with no runner behind it and nothing logged after that
-    # point, which is quieter than the per-frame refusal it replaced. The task
-    # has to reach the frame loop so the frame guard still speaks.
+def test_session_runner_refuses_a_residency_load_failure(caplog):
+    # A load that fails outside the rung ladder is an attempt failure, not a
+    # silent frame loop. The runner sends session_refused and ends.
     socket = FakeSocket()
     engine = RecordingEngine()
 
@@ -1061,6 +1147,74 @@ def test_session_runner_survives_a_residency_load_failure(caplog):
     with caplog.at_level("WARNING"):
         asyncio.run(scenario())
 
-    # Reached the frame loop rather than dying at the residency call.
-    assert len(socket.sent) == 1
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert frames == []
+    refused = [m for m in controls if m.get("type") == "session_refused"]
+    assert len(refused) == 1
+    assert refused[0]["reason"] == "not_resident"
     assert "could not make model vega-rt resident" in caplog.text
+
+
+def test_session_runner_keeps_going_after_one_residency_frame_failure():
+    socket = FakeSocket()
+
+    class OnceFail(RecordingEngine):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def frame(self, manifest, params, payload, *, prompt_cache=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("model is not fully resident")
+            return await super().frame(manifest, params, payload,
+                                       prompt_cache=prompt_cache)
+
+    engine = OnceFail()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    asyncio.run(scenario())
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert any(m.get("type") == "session_ready" for m in controls)
+    assert not any(m.get("type") == "session_refused" for m in controls)
+    assert len(frames) == 1
+
+
+def test_session_runner_refuses_repeated_residency_frame_failures():
+    socket = FakeSocket()
+
+    class AlwaysResidentFail(RecordingEngine):
+        async def frame(self, manifest, params, payload, *, prompt_cache=None):
+            raise RuntimeError("model is not fully resident")
+
+    engine = AlwaysResidentFail()
+    manifest = _realtime_manifest("vega-rt", steps_default=4)
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
+                               ensure_seed(manifest.with_defaults({"prompt": "x"})))
+        runner.submit(b"first")
+        await asyncio.sleep(0.03)
+        runner.submit(b"second")
+        await asyncio.sleep(0.03)
+        runner.close()
+
+    asyncio.run(scenario())
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert any(m.get("type") == "session_ready" for m in controls)
+    refused = [m for m in controls if m.get("type") == "session_refused"]
+    assert len(refused) == 1
+    assert refused[0]["reason"] == "not_resident"
+    assert frames == []
