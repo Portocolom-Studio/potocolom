@@ -287,16 +287,22 @@ sequenceDiagram
     A->>A: resolve model by model_id (tier routing is designed, not shipped)
     A->>A: quota reserve, create job row
     A-->>B: job id
-    A->>W: dispatch, direct self-hosted or Redis queue in cloud
-    W-->>A: progress events
+    A->>W: dispatch with a per-dispatch token, direct self-hosted or Redis queue in cloud
+    W-->>A: progress events, each echoing the token
     A-->>B: progress events
-    W->>S: upload result, presigned URL
-    W-->>A: done, gpu_ms
+    W->>S: upload result, presigned URL or the token-bearing local route
+    W-->>A: done, gpu_ms, token
+    A->>S: read the object back and check what it is
     A->>A: commit quota, record history
+    A->>S: collect the earlier attempts, after the commit
     A-->>B: complete, asset URL
 ```
 
 The job row in PostgreSQL is the source of truth, not the queue. If a worker dies mid job (spot reclaim, provider failure), the job is requeued once on another worker and the user only sees a longer wait. A second failure marks the job failed, refunds the reserved credits and surfaces a retry button. Nothing is retried more than once automatically, so an input that crashes workers cannot burn GPU money in a loop.
+
+Three orderings in that diagram are load bearing, and each one was a defect before it was a rule. The API reads the uploaded object back before committing anything, because a worker that reports a result it never uploaded would otherwise get an asset row pointing at nothing. The job stays tracked in memory until its terminal transition is durable, because clearing it first meant a lock timeout could leave the row running with nothing left to recover it. And cleanup runs only after that commit, never before, because a cleanup failure must not be able to fail a job.
+
+Every attempt writes to keys of its own, so nothing overwrites anything and every terminal path is responsible for collecting what the attempts left. A delete that fails is not lost: it is recorded and retried on a sweep, which is what keeps a denied permission from turning into an object nobody will ever name again. The token in the dispatch is what ties all of this to one attempt rather than to the job, so a worker still holding an old dispatch cannot speak for the attempt that replaced it, and cannot write to its keys.
 
 ### Upscale (post-generation)
 
@@ -624,7 +630,9 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Twelve of these tables exist at migration head 0011. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
+Thirteen of these tables exist at migration head 0013. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
+
+One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. The terminal paths swallow per-key failures so one bad key does not stop the rest, and without this the failure was visible only in a log line, so a denied permission left the object forever. A sweep retries them, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
 
 Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
 
@@ -820,6 +828,13 @@ erDiagram
         int id PK
         uuid install_id
         date last_report_day
+    }
+    pending_deletes {
+        text storage_key PK "the object a terminal path could not delete"
+        int attempts
+        text last_error
+        timestamptz first_failed_at
+        timestamptz next_attempt_at "due time; the sweep reads by this"
     }
 ```
 

@@ -179,6 +179,13 @@ Back up `pgdata` and `assets` together: jobs and asset rows reference files
 by storage key, so restoring one without the other leaves dangling
 references. `hf-cache` and `models` are reproducible.
 
+The API deletes what a failed or retried job left behind, and a delete it
+cannot make is recorded and retried every five minutes rather than logged and
+forgotten. If those retries keep failing, the cause is usually the `assets`
+volume: a full disk, or permissions the container cannot write through. The log
+line to look for names the key and says `still cannot delete`, and the
+`pending_deletes` table is the list of what is waiting.
+
 ## Logs
 
 Every service in `deploy/compose/compose.yml` uses Docker's `json-file`
