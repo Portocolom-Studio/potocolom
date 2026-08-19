@@ -177,12 +177,13 @@ verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
 	echo 'setup guards ok: no 3.11+ interpreter is refused, not silently used'
 
 verify-compose: ## validate every compose file and profile (no containers started)
-	cd deploy/compose && test -f .env || cp .env.example .env
-	cd deploy/compose && for p in gpu rocm smoke; do \
-		docker compose -f compose.yml --profile $$p config -q || exit 1; done
-	cd deploy/compose && docker compose -f dev.yml config -q \
-		&& docker compose -f dev.yml --profile cloud-sim config -q \
-		&& docker compose -f compose.smoke.yml config -q
+	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \
+	for p in gpu rocm smoke; do \
+		docker compose --env-file $$ENV_FILE -f compose.yml --profile $$p config -q || exit 1; \
+	done && \
+	docker compose --env-file $$ENV_FILE -f dev.yml config -q \
+		&& docker compose --env-file $$ENV_FILE -f dev.yml --profile cloud-sim config -q \
+		&& docker compose --env-file $$ENV_FILE -f compose.smoke.yml config -q
 
 verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
 	python3 scripts/verify-mermaid.py
