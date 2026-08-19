@@ -590,3 +590,35 @@ def test_out_of_range_realtime_p95_ms_normalises_to_none_at_the_manifest():
         assert parsed[0].realtime_p95_ms is None, bad
     accepted = parse_manifests([{**base, "realtime_p95_ms": FRAME_P95_MAX_MS}])
     assert accepted[0].realtime_p95_ms == FRAME_P95_MAX_MS
+
+
+def test_public_drops_offloaded_realtime_only_studio_capabilities(caplog):
+    """measured_manifests strips realtime on a rung below full and leaves
+    studio_capabilities: ["realtime"]. public() drops that hello-shaped
+    manifest from the studio and logs it (issue #269).
+    """
+    worker = realtime.Worker(
+        id="w-offload-rt", ws=None, realtime_slots=0,
+        manifests=[Manifest(
+            id="sdxl-turbo", name="SDXL Turbo",
+            capabilities=["text_to_image", "image_to_image"],
+            studio_capabilities=["realtime"],
+        )],
+    )
+    saved = dict(realtime.workers)
+    try:
+        realtime.workers.clear()
+        realtime.workers["w-offload-rt"] = worker
+        with caplog.at_level(logging.WARNING, logger="potocolom.registry"):
+            assert "sdxl-turbo" not in registry.public()
+        assert "sdxl-turbo" in registry.available()
+    finally:
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    records = [r for r in caplog.records if r.name == "potocolom.registry"]
+    assert len(records) == 1
+    assert records[0].message == (
+        "model sdxl-turbo dropped from the studio: advertised capabilities "
+        "['text_to_image', 'image_to_image'] narrow to nothing against "
+        "studio_capabilities ['realtime']"
+    )

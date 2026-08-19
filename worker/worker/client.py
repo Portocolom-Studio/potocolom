@@ -165,10 +165,13 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
 
 async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                           configured_slots: int) -> None:
-    """Load and time a full-resident realtime model before hello.
+    """Load and time every remaining realtime model before hello.
 
     Reconnects reuse a warm engine, so calibration is a no-op once slots are set.
-    DiffusersEngine only: the simulated engine has nothing to time.
+    DiffusersEngine only: the simulated engine has nothing to time. The default
+    is warmed first so the studio's preselected model is not the extra cold
+    load; the rest of the realtime set is still calibrated so admission cost
+    is each model's own p95 rather than the last write.
     """
     if configured_slots <= 0 or not hasattr(engine, "torch_compile"):
         return
@@ -186,26 +189,28 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     if len(declared) > 1:
         # The studio's picker takes the first default in ITS order, which is by
         # model id, while manifests arrive here in filename order. With one
-        # default the two agree; with several they can disagree and the warm
-        # model is not the opened one. Say so rather than pick silently.
+        # default the two agree; with several they can disagree and the first
+        # warm model is not the opened one. Say so rather than pick silently.
         logger.warning(
-            "several realtime models declare default (%s); warming %s, which the "
+            "several realtime models declare default (%s); warming %s first, which the "
             "studio may not be the one it preselects",
             ", ".join(sorted(m.id for m in declared)), declared[0].id,
         )
-    # Warm what the studio opens: the manifest declaring `default` is the one
-    # its picker preselects (fallbackModelId in studio.svelte.ts), so warming
-    # anything else leaves the first session on a fresh worker paying a cold
-    # load, measured at 15.4 s against 0.3 s warm, while a model nobody
-    # selected sits ready. This named vega-rt, which was right while it was the
-    # only realtime model and then became wrong in silence (issue #283). The
-    # choice also decides what calibrate_realtime measures, so the p95 the
-    # picker labels a model with is now the default model's own.
-    # benchmark_only models are excluded above: the studio never offers one, so
-    # warming it would leave whatever the picker does open cold and unlabelled.
-    pick = declared[0] if declared else candidates[0]
-    slots = await engine.calibrate_realtime(pick, configured_slots)
-    logger.info("warmup realtime model=%s slots=%d", pick.id, slots)
+    # Warm what the studio opens first: the manifest declaring `default` is
+    # the one its picker preselects (fallbackModelId in studio.svelte.ts).
+    # Then every other remaining realtime model, so hello's cost map is not
+    # a single model's p95 applied to the rest (issue #285).
+    ordered: list[Manifest] = []
+    if declared:
+        ordered.append(declared[0])
+    seen = {manifest.id for manifest in ordered}
+    for manifest in candidates:
+        if manifest.id not in seen:
+            ordered.append(manifest)
+            seen.add(manifest.id)
+    for manifest in ordered:
+        slots = await engine.calibrate_realtime(manifest, configured_slots)
+        logger.info("warmup realtime model=%s slots=%d", manifest.id, slots)
 
 
 class SessionRunner:
@@ -473,11 +478,14 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     # A measurement from this worker on this card, not a property of the
     # model: attach it at the wire edge so the API can advertise what a real
     # frame costs without Manifest.wire() growing a field of its own.
+    p95_map: dict[str, int] = {}
     for wire in wire_manifests:
         p95 = engine.realtime_p95_ms(wire["id"])
         if p95 is not None:
             wire["realtime_p95_ms"] = p95
-    await ws.send(json.dumps({
+            p95_map[wire["id"]] = p95
+    p95_map.update(frame_p95_payload(engine))
+    hello = {
         "type": "hello",
         "protocol_version": PROTOCOL_VERSION,
         "worker_id": settings.worker_id,
@@ -486,7 +494,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                                                            settings.realtime_slots),
         "device": settings.device,
         "memory_mode": settings.memory_mode,
-    }))
+    }
+    # Optional top-level map. An N-1 worker omits it and an older API keeps
+    # today's integer pool. Per-manifest realtime_p95_ms is not this map:
+    # current workers already send that field.
+    if p95_map:
+        hello["realtime_p95_ms"] = p95_map
+    await ws.send(json.dumps(hello))
     try:
         response = json.loads(await ws.recv())
         reply_type = response["type"]

@@ -368,6 +368,7 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._calibration_cap: int = 0
         self._realtime_p95_ms: dict[str, int] = {}
         self._observed_frame_ms: dict[str, deque[float]] = {}
         self._gpu = asyncio.Lock()
@@ -728,17 +729,36 @@ class DiffusersEngine:
                                exc_info=failure)
             raise
 
+    def _recompute_calibrated_slots(self) -> int:
+        """Min of slots_from_frame_ms across models this engine has measured.
+
+        Last-write-wins on a single int was the honesty defect: calibrating
+        a slow model after a fast one advertised the slow count for both.
+        A failure for one model must not zero the others.
+        """
+        if not self._realtime_p95_ms:
+            self._calibrated_slots = 0
+            return 0
+        self._calibrated_slots = min(
+            slots_from_frame_ms(float(p95), self._calibration_cap,
+                                bar_ms=REALTIME_BAR_MS)
+            for p95 in self._realtime_p95_ms.values()
+        )
+        return self._calibrated_slots
+
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        self._calibration_cap = configured
         async with self._gpu:
             try:
                 return await self._run_to_completion(self._calibrate_realtime,
                                                      manifest, configured)
             except Exception:
-                # Could not measure; advertise nothing rather than a guess,
-                # and never let a boot-time inference error kill the worker.
+                # Could not measure this model; advertise nothing for it
+                # rather than a guess, and never let a boot-time inference
+                # error kill the worker or wipe a sibling's measurement.
                 logger.exception("realtime calibration failed for %s", manifest.id)
-                self._calibrated_slots = 0
                 self._realtime_p95_ms.pop(manifest.id, None)
+                self._recompute_calibrated_slots()
                 return 0
 
     def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
@@ -779,18 +799,20 @@ class DiffusersEngine:
         Multi-image batch calibration waits on deferred cross-session batching;
         until then N sessions share the GPU lock, so capacity is bar_ms / p95.
         """
+        self._calibration_cap = configured
         if self.device != "cuda":
-            # CPU diffusion cannot hold the bar; skip the frames, advertise nothing.
-            self._calibrated_slots = 0
+            # CPU diffusion cannot hold the bar; skip the frames, advertise
+            # nothing for this model. Sibling measurements stay.
             self._realtime_p95_ms.pop(manifest.id, None)
+            self._recompute_calibrated_slots()
             return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
-            self._calibrated_slots = 0
             self._realtime_p95_ms.pop(manifest.id, None)
+            self._recompute_calibrated_slots()
             return 0
         if self._select_rung(manifest) != "full":
-            self._calibrated_slots = 0
             self._realtime_p95_ms.pop(manifest.id, None)
+            self._recompute_calibrated_slots()
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
             )
@@ -827,9 +849,8 @@ class DiffusersEngine:
             if index > 0:
                 samples.append(elapsed_ms)
         p95 = _percentile_nearest(samples, 95.0)
-        slots = slots_from_frame_ms(p95, configured, bar_ms=REALTIME_BAR_MS)
-        self._calibrated_slots = slots
         self._realtime_p95_ms[manifest.id] = round(p95)
+        slots = self._recompute_calibrated_slots()
         logger.info(
             "realtime calibration model=%s p95_ms=%.1f slots=%d (cap=%d)",
             manifest.id, p95, slots, configured,
@@ -1596,6 +1617,10 @@ class DiffusersEngine:
         *,
         prompt_cache: PromptCache | None = None,
     ) -> tuple[Image.Image, int]:
+        # The GPU lock already surrounds this call. Start the clock here so
+        # GeneratedFrame.gpu_ms and calibration measure the same occupancy
+        # (pipeline lookup, prompt encode, preview-decoder load, diffusion).
+        started = time.monotonic()
         if manifest.t2i_adapter:
             # Conditioned text-to-image: the canvas (already converted to the
             # adapter's sketch map, outside the GPU lock in frame())
@@ -1631,7 +1656,6 @@ class DiffusersEngine:
                     int(params["seed"])
                 )
             preview_decoder = self._preview_decoder(pipeline, manifest)
-            started = time.monotonic()
             pipeline_kwargs = {
                 **prompt_kwargs,
                 "image": canvas,
@@ -1656,7 +1680,6 @@ class DiffusersEngine:
             prompt_cache=prompt_cache,
         )
         preview_decoder = self._preview_decoder(pipeline, manifest)
-        started = time.monotonic()
         pipeline_kwargs = {
             **prompt_kwargs,
             "image": canvas,

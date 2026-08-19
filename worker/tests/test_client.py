@@ -404,6 +404,7 @@ def test_hello_carries_manifests():
     assert "source" not in manifest  # weight locations stay worker side
     # The simulated engine never calibrated a frame, so nothing is advertised.
     assert "realtime_p95_ms" not in manifest
+    assert "realtime_p95_ms" not in hello
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
     # A version 3 API requires the dispatch token on every job message and
@@ -439,6 +440,7 @@ def test_hello_carries_measured_realtime_p95_ms():
                                  manifests, P95Engine()))
     hello = json.loads(socket.sent[0])
     assert hello["models"][0]["realtime_p95_ms"] == 408
+    assert hello["realtime_p95_ms"] == {"vega-rt": 408}
 
 
 def test_frame_p95_payload_reports_measured_models_even_evicted():
@@ -697,7 +699,9 @@ def test_heartbeat_advertises_only_frames_at_default_steps():
 
 class WarmupEngine:
     """Enough engine for warmup_realtime: it gates on torch_compile existing
-    and on _calibrated_slots being unset, then calibrates one model."""
+    and on _calibrated_slots being unset, then calibrates remaining realtime
+    models, default first.
+    """
 
     torch_compile = False
 
@@ -741,7 +745,8 @@ def test_warmup_calibrates_the_manifest_declaring_default(order):
                  for name in order]
     engine = WarmupEngine()
     asyncio.run(warmup_realtime(engine, manifests, 1))
-    assert engine.calibrated == ["chosen"]
+    assert engine.calibrated[0] == "chosen"
+    assert set(engine.calibrated) == {"chosen", "plain"}
 
 
 def test_warmup_without_a_declared_default_picks_the_first_candidate():
@@ -754,7 +759,7 @@ def test_warmup_without_a_declared_default_picks_the_first_candidate():
     engine = WarmupEngine()
     asyncio.run(warmup_realtime(engine, [realtime_manifest("first"),
                                          realtime_manifest("vega-rt")], 1))
-    assert engine.calibrated == ["first"]
+    assert engine.calibrated == ["first", "vega-rt"]
 
 
 def test_warmup_ignores_a_default_the_card_cannot_hold():
@@ -787,7 +792,7 @@ def test_warmup_warns_when_several_models_declare_default(caplog):
     with caplog.at_level("WARNING"):
         asyncio.run(warmup_realtime(engine, [realtime_manifest("zeta", default=True),
                                              realtime_manifest("alpha", default=True)], 1))
-    assert engine.calibrated == ["zeta"]
+    assert engine.calibrated == ["zeta", "alpha"]
     assert "several realtime models declare default" in caplog.text
     assert "alpha, zeta" in caplog.text
 

@@ -59,6 +59,23 @@ def test_measured_wire_manifest():
     assert "text_to_image" in wire["capabilities"]
 
 
+def test_measured_wire_keeps_studio_capabilities_when_realtime_drops():
+    """A rung below full strips realtime from capabilities and leaves
+    studio_capabilities alone. That wire shape is what the API drops from
+    the studio (issue #269).
+    """
+    model = Manifest(
+        id="sdxl-turbo",
+        name="SDXL Turbo",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        studio_capabilities=["realtime"],
+        min_vram_gb=10,
+    )
+    wire = measured_wire_manifest(model, "model_offload")
+    assert "realtime" not in wire["capabilities"]
+    assert wire["studio_capabilities"] == ["realtime"]
+
+
 def test_measured_wire_manifests_per_model():
     small = manifest(min_vram_gb=4)
     large = manifest(min_vram_gb=16)
