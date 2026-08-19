@@ -28,6 +28,16 @@ UPLOAD_TOKEN_HEADER = "X-Upload-Token"
 PNG_CONTENT_TYPE = "image/png"
 WEBP_CONTENT_TYPE = "image/webp"
 DOWNLOAD_NAME_MAX_LENGTH = 96
+
+
+def stored_content_type(key: str) -> str:
+    """Content-Type stored for this key, from the suffix the API assigned.
+
+    Upload already signs this on PUT. Presigned GET repeats it as
+    ResponseContentType so a store that dropped object metadata still tells
+    the browser this is an image (issue #324).
+    """
+    return PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
 DOWNLOAD_NAME_PATTERN = re.compile(
     r"[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+",
 )
@@ -365,7 +375,7 @@ class S3Storage:
     async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
         # Presigning is local computation, no network round trip. The token is
         # the local backend's capability; here the signed URL is one already.
-        content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
+        content_type = stored_content_type(key)
         url = self.client.generate_presigned_url(
             "put_object",
             Params={
@@ -430,7 +440,11 @@ class S3Storage:
         )
 
     async def url(self, key: str, download_name: str | None = None) -> str:
-        params = {"Bucket": self.bucket, "Key": key}
+        params = {
+            "Bucket": self.bucket,
+            "Key": key,
+            "ResponseContentType": stored_content_type(key),
+        }
         if download_name is not None:
             params["ResponseContentDisposition"] = download_content_disposition(download_name)
         return self.client.generate_presigned_url(
