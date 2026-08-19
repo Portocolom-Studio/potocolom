@@ -508,6 +508,12 @@ def test_image_info_accepts_a_webp_header_with_no_bitstream(tmp_path):
     info = asyncio.run(storage.image_info("header-only.webp"))
     assert info is not None
     assert info.content_type == "image/webp"
+    # The dimensions those five bytes encode, not merely that something parsed:
+    # 14 bits of width and 14 of height, little endian after the signature. A
+    # reader that stopped parsing the header and answered from the container
+    # alone would still return an ImageInfo, so pinning the values is what makes
+    # this a test of the parse rather than of its presence.
+    assert (info.width, info.height) == (16, 544)
 
 
 def test_image_info_refuses_an_animated_webp(tmp_path):
