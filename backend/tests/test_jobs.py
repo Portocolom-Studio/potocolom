@@ -860,6 +860,169 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_stalled_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
+    """A job failed by the sweeper past its one retry never got a worker
+    verdict, so requeue_or_fail's failing branch is the only collector its
+    uploads have (issue #312)."""
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-stall-fail")
+                job_id = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "stall fail"}},
+                ).json()["job_id"]
+                first = worker.receive_json()
+                assert first["job_id"] == job_id
+
+                force_one_requeue(client, job_id)
+                second = worker.receive_json()
+                assert second["job_id"] == job_id
+                # Attempt 2 uploads its PNG and then dies without a verdict.
+                second_key = urlsplit(second["upload"]["url"]).path.rsplit(
+                    "/api/v1/files/", 1)[-1]
+                assert put_upload(client, second["upload"],
+                                  png_bytes()).status_code == 200
+                storage = jobs.get_storage()
+                assert storage.path(second_key).exists()
+
+                # Stall again: past the one retry, the sweeper fails the row.
+                jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
+                asyncio.run(jobs.sweep_stalled_jobs())
+                poll_until(client, job_id, "failed")
+
+                assert not storage.path(second_key).exists(), \
+                    "a verdictless failure kept its upload"
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_a_refused_failure_collects_nothing(monkeypatch):
+    """mark_failed refuses when the row went terminal, or moved to a later
+    attempt, while this failure was in flight. The keys then belong to whoever
+    won, so collecting on a refusal deletes their objects (issue #312).
+
+    The refusal is forced rather than raced: it happens inside mark_failed's
+    own locked read, which a test cannot reach by timing.
+    """
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-refused-fail")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "refused"}},
+            ).json()["job_id"]
+            worker.receive_json()
+            # Past the one retry, so requeue_or_fail reaches its failing
+            # branch rather than requeueing again.
+            force_one_requeue(client, job_id)
+            dispatch = worker.receive_json()
+            key = urlsplit(dispatch["upload"]["url"]).path.rsplit("/api/v1/files/", 1)[-1]
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            storage = jobs.get_storage()
+            assert storage.path(key).exists()
+
+            async def refuse(job_id, reason, expected_attempt=None):
+                return False
+
+            monkeypatch.setattr(jobs, "mark_failed", refuse)
+            asyncio.run(jobs.requeue_or_fail(uuid.UUID(job_id), "late worker loss"))
+
+            assert storage.path(key).exists(), \
+                "a refused failure deleted objects that belong to the winner"
+            # No tidy-up: the autouse fixture clears the job rows and the
+            # in-process dispatch state after every db test (issue #279).
+
+
+@pytest.mark.db
+def test_a_lost_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
+    """A worker that dies past the one retry fails the job through the
+    lost_jobs conduit, which is requeue_or_fail's failing branch; the uploads
+    must be collected there too (issue #312)."""
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-lost-fail")
+                job_id = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "lost fail"}},
+                ).json()["job_id"]
+                first = worker.receive_json()
+                assert first["job_id"] == job_id
+
+                force_one_requeue(client, job_id)
+                second = worker.receive_json()
+                assert second["job_id"] == job_id
+                second_key = urlsplit(second["upload"]["url"]).path.rsplit(
+                    "/api/v1/files/", 1)[-1]
+                assert put_upload(client, second["upload"],
+                                  png_bytes()).status_code == 200
+                storage = jobs.get_storage()
+                assert storage.path(second_key).exists()
+            # The worker died without a verdict: the disconnect handler files
+            # the job under lost_jobs and the dispatch loop fails it.
+            poll_until(client, job_id, "failed")
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and storage.path(second_key).exists():
+                time.sleep(0.05)
+            assert not storage.path(second_key).exists(), \
+                "a verdictless failure kept its upload"
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_a_requeue_keeps_the_earlier_attempts_blobs(monkeypatch):
+    """The requeue branch deliberately collects nothing: the retry may still
+    upload to attempt one's keys, so their objects must survive the requeue
+    (issue #312)."""
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-requeue-keeps")
+                job_id = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "keep"}},
+                ).json()["job_id"]
+                first = worker.receive_json()
+                assert first["job_id"] == job_id
+                first_key = urlsplit(first["upload"]["url"]).path.rsplit(
+                    "/api/v1/files/", 1)[-1]
+                first_thumb = urlsplit(first["thumb_upload"]["url"]).path.rsplit(
+                    "/api/v1/files/", 1)[-1]
+
+                # The first attempt uploaded before it stalled.
+                storage = jobs.get_storage()
+                asyncio.run(_write_blob(storage, first_key, png_bytes()))
+                asyncio.run(_write_blob(storage, first_thumb, png_bytes()))
+
+                force_one_requeue(client, job_id)
+                second = worker.receive_json()
+                assert second["job_id"] == job_id
+
+                assert storage.path(first_key).exists(), \
+                    "the requeue collected the earlier attempt"
+                assert storage.path(first_thumb).exists(), \
+                    "the requeue collected the earlier attempt's thumbnail"
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
 def test_a_reported_failure_does_not_leave_its_upload_behind():
     """job_failed never calls image_info, so nothing bounds or collects it.
 
@@ -3547,6 +3710,61 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
             assert row.first_failed_at is not None
             assert row.next_attempt_at is not None
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+
+
+@pytest.mark.db
+def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
+    """A delete that fails during requeue_or_fail's collection leaves a
+    pending_deletes row naming that key, exactly as the verdict paths do, and
+    the job still reaches failed: the cleanup failure must never fail the job
+    (issue #312)."""
+    monkeypatch.setenv("JOB_STALL_SECONDS", "600")
+    from app.settings import get_settings
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-verdictless-record")
+                asyncio.run(_clear_pending_deletes())
+                job_id = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "verdictless"}},
+                ).json()["job_id"]
+                first = worker.receive_json()
+                assert first["job_id"] == job_id
+
+                force_one_requeue(client, job_id)
+                second = worker.receive_json()
+                assert second["job_id"] == job_id
+                second_key = urlsplit(second["upload"]["url"]).path.rsplit(
+                    "/api/v1/files/", 1)[-1]
+                assert put_upload(client, second["upload"],
+                                  png_bytes()).status_code == 200
+
+                real_storage = jobs.get_storage()
+
+                class RefusingDelete:
+                    """Stands in for storage; only deletes fail, like a denied
+                    permission that is sticky for the whole cleanup."""
+
+                    def __getattr__(self, name):
+                        return getattr(real_storage, name)
+
+                    async def delete(self, storage_key):
+                        raise PermissionError(f"denied {storage_key}")
+
+                monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
+                jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
+                asyncio.run(jobs.sweep_stalled_jobs())
+                poll_until(client, job_id, "failed")
+
+                row = _await_pending_delete(second_key)
+                assert row.attempts == 0  # the sweep owns the counter, not the purge
+                assert row.last_error is not None
+                assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+    finally:
+        monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
+        get_settings.cache_clear()
 
 
 @pytest.mark.db

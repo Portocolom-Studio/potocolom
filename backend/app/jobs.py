@@ -1677,7 +1677,14 @@ async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:
             publish(job_id, {"state": "queued", "attempt": 2})
             logger.info("job %s requeued after %s", job_id, reason)
             return
-    await mark_failed(job_id, reason)
+        user_id = job.user_id
+        attempt = job.attempt
+    if await mark_failed(job_id, reason):
+        # A verdictless failure can still have uploaded: nothing downstream
+        # names those objects and no verdict path ran, so this is their only
+        # collector. The commit is durable before any delete, and a failing
+        # delete must not fail the job: the purge records it instead.
+        await purge_attempt_blobs(user_id, job_id, attempt)
 
 
 def on_worker_lost(worker: realtime.Worker) -> None:
