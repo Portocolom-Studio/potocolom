@@ -22,6 +22,8 @@ from app.main import app
 from app.realtime import PROTOCOL_VERSION
 from app.tables import Asset, Job, Model, PendingDelete, UsageEvent, User
 
+FLEET_HEADERS = {"x-fleet-token": "test-fleet-token"}
+
 MANIFEST = {
     "id": "sd-test",
     "name": "SD Test",
@@ -300,7 +302,7 @@ def test_generation_download_names_count_only_visible_masters():
         return job_id
 
     base_name = "potocolom-20260729-142530-a-lighthouse"
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         job_id = asyncio.run(seed_generation())
         single_asset = client.get(f"/api/v1/generations/{job_id}").json()["assets"][0]
         assert parse_qs(urlsplit(single_asset["download_url"]).query) == {
@@ -328,7 +330,7 @@ def test_generation_download_names_count_only_visible_masters():
 
 @pytest.mark.db
 def test_generation_end_to_end():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-jobs")
 
@@ -466,7 +468,7 @@ def test_generation_end_to_end():
 @pytest.mark.db
 def test_benchmark_only_model_hidden_without_benchmark_api():
     bench_manifest = {**MANIFEST, "id": "bench-only", "benchmark_only": True}
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-bench", manifest=bench_manifest)
             missing = client.post("/api/v1/generations",
@@ -482,7 +484,7 @@ def test_benchmark_only_model_allowed_when_benchmark_api_enabled(monkeypatch):
 
     get_settings.cache_clear()
     bench_manifest = {**MANIFEST, "id": "bench-only", "benchmark_only": True}
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-bench", manifest=bench_manifest)
             created = client.post("/api/v1/generations",
@@ -507,7 +509,7 @@ def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
     # so this test runs narrowed regardless of neighbour order.
     monkeypatch.delenv("BENCHMARK_API", raising=False)
     get_settings.cache_clear()
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-narrow", manifest=MANIFEST_NARROWED_WITH_T2I)
             # The premise: queued generations see the narrowed list.
@@ -541,7 +543,7 @@ def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
 
 @pytest.mark.db
 def test_unknown_model_and_invalid_params():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         missing = client.post("/api/v1/generations", json={"model_id": "nope", "params": {}})
         assert missing.status_code == 404
         with client.websocket_connect("/api/v1/fleet") as worker:
@@ -553,7 +555,7 @@ def test_unknown_model_and_invalid_params():
 
 @pytest.mark.db
 def test_worker_loss_requeues_once():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-dies")
             job_id = client.post("/api/v1/generations",
@@ -764,7 +766,7 @@ def test_stalled_job_requeues_once(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-stall")
                 job_id = client.post("/api/v1/generations",
@@ -793,7 +795,7 @@ def test_retried_attempt_uses_a_new_upload_key_and_rejects_the_old_key(monkeypat
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-attempt-keys")
                 job_id = client.post(
@@ -825,7 +827,7 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-attempt-orphans")
                 job_id = client.post(
@@ -868,7 +870,7 @@ def test_a_stalled_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-stall-fail")
                 job_id = client.post(
@@ -910,7 +912,7 @@ def test_a_refused_failure_collects_nothing(monkeypatch):
     The refusal is forced rather than raced: it happens inside mark_failed's
     own locked read, which a test cannot reach by timing.
     """
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-refused-fail")
             job_id = client.post(
@@ -948,7 +950,7 @@ def test_a_lost_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-lost-fail")
                 job_id = client.post(
@@ -990,7 +992,7 @@ def test_a_requeue_keeps_the_earlier_attempts_blobs(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-requeue-keeps")
                 job_id = client.post(
@@ -1030,7 +1032,7 @@ def test_a_reported_failure_does_not_leave_its_upload_behind():
     asset row names those objects and the success path never runs, so the
     terminal failure path is their only collector.
     """
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-failed-upload")
             job_id = client.post(
@@ -1063,7 +1065,7 @@ def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
     two's objects. The replacement is simulated inside image_info rather than
     by timing, so the ordering is deterministic.
     """
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-late-verdict")
             job_id = client.post(
@@ -1128,7 +1130,7 @@ def test_a_success_commit_failure_leaves_the_job_recoverable(monkeypatch):
     commit failure must leave the row running and the entry tracked, and the
     stall sweeper must then requeue it (issue #248)."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-commit-fail")
             job_id = client.post(
@@ -1175,7 +1177,7 @@ def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
     """The failure path keeps the same ordering: mark_failed's commit precedes
     the de-tracking, so a commit failure leaves the job recoverable."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-fail-commit")
             job_id = client.post(
@@ -1218,7 +1220,7 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
     and nothing retried it (issue #248). The entry rotates to the tail rather
     than holding the head, which the second half of this test covers."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -1283,7 +1285,7 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
     """Holding the head would stop the sweep and the dispatch behind it for as
     long as one entry keeps raising, so a failure rotates to the tail."""
     _stall_safe(monkeypatch)
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         stuck, healthy = uuid.uuid4(), uuid.uuid4()
         lost = [stuck, healthy]
         recovered = []
@@ -1319,7 +1321,7 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
     failure must not swallow the terminal event or the usage event: nothing
     tracks the job any more and nothing would retry either (issue #248)."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-sign-fail")
             job_id = client.post(
@@ -1404,7 +1406,7 @@ def test_a_requeue_during_a_terminal_transaction_keeps_its_entry(monkeypatch):
     row check must refuse the late verdict, which then must not take the
     replacement's entry or slot (issue #248)."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-verdict-race")
             job_id = client.post(
@@ -1481,7 +1483,7 @@ def test_terminal_verdicts_clear_inflight_exactly_once(monkeypatch):
     job: the slot count is the canary, because a release that runs twice on a
     two-job worker steals the other job's slot."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-exact-once")
             real_worker = realtime.workers["w-exact-once"]
@@ -1561,7 +1563,7 @@ def test_a_rejected_upload_is_not_left_in_storage():
     attempts, so nothing else would. A worker can push an arbitrarily large
     invalid object through the presigned PUT, which carries no size condition.
     """
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-rejected-upload")
             job_id = client.post(
@@ -1596,7 +1598,7 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-rejected-retry")
                 job_id = client.post(
@@ -1707,7 +1709,7 @@ def test_malformed_completion_is_recoverable_through_the_fleet_socket(monkeypatc
         return original_worker_int(value, default)
 
     monkeypatch.setattr(jobs, "_worker_int", raise_for_mapping)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-malformed-done")
             job_id = client.post(
@@ -1740,7 +1742,7 @@ def test_recover_requeues_running_and_dispatches_queued():
 
     queued_id, running_id = asyncio.run(prepare())
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         requeued = client.get(f"/api/v1/generations/{running_id}").json()
         assert requeued["state"] == "queued"
 
@@ -1768,7 +1770,7 @@ def test_recover_requeues_running_and_dispatches_queued():
 
 @pytest.mark.db
 def test_img2img_dispatch_includes_input_url():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-i2i")
 
@@ -1812,7 +1814,7 @@ def test_img2img_dispatch_includes_input_url():
 
 @pytest.mark.db
 def test_img2img_rejects_model_without_capability():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-i2i-cap", MANIFEST_T2I_ONLY)
 
@@ -1850,7 +1852,7 @@ def test_upscale_dispatch_includes_input_url():
         },
         "min_vram_gb": 4,
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-upscale-seed")
             created = client.post("/api/v1/generations",
@@ -1914,7 +1916,7 @@ def test_models_expose_measured_upscale_estimates():
         },
         "min_vram_gb": 1,
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             worker.send_json({
                 "type": "hello",
@@ -1946,7 +1948,7 @@ def test_upscale_rejects_without_source_asset():
         },
         "min_vram_gb": 4,
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-upscale-nosrc", upscale_manifest)
             rejected = client.post("/api/v1/generations",
@@ -1967,7 +1969,7 @@ def test_upscale_mixed_capabilities_rejected_at_hello():
         "parameters": {},
         "min_vram_gb": 0,
     }
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             worker.send_json({
                 "type": "hello",
@@ -1983,7 +1985,7 @@ def test_upscale_mixed_capabilities_rejected_at_hello():
 
 @pytest.mark.db
 def test_job_phase_timings_persisted():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-phases")
 
@@ -2011,7 +2013,7 @@ def test_job_phase_timings_persisted():
 
 @pytest.mark.db
 def test_job_failure_reason_persisted():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-fail-reason")
 
@@ -2074,7 +2076,7 @@ def _finish_job(client, worker, dispatch: dict) -> None:
 def test_dispatch_depth_two_before_job_done(monkeypatch):
     """Depth 2: API dispatches a second job while the first is still uploading."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-depth2")
 
@@ -2095,7 +2097,7 @@ def test_dispatch_depth_two_before_job_done(monkeypatch):
 @pytest.mark.db
 def test_dispatch_depth_blocks_third_until_slot_frees(monkeypatch):
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-depth-cap")
 
@@ -2187,7 +2189,7 @@ def test_job_dispatch_depth_one_while_realtime_live():
 def test_dispatch_depth_one_while_realtime_session_open(monkeypatch):
     """Sessions-first: depth drops to 1 while a drawing slot is live."""
     _stall_safe(monkeypatch)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-session-jobs", manifest=MANIFEST_WITH_RT)
 
@@ -2267,7 +2269,7 @@ async def _seed_lineage_generation(
 
 @pytest.mark.db
 def test_generation_history_roots_only_filter_pages_roots():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2345,7 +2347,7 @@ def test_generation_history_roots_only_filter_pages_roots():
 
 @pytest.mark.db
 def test_generation_lineage_chain_orders_ancestors_and_children():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2407,7 +2409,7 @@ def test_generation_lineage_chain_orders_ancestors_and_children():
 
 @pytest.mark.db
 def test_generation_lineage_fanout_orders_children_by_created_at():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, list[uuid.UUID]]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2446,7 +2448,7 @@ def test_generation_lineage_fanout_orders_children_by_created_at():
 
 @pytest.mark.db
 def test_generation_lineage_root_counts_grandchildren():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2490,7 +2492,7 @@ def test_generation_lineage_root_counts_grandchildren():
 
 @pytest.mark.db
 def test_generation_lineage_includes_upload_root():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2551,7 +2553,7 @@ def test_generation_lineage_includes_upload_root():
 
 @pytest.mark.db
 def test_generation_lineage_keeps_missing_middle_ancestor():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2600,7 +2602,7 @@ def test_generation_lineage_keeps_missing_middle_ancestor():
 
 @pytest.mark.db
 def test_generation_lineage_foreign_job_is_not_found():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.session_factory is not None
             foreign_user_id = uuid.uuid4()
@@ -2640,7 +2642,7 @@ def test_generation_lineage_foreign_job_is_not_found():
 @pytest.mark.db
 def test_generation_subtree_bounds_depth_and_reports_truncation(monkeypatch):
     monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_DEPTH", 2)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, list[uuid.UUID]]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2684,7 +2686,7 @@ def test_generation_subtree_bounds_depth_and_reports_truncation(monkeypatch):
 @pytest.mark.db
 def test_generation_subtree_caps_nodes_and_reports_truncation(monkeypatch):
     monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_NODES", 3)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2723,7 +2725,7 @@ def test_generation_subtree_caps_nodes_and_reports_truncation(monkeypatch):
 
 @pytest.mark.db
 def test_generation_subtree_is_owned_and_excludes_thumbnail_edges():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2781,7 +2783,7 @@ def test_generation_subtree_is_owned_and_excludes_thumbnail_edges():
 
 @pytest.mark.db
 def test_generation_subtree_and_descendant_count_are_cycle_safe():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2828,7 +2830,7 @@ def test_generation_subtree_and_descendant_count_are_cycle_safe():
 @pytest.mark.db
 def test_generation_lineage_descendant_depth_is_bounded(monkeypatch):
     monkeypatch.setattr(jobs, "LINEAGE_SUBTREE_MAX_DEPTH", 1)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2872,7 +2874,7 @@ def test_generation_lineage_descendant_depth_is_bounded(monkeypatch):
 
 @pytest.mark.db
 def test_generation_serializer_never_signs_foreign_assets():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> uuid.UUID:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -2935,7 +2937,7 @@ def test_generation_serializer_never_signs_foreign_assets():
 @pytest.mark.db
 def test_generation_cursor_anchor_must_match_every_filter():
     states = ("queued", "running", "succeeded", "failed")
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> dict[tuple[str, bool, bool], uuid.UUID]:
             assert db.local_user_id is not None
             assert db.session_factory is not None
@@ -3011,7 +3013,7 @@ def test_generation_cursor_anchor_must_match_every_filter():
 
 @pytest.mark.db
 def test_thumbnail_source_is_rejected_and_not_counted_as_derivative():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-thumbnail-source")
 
@@ -3172,7 +3174,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
     window is milliseconds wide and the point of the test is the token, not
     the timing. test_stalled_job_requeues_once covers the real requeue.
     """
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-stale-token")
             job_id = client.post(
@@ -3220,7 +3222,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
 def test_a_worker_that_sends_no_dispatch_token_is_still_believed():
     """The N-1 promise: a protocol 2 worker echoes no token and must still be
     able to finish a job (docs/connection-handling.md)."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-no-token", version=PROTOCOL_VERSION - 1)
             job_id = client.post(
@@ -3239,7 +3241,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
     """The token is required from a protocol 3 worker, not merely echoed: an
     omission is as stale as a wrong token, so the job must neither succeed
     nor record an asset (issue #247)."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-missing-token")
             job_id = client.post(
@@ -3283,7 +3285,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
 def test_an_upload_needs_the_token_of_its_own_dispatch():
     """The key is derivable by anyone who was ever dispatched the job; the
     token is not (issue #247)."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-upload-token")
             first_id = client.post(
@@ -3324,7 +3326,7 @@ def test_an_upload_needs_the_token_of_its_own_dispatch():
 def test_an_output_is_written_once():
     """Verification proves what the object was at inspection time; a second
     write would make that proof worthless (issue #249)."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-write-once")
             job_id = client.post(
@@ -3348,7 +3350,7 @@ def test_an_output_is_written_once():
 def test_a_thumbnail_that_is_not_a_webp_is_dropped_rather_than_served():
     """has_thumbnail used to create the row on the worker's word alone, so a
     worker could have the studio serve arbitrary bytes as an image."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-bad-thumb")
             job_id = client.post(
@@ -3376,7 +3378,7 @@ def test_an_oversized_thumbnail_is_dropped_rather_than_scaled_down():
     """An oversized WebP used to pass inspection and was then recorded with
     the master's dimensions scaled to the thumbnail cap, so a huge object was
     served to gallery views as a small thumbnail."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-big-thumb")
             job_id = client.post(
@@ -3448,7 +3450,7 @@ def test_authorization_is_rechecked_after_the_body(monkeypatch):
     stop the stale bytes from being published under the winning key."""
     from starlette.requests import Request
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-recheck")
             job_id = client.post(
@@ -3495,7 +3497,7 @@ def test_authorization_is_rechecked_between_write_and_link(monkeypatch):
     """The write happens in a thread, and the re-check only counts if the
     link follows it on the loop: a requeue that lands while the temporary is
     being written must leave nothing behind and publish nothing."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-write-link")
             job_id = client.post(
@@ -3554,7 +3556,7 @@ def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
     write-once) and the API could inspect and approve a prefix."""
     import os
 
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with TestClient(app, headers=FLEET_HEADERS, raise_server_exceptions=False) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-partial-write")
             job_id = client.post(
@@ -3619,7 +3621,7 @@ def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
         return real_mkstemp(*args, **kwargs)
 
     monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-temp-prefix")
             job_id = client.post(
@@ -3665,7 +3667,7 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
     """A delete that fails during purge_attempt_blobs leaves a pending_deletes
     row naming that key, and the job still reaches its terminal state: the
     cleanup failure must never fail the job or block the commit."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-purge-recorded")
             asyncio.run(_clear_pending_deletes())
@@ -3722,7 +3724,7 @@ def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
     from app.settings import get_settings
     get_settings.cache_clear()
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-verdictless-record")
                 asyncio.run(_clear_pending_deletes())
@@ -3772,7 +3774,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
     """The success path collects the earlier attempts and an unreported
     thumbnail, and its except swallowed the failure the same way
     purge_attempt_blobs used to: same leak, one function away."""
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-orphan-record")
             asyncio.run(_clear_pending_deletes())
@@ -3810,7 +3812,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
 
 @pytest.mark.db
 def test_the_sweep_deletes_the_object_and_drops_the_row():
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         key = f"{db.local_user_id}/sweep-success.png"
         asyncio.run(_clear_pending_deletes())
         asyncio.run(_seed_pending_delete(
@@ -3827,7 +3829,7 @@ def test_the_sweep_deletes_the_object_and_drops_the_row():
 
 @pytest.mark.db
 def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         key = f"{db.local_user_id}/sweep-backoff.png"
         asyncio.run(_clear_pending_deletes())
         asyncio.run(_seed_pending_delete(
@@ -3856,7 +3858,7 @@ def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
 
 @pytest.mark.db
 def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         key = f"{db.local_user_id}/give-up.png"
         asyncio.run(_clear_pending_deletes())
         asyncio.run(_seed_pending_delete(
@@ -3913,7 +3915,7 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
 def test_recording_a_key_again_does_not_undo_its_backoff():
     """The upsert can be waiting on the sweep's row lock, so writing its own
     due time would hand back a key the sweep had just pushed an hour out."""
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         key = f"{db.local_user_id}/re-record.png"
         asyncio.run(_clear_pending_deletes())
         later = datetime.now(timezone.utc) + timedelta(minutes=30)
@@ -3930,7 +3932,7 @@ def test_recording_a_key_again_does_not_undo_its_backoff():
 
 @pytest.mark.db
 def test_a_sweep_retries_only_rows_that_are_due():
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         due_key = f"{db.local_user_id}/due.png"
         future_key = f"{db.local_user_id}/not-due.png"
         now = datetime.now(timezone.utc)

@@ -31,7 +31,7 @@ VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
 PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
 
-preflight: ## check this machine against the self-hosting requirements (read-only)
+preflight: ## check this machine; write deploy/compose/.env when missing
 	@bash "$(CURDIR)/scripts/preflight.sh"
 
 # Self-hosting convenience wrappers. The docker compose commands in the README
@@ -228,28 +228,44 @@ endif
 WORKER ?=
 
 api: dev-db ## API server on the configured port; assets under ./data (make deps first)
+	@set -a; \
+	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
+	set +a; \
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
 		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
 		PUBLIC_URL=http://localhost:$(API_PORT) \
+		FLEET_TOKEN_KEY="$${FLEET_TOKEN_KEY:-$$FLEET_SECRET}" \
 		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT)
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
+	@set -a; \
+	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
+	set +a; \
 	cd worker && MODELS_DIR=models DEVICE=rocm \
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		FLEET_TOKEN="$${FLEET_TOKEN:-$$FLEET_SECRET}" \
 		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
 worker-cuda: ## inference worker on an NVIDIA GPU (make setup-cuda once)
+	@set -a; \
+	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
+	set +a; \
 	cd worker && MODELS_DIR=models DEVICE=cuda \
 		API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		FLEET_TOKEN="$${FLEET_TOKEN:-$$FLEET_SECRET}" \
 		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 
 worker-sim: ## simulated worker: no GPU, echo frames, flat images
+	@set -a; \
+	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
+	set +a; \
 	cd worker && API_URL=ws://127.0.0.1:$(API_PORT)/api/v1/fleet \
 		WORKER_LOCK="$(DEV_DIR)/worker.lock" \
+		FLEET_TOKEN="$${FLEET_TOKEN:-$$FLEET_SECRET}" \
 		env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_DATASETS_OFFLINE \
 		.venv/bin/python -m worker
 

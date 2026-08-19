@@ -22,6 +22,8 @@ from app.tables import (
     WorkerIdentity,
 )
 
+FLEET_HEADERS = {"x-fleet-token": "test-fleet-token"}
+
 MANIFEST = {
     "id": "sd-metrics",
     "name": "SD Metrics",
@@ -78,7 +80,7 @@ async def _wait_for_worker(worker_id: str, timeout: float = 3.0) -> WorkerIdenti
 
 @pytest.mark.db
 def test_registration_persists_worker_identity():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-identity")
             identity = asyncio.run(_wait_for_worker("w-identity"))
@@ -110,7 +112,7 @@ def test_maintenance_prunes_stale_worker_identities():
                 await session.get(WorkerIdentity, "w-retention-recent"),
             )
 
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         stale, recent = asyncio.run(exercise())
         assert stale is None
         assert recent is not None
@@ -250,7 +252,7 @@ def test_usage_event_maintenance_rolls_up_prunes_and_is_idempotent(monkeypatch):
             await session.commit()
         return first_rebuild, second_rebuild, first, second
 
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         first_rebuild, second_rebuild, first, second = asyncio.run(exercise())
 
     assert first_rebuild == second_rebuild
@@ -297,13 +299,13 @@ def test_usage_event_rollups_are_hard_deleted_with_user():
         async with db.session_factory() as session:
             return await session.get(UsageEventRollup, rollup_id)
 
-    with TestClient(app):
+    with TestClient(app, headers=FLEET_HEADERS):
         assert asyncio.run(exercise()) is None
 
 
 @pytest.mark.db
 def test_heartbeat_persists_gpu_sample():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker)
             worker.send_json({
@@ -357,7 +359,7 @@ def test_gpu_history_round_trip():
         loaded_models=["sd-metrics"],
     )
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         assert db.session_factory is not None
         asyncio.run(_clear_gpu_metrics())
 
@@ -388,7 +390,7 @@ def test_gpu_history_round_trip():
 
 @pytest.mark.db
 def test_job_dispatch_and_finish_timestamps():
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-ts")
 
@@ -478,7 +480,7 @@ def test_gpu_history_rejects_unusable_timestamps():
     # epoch overflows
     # the year, and a 25-digit one overflows the float division. All three were
     # 500s from an ordinary authenticated GET (issue #232).
-    with TestClient(app) as client:
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         good = "1700000000000"
         # The last two are the ISO branch: astimezone overflows at the edges
         # of the representable range, one line below the digit branch.

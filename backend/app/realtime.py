@@ -14,7 +14,6 @@ import hmac
 import ipaddress
 import json
 import logging
-import os
 import random
 import time
 import uuid
@@ -171,27 +170,21 @@ def peer_is_unroutable(ws: WebSocket) -> bool:
 def fleet_token_allowed(ws: WebSocket) -> bool:
     """Whether the peer may open a fleet socket.
 
-    An unset key stays permissive, which keeps the one-command self-hosted
-    start working (docs/decisions.md), but only for a peer that is not routable
-    from the internet: permissive plus a public peer is an open door to worker
-    registration, and a registered worker receives other people's prompts and
-    canvas frames. Compare encoded bytes: compare_digest refuses two str
-    arguments unless both are ASCII, so comparing the strings would raise on a
-    secret an operator is perfectly entitled to choose, and the handler would
-    then read that as a wrong token and refuse forever.
+    An unset key refuses the handshake. Preflight writes FLEET_SECRET so a
+    fresh install has one; an upgrade with an empty key fails startup with
+    a message that names scripts/preflight.sh. Compare encoded bytes:
+    compare_digest refuses two str arguments unless both are ASCII, so
+    comparing the strings would raise on a secret an operator is perfectly
+    entitled to choose, and the handler would then read that as a wrong
+    token and refuse forever.
     """
     key = get_settings().fleet_token_key
     if not key:
-        # The peer address cannot be trusted at all in this configuration:
-        # uvicorn will have taken it from a header the client controls, so
-        # there is nothing left for the check to decide on.
-        if forwarding_trusts_any_peer(os.environ.get("FORWARDED_ALLOW_IPS", "")):
-            logger.warning(
-                "fleet handshake refused: FLEET_TOKEN_KEY is unset and "
-                "FORWARDED_ALLOW_IPS trusts every peer, so uvicorn takes the "
-                "peer address from X-Forwarded-For and the client can forge it")
-            return False
-        return peer_is_unroutable(ws)
+        logger.warning(
+            "fleet handshake refused: FLEET_TOKEN_KEY is unset; "
+            "run scripts/preflight.sh to write deploy/compose/.env"
+        )
+        return False
     # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
     # matches the stored key verbatim, and the ASGI server passes the name
     # through with whatever casing the client sent. Any worker spelling this
@@ -526,14 +519,10 @@ async def fleet(ws: WebSocket) -> None:
         if get_settings().fleet_token_key:
             logger.warning("fleet handshake refused: invalid token")
         else:
-            # Naming the cause matters: the operator who exposed the port would
-            # otherwise read "invalid token" and go looking for a secret that
-            # was never the problem.
             logger.warning(
-                "fleet handshake refused: FLEET_TOKEN_KEY is unset, so only a worker "
-                "whose address cannot route from the internet is accepted, and %s "
-                "does not qualify; set the secret to admit remote workers",
-                ws.client.host if ws.client else "a peer with no address")
+                "fleet handshake refused: FLEET_TOKEN_KEY is unset; "
+                "run scripts/preflight.sh to write deploy/compose/.env"
+            )
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     await ws.accept()

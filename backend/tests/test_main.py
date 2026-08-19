@@ -1,6 +1,7 @@
 """Self-hosted SPA static serving and the AUTH_MODE startup gate."""
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,37 @@ def test_unimplemented_auth_mode_cannot_even_import(monkeypatch):
         get_settings.cache_clear()
         # Reload with the environment restored so the module left in
         # sys.modules is the good one and later tests are not poisoned.
+        importlib.reload(main_module)
+
+
+FLEET_TOKEN_KEY_UNSET = (
+    "FLEET_TOKEN_KEY is unset; refusing fleet handshakes. "
+    "Run scripts/preflight.sh to write deploy/compose/.env, "
+    "then set FLEET_TOKEN_KEY from FLEET_SECRET."
+)
+
+
+def test_unset_fleet_token_key_refuses_to_start(monkeypatch):
+    monkeypatch.delenv("FLEET_TOKEN_KEY", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match=re.escape(FLEET_TOKEN_KEY_UNSET)):
+            with TestClient(app):
+                pass
+    finally:
+        monkeypatch.setenv("FLEET_TOKEN_KEY", "test-fleet-token")
+        get_settings.cache_clear()
+
+
+def test_unset_fleet_token_key_cannot_even_import(monkeypatch):
+    monkeypatch.delenv("FLEET_TOKEN_KEY", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match=re.escape(FLEET_TOKEN_KEY_UNSET)):
+            importlib.reload(main_module)
+    finally:
+        monkeypatch.setenv("FLEET_TOKEN_KEY", "test-fleet-token")
+        get_settings.cache_clear()
         importlib.reload(main_module)
 
 

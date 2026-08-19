@@ -26,9 +26,9 @@ from app.settings import get_settings
 from app.tables import UsageEvent
 
 # A real peer address rather than the default "testclient", which no ASGI server
-# would ever report: permissive fleet mode decides on that address, so the tests
-# should present the shape production does.
-client = TestClient(app, client=("127.0.0.1", 50000))
+# would ever report: the handshake still sees a production-shaped address.
+FLEET_HEADERS = {"x-fleet-token": "test-fleet-token"}
+client = TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS)
 
 
 def manifest(model_id="sd-sim", parameters=None) -> dict:
@@ -140,9 +140,9 @@ def test_hello_with_an_absurd_realtime_p95_ms_still_registers():
 
 def test_fleet_accepts_a_correct_token_at_the_handshake(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
-    with client.websocket_connect(
-        "/api/v1/fleet", headers={"x-fleet-token": "fleet-secret"}
-    ) as ws:
+    authed = TestClient(app, client=("127.0.0.1", 50000),
+                        headers={"x-fleet-token": "fleet-secret"})
+    with authed.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(worker_id="w-token-ok"))
         assert ws.receive_json()["type"] == "registered"
 
@@ -158,8 +158,9 @@ def test_fleet_rejects_an_invalid_token_before_accept(monkeypatch, token):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "fleet-secret")
     headers = {} if token is None else {"x-fleet-token": token}
     worker_id = "w-token-bad"
+    bare = TestClient(app, client=("127.0.0.1", 50000), headers=headers)
     with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/api/v1/fleet", headers=headers) as ws:
+        with bare.websocket_connect("/api/v1/fleet") as ws:
             ws.send_json(hello(worker_id=worker_id))
             ws.receive_json()
     assert worker_id not in realtime.workers
@@ -236,7 +237,7 @@ def test_duplicate_token_headers_are_refused():
         assert not fleet_token_allowed(FakeRawHeaders([bad, good]))
         assert not fleet_token_allowed(FakeRawHeaders([good, good]))
     finally:
-        get_settings().fleet_token_key = ""
+        get_settings().fleet_token_key = "test-fleet-token"
 
 
 @pytest.mark.parametrize("name", [b"x-fleet-token", b"X-Fleet-Token", b"X-FLEET-TOKEN"])
@@ -254,11 +255,16 @@ def test_fleet_token_lookup_is_case_insensitive(monkeypatch, name):
     assert not fleet_token_allowed(FakeTokenHeaders("wrong-secret", name=name))
 
 
-def test_fleet_stays_open_when_token_key_is_unset(monkeypatch):
+def test_unset_fleet_token_key_refuses_even_loopback(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
-    with client.websocket_connect("/api/v1/fleet") as ws:
-        ws.send_json(hello(worker_id="w-token-unset"))
-        assert ws.receive_json()["type"] == "registered"
+    assert fleet_token_allowed(FakePeer("127.0.0.1")) is False
+    bare = TestClient(app, client=("127.0.0.1", 50000))
+    worker_id = "w-token-unset"
+    with pytest.raises(WebSocketDisconnect):
+        with bare.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "10.1.2.3", "172.18.0.3", "192.168.1.5",
@@ -356,20 +362,14 @@ def test_a_narrow_forwarding_setting_is_not_warned_about(spec):
     assert not forwarding_trusts_any_peer(spec)
 
 
-def test_permissive_mode_is_refused_when_forwarding_trusts_every_peer(monkeypatch):
-    """With FORWARDED_ALLOW_IPS=* uvicorn takes the peer address from a header
-    the client controls, so permissive mode cannot trust it even for a loopback
-    peer: if the unroutable check were consulted, a loopback peer would pass.
-    """
+def test_unset_key_is_refused_when_forwarding_trusts_every_peer(monkeypatch):
+    """Unset key refuses regardless of FORWARDED_ALLOW_IPS."""
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
     assert fleet_token_allowed(FakePeer("127.0.0.1")) is False
 
 
-def test_permissive_mode_refuses_a_public_peer(monkeypatch):
-    """Compose publishes on 0.0.0.0, so an unset secret on a host with a public
-    address used to accept worker registrations from anyone. A registered worker
-    is handed other people's prompts and canvas frames."""
+def test_unset_key_refuses_a_public_peer(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
     remote = TestClient(app, client=("8.8.8.8", 44321))
     worker_id = "w-public-peer"
@@ -380,12 +380,16 @@ def test_permissive_mode_refuses_a_public_peer(monkeypatch):
     assert worker_id not in realtime.workers
 
 
-def test_permissive_mode_admits_a_worker_on_the_compose_network(monkeypatch):
+def test_unset_key_refuses_a_worker_on_the_compose_network(monkeypatch):
     monkeypatch.setattr(get_settings(), "fleet_token_key", "")
+    assert fleet_token_allowed(FakePeer("172.18.0.3")) is False
     bridged = TestClient(app, client=("172.18.0.3", 51000))
-    with bridged.websocket_connect("/api/v1/fleet") as ws:
-        ws.send_json(hello(worker_id="w-bridge-peer"))
-        assert ws.receive_json()["type"] == "registered"
+    worker_id = "w-bridge-peer"
+    with pytest.raises(WebSocketDisconnect):
+        with bridged.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id=worker_id))
+            ws.receive_json()
+    assert worker_id not in realtime.workers
 
 
 def test_a_correct_token_still_admits_a_public_peer(monkeypatch):
@@ -803,7 +807,7 @@ def test_assigned_worker_sending_a_canvas_frame_is_a_protocol_violation():
 
 @pytest.mark.db
 def test_closed_session_persists_usage_event():
-    with TestClient(app) as db_client:
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
         with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
             worker_ws.send_json(hello(worker_id="w-usage"))
             assert worker_ws.receive_json()["type"] == "registered"
@@ -848,7 +852,7 @@ def test_closed_session_persists_usage_event():
 
 @pytest.mark.db
 def test_closing_session_is_removed_when_worker_is_lost():
-    with TestClient(app) as db_client:
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
         with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
             worker_ws.send_json(hello(worker_id="w-closing"))
             assert worker_ws.receive_json()["type"] == "registered"
@@ -1436,7 +1440,7 @@ def test_session_closed_from_another_worker_is_ignored():
     two sockets are separate tasks, so any assertion timed against a send is a
     race, and a racy test passes with the check removed.
     """
-    with TestClient(app) as db_client, \
+    with TestClient(app, headers=FLEET_HEADERS) as db_client, \
             db_client.websocket_connect("/api/v1/fleet") as owner_ws:
         owner_ws.send_json(hello(worker_id="w-closing-owner"))
         assert owner_ws.receive_json()["type"] == "registered"
