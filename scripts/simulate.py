@@ -30,6 +30,11 @@ from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 8901
 START = time.monotonic()
+# Pytest uses the same default. This script is not production; an unset key
+# now refuses to import the API (issues #245 and #260).
+_FLEET_TOKEN = (
+    os.environ.get("FLEET_TOKEN_KEY") or os.environ.get("FLEET_TOKEN") or "test-fleet-token"
+)
 
 
 def interpreter(component: str) -> str:
@@ -44,10 +49,12 @@ def log(who: str, text: str) -> None:
 
 
 def spawn_api() -> subprocess.Popen:
+    env = os.environ | {"FLEET_TOKEN_KEY": _FLEET_TOKEN}
     return subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
          "--port", str(PORT), "--log-level", "warning"],
         cwd=ROOT / "backend",
+        env=env,
     )
 
 
@@ -57,6 +64,7 @@ def spawn_worker(number: int) -> subprocess.Popen:
         "WORKER_ID": f"worker-{number}",
         "INFERENCE_SECONDS": "0.12",
         "HEARTBEAT_SECONDS": "5",
+        "FLEET_TOKEN": _FLEET_TOKEN,
     }
     process = subprocess.Popen(
         [interpreter("worker"), "-m", "worker"],
