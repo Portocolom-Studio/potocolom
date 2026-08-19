@@ -21,6 +21,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
@@ -1345,7 +1346,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             if not committed:
                 return  # a requeue or another verdict owns the row now
             clear_if_current(worker, job_id, current)
-            await purge_attempt_blobs(current.user_id, job_id, current.attempt)
+            schedule_blob_cleanup(
+                purge_attempt_blobs(current.user_id, job_id, current.attempt),
+                what=f"invalid output for job {job_id}",
+            )
             return
         image_dimensions = (image.width, image.height)
         if has_thumbnail:
@@ -1433,16 +1437,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         # collects them: the asset row only ever names the winning key.
         for earlier in range(1, current.attempt):
             orphans.extend(storage_keys_for_attempt(current.user_id, job_id, earlier))
-        for orphan in orphans:
-            try:
-                await _bounded_delete(orphan)
-            except Exception as error:
-                # The same leak purge_attempt_blobs had, one function away: the
-                # success path collects the earlier attempts and an unreported
-                # thumbnail, and nothing else ever names those keys.
-                logger.warning("could not remove orphaned blob %s for job %s", orphan,
-                               job_id, exc_info=True)
-                await record_pending_delete(orphan, _trim_error(error))
+        schedule_blob_cleanup(
+            _purge_keys(orphans, job_id),
+            what=f"orphans for job {job_id}",
+        )
         try:
             url = await get_storage().url(current.storage_key)
         except Exception:
@@ -1470,7 +1468,63 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         clear_if_current(worker, job_id, current)
         # A reported failure can still have uploaded: nothing downstream names
         # those objects, so this is their only collector.
-        await purge_attempt_blobs(current.user_id, job_id, current.attempt)
+        schedule_blob_cleanup(
+            purge_attempt_blobs(current.user_id, job_id, current.attempt),
+            what=f"failed attempt for job {job_id}",
+        )
+
+
+_blob_cleanup_tasks: set[asyncio.Task] = set()
+
+
+def schedule_blob_cleanup(coro, *, what: str) -> None:
+    """Run terminal blob deletes off the fleet reader (issue #313).
+
+    The verdict has already committed. A wedged delete must not park
+    last_seen; pending_deletes remains the backstop if this task fails.
+    """
+    async def guarded() -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            logger.exception("background blob cleanup failed (%s)", what)
+
+    task = asyncio.create_task(guarded())
+    _blob_cleanup_tasks.add(task)
+    task.add_done_callback(_blob_cleanup_tasks.discard)
+
+
+async def drain_blob_cleanup() -> None:
+    """Cancel leftover deletes while the database can still record them."""
+    tasks = list(_blob_cleanup_tasks)
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _purge_keys(keys: list[str], job_id: uuid.UUID) -> None:
+    pending = list(keys)
+    try:
+        while pending:
+            key = pending[0]
+            try:
+                await _bounded_delete(key)
+            except Exception as error:
+                # The same leak purge_attempt_blobs had, one function away: the
+                # success path collects the earlier attempts and an unreported
+                # thumbnail, and nothing else ever names those keys.
+                logger.warning("could not remove blob %s for job %s", key,
+                               job_id, exc_info=True)
+                await record_pending_delete(key, _trim_error(error))
+            pending.pop(0)
+    except asyncio.CancelledError:
+        for key in pending:
+            await asyncio.shield(record_pending_delete(key, "cleanup cancelled"))
+        raise
 
 
 async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> None:
@@ -1484,17 +1538,12 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     S3Storage.delete purges every version of the key, not just the current
     one, so this reclaims the storage rather than hiding it.
     """
-    for earlier in range(1, attempt + 1):
-        for key in storage_keys_for_attempt(user_id, job_id, earlier):
-            try:
-                await _bounded_delete(key)
-            except Exception as error:
-                # Warning, not debug: a missing object does not normally make
-                # a delete raise, so this is a real cleanup failure such as a
-                # denied permission, and the sweep is what retries it.
-                logger.warning("could not remove blob %s for job %s", key, job_id,
-                               exc_info=True)
-                await record_pending_delete(key, _trim_error(error))
+    keys = [
+        key
+        for earlier in range(1, attempt + 1)
+        for key in storage_keys_for_attempt(user_id, job_id, earlier)
+    ]
+    await _purge_keys(keys, job_id)
 
 
 async def _bounded_delete(storage_key: str) -> None:

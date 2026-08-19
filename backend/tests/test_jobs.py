@@ -1655,11 +1655,21 @@ async def _pending_delete(storage_key: str) -> PendingDelete | None:
         return await session.get(PendingDelete, storage_key)
 
 
-def _await_pending_delete(storage_key: str, timeout=3.0) -> PendingDelete:
+def _await_pending_delete(storage_key: str, timeout=3.0, client=None) -> PendingDelete:
     """The recording happens after the commit that publishes the terminal
-    state, so a test that polled for the state can arrive first."""
+    state, so a test that polled for the state can arrive first.
+
+    Verdict cleanup is a background task (issue #313). asyncio.run from the
+    test thread while that task still holds the engine deadlocks, so a live
+    TestClient must pump the loop until the task set is empty first.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if client is not None:
+            client.get("/api/v1/health")
+            if jobs._blob_cleanup_tasks:
+                time.sleep(0.05)
+                continue
         row = asyncio.run(_pending_delete(storage_key))
         if row is not None:
             return row
@@ -3697,21 +3707,83 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
                               "reason": "worker said no",
                               "dispatch_token": dispatch["dispatch_token"]})
             poll_until(client, job_id, "failed")
-
-            def recorded() -> PendingDelete | None:
-                return asyncio.run(_pending_delete(key))
-
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and recorded() is None:
-                time.sleep(0.05)
-            row = recorded()
-            assert row is not None, "the failed delete was not recorded"
+            row = _await_pending_delete(key, client=client)
             assert row.storage_key == key
             assert row.attempts == 0  # the sweep owns the counter, not the purge
             assert row.last_error is not None
             assert row.first_failed_at is not None
             assert row.next_attempt_at is not None
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
+
+
+@pytest.mark.db
+def test_a_hung_delete_does_not_delay_the_verdict(monkeypatch):
+    """A wedged mount must not park the fleet reader on the terminal path.
+
+    last_seen only advances when the fleet loop processes a message, so an
+    awaited 60 s delete makes a live worker look dead (issue #313).
+    """
+    hang = threading.Event()
+
+    async def hung_delete(storage_key):
+        while not hang.is_set():
+            await asyncio.sleep(0.05)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-hung-delete")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "hang"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            # Patch after startup so maintain_deletes_loop's first pass
+            # cannot sit on this hang for the life of the client.
+            monkeypatch.setattr(jobs, "_bounded_delete", hung_delete)
+            started = time.monotonic()
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed", timeout=1.0)
+            assert time.monotonic() - started < 1.0
+            hang.set()
+            for task in list(jobs._blob_cleanup_tasks):
+                task.cancel()
+            client.get("/api/v1/health")
+
+
+@pytest.mark.db
+def test_a_cancelled_cleanup_is_recorded_for_the_sweep(monkeypatch):
+    """Shutdown cancel must not drop remaining keys: pending_deletes is the
+    backstop (issue #313 follow-up)."""
+    hang = threading.Event()
+
+    async def hung_delete(storage_key):
+        while not hang.is_set():
+            await asyncio.sleep(0.05)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-cancel-cleanup")
+            asyncio.run(_clear_pending_deletes())
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "cancel"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1)[-1]
+            monkeypatch.setattr(jobs, "_bounded_delete", hung_delete)
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            poll_until(client, job_id, "failed", timeout=1.0)
+            for task in list(jobs._blob_cleanup_tasks):
+                task.cancel()
+            hang.set()
+            row = _await_pending_delete(key, client=client)
+            assert row.storage_key == key
+            assert row.last_error == "cleanup cancelled"
 
 
 @pytest.mark.db
@@ -3760,7 +3832,7 @@ def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
                 asyncio.run(jobs.sweep_stalled_jobs())
                 poll_until(client, job_id, "failed")
 
-                row = _await_pending_delete(second_key)
+                row = _await_pending_delete(second_key, client=client)
                 assert row.attempts == 0  # the sweep owns the counter, not the purge
                 assert row.last_error is not None
                 assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
@@ -3806,7 +3878,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
                               "gpu_ms": 1, "width": 512, "height": 512})
             poll_until(client, job_id, "succeeded")
 
-            row = _await_pending_delete(thumb_key)
+            row = _await_pending_delete(thumb_key, client=client)
             assert "denied" in (row.last_error or "")
 
 
