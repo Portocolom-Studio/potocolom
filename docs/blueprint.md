@@ -7,7 +7,7 @@ This document sits between [architecture.md](architecture.md) and real code. It 
 All mode differences are environment variables read once at startup into a settings object. Nothing branches on "self-hosted or cloud"; code branches on the specific setting.
 
 ```
-AUTH_MODE            = none | local | oauth      # default none
+AUTH_MODE            = none | local | oauth      # default none; local refuses to start until #5, oauth until #9
 OAUTH_PROVIDERS      = google,github             # only read when AUTH_MODE=oauth
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
@@ -464,7 +464,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-api:v0.x
     ports: ["8080:8080"]
     environment:
-      AUTH_MODE: none            # or local
+      AUTH_MODE: none            # the only mode that starts; local lands with #5, oauth with #9
       DATABASE_URL: postgresql://potocolom:...@postgres/potocolom
       STORAGE_BACKEND: local
       FLEET_TOKEN_KEY: ${FLEET_SECRET}

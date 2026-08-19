@@ -123,7 +123,7 @@ Environment for the API task, values resolved from SSM where secret:
 
 | Variable | Value |
 |---|---|
-| AUTH_MODE | `oauth` |
+| AUTH_MODE | `oauth` (target state: the API refuses to start with it until #9; do not deploy this stack to a public ALB before then) |
 | OAUTH_PROVIDERS | `google,github` |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |
