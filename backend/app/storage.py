@@ -156,6 +156,15 @@ def _webp_dimensions(data: bytes) -> tuple[int, int]:
     header whose canvas the frame must match, and a chunk whose declared
     length does not fit the RIFF payload is a fabricated container, not a
     thumbnail.
+
+    What it does not prove is that the frame decodes. A VP8 chunk needs ten
+    header bytes and a VP8L five, so a container carrying a header and no
+    compressed data passes here and gets a thumbnail row for a file no decoder
+    will render. That is a broken image in the gallery rather than active
+    content, because the API serves it with nosniff, and decoding here to catch
+    it was twice a denial of service (see the PNG walk above). The limit is
+    accepted and recorded in SECURITY.md; issue #281 holds the argument for
+    moving a real decoder off this path.
     """
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
         raise ValueError("stored object is not a WebP")

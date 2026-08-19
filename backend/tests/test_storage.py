@@ -485,6 +485,31 @@ def test_image_info_requires_a_complete_webp(tmp_path):
     assert asyncio.run(storage.image_info("bad-version.webp")) is None
 
 
+def test_image_info_accepts_a_webp_header_with_no_bitstream(tmp_path):
+    """Inspection proves structure, not decodability, and that is accepted.
+
+    A VP8L chunk needs five header bytes, so a container carrying those and no
+    compressed data walks cleanly and reports dimensions for a file no decoder
+    will render. The result is a broken image in the gallery rather than active
+    content, because the API serves it with nosniff, and decoding here to catch
+    it was twice a denial of service, which is why the reader parses only.
+
+    This test pins the accepted limit rather than endorsing it, so a later
+    decode step off the request path fails here and is adopted deliberately
+    instead of quietly. The argument is in SECURITY.md and issue #281.
+    """
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+
+    # Five bytes: the 0x2f signature, then width and height packed as 14 bits
+    # each, and a version of zero. Nothing follows, so there is no bitstream.
+    header_only = _webp_chunk(b"VP8L", bytes([0x2F, 0x0F, 0xC0, 0x87, 0x00]))
+    (tmp_path / "header-only.webp").write_bytes(_webp_container(header_only))
+
+    info = asyncio.run(storage.image_info("header-only.webp"))
+    assert info is not None
+    assert info.content_type == "image/webp"
+
+
 def test_image_info_refuses_an_animated_webp(tmp_path):
     """An ANMF chunk is refused, not treated as image data.
 
