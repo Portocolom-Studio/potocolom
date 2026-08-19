@@ -60,6 +60,7 @@
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
 		settleLineageRootStarReconciliation,
+		shouldSpendAnchorSearchPage,
 		type InitialLineageViewportAnchor,
 		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
@@ -1009,11 +1010,18 @@
 		// revisits it, so wait: the observer calls back here once it has one.
 		if (viewportWidth === 0 || viewportHeight === 0) return;
 		if (
-			restoredViewport?.rootId &&
-			!persistedRoots.some((root) => root.id === restoredViewport.rootId) &&
-			rootsHaveMore &&
-			anchorSearchPages < MAX_ANCHOR_SEARCH_PAGES &&
-			!rootsFailed
+			shouldSpendAnchorSearchPage({
+				viewportReady,
+				rootsHaveMore,
+				rootsFailed,
+				rootsLoading,
+				pagesUsed: anchorSearchPages,
+				maxPages: MAX_ANCHOR_SEARCH_PAGES,
+				missingAnchor: Boolean(
+					restoredViewport?.rootId &&
+					!persistedRoots.some((root) => root.id === restoredViewport.rootId)
+				)
+			})
 		) {
 			anchorSearchPages += 1;
 			void loadRoots();

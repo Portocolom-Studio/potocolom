@@ -266,6 +266,28 @@ export function lineageTreeNeedsHistoryRefresh(
 	return false;
 }
 
+export function shouldSpendAnchorSearchPage(args: {
+	viewportReady: boolean;
+	rootsHaveMore: boolean;
+	rootsFailed: boolean;
+	rootsLoading: boolean;
+	pagesUsed: number;
+	maxPages: number;
+	missingAnchor: boolean;
+}): boolean {
+	// True only when initializeViewport would start a roots request. loadRoots
+	// no-ops while a page is in flight, so spending the allowance then burns
+	// one of four searches without a request (issue #303).
+	return (
+		!args.viewportReady &&
+		args.missingAnchor &&
+		args.rootsHaveMore &&
+		!args.rootsFailed &&
+		!args.rootsLoading &&
+		args.pagesUsed < args.maxPages
+	);
+}
+
 export function lineageTreeOmittedHistoryJobIds(
 	nodes: CachedNode[],
 	history: Generation[]

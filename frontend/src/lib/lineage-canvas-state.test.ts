@@ -10,6 +10,7 @@ import {
 	decideViewportScheduleAfterRootPage,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
+	shouldSpendAnchorSearchPage,
 	retainedLineageTreeOffsets,
 	retainedRetryBudget,
 	rebaseLineageViewport,
@@ -464,4 +465,23 @@ test('a persistently failing subtree retries once, not forever', () => {
 	// new request and earns its own single retry.
 	attemptLoad(true);
 	assert.equal(decideLineageTreeLoad(true, entry), 'retry');
+});
+
+test('anchor search spends a page only when loadRoots would start work', () => {
+	const ready = {
+		viewportReady: false,
+		rootsHaveMore: true,
+		rootsFailed: false,
+		rootsLoading: false,
+		pagesUsed: 0,
+		maxPages: 4,
+		missingAnchor: true
+	};
+	assert.equal(shouldSpendAnchorSearchPage(ready), true);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, rootsLoading: true }), false);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, viewportReady: true }), false);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, missingAnchor: false }), false);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, rootsHaveMore: false }), false);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, rootsFailed: true }), false);
+	assert.equal(shouldSpendAnchorSearchPage({ ...ready, pagesUsed: 4 }), false);
 });

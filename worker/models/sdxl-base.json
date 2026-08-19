@@ -50,7 +50,7 @@
       },
       "strength": {
         "type": "number",
-        "minimum": 0.05,
+        "minimum": 0.1,
         "maximum": 1,
         "default": 0.75
       }
