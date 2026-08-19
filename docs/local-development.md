@@ -104,6 +104,18 @@ gets the canonical ports and the bare `potocolom` database unless you export
 `API_PORT`, `WEB_PORT` and `DATABASE_URL` yourself. Set `API_PORT` or `WEB_PORT`
 to override. Only the main worktree gets the canonical `8000` and `5173` above.
 
+The test suite goes further and takes a database per **run**, not per checkout,
+named for the checkout path plus the process. Two runs at once is ordinary here:
+an editor test runner beside a terminal run, or the self-hosted CI runner working
+on the same machine. They used to share job rows, and the failures landed on the
+retry tests as a 403 on an upload key that had just been issued, which reads as
+an application bug rather than as two suites colliding. A run drops its own
+database when it ends; `make test-db-clean` collects whatever a hard kill leaves.
+
+An exported `DATABASE_URL` opts out of that: it is shared by every run in the
+shell, and the suite will migrate it and write to it, though it never drops,
+rebuilds or empties it. Give it a database name of its own.
+
 ```bash
 
 # worker, from worker/
