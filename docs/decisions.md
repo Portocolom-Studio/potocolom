@@ -883,6 +883,8 @@ Rejected alternatives: clearing `benchmark_only` on its own, the one field that 
 
 ## Realtime concurrency comes from one GPU serving several sessions, by decode first and batching second
 
+> Shipped status (2026-08-20): **partially implemented.** The worker collects pending frames for 40 ms and denoises one compatibility class (model, steps, resolution) per GPU cycle, with round-robin across classes (issue #294). Admission still uses serialized per-model p95 (#285). Advertising slots from a measured batch curve does not ship.
+
 Supersedes only the start trigger in "GPU session density: calibrated slots now, worker-internal batching later" and in "GPU session density: capacity-critical at 1000 active sessions". Their method, their slot abstraction and their adoption bar all stand: the scheduler keeps consuming calibrated slots, batching stays internal to the worker, and a technique is adopted only when end-to-end p95 stays inside the realtime bar with quality accepted.
 
 What changes is when the work starts. Both entries gate it on fleet spend, at the 500 to 1000 GPU-process scale where density is the cheapest capacity. The requirement is now a product one at a single GPU: two people drawing at once on a self-hosted box, and more than two per GPU in the cloud. Serialising on the frame the realtime path shipped with cannot deliver that, and the reason turned out to be the decoder rather than the denoiser. Sessions share one GPU lock, so two sessions each see twice a single frame: on the reference card `sdxl-turbo` measures 278 ms for one frame, and two serialised sessions are 556 ms per cycle each, which misses the 500 ms bar and the 2 fps floor it encodes. The recorded formula agrees, admitting a second slot only at 250 ms or below, which neither shipped realtime model reaches.
@@ -970,10 +972,13 @@ Warmup calibrates every non-benchmark_only realtime model that still advertises
 realtime after measured_manifests, not only the default. Boot pays one extra
 cold load.
 
-GeneratedFrame.gpu_ms and calibration time the same region: the _frame call
-that holds the GPU lock. The picker and admission then read one quantity
-(issue #288). After twenty observations, a higher p95 may lower admission. A
-lower p95 must not raise it on that connection.
+Calibration times one _frame under the GPU lock. A compatible adapter
+batch times _frame_batch and reports occupancy share (cycle / N) so N
+sessions still sum to that cycle. Admission keeps the serialized p95
+until a batch curve replaces it. The picker and admission then read one
+advertised quantity (issue #288). After twenty observations, a higher
+p95 may lower admission. A lower p95 must not raise it on that
+connection.
 
 Ending a live session that no longer fits ships in protocol 4: after a
 heartbeat raises a model's admission p95, if live cost on that worker

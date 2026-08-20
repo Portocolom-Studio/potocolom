@@ -12,7 +12,6 @@ from worker.engine import (
     CALIBRATION_SAMPLES,
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
-    GeneratedFrame,
     NotResidentError,
     OBSERVED_FRAME_SAMPLES,
     OBSERVED_FRAME_WINDOW,
@@ -371,6 +370,32 @@ def test_short_prompt_embeds_without_chunking():
     # One encode is two calls on the single CLIP: the positive prompt and the
     # empty-string negative prompt both pass through the encoder.
     assert pipeline.text_encoder.calls == 2
+
+
+def test_merge_prompt_embeds_refuses_prompt_only_kwargs():
+    engine = _fake_prompt_engine()
+    assert engine._merge_prompt_embeds([
+        {"prompt": "a"}, {"prompt": "b"},
+    ]) is None
+
+
+def test_merge_prompt_embeds_refuses_mismatched_chunk_counts():
+    engine = _fake_prompt_engine()
+    assert engine._merge_prompt_embeds([
+        {"prompt_embeds": _FakeTensor((1, 77, 4))},
+        {"prompt_embeds": _FakeTensor((1, 154, 4))},
+    ]) is None
+
+
+def test_merge_prompt_embeds_stacks_matching_tensors():
+    engine = _fake_prompt_engine()
+    merged = engine._merge_prompt_embeds([
+        {"prompt": "a", "prompt_embeds": _FakeTensor((1, 77, 4))},
+        {"prompt": "b", "prompt_embeds": _FakeTensor((1, 77, 4))},
+    ])
+    assert merged is not None
+    assert merged["prompt_embeds"].shape == (2, 77, 4)
+    assert "prompt" not in merged
 
 
 def test_third_text_encoder_keeps_pipeline_prompt_path():
@@ -1698,7 +1723,7 @@ def test_frame_bounds_codec_concurrency():
     assert maximum == CODEC_CONCURRENCY_LIMIT
     assert kinds_seen == {"decode", "encode"}
     assert len(results) == call_count
-    assert all(result == GeneratedFrame(b"webp", 17) for result in results)
+    assert all(result.data == b"webp" for result in results)
 
 
 def test_frame_oom_retries_once_without_decoding_twice():
@@ -1747,7 +1772,6 @@ def test_frame_oom_retries_once_without_decoding_twice():
     engine._evict_except.assert_called_once_with(manifest.id)
     engine._evict_poisoned.assert_not_called()
     assert result.data == encode_webp(rendered)
-    assert result.gpu_ms == 17
 
 
 def test_calibrate_realtime_sets_slots_from_p95():
