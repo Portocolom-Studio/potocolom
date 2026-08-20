@@ -1,6 +1,7 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { planFavoriteMigration, type StarOutcome } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
 import {
 	beginOptimisticStarMutation,
@@ -484,25 +485,24 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export async function migrateStoredFavorites(): Promise<void> {
 	const stored = loadStarredIds();
 	if (stored.length === 0 || typeof localStorage === 'undefined') return;
-	// A value that was never a job id can never resolve, so count it as missing
-	// rather than letting its 422 hold the migration open forever.
-	let missing = stored.filter((id) => !UUID_PATTERN.test(id)).length;
-	let complete = true;
-	for (const id of stored.filter((value) => UUID_PATTERN.test(value))) {
+	const outcomes: Array<readonly [string, StarOutcome]> = [];
+	for (const id of stored) {
+		if (!UUID_PATTERN.test(id)) {
+			outcomes.push([id, 'invalid']);
+			continue;
+		}
 		try {
-			// Star directly: the endpoint's own 404 already reports an id that no
-			// longer resolves, so a preceding GET would only double the requests.
 			const starred = await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
-			if (starred.status === 404) {
-				missing += 1;
-			} else if (!starred.ok) {
-				complete = false;
-			}
+			if (starred.ok) outcomes.push([id, 'migrated']);
+			else if (starred.status === 404) outcomes.push([id, 'not-found']);
+			else outcomes.push([id, 'failed']);
 		} catch {
-			complete = false;
+			outcomes.push([id, 'failed']);
 		}
 	}
-	if (complete) localStorage.removeItem(STARRED_STORAGE_KEY);
+	const { retry, missing } = planFavoriteMigration(outcomes);
+	if (retry.length === 0) localStorage.removeItem(STARRED_STORAGE_KEY);
+	else localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(retry));
 	if (missing > 0) {
 		setFavoriteNotice(
 			'migration',
