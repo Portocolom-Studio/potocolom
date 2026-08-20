@@ -1,7 +1,7 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
-import { planFavoriteMigration, type StarOutcome } from '$lib/favorites-migration';
+import { runFavoriteMigration } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
 import {
 	beginOptimisticStarMutation,
@@ -480,30 +480,24 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function migrateStoredFavorites(): Promise<void> {
 	const stored = loadStarredIds();
 	if (stored.length === 0 || typeof localStorage === 'undefined') return;
-	const outcomes: Array<readonly [string, StarOutcome]> = [];
-	for (const id of stored) {
-		if (!UUID_PATTERN.test(id)) {
-			outcomes.push([id, 'invalid']);
-			continue;
-		}
+	const { retry, missing } = await runFavoriteMigration(stored, async (id) => {
 		try {
-			const starred = await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
-			if (starred.ok) outcomes.push([id, 'migrated']);
-			else if (starred.status === 404) outcomes.push([id, 'not-found']);
-			else outcomes.push([id, 'failed']);
+			return (await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
 		} catch {
-			outcomes.push([id, 'failed']);
+			return null;
 		}
-	}
-	const { retry, missing } = planFavoriteMigration(outcomes);
+	});
 	if (retry.length === 0) localStorage.removeItem(STARRED_STORAGE_KEY);
 	else localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(retry));
-	if (missing > 0) {
+	if (retry.length > 0) {
+		setFavoriteNotice(
+			'migration',
+			t('app.gen.favorite_unrestored').replace('{count}', String(retry.length))
+		);
+	} else if (missing > 0) {
 		setFavoriteNotice(
 			'migration',
 			t('app.gen.favorite_missing').replace('{count}', String(missing))
