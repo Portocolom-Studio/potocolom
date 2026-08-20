@@ -1397,6 +1397,7 @@ def test_a_requeue_during_a_terminal_transaction_keeps_its_entry(monkeypatch):
                 json={"model_id": "sd-test", "params": {"prompt": "verdict race"}},
             ).json()["job_id"]
             dispatch = worker.receive_json()
+            assert dispatch["job_id"] == job_id
             assert put_upload(client, dispatch["upload"],
                               png_bytes()).status_code == 200
 
@@ -3177,7 +3178,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "token"}},
             ).json()["job_id"]
-            worker.receive_json()
+            assert worker.receive_json()["job_id"] == job_id
 
             # What a requeue to the same worker leaves behind: a new entry,
             # same Worker object, new key, new token.
@@ -3226,7 +3227,7 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "n-1"}},
             ).json()["job_id"]
-            worker.receive_json()
+            assert worker.receive_json()["job_id"] == job_id
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
             asyncio.run(jobs.on_worker_message(current.worker, {
@@ -3257,7 +3258,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "missing token"}},
             ).json()["job_id"]
-            worker.receive_json()
+            assert worker.receive_json()["job_id"] == job_id
 
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
@@ -3302,11 +3303,13 @@ def test_an_upload_needs_the_token_of_its_own_dispatch():
                 json={"model_id": "sd-test", "params": {"prompt": "one"}},
             ).json()["job_id"]
             first = worker.receive_json()
+            assert first["job_id"] == first_id
             second_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "two"}},
             ).json()["job_id"]
             second = worker.receive_json()
+            assert second["job_id"] == second_id
             assert first_id != second_id
 
             path = urlsplit(first["upload"]["url"]).path
@@ -3338,11 +3341,12 @@ def test_an_output_is_written_once():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-write-once")
-            client.post(
+            job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "once"}},
-            )
+            ).json()["job_id"]
             dispatch = worker.receive_json()
+            assert dispatch["job_id"] == job_id
             assert put_upload(client, dispatch["upload"],
                               png_bytes(320, 240)).status_code == 200
             assert put_upload(client, dispatch["upload"],
@@ -3633,11 +3637,12 @@ def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-temp-prefix")
-            client.post(
+            job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "temp prefix"}},
-            )
+            ).json()["job_id"]
             dispatch = worker.receive_json()
+            assert dispatch["job_id"] == job_id
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             assert prefixes == [".upload-"]
 

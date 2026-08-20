@@ -232,72 +232,78 @@ def _no_inherited_jobs(request):
     get_settings.cache_clear()
     # A dispatch_step that already popped an id can still deliver after the
     # rows are gone unless its epoch is invalidated and the step has finished.
+    # Pause new admission in the same lock as the bump, otherwise a new step
+    # can start after wait_dispatch_idle returns and commit while this drain
+    # clears workers and rows.
     jobs.bump_dispatch_epoch()
-    jobs.wait_dispatch_idle()
-    # A worker whose socket is gone stays in this registry, and the scheduler
-    # will hand it the next test's job and wait for a reply that cannot come.
-    realtime.workers.clear()
-    realtime.sessions.clear()
-    realtime.closing_sessions.clear()
-    realtime.gpu_requests.clear()
-    jobs.inflight.clear()
-    jobs.live_progress.clear()
-    jobs.last_progress_at.clear()
-    jobs.lost_jobs.clear()
-    jobs.subscribers.clear()
-    for task in list(jobs._blob_cleanup_tasks):
-        task.cancel()
-    jobs._blob_cleanup_tasks.clear()
+    try:
+        jobs.wait_dispatch_idle()
+        # A worker whose socket is gone stays in this registry, and the scheduler
+        # will hand it the next test's job and wait for a reply that cannot come.
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.closing_sessions.clear()
+        realtime.gpu_requests.clear()
+        jobs.inflight.clear()
+        jobs.live_progress.clear()
+        jobs.last_progress_at.clear()
+        jobs.lost_jobs.clear()
+        jobs.subscribers.clear()
+        for task in list(jobs._blob_cleanup_tasks):
+            task.cancel()
+        jobs._blob_cleanup_tasks.clear()
 
-    async def drain() -> None:
-        # The queue holds ids, not rows, so truncating the table does not empty
-        # it. A leftover id is dispatched to whichever worker is registered
-        # when the loop next runs, which is the next test's, and that test then
-        # reads a dispatch belonging to a job it never created.
-        while await jobs.queues.pop(jobs.JOB_QUEUE) is not None:
-            pass
-        if "db" not in request.keywords or not DATABASE_AVAILABLE:
-            return
+        async def drain() -> None:
+            # The queue holds ids, not rows, so truncating the table does not empty
+            # it. A leftover id is dispatched to whichever worker is registered
+            # when the loop next runs, which is the next test's, and that test then
+            # reads a dispatch belonging to a job it never created.
+            while await jobs.queues.pop(jobs.JOB_QUEUE) is not None:
+                pass
+            if "db" not in request.keywords or not DATABASE_AVAILABLE:
+                return
 
-        async def delete_rows(session) -> None:
-            # DELETE rather than TRUNCATE: TRUNCATE takes an ACCESS EXCLUSIVE
-            # lock and waits behind any connection a finished test left open,
-            # which hangs the run instead of cleaning it. These tables hold a
-            # handful of rows, so the row-level path costs nothing, and the
-            # lock timeout keeps a stuck connection from stalling the suite.
-            #
-            # Assets first: they carry the job_id foreign key, which TRUNCATE
-            # CASCADE used to absorb and DELETE does not. Nulling the other
-            # direction first (jobs.source_asset_id) is what lets the assets go
-            # while a job still points at one.
-            await session.execute(text("SET LOCAL lock_timeout = '5s'"))
-            await session.execute(text("UPDATE jobs SET source_asset_id = NULL"))
-            await session.execute(text("DELETE FROM assets"))
-            await session.execute(text("DELETE FROM jobs"))
+            async def delete_rows(session) -> None:
+                # DELETE rather than TRUNCATE: TRUNCATE takes an ACCESS EXCLUSIVE
+                # lock and waits behind any connection a finished test left open,
+                # which hangs the run instead of cleaning it. These tables hold a
+                # handful of rows, so the row-level path costs nothing, and the
+                # lock timeout keeps a stuck connection from stalling the suite.
+                #
+                # Assets first: they carry the job_id foreign key, which TRUNCATE
+                # CASCADE used to absorb and DELETE does not. Nulling the other
+                # direction first (jobs.source_asset_id) is what lets the assets go
+                # while a job still points at one.
+                await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                await session.execute(text("UPDATE jobs SET source_asset_id = NULL"))
+                await session.execute(text("DELETE FROM assets"))
+                await session.execute(text("DELETE FROM jobs"))
 
-        if db.session_factory is not None:
-            async with db.session_factory() as session:
-                await delete_rows(session)
-                await session.commit()
-            return
-        # TestClient lifespan calls db.dispose() before this fixture runs, so
-        # the ORM session factory is gone even though the rows are not.
-        import asyncpg
+            if db.session_factory is not None:
+                async with db.session_factory() as session:
+                    await delete_rows(session)
+                    await session.commit()
+                return
+            # TestClient lifespan calls db.dispose() before this fixture runs, so
+            # the ORM session factory is gone even though the rows are not.
+            import asyncpg
 
-        url = urlsplit(_DATABASE_URL)
-        conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
-                                     user=url.username, password=url.password,
-                                     database=url.path.lstrip("/"), timeout=3)
-        try:
-            async with conn.transaction():
-                await conn.execute("SET LOCAL lock_timeout = '5s'")
-                await conn.execute("UPDATE jobs SET source_asset_id = NULL")
-                await conn.execute("DELETE FROM assets")
-                await conn.execute("DELETE FROM jobs")
-        finally:
-            await conn.close()
+            url = urlsplit(_DATABASE_URL)
+            conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
+                                         user=url.username, password=url.password,
+                                         database=url.path.lstrip("/"), timeout=3)
+            try:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL lock_timeout = '5s'")
+                    await conn.execute("UPDATE jobs SET source_asset_id = NULL")
+                    await conn.execute("DELETE FROM assets")
+                    await conn.execute("DELETE FROM jobs")
+            finally:
+                await conn.close()
 
-    asyncio.run(drain())
+        asyncio.run(drain())
+    finally:
+        jobs.resume_dispatch()
 
 
 def pytest_sessionfinish(session, exitstatus):

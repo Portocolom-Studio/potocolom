@@ -110,13 +110,26 @@ inflight: dict[uuid.UUID, InFlight] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 _dispatch_epoch = 0
 _dispatch_active = 0
+_dispatch_paused = False
 _dispatch_active_lock = threading.Lock()
 
 
 def bump_dispatch_epoch() -> None:
-    """Invalidate in-flight dispatches; the test harness calls this before drain."""
-    global _dispatch_epoch
-    _dispatch_epoch += 1
+    """Invalidate in-flight dispatches and refuse new ones until resume.
+
+    The test harness calls this before drain. Production never does.
+    """
+    global _dispatch_epoch, _dispatch_paused
+    with _dispatch_active_lock:
+        _dispatch_epoch += 1
+        _dispatch_paused = True
+
+
+def resume_dispatch() -> None:
+    """Allow dispatch_step to run again after a test drain."""
+    global _dispatch_paused
+    with _dispatch_active_lock:
+        _dispatch_paused = False
 
 
 def wait_dispatch_idle(*, timeout: float = 5.0) -> None:
@@ -1149,6 +1162,8 @@ async def sweep_stalled_jobs() -> None:
 async def dispatch_step() -> None:
     global _dispatch_active
     with _dispatch_active_lock:
+        if _dispatch_paused:
+            return
         _dispatch_active += 1
     try:
         await _dispatch_step_body()
