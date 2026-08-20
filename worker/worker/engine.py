@@ -25,7 +25,11 @@ from typing import Any, Protocol, TypeVar
 from PIL import Image, ImageDraw, ImageOps
 
 from worker.manifests import Manifest
-from worker.frame_batch import FrameBatchCollector, FrameRequest
+from worker.frame_batch import (
+    FrameBatchCollector,
+    FrameRequest,
+    occupancy_share_ms,
+)
 from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
@@ -248,7 +252,10 @@ class SimulatedEngine:
             self._batch_sizes.append(len(requests))
             started = time.monotonic()
             await asyncio.sleep(self.inference_seconds)
-            gpu_ms = int((time.monotonic() - started) * 1000)
+            gpu_ms = occupancy_share_ms(
+                int((time.monotonic() - started) * 1000),
+                len(requests),
+            )
             for request in requests:
                 if request.cancelled or request.future.done():
                     continue
@@ -1301,8 +1308,10 @@ class DiffusersEngine:
                 pipeline, manifest, pipeline_kwargs,
                 preview_decoder=preview_decoder,
             )
-            gpu_ms = int((time.monotonic() - started) * 1000)
-            # One GPU cycle: every request in the batch shares this duration.
+            gpu_ms = occupancy_share_ms(
+                int((time.monotonic() - started) * 1000),
+                len(requests),
+            )
             return [(image, gpu_ms) for image in rendered]
         return self._frame_batch_sequential(requests)
 

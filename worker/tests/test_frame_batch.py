@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from unittest.mock import patch
 
 from worker.client import SessionRunner
 from worker.engine import PromptCache, SimulatedEngine
@@ -11,6 +12,7 @@ from worker.frame_batch import (
     FrameBatchCollector,
     FrameRequest,
     compat_key,
+    occupancy_share_ms,
 )
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 
@@ -119,6 +121,78 @@ def test_collector_latest_input_wins_per_session():
     executor, results = asyncio.run(scenario())
     assert executor.batch_sizes == [1]
     assert results == [b"new", b"new"]
+
+
+def test_occupancy_share_ms_splits_the_cycle():
+    assert occupancy_share_ms(338, 2) == 169
+    assert occupancy_share_ms(338, 1) == 338
+    assert occupancy_share_ms(5, 3) == 1
+
+
+def test_simulated_batch_reports_occupancy_share():
+    async def scenario():
+        engine = SimulatedEngine(0.2)
+        loop = asyncio.get_running_loop()
+        requests = []
+        for session_key, payload in ((1, b"a"), (2, b"b")):
+            future = loop.create_future()
+            requests.append(FrameRequest(
+                session_key,
+                CompatKey("sd-sim", 2, 512),
+                SIMULATED_MANIFEST, {}, 0.0, None, payload, future,
+            ))
+
+        clock = {"t": 0.0}
+
+        def monotonic() -> float:
+            return clock["t"]
+
+        async def sleep(seconds: float) -> None:
+            clock["t"] += seconds
+
+        with (
+            patch("worker.engine.time.monotonic", monotonic),
+            patch("worker.engine.asyncio.sleep", sleep),
+        ):
+            await engine.execute_frame_batch(requests)
+        return [request.future.result() for request in requests]
+
+    results = asyncio.run(scenario())
+    assert results[0].gpu_ms == occupancy_share_ms(200, 2)
+    assert results[1].gpu_ms == 100
+
+
+def test_round_robin_does_not_skip_the_next_class():
+    executor = RecordingExecutor()
+    collector = FrameBatchCollector(executor, window_ms=1000.0)
+    manifest = Manifest(
+        id="sd-sim",
+        name="Sim",
+        capabilities=["realtime"],
+        parameters={
+            "type": "object",
+            "properties": {
+                "steps": {"type": "integer", "default": 2},
+            },
+        },
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        for steps, session_key in ((2, 1), (4, 2), (8, 3)):
+            collector._enqueue(FrameRequest(
+                session_key,
+                compat_key(manifest, {"steps": steps}, 512),
+                manifest, {"steps": steps}, 0.0, None, b"x",
+                loop.create_future(),
+            ))
+        order = []
+        for _ in range(3):
+            batch = collector._pick_batch()
+            assert batch is not None
+            order.append(batch[0].compat.steps)
+        assert order == [2, 4, 8]
+    finally:
+        loop.close()
 
 
 def test_round_robin_across_two_classes():

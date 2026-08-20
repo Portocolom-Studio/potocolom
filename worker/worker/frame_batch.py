@@ -21,6 +21,18 @@ logger = logging.getLogger("potocolom.worker")
 BATCH_WINDOW_MS = 40
 
 
+def occupancy_share_ms(cycle_ms: int, batch_size: int) -> int:
+    """Split one GPU cycle across the sessions that occupied it.
+
+    Admission still sums serialized per-model p95. Reporting the whole
+    cycle on every session would raise that p95 after a handful of
+    batched frames and shed the extra sessions the batch was meant to serve.
+    """
+    if batch_size <= 1:
+        return cycle_ms
+    return cycle_ms // batch_size
+
+
 @dataclass(frozen=True)
 class CompatKey:
     model_id: str
@@ -220,11 +232,16 @@ class FrameBatchCollector:
             bucket = self._pending.get(compat)
             if not bucket:
                 continue
-            self._next_class_index = (index + 1) % ring_len
             requests = list(bucket.values())
             self._pending.pop(compat, None)
             self._compat_ring = [
                 key for key in self._compat_ring if key != compat
             ]
+            # Removing the served class shifts later indexes down. Keep
+            # the cursor on what used to be next, which is now at index.
+            if self._compat_ring:
+                self._next_class_index = index % len(self._compat_ring)
+            else:
+                self._next_class_index = 0
             return requests
         return None
