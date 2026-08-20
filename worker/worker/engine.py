@@ -1118,15 +1118,50 @@ class DiffusersEngine:
 
     def _merge_prompt_embeds(
         self, prompt_kwargs_list: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        """Stack per-request embeds on dim 0, or None when they cannot batch.
+
+        Unlimited-token and SD3 paths return only `prompt` / `negative_prompt`.
+        Concatenating those away leaves the pipeline with neither prompt nor
+        embeds, which poisons the resident model. Mismatched chunk counts
+        raise on cat and would do the same.
+        """
+        if not prompt_kwargs_list:
+            return None
+        skip = ("prompt", "negative_prompt")
+        embed_keys = [key for key in prompt_kwargs_list[0] if key not in skip]
+        if not embed_keys:
+            return None
         merged: dict[str, Any] = {}
-        for key in prompt_kwargs_list[0]:
-            if key in ("prompt", "negative_prompt"):
-                continue
-            merged[key] = self.torch.cat(
-                [kwargs[key] for kwargs in prompt_kwargs_list], dim=0,
-            )
+        for key in embed_keys:
+            tensors = []
+            for kwargs in prompt_kwargs_list:
+                value = kwargs.get(key)
+                if value is None:
+                    return None
+                tensors.append(value)
+            try:
+                reference = tensors[0].shape[1:]
+                if any(tensor.shape[1:] != reference for tensor in tensors):
+                    return None
+                merged[key] = self.torch.cat(tensors, dim=0)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                return None
         return merged
+
+    def _frame_batch_sequential(
+        self, requests: list[FrameRequest],
+    ) -> list[tuple[Image.Image, int]]:
+        results: list[tuple[Image.Image, int]] = []
+        for request in requests:
+            started = time.monotonic()
+            image, _ = self._frame(
+                request.manifest, request.params, request.payload, request.strength,
+                prompt_cache=request.prompt_cache,
+            )
+            gpu_ms = int((time.monotonic() - started) * 1000)
+            results.append((image, gpu_ms))
+        return results
 
     async def execute_frame_batch(self, requests: list[FrameRequest]) -> None:
         if not requests:
@@ -1250,8 +1285,11 @@ class DiffusersEngine:
                 [[[[scale]]] for scale in scales],
                 device=self.device, dtype=self.dtype,
             )
+            merged = self._merge_prompt_embeds(prompt_kwargs_list)
+            if merged is None:
+                return self._frame_batch_sequential(requests)
             pipeline_kwargs = {
-                **self._merge_prompt_embeds(prompt_kwargs_list),
+                **merged,
                 "image": images,
                 "num_inference_steps": steps,
                 "adapter_conditioning_scale": adapter_scale,
@@ -1264,16 +1302,9 @@ class DiffusersEngine:
                 preview_decoder=preview_decoder,
             )
             gpu_ms = int((time.monotonic() - started) * 1000)
+            # One GPU cycle: every request in the batch shares this duration.
             return [(image, gpu_ms) for image in rendered]
-        results: list[Image.Image] = []
-        for request in requests:
-            image, _ = self._frame(
-                manifest, request.params, request.payload, request.strength,
-                prompt_cache=request.prompt_cache,
-            )
-            results.append(image)
-        gpu_ms = int((time.monotonic() - started) * 1000)
-        return [(image, gpu_ms) for image in results]
+        return self._frame_batch_sequential(requests)
 
     @staticmethod
     def _detach_preview_decoder(pipeline: Any) -> None:

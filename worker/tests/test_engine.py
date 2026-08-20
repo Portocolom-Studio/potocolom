@@ -372,6 +372,32 @@ def test_short_prompt_embeds_without_chunking():
     assert pipeline.text_encoder.calls == 2
 
 
+def test_merge_prompt_embeds_refuses_prompt_only_kwargs():
+    engine = _fake_prompt_engine()
+    assert engine._merge_prompt_embeds([
+        {"prompt": "a"}, {"prompt": "b"},
+    ]) is None
+
+
+def test_merge_prompt_embeds_refuses_mismatched_chunk_counts():
+    engine = _fake_prompt_engine()
+    assert engine._merge_prompt_embeds([
+        {"prompt_embeds": _FakeTensor((1, 77, 4))},
+        {"prompt_embeds": _FakeTensor((1, 154, 4))},
+    ]) is None
+
+
+def test_merge_prompt_embeds_stacks_matching_tensors():
+    engine = _fake_prompt_engine()
+    merged = engine._merge_prompt_embeds([
+        {"prompt": "a", "prompt_embeds": _FakeTensor((1, 77, 4))},
+        {"prompt": "b", "prompt_embeds": _FakeTensor((1, 77, 4))},
+    ])
+    assert merged is not None
+    assert merged["prompt_embeds"].shape == (2, 77, 4)
+    assert "prompt" not in merged
+
+
 def test_third_text_encoder_keeps_pipeline_prompt_path():
     engine = _fake_prompt_engine()
     pipeline = _fake_pipeline(dual=True)

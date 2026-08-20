@@ -74,7 +74,6 @@ class FrameBatchCollector:
         self._compat_ring: list[CompatKey] = []
         self._next_class_index = 0
         self._work = asyncio.Event()
-        self._running = False
         self._loop_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -88,6 +87,13 @@ class FrameBatchCollector:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._loop_task
             self._loop_task = None
+        for bucket in self._pending.values():
+            for request in bucket.values():
+                if not request.future.done():
+                    request.future.cancel()
+        self._pending.clear()
+        self._session_compat.clear()
+        self._compat_ring.clear()
 
     async def submit(
         self,
@@ -188,7 +194,6 @@ class FrameBatchCollector:
                 batch = self._pick_batch()
                 if batch is None:
                     break
-                self._running = True
                 try:
                     await self._executor.execute_frame_batch(batch)
                 except Exception as error:
@@ -196,10 +201,14 @@ class FrameBatchCollector:
                     for request in batch:
                         if not request.cancelled and not request.future.done():
                             request.future.set_exception(error)
-                finally:
-                    self._running = False
+                except asyncio.CancelledError:
+                    for request in batch:
+                        if not request.future.done():
+                            request.future.cancel()
+                    raise
                 for request in batch:
-                    self._session_compat.pop(request.session_key, None)
+                    if self._pending_for(request.session_key) is None:
+                        self._session_compat.pop(request.session_key, None)
 
     def _pick_batch(self) -> list[FrameRequest] | None:
         if not self._compat_ring:

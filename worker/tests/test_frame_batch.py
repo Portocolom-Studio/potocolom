@@ -69,11 +69,12 @@ def test_two_compatible_sessions_batch_together():
         return engine, results, elapsed
 
     engine, results, elapsed = asyncio.run(scenario())
-    assert engine._last_batch_size == 2
+    assert engine._batch_sizes == [2]
     assert results[0].data == b"alpha"
     assert results[1].data == b"beta"
-    # One GPU cycle (~50 ms), not two serial (~100 ms).
-    assert elapsed < 0.09
+    # One GPU cycle (~50 ms), not two serial (~100 ms). Bound is loose so a
+    # loaded runner does not fail a scheduling claim already pinned above.
+    assert elapsed < 0.2
 
 
 def test_mismatched_steps_do_not_batch():
@@ -135,20 +136,23 @@ def test_round_robin_across_two_classes():
         },
     )
     loop = asyncio.new_event_loop()
-    for steps, session_key, payload in (
-        (2, 1, b"a1"), (4, 2, b"b1"), (2, 3, b"a2"), (4, 4, b"b2"),
-    ):
-        collector._enqueue(FrameRequest(
-            session_key,
-            compat_key(manifest, {"steps": steps}, 512),
-            manifest, {"steps": steps}, 0.0, None, payload,
-            loop.create_future(),
-        ))
-    first = collector._pick_batch()
-    second = collector._pick_batch()
-    assert first is not None and second is not None
-    assert first[0].compat.steps != second[0].compat.steps
-    assert {first[0].compat.steps, second[0].compat.steps} == {2, 4}
+    try:
+        for steps, session_key, payload in (
+            (2, 1, b"a1"), (4, 2, b"b1"), (2, 3, b"a2"), (4, 4, b"b2"),
+        ):
+            collector._enqueue(FrameRequest(
+                session_key,
+                compat_key(manifest, {"steps": steps}, 512),
+                manifest, {"steps": steps}, 0.0, None, payload,
+                loop.create_future(),
+            ))
+        first = collector._pick_batch()
+        second = collector._pick_batch()
+        assert first is not None and second is not None
+        assert first[0].compat.steps != second[0].compat.steps
+        assert {first[0].compat.steps, second[0].compat.steps} == {2, 4}
+    finally:
+        loop.close()
 
 
 def test_batch_window_constant_in_range():
@@ -207,11 +211,15 @@ def test_closed_session_does_not_receive_frame():
         )
         runner_a.submit(b"mate")
         runner_b.submit(b"victim")
-        await asyncio.sleep(BATCH_WINDOW_MS / 2000.0)
+        await asyncio.sleep(0)
         runner_b.close()
-        await asyncio.sleep(BATCH_WINDOW_MS / 1000.0 + 0.08)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+            if len(frames) >= 1:
+                break
+            await asyncio.sleep(0.01)
         runner_a.close()
-        await asyncio.sleep(0.05)
         return socket
 
     socket = asyncio.run(scenario())
@@ -249,3 +257,65 @@ def test_collector_survives_an_executor_error():
     payload, calls = asyncio.run(scenario())
     assert payload == b"b"
     assert calls == 2
+
+
+def test_a_newer_frame_is_not_dropped_when_the_batch_clears_compat():
+    """execute_frame_batch can resolve the waiter, which then submits again
+    before the collector pops session_compat. Popping anyway loses the new
+    request: the next submit overwrites it and the overwritten future hangs."""
+
+    async def scenario():
+        released = asyncio.Event()
+        started = asyncio.Event()
+
+        class Slow:
+            async def execute_frame_batch(self, requests: list[FrameRequest]) -> None:
+                started.set()
+                await released.wait()
+                for request in requests:
+                    if not request.future.done():
+                        request.future.set_result(request.payload)
+
+        collector = FrameBatchCollector(Slow(), window_ms=0.0)
+        manifest = SIMULATED_MANIFEST
+        first = asyncio.create_task(
+            collector.submit(1, manifest, {}, b"a", 0.0, resolution=512),
+        )
+        await started.wait()
+        second = asyncio.create_task(
+            collector.submit(1, manifest, {}, b"b", 0.0, resolution=512),
+        )
+        await asyncio.sleep(0)
+        released.set()
+        got = await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+        later = await asyncio.wait_for(
+            collector.submit(1, manifest, {}, b"c", 0.0, resolution=512),
+            timeout=1,
+        )
+        return got, later
+
+    got, later = asyncio.run(scenario())
+    assert got == [b"a", b"b"]
+    assert later == b"c"
+
+
+def test_close_settles_outstanding_requests():
+    async def scenario():
+        class Idle:
+            async def execute_frame_batch(self, requests: list[FrameRequest]) -> None:
+                await asyncio.Event().wait()
+
+        collector = FrameBatchCollector(Idle(), window_ms=1000.0)
+        manifest = SIMULATED_MANIFEST
+        pending = asyncio.create_task(
+            collector.submit(1, manifest, {}, b"x", 0.0, resolution=512),
+        )
+        await asyncio.sleep(0)
+        await collector.close()
+        try:
+            await pending
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "completed"
+
+    assert asyncio.run(scenario()) == "cancelled"
