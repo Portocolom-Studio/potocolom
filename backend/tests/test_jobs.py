@@ -1057,6 +1057,97 @@ def test_a_reported_failure_does_not_leave_its_upload_behind():
 
 
 @pytest.mark.db
+def test_a_failed_thumbnail_promote_does_not_leave_the_library_master(monkeypatch):
+    """Promote copies the master before the thumbnail. If the thumbnail copy
+    fails, the master would otherwise stay in the library with no asset row."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-thumb-promote")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "thumb promote"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            assert put_upload(client, dispatch["thumb_upload"],
+                              webp_bytes()).status_code == 200
+            key = uuid.UUID(job_id)
+            user_id = jobs.inflight[key].user_id
+            library_key = jobs.storage_keys_for_attempt(user_id, key, 1)[0]
+            storage = jobs.get_storage()
+            real_promote = storage.promote
+
+            async def fail_thumb(source, dest):
+                if dest.endswith("-thumb.webp"):
+                    raise RuntimeError("thumb promote failed")
+                return await real_promote(source, dest)
+
+            monkeypatch.setattr(storage, "promote", fail_thumb)
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"],
+                              "gpu_ms": 1, "width": 512, "height": 512,
+                              "has_thumbnail": True})
+            poll_until(client, job_id, "failed")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and storage.path(library_key).exists():
+                client.get("/api/v1/health")
+                time.sleep(0.05)
+            assert not storage.path(library_key).exists(), \
+                "a failed thumbnail promote left the library master"
+
+
+@pytest.mark.db
+def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
+    """A requeue can replace the inflight entry after the master copy lands
+    and before the asset row commits. Those dests have no row."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-supersede-promote")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "supersede promote"}},
+            ).json()["job_id"]
+            dispatch = dispatch_for(worker, job_id)
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            key = uuid.UUID(job_id)
+            original = jobs.inflight[key]
+            library_key = jobs.storage_keys_for_attempt(original.user_id, key, 1)[0]
+            replacement = jobs.InFlight(
+                worker=original.worker, storage_key="replacement.png",
+                thumb_storage_key="replacement-thumb.webp",
+                user_id=original.user_id, dispatch_token="replacement-token",
+                attempt=2,
+            )
+            storage = jobs.get_storage()
+            real_promote = storage.promote
+
+            class Swapping:
+                def __getattr__(self, name):
+                    return getattr(storage, name)
+
+                async def promote(self, source, dest):
+                    await real_promote(source, dest)
+                    jobs.inflight[key] = replacement
+
+            monkeypatch.setattr(jobs, "get_storage", lambda: Swapping())
+            worker.send_json({"type": "job_done", "job_id": job_id,
+                              "dispatch_token": original.dispatch_token,
+                              "gpu_ms": 1, "width": 512, "height": 512})
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and storage.path(library_key).exists():
+                client.get("/api/v1/health")
+                time.sleep(0.05)
+            assert not storage.path(library_key).exists(), \
+                "a superseded promote left the library master"
+            monkeypatch.undo()
+            jobs.inflight[key] = original
+            worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
+                              "width": 512, "height": 512,
+                              "dispatch_token": original.dispatch_token})
+            poll_until(client, job_id, "succeeded")
+
+
+@pytest.mark.db
 def test_a_late_verdict_does_not_fail_the_attempt_that_replaced_it(monkeypatch):
     """image_info awaits a thread, so the attempt can change under it.
 

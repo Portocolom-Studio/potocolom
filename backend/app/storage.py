@@ -367,6 +367,10 @@ class LocalStorage:
                 raise
             try:
                 os.link(temporary, dest)
+            except FileExistsError:
+                # dest.exists() was false, then a concurrent promote published
+                # first. The destination is already the write-once object.
+                pass
             finally:
                 os.unlink(temporary)
 

@@ -1393,10 +1393,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         )
         try:
             storage = get_storage()
+            promoted: list[str] = []
             if current.storage_key != library_key:
                 await storage.promote(current.storage_key, library_key)
+                promoted.append(library_key)
             if thumb is not None and current.thumb_storage_key != library_thumb_key:
                 await storage.promote(current.thumb_storage_key, library_thumb_key)
+                promoted.append(library_thumb_key)
         except Exception:
             try:
                 committed = await mark_failed(
@@ -1415,6 +1418,12 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             )
             return
         if inflight.get(job_id) is not current:
+            # A requeue replaced this attempt after the copy. No asset row
+            # names these dests, and the winner's keys are a later attempt.
+            schedule_blob_cleanup(
+                _purge_keys(promoted, job_id),
+                what=f"superseded library copies for job {job_id}",
+            )
             return
         try:
             async with db.session_factory() as session:
@@ -1426,6 +1435,12 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 # entry's attempt means a requeue got there first.
                 if (job is None or job.state in TERMINAL_STATES
                         or job.attempt > current.attempt):
+                    if promoted and (job is None or job.attempt > current.attempt
+                                     or job.state != "succeeded"):
+                        schedule_blob_cleanup(
+                            _purge_keys(promoted, job_id),
+                            what=f"uncommitted library copies for job {job_id}",
+                        )
                     return
                 job.state = "succeeded"
                 job.gpu_ms = gpu_ms
@@ -1464,11 +1479,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             logger.exception("could not mark job %s succeeded", job_id)
             return
         clear_if_current(worker, job_id, current)
-        orphans = [
-            key
-            for attempt in range(1, current.attempt + 1)
-            for key in dispatch_keys_for_attempt(current.user_id, job_id, attempt)
-        ]
+        orphans: list[str] = []
+        for attempt in range(1, current.attempt + 1):
+            orphans.extend(dispatch_keys_for_attempt(current.user_id, job_id, attempt))
+            if attempt < current.attempt:
+                orphans.extend(storage_keys_for_attempt(current.user_id, job_id, attempt))
         schedule_blob_cleanup(
             _purge_keys(orphans, job_id),
             what=f"dispatch orphans for job {job_id}",
@@ -1570,11 +1585,10 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     S3Storage.delete purges every version of the key, not just the current
     one, so this reclaims the storage rather than hiding it.
     """
-    keys = [
-        key
-        for earlier in range(1, attempt + 1)
-        for key in dispatch_keys_for_attempt(user_id, job_id, earlier)
-    ]
+    keys: list[str] = []
+    for earlier in range(1, attempt + 1):
+        keys.extend(dispatch_keys_for_attempt(user_id, job_id, earlier))
+        keys.extend(storage_keys_for_attempt(user_id, job_id, earlier))
     await _purge_keys(keys, job_id)
 
 

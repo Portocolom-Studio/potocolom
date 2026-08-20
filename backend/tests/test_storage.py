@@ -74,6 +74,32 @@ def test_local_promote_leaves_an_existing_library_key(tmp_path):
     assert dest.read_bytes() == b"already there"
 
 
+def test_local_promote_treats_a_racing_link_as_success(tmp_path, monkeypatch):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    source = storage.path("dispatch/u/j-attempt-1.png")
+    dest = storage.path("u/j-attempt-1.png")
+    source.parent.mkdir(parents=True)
+    dest.parent.mkdir(parents=True)
+    source.write_bytes(png_bytes())
+    dest.write_bytes(b"winner")
+    dest_str = str(dest)
+
+    def exists_then_race(self):
+        if str(self) == dest_str:
+            return False
+        return original_exists(self)
+
+    original_exists = type(dest).exists
+    monkeypatch.setattr(type(dest), "exists", exists_then_race)
+
+    def already_there(src, dst):
+        raise FileExistsError(dst)
+
+    monkeypatch.setattr("os.link", already_there)
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    assert dest.read_bytes() == b"winner"
+
+
 class _FakeS3PromoteClient:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
