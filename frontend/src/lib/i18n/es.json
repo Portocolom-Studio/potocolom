@@ -333,6 +333,7 @@
 	"app.gen.star": "Destacar",
 	"app.gen.unstar": "Quitar destacado",
 	"app.gen.favorite_missing": "Ya no existen {count} favoritos guardados.",
+	"app.gen.favorite_unrestored": "No se pudieron restaurar {count} favoritos guardados.",
 	"app.gen.favorite_expired": "Un favorito caducado ya no est\u00e1 porque los favoritos no ampl\u00edan la retenci\u00f3n.",
 	"app.gen.favorite_save_failed": "No se pudo guardar el favorito.",
 	"app.update.available": "Hay una versión nueva disponible.",

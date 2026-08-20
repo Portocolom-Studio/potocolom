@@ -139,9 +139,12 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 ## Upgrading
 
 The worker protocol's N-1 promise is API-at-or-ahead of its workers. Upgrade
-the API first, then the worker. A worker one version ahead of its API may
-publish fields the older API drops, and narrowing fields such as
-`studio_capabilities` then fail open. Compose brings both from one image, so
+the API first, then the worker. Extra hello fields from a worker one version
+ahead of its API are dropped, so narrowing fields such as
+`studio_capabilities` fail open. From protocol 4, that mismatch also leaves
+realtime unready: a protocol 4 worker ignores `open_session` with no
+`control_generation`, so the session never becomes ready (close 4003 after
+the ready timeout). Jobs still run. Compose brings both from one image, so
 operators who follow compose do not hit this.
 
 ## Accounts
