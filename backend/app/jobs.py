@@ -17,6 +17,7 @@ import math
 import random
 import re
 import secrets
+import threading
 import time
 import unicodedata
 import uuid
@@ -107,6 +108,27 @@ class InFlight:
 
 inflight: dict[uuid.UUID, InFlight] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
+_dispatch_epoch = 0
+_dispatch_active = 0
+_dispatch_active_lock = threading.Lock()
+
+
+def bump_dispatch_epoch() -> None:
+    """Invalidate in-flight dispatches; the test harness calls this before drain."""
+    global _dispatch_epoch
+    _dispatch_epoch += 1
+
+
+def wait_dispatch_idle(*, timeout: float = 5.0) -> None:
+    """Block until no dispatch_step is running (cross-loop safe)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with _dispatch_active_lock:
+            if _dispatch_active == 0:
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("dispatch step still running after teardown")
+        time.sleep(0.001)
 
 
 def upload_authorized(key: str, token: object) -> bool:
@@ -1125,6 +1147,17 @@ async def sweep_stalled_jobs() -> None:
 
 
 async def dispatch_step() -> None:
+    global _dispatch_active
+    with _dispatch_active_lock:
+        _dispatch_active += 1
+    try:
+        await _dispatch_step_body()
+    finally:
+        with _dispatch_active_lock:
+            _dispatch_active -= 1
+
+
+async def _dispatch_step_body() -> None:
     if db.session_factory is None:
         return
     # One pass over what is here now: an entry appended while this runs waits
@@ -1175,6 +1208,7 @@ async def locked_job(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
 
 
 async def dispatch(job_id: uuid.UUID) -> bool:
+    epoch = _dispatch_epoch
     assert db.session_factory is not None
     async with db.session_factory() as session:
         job = await locked_job(session, job_id)
@@ -1222,6 +1256,11 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             dispatch_msg["input"] = {
                 "url": await get_storage().worker_fetch_url(source.storage_key),
             }
+        if epoch != _dispatch_epoch:
+            inflight.pop(job.id, None)
+            last_progress_at.pop(job.id, None)
+            release_job_slot(worker)
+            return True  # harness bumped epoch; session rolls back, job stays queued
         try:
             await worker.ws.send_json(dispatch_msg)
         except Exception:  # the socket is dead however the transport spells it
@@ -1232,6 +1271,11 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             last_progress_at.pop(job.id, None)
             release_job_slot(worker)
             return False  # session rolls back, the job stays queued
+        if epoch != _dispatch_epoch:
+            inflight.pop(job.id, None)
+            last_progress_at.pop(job.id, None)
+            release_job_slot(worker)
+            return True  # harness bumped epoch during send; session rolls back
         await session.commit()
     publish(job_id, {"state": "running"})
     logger.info("job %s dispatched to worker %s", job_id, worker.id)

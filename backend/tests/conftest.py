@@ -221,8 +221,6 @@ def _no_inherited_jobs(request):
     after still starts clean.
     """
     yield
-    if "db" not in request.keywords or not DATABASE_AVAILABLE:
-        return
     from app import db, jobs, realtime
     from app.settings import get_settings
 
@@ -232,14 +230,24 @@ def _no_inherited_jobs(request):
     # requeues their jobs under them. Undoing the variable is not undoing the
     # setting until this is cleared.
     get_settings.cache_clear()
+    # A dispatch_step that already popped an id can still deliver after the
+    # rows are gone unless its epoch is invalidated and the step has finished.
+    jobs.bump_dispatch_epoch()
+    jobs.wait_dispatch_idle()
     # A worker whose socket is gone stays in this registry, and the scheduler
     # will hand it the next test's job and wait for a reply that cannot come.
     realtime.workers.clear()
+    realtime.sessions.clear()
+    realtime.closing_sessions.clear()
+    realtime.gpu_requests.clear()
     jobs.inflight.clear()
     jobs.live_progress.clear()
     jobs.last_progress_at.clear()
     jobs.lost_jobs.clear()
     jobs.subscribers.clear()
+    for task in list(jobs._blob_cleanup_tasks):
+        task.cancel()
+    jobs._blob_cleanup_tasks.clear()
 
     async def drain() -> None:
         # The queue holds ids, not rows, so truncating the table does not empty
@@ -248,9 +256,10 @@ def _no_inherited_jobs(request):
         # reads a dispatch belonging to a job it never created.
         while await jobs.queues.pop(jobs.JOB_QUEUE) is not None:
             pass
-        if db.session_factory is None:
-            return  # the app never started here, so no rows of its making
-        async with db.session_factory() as session:
+        if "db" not in request.keywords or not DATABASE_AVAILABLE:
+            return
+
+        async def delete_rows(session) -> None:
             # DELETE rather than TRUNCATE: TRUNCATE takes an ACCESS EXCLUSIVE
             # lock and waits behind any connection a finished test left open,
             # which hangs the run instead of cleaning it. These tables hold a
@@ -265,7 +274,28 @@ def _no_inherited_jobs(request):
             await session.execute(text("UPDATE jobs SET source_asset_id = NULL"))
             await session.execute(text("DELETE FROM assets"))
             await session.execute(text("DELETE FROM jobs"))
-            await session.commit()
+
+        if db.session_factory is not None:
+            async with db.session_factory() as session:
+                await delete_rows(session)
+                await session.commit()
+            return
+        # TestClient lifespan calls db.dispose() before this fixture runs, so
+        # the ORM session factory is gone even though the rows are not.
+        import asyncpg
+
+        url = urlsplit(_DATABASE_URL)
+        conn = await asyncpg.connect(host=url.hostname, port=url.port or 5432,
+                                     user=url.username, password=url.password,
+                                     database=url.path.lstrip("/"), timeout=3)
+        try:
+            async with conn.transaction():
+                await conn.execute("SET LOCAL lock_timeout = '5s'")
+                await conn.execute("UPDATE jobs SET source_asset_id = NULL")
+                await conn.execute("DELETE FROM assets")
+                await conn.execute("DELETE FROM jobs")
+        finally:
+            await conn.close()
 
     asyncio.run(drain())
 

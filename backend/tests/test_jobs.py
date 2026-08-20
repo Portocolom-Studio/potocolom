@@ -80,23 +80,6 @@ def webp_bytes():
     return _WEBP_BYTES
 
 
-def dispatch_for(worker, job_id, limit=5):
-    """The dispatch for this job, skipping any that belongs to another test.
-
-    The conftest fixture clears the job rows and the in-process dispatch state
-    after every db test, which removes the leak this used to paper over. What
-    survives is a dispatch already in flight when the fixture runs: the loop
-    picked the row before the delete and delivers it to whichever worker is
-    registered when it wakes, which is the next test's. Measured, removing this
-    helper fails about one run in four, all in the same cluster (issue #279).
-    """
-    for _ in range(limit):
-        message = worker.receive_json()
-        if message.get("type") == "dispatch_job" and message["job_id"] == job_id:
-            return message
-    raise AssertionError(f"no dispatch for job {job_id}")
-
-
 def put_upload(client, spec, content):
     """PUT the way a worker does: the dispatch headers carry the upload token."""
     return client.put(urlsplit(spec["url"]).path, content=content,
@@ -1413,7 +1396,7 @@ def test_a_requeue_during_a_terminal_transaction_keeps_its_entry(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "verdict race"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"],
                               png_bytes()).status_code == 200
 
@@ -3194,7 +3177,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "token"}},
             ).json()["job_id"]
-            dispatch_for(worker, job_id)
+            worker.receive_json()
 
             # What a requeue to the same worker leaves behind: a new entry,
             # same Worker object, new key, new token.
@@ -3243,7 +3226,7 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "n-1"}},
             ).json()["job_id"]
-            dispatch_for(worker, job_id)
+            worker.receive_json()
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
             asyncio.run(jobs.on_worker_message(current.worker, {
@@ -3274,7 +3257,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "missing token"}},
             ).json()["job_id"]
-            dispatch_for(worker, job_id)
+            worker.receive_json()
 
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
@@ -3318,12 +3301,12 @@ def test_an_upload_needs_the_token_of_its_own_dispatch():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "one"}},
             ).json()["job_id"]
-            first = dispatch_for(worker, first_id)
+            first = worker.receive_json()
             second_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "two"}},
             ).json()["job_id"]
-            second = dispatch_for(worker, second_id)
+            second = worker.receive_json()
             assert first_id != second_id
 
             path = urlsplit(first["upload"]["url"]).path
@@ -3355,11 +3338,11 @@ def test_an_output_is_written_once():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-write-once")
-            job_id = client.post(
+            client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "once"}},
-            ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            )
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"],
                               png_bytes(320, 240)).status_code == 200
             assert put_upload(client, dispatch["upload"],
@@ -3383,7 +3366,7 @@ def test_a_thumbnail_that_is_not_a_webp_is_dropped_rather_than_served():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "thumb"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             assert put_upload(client, dispatch["thumb_upload"],
                               b"not a webp at all").status_code == 200
@@ -3411,7 +3394,7 @@ def test_an_oversized_thumbnail_is_dropped_rather_than_scaled_down():
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "big thumb"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             assert put_upload(client, dispatch["thumb_upload"],
                               _WEBP_BIG_BYTES).status_code == 200
@@ -3483,7 +3466,7 @@ def test_authorization_is_rechecked_after_the_body(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "recheck"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
             replacement = jobs.InFlight(
@@ -3530,7 +3513,7 @@ def test_authorization_is_rechecked_between_write_and_link(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "write-link"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
             replacement = jobs.InFlight(
@@ -3589,7 +3572,7 @@ def test_a_failed_write_leaves_no_partial_upload(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "partial"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             path = urlsplit(dispatch["upload"]["url"]).path
             key = path.rsplit("/api/v1/files/", 1)[-1]
             storage = jobs.get_storage()
@@ -3650,11 +3633,11 @@ def test_upload_temporaries_carry_a_debris_prefix(monkeypatch):
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-temp-prefix")
-            job_id = client.post(
+            client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "temp prefix"}},
-            ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            )
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             assert prefixes == [".upload-"]
 
@@ -3701,7 +3684,7 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "record"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             upload_path = urlsplit(dispatch["upload"]["url"]).path
             key = upload_path.rsplit("/api/v1/files/", 1)[-1]
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
@@ -3752,7 +3735,7 @@ def test_a_hung_delete_does_not_delay_the_verdict(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "hang"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             # Patch after startup so maintain_deletes_loop's first pass
             # cannot sit on this hang for the life of the client.
             monkeypatch.setattr(jobs, "_bounded_delete", hung_delete)
@@ -3786,7 +3769,7 @@ def test_a_cancelled_cleanup_is_recorded_for_the_sweep(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "cancel"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
                 "/api/v1/files/", 1)[-1]
             monkeypatch.setattr(jobs, "_bounded_delete", hung_delete)
@@ -3870,7 +3853,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "orphan record"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = worker.receive_json()
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
 
             real_storage = jobs.get_storage()
