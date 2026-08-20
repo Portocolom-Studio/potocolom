@@ -320,19 +320,23 @@ ci-runner-install: ## register CI_RUNNERS self-hosted Actions runners (once)
 ci-runner-service-install: ## install the runners as systemd services (sudo, once)
 	@for dir in $(CI_RUNNER_DIRS); do \
 		test -f "$$dir/svc.sh" || { echo "run make ci-runner-install first" >&2; exit 1; }; \
+		if [ -f "$$dir/.service" ]; then \
+			echo "service already installed for $$dir, skipping"; \
+			continue; \
+		fi; \
 		(cd "$$dir" && sudo ./svc.sh install) || exit 1; \
 	done
 
 ci-runner-start: ## start the self-hosted CI runners (systemd)
 	@for dir in $(CI_RUNNER_DIRS); do \
-		test -f "$$dir/svc.sh" || { echo "run make ci-runner-install first" >&2; exit 1; }; \
+		test -f "$$dir/.service" || { echo "run make ci-runner-service-install first" >&2; exit 1; }; \
 		(cd "$$dir" && sudo ./svc.sh start) || exit 1; \
 	done
 	@$(MAKE) --no-print-directory ci-runner-status
 
 ci-runner-stop: ## stop the self-hosted CI runners
 	@for dir in $(CI_RUNNER_DIRS); do \
-		test -f "$$dir/svc.sh" || continue; \
+		test -f "$$dir/.service" || continue; \
 		(cd "$$dir" && sudo ./svc.sh stop) || exit 1; \
 	done
 
@@ -340,10 +344,10 @@ ci-runner-restart: ci-runner-stop ci-runner-start ## restart the self-hosted CI 
 
 ci-runner-status: ## show self-hosted runner service status
 	@for dir in $(CI_RUNNER_DIRS); do \
-		if [ -f "$$dir/svc.sh" ]; then \
+		if [ -f "$$dir/.service" ]; then \
 			(cd "$$dir" && sudo ./svc.sh status); \
 		else \
-			echo "runner not installed ($$dir)"; \
+			echo "service not installed ($$dir)"; \
 		fi; \
 	done
 
