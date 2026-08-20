@@ -1351,9 +1351,11 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
                 jobs, "publish",
                 lambda job_id, event: published.append((job_id, event)),
             )
-            master_key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+            dispatch_key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
                 "/api/v1/files/", 1
             )[-1]
+            assert dispatch_key.startswith(jobs.DISPATCH_PREFIX)
+            master_key = dispatch_key.removeprefix(jobs.DISPATCH_PREFIX)
             real_storage = jobs.get_storage()
 
             class FailingUrl:

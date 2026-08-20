@@ -6,8 +6,10 @@ URL in the cloud, an internal API route (app/files.py) when local.
 """
 
 import asyncio
+import os
 import re
 import struct
+import tempfile
 import zlib
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
@@ -284,6 +286,8 @@ class Storage(Protocol):
 
     async def worker_fetch_url(self, key: str) -> str: ...
 
+    async def promote(self, source_key: str, dest_key: str) -> None: ...
+
     async def delete(self, key: str) -> None: ...
 
 
@@ -343,6 +347,30 @@ class LocalStorage:
 
     async def worker_fetch_url(self, key: str) -> str:
         return f"{self.worker_url}/api/v1/files/{key}"
+
+    async def promote(self, source_key: str, dest_key: str) -> None:
+        def copy_once() -> None:
+            source = self.path(source_key)
+            dest = self.path(dest_key)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                # A promote that landed, then a failed commit, retries
+                # job_done for the same attempt. Overwriting would break
+                # write-once; leaving the existing object is the retry.
+                return
+            descriptor, temporary = tempfile.mkstemp(dir=dest.parent, prefix=".promote-")
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(source.read_bytes())
+            except BaseException:
+                os.unlink(temporary)
+                raise
+            try:
+                os.link(temporary, dest)
+            finally:
+                os.unlink(temporary)
+
+        await asyncio.to_thread(copy_once)
 
     async def delete(self, key: str) -> None:
         # Off the loop, and in a pool of its own. unlink blocks forever on a
@@ -455,6 +483,27 @@ class S3Storage:
 
     async def worker_fetch_url(self, key: str) -> str:
         return await self.url(key)
+
+    async def promote(self, source_key: str, dest_key: str) -> None:
+        from botocore.exceptions import ClientError
+
+        def copy_once() -> None:
+            try:
+                self.client.head_object(Bucket=self.bucket, Key=dest_key)
+                return
+            except ClientError as error:
+                code = error.response.get("Error", {}).get("Code")
+                if code not in ("404", "NoSuchKey", "NotFound"):
+                    raise
+            self.client.copy_object(
+                Bucket=self.bucket,
+                Key=dest_key,
+                CopySource={"Bucket": self.bucket, "Key": source_key},
+                ContentType=stored_content_type(dest_key),
+                MetadataDirective="REPLACE",
+            )
+
+        await asyncio.to_thread(copy_once)
 
     async def delete(self, key: str) -> None:
         """Remove the object and, on a versioned bucket, its history.
