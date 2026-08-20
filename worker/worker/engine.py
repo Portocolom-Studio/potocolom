@@ -25,6 +25,7 @@ from typing import Any, Protocol, TypeVar
 from PIL import Image, ImageDraw, ImageOps
 
 from worker.manifests import Manifest
+from worker.frame_batch import FrameBatchCollector, FrameRequest
 from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
@@ -228,9 +229,32 @@ class SimulatedEngine:
     """Sleeps instead of denoising; frames echo back, jobs produce a flat
     image colored from the prompt so results are distinguishable."""
 
-    def __init__(self, inference_seconds: float):
+    def __init__(
+        self, inference_seconds: float, *, batch_window_ms: float = 0.0,
+    ):
         self.inference_seconds = inference_seconds
         self._loaded: set[str] = set()
+        self._gpu = asyncio.Lock()
+        # No collection delay by default: simulated inference is for protocol
+        # tests, not timing the batch window. Cross-session batching still runs
+        # through the same collector path as DiffusersEngine.
+        self._batch_collector = FrameBatchCollector(self, window_ms=batch_window_ms)
+        self._last_batch_size = 0
+        self._batch_sizes: list[int] = []
+
+    async def execute_frame_batch(self, requests: list[FrameRequest]) -> None:
+        async with self._gpu:
+            self._last_batch_size = len(requests)
+            self._batch_sizes.append(len(requests))
+            started = time.monotonic()
+            await asyncio.sleep(self.inference_seconds)
+            gpu_ms = int((time.monotonic() - started) * 1000)
+            for request in requests:
+                if request.cancelled or request.future.done():
+                    continue
+                request.future.set_result(
+                    GeneratedFrame(request.payload, gpu_ms),
+                )
 
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)
@@ -339,9 +363,14 @@ class SimulatedEngine:
         self, manifest: Manifest, params: dict, payload: bytes,
         *, prompt_cache: PromptCache | None = None,
     ) -> GeneratedFrame:
-        started = time.monotonic()
-        await asyncio.sleep(self.inference_seconds)
-        return GeneratedFrame(payload, int((time.monotonic() - started) * 1000))
+        session_key = (
+            id(prompt_cache) if prompt_cache is not None
+            else id(asyncio.current_task())
+        )
+        return await self._batch_collector.submit(
+            session_key, manifest, params, payload, 0.0,
+            prompt_cache=prompt_cache, resolution=REALTIME_SIZE,
+        )
 
 
 class DiffusersEngine:
@@ -377,6 +406,16 @@ class DiffusersEngine:
         self._observed_frame_ms: dict[str, deque[float]] = {}
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+        self._batch_collector = FrameBatchCollector(self)
+
+    def _batch_collector_or_create(self) -> FrameBatchCollector:
+        collector = getattr(self, "_batch_collector", None)
+        if collector is None:
+            # Tests build engines with __new__ and skip __init__; a zero window
+            # keeps their frame calls from waiting on the production collector.
+            collector = FrameBatchCollector(self, window_ms=0.0)
+            self._batch_collector = collector
+        return collector
 
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
@@ -800,8 +839,9 @@ class DiffusersEngine:
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.
 
-        Multi-image batch calibration waits on deferred cross-session batching;
-        until then N sessions share the GPU lock, so capacity is bar_ms / p95.
+        Cross-session batching runs below this advertisement. Admission still
+        uses serialized per-model p95, so a batch of N still costs N times
+        one frame until a later curve replaces this number.
         """
         self._calibration_cap = configured
         if self.device != "cuda":
@@ -1042,6 +1082,198 @@ class DiffusersEngine:
             # full-VAE render at this seed would be; the next frame re-seeds.
             image = pipeline(**pipeline_kwargs).images[0]
         return image
+
+    def _render_with_preview_decoder_batch(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        pipeline_kwargs: dict[str, Any],
+        *,
+        preview_decoder: Any | None = None,
+    ) -> list[Image.Image]:
+        if preview_decoder is None:
+            preview_decoder = self._preview_decoder(pipeline, manifest)
+        images: list[Image.Image] | None = None
+        if preview_decoder is not None:
+            latents = pipeline(**pipeline_kwargs, output_type="latent").images
+            try:
+                with self.torch.inference_mode():
+                    decoded = preview_decoder.decode(latents, return_dict=False)[0]
+                images = pipeline.image_processor.postprocess(
+                    decoded, output_type="pil",
+                )
+            except Exception as error:
+                self._defer_preview_decoder(pipeline, manifest, "decode", error)
+        if images is None:
+            images = pipeline(**pipeline_kwargs).images
+        return images
+
+    @staticmethod
+    def _session_frame_key(
+        prompt_cache: PromptCache | None,
+    ) -> int:
+        if prompt_cache is not None:
+            return id(prompt_cache)
+        return id(asyncio.current_task())
+
+    def _merge_prompt_embeds(
+        self, prompt_kwargs_list: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        for key in prompt_kwargs_list[0]:
+            if key in ("prompt", "negative_prompt"):
+                continue
+            merged[key] = self.torch.cat(
+                [kwargs[key] for kwargs in prompt_kwargs_list], dim=0,
+            )
+        return merged
+
+    async def execute_frame_batch(self, requests: list[FrameRequest]) -> None:
+        if not requests:
+            return
+        manifest = requests[0].manifest
+        frame_result: list[tuple[Image.Image, int]] | None = None
+        try:
+            async with self._gpu:
+                self._require_realtime_resident(manifest)
+                try:
+                    frame_result = await self._run_to_completion(
+                        self._frame_batch, requests,
+                    )
+                except self.torch.OutOfMemoryError:
+                    pass
+                except (ValueError, TypeError) as error:
+                    for request in requests:
+                        if not request.cancelled and not request.future.done():
+                            request.future.set_exception(error)
+                    return
+                except Exception as error:
+                    self._evict_poisoned(manifest.id)
+                    for request in requests:
+                        if not request.cancelled and not request.future.done():
+                            request.future.set_exception(error)
+                    return
+                if frame_result is None:
+                    self._evict_except(manifest.id)
+                    self._require_realtime_resident(manifest)
+                    try:
+                        frame_result = await self._run_to_completion(
+                            self._frame_batch, requests,
+                        )
+                    except self.torch.OutOfMemoryError as error:
+                        raise NotResidentError(
+                            f"model {manifest.id} is not fully resident for realtime"
+                        ) from error
+        except NotResidentError as error:
+            for request in requests:
+                if not request.cancelled and not request.future.done():
+                    request.future.set_exception(error)
+            return
+        except Exception as error:
+            for request in requests:
+                if not request.cancelled and not request.future.done():
+                    request.future.set_exception(error)
+            return
+        if frame_result is None:
+            return
+        encode_tasks = []
+        for request, (image, gpu_ms) in zip(
+            requests, frame_result, strict=True,
+        ):
+            if request.cancelled or request.future.done():
+                continue
+            encode_tasks.append(asyncio.create_task(
+                self._encode_frame_result(request, image, gpu_ms),
+            ))
+        if encode_tasks:
+            await asyncio.gather(*encode_tasks)
+
+    async def _encode_frame_result(
+        self,
+        request: FrameRequest,
+        image: Image.Image,
+        gpu_ms: int,
+    ) -> None:
+        async with self._codec:
+            data = await self._run_to_completion(encode_webp, image)
+        if not request.cancelled and not request.future.done():
+            request.future.set_result(GeneratedFrame(data, gpu_ms))
+
+    def _frame_batch(
+        self, requests: list[FrameRequest],
+    ) -> list[tuple[Image.Image, int]]:
+        started = time.monotonic()
+        manifest = requests[0].manifest
+        if len(requests) == 1:
+            request = requests[0]
+            image, _ = self._frame(
+                manifest, request.params, request.payload, request.strength,
+                prompt_cache=request.prompt_cache,
+            )
+            gpu_ms = int((time.monotonic() - started) * 1000)
+            return [(image, gpu_ms)]
+        if manifest.t2i_adapter:
+            pipeline = self._pipeline(
+                manifest, "realtime", allow_demotion=False,
+            )
+            preview_decoder = self._preview_decoder(pipeline, manifest)
+            prompt_kwargs_list: list[dict[str, Any]] = []
+            images: list[Image.Image] = []
+            generators: list[Any] = []
+            scales: list[float] = []
+            properties = manifest.parameters.get("properties", {})
+            steps = requests[0].compat.steps
+            seeded = False
+            for request in requests:
+                negative_prompt = request.params.get("negative_prompt")
+                prompt_kwargs_list.append(self._prompt_kwargs(
+                    pipeline,
+                    manifest,
+                    str(request.params.get("prompt", "")),
+                    str(negative_prompt) if negative_prompt is not None else None,
+                    prompt_cache=request.prompt_cache,
+                ))
+                images.append(request.payload)
+                seed = request.params.get("seed")
+                if isinstance(seed, int):
+                    seeded = True
+                    generators.append(
+                        self.torch.Generator(self.device).manual_seed(int(seed)),
+                    )
+                else:
+                    generators.append(self.torch.Generator(self.device))
+                scales.append(float(request.params.get(
+                    "structure_strength",
+                    properties.get("structure_strength", {}).get("default", 1.0),
+                )))
+            adapter_scale = self.torch.tensor(
+                [[[[scale]]] for scale in scales],
+                device=self.device, dtype=self.dtype,
+            )
+            pipeline_kwargs = {
+                **self._merge_prompt_embeds(prompt_kwargs_list),
+                "image": images,
+                "num_inference_steps": steps,
+                "adapter_conditioning_scale": adapter_scale,
+                "guidance_scale": 0.0,
+            }
+            if seeded:
+                pipeline_kwargs["generator"] = generators
+            rendered = self._render_with_preview_decoder_batch(
+                pipeline, manifest, pipeline_kwargs,
+                preview_decoder=preview_decoder,
+            )
+            gpu_ms = int((time.monotonic() - started) * 1000)
+            return [(image, gpu_ms) for image in rendered]
+        results: list[Image.Image] = []
+        for request in requests:
+            image, _ = self._frame(
+                manifest, request.params, request.payload, request.strength,
+                prompt_cache=request.prompt_cache,
+            )
+            results.append(image)
+        gpu_ms = int((time.monotonic() - started) * 1000)
+        return [(image, gpu_ms) for image in results]
 
     @staticmethod
     def _detach_preview_decoder(pipeline: Any) -> None:
@@ -1593,41 +1825,11 @@ class DiffusersEngine:
             # exceeded by exactly the frames being torn down (issue #202).
             canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
-        async with self._gpu:
-            # Recheck after the codec wait: another task can demote or
-            # unload while we decoded the canvas, and _frame would then
-            # load an offload pipeline instead of refusing (issue #270).
-            self._require_realtime_resident(manifest)
-            # _pipeline can load or evict GPU weights, _prompt_kwargs can run
-            # GPU text encoders for long prompts, and diffusion uses the GPU.
-            frame_result: tuple[Image.Image, int] | None = None
-            try:
-                frame_result = await self._run_to_completion(
-                    self._frame, manifest, frame_params, canvas, strength,
-                    prompt_cache=prompt_cache)
-            except self.torch.OutOfMemoryError:
-                pass  # retry outside: the live traceback pins failed tensors
-            except (ValueError, TypeError):
-                raise
-            except Exception:
-                self._evict_poisoned(manifest.id)
-                raise
-            if frame_result is None:
-                # The eviction mutates GPU residency, so it remains serialized.
-                self._evict_except(manifest.id)
-                self._require_realtime_resident(manifest)
-                try:
-                    frame_result = await self._run_to_completion(
-                        self._frame, manifest, frame_params, canvas, strength,
-                        prompt_cache=prompt_cache)
-                except self.torch.OutOfMemoryError as error:
-                    raise NotResidentError(
-                        f"model {manifest.id} is not fully resident for realtime"
-                    ) from error
-            image, gpu_ms = frame_result
-        async with self._codec:
-            data = await self._run_to_completion(encode_webp, image)
-        return GeneratedFrame(data, gpu_ms)
+        session_key = self._session_frame_key(prompt_cache)
+        return await self._batch_collector_or_create().submit(
+            session_key, manifest, frame_params, canvas, strength,
+            prompt_cache=prompt_cache, resolution=REALTIME_SIZE,
+        )
 
     def _frame(
         self,
