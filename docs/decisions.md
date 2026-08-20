@@ -972,12 +972,13 @@ Warmup calibrates every non-benchmark_only realtime model that still advertises
 realtime after measured_manifests, not only the default. Boot pays one extra
 cold load.
 
-GeneratedFrame.gpu_ms and calibration time the same region: the _frame call
-that holds the GPU lock. A batched cycle reports occupancy share (cycle / N)
-so N sessions still sum to that cycle; admission keeps the serialized p95
+Calibration times one _frame under the GPU lock. A compatible adapter
+batch times _frame_batch and reports occupancy share (cycle / N) so N
+sessions still sum to that cycle. Admission keeps the serialized p95
 until a batch curve replaces it. The picker and admission then read one
-quantity (issue #288). After twenty observations, a higher p95 may lower
-admission. A lower p95 must not raise it on that connection.
+advertised quantity (issue #288). After twenty observations, a higher
+p95 may lower admission. A lower p95 must not raise it on that
+connection.
 
 Ending a live session that no longer fits ships in protocol 4: after a
 heartbeat raises a model's admission p95, if live cost on that worker
