@@ -1,17 +1,21 @@
 # Development entry points. `make verify` runs exactly what CI runs.
+# First time on a machine:
+#   make init                  # venvs, GPU extras, secrets, postgres
+#   make dev                   # native studio on :5173 (or make selfhost for :8080)
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
 #   make worker-cuda           # terminal 2 (worker-rocm on AMD, worker-sim without a GPU)
 #   make web                   # terminal 3: the studio on the configured port
-# Or: make dev-start           # API + frontend + worker in the background (logs under data/dev/)
-#     make dev-status          # pid files, ports, workers, model list
+# Or: make dev                 # API + frontend + worker in the background (logs under data/dev/)
+#     make dev-status          # pid files, ports, workers, model list; use this if the studio is blank
 #     WORKER=rocm|cuda|sim|off (detected from the GPU present; set to override)
 # Self-hosted GitHub Actions runner (when hosted minutes are exhausted):
 #   make ci-runner-install && make ci-runner-service-install && make ci-runner-start
 # See docs/self-hosted-runner.md
 
 .PHONY: preflight compose-up compose-down compose-logs \
-	setup setup-rocm setup-cuda check-python check-worker-venv \
+	setup setup-rocm setup-cuda setup-inference check-python check-node check-worker-venv \
+	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
@@ -34,6 +38,9 @@ PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 preflight: ## check this machine; write deploy/compose/.env when missing
 	@bash "$(CURDIR)/scripts/preflight.sh"
 
+ensure-env: ## write deploy/compose/.env; fill empty FLEET_SECRET / POSTGRES_PASSWORD
+	@bash "$(CURDIR)/scripts/ensure-env.sh"
+
 # Self-hosting convenience wrappers. The docker compose commands in the README
 # stay canonical: self-hosting requires Docker and nothing else, and make is
 # not on every container host. These are for people who already have it, and
@@ -47,10 +54,7 @@ PROFILE ?= $(shell if [ -e /dev/kfd ]; then echo rocm; \
 	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; \
 	then echo gpu; else echo smoke; fi)
 
-compose-up: ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
-	@test -f deploy/compose/.env || { \
-		echo 'error: deploy/compose/.env is missing.' >&2; \
-		echo '  run scripts/preflight.sh to write it' >&2; exit 1; }
+compose-up: ensure-env ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
 	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" up -d --build
 
 compose-down: ## stop the self-hosted stack; named volumes are left intact
@@ -79,19 +83,53 @@ check-python: ## fail fast unless a Python 3.11+ interpreter is on PATH
 	@$(PYTHON) -c 'import sys; print("venvs use %s (%d.%d.%d)" \
 		% ((sys.executable,) + sys.version_info[:3]))'
 
-check-worker-venv:
-	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null || { \
-		echo 'error: worker/.venv is missing or not Python 3.11+; run make setup.' >&2; \
+# Node 24 is frontend/package.json engines plus frontend/.npmrc engine-strict.
+check-node: ## fail fast unless Node.js 24+ is on PATH
+	@command -v node >/dev/null 2>&1 || { \
+		echo 'error: Node.js 24 or newer is required for frontend/.' >&2; \
+		echo 'Install it from https://nodejs.org/ or your package manager.' >&2; \
+		exit 1; }
+	@node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)' || { \
+		echo 'error: Node.js 24 or newer is required (found '"$$(node --version)"').' >&2; \
 		exit 1; }
 
-setup: check-python ## create virtualenvs and install all dependencies
-	@for d in backend worker; do \
-		$$d/.venv/bin/python $(VENV_OK) 2>/dev/null \
-			|| $(PYTHON) -m venv --clear $$d/.venv; \
+check-worker-venv:
+	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null && test -x worker/.venv/bin/pip || { \
+		echo 'error: worker/.venv is missing, not Python 3.11+, or has no pip; run make setup.' >&2; \
+		exit 1; }
+
+# A leftover .venv can have a python symlink and still lack pip (Debian venv
+# without python3.x-venv, or an interrupted first run). python -m pip is not
+# the check: that can hit the system pip through the symlink and skip recreate.
+# VENV_ROOT is for verify-guards; make setup leaves it at this checkout.
+VENV_ROOT ?= $(CURDIR)
+ensure-venvs: check-python ## create backend/ and worker/ venvs, recreating pip-less ones
+	@set -e; \
+	venv_pkg="$$($(PYTHON) -c 'import sys; print("python%d.%d-venv" % sys.version_info[:2])')"; \
+	for d in backend worker; do \
+		venv="$(VENV_ROOT)/$$d/.venv"; \
+		if "$$venv/bin/python" $(VENV_OK) 2>/dev/null && test -x "$$venv/bin/pip"; then \
+			continue; \
+		fi; \
+		$(PYTHON) -m venv --clear "$$venv"; \
+		if ! test -x "$$venv/bin/pip"; then \
+			echo "error: $$venv was created without pip." >&2; \
+			echo "Debian/Ubuntu: sudo apt install $$venv_pkg" >&2; \
+			exit 1; \
+		fi; \
 	done
+
+setup: check-node ensure-venvs ## create virtualenvs and install all dependencies
 	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
 	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
 	cd frontend && npm install
+	@if [ "$(PROFILE)" = gpu ]; then \
+		echo 'Next: make setup-cuda  # NVIDIA inference wheels; skip if you only need make verify'; \
+	elif [ "$(PROFILE)" = rocm ]; then \
+		echo 'Next: make setup-rocm  # AMD inference wheels; skip if you only need make verify'; \
+	else \
+		echo 'No GPU detected: make dev-start will use the simulated worker'; \
+	fi
 
 setup-rocm: check-worker-venv ## worker inference deps for AMD: ROCm torch wheels, then the extra
 	cd worker && .venv/bin/pip install --upgrade pip
@@ -103,8 +141,55 @@ setup-cuda: check-worker-venv ## worker inference deps for NVIDIA: CUDA torch wh
 	cd worker && .venv/bin/pip install torch torchvision
 	cd worker && .venv/bin/pip install -e ".[inference]"
 
+# Same GPU detection as PROFILE / scripts/dev-stack.sh. Does not install torch
+# when there is no GPU: make verify does not need it.
+setup-inference: check-worker-venv
+	@if [ "$(PROFILE)" = gpu ]; then $(MAKE) setup-cuda; \
+	elif [ "$(PROFILE)" = rocm ]; then $(MAKE) setup-rocm; \
+	else echo 'No GPU: skipping inference extras (make dev uses the simulated worker)'; fi
+
+# Sequential: setup-inference needs the venvs from setup; deps needs Docker.
+# Not a dependency list, so `make -j init` cannot race those.
+init: ## first-time contributor: venvs, GPU extras, secrets, postgres
+	@$(MAKE) ensure-env
+	@$(MAKE) setup
+	@$(MAKE) setup-inference
+	@$(MAKE) deps
+	@echo
+	@echo 'Initialized. Native studio:  make dev'
+	@echo '            Docker product:  make selfhost'
+	@echo '            CI checks:       make verify'
+
+selfhost: ## Docker product on :8080 (preflight + compose-up)
+	@$(MAKE) preflight
+	@$(MAKE) compose-up
+	@echo 'Studio: http://localhost:8080'
+
+# Isolated from deploy/compose/compose.yml (same directory would otherwise
+# share project "compose" and a postgres with a different password).
+DEV_POSTGRES ?= potocolom-dev-postgres-1
+
 deps: ## start development dependencies (PostgreSQL: all the native dev loop uses)
-	docker compose -f deploy/compose/dev.yml up -d
+	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx compose-postgres-1; then \
+		echo 'stopping leftover self-hosted postgres on :5432'; \
+		docker compose -f "$(COMPOSE_FILE)" down; \
+	fi
+	@if ! docker compose -f deploy/compose/dev.yml up -d; then \
+		echo 'error: could not start potocolom-dev postgres.' >&2; \
+		echo '  port 5432 in use? stop whatever holds it, or:' >&2; \
+		echo '  DEV_POSTGRES_PORT=5433 DATABASE_URL=postgresql://potocolom:potocolom@localhost:5433/potocolom make deps' >&2; \
+		exit 1; \
+	fi
+	@i=0; \
+	while [ $$i -lt 20 ]; do \
+		if docker exec $(DEV_POSTGRES) pg_isready -U potocolom >/dev/null 2>&1; then \
+			exit 0; \
+		fi; \
+		sleep 0.5; \
+		i=$$((i+1)); \
+	done; \
+	echo 'error: $(DEV_POSTGRES) started but is not ready' >&2; \
+	exit 1
 
 deps-all: ## also start Redis, MinIO and Mailpit (cloud-sim profile; idle in local dev)
 	docker compose -f deploy/compose/dev.yml --profile cloud-sim up -d
@@ -127,9 +212,9 @@ verify-frontend:
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
 
 test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the shared dev one
-	@docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+	@docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \
 		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}(_[0-9]+_[0-9a-f]+)?$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
-		| xargs -I{} docker exec compose-postgres-1 psql -U potocolom -d postgres \
+		| xargs -I{} docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres \
 			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
 
 dev-db: ## create this checkout's dev database; no-op on the main worktree (make deps first)
@@ -140,16 +225,16 @@ dev-db: ## create this checkout's dev database; no-op on the main worktree (make
 	else \
 		i=0; \
 		while [ $$i -lt 10 ]; do \
-			if docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+			if docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \
 				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
 				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
 				exit 0; \
 			fi; \
-			if docker exec compose-postgres-1 psql -U potocolom -d postgres \
+			if docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres \
 				-c "CREATE DATABASE \"potocolom$(DB_SUFFIX)\""; then \
 				echo "created dev database potocolom$(DB_SUFFIX)"; \
 				exit 0; \
-			elif docker exec compose-postgres-1 psql -U potocolom -d postgres -tAc \
+			elif docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \
 				"SELECT 1 FROM pg_database WHERE datname = 'potocolom$(DB_SUFFIX)'" | grep -q 1; then \
 				echo "dev database potocolom$(DB_SUFFIX) already exists"; \
 				exit 0; \
@@ -157,7 +242,7 @@ dev-db: ## create this checkout's dev database; no-op on the main worktree (make
 			sleep 1; \
 			i=$$((i+1)); \
 		done; \
-		echo 'dev database not created; is compose-postgres-1 running? (make deps)'; \
+		echo 'dev database not created; is $(DEV_POSTGRES) running? (make deps)'; \
 		exit 1; \
 	fi
 
@@ -166,15 +251,36 @@ dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
 	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
 	@echo 'Undo with: git config --unset core.hooksPath'
 
-verify-guards: ## prove make setup refuses a toolchain without Python 3.11+
+verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less venv
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	mkdir -p "$$tmp/bin"; \
 	for c in python3 python3.11 python3.12 python3.13; do \
-		printf '#!/bin/sh\nexit 1\n' > "$$tmp/$$c"; chmod +x "$$tmp/$$c"; done; \
-	if PATH="$$tmp:$$PATH" $(MAKE) --no-print-directory check-python >/dev/null 2>&1; then \
+		printf '#!/bin/sh\nexit 1\n' > "$$tmp/bin/$$c"; chmod +x "$$tmp/bin/$$c"; done; \
+	if PATH="$$tmp/bin:$$PATH" $(MAKE) --no-print-directory check-python >/dev/null 2>&1; then \
 		echo 'error: check-python accepted a PATH with no Python 3.11+ on it.' >&2; \
 		exit 1; \
 	fi; \
-	echo 'setup guards ok: no 3.11+ interpreter is refused, not silently used'
+	py=$$(command -v python3); \
+	for d in backend worker; do \
+		mkdir -p "$$tmp/tree/$$d/.venv/bin"; \
+		ln -s "$$py" "$$tmp/tree/$$d/.venv/bin/python"; \
+		ln -s "$$py" "$$tmp/tree/$$d/.venv/bin/python3"; \
+	done; \
+	$(MAKE) --no-print-directory ensure-venvs VENV_ROOT="$$tmp/tree" >/dev/null; \
+	for d in backend worker; do \
+		if [ ! -x "$$tmp/tree/$$d/.venv/bin/pip" ]; then \
+			echo "error: ensure-venvs left $$d/.venv without pip." >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	cp "$(CURDIR)/deploy/compose/.env.example" "$$tmp/.env"; \
+	ENV_FILE="$$tmp/.env" ENV_EXAMPLE="$(CURDIR)/deploy/compose/.env.example" \
+		bash "$(CURDIR)/scripts/ensure-env.sh" >/dev/null; \
+	if ! grep -q '^FLEET_SECRET=.\+' "$$tmp/.env"; then \
+		echo 'error: ensure-env.sh left FLEET_SECRET empty.' >&2; \
+		exit 1; \
+	fi; \
+	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled'
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \
@@ -285,11 +391,11 @@ dev-stop: ## stop background API, frontend, and worker
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
 		bash "$(CURDIR)/scripts/dev-stack.sh" stop
 
-dev-start: dev-db ## start API, frontend, and worker in the background (make deps first)
+dev-start: ensure-env dev-db ## start API, frontend, and worker in the background (make deps first)
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" start
 
-dev-restart: dev-db ## restart background API, frontend, and worker
+dev-restart: ensure-env dev-db ## restart background API, frontend, and worker
 	@DEV_DIR="$(DEV_DIR)" API_PORT="$(API_PORT)" WEB_PORT="$(WEB_PORT)" \
 		WORKER="$(WORKER)" bash "$(CURDIR)/scripts/dev-stack.sh" restart
 
@@ -300,6 +406,10 @@ dev-status: ## show pid files, ports, local workers, and /api/v1/models
 stack-up: dev-start ## alias for dev-start
 stack-down: dev-stop ## alias for dev-stop
 stack-restart: dev-restart ## alias for dev-restart
+
+dev: deps ## native studio on :5173 (postgres + API + frontend + worker)
+	@$(MAKE) dev-start
+	@$(MAKE) --no-print-directory dev-status
 
 # GitHub Actions self-hosted runner (docs/self-hosted-runner.md). Requires Docker
 # for the backend workflow postgres service. Uses gh to fetch registration tokens.

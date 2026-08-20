@@ -28,6 +28,71 @@ DATABASE_URL="${DATABASE_URL:-postgresql://potocolom:potocolom@localhost:5432/po
 
 mkdir -p "$DEV_DIR"
 
+dump_logs() {
+	local name f
+	for name in api web worker; do
+		f="$DEV_DIR/${name}.log"
+		[[ -f "$f" ]] || continue
+		echo "----- $f -----" >&2
+		tail -n 40 "$f" >&2 || true
+	done
+}
+
+check_prereqs() {
+	if [[ ! -x "$REPO/backend/.venv/bin/uvicorn" ]]; then
+		echo "error: backend/.venv is missing uvicorn; run make setup" >&2
+		exit 1
+	fi
+	if [[ ! -d "$REPO/frontend/node_modules" ]]; then
+		echo "error: frontend/node_modules is missing; run make setup" >&2
+		exit 1
+	fi
+	if [[ "$WORKER" != "off" ]]; then
+		if ! "$REPO/worker/.venv/bin/python" -c 'import httpx' >/dev/null 2>&1; then
+			echo "error: worker/.venv is missing packages; run make setup" >&2
+			exit 1
+		fi
+	fi
+	if [[ "$WORKER" == "cuda" || "$WORKER" == "rocm" ]]; then
+		if ! "$REPO/worker/.venv/bin/python" -c 'import torch' >/dev/null 2>&1; then
+			echo "error: worker/.venv cannot import torch; run make setup-$WORKER" >&2
+			echo "  or start the simulated worker: make dev-start WORKER=sim" >&2
+			exit 1
+		fi
+	fi
+}
+
+wait_http() {
+	local url="$1" name="$2"
+	local i=0
+	while ((i < 60)); do
+		if curl -sf -m 1 "$url" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.5
+		i=$((i + 1))
+	done
+	echo "error: $name did not become ready at $url" >&2
+	return 1
+}
+
+# Any HTTP status means the server accepted a TCP connection. Used for Vite,
+# whose first compile can take a while and which may 404 / meanwhile.
+wait_listening() {
+	local url="$1" name="$2"
+	local i=0 code
+	while ((i < 60)); do
+		code="$(curl -s -m 1 -o /dev/null -w '%{http_code}' "$url" || true)"
+		if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+			return 0
+		fi
+		sleep 0.5
+		i=$((i + 1))
+	done
+	echo "error: $name did not become ready at $url" >&2
+	return 1
+}
+
 kill_pidfile() {
 	local pidfile="$1"
 	[[ -f "$pidfile" ]] || return 0
@@ -131,6 +196,12 @@ cmd_start() {
 			export FLEET_TOKEN="${FLEET_TOKEN:-$FLEET_SECRET}"
 		fi
 	fi
+	if [[ -z "${FLEET_TOKEN_KEY:-}" ]]; then
+		echo "error: FLEET_TOKEN_KEY is unset; run make init (fills FLEET_SECRET in deploy/compose/.env)" >&2
+		exit 1
+	fi
+
+	check_prereqs
 
 	cmd_stop
 	: >"$DEV_DIR/api.log"
@@ -170,6 +241,35 @@ cmd_start() {
 	echo "Web log:    $DEV_DIR/web.log"
 	if [[ "$WORKER" != "off" ]]; then
 		echo "Worker log: $DEV_DIR/worker.log"
+	fi
+
+	local fail=0 pid i
+	if ! wait_http "http://127.0.0.1:$API_PORT/api/v1/health" API; then
+		fail=1
+	fi
+	if ! wait_listening "http://127.0.0.1:$WEB_PORT/" studio; then
+		fail=1
+	fi
+	if [[ "$WORKER" != "off" ]]; then
+		i=0
+		pid="$(tr -d '[:space:]' <"$DEV_DIR/worker.pid" 2>/dev/null || true)"
+		while ((i < 10)); do
+			pid="$(tr -d '[:space:]' <"$DEV_DIR/worker.pid" 2>/dev/null || true)"
+			if [[ -n "$pid" ]] && ps -p "$pid" >/dev/null 2>&1; then
+				break
+			fi
+			sleep 0.2
+			i=$((i + 1))
+		done
+		if [[ -z "$pid" ]] || ! ps -p "$pid" >/dev/null 2>&1; then
+			echo "error: worker exited during startup" >&2
+			fail=1
+		fi
+	fi
+	if ((fail)); then
+		dump_logs
+		cmd_stop
+		exit 1
 	fi
 	echo "API:        http://localhost:$API_PORT"
 	echo "Studio:     http://localhost:$WEB_PORT"

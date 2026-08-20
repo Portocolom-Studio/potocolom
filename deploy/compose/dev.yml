@@ -1,6 +1,12 @@
 # Development dependencies only. The API server, frontend dev server and worker
 # run natively for hot reload and debugger access (docs/local-development.md).
 # The full self-hosted stack ships with issue #18.
+#
+# Named so this file does not share Docker Compose project "compose" with
+# compose.yml (same directory). That collision reused compose-postgres-1 with
+# a different POSTGRES_PASSWORD and orphaned the self-hosted api/worker.
+name: potocolom-dev
+
 services:
   postgres:
     image: postgres:16

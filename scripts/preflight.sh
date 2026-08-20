@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Check this machine against the self-hosting requirements and name the
 # compose profile it can actually run. Writes deploy/compose/.env from the
-# example when the file is missing (hex secrets); never overwrites one that
-# already exists. Starts nothing and installs nothing.
+# example when the file is missing (hex secrets), and fills empty
+# POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty secret.
+# Starts nothing and installs nothing.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -241,30 +242,16 @@ fi
 
 head_ "Compose secrets"
 
-ENV_FILE="$ROOT/deploy/compose/.env"
-ENV_EXAMPLE="$ROOT/deploy/compose/.env.example"
-
-if [[ -e "$ENV_FILE" ]]; then
-  pass "deploy/compose/.env already exists (left alone)"
+# Create .env when missing, and fill empty POSTGRES_PASSWORD / FLEET_SECRET.
+# A leftover .env with no FLEET_SECRET (or an empty one) used to be left
+# alone, then the API refused to start.
+if env_out="$(bash "$ROOT/scripts/ensure-env.sh" 2>&1)"; then
+  pass "deploy/compose/.env ready"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && note "$line"
+  done <<<"$env_out"
 else
-  if [[ ! -f "$ENV_EXAMPLE" ]]; then
-    fail "deploy/compose/.env.example is missing; cannot write .env"
-  elif ! command -v openssl >/dev/null 2>&1; then
-    fail "openssl is required to generate POSTGRES_PASSWORD and FLEET_SECRET"
-  else
-    pg="$(openssl rand -hex 32)"
-    fleet="$(openssl rand -hex 32)"
-    tmp="$(mktemp)"
-    awk -v pg="$pg" -v fleet="$fleet" '
-      /^POSTGRES_PASSWORD=/ { print "POSTGRES_PASSWORD=" pg; next }
-      /^FLEET_SECRET=/ { print "FLEET_SECRET=" fleet; next }
-      { print }
-    ' "$ENV_EXAMPLE" > "$tmp"
-    mv "$tmp" "$ENV_FILE"
-    pass "wrote $ENV_FILE"
-    note "FLEET_SECRET=$fleet"
-    note "A worker on another machine needs a copy of FLEET_SECRET."
-  fi
+  fail "$env_out"
 fi
 
 # ------------------------------------------------------------- verdict
