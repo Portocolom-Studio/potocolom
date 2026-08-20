@@ -44,20 +44,20 @@ the `make` targets further down are for working *on* potocolom, not running it.
 scripts/preflight.sh          # checks this machine; writes deploy/compose/.env when missing
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
+# With make: make selfhost
 ```
 
 `scripts/preflight.sh` starts nothing and installs nothing. It checks the table
 above against the running machine, names the profile you can run, prints the
 fix for anything missing, and writes `deploy/compose/.env` from the example
 when that file is missing (hex `POSTGRES_PASSWORD` and `FLEET_SECRET`). It
-refuses to overwrite an existing `.env`. Copy `FLEET_SECRET` to a worker on
-another machine.
+fills those keys when they are empty and refuses to overwrite a non-empty
+value. Copy `FLEET_SECRET` to a worker on another machine.
 
-If you happen to have `make`, `make compose-up`, `make compose-down` and
-`make compose-logs` wrap the compose commands and pick the profile from the
-GPU they find. They do not run preflight. Run `scripts/preflight.sh` first if
-`.env` is missing. They are a shortcut, never a requirement: the `docker
-compose` lines are the supported path.
+If you happen to have `make`, `make selfhost` is preflight plus compose-up.
+`make compose-up`, `make compose-down` and `make compose-logs` wrap the compose
+commands and pick the profile from the GPU they find. They are a shortcut,
+never a requirement: the `docker compose` lines are the supported path.
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment. An unset key refuses the handshake; preflight is what writes the secret on a fresh install. Signed cloud tokens remain issue #225. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
@@ -96,13 +96,15 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 
 Unlike self-hosting above, this is where `make` earns its place: these targets
 drive a native toolchain, not containers, so they need the prerequisites listed
-above rather than Docker alone.
+above rather than Docker alone. `scripts/preflight.sh` / `make selfhost` are
+the self-hosting check and start. Contributors run `make init` instead: that is
+the Python, Node, secrets, GPU extras and postgres check.
 
 ```
-make setup      # create virtualenvs, install all dependencies
-make deps       # start PostgreSQL; make deps-all adds the cloud-sim containers
-make verify     # lint, test and build all components: exactly what CI runs
-make simulate   # live connection handling demo (API + workers + simulated browser)
+make init            # first time: venvs, GPU extras, secrets, postgres
+make dev             # native studio on :5173; make selfhost is the Docker product on :8080
+make verify          # lint, test and build: exactly what CI runs (optional after init)
+make simulate        # live connection handling demo (API + workers + simulated browser)
 ```
 
 See [Local development and testing](docs/local-development.md) for running each component individually.

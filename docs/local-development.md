@@ -22,7 +22,7 @@ The GPU is the one that matters: the worker supports three device targets (see [
 
 ROCm notes for this machine: the in-kernel amdgpu driver is enough for the containerized worker; the container brings the ROCm userspace. The container needs `/dev/kfd` and `/dev/dri` passed through and the `video` group added. The RX 7600 is gfx1102; torch 2.9+rocm6.3 wheels ship gfx1102 kernels natively, so do not set `HSA_OVERRIDE_GFX_VERSION` (on other RDNA3 cards it forces the wrong ISA).
 
-CUDA notes: on an NVIDIA Linux box the bare-metal loop is `make setup` then `make setup-cuda`, and `make worker-cuda` (or `make dev-start WORKER=cuda`) to run. The PyPI torch wheels bundle the CUDA runtime, so the host needs only the NVIDIA driver. The compose gpu profile needs nvidia-container-toolkit on the host.
+CUDA notes: on an NVIDIA Linux box the bare-metal loop is `make setup` then `make setup-cuda`, and `make worker-cuda` (or `make dev-start`, which detects CUDA). The PyPI torch wheels bundle the CUDA runtime, so the host needs only the NVIDIA driver. The compose gpu profile needs nvidia-container-toolkit on the host. A 4 GB laptop (RTX 3050 class) can generate stills offloaded; it will not advertise the live draw-and-render loop. See [self-hosting.md](self-hosting.md).
 
 ```yaml
 # worker service, AMD variant
@@ -36,6 +36,24 @@ worker:
 ```
 
 The NVIDIA variant (`:v0.x-cuda`) uses the `deploy.resources.reservations.devices` block from [blueprint.md](blueprint.md) instead. Everything above the device layer is identical code.
+
+## First run on a new machine
+
+Two doors. Do not mix them on the same ports.
+
+**Run the product** (Docker, studio at http://localhost:8080): `make selfhost`, or `scripts/preflight.sh` then `docker compose -f deploy/compose/compose.yml --profile gpu up -d --build` (use `--profile rocm` on AMD). Preflight checks Docker and the GPU and writes `deploy/compose/.env`; it does not install Python or Node.
+
+**Hack on the code** (native, studio at http://localhost:5173):
+
+```
+make init            # venvs, GPU extras, secrets, postgres
+make dev             # API + studio + worker; make dev-status if the studio is blank
+make verify          # optional; the same lint/test/build CI runs
+```
+
+`make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
+
+`make deps` uses the Compose project `potocolom-dev` so it does not share PostgreSQL with the self-hosted stack in `compose.yml` (different password). If leftover `compose-postgres-1` is still holding :5432, `make deps` stops that self-hosted stack first.
 
 ## Day-to-day development loop
 
@@ -80,6 +98,7 @@ The containerized applications are still exercised constantly: by the cloud simu
 # database name of its own for the test URL: exporting one shares it with every
 # run in that shell, while the suite otherwise gives each run its own.
 docker compose -f deploy/compose/dev.yml up -d
+# project name potocolom-dev is in the file; do not share this with compose.yml
 
 # Prefer `make setup` (picks a 3.11+ interpreter, installs into .venv only).
 # Manual equivalent - the interpreter must be 3.11+, not a system python3 of 3.10:
@@ -193,7 +212,7 @@ GitHub Actions runs lint and tests on every pull request (issue #13). By default
 Per component, no GPU:
 
 1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
-2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
+2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+ and recreate a pip-less venv, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
 3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
 4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
 5. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.

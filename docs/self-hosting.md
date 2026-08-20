@@ -54,8 +54,9 @@ that already have `make`; they are a shortcut and never a requirement.
 against the machine you are on, names the compose profile it can run, and
 prints the fix for anything missing. It starts no containers and installs
 nothing. When `deploy/compose/.env` is missing it writes one from the
-example with generated hex secrets. It refuses to overwrite a file that
-already exists. Run it first; everything below is what it checks.
+example with generated hex secrets. Empty `POSTGRES_PASSWORD` / `FLEET_SECRET`
+are filled; a non-empty value is left alone. Run it first; everything below
+is what it checks. `make selfhost` is preflight plus compose-up.
 
 ## GPU passthrough
 
@@ -110,12 +111,14 @@ docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
 ```bash
 scripts/preflight.sh
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+# With make: make selfhost
 ```
 
 - Preflight writes `deploy/compose/.env` when that file is missing, with
-  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. It
+  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. Empty
+  values of those keys are filled; a non-empty value is left alone. It
   prints `FLEET_SECRET` once. Copy that value to a worker on another
-  machine. An existing `.env` is left alone.
+  machine. Non-empty keys in an existing `.env` are left alone.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with
