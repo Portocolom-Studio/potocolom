@@ -118,6 +118,7 @@ Rented GPU machines sit on untrusted networks outside the VPC. The rules:
 - That images distribution must attach a response-headers policy sending `X-Content-Type-Options: nosniff`. S3 and MinIO GET do not emit that header; object `Content-Type` (signed on PUT, and repeated as `ResponseContentType` on the presigned GET) is what the store itself can promise.
 - Share links are served from a `/shared/{token}` behavior on the images distribution with a short cache lifetime; revoking a share deletes the token, and the short TTL bounds how long a revoked link keeps working at the edge.
 - Retention: subscribers keep their library indefinitely. Trial assets carry an `expires_at` 30 days out; a nightly job deletes expired database rows and their objects, with an S3 lifecycle rule on the trial prefix as a backstop.
+- Dispatch uploads land under `dispatch/{user_id}/` and are promoted into the durable `{user_id}/` library prefix on commit. An S3 lifecycle rule expires the `dispatch/` prefix after 24 hours as a backstop when a presigned PUT is replayed after cleanup (issue #278). The images bucket has versioning on, so that rule must expire current objects, expire noncurrent versions, and drop expired delete markers. A current-only expiry leaves the replay as a noncurrent version and keeps billing for it.
 
 ## Worker lifecycle and autoscaling
 

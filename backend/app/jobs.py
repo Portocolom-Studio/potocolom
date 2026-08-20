@@ -129,8 +129,18 @@ def upload_authorized(key: str, token: object) -> bool:
     return False
 
 
+DISPATCH_PREFIX = "dispatch/"
+
+
 def storage_keys_for_attempt(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> tuple[str, str]:
+    """Durable library keys stored on asset rows after a successful commit."""
     prefix = f"{user_id}/{job_id}-attempt-{attempt}"
+    return f"{prefix}.png", f"{prefix}-thumb.webp"
+
+
+def dispatch_keys_for_attempt(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> tuple[str, str]:
+    """Temporary upload keys under dispatch/; an S3 lifecycle rule expires this prefix."""
+    prefix = f"{DISPATCH_PREFIX}{user_id}/{job_id}-attempt-{attempt}"
     return f"{prefix}.png", f"{prefix}-thumb.webp"
 
 # Latest reported denoising fraction per running job. Transient by design:
@@ -1183,7 +1193,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
         worker = pick_job_worker(job.model_id)
         if worker is None:
             return False
-        storage_key, thumb_storage_key = storage_keys_for_attempt(
+        storage_key, thumb_storage_key = dispatch_keys_for_attempt(
             job.user_id, job.id, job.attempt
         )
         dispatch_token = secrets.token_urlsafe(16)
@@ -1378,6 +1388,43 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                        job_id)
         return
     if control["type"] == "job_done":
+        library_key, library_thumb_key = storage_keys_for_attempt(
+            current.user_id, job_id, current.attempt,
+        )
+        try:
+            storage = get_storage()
+            promoted: list[str] = []
+            if current.storage_key != library_key:
+                await storage.promote(current.storage_key, library_key)
+                promoted.append(library_key)
+            if thumb is not None and current.thumb_storage_key != library_thumb_key:
+                await storage.promote(current.thumb_storage_key, library_thumb_key)
+                promoted.append(library_thumb_key)
+        except Exception:
+            try:
+                committed = await mark_failed(
+                    job_id, "could not commit output to the library",
+                    expected_attempt=current.attempt,
+                )
+            except Exception:
+                logger.exception("could not mark job %s failed after promote", job_id)
+                return
+            if not committed:
+                return
+            clear_if_current(worker, job_id, current)
+            schedule_blob_cleanup(
+                purge_attempt_blobs(current.user_id, job_id, current.attempt),
+                what=f"promote failure for job {job_id}",
+            )
+            return
+        if inflight.get(job_id) is not current:
+            # A requeue replaced this attempt after the copy. No asset row
+            # names these dests, and the winner's keys are a later attempt.
+            schedule_blob_cleanup(
+                _purge_keys(promoted, job_id),
+                what=f"superseded library copies for job {job_id}",
+            )
+            return
         try:
             async with db.session_factory() as session:
                 job = await locked_job(session, job_id)
@@ -1388,6 +1435,12 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 # entry's attempt means a requeue got there first.
                 if (job is None or job.state in TERMINAL_STATES
                         or job.attempt > current.attempt):
+                    if promoted and (job is None or job.attempt > current.attempt
+                                     or job.state != "succeeded"):
+                        schedule_blob_cleanup(
+                            _purge_keys(promoted, job_id),
+                            what=f"uncommitted library copies for job {job_id}",
+                        )
                     return
                 job.state = "succeeded"
                 job.gpu_ms = gpu_ms
@@ -1399,7 +1452,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                     user_id=current.user_id,
                     job_id=job_id,
                     parent_asset_id=job.source_asset_id,
-                    storage_key=current.storage_key,
+                    storage_key=library_key,
                     mime="image/png",
                     width=width,
                     height=height,
@@ -1414,7 +1467,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                         user_id=current.user_id,
                         job_id=job_id,
                         parent_asset_id=full.id,
-                        storage_key=current.thumb_storage_key,
+                        storage_key=library_thumb_key,
                         mime="image/webp",
                         width=thumb.width,
                         height=thumb.height,
@@ -1426,22 +1479,17 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             logger.exception("could not mark job %s succeeded", job_id)
             return
         clear_if_current(worker, job_id, current)
-        orphans = []
-        if not has_thumbnail:
-            # This attempt may have uploaded a thumbnail it did not report, or
-            # reported one the inspection below rejected.
-            orphans.append(current.thumb_storage_key)
-        # Attempts no longer share one key, so a retry leaves the earlier
-        # attempt's blobs behind instead of overwriting them. Nothing else
-        # collects them: the asset row only ever names the winning key.
-        for earlier in range(1, current.attempt):
-            orphans.extend(storage_keys_for_attempt(current.user_id, job_id, earlier))
+        orphans: list[str] = []
+        for attempt in range(1, current.attempt + 1):
+            orphans.extend(dispatch_keys_for_attempt(current.user_id, job_id, attempt))
+            if attempt < current.attempt:
+                orphans.extend(storage_keys_for_attempt(current.user_id, job_id, attempt))
         schedule_blob_cleanup(
             _purge_keys(orphans, job_id),
-            what=f"orphans for job {job_id}",
+            what=f"dispatch orphans for job {job_id}",
         )
         try:
-            url = await get_storage().url(current.storage_key)
+            url = await get_storage().url(library_key)
         except Exception:
             # The commit is durable and nothing tracks the job, so a signing
             # failure must not swallow the terminal event; the studio refetches
@@ -1537,11 +1585,10 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     S3Storage.delete purges every version of the key, not just the current
     one, so this reclaims the storage rather than hiding it.
     """
-    keys = [
-        key
-        for earlier in range(1, attempt + 1)
-        for key in storage_keys_for_attempt(user_id, job_id, earlier)
-    ]
+    keys: list[str] = []
+    for earlier in range(1, attempt + 1):
+        keys.extend(dispatch_keys_for_attempt(user_id, job_id, earlier))
+        keys.extend(storage_keys_for_attempt(user_id, job_id, earlier))
     await _purge_keys(keys, job_id)
 
 

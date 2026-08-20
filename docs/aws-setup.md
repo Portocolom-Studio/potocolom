@@ -81,7 +81,7 @@ Security groups, each referencing the previous rather than CIDRs: `alb-sg` allow
 
 ## 5. Buckets, CDN, DNS, certificates
 
-Buckets: `potocolom-spa` (private, CloudFront OAC only), `potocolom-images` (private, versioning enabled, lifecycle rule expiring the `trial/` prefix after 30 days).
+Buckets: `potocolom-spa` (private, CloudFront OAC only), `potocolom-images` (private, versioning enabled, lifecycle rules expiring the `trial/` prefix after 30 days and the `dispatch/` prefix after 24 hours). The images bucket has versioning on, so a current-object `Expiration` action only writes a delete marker. The `dispatch/` rule must also expire noncurrent versions after 24 hours and drop expired delete markers, or a replayed upload stays billable.
 
 CloudFront: two distributions with Origin Access Control.
 

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import struct
+import uuid
 import zlib
 from urllib.parse import parse_qs, urlsplit
 
@@ -18,6 +19,7 @@ from app.storage import (
     S3Storage,
     get_storage,
 )
+from app import jobs
 
 client = TestClient(app)
 
@@ -31,6 +33,114 @@ def png_bytes(width=3, height=2):
     rows = b"".join(b"\0" + b"\0" * (width * 3) for _ in range(height))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def test_dispatch_and_library_keys_are_distinct():
+    user_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    library = jobs.storage_keys_for_attempt(user_id, job_id, 1)
+    dispatch = jobs.dispatch_keys_for_attempt(user_id, job_id, 1)
+    assert library[0] == f"{user_id}/{job_id}-attempt-1.png"
+    assert library[1] == f"{user_id}/{job_id}-attempt-1-thumb.webp"
+    assert dispatch[0] == f"{jobs.DISPATCH_PREFIX}{user_id}/{job_id}-attempt-1.png"
+    assert dispatch[1] == f"{jobs.DISPATCH_PREFIX}{user_id}/{job_id}-attempt-1-thumb.webp"
+    assert not library[0].startswith(jobs.DISPATCH_PREFIX)
+    assert dispatch[0].startswith(jobs.DISPATCH_PREFIX)
+
+
+def test_local_promote_copies_dispatch_to_library(tmp_path):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    source = storage.path("dispatch/u/j-attempt-1.png")
+    source.parent.mkdir(parents=True)
+    data = png_bytes()
+    source.write_bytes(data)
+
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    dest = storage.path("u/j-attempt-1.png")
+    assert dest.read_bytes() == data
+    assert source.read_bytes() == data
+
+
+def test_local_promote_leaves_an_existing_library_key(tmp_path):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    source = storage.path("dispatch/u/j-attempt-1.png")
+    dest = storage.path("u/j-attempt-1.png")
+    source.parent.mkdir(parents=True)
+    dest.parent.mkdir(parents=True)
+    source.write_bytes(png_bytes())
+    dest.write_bytes(b"already there")
+
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    assert dest.read_bytes() == b"already there"
+
+
+def test_local_promote_treats_a_racing_link_as_success(tmp_path, monkeypatch):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    source = storage.path("dispatch/u/j-attempt-1.png")
+    dest = storage.path("u/j-attempt-1.png")
+    source.parent.mkdir(parents=True)
+    dest.parent.mkdir(parents=True)
+    source.write_bytes(png_bytes())
+    dest.write_bytes(b"winner")
+    dest_str = str(dest)
+
+    def exists_then_race(self):
+        if str(self) == dest_str:
+            return False
+        return original_exists(self)
+
+    original_exists = type(dest).exists
+    monkeypatch.setattr(type(dest), "exists", exists_then_race)
+
+    def already_there(src, dst):
+        raise FileExistsError(dst)
+
+    monkeypatch.setattr("os.link", already_there)
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    assert dest.read_bytes() == b"winner"
+
+
+class _FakeS3PromoteClient:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.head_calls: list[str] = []
+        self.copy_calls: list[tuple[str, str]] = []
+
+    def head_object(self, **kwargs):
+        self.head_calls.append(kwargs["Key"])
+        if kwargs["Key"] not in self.objects:
+            from botocore.exceptions import ClientError
+            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        return {}
+
+    def copy_object(self, **kwargs):
+        self.copy_calls.append((kwargs["CopySource"]["Key"], kwargs["Key"]))
+        self.objects[kwargs["Key"]] = self.objects[kwargs["CopySource"]["Key"]]
+
+
+def test_s3_promote_copies_dispatch_to_library():
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    client = _FakeS3PromoteClient()
+    client.objects["dispatch/u/j-attempt-1.png"] = png_bytes()
+    storage.client = client
+
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    assert client.copy_calls == [("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png")]
+    assert client.objects["u/j-attempt-1.png"] == client.objects["dispatch/u/j-attempt-1.png"]
+
+
+def test_s3_promote_leaves_an_existing_library_key():
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    client = _FakeS3PromoteClient()
+    client.objects["dispatch/u/j-attempt-1.png"] = png_bytes()
+    client.objects["u/j-attempt-1.png"] = b"already there"
+    storage.client = client
+
+    asyncio.run(storage.promote("dispatch/u/j-attempt-1.png", "u/j-attempt-1.png"))
+    assert client.copy_calls == []
+    assert client.objects["u/j-attempt-1.png"] == b"already there"
 
 
 def test_local_storage_rejects_escaping_keys(tmp_path):
