@@ -1090,7 +1090,7 @@ def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "supersede promote"}},
             ).json()["job_id"]
-            dispatch = dispatch_for(worker, job_id)
+            dispatch = _wait_for_dispatch(worker, {job_id})
             assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
             key = uuid.UUID(job_id)
             original = jobs.inflight[key]
