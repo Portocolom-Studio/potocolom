@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO="${RUNNER_REPO:-Portocolom-Studio/potocolom}"
 INSTALL_DIR="${RUNNER_INSTALL_DIR:-$HOME/.local/share/potocolom-actions-runner}"
+NAME="${RUNNER_NAME:-$(hostname -s)-potocolom}"
 LABELS="${RUNNER_LABELS:-self-hosted,Linux,X64,potocolom}"
 RUNNER_USER="${SUDO_USER:-$USER}"
 RUNNER_URL="${RUNNER_URL:-https://github.com/$REPO}"
@@ -61,9 +62,9 @@ URL="https://github.com/actions/runner/releases/download/v${VERSION}/${TARBALL}"
 
 mkdir -p "$(dirname "$INSTALL_DIR")"
 if [ -f "$INSTALL_DIR/.runner" ]; then
-  echo "runner already configured at $INSTALL_DIR" >&2
-  echo "remove it first: cd $INSTALL_DIR && ./config.sh remove" >&2
-  exit 1
+  echo "runner already configured at $INSTALL_DIR, skipping"
+  echo "to re-register: cd $INSTALL_DIR && ./config.sh remove"
+  exit 0
 fi
 
 # A failed config.sh leaves a half-installed tree; start clean.
@@ -82,7 +83,7 @@ cd "$INSTALL_DIR"
 if ! ./config.sh \
   --url "$RUNNER_URL" \
   --token "$TOKEN" \
-  --name "$(hostname -s)-potocolom" \
+  --name "$NAME" \
   --labels "$LABELS" \
   --unattended \
   --replace; then
