@@ -492,17 +492,14 @@ export async function migrateStoredFavorites(): Promise<void> {
 	});
 	if (retry.length === 0) localStorage.removeItem(STARRED_STORAGE_KEY);
 	else localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(retry));
+	const notices: string[] = [];
 	if (retry.length > 0) {
-		setFavoriteNotice(
-			'migration',
-			t('app.gen.favorite_unrestored').replace('{count}', String(retry.length))
-		);
-	} else if (missing > 0) {
-		setFavoriteNotice(
-			'migration',
-			t('app.gen.favorite_missing').replace('{count}', String(missing))
-		);
+		notices.push(t('app.gen.favorite_unrestored').replace('{count}', String(retry.length)));
 	}
+	if (missing > 0) {
+		notices.push(t('app.gen.favorite_missing').replace('{count}', String(missing)));
+	}
+	setFavoriteNotice('migration', notices.length > 0 ? notices.join(' ') : null);
 }
 
 export async function loadHistory(): Promise<void> {
