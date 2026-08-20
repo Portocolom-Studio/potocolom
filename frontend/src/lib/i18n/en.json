@@ -333,6 +333,7 @@
 	"app.gen.star": "Star",
 	"app.gen.unstar": "Unstar",
 	"app.gen.favorite_missing": "{count} saved favorite(s) no longer exist.",
+	"app.gen.favorite_unrestored": "{count} saved favorite(s) could not be restored.",
 	"app.gen.favorite_expired": "An expired favorite is gone because favorites do not extend retention.",
 	"app.gen.favorite_save_failed": "The favorite could not be saved.",
 	"app.update.available": "A new version is available.",

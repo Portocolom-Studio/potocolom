@@ -1,6 +1,7 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { runFavoriteMigration } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
 import {
 	beginOptimisticStarMutation,
@@ -479,36 +480,26 @@ export async function loadModels(): Promise<void> {
 	}
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function migrateStoredFavorites(): Promise<void> {
 	const stored = loadStarredIds();
 	if (stored.length === 0 || typeof localStorage === 'undefined') return;
-	// A value that was never a job id can never resolve, so count it as missing
-	// rather than letting its 422 hold the migration open forever.
-	let missing = stored.filter((id) => !UUID_PATTERN.test(id)).length;
-	let complete = true;
-	for (const id of stored.filter((value) => UUID_PATTERN.test(value))) {
+	const { retry, missing } = await runFavoriteMigration(stored, async (id) => {
 		try {
-			// Star directly: the endpoint's own 404 already reports an id that no
-			// longer resolves, so a preceding GET would only double the requests.
-			const starred = await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
-			if (starred.status === 404) {
-				missing += 1;
-			} else if (!starred.ok) {
-				complete = false;
-			}
+			return (await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
 		} catch {
-			complete = false;
+			return null;
 		}
+	});
+	if (retry.length === 0) localStorage.removeItem(STARRED_STORAGE_KEY);
+	else localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(retry));
+	const notices: string[] = [];
+	if (retry.length > 0) {
+		notices.push(t('app.gen.favorite_unrestored').replace('{count}', String(retry.length)));
 	}
-	if (complete) localStorage.removeItem(STARRED_STORAGE_KEY);
 	if (missing > 0) {
-		setFavoriteNotice(
-			'migration',
-			t('app.gen.favorite_missing').replace('{count}', String(missing))
-		);
+		notices.push(t('app.gen.favorite_missing').replace('{count}', String(missing)));
 	}
+	setFavoriteNotice('migration', notices.length > 0 ? notices.join(' ') : null);
 }
 
 export async function loadHistory(): Promise<void> {
