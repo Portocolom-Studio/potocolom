@@ -135,6 +135,9 @@ An exported `DATABASE_URL` opts out of that: it is shared by every run in the
 shell, and the suite will migrate it and write to it, though it never drops,
 rebuilds or empties it. Give it a database name of its own.
 
+The database test harness keeps setup, routes, and disposal on one event loop.
+The runtime database engine uses a bounded connection pool.
+
 ```bash
 
 # worker, from worker/
