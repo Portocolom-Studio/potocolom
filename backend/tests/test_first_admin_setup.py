@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
+from starlette.websockets import WebSocketDisconnect
 
 from app import audit, db, enable
 from app.main import app
@@ -262,3 +263,62 @@ def test_setup_is_refused_once_the_installation_is_claimed(accounts):
         # owner, and a second setup would hand it to someone else.
         second = client.portal.call(enable.mint_setup_token)
         assert _claim(client, second, email="later@example.com").status_code == 409
+
+
+@pytest.mark.db
+def test_the_realtime_socket_refuses_accounts_mode(accounts):
+    """Its only gate is the Origin header, which a non-browser client simply
+    omits, so in accounts mode it would drive the GPU and record the work
+    against whatever row the implicit administrator points at."""
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/v1/realtime") as socket:
+                socket.receive_json()
+
+
+@pytest.mark.db
+def test_a_restart_after_the_claim_creates_no_second_administrator(accounts):
+    """The claim renames the implicit row, so a startup that recreates it by
+    email would leave a standing admin nobody claimed."""
+    token = accounts(enable.mint_setup_token())
+    with TestClient(app) as client:
+        assert _claim(client, token).status_code == 204
+        claimed_id = db.local_user_id
+
+    async def everyone() -> list[tuple]:
+        async with db.session_factory() as session:
+            return list((await session.execute(
+                text("SELECT id, email, role FROM users ORDER BY created_at")
+            )).all())
+
+    accounts(db.connect())
+    rows = accounts(everyone())
+    assert len(rows) == 1
+    assert rows[0][0] == claimed_id
+    assert rows[0][1] == EMAIL
+
+
+@pytest.mark.db
+def test_a_rejected_body_never_echoes_the_password(accounts):
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/setup",
+                               json={"email": "a@b.co", "password": PASSWORD})
+    assert response.status_code == 422
+    assert PASSWORD not in response.text
+
+
+@pytest.mark.db
+def test_a_padded_password_cannot_walk_past_the_length_cap(accounts):
+    token = accounts(enable.mint_setup_token())
+    with TestClient(app) as client:
+        padded = " " * 100000 + PASSWORD + " " * 100000
+        assert _claim(client, token, password=padded).status_code == 400
+
+
+def test_setup_answers_nothing_when_accounts_are_off():
+    """An install that never enabled accounts has no link to claim it with."""
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/setup",
+                               json={"token": "x", "email": "a@b.co", "password": PASSWORD})
+    assert response.status_code == 404

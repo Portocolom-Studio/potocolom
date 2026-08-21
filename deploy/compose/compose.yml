@@ -15,7 +15,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      AUTH_MODE: none
+      AUTH_MODE: ${AUTH_MODE:-none}
+      ROOT_KEYS: ${ROOT_KEYS:-}
       DATABASE_URL: postgresql://potocolom:${POSTGRES_PASSWORD}@postgres/potocolom
       STORAGE_BACKEND: local
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}

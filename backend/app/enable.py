@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from anyio import to_thread
 from sqlalchemy import delete, func, select, update
 from starlette.responses import Response
 
@@ -69,12 +70,7 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
     leaves the operator a link to retry with.
     """
     address = _checked_email(email)
-    try:
-        password_hash = hash_password(password)
-    except PasswordRejected as rejected:
-        raise HTTPException(status_code=400,
-                            detail="password does not meet the policy") from rejected
-    if db.session_factory is None or db.local_user_id is None:
+    if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
@@ -97,9 +93,24 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
             claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
             if claimed is not None:
                 raise HTTPException(status_code=409, detail="installation already claimed")
-            user = await session.get(User, db.local_user_id)
+            # Argon2id costs 19 MiB and about 13 ms. Paying it only after a
+            # valid link is what keeps this route from being an anonymous
+            # grinder, and raising here rolls the consumption back, so a
+            # rejected password leaves the operator a link to retry with.
+            try:
+                password_hash = await to_thread.run_sync(hash_password, password)
+            except PasswordRejected as rejected:
+                raise HTTPException(status_code=400,
+                                    detail="password does not meet the policy") from rejected
+            # Resolved here rather than from the process global: after the
+            # claim above there is no implicit row, and a lookup outside this
+            # transaction would answer differently for a caller with no link.
+            user = (await session.execute(
+                select(User).where(User.email == db.LOCAL_USER_EMAIL)
+            )).scalar_one_or_none()
             if user is None:
                 raise HTTPException(status_code=503, detail="database unavailable")
+            adopted = user.id
             user.email = address
             user.role = "admin"
             user.state = "active"
@@ -111,7 +122,7 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
                 subject=address.lower(),
                 password_hash=password_hash,
             ))
-    return db.local_user_id
+    return adopted
 
 
 class SetupRequest(BaseModel):
@@ -122,13 +133,20 @@ class SetupRequest(BaseModel):
 
 @router.post("/api/v1/auth/setup", status_code=204)
 async def setup(request: SetupRequest) -> Response:
+    if get_settings().auth_mode != "accounts":
+        # An install that never enabled accounts has no link to claim it with,
+        # and should not answer as though it might.
+        raise HTTPException(status_code=404, detail="Not Found")
     adopted = await claim(request.token, request.email, request.password)
     await audit.record("POST /api/v1/auth/setup", target_user_id=adopted)
     return Response(status_code=204)
 
 
 async def _enable() -> str:
-    if not await db.connect():
+    # serving=False: this tool records the mode an installation chooses, so it
+    # must not be refused by the guard that stops a serving API starting in a
+    # mode nobody chose. Otherwise a second setup link could never be minted.
+    if not await db.connect(serving=False):
         raise RuntimeError("could not reach PostgreSQL; is the database up?")
     if db.session_factory is None:
         raise RuntimeError("database unavailable")

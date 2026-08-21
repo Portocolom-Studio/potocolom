@@ -5,7 +5,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
@@ -107,6 +109,7 @@ app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
 if get_settings().benchmark_api:
     app.include_router(benchmark_router)
+
 app.include_router(benchmark_sessions_router)
 app.include_router(enable_router)
 app.include_router(registry_router)
@@ -115,6 +118,20 @@ app.include_router(files_router)
 app.include_router(studio_router)
 app.include_router(metrics_router)
 app.include_router(telemetry_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, error: RequestValidationError) -> Response:
+    """FastAPI's default handler echoes the parsed body back as `input`, which
+    on the setup route means the plaintext password lands in an error body that
+    proxies and browser error reporters routinely capture."""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": [
+            {"type": item.get("type"), "loc": item.get("loc"), "msg": item.get("msg")}
+            for item in error.errors()
+        ]},
+    )
 
 
 @app.get("/api/v1/health")

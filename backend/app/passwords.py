@@ -30,7 +30,7 @@ def blocklist() -> frozenset[str]:
 
 def hash_password(password: str) -> str:
     candidate = password.strip()
-    if not MIN_LENGTH <= len(candidate) <= MAX_LENGTH:
+    if len(password) > MAX_LENGTH or not MIN_LENGTH <= len(candidate) <= MAX_LENGTH:
         raise PasswordRejected(f"password must be {MIN_LENGTH} to {MAX_LENGTH} characters")
     if candidate.lower() in blocklist():
         raise PasswordRejected("password is on the bundled blocklist")
