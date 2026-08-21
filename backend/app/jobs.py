@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Literal, Protocol
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -107,6 +108,7 @@ class InFlight:
 
 
 inflight: dict[uuid.UUID, InFlight] = {}
+input_capabilities: dict[str, tuple[str, int]] = {}
 lost_jobs: list[uuid.UUID] = []  # drained by the dispatch loop
 _dispatch_epoch = 0
 _dispatch_active = 0
@@ -162,6 +164,39 @@ def upload_authorized(key: str, token: object) -> bool:
         if hmac.compare_digest(token, entry.dispatch_token):
             return True
     return False
+
+
+def register_input_capability(capability: str, key: str, expires: int) -> None:
+    now = int(time.time())
+    for value, (_, expiry) in list(input_capabilities.items()):
+        if expiry <= now:
+            input_capabilities.pop(value, None)
+    input_capabilities[capability] = (key, expires)
+
+
+def resolve_input_capability(token: str | None, expires: int | None) -> str | None:
+    now = int(time.time())
+    for value, (_, expiry) in list(input_capabilities.items()):
+        if expiry <= now:
+            input_capabilities.pop(value, None)
+    if token is None or expires is None or expires <= now:
+        return None
+    for value, (key, expiry) in input_capabilities.items():
+        if expiry != expires:
+            continue
+        if hmac.compare_digest(value, token):
+            return key
+    return None
+
+
+def asset_url(
+    asset_id: uuid.UUID | str,
+    download_name: str | None = None,
+) -> str:
+    url = f"{get_settings().public_url.rstrip('/')}/api/v1/assets/{asset_id}"
+    if download_name is not None:
+        return f"{url}?{urlencode({'download': download_name})}"
+    return url
 
 
 DISPATCH_PREFIX = "dispatch/"
@@ -384,7 +419,6 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
         jobs_with_derivatives = {
             job_id for job_id in derivative_rows.scalars() if job_id is not None
         }
-    storage = get_storage()
     now = datetime.now(timezone.utc)
     # Keep expired masters for expired_favorite, but number only the assets the
     # client can see.
@@ -426,16 +460,16 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
             "assets": [
                 {
                     "id": str(asset.id),
-                    "url": await storage.url(asset.storage_key),
-                    "download_url": await storage.url(
-                        asset.storage_key,
+                    "url": asset_url(asset.id),
+                    "download_url": asset_url(
+                        asset.id,
                         download_name=generation_download_name(
                             job,
                             asset,
                             position if len(visible_masters[job.id]) > 1 else None,
                         ),
                     ),
-                    "thumbnail_url": await storage.url(thumb.storage_key)
+                    "thumbnail_url": asset_url(thumb.id)
                     if (thumb := thumbs_by_parent.get(asset.id)) is not None else None,
                     "mime": asset.mime,
                     "width": asset.width,
@@ -526,7 +560,7 @@ async def serialize_lineage_entry(row: RowMapping, now: datetime) -> dict:
     )
     thumbnail_url = None
     if not missing and not thumbnail_missing and row["thumbnail_storage_key"] is not None:
-        thumbnail_url = await get_storage().url(row["thumbnail_storage_key"])
+        thumbnail_url = asset_url(row["thumbnail_asset_id"])
     capabilities = set(row["capabilities"] or [])
     action = (
         "upload" if row["job_id"] is None else
@@ -694,6 +728,7 @@ async def generation_subtree(
                     AND output.storage_key NOT LIKE '%-thumb.webp'
                 ORDER BY output.id
             ) AS output_asset_ids,
+            thumbnail.thumbnail_asset_id,
             thumbnail.storage_key AS thumbnail_storage_key,
             thumbnail.expires_at AS thumbnail_expires_at,
             EXISTS (
@@ -727,7 +762,7 @@ async def generation_subtree(
             LIMIT 1
         ) AS master ON TRUE
         LEFT JOIN LATERAL (
-            SELECT thumb.storage_key, thumb.expires_at
+            SELECT thumb.id AS thumbnail_asset_id, thumb.storage_key, thumb.expires_at
             FROM assets AS thumb
             WHERE thumb.parent_asset_id = master.id
                 AND thumb.user_id = :user_id
@@ -742,7 +777,6 @@ async def generation_subtree(
         raise HTTPException(status_code=404, detail="no such generation")
 
     now = datetime.now(timezone.utc)
-    storage = get_storage()
     nodes = []
     for row in rows:
         expired = row["expires_at"] is not None and row["expires_at"] <= now
@@ -750,9 +784,9 @@ async def generation_subtree(
         if not expired:
             asset = {
                 "id": str(row["asset_id"]),
-                "url": await storage.url(row["storage_key"]),
-                "download_url": await storage.url(
-                    row["storage_key"],
+                "url": asset_url(row["asset_id"]),
+                "download_url": asset_url(
+                    row["asset_id"],
                     download_name=_generation_download_name(
                         row["model_id"],
                         row["params"],
@@ -762,7 +796,7 @@ async def generation_subtree(
                     ),
                 ),
                 "thumbnail_url": (
-                    await storage.url(row["thumbnail_storage_key"])
+                    asset_url(row["thumbnail_asset_id"])
                     if row["thumbnail_storage_key"] is not None
                     and (
                         row["thumbnail_expires_at"] is None
@@ -901,11 +935,12 @@ async def generation_lineage(
             ancestor_walk.state,
             ancestor_walk.capabilities,
             ancestor_walk.expires_at,
+            thumbnail.thumbnail_asset_id,
             thumbnail.storage_key AS thumbnail_storage_key,
             thumbnail.expires_at AS thumbnail_expires_at
         FROM ancestor_walk
         LEFT JOIN LATERAL (
-            SELECT storage_key, expires_at
+            SELECT id AS thumbnail_asset_id, storage_key, expires_at
             FROM assets
             WHERE parent_asset_id = ancestor_walk.asset_id
                 AND user_id = :user_id
@@ -926,6 +961,7 @@ async def generation_lineage(
             child.state,
             model.capabilities,
             master.expires_at,
+            thumbnail.thumbnail_asset_id,
             thumbnail.storage_key AS thumbnail_storage_key,
             thumbnail.expires_at AS thumbnail_expires_at
         FROM jobs AS current
@@ -942,7 +978,7 @@ async def generation_lineage(
             AND master.storage_key NOT LIKE '%-thumb.webp'
         JOIN models AS model ON model.id = child.model_id
         LEFT JOIN LATERAL (
-            SELECT storage_key, expires_at
+            SELECT id AS thumbnail_asset_id, storage_key, expires_at
             FROM assets
             WHERE parent_asset_id = master.id
                 AND user_id = :user_id

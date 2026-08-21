@@ -10,7 +10,7 @@ import time
 import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -288,27 +288,37 @@ def test_generation_download_names_count_only_visible_masters():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         job_id = asyncio.run(seed_generation())
         single_asset = client.get(f"/api/v1/generations/{job_id}").json()["assets"][0]
+        assert urlsplit(single_asset["url"]).path == f"/api/v1/assets/{single_asset['id']}"
         assert parse_qs(urlsplit(single_asset["download_url"]).query) == {
             "download": [f"{base_name}.webp"],
         }
+        assert urlsplit(single_asset["download_url"]).path == f"/api/v1/assets/{single_asset['id']}"
 
         asyncio.run(add_second_asset(job_id))
         batch_assets = client.get(f"/api/v1/generations/{job_id}").json()["assets"]
         assert len(batch_assets) == 2
         for position, asset in enumerate(batch_assets, start=1):
-            extension = asset["url"].rsplit(".", 1)[-1]
+            assert urlsplit(asset["url"]).path == f"/api/v1/assets/{asset['id']}"
+            extension = asset["mime"].rsplit("/", 1)[-1]
             assert parse_qs(urlsplit(asset["download_url"]).query) == {
                 "download": [f"{base_name}-{position}.{extension}"],
             }
+            assert urlsplit(asset["download_url"]).path == f"/api/v1/assets/{asset['id']}"
 
         expired_first_job_id = asyncio.run(seed_generation_with_expired_first())
         surviving_assets = client.get(
             f"/api/v1/generations/{expired_first_job_id}"
         ).json()["assets"]
         assert len(surviving_assets) == 1
+        assert urlsplit(surviving_assets[0]["url"]).path == (
+            f"/api/v1/assets/{surviving_assets[0]['id']}"
+        )
         assert parse_qs(urlsplit(surviving_assets[0]["download_url"]).query) == {
             "download": [f"{base_name}.webp"],
         }
+        assert urlsplit(surviving_assets[0]["download_url"]).path == (
+            f"/api/v1/assets/{surviving_assets[0]['id']}"
+        )
 
 
 @pytest.mark.db
@@ -381,19 +391,21 @@ def test_generation_end_to_end():
             assert asset["width"] == 320
             assert asset["height"] == 240
             assert asset["mime"] == "image/png"
-            assert asset["url"].endswith(f"/{job_id}-attempt-1.png")
+            assert urlsplit(asset["url"]).path == f"/api/v1/assets/{asset['id']}"
             created_stamp = datetime.fromisoformat(job["created_at"]).strftime("%Y%m%d-%H%M%S")
             expected_name = f"potocolom-{created_stamp}-a-lighthouse-cafe.png"
             download_url = urlsplit(asset["download_url"])
             assert parse_qs(download_url.query) == {"download": [expected_name]}
-            download_response = client.get(f"{download_url.path}?{download_url.query}")
+            assert download_url.path == f"/api/v1/assets/{asset['id']}"
+            download_response = client.get(asset["download_url"])
             assert download_response.content == png_bytes(320, 240)
             assert download_response.headers["content-disposition"] == (
                 f'attachment; filename="{expected_name}"'
             )
             assert asset["thumbnail_url"] is not None
-            assert client.get(urlsplit(asset["url"]).path).content == png_bytes(320, 240)
-            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == webp_bytes()
+            assert client.get(asset["url"]).content == png_bytes(320, 240)
+            assert "/api/v1/assets/" in urlsplit(asset["thumbnail_url"]).path
+            assert client.get(asset["thumbnail_url"]).content == webp_bytes()
 
             async def recorded_thumb_dimensions() -> tuple[int, int]:
                 assert db.session_factory is not None
@@ -1886,8 +1898,21 @@ def test_img2img_dispatch_includes_input_url():
             assert i2i_dispatch["type"] == "dispatch_job"
             assert i2i_dispatch["job_id"] == edit_job_id
             assert "input" in i2i_dispatch
-            input_path = urlsplit(i2i_dispatch["input"]["url"]).path
-            assert client.get(input_path).content == png_bytes()
+            input_url = urlsplit(i2i_dispatch["input"]["url"])
+            source_key = jobs.storage_keys_for_attempt(
+                db.local_user_id, uuid.UUID(source_job_id), 1
+            )[0]
+            assert source_key not in i2i_dispatch["input"]["url"]
+            query = parse_qs(input_url.query)
+            assert set(query) == {"token", "expires"}
+            assert client.get(i2i_dispatch["input"]["url"]).content == png_bytes()
+            assert client.get(input_url.path).status_code == 403
+            wrong = urlencode({"token": "wrong-capability", "expires": query["expires"][0]})
+            assert client.get(f"{input_url.path}?{wrong}").status_code == 403
+            expired_query = {"token": query["token"][0], "expires": "0"}
+            assert client.get(
+                f"{input_url.path}?{urlencode(expired_query)}"
+            ).status_code == 403
 
             assert put_upload(client, i2i_dispatch["upload"],
                               png_bytes()).status_code == 200
@@ -1895,7 +1920,8 @@ def test_img2img_dispatch_includes_input_url():
                               "gpu_ms": 200, "width": 512, "height": 512,
                               "dispatch_token": i2i_dispatch["dispatch_token"]})
             edit_job = poll_until(client, edit_job_id, "succeeded")
-            assert edit_job["assets"][0]["url"].endswith(".png")
+            edit_asset = edit_job["assets"][0]
+            assert urlsplit(edit_asset["url"]).path == f"/api/v1/assets/{edit_asset['id']}"
             assert edit_job["source_asset_id"] == source_asset_id
 
 
@@ -1976,7 +2002,13 @@ def test_upscale_dispatch_includes_input_url():
             assert up_dispatch["job_id"] == upscale_job_id
             assert up_dispatch["params"] == {"factor": 2}
             assert "input" in up_dispatch
-            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == png_bytes()
+            input_url = urlsplit(up_dispatch["input"]["url"])
+            source_key = jobs.storage_keys_for_attempt(
+                db.local_user_id, uuid.UUID(source_job_id), 1
+            )[0]
+            assert source_key not in up_dispatch["input"]["url"]
+            assert client.get(up_dispatch["input"]["url"]).content == png_bytes()
+            assert client.get(input_url.path).status_code == 403
 
             # Upload the real upscaled image: the asset row takes its
             # dimensions from the object now, not from the worker's claim.
@@ -3444,8 +3476,11 @@ def test_an_output_is_written_once():
                               png_bytes(320, 240)).status_code == 200
             assert put_upload(client, dispatch["upload"],
                               png_bytes(64, 64)).status_code == 409
-            served = client.get(urlsplit(dispatch["upload"]["url"]).path)
-            assert served.content == png_bytes(320, 240)
+            storage = jobs.get_storage()
+            key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1
+            )[-1]
+            assert storage.path(key).read_bytes() == png_bytes(320, 240)
             worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
                               "dispatch_token": dispatch["dispatch_token"],
                               "gpu_ms": 1, "width": 320, "height": 240})

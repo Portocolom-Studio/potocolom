@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, gpu_samples
-from app.auth import current_user
+from app.auth import require_role
 from app.tables import User
 
 router = APIRouter()
@@ -36,7 +36,7 @@ async def gpu_history(
     to: str = Query(),
     rollup: gpu_samples.RollupMode = "auto",
     worker_id: str | None = None,
-    user: User = Depends(current_user),
+    user: User = Depends(require_role("admin")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     del user  # studio scope is this install; auth keeps the route consistent.

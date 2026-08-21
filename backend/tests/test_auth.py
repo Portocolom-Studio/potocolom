@@ -45,7 +45,7 @@ def test_viewer_reads_but_cannot_mutate_and_preview_is_admin_only():
         try:
             asyncio.run(_set_local_role("viewer"))
             assert client.get("/api/v1/generations").status_code == 200
-            assert client.get("/api/v1/benchmark/sessions").status_code == 200
+            assert client.get("/api/v1/benchmark/sessions").status_code == 403
             assert client.post(
                 f"/api/v1/generations/{missing_job}/star"
             ).status_code == 403

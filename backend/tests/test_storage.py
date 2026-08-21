@@ -298,11 +298,16 @@ def test_s3_storage_presigns_offline():
     assert view.startswith("http://localhost:9100/")
     assert "u/j.png" in view
     assert "X-Amz-Signature" in view
+    assert parse_qs(urlsplit(view).query)["X-Amz-Expires"] == ["300"]
     assert parse_qs(urlsplit(view).query)["response-content-type"] == ["image/png"]
     thumb_view = asyncio.run(storage.url("u/j-thumb.webp"))
     assert parse_qs(urlsplit(thumb_view).query)["response-content-type"] == [
         "image/webp",
     ]
+    worker_input = asyncio.run(storage.worker_fetch_url("u/j.png"))
+    assert parse_qs(urlsplit(worker_input).query)["X-Amz-Expires"] == ["900"]
+    share = asyncio.run(storage.share_url("u/j.png"))
+    assert parse_qs(urlsplit(share).query)["X-Amz-Expires"] == ["60"]
     download = asyncio.run(
         storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
     )
@@ -355,21 +360,16 @@ def test_files_get_after_direct_write():
     path.write_bytes(b"image-bytes")
 
     response = client.get("/api/v1/files/u1/j1.webp")
-    assert response.status_code == 200
-    assert response.content == b"image-bytes"
-    assert response.headers["content-type"] == "image/webp"
-    assert "content-disposition" not in response.headers
+    assert response.status_code == 404
     unsafe_response = client.get(
         "/api/v1/files/u1/j1.webp",
         params={"download": 'safe.webp"\r\nX-Evil: injected'},
     )
-    assert unsafe_response.status_code == 400
+    assert unsafe_response.status_code == 404
     png_path = storage.path("u1/j2.png")
     png_path.write_bytes(b"png-bytes")
     png_response = client.get("/api/v1/files/u1/j2.png")
-    assert png_response.status_code == 200
-    assert png_response.content == b"png-bytes"
-    assert png_response.headers["content-type"] == "image/png"
+    assert png_response.status_code == 404
     assert client.get("/api/v1/files/u1/missing.webp").status_code == 404
 
 

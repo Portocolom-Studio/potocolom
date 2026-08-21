@@ -2,8 +2,10 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketState
 
 from app import realtime
+from app.auth import current_user
 from app.main import app
 from app.manifests import Manifest
+from app.tables import User
 
 client = TestClient(app)
 
@@ -51,6 +53,11 @@ def test_studio_gpu_returns_worker_snapshot(monkeypatch):
     monkeypatch.setattr("app.studio.gpu_command", fake_gpu_command)
     monkeypatch.setattr("app.studio.pick_any_worker", lambda: object())
 
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        current_user,
+        lambda: User(email="studio@example.test", role="admin"),
+    )
     response = client.get("/api/v1/studio/gpu")
     assert response.status_code == 200
     body = response.json()

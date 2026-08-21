@@ -9,6 +9,7 @@ from starlette.datastructures import Address, Headers
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, realtime
+from app.auth import current_user
 from app.main import app
 from app.manifests import FRAME_P95_MAX_MS, Manifest
 from app.realtime import (
@@ -23,7 +24,7 @@ from app.realtime import (
     peer_is_unroutable,
 )
 from app.settings import get_settings
-from app.tables import UsageEvent
+from app.tables import UsageEvent, User
 
 # A real peer address rather than the default "testclient", which no ASGI server
 # would ever report: the handshake still sees a production-shaped address.
@@ -962,7 +963,12 @@ def test_heartbeat_does_not_free_committed_slots():
                 assert refusal["code"] == 4003
 
 
-def test_heartbeat_frame_p95_replaces_the_hello_measurement():
+def test_heartbeat_frame_p95_replaces_the_hello_measurement(monkeypatch):
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        current_user,
+        lambda: User(email="realtime@example.test", role="admin"),
+    )
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         hello_msg = hello(worker_id="w-live", models=("vega-rt",), slots=1)
         hello_msg["models"][0]["realtime_p95_ms"] = 408
