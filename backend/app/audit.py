@@ -7,6 +7,7 @@ record leaves a structured log line, a bounded spool keeps it for the next
 successful insert, and the seven-day summary shows the gap.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -49,6 +50,9 @@ class Pending:
 _spool: deque[Pending] = deque()
 _dropped = 0
 _fell_back = 0
+# One delivery at a time. Two that read the spool concurrently would each
+# insert all of it, so a recovery would duplicate every held record.
+_lock = asyncio.Lock()
 
 
 def _now() -> datetime:
@@ -81,6 +85,19 @@ async def record(
 
 
 async def _deliver(event: Pending) -> None:
+    global _fell_back
+    try:
+        async with _lock:
+            await _deliver_locked(event)
+    except Exception:
+        # The lock or anything else unexpected. A broken audit must not take
+        # the caller's action down with it, which is the whole contract.
+        _fell_back += 1
+        _log_fallback(event)
+        _push(event)
+
+
+async def _deliver_locked(event: Pending) -> None:
     global _dropped, _fell_back
     try:
         await _insert([*_spool, event, *_markers()])

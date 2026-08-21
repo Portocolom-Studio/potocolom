@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -130,6 +131,42 @@ def test_a_spooled_event_is_flushed_by_the_next_successful_insert(connected, mon
         "first", "second", audit.FALLBACK_ACTION
     ]
     assert not audit._spool
+
+
+@pytest.mark.db
+def test_a_record_never_raises_into_the_action_it_describes(connected, monkeypatch):
+    """Audit fails open through every path, including its own machinery."""
+    def explode(_event):
+        raise RuntimeError("audit machinery is broken")
+
+    monkeypatch.setattr(audit, "_deliver_locked", explode)
+    connected(audit.record("GET /api/v1/telemetry/preview"))
+    assert len(audit._spool) == 1
+
+
+@pytest.mark.db
+def test_concurrent_records_do_not_duplicate_the_spool(connected, monkeypatch):
+    """Two deliveries that read the same spool would each insert all of it."""
+    calls = {"n": 0}
+    real = audit._insert
+
+    async def fail_once(events):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("audit table unavailable")
+        return await real(events)
+
+    monkeypatch.setattr(audit, "_insert", fail_once)
+    connected(audit.record("spooled"))
+
+    async def both():
+        await asyncio.gather(audit.record("first"), audit.record("second"))
+
+    connected(both())
+    actions = [event.action for event in _stored(connected)]
+    assert sorted(actions) == sorted(
+        ["spooled", "first", "second", audit.FALLBACK_ACTION]
+    )
 
 
 @pytest.mark.db
