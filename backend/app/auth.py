@@ -5,10 +5,10 @@ milestone behind the same dependency (docs/blueprint.md, the mode seam)."""
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db
+from app import audit, db
 from app.tables import User
 
 
@@ -25,13 +25,27 @@ RoleTier = Literal["viewer", "member", "admin"]
 _ROLE_RANK = {"viewer": 0, "user": 1, "admin": 2}
 
 
+def _action(request: Request) -> str:
+    """The route template, not the resolved path, so ids never become actions."""
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    return f"{request.method} {path}"
+
+
 def require_role(minimum: RoleTier) -> Callable[..., Awaitable[User]]:
-    """Require a role tier while preserving "user" as the stored member value."""
+    """Require a role tier while preserving "user" as the stored member value.
+
+    Administrator work is audited here rather than in each route: a route added
+    later cannot forget, and no route can be audited under a name that has
+    drifted from the path it actually serves.
+    """
     required = "user" if minimum == "member" else minimum
 
-    async def role_user(user: User = Depends(current_user)) -> User:
+    async def role_user(request: Request, user: User = Depends(current_user)) -> User:
         if _ROLE_RANK.get(user.role, -1) < _ROLE_RANK[required]:
             raise HTTPException(status_code=403, detail="insufficient role")
+        if required == "admin":
+            await audit.record(_action(request), actor=user)
         return user
 
     return role_user

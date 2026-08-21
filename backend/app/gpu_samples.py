@@ -12,7 +12,7 @@ from sqlalchemy import Date, cast, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db, estimates
+from app import audit, db, estimates
 from app.tables import (
     GpuSample,
     GpuSampleRollup,
@@ -290,6 +290,7 @@ async def maintain_once() -> None:
     await estimates.refresh_observed_timings()
     if db.session_factory is None:
         return
+    await audit.prune()
     now = _utcnow()
     raw_cutoff = now - RAW_RETENTION
     rollup_cutoff = now - ROLLUP_RETENTION
