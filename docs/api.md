@@ -13,6 +13,10 @@ Every call a customer's browser makes, from first page load to account deletion.
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
   answer 403 for a `viewer`. The code calls the `user` tier "member" in
   `require_role("member")`; the stored value is `user`.
+- In `AUTH_MODE=accounts` a request authenticates with a session: 32 random bytes, kept only as a SHA-256 hash. Over HTTPS the cookies are `__Host-potocolom_session` and `__Host-potocolom_csrf`; over plain HTTP, which is what LAN self-hosting uses, they are `potocolom_session` and `potocolom_csrf`, because the `__Host-` prefix requires `Secure` and a browser drops a `Secure` cookie on plain HTTP. The session cookie is `HttpOnly`, `SameSite=Lax`, host-only and `Path=/`. The CSRF cookie is readable, because the browser has to echo it back.
+- An unsafe request authenticated by cookie needs an exact `Origin` and an `X-CSRF-Token` header matching the CSRF cookie, or it answers 403. An absent `Origin` is refused. A request authenticated by `Authorization: Bearer` needs neither, because a bearer is presented deliberately rather than sent along by the browser. A bearer wins outright: an invalid one answers 401 and never falls back to the cookie.
+- Sessions last 12 hours. Remember-me lasts 30 days with a 7 day idle window. An administrator gets 12 hours with a 30 minute idle window and cannot be remembered. Recent authentication lasts 30 minutes, is granted by signing in, and is never granted by claiming the installation.
+- `disabled`, `deletion_pending` and `purging` accounts cannot sign in, and their existing sessions stop resolving. A `suspended` account signs in read-only: safe methods answer normally and anything else answers 403.
 - A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
@@ -45,12 +49,13 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
 | POST `/api/v1/auth/register` | issue #5 | email and password signup |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |
-| POST `/api/v1/auth/login` | issue #5 | session cookie issuance |
-| POST `/api/v1/auth/logout` | issue #5 | revoke the current session |
+| POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
+| POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies |
+| POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | issue #5 | OAuth authorization redirect |
 | GET `/api/v1/auth/callback/{provider}` | issue #5 | OAuth code exchange, then a session cookie |
-| GET `/api/v1/account` | issue #10 | profile, active sessions list |
-| DELETE `/api/v1/account/sessions/{id}` | issue #10 | revoke another session |
+| GET `/api/v1/account` | implemented | this account, and its live sessions |
+| DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
 | DELETE `/api/v1/account` | issue #10 | deactivate now, hard delete within 30 days |
 | POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |

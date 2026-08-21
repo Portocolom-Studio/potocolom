@@ -33,7 +33,7 @@ flowchart LR
 
 | Setting | Local dev | Self-hosted | Scaled self-hosted | cloud-sim | Cloud |
 |---|---|---|---|---|---|
-| AUTH_MODE | none | none or local | local | local | oauth |
+| AUTH_MODE | none | none or accounts | accounts | accounts | accounts |
 | OAUTH_PROVIDERS | | | | | google,github |
 | BILLING_ENABLED | false | false | false | true (fake) | true |
 | SAFETY_CHECKS | false | false | false | false | true |
@@ -48,7 +48,7 @@ flowchart LR
 
 The scaled self-hosted column deserves a note: it is not a separately designed product. Setting `REDIS_URL` switches dispatch and the frame relay to the Redis implementations, and additional worker containers simply dial the same fleet endpoint. A lab or studio with three GPU machines gets multi-worker scheduling with the exact scheduler the cloud runs (issue #20), for the cost of one Redis container.
 
-The `AUTH_MODE` row is target state. Only `none` is implemented; the API refuses to start with `local` until issue #5 lands it and with `oauth` until issue #9 lands it.
+`AUTH_MODE` is `none` or `accounts`; the retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented for REST. `accounts` still refuses the realtime socket, which has no principal of its own until issue #19 gives it one, so the studio needs `none` today.
 
 > Shipped status (2026-07-30): **not yet implemented.** Setting `REDIS_URL` currently changes neither job dispatch nor realtime relay, and the backend has no Redis dependency. This remains the migration target under "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
 
@@ -119,7 +119,9 @@ Every path below is possible because the schema, storage keys and API are identi
 
 ### Enabling accounts on an install that ran without them
 
-`AUTH_MODE=none` runs everything as one implicit local user who owns every row. Switching to `local` is the config change plus one ownership step: the first registered account adopts the existing library. That adoption command ships with issue #9 (it is a one-statement update behind a confirmation). Going further to `oauth` is purely additive: local identities remain valid, providers appear beside them.
+`AUTH_MODE=none` runs everything as one implicit local user who owns every row. `make auth-enable` is the switch: it writes the root key ring, records the change in PostgreSQL, and prints a one-use link valid for an hour. The first claimant adopts that implicit user, keeping its UUID, so the existing library comes with them rather than being copied or stranded.
+
+The switch is one way. An install that has enabled accounts refuses to start in `none` mode again, because falling back would return a multi-user install to answering every request as an administrator. Undoing it needs an offline destructive reset. Google and GitHub are additive within `accounts`: password identities stay valid and providers appear beside them.
 
 ### Adding Redis and more workers (self-hosted scale-out)
 
