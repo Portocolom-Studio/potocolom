@@ -25,6 +25,14 @@ RoleTier = Literal["viewer", "member", "admin"]
 _ROLE_RANK = {"viewer": 0, "user": 1, "admin": 2}
 
 
+# A safe method changes nothing, and the studio polls two of these admin reads
+# every two seconds, which would bury real administrator work under millions of
+# rows a caller drives for free. A read that reaches another user's data is a
+# different thing: it carries a target, which this hook cannot know, so those
+# routes record it themselves.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
 def _action(request: Request) -> str:
     """The route template, not the resolved path, so ids never become actions."""
     route = request.scope.get("route")
@@ -44,7 +52,7 @@ def require_role(minimum: RoleTier) -> Callable[..., Awaitable[User]]:
     async def role_user(request: Request, user: User = Depends(current_user)) -> User:
         if _ROLE_RANK.get(user.role, -1) < _ROLE_RANK[required]:
             raise HTTPException(status_code=403, detail="insufficient role")
-        if required == "admin":
+        if required == "admin" and request.method not in SAFE_METHODS:
             await audit.record(_action(request), actor=user)
         return user
 

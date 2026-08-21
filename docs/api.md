@@ -13,7 +13,7 @@ Every call a customer's browser makes, from first page load to account deletion.
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
   answer 403 for a `viewer`. The code calls the `user` tier "member" in
   `require_role("member")`; the stored value is `user`.
-- Every route requiring `admin` is audited before it runs, with the actor, the role, and the route template as the action name. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
+- A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).

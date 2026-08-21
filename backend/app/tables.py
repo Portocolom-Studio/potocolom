@@ -426,9 +426,10 @@ class InstallationAuthState(Base):
 class AuditEvent(Base):
     """What a privileged action did, kept when the account that did it is gone.
 
-    actor_user_id is SET NULL rather than CASCADE: an administrator deleting
-    their own account must not erase the record of what they did with it, so
-    the durable role and action outlive the row they pointed at.
+    The actor and target are plain ids with no foreign key. A record is a
+    historical fact, not a live relation: CASCADE would let an administrator
+    erase what they did by deleting their own account, and SET NULL would let
+    them erase who did it, which is the part an audit exists for.
     """
 
     __tablename__ = "audit_events"
@@ -440,12 +441,10 @@ class AuditEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     occurred_at: Mapped[datetime]
-    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"))
+    actor_user_id: Mapped[uuid.UUID | None]
     actor_role: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(Text)
-    target_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"))
+    target_user_id: Mapped[uuid.UUID | None]
     object_ids: Mapped[list] = mapped_column(JSONB, default=list)
     object_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     truncated: Mapped[bool] = mapped_column(default=False, server_default=text("false"))

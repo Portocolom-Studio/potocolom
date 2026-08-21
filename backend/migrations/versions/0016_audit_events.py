@@ -21,14 +21,13 @@ def upgrade() -> None:
         "audit_events",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
-        # SET NULL, not CASCADE: an administrator deleting their own account
-        # must not erase the record of what they did with it.
-        sa.Column("actor_user_id", sa.Uuid(),
-                  sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        # No foreign key: a record is a historical fact, not a live relation.
+        # CASCADE would let an administrator erase what they did by deleting
+        # their own account, and SET NULL would erase who did it.
+        sa.Column("actor_user_id", sa.Uuid(), nullable=True),
         sa.Column("actor_role", sa.Text(), nullable=True),
         sa.Column("action", sa.Text(), nullable=False),
-        sa.Column("target_user_id", sa.Uuid(),
-                  sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("target_user_id", sa.Uuid(), nullable=True),
         sa.Column("object_ids", JSONB(), nullable=False),
         sa.Column("object_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("truncated", sa.Boolean(), nullable=False, server_default=sa.text("false")),

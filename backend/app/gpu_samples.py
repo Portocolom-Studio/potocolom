@@ -290,7 +290,6 @@ async def maintain_once() -> None:
     await estimates.refresh_observed_timings()
     if db.session_factory is None:
         return
-    await audit.prune()
     now = _utcnow()
     raw_cutoff = now - RAW_RETENTION
     rollup_cutoff = now - ROLLUP_RETENTION
@@ -310,6 +309,9 @@ async def maintain_once() -> None:
             delete(UsageEvent).where(UsageEvent.created_at < usage_raw_cutoff)
         )
         await session.commit()
+    # Last: an audit prune that fails must not take the retention above it
+    # with it, or these tables stop being pruned at all.
+    await audit.prune()
 
 
 async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: datetime) -> None:

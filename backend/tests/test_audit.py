@@ -9,7 +9,17 @@ from sqlalchemy import select, text
 
 from app import audit, db
 from app.main import app
+from app.settings import get_settings
 from app.tables import AuditEvent, User
+
+
+@pytest.fixture
+def benchmark_api(monkeypatch):
+    """The only admin routes with an unsafe method sit behind BENCHMARK_API."""
+    monkeypatch.setenv("BENCHMARK_API", "1")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -75,37 +85,42 @@ def test_a_privileged_action_is_recorded(connected):
 
 
 @pytest.mark.db
-def test_every_admin_route_is_audited_without_naming_itself(connected):
+def test_an_admin_action_is_audited_under_its_route_template(connected, benchmark_api):
     """The record happens inside the admin role check, so a route added later
-    cannot forget to audit and no route can be audited under a stale name."""
+    cannot forget, and the name is the template rather than the resolved path.
+
+    The body is rejected, which is the point: the dependency runs before
+    validation, so an attempted privileged action is on record either way.
+    """
     with TestClient(app) as client:
-        assert client.get("/api/v1/telemetry/preview").status_code == 200
+        assert client.post("/api/v1/benchmark/sessions", json={}).status_code == 422
         # The client's lifespan owns the engine while it is live, so reads go
         # through its portal rather than the test loop.
         assert [event.action for event in client.portal.call(_fetch_events)] == [
-            "GET /api/v1/telemetry/preview"
+            "POST /api/v1/benchmark/sessions"
         ]
 
 
 @pytest.mark.db
-def test_the_attempt_is_recorded_even_when_the_action_then_fails(connected):
-    """Durable before the action, so an attempt that fails is still on record."""
+def test_an_admin_read_is_not_audited(connected):
+    """The studio polls admin reads every two seconds. Recording them buries
+    real administrator work under rows a caller drives for free."""
     with TestClient(app) as client:
-        assert client.get("/api/v1/studio/gpu").status_code == 503
-        assert [event.action for event in client.portal.call(_fetch_events)] == [
-            "GET /api/v1/studio/gpu"
-        ]
+        assert client.get("/api/v1/telemetry/preview").status_code == 200
+        assert client.portal.call(_fetch_events) == []
 
 
 @pytest.mark.db
-def test_a_privileged_action_proceeds_when_only_its_audit_fails(connected, monkeypatch):
-    """Audit fails open: losing the record must not deny the action."""
+def test_a_privileged_action_proceeds_when_only_its_audit_fails(
+    connected, benchmark_api, monkeypatch
+):
+    """Audit fails open: losing the record must not change what the caller gets."""
     async def refuse(_events):
         raise RuntimeError("audit table unavailable")
 
     monkeypatch.setattr(audit, "_insert", refuse)
     with TestClient(app) as client:
-        assert client.get("/api/v1/telemetry/preview").status_code == 200
+        assert client.post("/api/v1/benchmark/sessions", json={}).status_code == 422
         assert client.portal.call(_fetch_events) == []
     assert len(audit._spool) == 1
 
@@ -269,6 +284,16 @@ def test_exporting_the_audit_is_itself_audited(connected):
 
 
 @pytest.mark.db
+def test_search_never_returns_more_than_its_own_cap(connected, monkeypatch):
+    """A caller-supplied limit must not decide how much export holds in memory."""
+    monkeypatch.setattr(audit, "SEARCH_LIMIT", 2)
+    for index in range(4):
+        connected(audit.record(f"action-{index}"))
+    assert len(connected(audit.search(limit=10 ** 9))) == 2
+    assert len(connected(audit.search(limit=-5))) == 1
+
+
+@pytest.mark.db
 def test_search_filters_by_actor_action_and_time(connected):
     actor = _actor(connected)
     other = _actor(connected, "other@example.com")
@@ -293,7 +318,7 @@ def test_retention_prunes_events_past_ninety_days(connected):
 
 @pytest.mark.db
 def test_the_record_outlives_the_account_that_made_it(connected):
-    """An administrator deleting themselves must not erase what they did."""
+    """Deleting the account must not erase what it did, nor who did it."""
     actor = _actor(connected)
     connected(audit.record("GET /api/v1/studio/gpu", actor=actor))
 
@@ -305,5 +330,5 @@ def test_the_record_outlives_the_account_that_made_it(connected):
     connected(remove())
     stored = _stored(connected)
     assert [event.action for event in stored] == ["GET /api/v1/studio/gpu"]
-    assert stored[0].actor_user_id is None
+    assert stored[0].actor_user_id == actor.id
     assert stored[0].actor_role == "admin"

@@ -27,6 +27,9 @@ OBJECT_ID_CAP = 100
 RETENTION = timedelta(days=90)
 SUMMARY_WINDOW = timedelta(days=7)
 SEARCH_LIMIT = 1000
+# The delivery lock is process wide and the insert takes a pooled connection,
+# so an unbounded wait would queue every admin request behind one slow write.
+DELIVERY_TIMEOUT = 5.0
 
 OVERFLOW_ACTION = "audit.overflow"
 FALLBACK_ACTION = "audit.fallback"
@@ -87,14 +90,18 @@ async def record(
 async def _deliver(event: Pending) -> None:
     global _fell_back
     try:
-        async with _lock:
-            await _deliver_locked(event)
+        await asyncio.wait_for(_locked(event), DELIVERY_TIMEOUT)
     except Exception:
         # The lock or anything else unexpected. A broken audit must not take
         # the caller's action down with it, which is the whole contract.
         _fell_back += 1
         _log_fallback(event)
         _push(event)
+
+
+async def _locked(event: Pending) -> None:
+    async with _lock:
+        await _deliver_locked(event)
 
 
 async def _deliver_locked(event: Pending) -> None:
@@ -194,7 +201,10 @@ async def search(
 ) -> list[dict]:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
-    query = select(AuditEvent).order_by(AuditEvent.occurred_at.desc()).limit(limit)
+    # A cap, not a default: export builds the whole result in memory three
+    # times over, so a caller-supplied limit must not decide how much.
+    query = (select(AuditEvent).order_by(AuditEvent.occurred_at.desc())
+             .limit(max(1, min(limit, SEARCH_LIMIT))))
     if actor_user_id is not None:
         query = query.where(AuditEvent.actor_user_id == actor_user_id)
     if target_user_id is not None:
@@ -225,7 +235,12 @@ async def search(
 
 
 async def export(*, actor: User | None = None, **filters) -> str:
-    """Reading the whole audit is itself a privileged action, so it is audited."""
+    """Reading the whole audit is itself a privileged action, so it is audited.
+
+    The record is written after the query and before the caller receives
+    anything, because the ids it carries are the point and a failure between
+    the two returns nothing to anyone.
+    """
     rows = await search(**filters)
     await record(EXPORT_ACTION, actor=actor, object_ids=[row["id"] for row in rows])
     return json.dumps(rows)
