@@ -22,6 +22,7 @@ from app.logs import setup_logging
 from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
+from app.enable import router as enable_router
 from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
@@ -29,21 +30,6 @@ from app.storage import get_storage
 from app.studio import router as studio_router
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
-
-
-def _reject_unimplemented_auth_mode(mode: str) -> None:
-    if mode == "none":
-        # none is the only implemented mode, so it must keep working.
-        return
-    # Refusing to boot is deliberate rather than a warning, because a
-    # warning is exactly what an operator misses while the API resolves
-    # every request to the local admin user.
-    raise RuntimeError(
-        f"AUTH_MODE={mode} is not implemented and "
-        "authenticates nobody, so every request would resolve to the local "
-        "admin user. Unset AUTH_MODE or set it to none (accounts is tracked "
-        "in #5 and #9)."
-    )
 
 
 FLEET_TOKEN_KEY_UNSET = (
@@ -65,7 +51,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The import-time check cannot see an environment that changes after
     # import, and get_settings caches per process, so startup re-checks with
     # the settings this process actually runs under.
-    _reject_unimplemented_auth_mode(settings.auth_mode)
     _reject_unset_fleet_token_key(settings.fleet_token_key)
     setup_logging(settings.log_format)
     if not settings.fleet_token_key.isascii():
@@ -103,11 +88,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await db.dispose()
 
 
-# The gate runs at import time because the ASGI lifespan protocol is optional:
-# uvicorn --lifespan off and a TestClient outside a context manager serve the
-# app without it, so a lifespan-only check is bypassable. No server flag or
-# embedder can avoid importing the module that defines app.
-_reject_unimplemented_auth_mode(get_settings().auth_mode)
 _reject_unset_fleet_token_key(get_settings().fleet_token_key)
 
 app = FastAPI(
@@ -128,6 +108,7 @@ app.include_router(realtime_router)
 if get_settings().benchmark_api:
     app.include_router(benchmark_router)
 app.include_router(benchmark_sessions_router)
+app.include_router(enable_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
 app.include_router(files_router)

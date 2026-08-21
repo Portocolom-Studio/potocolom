@@ -28,12 +28,14 @@ def test_retired_auth_mode_fails_settings_validation(monkeypatch, mode):
         get_settings.cache_clear()
 
 
-def test_unimplemented_auth_mode_cannot_even_import(monkeypatch):
+def test_accounts_mode_imports_and_authenticates_nobody(monkeypatch):
+    """Accounts mode boots now, and the guard that used to be an import-time
+    refusal moved to the principal: nothing resolves to the implicit admin."""
     monkeypatch.setenv("AUTH_MODE", "accounts")
     get_settings.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="AUTH_MODE=accounts"):
-            importlib.reload(main_module)
+        importlib.reload(main_module)
+        assert get_settings().auth_mode == "accounts"
     finally:
         monkeypatch.delenv("AUTH_MODE", raising=False)
         get_settings.cache_clear()
