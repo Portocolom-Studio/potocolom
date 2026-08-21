@@ -207,13 +207,17 @@ def test_a_weak_password_is_refused_and_claims_nothing(accounts):
 
 
 @pytest.mark.db
-def test_setup_grants_no_session_and_no_recent_authentication(accounts):
-    """Setup proves a capability, not a person, so it must not hand out the
-    recent-authentication window that guards credential changes."""
+def test_setup_grants_a_clean_session_and_no_recent_authentication(accounts):
+    """Setup proves a capability, not a person. It signs the claimant in, and
+    withholds the recent-authentication window that guards credential
+    changes."""
     token = accounts(enable.mint_setup_token())
     with TestClient(app) as client:
         assert _claim(client, token).status_code == 204
-        assert client.portal.call(_sessions) == []
+        live = client.portal.call(_sessions)
+        assert len(live) == 1
+        assert live[0].recent_auth_at is None
+        assert live[0].remember_me is False
 
 
 @pytest.mark.db
