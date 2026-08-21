@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
+from conftest import run_on_test_loop
 from sqlalchemy import delete, func, select
 from fastapi.testclient import TestClient
 
@@ -286,7 +287,7 @@ def test_generation_download_names_count_only_visible_masters():
 
     base_name = "potocolom-20260729-142530-a-lighthouse"
     with TestClient(app, headers=FLEET_HEADERS) as client:
-        job_id = asyncio.run(seed_generation())
+        job_id = client.portal.call(seed_generation)
         single_asset = client.get(f"/api/v1/generations/{job_id}").json()["assets"][0]
         assert urlsplit(single_asset["url"]).path == f"/api/v1/assets/{single_asset['id']}"
         assert parse_qs(urlsplit(single_asset["download_url"]).query) == {
@@ -294,7 +295,7 @@ def test_generation_download_names_count_only_visible_masters():
         }
         assert urlsplit(single_asset["download_url"]).path == f"/api/v1/assets/{single_asset['id']}"
 
-        asyncio.run(add_second_asset(job_id))
+        client.portal.call(add_second_asset, job_id)
         batch_assets = client.get(f"/api/v1/generations/{job_id}").json()["assets"]
         assert len(batch_assets) == 2
         for position, asset in enumerate(batch_assets, start=1):
@@ -305,7 +306,7 @@ def test_generation_download_names_count_only_visible_masters():
             }
             assert urlsplit(asset["download_url"]).path == f"/api/v1/assets/{asset['id']}"
 
-        expired_first_job_id = asyncio.run(seed_generation_with_expired_first())
+        expired_first_job_id = client.portal.call(seed_generation_with_expired_first)
         surviving_assets = client.get(
             f"/api/v1/generations/{expired_first_job_id}"
         ).json()["assets"]
@@ -348,7 +349,7 @@ def test_generation_end_to_end():
             # usage_events carries no job id, and the database is truncated once
             # per session, so this job's row is identified by the count rising
             # rather than by any matching row existing.
-            events_before = asyncio.run(job_events())
+            events_before = client.portal.call(job_events)
 
             created = client.post("/api/v1/generations",
                                   json={"model_id": "sd-test",
@@ -418,7 +419,7 @@ def test_generation_end_to_end():
 
             # The thumbnail row carries the inspected dimensions, not a
             # derivation from the master's: the object is the truth.
-            assert asyncio.run(recorded_thumb_dimensions()) == (320, 200)
+            assert client.portal.call(recorded_thumb_dimensions) == (320, 200)
 
             history = client.get("/api/v1/generations").json()
             assert any(entry["id"] == job_id for entry in history)
@@ -437,7 +438,7 @@ def test_generation_end_to_end():
                     row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
                     await session.commit()
 
-            asyncio.run(expire_asset())
+            client.portal.call(expire_asset)
             expired = client.get("/api/v1/generations?starred=true").json()[0]
             assert expired["assets"] == []
             assert expired["expired_favorite"] is True
@@ -452,7 +453,7 @@ def test_generation_end_to_end():
             assert "succeeded" in events.text
 
             def usage_written() -> bool:
-                return asyncio.run(job_events()) > events_before
+                return client.portal.call(job_events) > events_before
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not usage_written():
@@ -520,7 +521,7 @@ def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
 
             # The row may be missing when the worker registered while the
             # database was down; drop it so this POST is the write under test.
-            asyncio.run(drop_model_row())
+            client.portal.call(drop_model_row)
             created = client.post("/api/v1/generations",
                                   json={"model_id": "sd-narrow",
                                         "params": {"prompt": "x"}})
@@ -532,7 +533,7 @@ def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
                     row = await session.get(Model, "sd-narrow")
                     return list(row.capabilities) if row is not None else None
 
-            capabilities = asyncio.run(row_capabilities())
+            capabilities = client.portal.call(row_capabilities)
     assert capabilities == ["text_to_image", "image_to_image", "realtime"]
 
 
@@ -622,7 +623,7 @@ def force_one_requeue(client, job_id: str, timeout=5.0) -> dict:
     """
     key = uuid.UUID(job_id)
     jobs.last_progress_at[key] = 0.0  # older than any stall the settings allow
-    asyncio.run(jobs.sweep_stalled_jobs())
+    client.portal.call(jobs.sweep_stalled_jobs)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         job = client.get(f"/api/v1/generations/{job_id}").json()
@@ -839,8 +840,8 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
                 storage = jobs.get_storage()
                 first_key = first_path.rsplit("/api/v1/files/", 1)[-1]
                 first_thumb_key = first_thumb.rsplit("/api/v1/files/", 1)[-1]
-                asyncio.run(_write_blob(storage, first_key, png_bytes()))
-                asyncio.run(_write_blob(storage, first_thumb_key, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_key, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_thumb_key, png_bytes()))
 
                 assert put_upload(client, second["upload"],
                                   png_bytes()).status_code == 200
@@ -849,8 +850,8 @@ def test_a_retry_does_not_leave_the_earlier_attempt_behind(monkeypatch):
                                   "dispatch_token": second["dispatch_token"]})
                 poll_until(client, job_id, "succeeded")
 
-                assert asyncio.run(storage.image_info(first_key)) is None
-                assert asyncio.run(storage.image_info(first_thumb_key)) is None
+                assert run_on_test_loop(storage.image_info(first_key)) is None
+                assert run_on_test_loop(storage.image_info(first_thumb_key)) is None
     finally:
         monkeypatch.delenv("JOB_STALL_SECONDS", raising=False)
         get_settings.cache_clear()
@@ -888,7 +889,7 @@ def test_a_stalled_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
 
                 # Stall again: past the one retry, the sweeper fails the row.
                 jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
-                asyncio.run(jobs.sweep_stalled_jobs())
+                client.portal.call(jobs.sweep_stalled_jobs)
                 poll_until(client, job_id, "failed")
 
                 assert not storage.path(second_key).exists(), \
@@ -928,7 +929,7 @@ def test_a_refused_failure_collects_nothing(monkeypatch):
                 return False
 
             monkeypatch.setattr(jobs, "mark_failed", refuse)
-            asyncio.run(jobs.requeue_or_fail(uuid.UUID(job_id), "late worker loss"))
+            client.portal.call(jobs.requeue_or_fail, uuid.UUID(job_id), "late worker loss")
 
             assert storage.path(key).exists(), \
                 "a refused failure deleted objects that belong to the winner"
@@ -1003,8 +1004,8 @@ def test_a_requeue_keeps_the_earlier_attempts_blobs(monkeypatch):
 
                 # The first attempt uploaded before it stalled.
                 storage = jobs.get_storage()
-                asyncio.run(_write_blob(storage, first_key, png_bytes()))
-                asyncio.run(_write_blob(storage, first_thumb, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_key, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_thumb, png_bytes()))
 
                 force_one_requeue(client, job_id)
                 second = worker.receive_json()
@@ -1250,7 +1251,7 @@ def test_a_success_commit_failure_leaves_the_job_recoverable(monkeypatch):
             # Recovery: the entry is still tracked with a stale progress stamp,
             # so the sweeper requeues it and the retry reaches a terminal state.
             jobs.last_progress_at[key] = 0.0
-            asyncio.run(jobs.sweep_stalled_jobs())
+            client.portal.call(jobs.sweep_stalled_jobs)
             poll_until_attempt(client, job_id, 2, timeout=3.0)
             redispatch = worker.receive_json()
             assert redispatch["type"] == "dispatch_job"
@@ -1293,7 +1294,7 @@ def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
             assert realtime.workers["w-fail-commit"].jobs_in_flight == 1
 
             jobs.last_progress_at[key] = 0.0
-            asyncio.run(jobs.sweep_stalled_jobs())
+            client.portal.call(jobs.sweep_stalled_jobs)
             poll_until_attempt(client, job_id, 2, timeout=3.0)
             redispatch = worker.receive_json()
             worker.send_json({"type": "job_failed", "job_id": job_id,
@@ -1337,7 +1338,7 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
                 await session.commit()
             return job_id
 
-        job_id = asyncio.run(seed())
+        job_id = client.portal.call(seed)
         lost = [job_id]
         real_requeue_or_fail = jobs.requeue_or_fail
         real_dispatch_step = jobs.dispatch_step
@@ -1358,12 +1359,12 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
         monkeypatch.setattr(jobs, "lost_jobs", lost)
         monkeypatch.setattr(jobs, "requeue_or_fail", flaky_requeue)
         try:
-            asyncio.run(real_dispatch_step())
+            client.portal.call(real_dispatch_step)
         except RuntimeError:
             pass  # the first recovery failed; the job must stay at the head
         assert lost == [job_id], "a failed recovery dropped the only reference"
 
-        asyncio.run(real_dispatch_step())
+        client.portal.call(real_dispatch_step)
         assert lost == []
         assert reasons == ["worker disconnected", "worker disconnected"]
         assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
@@ -1374,7 +1375,7 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
     """Holding the head would stop the sweep and the dispatch behind it for as
     long as one entry keeps raising, so a failure rotates to the tail."""
     _stall_safe(monkeypatch)
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         stuck, healthy = uuid.uuid4(), uuid.uuid4()
         lost = [stuck, healthy]
         recovered = []
@@ -1397,7 +1398,7 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
         monkeypatch.setattr(jobs, "requeue_or_fail", flaky_requeue)
         monkeypatch.setattr(jobs, "sweep_stalled_jobs", counted_sweep)
 
-        asyncio.run(real_dispatch_step())
+        client.portal.call(real_dispatch_step)
 
         assert recovered == [healthy], "the job behind the failing one never ran"
         assert lost == [stuck], "the failing entry must stay, at the tail"
@@ -1429,7 +1430,9 @@ def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
                         )
                     ) or 0)
 
-            events_before = asyncio.run(job_events())
+            # usage_events carries no job id, and the database is truncated once
+            # per session, so this job's row is identified by the count rising.
+            events_before = client.portal.call(job_events)
             published = []
             monkeypatch.setattr(
                 jobs, "publish",
@@ -1479,7 +1482,7 @@ def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
             assert tracking_url.calls == []
 
             def usage_written() -> bool:
-                return asyncio.run(job_events()) > events_before
+                return client.portal.call(job_events) > events_before
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not usage_written():
@@ -1703,8 +1706,8 @@ def test_a_rejected_retry_collects_every_attempt(monkeypatch):
                 storage = jobs.get_storage()
                 first_key = first_path.rsplit("/api/v1/files/", 1)[-1]
                 first_thumb_key = first_thumb.rsplit("/api/v1/files/", 1)[-1]
-                asyncio.run(_write_blob(storage, first_key, png_bytes()))
-                asyncio.run(_write_blob(storage, first_thumb_key, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_key, png_bytes()))
+                run_on_test_loop(_write_blob(storage, first_thumb_key, png_bytes()))
 
                 # The retry's output is rejected: the key is still inflight so
                 # the PUT succeeds, and the invalid bytes fail verification.
@@ -1758,7 +1761,10 @@ def _await_pending_delete(storage_key: str, timeout=3.0, client=None) -> Pending
             if jobs._blob_cleanup_tasks:
                 time.sleep(0.05)
                 continue
-        row = asyncio.run(_pending_delete(storage_key))
+        if client is not None:
+            row = client.portal.call(_pending_delete, storage_key)
+        else:
+            row = run_on_test_loop(_pending_delete(storage_key))
         if row is not None:
             return row
         time.sleep(0.05)
@@ -1838,7 +1844,7 @@ def test_recover_requeues_running_and_dispatches_queued():
         await db.dispose()
         return ids
 
-    queued_id, running_id = asyncio.run(prepare())
+    queued_id, running_id = run_on_test_loop(prepare())
 
     with TestClient(app, headers=FLEET_HEADERS) as client:
         requeued = client.get(f"/api/v1/generations/{running_id}").json()
@@ -2502,7 +2508,7 @@ def test_generation_history_roots_only_filter_pages_roots():
                 await session.commit()
             return newest_root_id, older_root_id, child_id
 
-        newest_root_id, older_root_id, child_id = asyncio.run(seed())
+        newest_root_id, older_root_id, child_id = client.portal.call(seed)
 
         first = client.get(
             "/api/v1/generations",
@@ -2581,7 +2587,7 @@ def test_generation_lineage_chain_orders_ancestors_and_children():
                 await session.commit()
             return root_id, edit_id, upscale_id
 
-        root_id, edit_id, upscale_id = asyncio.run(seed())
+        root_id, edit_id, upscale_id = client.portal.call(seed)
 
         root = client.get(f"/api/v1/generations/{root_id}/lineage").json()
         assert root["ancestors"] == []
@@ -2637,7 +2643,7 @@ def test_generation_lineage_fanout_orders_children_by_created_at():
                 await session.commit()
             return root_id, [children[1], children[2], children[0]]
 
-        root_id, expected = asyncio.run(seed())
+        root_id, expected = client.portal.call(seed)
         lineage = client.get(f"/api/v1/generations/{root_id}/lineage").json()
         assert [entry["job_id"] for entry in lineage["children"]] == [
             str(job_id) for job_id in expected
@@ -2682,7 +2688,7 @@ def test_generation_lineage_root_counts_grandchildren():
                 await session.commit()
             return root_id
 
-        root_id = asyncio.run(seed())
+        root_id = client.portal.call(seed)
         lineage = client.get(f"/api/v1/generations/{root_id}/lineage").json()
         assert lineage["ancestors"] == []
         assert len(lineage["children"]) == 1
@@ -2739,7 +2745,7 @@ def test_generation_lineage_includes_upload_root():
                 await session.commit()
             return leaf_id, edit_id
 
-        leaf_id, edit_id = asyncio.run(seed())
+        leaf_id, edit_id = client.portal.call(seed)
         lineage = client.get(f"/api/v1/generations/{leaf_id}/lineage").json()
         assert [entry["job_id"] for entry in lineage["ancestors"]] == [None, str(edit_id)]
         upload = lineage["ancestors"][0]
@@ -2788,7 +2794,7 @@ def test_generation_lineage_keeps_missing_middle_ancestor():
                 await session.commit()
             return leaf_id, root_id, middle_id
 
-        leaf_id, root_id, middle_id = asyncio.run(seed())
+        leaf_id, root_id, middle_id = client.portal.call(seed)
         lineage = client.get(f"/api/v1/generations/{leaf_id}/lineage").json()
         assert [entry["job_id"] for entry in lineage["ancestors"]] == [
             str(root_id),
@@ -2832,7 +2838,7 @@ def test_generation_lineage_foreign_job_is_not_found():
                 await session.commit()
             return job_id
 
-        job_id = asyncio.run(seed())
+        job_id = client.portal.call(seed)
         response = client.get(f"/api/v1/generations/{job_id}/lineage")
         assert response.status_code == 404
         assert response.json() == {"detail": "no such generation"}
@@ -2870,7 +2876,7 @@ def test_generation_subtree_bounds_depth_and_reports_truncation(monkeypatch):
                 await session.commit()
             return root_id, ids
 
-        root_id, ids = asyncio.run(seed())
+        root_id, ids = client.portal.call(seed)
         response = client.get(f"/api/v1/generations/{root_id}/subtree")
         assert response.status_code == 200
         body = response.json()
@@ -2912,7 +2918,7 @@ def test_generation_subtree_caps_nodes_and_reports_truncation(monkeypatch):
                 await session.commit()
             return root_id
 
-        root_id = asyncio.run(seed())
+        root_id = client.portal.call(seed)
         response = client.get(f"/api/v1/generations/{root_id}/subtree")
         assert response.status_code == 200
         body = response.json()
@@ -2971,7 +2977,7 @@ def test_generation_subtree_is_owned_and_excludes_thumbnail_edges():
                 await session.commit()
             return root_id, child_id, foreign_id
 
-        root_id, child_id, foreign_id = asyncio.run(seed())
+        root_id, child_id, foreign_id = client.portal.call(seed)
         subtree = client.get(f"/api/v1/generations/{root_id}/subtree")
         assert subtree.status_code == 200
         returned = [node["generation"]["id"] for node in subtree.json()["nodes"]]
@@ -3011,7 +3017,7 @@ def test_generation_subtree_and_descendant_count_are_cycle_safe():
                 await session.commit()
             return root_id, child_id
 
-        root_id, child_id = asyncio.run(seed())
+        root_id, child_id = client.portal.call(seed)
         subtree = client.get(f"/api/v1/generations/{root_id}/subtree")
         assert subtree.status_code == 200
         assert [node["generation"]["id"] for node in subtree.json()["nodes"]] == [
@@ -3064,7 +3070,7 @@ def test_generation_lineage_descendant_depth_is_bounded(monkeypatch):
                 await session.commit()
             return root_id
 
-        root_id = asyncio.run(seed())
+        root_id = client.portal.call(seed)
         lineage = client.get(f"/api/v1/generations/{root_id}/lineage")
         assert lineage.status_code == 200
         assert lineage.json()["descendant_count"] == 1
@@ -3125,7 +3131,7 @@ def test_generation_serializer_never_signs_foreign_assets():
                 await session.commit()
             return job_id
 
-        job_id = asyncio.run(seed())
+        job_id = client.portal.call(seed)
         response = client.get(f"/api/v1/generations/{job_id}")
         assert response.status_code == 200
         assert response.json()["assets"] == []
@@ -3183,7 +3189,7 @@ def test_generation_cursor_anchor_must_match_every_filter():
                 await session.commit()
             return ids
 
-        ids = asyncio.run(seed())
+        ids = client.portal.call(seed)
         for state in states:
             for starred in (False, True):
                 for roots_only in (False, True):
@@ -3248,7 +3254,7 @@ def test_thumbnail_source_is_rejected_and_not_counted_as_derivative():
                     await session.commit()
                 return root_id, thumbnail_id
 
-            root_id, thumbnail_id = asyncio.run(seed())
+            root_id, thumbnail_id = client.portal.call(seed)
             detail = client.get(f"/api/v1/generations/{root_id}")
             assert detail.status_code == 200
             assert detail.json()["has_derivatives"] is False
@@ -3275,12 +3281,12 @@ def test_non_finite_progress_is_ignored():
     )
     try:
         for unusable in (float("nan"), float("inf"), 10 ** 400, [1], {"a": 1}, None):
-            asyncio.run(jobs.on_worker_message(worker, {
+            run_on_test_loop(jobs.on_worker_message(worker, {
                 "type": "job_progress", "job_id": str(job_id), "progress": unusable,
                 "dispatch_token": "token",
             }))
             assert job_id not in jobs.live_progress, f"{unusable!r} was stored"
-        asyncio.run(jobs.on_worker_message(worker, {
+        run_on_test_loop(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
             "dispatch_token": "token",
         }))
@@ -3326,7 +3332,7 @@ def test_job_done_with_unusable_numbers_leaves_the_job_recoverable():
             dispatch_token="token",
         )
         try:
-            asyncio.run(jobs.on_worker_message(worker, {
+            run_on_test_loop(jobs.on_worker_message(worker, {
                 "type": "job_done", "job_id": str(job_id), "gpu_ms": unusable,
                 "width": unusable, "height": unusable,
                 # Without the token this worker is at the current protocol and
@@ -3397,11 +3403,11 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
 
             # The superseded attempt reports success. It knows the job id and
             # holds the same socket, and must still not be believed.
-            asyncio.run(jobs.on_worker_message(current.worker, {
+            client.portal.call(jobs.on_worker_message, current.worker, {
                 "type": "job_done", "job_id": job_id,
                 "dispatch_token": superseded.dispatch_token,
                 "gpu_ms": 1, "width": 512, "height": 512,
-            }))
+            })
             assert jobs.inflight.get(key) is current
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
 
@@ -3432,10 +3438,10 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
             assert worker.receive_json()["job_id"] == job_id
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
-            asyncio.run(jobs.on_worker_message(current.worker, {
+            client.portal.call(jobs.on_worker_message, current.worker, {
                 "type": "job_done", "job_id": job_id,
                 "gpu_ms": 7, "width": 512, "height": 512,
-            }))
+            })
             assert jobs.inflight.get(key) is current
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
             assert client.put(
@@ -3464,10 +3470,10 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
 
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
-            asyncio.run(jobs.on_worker_message(current.worker, {
+            client.portal.call(jobs.on_worker_message, current.worker, {
                 "type": "job_done", "job_id": job_id,
                 "gpu_ms": 7, "width": 512, "height": 512,
-            }))
+            })
             assert jobs.inflight.get(key) is current
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "running"
 
@@ -3479,7 +3485,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
                     )
                     return list(result.scalars())
 
-            assert asyncio.run(recorded_assets()) == []
+            assert client.portal.call(recorded_assets) == []
 
             # Finish the job with its own token, as the stale-token test
             # does: a job left running is requeued when this socket closes.
@@ -3629,7 +3635,7 @@ def test_a_non_ascii_dispatch_token_is_ignored():
         dispatch_token="token",
     )
     try:
-        asyncio.run(jobs.on_worker_message(worker, {
+        run_on_test_loop(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
             "dispatch_token": "caf\u00e9",
         }))
@@ -3871,7 +3877,7 @@ def test_a_worker_built_without_a_registration_is_not_lenient():
         dispatch_token="token",
     )
     try:
-        asyncio.run(jobs.on_worker_message(worker, {
+        run_on_test_loop(jobs.on_worker_message(worker, {
             "type": "job_progress", "job_id": str(job_id), "progress": 0.5,
         }))
         assert job_id not in jobs.live_progress
@@ -3889,7 +3895,7 @@ def test_a_failed_purge_is_recorded_for_the_sweep(monkeypatch):
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-purge-recorded")
-            asyncio.run(_clear_pending_deletes())
+            client.portal.call(_clear_pending_deletes)
             job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "record"}},
@@ -3974,7 +3980,7 @@ def test_a_cancelled_cleanup_is_recorded_for_the_sweep(monkeypatch):
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-cancel-cleanup")
-            asyncio.run(_clear_pending_deletes())
+            client.portal.call(_clear_pending_deletes)
             job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "cancel"}},
@@ -4008,7 +4014,7 @@ def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
         with TestClient(app, headers=FLEET_HEADERS) as client:
             with client.websocket_connect("/api/v1/fleet") as worker:
                 fleet_hello(worker, "w-verdictless-record")
-                asyncio.run(_clear_pending_deletes())
+                client.portal.call(_clear_pending_deletes)
                 job_id = client.post(
                     "/api/v1/generations",
                     json={"model_id": "sd-test", "params": {"prompt": "verdictless"}},
@@ -4038,7 +4044,7 @@ def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
 
                 monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
                 jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
-                asyncio.run(jobs.sweep_stalled_jobs())
+                client.portal.call(jobs.sweep_stalled_jobs)
                 poll_until(client, job_id, "failed")
 
                 row = _await_pending_delete(second_key, client=client)
@@ -4058,7 +4064,7 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-orphan-record")
-            asyncio.run(_clear_pending_deletes())
+            client.portal.call(_clear_pending_deletes)
             job_id = client.post(
                 "/api/v1/generations",
                 json={"model_id": "sd-test", "params": {"prompt": "orphan record"}},
@@ -4093,31 +4099,31 @@ def test_a_failed_orphan_delete_on_the_success_path_is_recorded(monkeypatch):
 
 @pytest.mark.db
 def test_the_sweep_deletes_the_object_and_drops_the_row():
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         key = f"{db.local_user_id}/sweep-success.png"
-        asyncio.run(_clear_pending_deletes())
-        asyncio.run(_seed_pending_delete(
-            key, attempts=0, due=datetime.now(timezone.utc) - timedelta(hours=1),
-        ))
+        client.portal.call(_clear_pending_deletes)
+        client.portal.call(
+            _seed_pending_delete, key, 0, datetime.now(timezone.utc) - timedelta(hours=1)
+        )
         storage = jobs.get_storage()
-        asyncio.run(_write_blob(storage, key, png_bytes()))
+        client.portal.call(_write_blob, storage, key, png_bytes())
 
-        asyncio.run(jobs.retry_pending_deletes())
+        client.portal.call(jobs.retry_pending_deletes)
 
         assert not storage.path(key).exists(), "the sweep left the object behind"
-        assert asyncio.run(_pending_delete(key)) is None, "the row survived its delete"
+        assert client.portal.call(_pending_delete, key) is None, "the row survived its delete"
 
 
 @pytest.mark.db
 def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         key = f"{db.local_user_id}/sweep-backoff.png"
-        asyncio.run(_clear_pending_deletes())
-        asyncio.run(_seed_pending_delete(
-            key, attempts=0, due=datetime.now(timezone.utc) - timedelta(hours=1),
-        ))
+        client.portal.call(_clear_pending_deletes)
+        client.portal.call(
+            _seed_pending_delete, key, 0, datetime.now(timezone.utc) - timedelta(hours=1)
+        )
         storage = jobs.get_storage()
-        asyncio.run(_write_blob(storage, key, png_bytes()))
+        client.portal.call(_write_blob, storage, key, png_bytes())
 
         class RefusingDelete:
             def __getattr__(self, name):
@@ -4127,9 +4133,9 @@ def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
                 raise PermissionError(f"denied {storage_key}")
 
         monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
-        asyncio.run(jobs.retry_pending_deletes())
+        client.portal.call(jobs.retry_pending_deletes)
 
-        row = asyncio.run(_pending_delete(key))
+        row = client.portal.call(_pending_delete, key)
         assert row is not None, "a failed sweep dropped the row"
         assert row.attempts == 1
         assert row.last_error is not None
@@ -4139,14 +4145,14 @@ def test_a_sweep_failure_backs_off_and_keeps_the_row(monkeypatch):
 
 @pytest.mark.db
 def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         key = f"{db.local_user_id}/give-up.png"
-        asyncio.run(_clear_pending_deletes())
-        asyncio.run(_seed_pending_delete(
-            key, attempts=7, due=datetime.now(timezone.utc) - timedelta(minutes=1),
-        ))
+        client.portal.call(_clear_pending_deletes)
+        client.portal.call(
+            _seed_pending_delete, key, 7, datetime.now(timezone.utc) - timedelta(minutes=1)
+        )
         storage = jobs.get_storage()
-        asyncio.run(_write_blob(storage, key, png_bytes()))
+        client.portal.call(_write_blob, storage, key, png_bytes())
 
         class RefusingDelete:
             def __getattr__(self, name):
@@ -4163,9 +4169,9 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
         jobs.logger.addHandler(handler)
         try:
             monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
-            asyncio.run(jobs.retry_pending_deletes())
+            client.portal.call(jobs.retry_pending_deletes)
 
-            row = asyncio.run(_pending_delete(key))
+            row = client.portal.call(_pending_delete, key)
             assert row is not None, "the record of the object was thrown away"
             assert row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS
             assert storage.path(key).exists(), "the failing delete removed the object"
@@ -4173,21 +4179,21 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
 
             # Ninth failure: still retried, and silent. Alerting on every
             # failure past the eighth would bury the one line that matters.
-            asyncio.run(_make_due(key))
-            asyncio.run(jobs.retry_pending_deletes())
+            client.portal.call(_make_due, key)
+            client.portal.call(jobs.retry_pending_deletes)
             assert sum("still cannot delete" in message for message in messages) == 1
-            row = asyncio.run(_pending_delete(key))
+            row = client.portal.call(_pending_delete, key)
             assert row is not None and row.attempts == jobs.PENDING_DELETE_MAX_ATTEMPTS + 1
 
             # Still scheduled, because an outage can outlive the backoff and a
             # row nothing retries is a leak with no way back. Due again within
             # the hour cap, and the next healthy sweep collects it.
             assert row.next_attempt_at is not None
-            asyncio.run(_make_due(key))
+            client.portal.call(_make_due, key)
             monkeypatch.undo()
-            asyncio.run(jobs.retry_pending_deletes())
+            client.portal.call(jobs.retry_pending_deletes)
             assert not storage.path(key).exists(), "recovery never collected the object"
-            assert asyncio.run(_pending_delete(key)) is None
+            assert client.portal.call(_pending_delete, key) is None
         finally:
             jobs.logger.removeHandler(handler)
 
@@ -4196,15 +4202,15 @@ def test_the_eighth_failure_alerts_once_and_keeps_retrying(monkeypatch):
 def test_recording_a_key_again_does_not_undo_its_backoff():
     """The upsert can be waiting on the sweep's row lock, so writing its own
     due time would hand back a key the sweep had just pushed an hour out."""
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         key = f"{db.local_user_id}/re-record.png"
-        asyncio.run(_clear_pending_deletes())
+        client.portal.call(_clear_pending_deletes)
         later = datetime.now(timezone.utc) + timedelta(minutes=30)
-        asyncio.run(_seed_pending_delete(key, attempts=3, due=later))
+        client.portal.call(_seed_pending_delete, key, 3, later)
 
-        asyncio.run(jobs.record_pending_delete(key, "denied again"))
+        client.portal.call(jobs.record_pending_delete, key, "denied again")
 
-        row = asyncio.run(_pending_delete(key))
+        row = client.portal.call(_pending_delete, key)
         assert row is not None
         assert row.last_error == "denied again", "the new error was not recorded"
         assert row.next_attempt_at == later, "the backoff was reset by a re-recording"
@@ -4213,20 +4219,20 @@ def test_recording_a_key_again_does_not_undo_its_backoff():
 
 @pytest.mark.db
 def test_a_sweep_retries_only_rows_that_are_due():
-    with TestClient(app, headers=FLEET_HEADERS):
+    with TestClient(app, headers=FLEET_HEADERS) as client:
         due_key = f"{db.local_user_id}/due.png"
         future_key = f"{db.local_user_id}/not-due.png"
         now = datetime.now(timezone.utc)
-        asyncio.run(_clear_pending_deletes())
-        asyncio.run(_seed_pending_delete(due_key, attempts=0, due=now - timedelta(minutes=5)))
-        asyncio.run(_seed_pending_delete(future_key, attempts=0, due=now + timedelta(hours=1)))
+        client.portal.call(_clear_pending_deletes)
+        client.portal.call(_seed_pending_delete, due_key, 0, now - timedelta(minutes=5))
+        client.portal.call(_seed_pending_delete, future_key, 0, now + timedelta(hours=1))
         storage = jobs.get_storage()
-        asyncio.run(_write_blob(storage, due_key, png_bytes()))
-        asyncio.run(_write_blob(storage, future_key, png_bytes()))
+        client.portal.call(_write_blob, storage, due_key, png_bytes())
+        client.portal.call(_write_blob, storage, future_key, png_bytes())
 
-        asyncio.run(jobs.retry_pending_deletes())
+        client.portal.call(jobs.retry_pending_deletes)
 
         assert not storage.path(due_key).exists(), "the due key was not retried"
         assert storage.path(future_key).exists(), "a key that was not due got deleted"
-        assert asyncio.run(_pending_delete(due_key)) is None
-        assert asyncio.run(_pending_delete(future_key)) is not None
+        assert client.portal.call(_pending_delete, due_key) is None
+        assert client.portal.call(_pending_delete, future_key) is not None

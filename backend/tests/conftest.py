@@ -202,6 +202,18 @@ def _drop_database() -> None:
 DATABASE_AVAILABLE = _prepare_database()
 
 
+_RUNNER = asyncio.Runner()
+
+
+def run_on_test_loop(awaitable):
+    return _RUNNER.run(awaitable)
+
+
+@pytest.fixture
+def portal_runner():
+    return _RUNNER.run
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "db: needs the development PostgreSQL")
 
@@ -309,6 +321,7 @@ def _no_inherited_jobs(request):
 def pytest_sessionfinish(session, exitstatus):
     if DATABASE_AVAILABLE and _OURS:
         _drop_database()
+    _RUNNER.close()
 
 
 def pytest_collection_modifyitems(config, items):

@@ -1,6 +1,5 @@
-import asyncio
-
 import pytest
+from conftest import run_on_test_loop
 
 from app import db, estimates
 from app.estimates import estimate_gpu_ms, schema_defaults
@@ -132,7 +131,7 @@ def test_observed_timing_database_failure_uses_shipped_constant(monkeypatch):
     estimates._observed_scales = {"sdxl-fast": 0.5}
     monkeypatch.setattr(db, "session_factory", BrokenSession)
 
-    asyncio.run(estimates.refresh_observed_timings())
+    run_on_test_loop(estimates.refresh_observed_timings())
 
     assert estimate_gpu_ms(
         "sdxl-fast", {"width": 1024, "height": 1024, "steps": 8}

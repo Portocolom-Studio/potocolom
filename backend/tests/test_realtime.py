@@ -3,6 +3,7 @@ import time
 import uuid
 
 import pytest
+from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from starlette.datastructures import Address, Headers
@@ -223,7 +224,7 @@ def test_a_refused_fleet_handshake_is_never_accepted(monkeypatch):
         "server": ("127.0.0.1", 8000),
         "subprotocols": [],
     }
-    asyncio.run(app(scope, receive, send))
+    run_on_test_loop(app(scope, receive, send))
 
     assert sent, "the endpoint sent nothing at all"
     assert sent[0]["type"] == "websocket.close", sent
@@ -862,9 +863,9 @@ def test_closed_session_persists_usage_event():
                     return row is not None and row.frames == 3 and row.action == "draw"
 
             deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and not asyncio.run(persisted()):
+            while time.monotonic() < deadline and not db_client.portal.call(persisted):
                 time.sleep(0.05)
-            assert asyncio.run(persisted())
+            assert db_client.portal.call(persisted)
 
 
 @pytest.mark.db
@@ -1181,7 +1182,7 @@ def test_assign_timeout_sends_close_session(monkeypatch):
             realtime.workers.pop(worker.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
@@ -1219,7 +1220,7 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
             realtime.workers.pop(worker.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_reassign_retries_another_protocol_4_worker(monkeypatch):
@@ -1262,7 +1263,7 @@ def test_reassign_retries_another_protocol_4_worker(monkeypatch):
             realtime.workers.pop(spare.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_reassign_moves_the_session_with_correct_accounting():
@@ -1294,7 +1295,7 @@ def test_reassign_moves_the_session_with_correct_accounting():
             realtime.workers.pop(replacement.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_reassign_sends_the_same_seed_to_the_replacement_worker():
@@ -1326,7 +1327,7 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
             realtime.workers.pop(replacement.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_reaper_closes_silent_workers():
@@ -1335,7 +1336,7 @@ def test_reaper_closes_silent_workers():
     fresh = realtime.Worker(id="w-fresh", ws=FakeSocket(), manifests=[], realtime_slots=1)
     realtime.workers.update({stale.id: stale, fresh.id: fresh})
     try:
-        asyncio.run(realtime.reap_once())
+        run_on_test_loop(realtime.reap_once())
         assert stale.ws.close_code is not None
         assert fresh.ws.close_code is None
     finally:
@@ -1480,16 +1481,16 @@ def test_session_closed_from_another_worker_is_ignored():
                                 "category": "other"})
             deadline = time.monotonic() + 1.5
             while time.monotonic() < deadline:
-                assert 9999 not in asyncio.run(recorded()), "a stranger closed the session"
+                assert 9999 not in db_client.portal.call(recorded), "a stranger closed the session"
                 time.sleep(0.05)
 
             owner_ws.send_json({"type": "session_closed", "session_id": session_id,
                                 "frames": 7, "gpu_ms": 70, "duration_ms": 700,
                                 "category": "other"})
             deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and 7 not in asyncio.run(recorded()):
+            while time.monotonic() < deadline and 7 not in db_client.portal.call(recorded):
                 time.sleep(0.05)
-            assert 7 in asyncio.run(recorded()), "the owner's close was not recorded"
+            assert 7 in db_client.portal.call(recorded), "the owner's close was not recorded"
 
 
 def test_cost_admission_keeps_mixed_load_inside_the_bar():
@@ -1705,7 +1706,7 @@ def test_session_refused_reassigns_to_another_protocol_4_worker():
             realtime.workers.pop(spare.id, None)
             realtime.sessions.pop(session.id, None)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_session_refused_with_no_other_worker_closes_4003():
@@ -1826,7 +1827,7 @@ def test_stale_close_generation_is_not_sent_after_reassign():
             realtime.workers.update(saved_workers)
             realtime.sessions.update(saved_sessions)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_over_capacity_drops_newest_protocol_4_session():
@@ -1938,7 +1939,7 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             realtime.workers.update(saved_workers)
             realtime.sessions.update(saved_sessions)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_schedule_reassign_starts_only_one_placement():
@@ -1983,7 +1984,7 @@ def test_schedule_reassign_starts_only_one_placement():
             realtime.workers.update(saved_workers)
             realtime.sessions.update(saved_sessions)
 
-    asyncio.run(scenario())
+    run_on_test_loop(scenario())
 
 
 def test_ended_absorbs_transitions():

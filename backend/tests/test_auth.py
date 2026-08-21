@@ -43,7 +43,7 @@ def test_viewer_reads_but_cannot_mutate_and_preview_is_admin_only():
     missing_job = uuid.UUID("00000000-0000-0000-0000-000000000000")
     with TestClient(app) as client:
         try:
-            asyncio.run(_set_local_role("viewer"))
+            client.portal.call(_set_local_role, "viewer")
             assert client.get("/api/v1/generations").status_code == 200
             assert client.get("/api/v1/benchmark/sessions").status_code == 403
             assert client.post(
@@ -51,28 +51,28 @@ def test_viewer_reads_but_cannot_mutate_and_preview_is_admin_only():
             ).status_code == 403
             assert client.get("/api/v1/telemetry/preview").status_code == 403
 
-            asyncio.run(_set_local_role("user"))
+            client.portal.call(_set_local_role, "user")
             assert client.post(
                 f"/api/v1/generations/{missing_job}/star"
             ).status_code == 404
             assert client.get("/api/v1/telemetry/preview").status_code == 403
 
-            asyncio.run(_set_local_role("admin"))
+            client.portal.call(_set_local_role, "admin")
             assert client.post(
                 f"/api/v1/generations/{missing_job}/star"
             ).status_code == 404
             assert client.get("/api/v1/telemetry/preview").status_code == 200
         finally:
-            asyncio.run(_set_local_role("admin"))
+            client.portal.call(_set_local_role, "admin")
 
 
 @pytest.mark.db
 def test_existing_implicit_local_user_is_promoted_to_admin():
-    with TestClient(app):
+    with TestClient(app) as client:
         assert db.session_factory is not None
         assert db.local_user_id is not None
-        asyncio.run(_set_local_role("user"))
-        user_id = asyncio.run(db._ensure_local_user(db.session_factory))
+        client.portal.call(_set_local_role, "user")
+        user_id = client.portal.call(db._ensure_local_user, db.session_factory)
         assert user_id == db.local_user_id
 
         async def read_role() -> str:
@@ -82,4 +82,4 @@ def test_existing_implicit_local_user_is_promoted_to_admin():
                 assert user is not None
                 return user.role
 
-        assert asyncio.run(read_role()) == "admin"
+        assert client.portal.call(read_role) == "admin"
