@@ -123,7 +123,8 @@ Environment for the API task, values resolved from SSM where secret:
 
 | Variable | Value |
 |---|---|
-| AUTH_MODE | `oauth` (target state: the API refuses to start with it until #9; do not deploy this stack to a public ALB before then) |
+| AUTH_MODE | `accounts` (the mode boots, but sign-in is not implemented until #5, so every request answers 401 except the one-use setup call; do not deploy this stack to a public ALB before then) |
+| ROOT_KEYS | versioned root key ring for account secrets, newest first; separate key material from the fleet secret, and required whenever AUTH_MODE is accounts |
 | OAUTH_PROVIDERS | `google,github` |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |

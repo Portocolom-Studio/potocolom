@@ -147,6 +147,22 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 .venv/bin/ruff check . && .venv/bin/pytest
 ```
 
+## Trying accounts mode locally
+
+`AUTH_MODE` defaults to `none` and the dev loop wants it that way: every request
+resolves to one implicit local administrator, so nothing asks you to sign in.
+
+To exercise the account path, `make auth-enable` writes `ROOT_KEYS`, sets
+`AUTH_MODE=accounts`, records the switch in PostgreSQL and prints a one-use call
+that claims the administrator account. It is one way: the same database refuses
+to start in `none` mode afterwards. Point it at a throwaway database, or expect
+to drop and recreate the one you use, because there is no undo short of an
+offline destructive reset.
+
+Sign-in is not implemented yet, so accounts mode answers `401` for everything
+except that one call. The password policy is fifteen to one hundred and twenty
+eight characters against a bundled blocklist.
+
 ## The local cloud simulation
 
 The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud topology with generic containers, which the pluggable seams make cheap: the code cannot tell nginx from an ALB or MinIO from S3, and that is the point of the seams.
