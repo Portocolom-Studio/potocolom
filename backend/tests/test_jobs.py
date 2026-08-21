@@ -1466,7 +1466,7 @@ def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
                         select(Asset.storage_key).where(Asset.id == uuid.UUID(asset_id))
                     ))
 
-            storage_key = asyncio.run(asset_storage_key())
+            storage_key = client.portal.call(asset_storage_key)
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not any(
@@ -3387,6 +3387,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
                 json={"model_id": "sd-test", "params": {"prompt": "token"}},
             ).json()["job_id"]
             assert worker.receive_json()["job_id"] == job_id
+            poll_until(client, job_id, "running")
 
             # What a requeue to the same worker leaves behind: a new entry,
             # same Worker object, new key, new token.
@@ -3436,6 +3437,7 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
                 json={"model_id": "sd-test", "params": {"prompt": "n-1"}},
             ).json()["job_id"]
             assert worker.receive_json()["job_id"] == job_id
+            poll_until(client, job_id, "running")
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]
             client.portal.call(jobs.on_worker_message, current.worker, {
@@ -3467,6 +3469,7 @@ def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
                 json={"model_id": "sd-test", "params": {"prompt": "missing token"}},
             ).json()["job_id"]
             assert worker.receive_json()["job_id"] == job_id
+            poll_until(client, job_id, "running")
 
             key = uuid.UUID(job_id)
             current = jobs.inflight[key]

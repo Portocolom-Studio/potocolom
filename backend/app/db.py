@@ -17,7 +17,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,12 +27,13 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.settings import get_settings
-from app.tables import User
+from app.tables import InstallationAuthState, User
 
 logger = logging.getLogger("potocolom.db")
 
 LOCAL_USER_EMAIL = "local@localhost"
 MIN_POSTGRES_VERSION = (13, 0)
+ACCOUNTS_STARTUP_LOCK_KEY = 184467
 
 engine: AsyncEngine | None = None
 session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -84,12 +85,9 @@ async def connect() -> bool:
     except Exception as error:
         logger.warning("database unavailable (%s); generations and history are disabled", error)
         return False
-    # No connection pool: asyncpg connections are bound to the event loop that
-    # created them, and the test client legitimately drives requests and
-    # websockets on separate loops. A single-process self-host loses little;
-    # pool tuning belongs to the cloud profile work.
-    engine = create_async_engine(async_url(settings.database_url), poolclass=NullPool)
+    engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    await validate_startup_auth_mode(settings.auth_mode)
     local_user_id = await _ensure_local_user(session_factory)
     return True
 
@@ -124,3 +122,46 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with session_factory() as session:
         yield session
+
+
+async def require_account_dependencies() -> None:
+    if engine is None or session_factory is None:
+        raise HTTPException(status_code=503, detail="account dependencies unavailable")
+
+
+async def read_installation_auth_mode() -> str | None:
+    if session_factory is None:
+        raise RuntimeError("database unavailable")
+    async with session_factory() as session:
+        state = await session.get(InstallationAuthState, 1)
+        return state.auth_mode if state is not None else None
+
+
+async def enable_accounts_mode(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO installation_auth_state (id, auth_mode) "
+                    "VALUES (1, 'accounts') ON CONFLICT (id) DO NOTHING"
+                )
+            )
+
+
+async def validate_startup_auth_mode(configured: str) -> None:
+    persisted = await read_installation_auth_mode()
+    if configured == "accounts" and persisted != "accounts":
+        raise RuntimeError("accounts mode requires explicit installation enable")
+    if configured == "none" and persisted == "accounts":
+        raise RuntimeError("accounts installation cannot start in none mode")
+
+
+async def acquire_accounts_startup_lock(asyncpg_connection) -> bool:
+    acquired = await asyncpg_connection.fetchval(
+        "SELECT pg_try_advisory_lock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
+    )
+    if not acquired:
+        raise RuntimeError("another accounts startup is in progress")
+    return True

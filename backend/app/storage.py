@@ -282,6 +282,8 @@ def _inspect(data: bytes) -> tuple[int, int, str] | None:
 
 
 class Storage(Protocol):
+    async def ready(self) -> bool: ...
+
     async def upload_target(self, key: str, token: str | None = None) -> UploadTarget: ...
 
     async def image_info(self, key: str) -> ImageInfo | None: ...
@@ -308,6 +310,9 @@ class LocalStorage:
         if not path.is_relative_to(self.root.resolve()):
             raise ValueError("storage key escapes the storage root")
         return path
+
+    async def ready(self) -> bool:
+        return await asyncio.to_thread(self.root.is_dir)
 
     async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
         content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
@@ -412,6 +417,15 @@ class S3Storage:
             aws_secret_access_key=settings.storage_s3_secret_key or None,
             config=Config(signature_version="s3v4"),  # MinIO requires SigV4
         )
+
+    async def ready(self) -> bool:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket), timeout=2
+            )
+        except Exception:
+            return False
+        return True
 
     async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
         # Presigning is local computation, no network round trip. The token is

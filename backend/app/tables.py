@@ -230,6 +230,14 @@ class PendingDelete(Base):
     __table_args__ = (Index("pending_deletes_due", "next_attempt_at"),)
 
 
+class InstallationAuthState(Base):
+    __tablename__ = "installation_auth_state"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    auth_mode: Mapped[str] = mapped_column(Text)
+    enabled_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class WorkerIdentity(Base):
     __tablename__ = "workers"
 

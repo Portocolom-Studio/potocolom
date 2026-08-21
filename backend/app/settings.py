@@ -8,8 +8,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    auth_mode: Literal["none", "local", "oauth"] = "none"
-    oauth_providers: str = ""  # comma separated, read only when auth_mode is oauth
+    auth_mode: Literal["none", "accounts"] = "none"
+    oauth_providers: str = ""
     billing_enabled: bool = False
     log_format: Literal["plain", "json"] = "plain"
     fleet_token_key: str = ""
@@ -56,9 +56,11 @@ class Settings(BaseSettings):
     def auth_methods(self) -> list[str]:
         if self.auth_mode == "none":
             return []
-        methods = ["local"]
-        if self.auth_mode == "oauth":
-            methods += [p.strip() for p in self.oauth_providers.split(",") if p.strip()]
+        methods = ["password"]
+        methods += [
+            provider for provider in (part.strip() for part in self.oauth_providers.split(","))
+            if provider in {"google", "github"}
+        ]
         return methods
 
 
