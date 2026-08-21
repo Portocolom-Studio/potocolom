@@ -41,8 +41,8 @@ def _reject_unimplemented_auth_mode(mode: str) -> None:
     raise RuntimeError(
         f"AUTH_MODE={mode} is not implemented and "
         "authenticates nobody, so every request would resolve to the local "
-        "admin user. Unset AUTH_MODE or set it to none (local is tracked "
-        "in #5, oauth in #9)."
+        "admin user. Unset AUTH_MODE or set it to none (accounts is tracked "
+        "in #5 and #9)."
     )
 
 
