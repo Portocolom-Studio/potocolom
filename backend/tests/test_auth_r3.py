@@ -198,12 +198,39 @@ def test_deleting_an_account_takes_its_authentication_rows_with_it(connected, no
 @pytest.mark.db
 def test_an_unknown_auth_token_purpose_is_refused(connected, now):
     owner = _user(connected, "token-purpose@example.com")
-    for purpose in ("setup", "reset", "recovery", "challenge"):
+    for purpose in ("reset", "recovery", "challenge"):
         _insert(connected, AuthToken(id=uuid.uuid4(), user_id=owner.id, purpose=purpose,
                                      token_hash=purpose.encode().ljust(32, b"."),
                                      expires_at=now))
+    _insert(connected, AuthToken(id=uuid.uuid4(), user_id=None, purpose="setup",
+                                 token_hash=b"setup".ljust(32, b"."), expires_at=now))
     _expect_refusal(connected, AuthToken(id=uuid.uuid4(), user_id=owner.id, purpose="wire-transfer",
                                          token_hash=b"w" * 32, expires_at=now))
+
+
+@pytest.mark.db
+def test_only_a_setup_token_may_stand_without_an_account(connected, now):
+    """Setup mints the first administrator, so a consumer that reads a missing
+    account as "this is the setup flow" must not meet a reset row shaped
+    like one."""
+    owner = _user(connected, "setup-shape@example.com")
+    _expect_refusal(connected, AuthToken(id=uuid.uuid4(), user_id=owner.id, purpose="setup",
+                                         token_hash=b"S" * 32, expires_at=now))
+    _expect_refusal(connected, AuthToken(id=uuid.uuid4(), user_id=None, purpose="reset",
+                                         token_hash=b"R" * 32, expires_at=now))
+
+
+@pytest.mark.db
+def test_a_password_identity_is_unique_per_normalized_address(connected):
+    """Accounts are one per normalized address, so their password identities
+    must be too, or a login lookup has two rows to choose between."""
+    first = _user(connected, "Case@example.com")
+    second = _user(connected, "other@example.com")
+    _insert(connected, AuthIdentity(id=uuid.uuid4(), user_id=first.id, provider="password",
+                                    subject="Case@example.com", password_hash="argon2-a"))
+    _expect_refusal(connected, AuthIdentity(id=uuid.uuid4(), user_id=second.id,
+                                            provider="password", subject=" case@EXAMPLE.com ",
+                                            password_hash="argon2-b"))
 
 
 @pytest.mark.db
@@ -269,7 +296,7 @@ def test_a_factor_secret_survives_rotation_and_the_old_key_being_removed(connect
     written = KeyRing([(1, V1)])
     _insert(connected, AuthFactor(id=uuid.uuid4(), user_id=owner.id, kind="totp",
                                   secret_ciphertext=written.encrypt(TOTP_PURPOSE, b"seed",
-                                                                    aad=owner.id.bytes),
+                                                                    owner.id.bytes),
                                   key_version=written.active_version))
 
     rotating = KeyRing([(2, V2), (1, V1)])
@@ -318,6 +345,35 @@ def test_a_secret_still_on_a_removed_key_is_unreadable(connected):
 
     with pytest.raises(KeyRingError):
         KeyRing([(2, V2)]).decrypt(TOTP_PURPOSE, connected(stored()), aad=owner.id.bytes)
+
+
+@pytest.mark.db
+def test_enabling_accounts_records_the_key_version_it_writes_with(connected, monkeypatch):
+    """A guard nothing arms cannot fire, and the install that needed it is
+    exactly the one that finds out too late."""
+    monkeypatch.setattr(db, "get_key_ring", lambda: KeyRing([(7, V1)]))
+    try:
+        connected(db.enable_accounts_mode(db.session_factory))
+        assert connected(db.read_installation_root_key_version()) == 7
+    finally:
+        async def clear() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM installation_auth_state"))
+                await session.commit()
+
+        connected(clear())
+
+
+@pytest.mark.db
+def test_enabling_accounts_without_a_usable_ring_is_refused(connected, monkeypatch):
+    """Enabling accounts with no ring would write secrets nothing can read."""
+    def unusable() -> KeyRing:
+        raise KeyRingError("root keys are not configured")
+
+    monkeypatch.setattr(db, "get_key_ring", unusable)
+    with pytest.raises(KeyRingError):
+        connected(db.enable_accounts_mode(db.session_factory))
+    assert connected(db.read_installation_root_key_version()) is None
 
 
 @pytest.mark.db

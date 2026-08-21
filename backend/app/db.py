@@ -147,9 +147,10 @@ async def enable_accounts_mode(
         async with session.begin():
             await session.execute(
                 text(
-                    "INSERT INTO installation_auth_state (id, auth_mode) "
-                    "VALUES (1, 'accounts') ON CONFLICT (id) DO NOTHING"
-                )
+                    "INSERT INTO installation_auth_state (id, auth_mode, root_key_version) "
+                    "VALUES (1, 'accounts', :version) ON CONFLICT (id) DO NOTHING"
+                ),
+                {"version": get_key_ring().active_version},
             )
 
 

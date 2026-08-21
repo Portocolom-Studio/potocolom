@@ -15,7 +15,7 @@ _KEY_BYTES = 32
 _VERSION_BYTES = 2
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
-_MAX_VERSION = 2 ** (_VERSION_BYTES * 8) - 1
+_MAX_VERSION = 32767
 
 
 class KeyRingError(Exception):
@@ -31,6 +31,7 @@ def parse_root_keys(raw: str) -> list[tuple[int, bytes]]:
     """Refuses every entry it cannot fully trust, so a misread ring never becomes a weaker one."""
     entries: list[tuple[int, bytes]] = []
     seen: set[int] = set()
+    seen_keys: set[bytes] = set()
     for item in raw.split(","):
         version_text, separator, key_text = item.strip().partition(":")
         if not separator:
@@ -49,12 +50,22 @@ def parse_root_keys(raw: str) -> list[tuple[int, bytes]]:
             raise KeyRingError("root key must be base64") from None
         if len(key) != _KEY_BYTES:
             raise KeyRingError("root key must decode to 32 bytes")
+        if key in seen_keys:
+            raise KeyRingError("root keys must be distinct")
         seen.add(version)
+        seen_keys.add(key)
         entries.append((version, key))
     return entries
 
 
 class KeyRing:
+    """Values are bound to a purpose and to a caller-named context.
+
+    aad has no default on purpose: a blob encrypted with nothing bound to it
+    verifies in any row of its purpose, so a caller with nothing to bind says
+    so rather than leaving it out.
+    """
+
     def __init__(self, entries: list[tuple[int, bytes]]) -> None:
         if not entries:
             raise KeyRingError("a key ring needs at least one root key")
@@ -65,6 +76,8 @@ class KeyRing:
                 raise KeyRingError("root key must be 32 bytes")
         if len({version for version, _ in entries}) != len(entries):
             raise KeyRingError("root key versions must be unique")
+        if len({key for _, key in entries}) != len(entries):
+            raise KeyRingError("root keys must be distinct")
         self._roots = dict(entries)
         self._active = entries[0][0]
 
@@ -91,7 +104,7 @@ class KeyRing:
         )
         return kdf.derive(self._root(version))
 
-    def encrypt(self, purpose: str, plaintext: bytes, aad: bytes = b"") -> bytes:
+    def encrypt(self, purpose: str, plaintext: bytes, aad: bytes) -> bytes:
         nonce = os.urandom(_NONCE_BYTES)
         ciphertext = AESGCM(self.derive(purpose)).encrypt(
             nonce, plaintext, _associated_data(purpose, aad)
@@ -103,7 +116,7 @@ class KeyRing:
             raise KeyRingError("blob is too short to hold a version, a nonce and a tag")
         return int.from_bytes(blob[:_VERSION_BYTES], "big")
 
-    def decrypt(self, purpose: str, blob: bytes, aad: bytes = b"") -> bytes:
+    def decrypt(self, purpose: str, blob: bytes, aad: bytes) -> bytes:
         key = self.derive(purpose, self.version_of(blob))
         nonce = blob[_VERSION_BYTES:_VERSION_BYTES + _NONCE_BYTES]
         try:
@@ -113,7 +126,7 @@ class KeyRing:
         except InvalidTag:
             raise KeyRingError("blob does not verify under this purpose, aad and version") from None
 
-    def reencrypt(self, purpose: str, blob: bytes, aad: bytes = b"") -> bytes:
+    def reencrypt(self, purpose: str, blob: bytes, aad: bytes) -> bytes:
         return self.encrypt(purpose, self.decrypt(purpose, blob, aad), aad)
 
 

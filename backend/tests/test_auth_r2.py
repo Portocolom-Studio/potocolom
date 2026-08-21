@@ -10,6 +10,7 @@ from sqlalchemy.pool import NullPool
 
 from app import auth
 from app import db
+from app.keyring import KeyRing
 import app.main as main_module
 from app.main import app
 from app.settings import Settings
@@ -130,7 +131,10 @@ def test_account_dependency_rejects_before_principal(monkeypatch):
 
 
 @pytest.mark.db
-def test_accounts_enable_persists_mode_and_existing_ownership(portal_runner):
+def test_accounts_enable_persists_mode_and_existing_ownership(portal_runner, monkeypatch):
+    # Enabling accounts records the root key version it writes with, so it
+    # needs a ring; test_auth_r3.py covers what happens without one.
+    monkeypatch.setattr(db, "get_key_ring", lambda: KeyRing([(1, bytes(range(32)))]))
     assert portal_runner(db.connect()) is True
     enabled = False
     try:

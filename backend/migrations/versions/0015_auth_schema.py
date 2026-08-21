@@ -66,6 +66,10 @@ def upgrade() -> None:
     )
     op.create_index("auth_identities_one_password", "auth_identities", ["user_id"], unique=True,
                     postgresql_where=sa.text("provider = 'password'"))
+    # Accounts are one per normalized address, so their password identities are
+    # too: a byte-exact subject would let two rows answer one login.
+    op.execute("CREATE UNIQUE INDEX auth_identities_password_subject ON auth_identities "
+               "(lower(btrim(subject))) WHERE provider = 'password'")
     op.create_index("auth_identities_user", "auth_identities", ["user_id"])
 
     op.create_table(
@@ -96,6 +100,8 @@ def upgrade() -> None:
         sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
         _created_at(),
         sa.CheckConstraint(f"purpose IN {AUTH_TOKEN_PURPOSES}", name="auth_tokens_purpose"),
+        sa.CheckConstraint("(purpose = 'setup') = (user_id IS NULL)",
+                           name="auth_tokens_setup_has_no_user"),
     )
     op.create_index("auth_tokens_user", "auth_tokens", ["user_id"])
 
@@ -176,6 +182,7 @@ def downgrade() -> None:
     op.drop_index("sessions_user", table_name="sessions")
     op.drop_table("sessions")
     op.drop_index("auth_identities_user", table_name="auth_identities")
+    op.drop_index("auth_identities_password_subject", table_name="auth_identities")
     op.drop_index("auth_identities_one_password", table_name="auth_identities")
     op.drop_table("auth_identities")
     op.drop_column("installation_auth_state", "root_key_version")

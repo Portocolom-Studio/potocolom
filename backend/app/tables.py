@@ -66,6 +66,10 @@ class AuthIdentity(Base):
         UniqueConstraint("provider", "subject", name="auth_identities_provider_subject"),
         Index("auth_identities_one_password", "user_id",
               unique=True, postgresql_where=text("provider = 'password'")),
+        # Accounts are one per normalized address, so their password identities
+        # are too: a byte-exact subject would let two rows answer one login.
+        Index("auth_identities_password_subject", text("lower(btrim(subject))"),
+              unique=True, postgresql_where=text("provider = 'password'")),
         Index("auth_identities_user", "user_id"),
     )
 
@@ -110,6 +114,8 @@ class AuthToken(Base):
     __tablename__ = "auth_tokens"
     __table_args__ = (
         CheckConstraint(_one_of("purpose", AUTH_TOKEN_PURPOSES), name="auth_tokens_purpose"),
+        CheckConstraint("(purpose = 'setup') = (user_id IS NULL)",
+                        name="auth_tokens_setup_has_no_user"),
         Index("auth_tokens_user", "user_id"),
     )
 
