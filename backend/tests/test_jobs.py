@@ -1952,6 +1952,84 @@ def test_img2img_rejects_model_without_capability():
 
 
 @pytest.mark.db
+def test_expired_source_asset_is_rejected_for_img2img_and_upscale():
+    upscale_manifest = {
+        "id": "realesrgan-expired-source",
+        "name": "Real-ESRGAN",
+        "capabilities": ["upscale"],
+        "parameters": {
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4]}},
+            "required": ["factor"],
+        },
+        "min_vram_gb": 4,
+    }
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json({
+                "type": "hello",
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "w-expired-source",
+                "models": [MANIFEST, upscale_manifest],
+                "realtime_slots": 1,
+            })
+            assert worker.receive_json()["type"] == "registered"
+
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            expired_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            source_asset_id = uuid.uuid4()
+
+            async def seed() -> int:
+                async with db.session_factory() as session:
+                    session.add(Asset(
+                        id=source_asset_id,
+                        user_id=db.local_user_id,
+                        job_id=None,
+                        storage_key=f"{db.local_user_id}/expired-source.png",
+                        mime="image/png",
+                        width=512,
+                        height=512,
+                        expires_at=expired_at,
+                    ))
+                    await session.commit()
+                    return await session.scalar(
+                        select(func.count()).select_from(Job).where(
+                            Job.user_id == db.local_user_id
+                        )
+                    )
+
+            jobs_before = asyncio.run(seed())
+            queue_before = list(jobs.queues._heaps.get(jobs.JOB_QUEUE, []))
+
+            for model_id, params in (
+                ("sd-test", {"prompt": "expired edit"}),
+                ("realesrgan-expired-source", {"factor": 2}),
+            ):
+                rejected = client.post(
+                    "/api/v1/generations",
+                    json={
+                        "model_id": model_id,
+                        "params": params,
+                        "source_asset_id": str(source_asset_id),
+                    },
+                )
+                assert rejected.status_code == 404
+                assert rejected.json()["detail"] == "unknown source asset"
+
+            async def count_jobs() -> int:
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        select(func.count()).select_from(Job).where(
+                            Job.user_id == db.local_user_id
+                        )
+                    )
+
+            assert asyncio.run(count_jobs()) == jobs_before
+            assert jobs.queues._heaps.get(jobs.JOB_QUEUE, []) == queue_before
+
+
+@pytest.mark.db
 def test_upscale_dispatch_includes_input_url():
     upscale_manifest = {
         "id": "realesrgan",

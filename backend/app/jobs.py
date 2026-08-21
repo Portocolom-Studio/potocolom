@@ -365,7 +365,9 @@ async def create_generation(
         raise HTTPException(status_code=422, detail="model is not offered for text_to_image")
     if source_asset_id is not None:
         source = await session.get(Asset, source_asset_id)
-        if source is None or source.user_id != user.id:
+        if (source is None or source.user_id != user.id
+                or (source.expires_at is not None
+                    and source.expires_at <= datetime.now(timezone.utc))):
             raise HTTPException(status_code=404, detail="unknown source asset")
         if source.storage_key.endswith("-thumb.webp"):
             raise HTTPException(status_code=422, detail="source asset cannot be a thumbnail")
