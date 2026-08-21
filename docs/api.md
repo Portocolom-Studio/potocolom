@@ -149,7 +149,6 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
                              carrying opaque asset-ID URLs and "thumbnail_url", plus
                              "has_derivatives" for stable client layout; cursor paging.
-                             (This is the real history endpoint. There is no /api/v1/assets.)
                              ?starred=true uses starred_at newest-first; false excludes favorites.
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
@@ -241,8 +240,8 @@ GET  /api/v1/assets/{id}                owner or admin; serves local bytes, with
                                         unauthorized assets and 400 for an unsafe download name
 ```
 
-Worker input URLs use `/api/v1/worker-input` with an opaque 32-byte capability. The capability
-expires after 15 minutes. The URL does not contain the storage key.
+For local storage, worker input URLs use `/api/v1/worker-input` with an opaque 32-byte capability.
+The capability expires after 15 minutes. The URL does not contain the storage key.
 
 ## Planned endpoints, shapes fixed by the blueprint
 
