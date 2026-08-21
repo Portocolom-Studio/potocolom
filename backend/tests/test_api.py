@@ -23,15 +23,15 @@ def test_config_defaults():
 
 def test_auth_methods_by_mode():
     assert Settings(auth_mode="none").auth_methods == []
-    assert Settings(auth_mode="local").auth_methods == ["local"]
-    assert Settings(auth_mode="oauth", oauth_providers="google,github").auth_methods == [
-        "local",
+    assert Settings(auth_mode="accounts").auth_methods == ["password"]
+    assert Settings(auth_mode="accounts", oauth_providers="google,github").auth_methods == [
+        "password",
         "google",
         "github",
     ]
     # Whitespace around commas must not leak into method names.
-    assert Settings(auth_mode="oauth", oauth_providers="google, github, ").auth_methods == [
-        "local",
+    assert Settings(auth_mode="accounts", oauth_providers="google, github, ").auth_methods == [
+        "password",
         "google",
         "github",
     ]
