@@ -285,6 +285,7 @@ def test_s3_storage_presigns_offline():
     assert target.url.startswith("http://localhost:9100/")
     assert "u/j.png" in target.url
     assert "X-Amz-Signature" in target.url
+    assert parse_qs(urlsplit(target.url).query)["X-Amz-Expires"] == ["3600"]
     # If-None-Match is signed as well as sent: the bucket refuses a second
     # write with 412, so a presigned PUT cannot be replayed over an object the
     # API has already verified (issue #249).
@@ -306,8 +307,6 @@ def test_s3_storage_presigns_offline():
     ]
     worker_input = asyncio.run(storage.worker_fetch_url("u/j.png"))
     assert parse_qs(urlsplit(worker_input).query)["X-Amz-Expires"] == ["900"]
-    share = asyncio.run(storage.share_url("u/j.png"))
-    assert parse_qs(urlsplit(share).query)["X-Amz-Expires"] == ["60"]
     download = asyncio.run(
         storage.url("u/j.png", download_name="potocolom-20260729-142530-castle.png")
     )
@@ -344,6 +343,8 @@ def test_s3_presign_params_declare_stored_content_type():
     assert put_webp["ContentType"] == "image/webp"
     assert get_png["ResponseContentType"] == "image/png"
     assert get_webp["ResponseContentType"] == "image/webp"
+    assert get_png["ResponseCacheControl"] == "no-store"
+    assert get_webp["ResponseCacheControl"] == "no-store"
 
 
 def test_storage_rejects_unsafe_download_name(tmp_path):

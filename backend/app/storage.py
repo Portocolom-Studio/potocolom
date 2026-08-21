@@ -23,8 +23,8 @@ from urllib.parse import urlencode
 from app.settings import Settings, get_settings
 
 SIGNED_URL_TTL = 300
-SHARE_URL_TTL = 60
 WORKER_URL_TTL = 900
+OUTPUT_UPLOAD_URL_TTL = 3600
 # Deletes get their own small pool: a wedged filesystem leaks one thread per
 # attempt for good, and the default executor is shared with every other
 # off-loop read this app makes.
@@ -429,7 +429,7 @@ class S3Storage:
                 # (issue #249).
                 "IfNoneMatch": "*",
             },
-            ExpiresIn=SIGNED_URL_TTL,
+            ExpiresIn=OUTPUT_UPLOAD_URL_TTL,
         )
         return UploadTarget(url=url, headers={"Content-Type": content_type,
                                               "If-None-Match": "*"})
@@ -485,6 +485,7 @@ class S3Storage:
             "Bucket": self.bucket,
             "Key": key,
             "ResponseContentType": stored_content_type(key),
+            "ResponseCacheControl": "no-store",
         }
         if download_name is not None:
             params["ResponseContentDisposition"] = download_content_disposition(download_name)
@@ -492,13 +493,6 @@ class S3Storage:
             "get_object",
             Params=params,
             ExpiresIn=SIGNED_URL_TTL,
-        )
-
-    async def share_url(self, key: str) -> str:
-        return self.client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": self.bucket, "Key": key, "ResponseContentType": stored_content_type(key)},
-            ExpiresIn=SHARE_URL_TTL,
         )
 
     async def worker_fetch_url(self, key: str) -> str:

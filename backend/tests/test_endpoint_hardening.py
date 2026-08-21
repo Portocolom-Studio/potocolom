@@ -1,12 +1,13 @@
 import asyncio
 import uuid
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, jobs
 from app.auth import current_user
 from app.benchmark import router as benchmark_router
 from app.main import app
@@ -176,7 +177,7 @@ class _PresignClient:
 
 @pytest.mark.parametrize(
     ("method", "expected"),
-    (("share_url", 60), ("url", 300), ("worker_fetch_url", 900)),
+    (("url", 300), ("worker_fetch_url", 900)),
 )
 def test_storage_url_purposes_have_separate_expiry_contracts(method, expected):
     fake = _PresignClient()
@@ -207,3 +208,19 @@ def test_auth_mode_none_keeps_owner_data_and_install_access():
         assert client.get("/api/v1/generations").status_code == 200
         assert client.get("/api/v1/telemetry/preview").status_code == 200
         assert client.get("/api/v1/models").status_code == 200
+
+
+def test_worker_input_rejects_non_ascii_capability_token(monkeypatch):
+    monkeypatch.setattr(jobs, "time", SimpleNamespace(time=lambda: 1_800_000_000))
+    capability = "endpoint-hardening-live-capability"
+    expires = 1_800_000_300
+    jobs.register_input_capability(capability, "input/source.png", expires)
+    try:
+        with _client() as client:
+            response = client.get(
+                "/api/v1/worker-input",
+                params={"token": "é", "expires": expires},
+            )
+        assert response.status_code == 403
+    finally:
+        jobs.input_capabilities.pop(capability, None)

@@ -179,7 +179,8 @@ def resolve_input_capability(token: str | None, expires: int | None) -> str | No
     for value, (_, expiry) in list(input_capabilities.items()):
         if expiry <= now:
             input_capabilities.pop(value, None)
-    if token is None or expires is None or expires <= now:
+    if (not isinstance(token, str) or not token or not token.isascii()
+            or expires is None or expires <= now):
         return None
     for value, (key, expiry) in input_capabilities.items():
         if expiry != expires:

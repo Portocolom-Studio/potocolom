@@ -1115,6 +1115,7 @@ def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
             )
             storage = jobs.get_storage()
             real_promote = storage.promote
+            cleaned = threading.Event()
 
             class Swapping:
                 def __getattr__(self, name):
@@ -1124,14 +1125,16 @@ def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
                     await real_promote(source, dest)
                     jobs.inflight[key] = replacement
 
+                async def delete(self, storage_key):
+                    await storage.delete(storage_key)
+                    if storage_key == library_key:
+                        cleaned.set()
+
             monkeypatch.setattr(jobs, "get_storage", lambda: Swapping())
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "dispatch_token": original.dispatch_token,
                               "gpu_ms": 1, "width": 512, "height": 512})
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and storage.path(library_key).exists():
-                client.get("/api/v1/health")
-                time.sleep(0.05)
+            assert cleaned.wait(3)
             assert not storage.path(library_key).exists(), \
                 "a superseded promote left the library master"
             monkeypatch.undo()
