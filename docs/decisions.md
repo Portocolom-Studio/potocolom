@@ -1061,6 +1061,18 @@ Retrying forever costs one delete call an hour per stuck key, and the row is the
 
 Rejected alternatives: dropping the row at a bounded attempt count, which is what the issue asked for and which loses the object silently; unscheduling the row and re-arming it at startup, which makes recovery depend on a restart nobody will perform for a cleanup failure; an operator endpoint to re-arm, which is a surface with one caller for a case that a retry already handles; and an S3 lifecycle rule instead of any of this, which is the better answer for the cloud profile and covers only it, so it belongs with issue #278 rather than replacing the retry a self-hosted install needs.
 
+## Secrets at rest: one versioned root key ring, purpose keys derived per use
+
+Account secrets are encrypted under keys derived from a versioned root key ring, never under a root key directly. `ROOT_KEYS` carries comma separated `version:base64key` entries with the newest first: the first entry is the active write key and every entry stays readable. A purpose key comes from HKDF-SHA256 over the root key with the purpose in the info string, so one subsystem's key is useless against another's data. Values are sealed with AES-GCM and carry their key version, and the purpose and any row binding go into the associated data, so a blob cannot be replayed under a different purpose or a different row. Rotation is therefore active write, multi read, re-encrypt, then remove, with no downtime and no flag day. A key that leaves the ring before its rows are re-encrypted makes those rows unreadable, and every refusal raises rather than returning a value: losing a secret is the correct outcome, and silently reading one under a fallback key is not. The ring is separate key material from `FLEET_TOKEN_KEY`, which authenticates workers.
+
+Rejected alternatives: one static key from the environment (no rotation story at all, and every subsystem shares one blast radius); encrypting with the root key directly (rotation then rewrites every row for every purpose at once, and one leaked key exposes everything); a key management service (a hard dependency the self-hosted profile cannot take, for a threat the self-hoster's own disk encryption already bounds); storing the key version only inside the blob (finding the rows still on an old key then means scanning and parsing the whole table instead of reading an index).
+
+## Password and email uniqueness: a functional index, not a second column
+
+Accounts are unique on `lower(btrim(email))` through a unique functional index, and invitations use the same expression in a partial index that admits one open invitation per address. There is no stored normalized column to keep in step.
+
+Rejected alternative: a normalized column filled on write. It duplicates a value the database can compute, adds a backfill to the migration, and goes stale the moment one write path forgets it, which is exactly the write path that also decides who owns an account.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
