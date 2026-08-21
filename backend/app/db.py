@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.keyring import KeyRingError, get_key_ring
 from app.settings import get_settings
 from app.tables import InstallationAuthState, User
 
@@ -89,6 +90,7 @@ async def connect() -> bool:
     engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     await validate_startup_auth_mode(settings.auth_mode)
+    await validate_startup_key_ring()
     local_user_id = await _ensure_local_user(session_factory)
     return True
 
@@ -149,6 +151,32 @@ async def enable_accounts_mode(
                     "VALUES (1, 'accounts') ON CONFLICT (id) DO NOTHING"
                 )
             )
+
+
+async def read_installation_root_key_version() -> int | None:
+    if session_factory is None:
+        raise RuntimeError("database unavailable")
+    async with session_factory() as session:
+        state = await session.get(InstallationAuthState, 1)
+        return state.root_key_version if state is not None else None
+
+
+async def validate_startup_key_ring() -> None:
+    """PostgreSQL is the authority on the version this installation writes with.
+
+    A ring that no longer holds it cannot read anything written since, so
+    refusing to start is the only honest outcome: coming up would answer with
+    an installation that silently lost every encrypted secret.
+    """
+    recorded = await read_installation_root_key_version()
+    if recorded is None:
+        return
+    try:
+        ring = get_key_ring()
+    except KeyRingError as error:
+        raise RuntimeError(f"root key ring is unusable: {error}") from error
+    if recorded not in ring.versions:
+        raise RuntimeError(f"root key version {recorded} is missing from the key ring")
 
 
 async def validate_startup_auth_mode(configured: str) -> None:

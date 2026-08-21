@@ -8,8 +8,8 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
-    BigInteger, Date, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, Text,
-    text,
+    BigInteger, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer,
+    LargeBinary, SmallInteger, Text, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -19,13 +19,190 @@ class Base(DeclarativeBase):
     type_annotation_map = {datetime: DateTime(timezone=True)}  # timestamptz everywhere
 
 
+ROLES = ("viewer", "user", "admin")
+ACCOUNT_STATES = ("active", "suspended", "disabled", "deletion_pending", "purging")
+IDENTITY_PROVIDERS = ("password", "google", "github")
+AUTH_TOKEN_PURPOSES = ("setup", "reset", "recovery", "challenge")
+OUTBOX_STATES = ("pending", "sent", "failed")
+NORMALIZED_EMAIL = text("lower(btrim(email))")
+
+
+def _one_of(column: str, allowed: tuple[str, ...]) -> str:
+    return f"{column} IN (" + ", ".join(f"'{value}'" for value in allowed) + ")"
+
+
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(_one_of("role", ROLES), name="users_role"),
+        CheckConstraint(_one_of("state", ACCOUNT_STATES), name="users_state"),
+        # Two addresses that differ only by case or padding are one account.
+        Index("users_email_normalized", NORMALIZED_EMAIL, unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(Text, unique=True)
+    mail_verified: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     role: Mapped[str] = mapped_column(Text, default="user")
+    state: Mapped[str] = mapped_column(Text, default="active", server_default=text("'active'"))
     deleted_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AuthIdentity(Base):
+    """One way to prove an account: a local password, or a provider subject.
+
+    A provider identity is the provider's proof and never carries a local
+    credential, so the two cannot be confused for one another.
+    """
+
+    __tablename__ = "auth_identities"
+    __table_args__ = (
+        CheckConstraint(_one_of("provider", IDENTITY_PROVIDERS), name="auth_identities_provider"),
+        CheckConstraint(
+            "(provider = 'password') = (password_hash IS NOT NULL)",
+            name="auth_identities_password_hash",
+        ),
+        UniqueConstraint("provider", "subject", name="auth_identities_provider_subject"),
+        Index("auth_identities_one_password", "user_id",
+              unique=True, postgresql_where=text("provider = 'password'")),
+        Index("auth_identities_user", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(Text)
+    subject: Mapped[str] = mapped_column(Text)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    last_login_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Session(Base):
+    """Only the SHA-256 of the 32 random bytes is kept, never the token itself.
+
+    No raw address and no full user agent: a durable record of who signed in
+    from where is a standing disclosure risk that login does not need.
+    """
+
+    __tablename__ = "sessions"
+    __table_args__ = (Index("sessions_user", "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    remember_me: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    absolute_expires_at: Mapped[datetime]
+    idle_expires_at: Mapped[datetime | None]
+    recent_auth_at: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+    last_seen_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AuthToken(Base):
+    """A one-use capability, not a principal: setup, reset, recovery, or the
+    pre-session challenge a primary login mints before TOTP is checked.
+
+    Setup carries no user because nobody has claimed the installation yet.
+    """
+
+    __tablename__ = "auth_tokens"
+    __table_args__ = (
+        CheckConstraint(_one_of("purpose", AUTH_TOKEN_PURPOSES), name="auth_tokens_purpose"),
+        Index("auth_tokens_user", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(Text)
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    expires_at: Mapped[datetime]
+    consumed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Invitation(Base):
+    __tablename__ = "invitations"
+    __table_args__ = (
+        CheckConstraint(_one_of("role", ROLES), name="invitations_role"),
+        # One open invitation per address; accepted and revoked ones stay as
+        # the record of what happened.
+        Index("invitations_one_open", NORMALIZED_EMAIL, unique=True,
+              postgresql_where=text("accepted_at IS NULL AND revoked_at IS NULL")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(Text)
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    accepted_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    expires_at: Mapped[datetime]
+    accepted_at: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AuthFactor(Base):
+    """A TOTP secret, encrypted under a root key ring purpose key.
+
+    key_version is what makes rotation a bounded indexed sweep rather than a
+    scan that parses every blob to find the ones still on the old key.
+    """
+
+    __tablename__ = "auth_factors"
+    __table_args__ = (
+        CheckConstraint("kind = 'totp'", name="auth_factors_kind"),
+        UniqueConstraint("user_id", "kind", name="auth_factors_one_per_kind"),
+        Index("auth_factors_key_version", "key_version"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(Text)
+    secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+    key_version: Mapped[int] = mapped_column(SmallInteger)
+    confirmed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class RecoveryCode(Base):
+    __tablename__ = "recovery_codes"
+    __table_args__ = (
+        UniqueConstraint("user_id", "code_hash", name="recovery_codes_unique"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[bytes] = mapped_column(LargeBinary)
+    consumed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class MailOutbox(Base):
+    """Every email capability is durable here before anyone tries to deliver it,
+    so a delivery outage queues and retries instead of losing the capability."""
+
+    __tablename__ = "mail_outbox"
+    __table_args__ = (
+        CheckConstraint(_one_of("state", OUTBOX_STATES), name="mail_outbox_state"),
+        Index("mail_outbox_due", "state", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    to_email: Mapped[str] = mapped_column(Text)
+    template: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    state: Mapped[str] = mapped_column(Text, default="pending", server_default=text("'pending'"))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    next_attempt_at: Mapped[datetime]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -235,6 +412,7 @@ class InstallationAuthState(Base):
 
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     auth_mode: Mapped[str] = mapped_column(Text)
+    root_key_version: Mapped[int | None] = mapped_column(SmallInteger)
     enabled_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
