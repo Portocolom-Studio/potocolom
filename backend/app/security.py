@@ -52,11 +52,14 @@ def unhandled_exception_response(request: Request, exc: Exception) -> Response:
     Starlette places ServerErrorMiddleware outside user middleware, so responses
     from this handler never pass through SecurityHeadersMiddleware.
     """
-    del request, exc  # signature fixed by Starlette ExceptionHandler
+    headers = dict(SECURITY_HEADERS)
+    if request.url.path.startswith("/api/v1/"):
+        headers["Cache-Control"] = "no-store"
+    del exc
     return PlainTextResponse(
         "Internal Server Error",
         status_code=500,
-        headers=SECURITY_HEADERS,
+        headers=headers,
     )
 
 

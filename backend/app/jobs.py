@@ -1584,15 +1584,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             _purge_keys(orphans, job_id),
             what=f"dispatch orphans for job {job_id}",
         )
-        try:
-            url = await get_storage().url(library_key)
-        except Exception:
-            # The commit is durable and nothing tracks the job, so a signing
-            # failure must not swallow the terminal event; the studio refetches
-            # on it and gets the URL then.
-            logger.exception("could not sign output url for job %s", job_id)
-            url = None
-        publish(job_id, {"state": "succeeded", "url": url})
+        publish(job_id, {"state": "succeeded", "url": asset_url(full.id)})
         logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
         from app import usage_events
         usage_events.schedule_job(job_id, control)

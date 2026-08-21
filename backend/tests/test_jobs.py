@@ -1405,10 +1405,7 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
 
 
 @pytest.mark.db
-def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
-    """The URL is signed after the commit and the de-tracking, so a signing
-    failure must not swallow the terminal event or the usage event: nothing
-    tracks the job any more and nothing would retry either (issue #248)."""
+def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
     _stall_safe(monkeypatch)
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
@@ -1432,45 +1429,41 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
                         )
                     ) or 0)
 
-            # usage_events carries no job id, and the database is truncated once
-            # per session, so this job's row is identified by the count rising.
             events_before = asyncio.run(job_events())
             published = []
             monkeypatch.setattr(
                 jobs, "publish",
                 lambda job_id, event: published.append((job_id, event)),
             )
-            dispatch_key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
-                "/api/v1/files/", 1
-            )[-1]
-            assert dispatch_key.startswith(jobs.DISPATCH_PREFIX)
-            master_key = dispatch_key.removeprefix(jobs.DISPATCH_PREFIX)
             real_storage = jobs.get_storage()
 
-            class FailingUrl:
-                """Fails the first signing of the master key: the success path
-                is its first caller, and the studio's later refetch still works."""
-
+            class TrackingUrl:
                 def __init__(self):
-                    self.fired = False
+                    self.calls = []
 
                 def __getattr__(self, name):
                     return getattr(real_storage, name)
 
                 async def url(self, key, download_name=None):
-                    if not self.fired and key == master_key:
-                        self.fired = True
-                        raise RuntimeError("simulated signing failure")
+                    self.calls.append(key)
                     return await real_storage.url(key, download_name)
 
-            # get_storage() is called once per request, so one shared instance
-            # carries the fired flag across the success path and the refetch.
-            failing_url = FailingUrl()
-            monkeypatch.setattr(jobs, "get_storage", lambda: failing_url)
+            tracking_url = TrackingUrl()
+            monkeypatch.setattr(jobs, "get_storage", lambda: tracking_url)
             worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
                               "width": 512, "height": 512,
                               "dispatch_token": dispatch["dispatch_token"]})
-            poll_until(client, job_id, "succeeded")
+            generation = poll_until(client, job_id, "succeeded")
+            asset_id = generation["assets"][0]["id"]
+
+            async def asset_storage_key() -> str:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return str(await session.scalar(
+                        select(Asset.storage_key).where(Asset.id == uuid.UUID(asset_id))
+                    ))
+
+            storage_key = asyncio.run(asset_storage_key())
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not any(
@@ -1480,7 +1473,10 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
             succeeded = next(
                 event for _, event in published if event.get("state") == "succeeded"
             )
-            assert succeeded.get("url") is None
+            succeeded_url = succeeded["url"]
+            assert urlsplit(succeeded_url).path == f"/api/v1/assets/{asset_id}"
+            assert storage_key not in succeeded_url
+            assert tracking_url.calls == []
 
             def usage_written() -> bool:
                 return asyncio.run(job_events()) > events_before
