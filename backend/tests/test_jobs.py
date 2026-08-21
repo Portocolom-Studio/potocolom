@@ -2005,7 +2005,7 @@ def test_expired_source_asset_is_rejected_for_img2img_and_upscale():
                         )
                     )
 
-            jobs_before = asyncio.run(seed())
+            jobs_before = client.portal.call(seed)
             queue_before = list(jobs.queues._heaps.get(jobs.JOB_QUEUE, []))
 
             for model_id, params in (
@@ -2031,7 +2031,7 @@ def test_expired_source_asset_is_rejected_for_img2img_and_upscale():
                         )
                     )
 
-            assert asyncio.run(count_jobs()) == jobs_before
+            assert client.portal.call(count_jobs) == jobs_before
             assert jobs.queues._heaps.get(jobs.JOB_QUEUE, []) == queue_before
 
 
