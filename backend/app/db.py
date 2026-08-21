@@ -12,6 +12,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from alembic import command
@@ -158,10 +159,16 @@ async def validate_startup_auth_mode(configured: str) -> None:
         raise RuntimeError("accounts installation cannot start in none mode")
 
 
-async def acquire_accounts_startup_lock(asyncpg_connection) -> bool:
+@asynccontextmanager
+async def accounts_startup_lock(asyncpg_connection) -> AsyncIterator[None]:
     acquired = await asyncpg_connection.fetchval(
         "SELECT pg_try_advisory_lock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
     )
     if not acquired:
         raise RuntimeError("another accounts startup is in progress")
-    return True
+    try:
+        yield
+    finally:
+        await asyncpg_connection.fetchval(
+            "SELECT pg_advisory_unlock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
+        )

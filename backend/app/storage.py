@@ -15,7 +15,7 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlencode
@@ -29,6 +29,9 @@ OUTPUT_UPLOAD_URL_TTL = 3600
 # attempt for good, and the default executor is shared with every other
 # off-loop read this app makes.
 DELETE_THREADS = 4
+# Readiness gets its own pool for the same reason, and a smaller one: the probe
+# is unauthenticated, so its rate is set by whoever is calling it.
+READY_THREADS = 2
 # Carries the dispatch token on a local upload (app/files.py, issue #247).
 UPLOAD_TOKEN_HEADER = "X-Upload-Token"
 PNG_CONTENT_TYPE = "image/png"
@@ -52,6 +55,11 @@ DOWNLOAD_NAME_PATTERN = re.compile(
 @lru_cache
 def _delete_threads() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=DELETE_THREADS, thread_name_prefix="storage-delete")
+
+
+@lru_cache
+def _ready_threads() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=READY_THREADS, thread_name_prefix="storage-ready")
 
 
 def validate_download_name(name: str) -> str:
@@ -312,7 +320,8 @@ class LocalStorage:
         return path
 
     async def ready(self) -> bool:
-        return await asyncio.to_thread(self.root.is_dir)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_ready_threads(), self.root.is_dir)
 
     async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
         content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
@@ -419,10 +428,12 @@ class S3Storage:
         )
 
     async def ready(self) -> bool:
+        loop = asyncio.get_running_loop()
+        probe = loop.run_in_executor(
+            _ready_threads(), partial(self.client.head_bucket, Bucket=self.bucket)
+        )
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket), timeout=2
-            )
+            await asyncio.wait_for(probe, timeout=2)
         except Exception:
             return False
         return True

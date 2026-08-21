@@ -187,9 +187,14 @@ def test_accounts_without_redis_refuses_concurrent_startup(portal_runner):
         first = await asyncpg.connect(db.get_settings().database_url)
         second = await asyncpg.connect(db.get_settings().database_url)
         try:
-            assert await db.acquire_accounts_startup_lock(first) is True
-            with pytest.raises(RuntimeError, match="accounts startup"):
-                await db.acquire_accounts_startup_lock(second)
+            async with db.accounts_startup_lock(first):
+                with pytest.raises(RuntimeError, match="accounts startup"):
+                    async with db.accounts_startup_lock(second):
+                        pass
+            # A session lock the holder never releases wedges every restart
+            # until PostgreSQL reaps the backend on its keepalive timeout.
+            async with db.accounts_startup_lock(second):
+                pass
         finally:
             await second.close()
             await first.close()
