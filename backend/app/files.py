@@ -16,6 +16,7 @@ import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
@@ -125,6 +126,8 @@ async def asset(
 ):
     row = await session.get(Asset, asset_id)
     if row is None or (row.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="no such asset")
+    if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=404, detail="no such asset")
     try:
         download_name = validate_download_name(download) if download is not None else None

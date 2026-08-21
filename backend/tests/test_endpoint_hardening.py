@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -164,6 +165,33 @@ def test_asset_id_read_is_session_bound_and_owner_scoped(tmp_path, monkeypatch):
         assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404
         app.dependency_overrides[current_user] = lambda: admin
         assert client.get(f"/api/v1/assets/{asset_id}").status_code == 200
+
+
+@pytest.mark.db
+def test_expired_asset_is_not_readable_by_owner_or_admin(tmp_path, monkeypatch):
+    asset_id = uuid.uuid5(uuid.NAMESPACE_URL, "endpoint-hardening:expired-asset")
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    monkeypatch.setattr("app.files.get_storage", lambda: storage)
+    with _client() as client:
+        owner = asyncio.run(_persist_user("user", "expired-asset-owner"))
+        admin = asyncio.run(_persist_user("admin", "expired-asset-admin"))
+        key = f"{owner.id}/expired-asset.png"
+        path = storage.path(key)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"expired-asset-bytes")
+
+        async def create_asset() -> None:
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add(Asset(id=asset_id, user_id=owner.id, storage_key=key,
+                                  mime="image/png", width=1, height=1,
+                                  expires_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
+                await session.commit()
+
+        asyncio.run(create_asset())
+        for principal in (owner, admin):
+            app.dependency_overrides[current_user] = lambda principal=principal: principal
+            assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404
 
 
 class _PresignClient:
