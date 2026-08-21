@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app import accounts as accounts_module
 from app import db, sessions
 from app.main import app
 from app.passwords import hash_password
@@ -246,14 +247,51 @@ async def _session_id(token: str):
 
 
 @pytest.mark.db
-def test_a_login_rotates_onto_a_new_session(accounts):
-    """A session that existed before authentication must not survive it."""
-    user = _account(accounts, "rotate@example.com")
+def test_a_session_planted_before_a_login_does_not_survive_it(accounts):
+    """Session fixation: a token planted in this browser before authentication
+    must not be the token that comes out of it."""
+    user = _account(accounts, "fixate@example.com")
     with TestClient(app) as client:
-        stale = client.portal.call(sessions.mint, user, False)
-        assert _login(client, "rotate@example.com").status_code == 204
+        planted = client.portal.call(sessions.mint, user, False)
+        client.cookies.set("potocolom_session", planted.token)
+        assert _login(client, "fixate@example.com").status_code == 204
         assert client.get("/api/v1/account",
-                          headers={"Authorization": f"Bearer {stale.token}"}).status_code == 401
+                          headers={"Authorization": f"Bearer {planted.token}"}).status_code == 401
+
+
+@pytest.mark.db
+def test_signing_in_on_one_device_does_not_sign_out_another(accounts):
+    """The account page exists to let people revoke their own sessions, so a
+    login must not do it for them."""
+    user = _account(accounts, "twodevices@example.com")
+    with TestClient(app) as client:
+        phone = client.portal.call(sessions.mint, user, False)
+        assert _login(client, "twodevices@example.com").status_code == 204
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {phone.token}"}).status_code == 200
+
+
+@pytest.mark.db
+def test_an_unknown_address_costs_the_same_as_a_wrong_password(accounts):
+    """Answering an unknown address without hashing would let the response
+    time say which addresses exist."""
+    _account(accounts, "timed@example.com")
+    calls = []
+    real = accounts_module.verify_password
+
+    def counting(stored, password):
+        calls.append(stored)
+        return real(stored, password)
+
+    with TestClient(app) as client:
+        accounts_module.verify_password = counting
+        try:
+            _login(client, "nobody@example.com")
+            _login(client, "timed@example.com", password="a-different-long-password")
+        finally:
+            accounts_module.verify_password = real
+    assert len(calls) == 2
+    assert calls[0] == accounts_module.ABSENT_ACCOUNT_HASH
 
 
 @pytest.mark.db

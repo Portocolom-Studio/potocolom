@@ -4,12 +4,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from anyio import to_thread
 from sqlalchemy import select
 from starlette.responses import Response
 
 from app import db, sessions
 from app.auth import current_principal, require_accounts_mode
-from app.passwords import verify_password
+from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, Session, User
 
@@ -18,6 +19,12 @@ router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 # One answer for an address nobody holds and a password that does not match,
 # so the response cannot be used to learn which accounts exist.
 REFUSED = HTTPException(status_code=401, detail="invalid email or password")
+
+
+async def _presented_session(http: Request) -> sessions.Resolved | None:
+    session_name, _ = sessions.cookie_names(get_settings().public_url)
+    token = http.cookies.get(session_name)
+    return await sessions.resolve(token) if token else None
 
 
 class LoginRequest(BaseModel):
@@ -45,7 +52,8 @@ def _clear(response: Response) -> None:
 
 
 @router.post("/api/v1/auth/login", status_code=204)
-async def login(request: LoginRequest) -> Response:
+async def login(request: LoginRequest, http: Request) -> Response:
+    presented = await _presented_session(http)
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     subject = request.email.strip().lower()
@@ -55,17 +63,18 @@ async def login(request: LoginRequest) -> Response:
             .join(User, User.id == AuthIdentity.user_id)
             .where(AuthIdentity.provider == "password", AuthIdentity.subject == subject)
         )).first()
-    if found is None:
+    stored = ABSENT_ACCOUNT_HASH if found is None else (found[0].password_hash or "")
+    matched = await to_thread.run_sync(verify_password, stored, request.password)
+    if found is None or not matched:
         raise REFUSED
-    identity, user = found
-    if identity.password_hash is None or not verify_password(identity.password_hash,
-                                                             request.password):
-        raise REFUSED
+    _, user = found
     if user.state in {"disabled", "deletion_pending", "purging"}:
         raise REFUSED
-    # Everything this account already held is retired: authentication is the
-    # boundary a session before it must not cross.
-    await sessions.revoke_all(user.id)
+    # Session fixation: a token planted in this browser before authentication
+    # must not be the token that comes out of it. Only the session presented
+    # here is retired, so signing in on one device does not sign out another.
+    if presented is not None:
+        await sessions.revoke(presented.session.id)
     issued = await sessions.mint(user, remember_me=request.remember_me, authenticated=True)
     response = Response(status_code=204)
     issue_session(response, issued)
