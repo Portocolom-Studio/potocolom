@@ -55,13 +55,14 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
-| GET `/api/v1/auth/redirect/{provider}` | issue #5 | OAuth authorization redirect |
-| GET `/api/v1/auth/callback/{provider}` | issue #5 | OAuth code exchange, then a session cookie |
+| GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials |
+| GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account |
 | POST `/api/v1/invitations` | implemented | invite an address to a role; returns the link once, admin only |
 | GET `/api/v1/invitations` | implemented | the open invitations, without their links; admin only |
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
 | POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
+| POST `/api/v1/account/identities/{provider}` | implemented | start linking a provider to this account; needs recent authentication |
 | GET `/api/v1/account` | implemented | this account, and its live sessions |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
@@ -282,7 +283,11 @@ POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "re
 POST /api/v1/auth/logout     204, session revoked and both cookies cleared
 ```
 
-OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code, finds or creates the user, and ends in the same session cookie as local login. (Google and GitHub at launch; Apple is deferred.)
+OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code and ends in the same session cookies as a password login. It **never finds or creates an account by email**. Registration is invitation-only, so a provider sign-in only succeeds for an identity somebody already linked deliberately, and a provider account that happens to know an address cannot become that person. Linking is a separate act: `POST /api/v1/account/identities/{provider}` needs a live session and authentication within the last 30 minutes.
+
+The flow is authorization code with PKCE S256. The state is minted here and only its hash is stored, the verifier and nonce never leave the server, the redirect URI is exact, and the flow row is one use and expires in ten minutes. Google's `id_token` must carry a valid issuer, audience, expiry and nonce, and a verified email. GitHub's address is the primary verified entry from `/user/emails`. The provider's access token is discarded as soon as the identity is read; nothing here acts as an agent for the provider.
+
+A provider-verified address raises this account's `mail_verified` only when it normalizes equal to the account's own primary address. A provider proving some other address says nothing about this one. (Google and GitHub; Apple is deferred.)
 
 ### Sharing (issue #17)
 
