@@ -31,7 +31,8 @@ def accounts(portal_runner, monkeypatch):
     async def clear() -> None:
         async with db.session_factory() as session:
             for table in ("sessions", "auth_identities", "auth_tokens", "invitations",
-                          "audit_events", "installation_auth_state"):
+                          "audit_events", "mail_outbox", "suppressed_addresses",
+                          "installation_auth_state"):
                 await session.execute(text(f"DELETE FROM {table}"))
             await session.execute(text("DELETE FROM users WHERE id <> :id"), {"id": original})
             await session.execute(
@@ -318,3 +319,62 @@ def test_an_administrator_invitation_records_who_it_was_for(accounts):
     created = [row for row in rows if row["action"] == "invitation.created"]
     assert len(created) == 1
     assert created[0]["object_ids"] == ["Named@example.com", "admin"]
+
+
+@pytest.mark.db
+def test_an_invitation_queues_its_mail_in_the_same_transaction(accounts, monkeypatch):
+    """The capability and the mail carrying it are one write. An invitation
+    that exists but was never queued, or a queued mail for an invitation that
+    rolled back, are both worse than either happening or neither."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        created = client.post("/api/v1/invitations", headers=headers,
+                              json={"email": "mailed@example.com", "role": "user"})
+        assert created.status_code == 201
+        queued = client.portal.call(_outbox)
+    assert len(queued) == 1
+    assert queued[0].to_email == "mailed@example.com"
+    assert queued[0].template == "invitation"
+    assert queued[0].state == "pending"
+    # The link is the capability, so it has to be the one that was minted.
+    assert created.json()["token"] in queued[0].payload["link"]
+
+
+@pytest.mark.db
+def test_a_mail_outage_does_not_stop_anyone_signing_in(accounts, monkeypatch):
+    """Locked acceptance: delivery outages do not stop login."""
+    from app import mail
+
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+
+    async def refuse(_row, _settings):
+        raise OSError("the relay is down")
+
+    monkeypatch.setattr(mail, "_deliver", refuse)
+    _account(accounts, "signing-in@example.com")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert client.post("/api/v1/invitations", headers=headers,
+                           json={"email": "queued@example.com",
+                                 "role": "user"}).status_code == 201
+        client.portal.call(mail.deliver_due)
+        assert client.portal.call(_outbox)[0].state == "pending"
+        # The outage is entirely contained in the queue.
+        assert client.post("/api/v1/auth/login", headers={"Origin": ORIGIN},
+                           json={"email": "signing-in@example.com", "password": PASSWORD,
+                                 "remember_me": False}).status_code == 204
+
+
+async def _outbox():
+    from sqlalchemy import select
+
+    from app.tables import MailOutbox
+    async with db.session_factory() as session:
+        return list((await session.execute(select(MailOutbox))).scalars().all())

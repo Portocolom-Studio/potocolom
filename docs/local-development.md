@@ -163,6 +163,32 @@ Sign-in is not implemented yet, so accounts mode answers `401` for everything
 except that one call. The password policy is fifteen to one hundred and twenty
 eight characters against a bundled blocklist.
 
+## Mail, and doing without it
+
+`EMAIL_BACKEND` defaults to `none` and the dev loop wants it that way. Nothing
+is sent, nothing is queued, and an invitation link is copied out of the API
+response by hand. That is the shipped self-hosted default, not a development
+shortcut.
+
+Set `EMAIL_BACKEND=smtp` with `SMTP_HOST` and `MAIL_FROM` to exercise the
+outbox. The cloud-sim compose stack runs Mailpit for exactly this; see the
+ports it maps before pointing `SMTP_HOST` at it. A capability is written to the
+`mail_outbox` table in the same transaction that mints it, and a sweep delivers
+it a few seconds later, so a relay that is down queues and retries rather than
+failing the request that created it.
+
+An install configured for mail that cannot send refuses to start, naming the
+variable it is missing. That is deliberate: an operator who believes
+invitations are going out is worse off than one whose API will not boot. It
+also refuses a `PUBLIC_URL` that is not https, and plaintext SMTP to anywhere
+but a relay on this machine, because the link in the mail is the capability.
+`http://localhost` is the exception, which is what the dev loop uses.
+
+Switching `EMAIL_BACKEND` back to `none` does not simply pause the queue. The
+next sweep marks every queued row failed and drops its payload, because
+nothing can deliver those rows any more and each one still holds a live link.
+Re-mint the invitation rather than expecting the queue to resume.
+
 ## The local cloud simulation
 
 The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud topology with generic containers, which the pluggable seams make cheap: the code cannot tell nginx from an ALB or MinIO from S3, and that is the point of the seams.

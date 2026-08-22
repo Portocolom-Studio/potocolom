@@ -33,6 +33,7 @@ from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.storage import get_storage
 from app.studio import router as studio_router
+from app.mail import check_configuration as check_mail_configuration, mail_loop
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # import, and get_settings caches per process, so startup re-checks with
     # the settings this process actually runs under.
     _reject_unset_fleet_token_key(settings.fleet_token_key)
+    check_mail_configuration(settings)
     setup_logging(settings.log_format)
     if not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
@@ -83,6 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(maintain_loop()),
         asyncio.create_task(maintain_deletes_loop()),
         asyncio.create_task(telemetry_loop()),
+        asyncio.create_task(mail_loop()),
     ]
     yield
     await jobs.drain_blob_cleanup()

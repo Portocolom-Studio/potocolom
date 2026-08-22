@@ -423,6 +423,21 @@ class InstallationAuthState(Base):
     enabled_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class SuppressedAddress(Base):
+    """An address the relay refused outright, or the provider reported back.
+
+    Keyed by the normalized address, so recording the same bounce twice is the
+    same row. Retrying a permanently undeliverable address only teaches the
+    relay to distrust this sender.
+    """
+
+    __tablename__ = "suppressed_addresses"
+
+    email: Mapped[str] = mapped_column(Text, primary_key=True)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class AuditEvent(Base):
     """What a privileged action did, kept when the account that did it is gone.
 
