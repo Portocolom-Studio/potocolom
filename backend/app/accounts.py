@@ -8,7 +8,7 @@ from anyio import to_thread
 from sqlalchemy import func, or_, select
 from starlette.responses import Response
 
-from app import db, sessions
+from app import db, factors, sessions
 from app.auth import current_principal, require_accounts_mode
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
@@ -81,6 +81,12 @@ async def login(request: LoginRequest, http: Request) -> Response:
     # here is retired, so signing in on one device does not sign out another.
     if presented is not None:
         await sessions.revoke(presented.session.id)
+    async with db.session_factory() as session:
+        gated = await factors.enrolled_factor(session, user.id)
+    if gated is not None:
+        # The password was right, and that is not enough for this account. What
+        # comes back is a capability to answer a challenge, never a session.
+        return await factors.begin_challenge(user, request.remember_me)
     issued = await sessions.mint(user, remember_me=request.remember_me, authenticated=True)
     response = Response(status_code=204)
     issue_session(response, issued)

@@ -26,7 +26,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.responses import RedirectResponse, Response
 
-from app import db, sessions
+from app import db, factors, sessions
 from app.accounts import issue_session
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
 from app.settings import Settings, get_settings
@@ -308,6 +308,13 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         resolved = await sessions.resolve(presented)
         if resolved is not None:
             await sessions.revoke(resolved.session.id)
+    if db.session_factory is not None:
+        async with db.session_factory() as session:
+            gated = await factors.enrolled_factor(session, user.id)
+        if gated is not None:
+            # Every primary login passes the same gate. A provider proving who
+            # somebody is does not answer for the factor they enrolled.
+            return await factors.begin_challenge(user, remember_me=False)
     response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, await sessions.mint(user, remember_me=False, authenticated=True))
     return response
