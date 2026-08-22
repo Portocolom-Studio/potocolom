@@ -24,6 +24,7 @@ ACCOUNT_STATES = ("active", "suspended", "disabled", "deletion_pending", "purgin
 IDENTITY_PROVIDERS = ("password", "google", "github")
 AUTH_TOKEN_PURPOSES = ("setup", "reset", "recovery", "challenge")
 OUTBOX_STATES = ("pending", "sent", "failed")
+AUDIT_SEVERITIES = ("info", "high")
 NORMALIZED_EMAIL = text("lower(btrim(email))")
 
 
@@ -420,6 +421,34 @@ class InstallationAuthState(Base):
     auth_mode: Mapped[str] = mapped_column(Text)
     root_key_version: Mapped[int | None] = mapped_column(SmallInteger)
     enabled_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AuditEvent(Base):
+    """What a privileged action did, kept when the account that did it is gone.
+
+    The actor and target are plain ids with no foreign key. A record is a
+    historical fact, not a live relation: CASCADE would let an administrator
+    erase what they did by deleting their own account, and SET NULL would let
+    them erase who did it, which is the part an audit exists for.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint(_one_of("severity", AUDIT_SEVERITIES), name="audit_events_severity"),
+        Index("audit_events_occurred", "occurred_at"),
+        Index("audit_events_actor", "actor_user_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    occurred_at: Mapped[datetime]
+    actor_user_id: Mapped[uuid.UUID | None]
+    actor_role: Mapped[str | None] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    target_user_id: Mapped[uuid.UUID | None]
+    object_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    object_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    truncated: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    severity: Mapped[str] = mapped_column(Text, default="info", server_default=text("'info'"))
 
 
 class WorkerIdentity(Base):

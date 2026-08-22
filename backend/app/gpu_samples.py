@@ -12,7 +12,7 @@ from sqlalchemy import Date, cast, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db, estimates
+from app import audit, db, estimates
 from app.tables import (
     GpuSample,
     GpuSampleRollup,
@@ -309,6 +309,9 @@ async def maintain_once() -> None:
             delete(UsageEvent).where(UsageEvent.created_at < usage_raw_cutoff)
         )
         await session.commit()
+    # Last: an audit prune that fails must not take the retention above it
+    # with it, or these tables stop being pruned at all.
+    await audit.prune()
 
 
 async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: datetime) -> None:

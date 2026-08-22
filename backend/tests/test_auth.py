@@ -2,7 +2,7 @@ import asyncio
 import uuid
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app import db
@@ -21,6 +21,14 @@ async def _set_local_role(role: str) -> None:
         await session.commit()
 
 
+def _request(method: str = "GET", path: str = "/api/v1/probe") -> Request:
+    return Request({
+        "type": "http", "http_version": "1.1", "method": method, "scheme": "http",
+        "path": path, "raw_path": path.encode(), "query_string": b"",
+        "root_path": "", "headers": [], "server": ("testserver", 80), "client": None,
+    })
+
+
 def test_role_tiers_preserve_user_as_member_value():
     viewer = User(email="viewer@example.test", role="viewer")
     member = User(email="member@example.test", role="user")
@@ -28,13 +36,15 @@ def test_role_tiers_preserve_user_as_member_value():
     member_dependency = require_role("member")
     admin_dependency = require_role("admin")
 
+    request = _request()
+
     with pytest.raises(HTTPException) as denied:
-        asyncio.run(member_dependency(viewer))
+        asyncio.run(member_dependency(request, viewer))
     assert denied.value.status_code == 403
-    assert asyncio.run(member_dependency(member)) is member
-    assert asyncio.run(member_dependency(admin)) is admin
+    assert asyncio.run(member_dependency(request, member)) is member
+    assert asyncio.run(member_dependency(request, admin)) is admin
     with pytest.raises(HTTPException) as denied:
-        asyncio.run(admin_dependency(member))
+        asyncio.run(admin_dependency(request, member))
     assert denied.value.status_code == 403
 
 
