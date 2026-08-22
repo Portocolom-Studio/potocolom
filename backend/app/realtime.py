@@ -1009,7 +1009,14 @@ async def _handshake_principal(ws: WebSocket) -> Handshake | None:
     token = ws.cookies.get(name)
     if not token:
         return None
-    resolved = await account_sessions.resolve(token)
+    try:
+        resolved = await account_sessions.resolve(token)
+    except Exception:
+        # The none branch above tolerates a database that is down. This one
+        # must be equally defined: refuse, rather than raise out of the
+        # endpoint before accept and make every reconnect a traceback.
+        logger.warning("realtime handshake could not resolve a session")
+        return Handshake(close_code=CLOSE_UNAUTHORIZED)
     if resolved is None:
         return Handshake(close_code=CLOSE_UNAUTHORIZED)
     if resolved.user.role not in REALTIME_ROLES or resolved.user.state != "active":
@@ -1022,7 +1029,13 @@ async def _still_live(handshake: Handshake) -> bool:
         return True
     from app import sessions as account_sessions
 
-    return await account_sessions.is_live(handshake.auth_session_id)
+    try:
+        return await account_sessions.is_live(handshake.auth_session_id)
+    except Exception:
+        # Cannot prove the session is alive, so treat it as dead. The socket
+        # is about to hold a GPU slot on the strength of this answer.
+        logger.warning("realtime could not confirm a session is still live")
+        return False
 
 
 @router.websocket("/api/v1/realtime")
@@ -1222,6 +1235,15 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
     # reading blocks that write with no timeout. Sequentially, one such socket
     # would keep every other socket on the account alive and hang the logout
     # request that asked for them to go.
+    # The server side goes first and unconditionally. A wedged transport eats
+    # the write below and its close with it, and leaving the session
+    # registered would keep a revoked account holding a GPU slot for as long
+    # as it holds the connection.
+    for session in doomed:
+        sessions.pop(session.id, None)
+        transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
+        transition(session, "ending", "ended")
+        await release(session)
     await asyncio.gather(
         *(asyncio.wait_for(
             refuse(session.browser, CLOSE_UNAUTHORIZED, "session revoked"), CLOSE_TIMEOUT)

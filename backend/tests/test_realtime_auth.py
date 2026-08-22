@@ -113,13 +113,32 @@ def test_a_viewer_is_refused_before_any_scarce_work(accounts):
 
 
 @pytest.mark.db
-def test_a_suspended_account_is_refused(accounts):
-    """Suspension blocks GPU work, and this socket is nothing but GPU work."""
+@pytest.mark.parametrize("state", ["suspended", "disabled", "deletion_pending", "purging"])
+def test_an_account_that_is_not_active_is_refused(accounts, state):
+    """Suspension blocks GPU work, and this socket is nothing but GPU work.
+    The others cannot sign in at all."""
     with TestClient(app) as client:
-        _signed_in(client, "paused@example.com", state="suspended")
+        _signed_in(client, f"{state}@example.com", state=state)
         with client.websocket_connect("/api/v1/realtime") as ws:
             message = ws.receive_json()
     assert message["code"] == realtime.CLOSE_FORBIDDEN
+
+
+@pytest.mark.db
+def test_a_handshake_survives_a_database_that_is_down(accounts, monkeypatch):
+    """The none branch tolerates a down database. This one must be equally
+    defined: a refusal, not a traceback on every reconnect."""
+    from app import sessions as account_sessions
+
+    async def broken(_token):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(account_sessions, "resolve", broken)
+    with TestClient(app) as client:
+        client.cookies.set("potocolom_session", "anything")
+        with client.websocket_connect("/api/v1/realtime") as ws:
+            assert ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
+    assert realtime.sessions == {}
 
 
 @pytest.mark.db
@@ -158,11 +177,17 @@ def test_revoking_the_account_session_closes_the_live_socket(accounts):
                 assert browser_ws.receive_json()["type"] == "ready"
 
                 resolved = client.portal.call(sessions.resolve, issued.token)
+                worker = _only_session().worker
                 client.portal.call(sessions.revoke, resolved.session.id)
 
                 closing = browser_ws.receive_json()
                 assert closing["type"] == "error"
                 assert closing["code"] == realtime.CLOSE_UNAUTHORIZED
+                # The slot goes with it. A revoked account holding a GPU slot
+                # until its transport happens to die is the thing revocation
+                # exists to prevent.
+                assert realtime.sessions == {}
+                assert worker.slots_in_use == 0
 
 
 @pytest.mark.db
@@ -222,6 +247,8 @@ def test_one_unread_socket_does_not_keep_the_others_alive(accounts):
                 client.portal.call(sessions.revoke, resolved.session.id)
 
                 assert browser_ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
+                # Including the one whose transport ate the close.
+                assert stalled.id not in realtime.sessions
         realtime.sessions.pop(stalled.id, None)
 
 
