@@ -108,7 +108,7 @@ The version gate implements the N-1 promise: with current protocol version N, ve
 
 Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized; a viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal, create no admission or worker state, and send an error before closing. Logout, revocation, disable, deletion, or role change cancels queued work or closes indexed live connections. After gateway extraction, the browser presents a short-lived API-minted ticket and the gateway validates transport admission without taking API authority.
 
-> Shipped status (2026-07-30): **not yet implemented.** The current endpoint accepts the WebSocket before `open`, binds only the implicit local user, and has no ticket, connection index, invalidation path, or unauthorized/forbidden close semantics. The governing decision is "Realtime authorization: bind once, invalidate explicitly"; issue #19, "Real-Time Generation Protocol", owns direct-socket behavior and "Gateway realtime tickets and revocation" owns the gateway path.
+> Shipped status: **authentication and authorization are implemented; the rest of the protocol is not.** In `AUTH_MODE=none` the socket binds the implicit local user, as before. In `AUTH_MODE=accounts` the upgrade resolves the session cookie before `accept`: no cookie fails the handshake as HTTP 403, a cookie that resolves to nothing closes `4401`, and a principal that may not spend a realtime slot (a `viewer`, or any account that is not `active`) closes `4403`. The principal binds once and the browser cannot select it. Revoking the account session, which is what logout, disable, deletion and a role change all do, closes the live socket with `4401`. Still absent, and still owned by issue #19: the admission queue, resume, frame sequence numbers, codec negotiation, idle release, and writer isolation. The gateway ticket path is owned by "Gateway realtime tickets and revocation". The governing decision is "Realtime authorization: bind once, invalidate explicitly".
 
 ## GPU work is not interruptible
 
@@ -269,8 +269,10 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | 4002 | unsupported protocol version | worker |
 | 4003 | no worker capacity for the requested model | browser |
 | 4004 | unknown model | browser |
+| 4401 | authentication required or no longer valid | browser |
+| 4403 | authenticated, but not permitted to open a realtime session | browser |
 
-> Shipped status (2026-07-30): code 4003 is currently an immediate full-pool rejection. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers.
+> Shipped status (2026-07-30): code 4003 is currently an immediate full-pool rejection. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
 
 ## Delivery semantics
 
