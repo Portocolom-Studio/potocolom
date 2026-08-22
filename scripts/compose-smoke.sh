@@ -6,7 +6,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_DIR="$ROOT/deploy/compose"
 cd "$COMPOSE_DIR"
 
-PORT="${COMPOSE_SMOKE_PORT:-18080}"
 PROJECT="${COMPOSE_SMOKE_PROJECT:-potocolom-smoke}"
 COMPOSE=(docker compose -p "$PROJECT" -f compose.smoke.yml)
 
@@ -14,21 +13,64 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
-if (echo >/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
-  echo "port ${PORT} is already in use; stop the conflicting service or set COMPOSE_SMOKE_PORT" >&2
-  exit 1
+port_free() {
+  ! (echo >/dev/tcp/127.0.0.1/"$1") 2>/dev/null
+}
+
+free_port() {
+  python3 -c "
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+"
+}
+
+if [[ -n "${COMPOSE_SMOKE_PORT:-}" ]]; then
+  # Asked for explicitly, so a clash is the operator's to resolve.
+  PORT="$COMPOSE_SMOKE_PORT"
+  if ! port_free "$PORT"; then
+    echo "port ${PORT} is already in use; stop the conflicting service or set COMPOSE_SMOKE_PORT" >&2
+    exit 1
+  fi
+else
+  # Several self-hosted runners share one machine, so a fixed default meant two
+  # smoke tests at once fought over one port. Take 18080 when it is free and
+  # let the OS name one when it is not.
+  PORT=18080
+  if ! port_free "$PORT"; then
+    PORT="$(free_port)"
+  fi
 fi
 
 export COMPOSE_SMOKE_PORT="$PORT"
+base="http://localhost:${PORT}"
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans || true
 }
 trap cleanup EXIT
 
-"${COMPOSE[@]}" up -d --build --remove-orphans
+# Probing a port and then binding it are two steps, and another job can take
+# it in between. Retry on the bind failure rather than pretending the probe
+# was a reservation. PUBLIC_URL has to be settled before the API starts,
+# because it reads it at boot, so the port cannot simply be left to Docker.
+for attempt in 1 2 3; do
+  if "${COMPOSE[@]}" up -d --build --remove-orphans; then
+    break
+  fi
+  if [[ "$attempt" == 3 ]]; then
+    echo "could not start the smoke stack after 3 attempts" >&2
+    exit 1
+  fi
+  echo "start failed on port ${PORT}; taking another and retrying" >&2
+  "${COMPOSE[@]}" down -v --remove-orphans || true
+  PORT="$(free_port)"
+  export COMPOSE_SMOKE_PORT="$PORT"
+  base="http://localhost:${PORT}"
+done
 
-base="http://localhost:${PORT}"
 for _ in $(seq 1 90); do
   if curl -sf "${base}/api/v1/health" >/dev/null; then
     break

@@ -37,3 +37,8 @@ jobs:
       # through them; the script cleans up its containers and volumes.
       - run: scripts/compose-smoke.sh
         timeout-minutes: 20
+        env:
+          # Four self-hosted runners share one machine, so two deploy jobs can
+          # run at once. With one project name they reused and then removed
+          # each other's containers mid-test.
+          COMPOSE_SMOKE_PROJECT: potocolom-smoke-${{ github.run_id }}-${{ github.run_attempt }}

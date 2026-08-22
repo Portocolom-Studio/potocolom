@@ -25,9 +25,6 @@ jobs:
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
     # Switch back to ubuntu-latest when hosted quota is available (docs/self-hosted-runner.md).
     runs-on: [self-hosted, Linux, X64, potocolom]
-    env:
-      # 15432 avoids clashing with deploy/compose/dev.yml postgres on :5432.
-      DATABASE_URL: postgresql://potocolom:potocolom@localhost:15432/potocolom_test
     defaults:
       run:
         working-directory: backend
@@ -40,7 +37,11 @@ jobs:
           POSTGRES_PASSWORD: potocolom
           POSTGRES_DB: potocolom
         ports:
-          - 15432:5432
+          # No fixed host port. Four self-hosted runners share one machine, so
+          # two backend jobs at once both tried to bind the same port and the
+          # second died before a single test ran. Docker picks a free one and
+          # the step below reads it back.
+          - 5432
         options: >-
           --health-cmd "pg_isready -U potocolom"
           --health-interval 5s
@@ -53,3 +54,6 @@ jobs:
       # The Makefile target is the single definition of what the job checks.
       - run: make verify-backend
         working-directory: .
+        env:
+          DATABASE_URL: >-
+            postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/potocolom_test
