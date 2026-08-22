@@ -157,13 +157,25 @@ user, and that user holds the `admin` role, so anyone who can reach the API can 
 the install can do. Keep it on a trusted network, and see the fleet secret above for the
 worker side of the same question.
 
-`AUTH_MODE=local` and `AUTH_MODE=oauth` are refused: the API will not start with either,
-because neither is implemented and an install configured for authentication that performs
-none is worse than one that will not boot. `local` becomes available with issue #5
-and `oauth` with issue #9.
+`AUTH_MODE=accounts` is the account mode. Turn it on with `make auth-enable`, which
+generates the root key ring, asks where browsers reach this install, records the switch
+in PostgreSQL, and prints a one-use call that claims the administrator account. The
+claimant adopts the implicit local user, so every job and asset made before accounts
+existed belongs to them; nothing is stranded and nothing is copied.
+
+Enabling accounts is one way. An install that has enabled them refuses to start in
+`none` mode again, because falling back would return a multi-user install to answering
+every request as an administrator. Undoing it needs an offline destructive reset.
+
+The link lasts one hour, is good once, and is replaced if you run `make auth-enable`
+again. Nothing durable holds it, only its hash, so a lost link means minting another.
+
+Sign-in is not here yet. Until it lands, `AUTH_MODE=accounts` authenticates nobody
+except through that one call: every other request answers `401`. Do not switch a
+working install over until sign-in ships, tracked in issue #5.
 
 Multi-user is the intended shape, not a maybe: an operator holding `admin`, invited people
-signing in with a local email and password or with Google or GitHub, and a read-only `viewer`
+signing in with an email and password or with Google or GitHub, and a read-only `viewer`
 tier for someone who should see the gallery without spending the GPU. That is recorded in
 [decisions.md](decisions.md) under "Self-hosted installs are multi-user" and tracked in issues
 #5 and #9. Until those land, treat the install as single-operator.

@@ -71,7 +71,13 @@ async def _postgres_version(database_url: str) -> tuple[int, ...]:
         await check_engine.dispose()
 
 
-async def connect() -> bool:
+async def connect(serving: bool = True) -> bool:
+    """serving=False is for the enable tool, which is not an API coming up.
+
+    The startup guards exist to stop a serving process running in a mode the
+    installation did not choose. Applying them to the tool that records the
+    choice would mean an installation can never mint a second setup link.
+    """
     global engine, session_factory, local_user_id
     settings = get_settings()
     try:
@@ -89,9 +95,10 @@ async def connect() -> bool:
         return False
     engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    await validate_startup_auth_mode(settings.auth_mode)
-    await validate_startup_key_ring()
-    local_user_id = await _ensure_local_user(session_factory)
+    if serving:
+        await validate_startup_auth_mode(settings.auth_mode)
+        await validate_startup_key_ring()
+        local_user_id = await _ensure_local_user(session_factory)
     return True
 
 
@@ -104,17 +111,26 @@ async def dispose() -> None:
     local_user_id = None
 
 
-async def _ensure_local_user(factory: async_sessionmaker[AsyncSession]) -> uuid.UUID:
-    """AUTH_MODE=none maps every request to one local user (docs/blueprint.md)."""
+async def _ensure_local_user(factory: async_sessionmaker[AsyncSession]) -> uuid.UUID | None:
+    """AUTH_MODE=none maps every request to one local user (docs/blueprint.md).
+
+    In accounts mode this only looks. The first administrator adopts this row
+    and renames it, so recreating it by address would stand up a second
+    administrator nobody claimed, and forcing the role back would re-promote a
+    row an operator had demoted.
+    """
+    accounts = get_settings().auth_mode != "none"
     async with factory() as session:
         user = (
             await session.execute(select(User).where(User.email == LOCAL_USER_EMAIL))
         ).scalar_one_or_none()
         if user is None:
+            if accounts:
+                return None
             user = User(email=LOCAL_USER_EMAIL, role="admin")
             session.add(user)
             await session.commit()
-        elif user.role != "admin":
+        elif user.role != "admin" and not accounts:
             user.role = "admin"
             await session.commit()
         return user.id

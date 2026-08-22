@@ -967,6 +967,14 @@ def session_seed(value: object) -> int | None:
 
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
+    if get_settings().auth_mode != "none":
+        # This socket has never had a principal of its own: its only gate is
+        # Origin, and a non-browser client sends none. Serving it in accounts
+        # mode would spend the GPU for anyone who reaches the port and record
+        # the work against the implicit administrator. Session authentication
+        # for the socket arrives with sign-in.
+        await ws.close()
+        return
     if not origin_allowed(ws):
         logger.warning("realtime handshake refused from origin %s", ws.headers.get("origin"))
         await ws.close()  # before accept: the handshake fails with HTTP 403

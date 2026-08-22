@@ -9,10 +9,17 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import audit, db
+from app.settings import get_settings
 from app.tables import User
 
 
 async def current_user(session: AsyncSession = Depends(db.get_session)) -> User:
+    if get_settings().auth_mode != "none":
+        # Accounts mode has no session yet, and the implicit local user is an
+        # administrator. Resolving to it here would hand every caller the
+        # owner's account, which is the one outcome enabling accounts must
+        # never produce. Sign-in arrives with sessions.
+        raise HTTPException(status_code=401, detail="authentication required")
     if db.local_user_id is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     user = await session.get(User, db.local_user_id)

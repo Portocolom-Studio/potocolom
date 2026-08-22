@@ -22,6 +22,7 @@
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
+	auth-enable \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
@@ -37,6 +38,9 @@ PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 
 preflight: ## check this machine; write deploy/compose/.env when missing
 	@bash "$(CURDIR)/scripts/preflight.sh"
+
+auth-enable: ## turn on accounts and print the one-use first-admin setup link
+	@bash "$(CURDIR)/scripts/auth-enable.sh"
 
 ensure-env: ## write deploy/compose/.env; fill empty FLEET_SECRET / POSTGRES_PASSWORD
 	@bash "$(CURDIR)/scripts/ensure-env.sh"
