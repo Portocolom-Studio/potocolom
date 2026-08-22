@@ -17,6 +17,16 @@ port_free() {
   ! (echo >/dev/tcp/127.0.0.1/"$1") 2>/dev/null
 }
 
+free_port() {
+  python3 -c "
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+"
+}
+
 if [[ -n "${COMPOSE_SMOKE_PORT:-}" ]]; then
   # Asked for explicitly, so a clash is the operator's to resolve.
   PORT="$COMPOSE_SMOKE_PORT"
@@ -30,26 +40,37 @@ else
   # let the OS name one when it is not.
   PORT=18080
   if ! port_free "$PORT"; then
-    PORT="$(python3 -c "
-import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
-print(s.getsockname()[1])
-s.close()
-")"
+    PORT="$(free_port)"
   fi
 fi
 
 export COMPOSE_SMOKE_PORT="$PORT"
+base="http://localhost:${PORT}"
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans || true
 }
 trap cleanup EXIT
 
-"${COMPOSE[@]}" up -d --build --remove-orphans
+# Probing a port and then binding it are two steps, and another job can take
+# it in between. Retry on the bind failure rather than pretending the probe
+# was a reservation. PUBLIC_URL has to be settled before the API starts,
+# because it reads it at boot, so the port cannot simply be left to Docker.
+for attempt in 1 2 3; do
+  if "${COMPOSE[@]}" up -d --build --remove-orphans; then
+    break
+  fi
+  if [[ "$attempt" == 3 ]]; then
+    echo "could not start the smoke stack after 3 attempts" >&2
+    exit 1
+  fi
+  echo "start failed on port ${PORT}; taking another and retrying" >&2
+  "${COMPOSE[@]}" down -v --remove-orphans || true
+  PORT="$(free_port)"
+  export COMPOSE_SMOKE_PORT="$PORT"
+  base="http://localhost:${PORT}"
+done
 
-base="http://localhost:${PORT}"
 for _ in $(seq 1 90); do
   if curl -sf "${base}/api/v1/health" >/dev/null; then
     break

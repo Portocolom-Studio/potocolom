@@ -33,12 +33,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: make verify-compose
-        env:
-          # Four self-hosted runners share one machine. The smoke test defaulted
-          # to one compose project name and one host port, so two deploy jobs at
-          # once tore down each other's containers mid-test.
-          COMPOSE_SMOKE_PROJECT: potocolom-smoke-${{ github.run_id }}-${{ github.run_attempt }}
       # Builds the api and worker-sim images and drives a real generation
       # through them; the script cleans up its containers and volumes.
       - run: scripts/compose-smoke.sh
         timeout-minutes: 20
+        env:
+          # Four self-hosted runners share one machine, so two deploy jobs can
+          # run at once. With one project name they reused and then removed
+          # each other's containers mid-test.
+          COMPOSE_SMOKE_PROJECT: potocolom-smoke-${{ github.run_id }}-${{ github.run_attempt }}
