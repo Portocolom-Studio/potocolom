@@ -21,8 +21,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.responses import RedirectResponse, Response
 
@@ -72,7 +72,7 @@ def _redirect_uri(settings: Settings, provider: str) -> str:
     return f"{settings.public_url.rstrip('/')}/api/v1/auth/callback/{provider}"
 
 
-async def _start(provider: str, link_user_id: uuid.UUID | None) -> str:
+async def _start(provider: str, link_user_id: uuid.UUID | None) -> tuple[str, str]:
     """Mints the flow and returns the provider URL to send the browser to.
 
     Only the hash of the state travels back into the database, and the verifier
@@ -108,7 +108,7 @@ async def _start(provider: str, link_user_id: uuid.UUID | None) -> str:
         "code_challenge": challenge_for(verifier),
         "code_challenge_method": "S256",
     })
-    return f"{endpoint}?{query}"
+    return f"{endpoint}?{query}", state
 
 
 def _json(response: httpx.Response) -> Any:
@@ -214,14 +214,48 @@ async def exchange(provider: str, code: str, verifier: str, nonce: str,
     return await _github(code, verifier, settings)
 
 
+FLOW_COOKIE = "potocolom_oauth"
+
+
+def _flow_cookie_name(settings: Settings) -> str:
+    return f"__Host-{FLOW_COOKIE}" if sessions.is_secure(settings.public_url) else FLOW_COOKIE
+
+
+def _bind_to_browser(response: Response, state: str, settings: Settings) -> None:
+    """The state alone proves this server started a flow, not that this
+    browser did.
+
+    Without that second half, a callback captured from one browser can be
+    completed in another: a sign-in flow plants the starter's session in
+    somebody else's browser, and a link flow attaches somebody else's provider
+    account to the starter's, permanently, because one provider account links
+    to one account.
+    """
+    response.set_cookie(
+        _flow_cookie_name(settings), state, path="/", samesite="lax",
+        secure=sessions.is_secure(settings.public_url), httponly=True,
+        max_age=int(FLOW_TTL.total_seconds()),
+    )
+
+
+def _started_here(request: Request, state: str, settings: Settings) -> bool:
+    presented = request.cookies.get(_flow_cookie_name(settings), "")
+    return bool(presented) and secrets.compare_digest(presented, state)
+
+
 @router.get("/api/v1/auth/redirect/{provider}")
 async def redirect(provider: str) -> Response:
-    return RedirectResponse(await _start(provider, None), status_code=307)
+    target, state = await _start(provider, None)
+    response = RedirectResponse(target, status_code=307)
+    _bind_to_browser(response, state, get_settings())
+    return response
 
 
 @router.get("/api/v1/auth/callback/{provider}")
-async def callback(provider: str, state: str, code: str) -> Response:
+async def callback(provider: str, state: str, code: str, request: Request) -> Response:
     settings = get_settings()
+    if not _started_here(request, state, settings):
+        raise REFUSED
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
@@ -244,12 +278,17 @@ async def callback(provider: str, state: str, code: str) -> Response:
     except ProviderRefused as refused:
         raise REFUSED from refused
     if flow.link_user_id is None:
-        return await _sign_in(provider, identity, settings)
-    return await _link(provider, identity, flow.link_user_id, settings)
+        response = await _sign_in(provider, identity, settings, request)
+    else:
+        response = await _link(provider, identity, flow.link_user_id, settings)
+    response.delete_cookie(_flow_cookie_name(settings), path="/",
+                           samesite="lax", secure=sessions.is_secure(settings.public_url),
+                           httponly=True)
+    return response
 
 
 async def _sign_in(provider: str, identity: ProviderIdentity,
-                   settings: Settings) -> Response:
+                   settings: Settings, request: Request) -> Response:
     """Matches a linked identity only. There is no lookup by address here."""
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -262,6 +301,13 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         )).scalar_one_or_none()
     if user is None or user.state in CANNOT_SIGN_IN:
         raise REFUSED
+    # Parity with the password route: a token planted in this browser before
+    # authentication must not be the token that comes out of it.
+    presented = request.cookies.get(sessions.cookie_names(settings.public_url)[0])
+    if presented:
+        resolved = await sessions.resolve(presented)
+        if resolved is not None:
+            await sessions.revoke(resolved.session.id)
     response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, await sessions.mint(user, remember_me=False, authenticated=True))
     return response
@@ -293,8 +339,29 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
 @router.post("/api/v1/account/identities/{provider}")
 async def start_link(
     provider: str,
+    response: Response,
     principal: sessions.Resolved = Depends(current_principal),
 ) -> dict:
     if not sessions.is_recent(principal.session):
         raise HTTPException(status_code=403, detail="recent authentication required")
-    return {"redirect": await _start(provider, principal.user.id)}
+    if principal.user.state != "active":
+        # Suspended reads and settles its account, and changes nothing. A new
+        # way to sign in is a change.
+        raise HTTPException(status_code=403, detail="account suspended")
+    target, state = await _start(provider, principal.user.id)
+    _bind_to_browser(response, state, get_settings())
+    return {"redirect": target}
+
+
+async def prune() -> None:
+    """Reclaim flows nobody can use any more.
+
+    The redirect that creates them takes no credential, so these rows are the
+    one thing here a stranger can pile up. A spent flow is finished and an
+    expired one can never be spent, so neither is worth keeping.
+    """
+    if db.session_factory is None:
+        return
+    async with db.session_factory() as session:
+        await session.execute(delete(OAuthFlow).where(OAuthFlow.expires_at < func.now()))
+        await session.commit()

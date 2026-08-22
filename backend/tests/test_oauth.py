@@ -347,3 +347,103 @@ def test_a_dead_account_cannot_sign_in_through_a_provider_either(accounts, monke
         client.portal.call(kill)
         assert _callback(client, "google", _start(client, "google")).status_code == 403
         assert client.get("/api/v1/account").status_code == 401
+
+
+@pytest.mark.db
+def test_a_flow_completed_in_another_browser_is_refused(accounts, monkeypatch):
+    """The state proves this server started a flow, not that this browser did.
+
+    Without binding, an attacker starts a link flow on their own account and
+    sends the provider URL to someone else. That person's browser completes
+    it, and their provider account is attached to the attacker's account for
+    good, because one provider account links to one account and there is no
+    unlink route.
+    """
+    _fake_provider(monkeypatch, "github", subject="h-victim", email="victim@example.com")
+    with TestClient(app, base_url=ORIGIN) as attacker:
+        attacker.portal.call(_make, "attacker@example.com")
+        _sign_in(attacker, "attacker@example.com")
+        started = attacker.post("/api/v1/account/identities/github", headers=_csrf(attacker))
+        state = parse_qs(urlsplit(started.json()["redirect"]).query)["state"][0]
+
+        # Another browser: same server, no cookie from the redirect that
+        # started this flow.
+        with TestClient(app, base_url=ORIGIN) as victim:
+            assert _callback(victim, "github", state).status_code == 403
+
+
+@pytest.mark.db
+def test_a_sign_in_flow_cannot_be_planted_in_someone_else_s_browser(accounts, monkeypatch):
+    """Login CSRF: a callback URL captured from the attacker's own flow, then
+    opened by someone else, would sign that person into the attacker's
+    account and quietly collect everything they then made."""
+    _fake_provider(monkeypatch, "google", subject="g-attacker", email="attacker@example.com")
+    with TestClient(app, base_url=ORIGIN) as attacker:
+        user = attacker.portal.call(_make, "attacker@example.com")
+        attacker.portal.call(_link, user.id, "google", "g-attacker")
+        state = _start(attacker, "google")
+        with TestClient(app, base_url=ORIGIN) as victim:
+            assert _callback(victim, "google", state).status_code == 403
+            assert victim.get("/api/v1/account").status_code == 401
+
+
+@pytest.mark.db
+def test_signing_in_retires_the_session_the_browser_arrived_with(accounts, monkeypatch):
+    """Parity with the password route: a token planted before authentication
+    must not be the token that comes out of it."""
+    _fake_provider(monkeypatch, "google", subject="g-1", email="known@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "known@example.com")
+        client.portal.call(_link, user.id, "google", "g-1")
+        planted = client.portal.call(sessions.mint, user, False)
+        client.cookies.set("__Host-potocolom_session", planted.token)
+        state = _start(client, "google")
+        assert _callback(client, "google", state).status_code == 307
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {planted.token}"}).status_code == 401
+
+
+@pytest.mark.db
+def test_a_suspended_account_cannot_add_a_new_way_to_sign_in(accounts, monkeypatch):
+    """Suspended reads and settles, and changes nothing. A credential is a
+    change."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "paused@example.com")
+        _sign_in(client, "paused@example.com")
+
+        async def pause():
+            async with db.session_factory() as session:
+                await session.execute(text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                                      {"id": user.id})
+                await session.commit()
+
+        client.portal.call(pause)
+        assert client.post("/api/v1/account/identities/google",
+                           headers=_csrf(client)).status_code == 403
+
+
+@pytest.mark.db
+def test_spent_and_expired_flows_are_reclaimed(accounts):
+    """The redirect route is unauthenticated, so its rows are the one thing
+    here a stranger can accumulate. Nothing was clearing them."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        _start(client, "google")
+
+        async def age():
+            async with db.session_factory() as session:
+                await session.execute(text("UPDATE oauth_flows SET expires_at = :past"),
+                                      {"past": datetime.now(timezone.utc) - timedelta(hours=2)})
+                await session.commit()
+
+        client.portal.call(age)
+        assert len(client.portal.call(_flows)) == 1
+        client.portal.call(oauth.prune)
+        assert client.portal.call(_flows) == []
+
+
+@pytest.mark.db
+def test_a_flow_that_is_still_usable_survives_the_sweep(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        _start(client, "google")
+        client.portal.call(oauth.prune)
+        assert len(client.portal.call(_flows)) == 1
