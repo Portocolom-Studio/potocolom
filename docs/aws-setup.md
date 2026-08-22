@@ -125,6 +125,7 @@ Environment for the API task, values resolved from SSM where secret:
 |---|---|
 | AUTH_MODE | `accounts` (password sign-in works; Google and GitHub land with #9, and the browser realtime socket refuses accounts mode until #19, so the studio is not usable on this stack yet) |
 | ROOT_KEYS | versioned root key ring for account secrets, newest first; separate key material from the fleet secret, and required whenever AUTH_MODE is accounts |
+| EMAIL_BACKEND | `ses`, with `MAIL_FROM` and `SES_REGION`. The API refuses to start if either is missing. Bounce and complaint feedback needs an SNS subscription, which is documentation only until the suppression webhook lands |
 | OAUTH_PROVIDERS | `google,github` (read only once #9 implements the providers; ignored before then) |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |
