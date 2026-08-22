@@ -8,7 +8,7 @@ The self-hosted version is the base and the cloud is a configuration of it, neve
 
 1. One build. A release tag produces one set of container images and one SPA artifact. GHCR serves self-hosters, ECR mirrors the same digests for the cloud. There is no cloud build.
 2. No mode branches. Application code never asks "am I self-hosted or cloud"; it reads specific settings (`REDIS_URL`, `STORAGE_BACKEND`, `AUTH_MODE`, `QUOTA_SERVICE_URL`, `BILLING_ENABLED`, `SAFETY_CHECKS`). Every difference between deployments is one of these values.
-3. Seams with two implementations. Where behavior must differ, an interface owns the difference: `Queues` and `FrameBus` (in-process or Redis), `Storage` (local filesystem or S3 with signed URLs), `QuotaService` (unlimited or the billing service over HTTP), and the auth mode module (`none`, `local`, `oauth`). The interfaces are specified in [blueprint.md](blueprint.md); the wire and API surface above them never change.
+3. Seams with two implementations. Where behavior must differ, an interface owns the difference: `Queues` and `FrameBus` (in-process or Redis), `Storage` (local filesystem or S3 with signed URLs), `QuotaService` (unlimited or the billing service over HTTP), and the auth mode module (`none`, `accounts`). The interfaces are specified in [blueprint.md](blueprint.md); the wire and API surface above them never change.
 
 The proof mechanism is the cloud-sim compose in [local-development.md](local-development.md): the application demonstrably cannot tell nginx from an ALB or MinIO from S3, because the seams are the only place the difference could show.
 
@@ -27,7 +27,7 @@ flowchart LR
     SIM["cloud-sim compose<br>validates the seams locally"]
     DEV -->|"same images"| SH
     SH -->|"set REDIS_URL,<br>add worker containers"| SSH
-    SSH -->|"S3 storage, oauth,<br>QUOTA_SERVICE_URL, infra"| CLOUD
+    SSH -->|"S3 storage, accounts,<br>QUOTA_SERVICE_URL, infra"| CLOUD
     SIM -.->|"rehearses"| CLOUD
 ```
 
@@ -75,7 +75,7 @@ Both columns run identical container images and expose identical endpoints; ever
 flowchart TB
     subgraph SH["Self-hosted: AGPL, your hardware, free"]
         B1["Browser"] -->|"SPA, REST and WS served by the API itself"| A1["API server, one container"]
-        A1 --> AU1["Auth: none (auto login) or local email+password"]
+        A1 --> AU1["Auth: none (auto login) or accounts (email+password)"]
         A1 --> Q1["Quota: UnlimitedQuota, no payments"]
         A1 -->|"in-process dispatch"| W1["Your GPU worker(s)<br>memory ladder for small VRAM"]
         A1 --> S1["Storage: local disk"]

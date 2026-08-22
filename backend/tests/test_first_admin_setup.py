@@ -213,7 +213,10 @@ def test_setup_grants_a_clean_session_and_no_recent_authentication(accounts):
     changes."""
     token = accounts(enable.mint_setup_token())
     with TestClient(app) as client:
-        assert _claim(client, token).status_code == 204
+        claimed = _claim(client, token)
+        assert claimed.status_code == 204
+        assert any(header.startswith("potocolom_session=")
+                   for header in claimed.headers.get_list("set-cookie"))
         live = client.portal.call(_sessions)
         assert len(live) == 1
         assert live[0].recent_auth_at is None
@@ -319,10 +322,48 @@ def test_a_padded_password_cannot_walk_past_the_length_cap(accounts):
         assert _claim(client, token, password=padded).status_code == 400
 
 
-def test_setup_answers_nothing_when_accounts_are_off():
+def test_setup_answers_nothing_when_accounts_are_off(monkeypatch):
     """An install that never enabled accounts has no link to claim it with."""
+    monkeypatch.setenv("AUTH_MODE", "none")
     get_settings.cache_clear()
     with TestClient(app) as client:
         response = client.post("/api/v1/auth/setup",
                                json={"token": "x", "email": "a@b.co", "password": PASSWORD})
     assert response.status_code == 404
+
+
+@pytest.mark.db
+def test_a_clean_install_can_be_claimed(portal_runner, monkeypatch):
+    """An install whose API never ran in none mode has no implicit user, and
+    the enable tool skips the startup path that would create one. Without it
+    the setup call answers 503 and the installation can never be claimed."""
+    monkeypatch.setenv("ROOT_KEYS", ROOT_KEYS)
+    get_settings.cache_clear()
+    assert portal_runner(db.connect(serving=False)) is True
+
+    async def wipe() -> None:
+        async with db.session_factory() as session:
+            for table in ("auth_tokens", "auth_identities", "sessions", "audit_events",
+                          "installation_auth_state"):
+                await session.execute(text(f"DELETE FROM {table}"))
+            await session.execute(text("DELETE FROM users"))
+            await session.commit()
+
+    portal_runner(wipe())
+    portal_runner(db.dispose())
+    token = portal_runner(enable._enable())
+
+    monkeypatch.setenv("AUTH_MODE", "accounts")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            assert _claim(client, token).status_code == 204
+            assert client.portal.call(_user).email == EMAIL
+    finally:
+        # serving=False: the install is still marked accounts here, and the
+        # startup guard would refuse a none-mode connect until wipe clears it.
+        portal_runner(db.connect(serving=False))
+        portal_runner(wipe())
+        portal_runner(db.dispose())
+        monkeypatch.delenv("AUTH_MODE", raising=False)
+        get_settings.cache_clear()

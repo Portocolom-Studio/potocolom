@@ -273,3 +273,15 @@ def test_a_stale_session_still_slides_before_it_idles_out(connected):
     connected(go_quiet())
     assert connected(sessions.resolve(issued.token)) is not None
     assert _about(connected(_row(issued.token)).idle_expires_at, sessions.ADMIN_IDLE)
+
+
+@pytest.mark.db
+def test_rotating_a_session_that_is_already_gone_mints_nothing(connected):
+    """Rotation replaces a live credential. Given a dead one it would be
+    turning something revoked back into something usable."""
+    user = _user(connected)
+    issued = connected(sessions.mint(user, remember_me=False))
+    row = connected(_row(issued.token))
+    connected(sessions.revoke(row.id))
+    with pytest.raises(RuntimeError):
+        connected(sessions.rotate(row.id, user))

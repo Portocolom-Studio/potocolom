@@ -152,6 +152,26 @@ async def setup(request: SetupRequest) -> Response:
     return response
 
 
+async def _ensure_claimable(factory) -> None:
+    """The claim adopts the implicit user, so an install that never ran in
+    none mode needs one before it can be claimed at all.
+
+    Only while the install is unclaimed. Afterwards the row has been renamed
+    to the owner, and recreating it by address would stand up a second
+    administrator nobody claimed.
+    """
+    async with factory() as session:
+        claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
+        if claimed is not None:
+            return
+        implicit = (await session.execute(
+            select(User.id).where(User.email == db.LOCAL_USER_EMAIL)
+        )).first()
+        if implicit is None:
+            session.add(User(email=db.LOCAL_USER_EMAIL, role="admin"))
+            await session.commit()
+
+
 async def _enable() -> str:
     # serving=False: this tool records the mode an installation chooses, so it
     # must not be refused by the guard that stops a serving API starting in a
@@ -161,6 +181,7 @@ async def _enable() -> str:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
     try:
+        await _ensure_claimable(db.session_factory)
         await db.enable_accounts_mode(db.session_factory)
         return await mint_setup_token()
     finally:

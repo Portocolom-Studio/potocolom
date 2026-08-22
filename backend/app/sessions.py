@@ -44,10 +44,17 @@ def token_hash(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
+def is_secure(public_url: str) -> bool:
+    """One predicate for the whole cookie decision. Two that disagree on a
+    malformed value would set the __Host- prefix without Secure, which every
+    browser then drops."""
+    return public_url.startswith("https://")
+
+
 def cookie_names(public_url: str) -> tuple[str, str]:
     """__Host- requires Secure, which a browser refuses to set over plain HTTP,
     and LAN self-hosting is plain HTTP."""
-    prefix = "__Host-" if public_url.startswith("https://") else ""
+    prefix = "__Host-" if is_secure(public_url) else ""
     return f"{prefix}potocolom_session", f"{prefix}potocolom_csrf"
 
 
@@ -149,6 +156,10 @@ async def rotate(session_id: uuid.UUID, user: User) -> Issued:
             .returning(Session.remember_me)
         )).scalar_one_or_none()
         await session.commit()
+    if remembered is None:
+        # Nothing was revoked, so there was nothing to rotate. Minting here
+        # would turn an unknown or already dead session into a live one.
+        raise RuntimeError("no live session to rotate")
     return await mint(user, remember_me=bool(remembered))
 
 

@@ -52,6 +52,11 @@ def parse_root_keys(raw: str) -> list[tuple[int, bytes]]:
             raise KeyRingError("root key must decode to 32 bytes")
         if key in seen_keys:
             raise KeyRingError("root keys must be distinct")
+        if entries and version > entries[-1][0]:
+            # The first entry is the write key. Listed the other way round,
+            # rotation re-encrypts every row onto the version being retired,
+            # and removing it then destroys what it protected.
+            raise KeyRingError("root keys must be listed newest version first")
         seen.add(version)
         seen_keys.add(key)
         entries.append((version, key))

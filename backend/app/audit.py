@@ -243,7 +243,12 @@ async def export(*, actor: User | None = None, **filters) -> str:
     """
     rows = await search(**filters)
     await record(EXPORT_ACTION, actor=actor, object_ids=[row["id"] for row in rows])
-    return json.dumps(rows)
+    # A bare array cannot say whether it is the whole audit or the newest page
+    # of a much longer one, and an operator exporting an incident needs to know.
+    return json.dumps({
+        "events": rows,
+        "truncated": len(rows) >= min(filters.get("limit", SEARCH_LIMIT), SEARCH_LIMIT),
+    })
 
 
 async def prune() -> None:
