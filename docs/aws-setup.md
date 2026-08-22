@@ -123,10 +123,12 @@ Environment for the API task, values resolved from SSM where secret:
 
 | Variable | Value |
 |---|---|
-| AUTH_MODE | `accounts` (password sign-in works; Google and GitHub land with #9, and the browser realtime socket refuses accounts mode until #19, so the studio is not usable on this stack yet) |
+| AUTH_MODE | `accounts`. Password, Google and GitHub sign-in all work. Registration stays invitation-only: a provider can sign in an identity somebody linked, and can never create an account |
 | ROOT_KEYS | versioned root key ring for account secrets, newest first; separate key material from the fleet secret, and required whenever AUTH_MODE is accounts |
 | EMAIL_BACKEND | `ses`, with `MAIL_FROM` and `SES_REGION`. The API refuses to start if either is missing, and refuses a `PUBLIC_URL` that is not https, because the invitation link is the capability. `MAIL_FROM` must equal the address allowed by the task role's `ses:FromAddress` condition; startup does not check the value, so a mismatch shows up only as AccessDenied on every send. Bounce and complaint feedback needs an SNS subscription, which is documentation only until the suppression webhook lands |
-| OAUTH_PROVIDERS | `google,github` (read only once #9 implements the providers; ignored before then) |
+| OAUTH_PROVIDERS | `google,github`. A provider is offered only when its client id and secret are also set, so a half configuration shows no button rather than a broken one |
+| GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET | required to offer Google. The authorized redirect URI must be exactly `{PUBLIC_URL}/api/v1/auth/callback/google` |
+| GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET | required to offer GitHub. The callback URL must be exactly `{PUBLIC_URL}/api/v1/auth/callback/github` |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |
 | LOG_FORMAT | `json` |

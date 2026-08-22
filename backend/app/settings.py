@@ -9,7 +9,13 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     auth_mode: Literal["none", "accounts"] = "none"
+    # Comma separated, and only a provider whose credentials are present is
+    # ever offered: a button that cannot complete is worse than no button.
     oauth_providers: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    github_client_id: str = ""
+    github_client_secret: str = ""
     billing_enabled: bool = False
     log_format: Literal["plain", "json"] = "plain"
     fleet_token_key: str = ""
@@ -76,9 +82,13 @@ class Settings(BaseSettings):
         methods = ["password"]
         methods += [
             provider for provider in (part.strip() for part in self.oauth_providers.split(","))
-            if provider in {"google", "github"}
+            if provider in {"google", "github"} and self.oauth_configured(provider)
         ]
         return methods
+
+    def oauth_configured(self, provider: str) -> bool:
+        return bool(getattr(self, f"{provider}_client_id", "")
+                    and getattr(self, f"{provider}_client_secret", ""))
 
 
 @lru_cache
