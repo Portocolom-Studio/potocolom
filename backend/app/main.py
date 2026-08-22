@@ -27,6 +27,7 @@ from app.realtime import router as realtime_router
 from app.accounts import router as accounts_router
 from app.enable import router as enable_router
 from app.invitations import router as invitations_router
+from app.oauth import router as oauth_router
 from app.registry import router as registry_router
 from app.roles import router as roles_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
@@ -120,6 +121,7 @@ app.include_router(benchmark_sessions_router)
 app.include_router(accounts_router)
 app.include_router(enable_router)
 app.include_router(invitations_router)
+app.include_router(oauth_router)
 app.include_router(roles_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
