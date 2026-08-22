@@ -138,15 +138,28 @@ async def _attempt(row: MailOutbox, settings: Settings) -> None:
     except PermanentlyUndeliverable as error:
         row.state = "failed"
         row.last_error = str(error)
+        _forget_capability(row)
         await suppress(row.to_email, "undeliverable")
     except Exception as error:
         row.last_error = str(error)
         row.next_attempt_at = _now() + BACKOFF * 2 ** (row.attempts - 1)
         if row.attempts >= MAX_ATTEMPTS:
             row.state = "failed"
+            _forget_capability(row)
     else:
         row.state = "sent"
         row.sent_at = _now()
+        _forget_capability(row)
+
+
+def _forget_capability(row: MailOutbox) -> None:
+    """The payload carries a live capability, an invitation link today.
+
+    A settled row does not need it, and keeping it would leave a bearer token
+    in this table, and in every backup of it, for as long as the row lives.
+    What the mail was and who it was for stay, so an operator can still act.
+    """
+    row.payload = {}
 
 
 async def status() -> dict:

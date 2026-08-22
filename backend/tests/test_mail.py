@@ -238,3 +238,44 @@ def test_a_sweep_survives_one_capability_that_cannot_be_sent(connected, monkeypa
     connected(_queue("good@example.com"))
     connected(mail.deliver_due())
     assert sent == ["good@example.com"]
+
+
+@pytest.mark.db
+def test_a_settled_row_stops_holding_the_capability_it_carried(connected, monkeypatch):
+    """The payload holds a live invitation link. Queuing it is the point, and
+    keeping it after the row is settled is a bearer capability sitting in a
+    table, and in every backup of that table, for as long as the row lives."""
+    _configure(monkeypatch, "smtp")
+    monkeypatch.setattr(mail, "_deliver", _record([]))
+    connected(_queue(payload={"link": "https://example.com/join#a-live-token"}))
+    connected(mail.deliver_due())
+    row = connected(_rows())[0]
+    assert row.state == "sent"
+    assert row.payload == {}
+    assert "a-live-token" not in str(row.payload)
+
+
+@pytest.mark.db
+def test_a_failed_row_stops_holding_it_too(connected, monkeypatch):
+    _configure(monkeypatch, "smtp")
+    monkeypatch.setattr(mail, "_deliver",
+                        _record([], error=mail.PermanentlyUndeliverable("no such mailbox")))
+    connected(_queue(payload={"link": "https://example.com/join#another-token"}))
+    connected(mail.deliver_due())
+    row = connected(_rows())[0]
+    assert row.state == "failed"
+    assert row.payload == {}
+    # What it was and who it was for survive, so an operator can still act.
+    assert row.to_email == TO and row.template == "invitation"
+    assert "no such mailbox" in row.last_error
+
+
+@pytest.mark.db
+def test_a_pending_row_keeps_it_because_it_still_needs_it(connected, monkeypatch):
+    _configure(monkeypatch, "smtp")
+    monkeypatch.setattr(mail, "_deliver", _record([], error=OSError("relay down")))
+    connected(_queue(payload={"link": "https://example.com/join#still-needed"}))
+    connected(mail.deliver_due())
+    row = connected(_rows())[0]
+    assert row.state == "pending"
+    assert row.payload["link"].endswith("still-needed")
