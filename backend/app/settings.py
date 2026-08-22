@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     log_format: Literal["plain", "json"] = "plain"
     fleet_token_key: str = ""
 
+    # Versioned root key ring, comma separated version:base64key entries, newest first.
+    # The first entry is the active write key; every entry stays readable so rotation is
+    # active write, multi read, re-encrypt, then remove. Separate from FLEET_TOKEN_KEY.
+    root_keys: str = ""
+
     # PUBLIC_URL is where browsers reach this API; asset URLs in responses use it.
     public_url: str = "http://localhost:8000"
 

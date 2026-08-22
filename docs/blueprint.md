@@ -23,6 +23,7 @@ STORAGE_LOCAL_PATH   = /data/assets              # local backend
 STORAGE_S3_BUCKET    = ...                       # s3 backend, plus region and credentials
 QUOTA_SERVICE_URL    = ""                        # empty: unlimited default implementation
 FLEET_TOKEN_KEY      = ...                       # verifies worker tokens; self-host uses a static shared secret
+ROOT_KEYS            = "2:<base64>,1:<base64>"     # versioned root key ring, newest first; separate from FLEET_TOKEN_KEY
 EMAIL_BACKEND        = none | smtp | ses
 PUBLIC_URL           = https://app.potocolom.com
 ALLOWED_ORIGINS      = ""                      # extra browser origins for the WebSocket endpoints; PUBLIC_URL is always allowed
