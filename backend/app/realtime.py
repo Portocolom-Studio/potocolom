@@ -1015,6 +1015,14 @@ async def _handshake_principal(ws: WebSocket) -> Handshake | None:
     return Handshake(user_id=resolved.user.id, auth_session_id=resolved.session.id)
 
 
+async def _still_live(handshake: Handshake) -> bool:
+    if handshake.auth_session_id is None:
+        return True
+    from app import sessions as account_sessions
+
+    return await account_sessions.is_live(handshake.auth_session_id)
+
+
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
     if not origin_allowed(ws):
@@ -1072,6 +1080,13 @@ async def realtime(ws: WebSocket) -> None:
         id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
         user_id=handshake.user_id, auth_session_id=handshake.auth_session_id)
     sessions[session.id] = session
+    # Registered first, then re-checked: a revocation that commits between the
+    # handshake and this line runs its close sweep before the session is in
+    # the dictionary, so nothing would ever close this socket.
+    if not await _still_live(handshake):
+        del sessions[session.id]
+        await refuse(ws, CLOSE_UNAUTHORIZED, "session revoked")
+        return
     try:
         accepted = await place_session(session)
         if not accepted:

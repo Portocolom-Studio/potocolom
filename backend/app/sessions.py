@@ -157,6 +157,24 @@ async def revoke_all(user_id: uuid.UUID) -> None:
     await _close_sockets(user_id, None)
 
 
+async def is_live(session_id: uuid.UUID) -> bool:
+    """Whether that account session can still act, judged without its token.
+
+    A socket that bound its principal at the handshake has no token to
+    re-present, and needs to know whether the session died in between.
+    """
+    if db.session_factory is None:
+        raise RuntimeError("database unavailable")
+    now = _now()
+    async with db.session_factory() as session:
+        row = (await session.execute(
+            select(Session).where(Session.id == session_id)
+        )).scalar_one_or_none()
+    if row is None or row.revoked_at is not None or row.absolute_expires_at <= now:
+        return False
+    return row.idle_expires_at is None or row.idle_expires_at > now
+
+
 async def rotate(session_id: uuid.UUID, user: User) -> Issued:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")

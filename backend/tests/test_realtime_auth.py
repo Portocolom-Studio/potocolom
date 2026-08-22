@@ -188,3 +188,27 @@ def test_none_mode_still_needs_no_credential():
         with client.websocket_connect("/api/v1/realtime") as ws:
             ws.send_json({"type": "open", "model_id": "does-not-exist"})
             assert ws.receive_json()["code"] == 4004
+
+
+@pytest.mark.db
+def test_a_session_revoked_during_the_handshake_never_opens(accounts):
+    """The socket binds once, so a revocation that lands between resolving the
+    cookie and registering the session would otherwise be missed by the close
+    sweep and the socket would outlive its credential for good.
+
+    The server is blocked awaiting the open message while the revoke commits,
+    which is exactly that window.
+    """
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, issued = _signed_in(client, "raced@example.com")
+        resolved = client.portal.call(sessions.resolve, issued.token)
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-race", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                client.portal.call(sessions.revoke, resolved.session.id)
+                _open(browser_ws)
+                message = browser_ws.receive_json()
+    assert message["type"] == "error"
+    assert message["code"] == realtime.CLOSE_UNAUTHORIZED
+    assert realtime.sessions == {}
