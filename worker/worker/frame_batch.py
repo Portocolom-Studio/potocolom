@@ -52,6 +52,8 @@ class FrameRequest:
     payload: Any
     future: asyncio.Future
     cancelled: bool = False
+    profile: bool = False
+    stages: dict[str, int] | None = None
 
 
 class BatchExecutor(Protocol):
@@ -117,6 +119,7 @@ class FrameBatchCollector:
         *,
         prompt_cache: Any = None,
         resolution: int,
+        profile: bool = False,
     ) -> Any:
         self.start()
         compat = compat_key(manifest, params, resolution)
@@ -127,6 +130,7 @@ class FrameBatchCollector:
             existing.strength = strength
             existing.prompt_cache = prompt_cache
             existing.payload = payload
+            existing.profile = profile
             if existing.compat != compat:
                 self._rebucket(existing, compat)
             try:
@@ -138,7 +142,7 @@ class FrameBatchCollector:
         future = loop.create_future()
         request = FrameRequest(
             session_key, compat, manifest, dict(params), strength,
-            prompt_cache, payload, future,
+            prompt_cache, payload, future, profile=profile,
         )
         self._enqueue(request)
         try:
