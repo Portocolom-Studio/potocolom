@@ -33,6 +33,7 @@ from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.storage import get_storage
 from app.studio import router as studio_router
+from app.mail import mail_loop
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
 
@@ -42,6 +43,14 @@ FLEET_TOKEN_KEY_UNSET = (
     "Run scripts/preflight.sh to write deploy/compose/.env, "
     "then set FLEET_TOKEN_KEY from FLEET_SECRET."
 )
+
+
+def _reject_incomplete_mail(settings) -> None:
+    """An install configured for mail that cannot send is worse than one with
+    no mail at all: the operator believes invitations are going out."""
+    from app import mail
+
+    mail.check_configuration(settings)
 
 
 def _reject_unset_fleet_token_key(key: str) -> None:
@@ -57,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # import, and get_settings caches per process, so startup re-checks with
     # the settings this process actually runs under.
     _reject_unset_fleet_token_key(settings.fleet_token_key)
+    _reject_incomplete_mail(settings)
     setup_logging(settings.log_format)
     if not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
@@ -83,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(maintain_loop()),
         asyncio.create_task(maintain_deletes_loop()),
         asyncio.create_task(telemetry_loop()),
+        asyncio.create_task(mail_loop()),
     ]
     yield
     await jobs.drain_blob_cleanup()

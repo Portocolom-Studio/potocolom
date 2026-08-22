@@ -16,16 +16,21 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from starlette.responses import Response
 
-from app import audit, db, sessions
+from app import audit, db, mail, sessions
 from app.accounts import issue_session
 from app.auth import current_principal, require_accounts_mode, require_role
 from app.passwords import PasswordRejected, hash_password
+from app.settings import get_settings
 from app.tables import AuthIdentity, Invitation, User
 
 INVITATION_TTL = timedelta(hours=72)
 INVALID_INVITATION = "invalid or expired invitation"
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
+
+
+def _invitation_link(token: str) -> str:
+    return f"{get_settings().public_url.rstrip('/')}/join#{token}"
 
 
 def _token_hash(token: str) -> bytes:
@@ -96,6 +101,14 @@ async def invite(
                 token_hash=_token_hash(token),
                 expires_at=expires_at,
             ))
+            # In the same transaction as the capability it carries: an
+            # invitation that exists but was never queued, or a queued mail
+            # for an invitation that rolled back, are both worse than either
+            # happening or neither. With no mail backend this queues nothing
+            # and the link is copied by hand, which is the default.
+            await mail.queue(session, address, "invitation",
+                             {"link": _invitation_link(token), "role": request.role,
+                              "expires_at": expires_at.isoformat()})
     await audit.record("invitation.created", actor=admin,
                        object_ids=[address, request.role],
                        severity="high" if request.role == "admin" else "info")
