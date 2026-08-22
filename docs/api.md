@@ -17,6 +17,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 - An unsafe request authenticated by cookie needs an exact `Origin` and an `X-CSRF-Token` header matching the CSRF cookie, or it answers 403. An absent `Origin` is refused. A request authenticated by `Authorization: Bearer` needs neither, because a bearer is presented deliberately rather than sent along by the browser. A bearer wins outright: an invalid one answers 401 and never falls back to the cookie.
 - Sessions last 12 hours. Remember-me lasts 30 days with a 7 day idle window. An administrator gets 12 hours with a 30 minute idle window and cannot be remembered. Recent authentication lasts 30 minutes, is granted by signing in, and is never granted by claiming the installation.
 - `disabled`, `deletion_pending` and `purging` accounts cannot sign in, and their existing sessions stop resolving. A `suspended` account signs in read-only: safe methods answer normally and anything else answers 403.
+- Registration is invitation-only. An invitation is bound to one address, good once, and valid 72 hours. It may be copied and handed over by any means, because a self-hosted install is not required to have mail. Only the hash is stored, so the link is shown once at creation; revealing it again mints a fresh one and retires the previous, on the assumption that a link nobody could see may have leaked on the way.
+- Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
+- A role change revokes every session the account held, since the old session carries the old authority.
 - A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
@@ -47,13 +50,18 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET, POST `/api/v1/benchmark/*` | implemented, `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking; admin only |
 | PUT `/api/v1/files/{key}` | implemented | local-storage upload target; capability-bound worker writes |
 | GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
-| POST `/api/v1/auth/register` | issue #5 | email and password signup |
+| POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |
 | POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | issue #5 | OAuth authorization redirect |
 | GET `/api/v1/auth/callback/{provider}` | issue #5 | OAuth code exchange, then a session cookie |
+| POST `/api/v1/invitations` | implemented | invite an address to a role; returns the link once, admin only |
+| GET `/api/v1/invitations` | implemented | the open invitations, without their links; admin only |
+| DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
+| POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; admin only |
+| POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
 | GET `/api/v1/account` | implemented | this account, and its live sessions |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |

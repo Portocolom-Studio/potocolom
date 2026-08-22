@@ -174,6 +174,20 @@ Sign-in is not here yet. Until it lands, `AUTH_MODE=accounts` authenticates nobo
 except through that one call: every other request answers `401`. Do not switch a
 working install over until sign-in ships, tracked in issue #5.
 
+Once accounts are on, adding people needs no mail service. An administrator
+creates an invitation for an address and a role, and the API returns the link
+once. Copy it and hand it over however you like. It is bound to that address,
+good once, and expires after 72 hours. Asking to see the link again mints a
+fresh one and retires the previous, so a link that never reached its recipient
+cannot be used by whoever did see it.
+
+Promoting someone to administrator asks for evidence. The caller must have
+signed in within the last 30 minutes, and the account being promoted must
+either hold a verified address or be promoted under an explicit attestation
+that is recorded against it. Without mail there is nothing else that can say
+who an address belongs to, so the record names the administrator who vouched.
+Nobody can change their own role, and the last administrator cannot be demoted.
+
 Multi-user is the intended shape, not a maybe: an operator holding `admin`, invited people
 signing in with an email and password or with Google or GitHub, and a read-only `viewer`
 tier for someone who should see the gallery without spending the GPU. That is recorded in
