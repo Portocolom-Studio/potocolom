@@ -191,3 +191,17 @@ def test_changing_the_role_of_an_account_that_does_not_exist(accounts):
     with TestClient(app) as client:
         headers = _admin(accounts, client)
         assert _change(client, headers, _uuid.uuid4(), role="user").status_code == 404
+
+
+@pytest.mark.db
+def test_setting_the_same_role_again_still_ends_the_sessions(accounts):
+    """The role change commits before the sessions are revoked. If that second
+    step fails, the operator retries, and a retry that short-circuits on
+    "already that role" would leave the old sessions alive for good."""
+    target = _account(accounts, "retry@example.com", role="admin", mail_verified=True)
+    with TestClient(app) as client:
+        theirs = client.portal.call(sessions.mint, target, False)
+        headers = _admin(accounts, client, email="first@example.com")
+        assert _change(client, headers, target.id, role="admin").status_code == 204
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {theirs.token}"}).status_code == 401

@@ -50,8 +50,9 @@ async def change_role(
             target = await session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Not Found")
-            if target.role == change.role:
-                return Response(status_code=204)
+            # No short circuit when the role already matches: the revocation
+            # below happens after this commits, so an operator retrying a call
+            # that failed halfway must still reach it.
             if change.role == "admin":
                 if not sessions.is_recent(principal.session):
                     raise HTTPException(status_code=403,
@@ -61,7 +62,8 @@ async def change_role(
                         status_code=409,
                         detail="this address is unverified; attest to promote it",
                     )
-            elif target.role == "admin" and not await _remaining_administrators(session, user_id):
+            elif (target.role == "admin" and change.role != "admin"
+                  and not await _remaining_administrators(session, user_id)):
                 # An install with no administrator can only be recovered
                 # offline, so nothing here may produce one.
                 raise HTTPException(status_code=403,
