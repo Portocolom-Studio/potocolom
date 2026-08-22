@@ -32,6 +32,12 @@ def test_a_password_past_the_upper_bound_is_refused():
     assert hash_password("b" * MAX_LENGTH)
     with pytest.raises(PasswordRejected):
         hash_password("b" * (MAX_LENGTH + 1))
+    # Padding must not walk past the cap either: a check that measured only
+    # the stripped value would hand Argon2 an unbounded string.
+    with pytest.raises(PasswordRejected):
+        hash_password(" " + "b" * MAX_LENGTH)
+    with pytest.raises(PasswordRejected):
+        hash_password(" " * 10000 + "b" * MIN_LENGTH + " " * 10000)
 
 
 def test_the_bundled_blocklist_is_offline_and_not_empty():

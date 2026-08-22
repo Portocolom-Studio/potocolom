@@ -61,9 +61,13 @@ esac
 set_key PUBLIC_URL "$public_url"
 
 # The container carries the compose database; the host does not reach it.
-if docker compose -f "$COMPOSE_FILE" ps --status running api 2>/dev/null | grep -q api; then
+# --env-file matters: without it compose reads its own default .env, so an
+# operator who overrides ENV_FILE would mint a link against one database while
+# writing ROOT_KEYS and AUTH_MODE into another.
+compose=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+if "${compose[@]}" ps --status running api 2>/dev/null | grep -q api; then
 	echo "running the enable step inside the api container"
-	docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+	"${compose[@]}" run --rm --no-deps \
 		-e ROOT_KEYS="$(read_key ROOT_KEYS)" -e PUBLIC_URL="$public_url" \
 		api python -m app.enable
 else
