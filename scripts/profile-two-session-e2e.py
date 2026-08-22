@@ -95,11 +95,22 @@ def inside_bar(p95_values: list[float], bar_ms: float = BAR_MS) -> bool:
     return bool(p95_values) and all(value <= bar_ms for value in p95_values)
 
 
+def close_code(reply: object) -> int | None:
+    rcvd = getattr(reply, "rcvd", None)
+    code = getattr(rcvd, "code", None)
+    if isinstance(code, int):
+        return code
+    sent = getattr(reply, "sent", None)
+    code = getattr(sent, "code", None)
+    if isinstance(code, int):
+        return code
+    return None
+
+
 def is_no_capacity(reply: object) -> bool:
     if isinstance(reply, dict):
         return reply.get("type") == "error" and reply.get("code") == CLOSE_NO_CAPACITY
-    code = getattr(reply, "code", None)
-    return code == CLOSE_NO_CAPACITY
+    return close_code(reply) == CLOSE_NO_CAPACITY
 
 
 def advertised_slots(log_text: str, model_id: str) -> int | None:
@@ -242,10 +253,12 @@ def model_p95(models: list[dict], model_id: str) -> int | None:
         if item.get("id") != model_id:
             continue
         value = item.get("realtime_p95_ms")
+        if isinstance(value, bool):
+            return None
         if isinstance(value, int):
             return value
-        if isinstance(value, float) and value.is_integer():
-            return int(value)
+        if isinstance(value, float) and math.isfinite(value):
+            return round(value)
     return None
 
 
@@ -294,8 +307,9 @@ async def open_session(
             raise RuntimeError(
                 f"worker exited ({worker.returncode})\n{tail_text(log_path)}"
             )
-        ws = await websockets.connect(url, max_size=None, open_timeout=5)
+        ws = None
         try:
+            ws = await websockets.connect(url, max_size=None, open_timeout=5)
             await ws.send(json.dumps({
                 "type": "open",
                 "model_id": model_id,
@@ -307,16 +321,18 @@ async def open_session(
                 return ws, uuid.UUID(reply["session_id"])
             last = reply
             await ws.close()
+            ws = None
             if fail_on_no_capacity and is_no_capacity(reply):
                 raise RuntimeError(f"no worker capacity: {reply}")
         except RuntimeError:
             raise
         except Exception as error:
             last = error
-            try:
-                await ws.close()
-            except Exception:
-                pass
+            if ws is not None:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
             if fail_on_no_capacity and is_no_capacity(error):
                 raise RuntimeError("no worker capacity") from error
         if attempt == 0 or attempt % 15 == 14:
@@ -339,6 +355,7 @@ async def measure_case(
 ) -> dict:
     image = canvas_bytes()
     clients: list[tuple] = []
+    refusal: str | None = None
     try:
         try:
             for index in range(sessions):
@@ -348,9 +365,10 @@ async def measure_case(
                     fail_on_no_capacity=bool(clients),
                 )
                 clients.append((ws, session_id))
-        except RuntimeError:
+        except RuntimeError as error:
             if not clients:
                 raise
+            refusal = str(error)
         latencies: list[list[float]] = [[] for _ in clients]
         recv_at: list[list[float]] = [[] for _ in clients]
         sent = [0] * len(clients)
@@ -397,6 +415,7 @@ async def measure_case(
         "model": model_id,
         "admitted": len(clients),
         "requested": sessions,
+        "refusal": refusal,
         "samples": samples,
         "warmup_discarded": len(clients) == sessions and samples > 0,
         "advertised_realtime_p95_ms": advertised_p95,

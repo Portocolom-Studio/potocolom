@@ -84,5 +84,23 @@ def test_is_no_capacity() -> None:
     assert SCRIPT.is_no_capacity({"type": "error", "code": 4003}) is True
     assert SCRIPT.is_no_capacity({"type": "error", "code": 4004}) is False
     assert SCRIPT.is_no_capacity({"type": "ready"}) is False
-    assert SCRIPT.is_no_capacity(type("Closed", (), {"code": 4003})()) is True
+    received = type("Closed", (), {
+        "rcvd": type("Frame", (), {"code": 4003})(),
+        "sent": None,
+    })()
+    sent = type("Closed", (), {
+        "rcvd": None,
+        "sent": type("Frame", (), {"code": 4003})(),
+    })()
+    assert SCRIPT.is_no_capacity(received) is True
+    assert SCRIPT.is_no_capacity(sent) is True
+    assert SCRIPT.is_no_capacity(type("Closed", (), {"code": 4003})()) is False
     assert SCRIPT.is_no_capacity("nope") is False
+
+
+def test_model_p95_rounds_a_finite_float() -> None:
+    models = [{"id": "sdxl-turbo", "realtime_p95_ms": 412.5}]
+    assert SCRIPT.model_p95(models, "sdxl-turbo") == 412
+    assert SCRIPT.model_p95([{"id": "sdxl-turbo", "realtime_p95_ms": 139}], "sdxl-turbo") == 139
+    assert SCRIPT.model_p95([{"id": "sdxl-turbo", "realtime_p95_ms": True}], "sdxl-turbo") is None
+    assert SCRIPT.model_p95([{"id": "other", "realtime_p95_ms": 139}], "sdxl-turbo") is None
