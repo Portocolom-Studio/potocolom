@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import pytest
@@ -165,20 +166,73 @@ def test_revoking_the_account_session_closes_the_live_socket(accounts):
 
 
 @pytest.mark.db
-def test_a_role_change_closes_the_sockets_it_revokes(accounts):
+def test_demoting_an_account_closes_the_socket_it_is_drawing_on(accounts):
+    """Through the real endpoint, not through the helper it happens to call.
+
+    A demotion to viewer exists precisely to take the slot away. The account
+    binds its principal once, so without an explicit close it keeps relaying
+    frames and keeps metering for as long as it holds the connection.
+    """
     with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
-        user, _ = _signed_in(client, "promoted@example.com")
+        target, _ = _signed_in(client, "demoted@example.com")
+        boss = client.portal.call(_make, "boss-rt@example.com", "admin")
+        # The admin acts by bearer, so the browser's cookie jar stays the
+        # target's and the socket below is opened as the target.
+        admin_token = client.portal.call(sessions.mint, boss, False, True).token
         with client.websocket_connect("/api/v1/fleet") as worker_ws:
-            worker_ws.send_json(hello(worker_id="w-rt-role", parameters=REQUIRES_PROMPT))
+            worker_ws.send_json(hello(worker_id="w-rt-demote", parameters=REQUIRES_PROMPT))
             assert worker_ws.receive_json()["type"] == "registered"
             with client.websocket_connect("/api/v1/realtime") as browser_ws:
                 _open(browser_ws)
                 answer_ready(worker_ws, worker_ws.receive_json())
                 assert browser_ws.receive_json()["type"] == "ready"
 
-                client.portal.call(sessions.revoke_all, user.id)
+                demoted = client.post(
+                    f"/api/v1/users/{target.id}/role",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"role": "viewer"})
+                assert demoted.status_code == 204
+
+                closing = browser_ws.receive_json()
+                assert closing["type"] == "error"
+                assert closing["code"] == realtime.CLOSE_UNAUTHORIZED
+
+
+@pytest.mark.db
+def test_one_unread_socket_does_not_keep_the_others_alive(accounts):
+    """refuse writes before it closes, and a browser that stopped reading
+    blocks that write with no timeout. Sequentially, the first such socket
+    would strand every other socket on the account."""
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, issued = _signed_in(client, "stalled@example.com")
+        resolved = client.portal.call(sessions.resolve, issued.token)
+
+        stalled = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                   browser=_NeverDrains(), user_id=user.id,
+                                   auth_session_id=resolved.session.id)
+        realtime.sessions[stalled.id] = stalled
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-stall", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                answer_ready(worker_ws, worker_ws.receive_json())
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                client.portal.call(sessions.revoke, resolved.session.id)
 
                 assert browser_ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
+        realtime.sessions.pop(stalled.id, None)
+
+
+class _NeverDrains:
+    """A browser that accepted the socket and then stopped reading."""
+
+    async def send_json(self, _payload) -> None:
+        await asyncio.Event().wait()
+
+    async def close(self, **_kwargs) -> None:
+        await asyncio.Event().wait()
 
 
 def test_none_mode_still_needs_no_credential():

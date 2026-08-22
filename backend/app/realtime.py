@@ -18,7 +18,6 @@ import random
 import time
 import uuid
 from collections.abc import Coroutine
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -67,6 +66,9 @@ CLOSE_FORBIDDEN = 4403
 # Only these may consume a slot. A viewer reads their own work; realtime is
 # not reading.
 REALTIME_ROLES = frozenset({"user", "admin"})
+# How long revocation waits for one socket to take its close. A wedged
+# transport must not hold the request that revoked it.
+CLOSE_TIMEOUT = 2.0
 FLEET_TOKEN_HEADER = "x-fleet-token"
 # Same 500 ms bar the worker uses in slots_from_frame_ms. Duplicated rather
 # than imported: the two packages have no shared module.
@@ -1216,6 +1218,13 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
         if session.user_id == user_id
         and (auth_session_id is None or session.auth_session_id == auth_session_id)
     ]
-    for session in doomed:
-        with suppress(Exception):
-            await refuse(session.browser, CLOSE_UNAUTHORIZED, "session revoked")
+    # Concurrently: refuse writes before it closes, and a browser that stopped
+    # reading blocks that write with no timeout. Sequentially, one such socket
+    # would keep every other socket on the account alive and hang the logout
+    # request that asked for them to go.
+    await asyncio.gather(
+        *(asyncio.wait_for(
+            refuse(session.browser, CLOSE_UNAUTHORIZED, "session revoked"), CLOSE_TIMEOUT)
+          for session in doomed),
+        return_exceptions=True,
+    )
