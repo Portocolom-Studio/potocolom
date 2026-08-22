@@ -8,7 +8,7 @@ worker over the fleet socket (docs/connection-handling.md).
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth import current_user, require_role
+from app.auth import require_role
 from app.realtime import gpu_command, pick_any_worker, pick_worker_for_model
 from app.tables import User
 
@@ -19,7 +19,7 @@ GPU_TIMEOUT = 120.0
 
 
 @router.get("/api/v1/benchmark/models")
-async def benchmark_models(_user: User = Depends(current_user)) -> list[dict]:
+async def benchmark_models(_user: User = Depends(require_role("admin"))) -> list[dict]:
     """All worker manifests, including benchmark_only (hidden from the studio UI)."""
     from app import registry
 
@@ -27,7 +27,7 @@ async def benchmark_models(_user: User = Depends(current_user)) -> list[dict]:
 
 
 @router.get("/api/v1/benchmark/gpu")
-async def gpu_status(_user: User = Depends(current_user)) -> dict:
+async def gpu_status(_user: User = Depends(require_role("admin"))) -> dict:
     worker = pick_any_worker()
     if worker is None:
         raise HTTPException(status_code=503, detail="no worker connected")
@@ -41,7 +41,7 @@ class LoadRequest(BaseModel):
 @router.post("/api/v1/benchmark/gpu/load")
 async def gpu_load(
     request: LoadRequest,
-    _user: User = Depends(require_role("member")),
+    _user: User = Depends(require_role("admin")),
 ) -> dict:
     worker = pick_worker_for_model(request.model_id)
     if worker is None:
@@ -62,7 +62,7 @@ class UnloadRequest(BaseModel):
 @router.post("/api/v1/benchmark/gpu/unload")
 async def gpu_unload(
     request: UnloadRequest = UnloadRequest(),
-    _user: User = Depends(require_role("member")),
+    _user: User = Depends(require_role("admin")),
 ) -> dict:
     worker = pick_any_worker()
     if worker is None:

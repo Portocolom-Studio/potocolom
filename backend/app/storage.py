@@ -8,8 +8,10 @@ URL in the cloud, an internal API route (app/files.py) when local.
 import asyncio
 import os
 import re
+import secrets
 import struct
 import tempfile
+import time
 import zlib
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +22,9 @@ from urllib.parse import urlencode
 
 from app.settings import Settings, get_settings
 
-SIGNED_URL_TTL = 3600
+SIGNED_URL_TTL = 300
+WORKER_URL_TTL = 900
+OUTPUT_UPLOAD_URL_TTL = 3600
 # Deletes get their own small pool: a wedged filesystem leaks one thread per
 # attempt for good, and the default executor is shared with every other
 # off-loop read this app makes.
@@ -346,7 +350,12 @@ class LocalStorage:
         return f"{url}?{urlencode({'download': validate_download_name(download_name)})}"
 
     async def worker_fetch_url(self, key: str) -> str:
-        return f"{self.worker_url}/api/v1/files/{key}"
+        from app import jobs
+
+        capability = secrets.token_urlsafe(32)
+        expires = int(time.time()) + WORKER_URL_TTL
+        jobs.register_input_capability(capability, key, expires)
+        return f"{self.worker_url}/api/v1/worker-input?token={capability}&expires={expires}"
 
     async def promote(self, source_key: str, dest_key: str) -> None:
         def copy_once() -> None:
@@ -420,7 +429,7 @@ class S3Storage:
                 # (issue #249).
                 "IfNoneMatch": "*",
             },
-            ExpiresIn=SIGNED_URL_TTL,
+            ExpiresIn=OUTPUT_UPLOAD_URL_TTL,
         )
         return UploadTarget(url=url, headers={"Content-Type": content_type,
                                               "If-None-Match": "*"})
@@ -476,6 +485,7 @@ class S3Storage:
             "Bucket": self.bucket,
             "Key": key,
             "ResponseContentType": stored_content_type(key),
+            "ResponseCacheControl": "no-store",
         }
         if download_name is not None:
             params["ResponseContentDisposition"] = download_content_disposition(download_name)
@@ -486,7 +496,11 @@ class S3Storage:
         )
 
     async def worker_fetch_url(self, key: str) -> str:
-        return await self.url(key)
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key, "ResponseContentType": stored_content_type(key)},
+            ExpiresIn=WORKER_URL_TTL,
+        )
 
     async def promote(self, source_key: str, dest_key: str) -> None:
         from botocore.exceptions import ClientError

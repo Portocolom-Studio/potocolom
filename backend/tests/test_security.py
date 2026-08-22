@@ -61,14 +61,15 @@ def test_security_headers_on_unhandled_500():
     inner.add_middleware(SecurityHeadersMiddleware)
     inner.add_exception_handler(Exception, unhandled_exception_response)
 
-    @inner.get("/boom")
+    @inner.get("/api/v1/boom")
     async def boom() -> None:
         raise RuntimeError("boom")
 
     with TestClient(inner, raise_server_exceptions=False) as boom_client:
-        response = boom_client.get("/boom")
+        response = boom_client.get("/api/v1/boom")
         assert response.status_code == 500
         _assert_security_headers(response)
+        assert response.headers["cache-control"] == "no-store"
 
 
 def test_security_headers_on_static_and_spa_fallback(tmp_path: Path):

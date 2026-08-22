@@ -15,13 +15,19 @@ import asyncio
 import logging
 import os
 import tempfile
+import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import db
+from app.auth import current_user
 from app.storage import (
     UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
 )
+from app.tables import Asset, User
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +113,52 @@ async def upload(key: str, request: Request) -> dict:
 
 
 @router.get("/api/v1/files/{key:path}")
-async def serve(key: str, download: str | None = None) -> FileResponse:
-    storage = local_storage()
+async def serve_retired() -> None:
+    raise HTTPException(status_code=404, detail="file route retired")
+
+
+@router.get("/api/v1/assets/{asset_id}")
+async def asset(
+    asset_id: uuid.UUID,
+    download: str | None = None,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+):
+    row = await session.get(Asset, asset_id)
+    if row is None or (row.user_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="no such asset")
+    if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=404, detail="no such asset")
     try:
         download_name = validate_download_name(download) if download is not None else None
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    storage = get_storage()
+    if not isinstance(storage, LocalStorage):
+        return RedirectResponse(await storage.url(row.storage_key, download_name))
     try:
-        path = storage.path(key)
+        path = storage.path(row.storage_key)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if not path.is_file():
         raise HTTPException(status_code=404, detail="no such file")
     if download_name is not None:
         return FileResponse(path, filename=download_name)
+    return FileResponse(path)
+
+
+@router.get("/api/v1/worker-input")
+async def worker_input(token: str | None = None, expires: int | None = None) -> FileResponse:
+    from app import jobs
+
+    key = jobs.resolve_input_capability(token, expires)
+    if key is None:
+        raise HTTPException(status_code=403, detail="input not authorized")
+    storage = local_storage()
+    try:
+        path = storage.path(key)
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if not path.is_file():
+        raise HTTPException(status_code=403, detail="input not authorized")
     return FileResponse(path)

@@ -3,10 +3,27 @@
 import logging
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
 from app import realtime, registry
+from app.auth import current_user
 from app.manifests import Manifest
+from app.tables import User
+
+
+@pytest.fixture
+def models_client(monkeypatch):
+    test_app = FastAPI()
+    test_app.include_router(registry.router)
+    monkeypatch.setitem(
+        test_app.dependency_overrides,
+        current_user,
+        lambda: User(email="registry@example.test", role="admin"),
+    )
+    with TestClient(test_app) as client:
+        yield client
 
 
 def _manifest(model_id: str, *, benchmark_only: bool) -> Manifest:
@@ -44,14 +61,11 @@ def test_available_prefers_studio_visible_over_stale_benchmark_only():
         realtime.workers.update(saved)
 
 
-def test_models_endpoint_survives_a_malformed_upscale_manifest():
+def test_models_endpoint_survives_a_malformed_upscale_manifest(models_client):
     # A manifest is worker-supplied, so neither `properties` nor the factor
     # `enum` is guaranteed to be the shape it should be. A bare `for` over a
     # non-list 500s this endpoint for every caller (issue #232).
     from app import realtime
-    from app.main import app
-    from fastapi.testclient import TestClient
-
     worker = realtime.Worker(
         id="w-bad", ws=None, realtime_slots=0,
         manifests=[Manifest(id="up-bad", name="up-bad", capabilities=["upscale"],
@@ -61,19 +75,16 @@ def test_models_endpoint_survives_a_malformed_upscale_manifest():
     )
     realtime.workers[worker.id] = worker
     try:
-        assert TestClient(app).get("/api/v1/models").status_code == 200
+        assert models_client.get("/api/v1/models").status_code == 200
     finally:
         realtime.workers.pop(worker.id, None)
 
 
-def test_models_endpoint_survives_manifest_numbers_that_overflow_the_estimate():
+def test_models_endpoint_survives_manifest_numbers_that_overflow_the_estimate(models_client):
     # The overflow is in the scaling arithmetic, not the int() calls: an
     # arbitrary-precision int divides to a float that cannot hold it, and a
     # merely huge one reaches round() as infinity (issue #232).
     from app import realtime
-    from app.main import app
-    from fastapi.testclient import TestClient
-
     for steps in (10 ** 400, 10 ** 308):
         worker = realtime.Worker(
             id="w-est", ws=None, realtime_slots=0,
@@ -86,18 +97,15 @@ def test_models_endpoint_survives_manifest_numbers_that_overflow_the_estimate():
         )
         realtime.workers[worker.id] = worker
         try:
-            assert TestClient(app).get("/api/v1/models").status_code == 200, steps
+            assert models_client.get("/api/v1/models").status_code == 200, steps
         finally:
             realtime.workers.pop(worker.id, None)
 
 
-def test_models_endpoint_round_trips_realtime_p95_ms():
+def test_models_endpoint_round_trips_realtime_p95_ms(models_client):
     # A worker's calibration measurement must reach the browser: the studio
     # picker labels each realtime model with its measured frame cost.
     from app import realtime
-    from app.main import app
-    from fastapi.testclient import TestClient
-
     worker = realtime.Worker(
         id="w-rt", ws=None, realtime_slots=1,
         manifests=[Manifest(id="vega-rt", name="VegaRT",
@@ -106,20 +114,17 @@ def test_models_endpoint_round_trips_realtime_p95_ms():
     )
     realtime.workers[worker.id] = worker
     try:
-        payload = TestClient(app).get("/api/v1/models").json()
+        payload = models_client.get("/api/v1/models").json()
     finally:
         realtime.workers.pop(worker.id, None)
     entry = next(m for m in payload if m["id"] == "vega-rt")
     assert entry["realtime_p95_ms"] == 408
 
 
-def test_models_endpoint_without_measurement_reports_null():
+def test_models_endpoint_without_measurement_reports_null(models_client):
     # A worker that never calibrated (the simulator) carries no measurement;
     # the field must come through as null rather than break the endpoint.
     from app import realtime
-    from app.main import app
-    from fastapi.testclient import TestClient
-
     worker = realtime.Worker(
         id="w-sim", ws=None, realtime_slots=1,
         manifests=[Manifest(id="sd-sim", name="Simulated",
@@ -127,7 +132,7 @@ def test_models_endpoint_without_measurement_reports_null():
     )
     realtime.workers[worker.id] = worker
     try:
-        payload = TestClient(app).get("/api/v1/models").json()
+        payload = models_client.get("/api/v1/models").json()
     finally:
         realtime.workers.pop(worker.id, None)
     entry = next(m for m in payload if m["id"] == "sd-sim")
@@ -416,7 +421,7 @@ def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
         realtime.workers.update(saved)
 
 
-def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
+def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model(models_client):
     # The shipped manifest is the contract the studio picker builds on:
     # studio-visible (benchmark_only false), sketch-conditioned like vega-rt,
     # with a steps ceiling that covers the shipped 512-4step benchmark entries,
@@ -425,9 +430,7 @@ def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
     from pathlib import Path
 
     from app import realtime
-    from app.main import app
     from app.manifests import Manifest
-    from fastapi.testclient import TestClient
 
     raw = json.loads(Path(__file__).resolve().parents[2].joinpath(
         "worker", "models", "sdxl-turbo.json").read_text())
@@ -450,7 +453,7 @@ def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model():
     )
     realtime.workers[worker.id] = worker
     try:
-        payload = TestClient(app).get("/api/v1/models").json()
+        payload = models_client.get("/api/v1/models").json()
     finally:
         realtime.workers.pop(worker.id, None)
     entry = next(m for m in payload if m["id"] == "sdxl-turbo")

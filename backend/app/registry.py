@@ -7,13 +7,14 @@ is currently offline.
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sqlalchemy.dialects.postgresql import insert
 
 from app import db, realtime
+from app.auth import current_user
 from app.estimates import estimate_gpu_ms, schema_defaults
 from app.manifests import Manifest
-from app.tables import Model
+from app.tables import Model, User
 
 logger = logging.getLogger("potocolom.registry")
 
@@ -92,7 +93,7 @@ def for_jobs() -> dict[str, Manifest]:
 
 
 @router.get("/api/v1/models")
-async def list_models() -> list[dict]:
+async def list_models(_user: User = Depends(current_user)) -> list[dict]:
     models = []
     for _, manifest in sorted(public().items()):
         payload = manifest.model_dump()

@@ -7,13 +7,14 @@ Every call a customer's browser makes, from first page load to account deletion.
 ## Conventions
 
 - Base path `/api/v1`. JSON request and response bodies.
-- Authentication is a session cookie (opaque token, httpOnly), set by the auth endpoints (issue #5). Until those ship, the prototype endpoints are unauthenticated and run as a single implicit local user (`AUTH_MODE=none`).
+- Authentication resolves requests to a principal. With `AUTH_MODE=none`, the principal is one implicit local admin.
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
   answer 403 for a `viewer`. The code calls the `user` tier "member" in
   `require_role("member")`; the stored value is `user`.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
+- Responses under `/api/v1/` include `Cache-Control: no-store`.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
 - API versioning is the path prefix. The worker protocol versions independently with an N-1 compatibility promise, and the API tolerates the previous release's SPA through additive-only response changes over the same release window.
 
@@ -25,20 +26,21 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented (prototype) | realtime drawing sessions |
 | WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret |
-| GET `/api/v1/models` | implemented (#11, #15) | registered models with parameter schemas and GPU-time estimates |
+| GET `/api/v1/models` | implemented | registered models with parameter schemas and GPU-time estimates; requires a principal |
 | POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
-| GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested signed-URL assets, cursor paging |
+| GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested opaque asset-ID URLs, cursor paging |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
 | POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
 | GET `/api/v1/generations/{id}/lineage` | implemented (#129) | ancestry, direct derivatives and subtree size of an owned generation |
 | GET `/api/v1/generations/{id}/subtree` | implemented (#130) | bounded descendants and render data for one Images canvas tree |
-| GET `/api/v1/benchmark/sessions/*` | implemented (#107) | list and read durable benchmark sessions, install-scoped |
-| POST `/api/v1/benchmark/sessions` | implemented (#107), `BENCHMARK_API`-gated | ingest a completed benchmark session |
-| GET `/api/v1/studio/gpu` | implemented (#93) | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel |
-| GET `/api/v1/metrics/gpu/history` | implemented (#98) | GPU telemetry over a time range (raw, or 5-minute rollups) |
-| GET, POST `/api/v1/benchmark/*` | implemented (#83), `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking |
-| PUT, GET `/api/v1/files/{key}` | implemented (#18) | local-storage upload target and serve path (self-hosted, non-S3) |
+| GET `/api/v1/benchmark/sessions/*` | implemented | list and read durable benchmark sessions; admin only |
+| POST `/api/v1/benchmark/sessions` | implemented, `BENCHMARK_API`-gated | ingest a completed benchmark session; admin only |
+| GET `/api/v1/studio/gpu` | implemented | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel; admin only |
+| GET `/api/v1/metrics/gpu/history` | implemented | GPU telemetry over a time range (raw, or 5-minute rollups); admin only |
+| GET, POST `/api/v1/benchmark/*` | implemented, `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking; admin only |
+| PUT `/api/v1/files/{key}` | implemented | local-storage upload target; capability-bound worker writes |
+| GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
 | POST `/api/v1/auth/register` | issue #5 | email and password signup |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |
 | POST `/api/v1/auth/login` | issue #5 | session cookie issuance |
@@ -76,7 +78,7 @@ The SPA's first call. One build artifact serves every deployment; this response 
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none` (self-hosted default: auto login, account UI hidden), `["local"]` for email and password, and `["local", "google", "github"]` when OAuth is configured.
+`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests.
 
 <!-- Note: the shipped SPA does not yet consume /api/v1/config (built but unused). -->
 
@@ -145,9 +147,8 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
                               "dispatched_at"/"finished_at", "failure_reason" on failure}
 
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
-                             carrying short-lived signed URLs and "thumbnail_url", plus
+                             carrying opaque asset-ID URLs and "thumbnail_url", plus
                              "has_derivatives" for stable client layout; cursor paging.
-                             (This is the real history endpoint. There is no /api/v1/assets.)
                              ?starred=true uses starred_at newest-first; false excludes favorites.
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
@@ -190,6 +191,9 @@ GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#13
                                       404 for another user's, missing, or assetless anchor job.
 ```
 
+Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or admin role. A missing
+or unauthorized asset returns 404. For an accessible asset, an unsafe `download` name returns 400.
+
 The studio opens at most four generation event streams. An `EventSource` error
 before or after the initial event moves that job to the 1.5-second history
 polling fallback; jobs above the stream cap share the same fallback refresh.
@@ -207,21 +211,21 @@ Progress also streams as control messages over the realtime WebSocket once issue
 ### Studio, metrics, benchmark and local files
 
 ```
-GET /api/v1/studio/gpu                 {"gpu": {device, util_pct, vram_used_pct, vram_used_bytes,
+GET /api/v1/studio/gpu                 admin only; {"gpu": {device, util_pct, vram_used_pct, vram_used_bytes,
                                         vram_total_bytes, temperature_c, power_w, available}}
-GET /api/v1/metrics/gpu/history        ?from&to&rollup - GPU samples over a range; the endpoint
+GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
-GET  /api/v1/benchmark/models          list benchmarkable models (BENCHMARK_API-gated)
-POST /api/v1/benchmark/{load|unload|run}   drive a model for a benchmark run
-POST /api/v1/benchmark/sessions       user or admin; BENCHMARK_API-gated completed
+GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
+POST /api/v1/benchmark/{load|unload|run}   admin only; drive a model for a benchmark run
+POST /api/v1/benchmark/sessions       admin only; BENCHMARK_API-gated completed
                                         scripts/benchmark.py report;
                                         201 {"id": "..."}; 404 when the benchmark API is disabled;
                                         malformed reports return 422
-GET  /api/v1/benchmark/sessions       200 newest-first install-scoped session summaries;
+GET  /api/v1/benchmark/sessions       admin only; 200 newest-first install-scoped session summaries;
                                         ?limit defaults to 50 and is capped at 200; pass the last
                                         session id as ?cursor to read the next page
-GET  /api/v1/benchmark/sessions/{id}  200 full report in the existing results.json shape;
+GET  /api/v1/benchmark/sessions/{id}  admin only; 200 full report in the existing results.json shape;
                                         404 for a missing session
 GET  /api/v1/telemetry/preview        admin only; 403 for viewer or user; 200 exact previous
                                         UTC day's anonymous aggregate payload;
@@ -231,8 +235,13 @@ PUT  /api/v1/files/{key}               local-storage upload target (self-hosted,
                                         AND an X-Upload-Token header matching that dispatch, which
                                         the worker echoes from upload.headers; 403 otherwise, and
                                         409 on a second write, since outputs are write-once
-GET  /api/v1/files/{key}               serve a stored object (self-hosted, non-S3)
+GET  /api/v1/files/{key}               always 404; this route is retired
+GET  /api/v1/assets/{id}                owner or admin; serves local bytes, with 404 for missing or
+                                        unauthorized assets and 400 for an unsafe download name
 ```
+
+For local storage, worker input URLs use `/api/v1/worker-input` with an opaque 32-byte capability.
+The capability expires after 15 minutes. The URL does not contain the storage key.
 
 ## Planned endpoints, shapes fixed by the blueprint
 

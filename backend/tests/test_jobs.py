@@ -10,7 +10,7 @@ import time
 import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -288,27 +288,37 @@ def test_generation_download_names_count_only_visible_masters():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         job_id = asyncio.run(seed_generation())
         single_asset = client.get(f"/api/v1/generations/{job_id}").json()["assets"][0]
+        assert urlsplit(single_asset["url"]).path == f"/api/v1/assets/{single_asset['id']}"
         assert parse_qs(urlsplit(single_asset["download_url"]).query) == {
             "download": [f"{base_name}.webp"],
         }
+        assert urlsplit(single_asset["download_url"]).path == f"/api/v1/assets/{single_asset['id']}"
 
         asyncio.run(add_second_asset(job_id))
         batch_assets = client.get(f"/api/v1/generations/{job_id}").json()["assets"]
         assert len(batch_assets) == 2
         for position, asset in enumerate(batch_assets, start=1):
-            extension = asset["url"].rsplit(".", 1)[-1]
+            assert urlsplit(asset["url"]).path == f"/api/v1/assets/{asset['id']}"
+            extension = asset["mime"].rsplit("/", 1)[-1]
             assert parse_qs(urlsplit(asset["download_url"]).query) == {
                 "download": [f"{base_name}-{position}.{extension}"],
             }
+            assert urlsplit(asset["download_url"]).path == f"/api/v1/assets/{asset['id']}"
 
         expired_first_job_id = asyncio.run(seed_generation_with_expired_first())
         surviving_assets = client.get(
             f"/api/v1/generations/{expired_first_job_id}"
         ).json()["assets"]
         assert len(surviving_assets) == 1
+        assert urlsplit(surviving_assets[0]["url"]).path == (
+            f"/api/v1/assets/{surviving_assets[0]['id']}"
+        )
         assert parse_qs(urlsplit(surviving_assets[0]["download_url"]).query) == {
             "download": [f"{base_name}.webp"],
         }
+        assert urlsplit(surviving_assets[0]["download_url"]).path == (
+            f"/api/v1/assets/{surviving_assets[0]['id']}"
+        )
 
 
 @pytest.mark.db
@@ -381,19 +391,21 @@ def test_generation_end_to_end():
             assert asset["width"] == 320
             assert asset["height"] == 240
             assert asset["mime"] == "image/png"
-            assert asset["url"].endswith(f"/{job_id}-attempt-1.png")
+            assert urlsplit(asset["url"]).path == f"/api/v1/assets/{asset['id']}"
             created_stamp = datetime.fromisoformat(job["created_at"]).strftime("%Y%m%d-%H%M%S")
             expected_name = f"potocolom-{created_stamp}-a-lighthouse-cafe.png"
             download_url = urlsplit(asset["download_url"])
             assert parse_qs(download_url.query) == {"download": [expected_name]}
-            download_response = client.get(f"{download_url.path}?{download_url.query}")
+            assert download_url.path == f"/api/v1/assets/{asset['id']}"
+            download_response = client.get(asset["download_url"])
             assert download_response.content == png_bytes(320, 240)
             assert download_response.headers["content-disposition"] == (
                 f'attachment; filename="{expected_name}"'
             )
             assert asset["thumbnail_url"] is not None
-            assert client.get(urlsplit(asset["url"]).path).content == png_bytes(320, 240)
-            assert client.get(urlsplit(asset["thumbnail_url"]).path).content == webp_bytes()
+            assert client.get(asset["url"]).content == png_bytes(320, 240)
+            assert "/api/v1/assets/" in urlsplit(asset["thumbnail_url"]).path
+            assert client.get(asset["thumbnail_url"]).content == webp_bytes()
 
             async def recorded_thumb_dimensions() -> tuple[int, int]:
                 assert db.session_factory is not None
@@ -1103,6 +1115,7 @@ def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
             )
             storage = jobs.get_storage()
             real_promote = storage.promote
+            cleaned = threading.Event()
 
             class Swapping:
                 def __getattr__(self, name):
@@ -1112,14 +1125,16 @@ def test_a_superseded_promote_does_not_leave_the_library_master(monkeypatch):
                     await real_promote(source, dest)
                     jobs.inflight[key] = replacement
 
+                async def delete(self, storage_key):
+                    await storage.delete(storage_key)
+                    if storage_key == library_key:
+                        cleaned.set()
+
             monkeypatch.setattr(jobs, "get_storage", lambda: Swapping())
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "dispatch_token": original.dispatch_token,
                               "gpu_ms": 1, "width": 512, "height": 512})
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and storage.path(library_key).exists():
-                client.get("/api/v1/health")
-                time.sleep(0.05)
+            assert cleaned.wait(3)
             assert not storage.path(library_key).exists(), \
                 "a superseded promote left the library master"
             monkeypatch.undo()
@@ -1390,10 +1405,7 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
 
 
 @pytest.mark.db
-def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
-    """The URL is signed after the commit and the de-tracking, so a signing
-    failure must not swallow the terminal event or the usage event: nothing
-    tracks the job any more and nothing would retry either (issue #248)."""
+def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
     _stall_safe(monkeypatch)
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
@@ -1417,45 +1429,41 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
                         )
                     ) or 0)
 
-            # usage_events carries no job id, and the database is truncated once
-            # per session, so this job's row is identified by the count rising.
             events_before = asyncio.run(job_events())
             published = []
             monkeypatch.setattr(
                 jobs, "publish",
                 lambda job_id, event: published.append((job_id, event)),
             )
-            dispatch_key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
-                "/api/v1/files/", 1
-            )[-1]
-            assert dispatch_key.startswith(jobs.DISPATCH_PREFIX)
-            master_key = dispatch_key.removeprefix(jobs.DISPATCH_PREFIX)
             real_storage = jobs.get_storage()
 
-            class FailingUrl:
-                """Fails the first signing of the master key: the success path
-                is its first caller, and the studio's later refetch still works."""
-
+            class TrackingUrl:
                 def __init__(self):
-                    self.fired = False
+                    self.calls = []
 
                 def __getattr__(self, name):
                     return getattr(real_storage, name)
 
                 async def url(self, key, download_name=None):
-                    if not self.fired and key == master_key:
-                        self.fired = True
-                        raise RuntimeError("simulated signing failure")
+                    self.calls.append(key)
                     return await real_storage.url(key, download_name)
 
-            # get_storage() is called once per request, so one shared instance
-            # carries the fired flag across the success path and the refetch.
-            failing_url = FailingUrl()
-            monkeypatch.setattr(jobs, "get_storage", lambda: failing_url)
+            tracking_url = TrackingUrl()
+            monkeypatch.setattr(jobs, "get_storage", lambda: tracking_url)
             worker.send_json({"type": "job_done", "job_id": job_id, "gpu_ms": 1,
                               "width": 512, "height": 512,
                               "dispatch_token": dispatch["dispatch_token"]})
-            poll_until(client, job_id, "succeeded")
+            generation = poll_until(client, job_id, "succeeded")
+            asset_id = generation["assets"][0]["id"]
+
+            async def asset_storage_key() -> str:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    return str(await session.scalar(
+                        select(Asset.storage_key).where(Asset.id == uuid.UUID(asset_id))
+                    ))
+
+            storage_key = asyncio.run(asset_storage_key())
 
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not any(
@@ -1465,7 +1473,10 @@ def test_a_signing_failure_does_not_lose_the_terminal_event(monkeypatch):
             succeeded = next(
                 event for _, event in published if event.get("state") == "succeeded"
             )
-            assert succeeded.get("url") is None
+            succeeded_url = succeeded["url"]
+            assert urlsplit(succeeded_url).path == f"/api/v1/assets/{asset_id}"
+            assert storage_key not in succeeded_url
+            assert tracking_url.calls == []
 
             def usage_written() -> bool:
                 return asyncio.run(job_events()) > events_before
@@ -1886,8 +1897,21 @@ def test_img2img_dispatch_includes_input_url():
             assert i2i_dispatch["type"] == "dispatch_job"
             assert i2i_dispatch["job_id"] == edit_job_id
             assert "input" in i2i_dispatch
-            input_path = urlsplit(i2i_dispatch["input"]["url"]).path
-            assert client.get(input_path).content == png_bytes()
+            input_url = urlsplit(i2i_dispatch["input"]["url"])
+            source_key = jobs.storage_keys_for_attempt(
+                db.local_user_id, uuid.UUID(source_job_id), 1
+            )[0]
+            assert source_key not in i2i_dispatch["input"]["url"]
+            query = parse_qs(input_url.query)
+            assert set(query) == {"token", "expires"}
+            assert client.get(i2i_dispatch["input"]["url"]).content == png_bytes()
+            assert client.get(input_url.path).status_code == 403
+            wrong = urlencode({"token": "wrong-capability", "expires": query["expires"][0]})
+            assert client.get(f"{input_url.path}?{wrong}").status_code == 403
+            expired_query = {"token": query["token"][0], "expires": "0"}
+            assert client.get(
+                f"{input_url.path}?{urlencode(expired_query)}"
+            ).status_code == 403
 
             assert put_upload(client, i2i_dispatch["upload"],
                               png_bytes()).status_code == 200
@@ -1895,7 +1919,8 @@ def test_img2img_dispatch_includes_input_url():
                               "gpu_ms": 200, "width": 512, "height": 512,
                               "dispatch_token": i2i_dispatch["dispatch_token"]})
             edit_job = poll_until(client, edit_job_id, "succeeded")
-            assert edit_job["assets"][0]["url"].endswith(".png")
+            edit_asset = edit_job["assets"][0]
+            assert urlsplit(edit_asset["url"]).path == f"/api/v1/assets/{edit_asset['id']}"
             assert edit_job["source_asset_id"] == source_asset_id
 
 
@@ -1924,6 +1949,84 @@ def test_img2img_rejects_model_without_capability():
             assert rejected.status_code == 422
             detail = rejected.json()["detail"]
             assert "image_to_image" in detail or "upscale" in detail
+
+
+@pytest.mark.db
+def test_expired_source_asset_is_rejected_for_img2img_and_upscale():
+    upscale_manifest = {
+        "id": "realesrgan-expired-source",
+        "name": "Real-ESRGAN",
+        "capabilities": ["upscale"],
+        "parameters": {
+            "type": "object",
+            "properties": {"factor": {"type": "integer", "enum": [2, 4]}},
+            "required": ["factor"],
+        },
+        "min_vram_gb": 4,
+    }
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json({
+                "type": "hello",
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "w-expired-source",
+                "models": [MANIFEST, upscale_manifest],
+                "realtime_slots": 1,
+            })
+            assert worker.receive_json()["type"] == "registered"
+
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            expired_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            source_asset_id = uuid.uuid4()
+
+            async def seed() -> int:
+                async with db.session_factory() as session:
+                    session.add(Asset(
+                        id=source_asset_id,
+                        user_id=db.local_user_id,
+                        job_id=None,
+                        storage_key=f"{db.local_user_id}/expired-source.png",
+                        mime="image/png",
+                        width=512,
+                        height=512,
+                        expires_at=expired_at,
+                    ))
+                    await session.commit()
+                    return await session.scalar(
+                        select(func.count()).select_from(Job).where(
+                            Job.user_id == db.local_user_id
+                        )
+                    )
+
+            jobs_before = asyncio.run(seed())
+            queue_before = list(jobs.queues._heaps.get(jobs.JOB_QUEUE, []))
+
+            for model_id, params in (
+                ("sd-test", {"prompt": "expired edit"}),
+                ("realesrgan-expired-source", {"factor": 2}),
+            ):
+                rejected = client.post(
+                    "/api/v1/generations",
+                    json={
+                        "model_id": model_id,
+                        "params": params,
+                        "source_asset_id": str(source_asset_id),
+                    },
+                )
+                assert rejected.status_code == 404
+                assert rejected.json()["detail"] == "unknown source asset"
+
+            async def count_jobs() -> int:
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        select(func.count()).select_from(Job).where(
+                            Job.user_id == db.local_user_id
+                        )
+                    )
+
+            assert asyncio.run(count_jobs()) == jobs_before
+            assert jobs.queues._heaps.get(jobs.JOB_QUEUE, []) == queue_before
 
 
 @pytest.mark.db
@@ -1976,7 +2079,13 @@ def test_upscale_dispatch_includes_input_url():
             assert up_dispatch["job_id"] == upscale_job_id
             assert up_dispatch["params"] == {"factor": 2}
             assert "input" in up_dispatch
-            assert client.get(urlsplit(up_dispatch["input"]["url"]).path).content == png_bytes()
+            input_url = urlsplit(up_dispatch["input"]["url"])
+            source_key = jobs.storage_keys_for_attempt(
+                db.local_user_id, uuid.UUID(source_job_id), 1
+            )[0]
+            assert source_key not in up_dispatch["input"]["url"]
+            assert client.get(up_dispatch["input"]["url"]).content == png_bytes()
+            assert client.get(input_url.path).status_code == 403
 
             # Upload the real upscaled image: the asset row takes its
             # dimensions from the object now, not from the worker's claim.
@@ -3444,8 +3553,11 @@ def test_an_output_is_written_once():
                               png_bytes(320, 240)).status_code == 200
             assert put_upload(client, dispatch["upload"],
                               png_bytes(64, 64)).status_code == 409
-            served = client.get(urlsplit(dispatch["upload"]["url"]).path)
-            assert served.content == png_bytes(320, 240)
+            storage = jobs.get_storage()
+            key = urlsplit(dispatch["upload"]["url"]).path.rsplit(
+                "/api/v1/files/", 1
+            )[-1]
+            assert storage.path(key).read_bytes() == png_bytes(320, 240)
             worker.send_json({"type": "job_done", "job_id": dispatch["job_id"],
                               "dispatch_token": dispatch["dispatch_token"],
                               "gpu_ms": 1, "width": 320, "height": 240})
