@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
+from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
@@ -24,6 +25,7 @@ from app.realtime import router as realtime_router
 from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
+from app.storage import get_storage
 from app.studio import router as studio_router
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
@@ -39,8 +41,8 @@ def _reject_unimplemented_auth_mode(mode: str) -> None:
     raise RuntimeError(
         f"AUTH_MODE={mode} is not implemented and "
         "authenticates nobody, so every request would resolve to the local "
-        "admin user. Unset AUTH_MODE or set it to none (local is tracked "
-        "in #5, oauth in #9)."
+        "admin user. Unset AUTH_MODE or set it to none (accounts is tracked "
+        "in #5 and #9)."
     )
 
 
@@ -139,6 +141,20 @@ async def health() -> dict:
     # Answers from process state only: the load balancer must not be convinced
     # to kill healthy tasks during a database incident (docs/blueprint.md).
     return {"status": "ok"}
+
+
+@app.get("/api/v1/ready")
+async def ready() -> Response:
+    try:
+        if db.engine is None:
+            return Response(status_code=503)
+        async with db.engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        if not await get_storage().ready():
+            return Response(status_code=503)
+    except Exception:
+        return Response(status_code=503)
+    return Response(status_code=200)
 
 
 @app.get("/api/v1/config")

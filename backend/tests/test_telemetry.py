@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
@@ -55,7 +54,7 @@ def test_telemetry_preview_is_exact_daily_aggregate():
             await session.commit()
 
     with TestClient(app) as client:
-        asyncio.run(seed())
+        client.portal.call(seed)
         response = client.get("/api/v1/telemetry/preview")
         assert response.status_code == 200
         payload = response.json()
@@ -91,8 +90,8 @@ def test_failed_telemetry_send_is_marked_and_dropped(monkeypatch):
             expected = datetime.now(timezone.utc).date() - timedelta(days=1)
             assert state.last_report_day == expected
 
-    with TestClient(app):
-        asyncio.run(exercise())
+    with TestClient(app) as client:
+        client.portal.call(exercise)
 
 
 @pytest.mark.db
@@ -125,5 +124,5 @@ def test_usage_events_are_hard_deleted_with_user():
         async with db.session_factory() as session:
             assert await session.get(UsageEvent, event_id) is None
 
-    with TestClient(app):
-        asyncio.run(exercise())
+    with TestClient(app) as client:
+        client.portal.call(exercise)

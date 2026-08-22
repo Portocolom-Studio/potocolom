@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import threading
 import struct
 import uuid
 import zlib
@@ -871,3 +872,48 @@ def test_local_delete_does_not_block_the_event_loop(tmp_path):
 
     assert asyncio.run(drive()) == ["loop kept running", "delete returned"]
     assert not (tmp_path / "u" / "j.png").exists()
+
+
+def _wedged_local(tmp_path, release):
+    class WedgedRoot:
+        def is_dir(self) -> bool:
+            release.wait(10)
+            return True
+
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    storage.root = WedgedRoot()
+    return storage
+
+
+def _wedged_s3(_tmp_path, release):
+    class WedgedClient:
+        def head_bucket(self, **_kwargs) -> None:
+            release.wait(10)
+
+    storage = S3Storage.__new__(S3Storage)
+    storage.bucket = "bucket"
+    storage.client = WedgedClient()
+    return storage
+
+
+@pytest.mark.parametrize("build", [_wedged_local, _wedged_s3])
+def test_readiness_probes_cannot_starve_other_off_loop_work(tmp_path, build):
+    """/api/v1/ready takes no principal, so its probe rate is attacker paced.
+
+    A wedged store abandons one thread per probe for good, and in the shared
+    default executor that eventually starves every other off-loop call the app
+    makes: uploads, image inspection, promotion copies, purges.
+    """
+    release = threading.Event()
+    storage = build(tmp_path, release)
+
+    async def drive() -> str:
+        probes = [asyncio.ensure_future(storage.ready()) for _ in range(64)]
+        await asyncio.sleep(0.2)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(lambda: "other work ran"), 2)
+        finally:
+            release.set()
+            await asyncio.gather(*probes, return_exceptions=True)
+
+    assert asyncio.run(drive()) == "other work ran"

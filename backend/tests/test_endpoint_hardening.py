@@ -142,9 +142,9 @@ def test_asset_id_read_is_session_bound_and_owner_scoped(tmp_path, monkeypatch):
     storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
     monkeypatch.setattr("app.files.get_storage", lambda: storage)
     with _client() as client:
-        owner = asyncio.run(_persist_user("user", "asset-owner"))
-        other = asyncio.run(_persist_user("viewer", "asset-other"))
-        admin = asyncio.run(_persist_user("admin", "asset-admin"))
+        owner = client.portal.call(_persist_user, "user", "asset-owner")
+        other = client.portal.call(_persist_user, "viewer", "asset-other")
+        admin = client.portal.call(_persist_user, "admin", "asset-admin")
         key = f"{owner.id}/asset.png"
         path = storage.path(key)
         path.parent.mkdir(parents=True)
@@ -155,7 +155,7 @@ def test_asset_id_read_is_session_bound_and_owner_scoped(tmp_path, monkeypatch):
                 session.add(Asset(id=asset_id, user_id=owner.id, storage_key=key,
                                   mime="image/png", width=1, height=1))
                 await session.commit()
-        asyncio.run(create_asset())
+        client.portal.call(create_asset)
         app.dependency_overrides[current_user] = lambda: owner
         owner_response = client.get(f"/api/v1/assets/{asset_id}")
         assert owner_response.status_code == 200
@@ -173,8 +173,8 @@ def test_expired_asset_is_not_readable_by_owner_or_admin(tmp_path, monkeypatch):
     storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
     monkeypatch.setattr("app.files.get_storage", lambda: storage)
     with _client() as client:
-        owner = asyncio.run(_persist_user("user", "expired-asset-owner"))
-        admin = asyncio.run(_persist_user("admin", "expired-asset-admin"))
+        owner = client.portal.call(_persist_user, "user", "expired-asset-owner")
+        admin = client.portal.call(_persist_user, "admin", "expired-asset-admin")
         key = f"{owner.id}/expired-asset.png"
         path = storage.path(key)
         path.parent.mkdir(parents=True)
@@ -188,7 +188,7 @@ def test_expired_asset_is_not_readable_by_owner_or_admin(tmp_path, monkeypatch):
                                   expires_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
                 await session.commit()
 
-        asyncio.run(create_asset())
+        client.portal.call(create_asset)
         for principal in (owner, admin):
             app.dependency_overrides[current_user] = lambda principal=principal: principal
             assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404

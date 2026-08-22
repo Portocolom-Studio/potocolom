@@ -83,7 +83,7 @@ def test_registration_persists_worker_identity():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-identity")
-            identity = asyncio.run(_wait_for_worker("w-identity"))
+            identity = client.portal.call(_wait_for_worker, "w-identity")
             assert identity is not None
             assert identity.device == "rocm"
             assert identity.memory_mode == "model_offload"
@@ -112,8 +112,8 @@ def test_maintenance_prunes_stale_worker_identities():
                 await session.get(WorkerIdentity, "w-retention-recent"),
             )
 
-    with TestClient(app, headers=FLEET_HEADERS):
-        stale, recent = asyncio.run(exercise())
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        stale, recent = client.portal.call(exercise)
         assert stale is None
         assert recent is not None
 
@@ -252,8 +252,8 @@ def test_usage_event_maintenance_rolls_up_prunes_and_is_idempotent(monkeypatch):
             await session.commit()
         return first_rebuild, second_rebuild, first, second
 
-    with TestClient(app, headers=FLEET_HEADERS):
-        first_rebuild, second_rebuild, first, second = asyncio.run(exercise())
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        first_rebuild, second_rebuild, first, second = client.portal.call(exercise)
 
     assert first_rebuild == second_rebuild
     assert first == second
@@ -299,8 +299,8 @@ def test_usage_event_rollups_are_hard_deleted_with_user():
         async with db.session_factory() as session:
             return await session.get(UsageEventRollup, rollup_id)
 
-    with TestClient(app, headers=FLEET_HEADERS):
-        assert asyncio.run(exercise()) is None
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        assert client.portal.call(exercise) is None
 
 
 @pytest.mark.db
@@ -322,7 +322,7 @@ def test_heartbeat_persists_gpu_sample():
                     "power_w": 120.0,
                 },
             })
-            rows = asyncio.run(_wait_for_samples())
+            rows = client.portal.call(_wait_for_samples)
             assert rows, "heartbeat sample was not persisted"
             row = rows[0]
             assert row.worker_id == "w-metrics"
@@ -338,7 +338,7 @@ def test_heartbeat_persists_gpu_sample():
                 async with db.session_factory() as session:
                     return await session.get(WorkerIdentity, "w-metrics")
 
-            identity = asyncio.run(read_worker())
+            identity = client.portal.call(read_worker)
             assert identity is not None
             assert identity.device == "rocm"
             assert identity.memory_mode == "model_offload"
@@ -361,14 +361,14 @@ def test_gpu_history_round_trip():
 
     with TestClient(app, headers=FLEET_HEADERS) as client:
         assert db.session_factory is not None
-        asyncio.run(_clear_gpu_metrics())
+        client.portal.call(_clear_gpu_metrics)
 
         async def insert():
             async with db.session_factory() as session:
                 session.add(sample)
                 await session.commit()
 
-        asyncio.run(insert())
+        client.portal.call(insert)
 
         response = client.get(
             "/api/v1/metrics/gpu/history",
@@ -415,7 +415,7 @@ def test_job_dispatch_and_finish_timestamps():
             job = None
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
-                job = asyncio.run(read_job())
+                job = client.portal.call(read_job)
                 assert job is not None
                 if job.dispatched_at is not None and job.state == "running":
                     break
@@ -435,7 +435,7 @@ def test_job_dispatch_and_finish_timestamps():
 
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
-                job = asyncio.run(read_job())
+                job = client.portal.call(read_job)
                 if job.state in ("failed", "succeeded"):
                     break
                 time.sleep(0.05)

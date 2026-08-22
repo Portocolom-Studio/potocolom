@@ -23,6 +23,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | Method and path | Status | Purpose |
 |---|---|---|
 | GET `/api/v1/health` | implemented | process liveness for the load balancer |
+| GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented (prototype) | realtime drawing sessions |
 | WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret |
@@ -65,6 +66,12 @@ Answers from process state only, so a database incident cannot convince the load
 ```json
 {"status": "ok"}
 ```
+
+### GET /api/v1/ready
+
+Checks PostgreSQL and the configured asset store. It returns `200` when both
+are available and `503` otherwise. Use `/api/v1/health` for process liveness;
+this endpoint reports whether required data services are ready.
 
 ### GET /api/v1/config
 

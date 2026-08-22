@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 
 from fastapi.testclient import TestClient
@@ -130,7 +129,7 @@ def test_benchmark_session_reads_are_install_scoped(monkeypatch):
                     row.user_id = other_id
                     await session.commit()
 
-            asyncio.run(change_provenance())
+            client.portal.call(change_provenance)
             listed = client.get("/api/v1/benchmark/sessions")
             assert session_id in {uuid.UUID(row["id"]) for row in listed.json()}
             assert client.get(
@@ -165,7 +164,7 @@ def test_benchmark_history_survives_deleting_the_account_that_ran_it(monkeypatch
                     await session.execute(delete(User).where(User.id == runner_id))
                     await session.commit()
 
-            asyncio.run(delete_the_runner())
+            client.portal.call(delete_the_runner)
             assert client.get(f"/api/v1/benchmark/sessions/{session_id}").status_code == 200
 
             async def provenance_cleared() -> None:
@@ -174,6 +173,6 @@ def test_benchmark_history_survives_deleting_the_account_that_ran_it(monkeypatch
                     row = await session.get(BenchmarkSession, session_id)
                     assert row is not None and row.user_id is None
 
-            asyncio.run(provenance_cleared())
+            client.portal.call(provenance_cleared)
     finally:
         get_settings.cache_clear()
