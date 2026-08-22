@@ -18,11 +18,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from app import db, mail, sessions
+from app import db, mail
 from app.auth import require_accounts_mode
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
-from app.tables import AuthIdentity, AuthToken, User
+from app.tables import AuthIdentity, AuthToken, Session, User
 
 RESET_TTL = timedelta(minutes=30)
 ADMIN_RECOVERY_TTL = timedelta(minutes=10)
@@ -169,7 +169,15 @@ async def complete(request: CompleteRequest) -> Response:
                 session.add(AuthIdentity(user_id=user_id, provider="password",
                                          subject=address.strip().lower(),
                                          password_hash=password_hash))
-    await sessions.revoke_all(user_id)
+            # In the same transaction as the new password. Done afterwards, a
+            # failure here leaves the token spent, the password changed and
+            # every stolen session still live, which is the case this route
+            # exists to end.
+            await session.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=func.now())
+            )
     return Response(status_code=204)
 
 

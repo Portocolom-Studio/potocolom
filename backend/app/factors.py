@@ -13,10 +13,9 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
-from app.accounts import issue_session
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
 from app.settings import Settings, get_settings
 from app.tables import AuthFactor, AuthToken, RecoveryCode, User
@@ -56,18 +55,32 @@ async def enrolled_factor(session, user_id: uuid.UUID) -> AuthFactor | None:
     )).scalar_one_or_none()
 
 
-async def begin_challenge(user: User, remember_me: bool) -> Response:
+async def begin_challenge(user: User, remember_me: bool,
+                          redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
     session. It carries no authority of its own and authorizes nothing."""
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     token = secrets.token_urlsafe(32)
     async with db.session_factory() as session:
-        session.add(AuthToken(user_id=user.id, purpose="challenge",
-                              token_hash=_hash(token), expires_at=_now() + CHALLENGE_TTL))
-        await session.commit()
+        async with session.begin():
+            # The budget belongs to the account, not to one challenge. Minted
+            # per challenge it counts nothing, because starting another is
+            # free to anyone who already has the password.
+            spent = (await session.execute(
+                update(AuthToken)
+                .where(AuthToken.user_id == user.id, AuthToken.purpose == "challenge",
+                       AuthToken.consumed_at.is_(None), AuthToken.expires_at > func.now())
+                .values(consumed_at=func.now())
+                .returning(AuthToken.attempts)
+            )).scalars().all()
+            session.add(AuthToken(user_id=user.id, purpose="challenge",
+                                  token_hash=_hash(token), attempts=sum(spent),
+                                  expires_at=_now() + CHALLENGE_TTL))
     settings = get_settings()
-    response = JSONResponse({"totp_required": True}, status_code=200)
+    response: Response = (RedirectResponse(redirect_to, status_code=307)
+                          if redirect_to else JSONResponse({"totp_required": True},
+                                                           status_code=200))
     response.set_cookie(
         _cookie_name(settings), token, path="/", samesite="lax",
         secure=sessions.is_secure(settings.public_url), httponly=True,
@@ -121,6 +134,8 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         await session.commit()
     remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
     response = Response(status_code=204)
+    from app.accounts import issue_session
+
     issue_session(response, await sessions.mint(user, remember_me=remembered,
                                                 authenticated=True))
     _clear_challenge(response, settings)
@@ -145,7 +160,28 @@ async def _accepted(code: str, user: User, factor: AuthFactor) -> bool:
         # A secret this installation can no longer read is a factor nobody can
         # pass, which is the fail-closed direction.
         return False
-    return totp.verify(secret, code)
+    step = totp.matched_step(secret, code)
+    if step is None:
+        return False
+    return await _claim_step(factor.id, step)
+
+
+async def _claim_step(factor_id: uuid.UUID, step: int) -> bool:
+    """A code is good once, which RFC 6238 requires and the drift window makes
+    necessary: without this one stays live for ninety seconds, long enough for
+    whoever phished it to spend it."""
+    if db.session_factory is None:
+        return False
+    async with db.session_factory() as session:
+        claimed = (await session.execute(
+            update(AuthFactor)
+            .where(AuthFactor.id == factor_id,
+                   (AuthFactor.last_step.is_(None)) | (AuthFactor.last_step < step))
+            .values(last_step=step)
+            .returning(AuthFactor.id)
+        )).first()
+        await session.commit()
+    return claimed is not None
 
 
 async def _spend_recovery_code(user_id: uuid.UUID, code: str) -> bool:

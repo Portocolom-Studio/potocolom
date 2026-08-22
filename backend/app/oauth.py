@@ -314,7 +314,14 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         if gated is not None:
             # Every primary login passes the same gate. A provider proving who
             # somebody is does not answer for the factor they enrolled.
-            return await factors.begin_challenge(user, remember_me=False)
+            #
+            # The browser arrived here by navigation, not by fetch, so it is
+            # sent back to a page that can ask for the code. Answering with
+            # JSON would leave the person looking at raw JSON with nowhere to
+            # type it.
+            return await factors.begin_challenge(
+                user, remember_me=False,
+                redirect_to=f"{settings.public_url.rstrip('/')}/?totp=required")
     response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, await sessions.mint(user, remember_me=False, authenticated=True))
     return response

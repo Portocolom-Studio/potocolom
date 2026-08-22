@@ -335,3 +335,54 @@ def test_the_challenge_never_carries_administrator_capability(accounts):
         # The password was right and it minted nothing. The session the
         # enrolment browser still holds is not this login's doing.
         assert len(fresh.portal.call(_live_sessions)) == before
+
+
+@pytest.mark.db
+def test_a_new_login_does_not_hand_back_a_fresh_ten_guesses(accounts):
+    """The ceiling is what makes six digits safe. Counted per challenge and
+    with a free challenge available on every login, it counts nothing: an
+    attacker holding the password loops login, ten guesses, login."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "bruteforced@example.com")
+        assert _login(client, "bruteforced@example.com").status_code == 204
+        secret, _ = _enrol(client)
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "bruteforced@example.com").status_code == 200
+        for _ in range(10):
+            assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                              json={"code": "000000"}).status_code == 403
+        # Start again, which is free, and the budget must not come back.
+        assert _login(fresh, "bruteforced@example.com").status_code == 200
+        assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": "000000"}).status_code == 403
+        assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": totp.code_at(secret, int(_now()))}).status_code == 403
+
+
+@pytest.mark.db
+def test_a_code_that_worked_once_never_works_again(accounts):
+    """RFC 6238 is explicit: a validated code must not be accepted twice. It
+    stays valid for ninety seconds otherwise, which is long enough for a
+    proxy that phished it to spend it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "replayed@example.com")
+        assert _login(client, "replayed@example.com").status_code == 204
+        secret, _ = _enrol(client)
+    code = totp.code_at(secret, int(_now()))
+    with TestClient(app, base_url=ORIGIN) as first:
+        assert _login(first, "replayed@example.com").status_code == 200
+        assert first.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": code}).status_code == 204
+    with TestClient(app, base_url=ORIGIN) as second:
+        assert _login(second, "replayed@example.com").status_code == 200
+        assert second.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": code}).status_code == 403
+
+
+def test_a_recovery_code_is_long_enough_to_survive_a_stolen_database():
+    """It is the one credential here that is both low entropy and fast
+    hashed, so its length is the only thing standing behind it."""
+    codes = totp.new_recovery_codes()
+    alphabet = 32
+    symbols = sum(len(part) for part in codes[0].split("-"))
+    assert symbols * (alphabet.bit_length() - 1) >= 100

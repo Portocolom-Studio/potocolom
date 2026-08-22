@@ -14,7 +14,7 @@ RECOVERY_CODES = 10
 _SECRET_BYTES = 20
 _RECOVERY_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
 _RECOVERY_GROUP = 5
-_RECOVERY_GROUPS = 2
+_RECOVERY_GROUPS = 4
 
 
 def new_secret() -> str:
@@ -29,19 +29,30 @@ def code_at(secret: str, moment: int, digits: int = 6) -> str:
     return str(truncated % 10**digits).zfill(digits)
 
 
+def matched_step(secret: str, code: str, at: int | None = None) -> int | None:
+    """The time step this code belongs to, or None.
+
+    The caller needs the step, not just a yes: RFC 6238 requires that a code
+    which has been accepted once is never accepted again, and the step is what
+    identifies it.
+    """
+    moment = int(time.time()) if at is None else at
+    candidate = code.strip().encode("utf-8", "replace")
+    for offset in (-1, 0, 1):
+        step_at = moment + offset * STEP
+        try:
+            expected = code_at(secret, step_at).encode()
+        except ValueError:
+            return None
+        if hmac.compare_digest(candidate, expected):
+            return step_at // STEP
+    return None
+
+
 def verify(secret: str, code: str, at: int | None = None) -> bool:
     """Accept one step of drift either side and no more: every extra step widens
     the window an attacker guesses into."""
-    moment = int(time.time()) if at is None else at
-    # Compared as bytes: compare_digest refuses non-ASCII strings, and this
-    # value arrives in a request body, so raising would turn a wrong code into
-    # a 500 rather than a refusal.
-    candidate = code.strip().encode("utf-8", "replace")
-    try:
-        expected = [code_at(secret, moment + offset * STEP) for offset in (-1, 0, 1)]
-    except ValueError:
-        return False
-    return any(hmac.compare_digest(candidate, other.encode()) for other in expected)
+    return matched_step(secret, code, at) is not None
 
 
 def enrolment_uri(secret: str, account: str, issuer: str) -> str:
