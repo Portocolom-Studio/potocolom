@@ -20,6 +20,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Registration is invitation-only. An invitation is bound to one address, good once, and valid 72 hours. It may be copied and handed over by any means, because a self-hosted install is not required to have mail. Only the hash is stored, so the link is shown once at creation; revealing it again mints a fresh one and retires the previous, on the assumption that a link nobody could see may have leaked on the way.
 - Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
 - A role change revokes every session the account held, since the old session carries the old authority.
+- A second factor is optional for every role. When an account has enrolled and confirmed one, a correct password or a provider sign-in returns `200 {"totp_required": true}` and a short-lived challenge cookie instead of a session. `POST /api/v1/auth/totp` answers it with a TOTP code or a one-use recovery code and returns the session. The challenge lives ten minutes, allows ten attempts, and carries no authority of its own: an administrator part way through it can reach nothing. TOTP gates sign-in and nothing else; it does not gate setup, invitation acceptance, promotion or recovery, and it changes neither what an account may do nor how long its session lasts.
+- `POST /api/v1/auth/reset` always answers `202` with the same body, whether or not anybody holds that address. A non-administrator is emailed a one-use link valid 30 minutes. An administrator is emailed nothing, ever: their way back is `make auth-recover`, run at the machine, which prints a one-use link valid 10 minutes. Completing either sets the password, revokes every session that account held, and returns the person to the login screen with no session and no recent-authentication grant.
 - A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
@@ -62,6 +64,11 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
 | POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
+| POST `/api/v1/auth/totp` | implemented | answer a sign-in challenge with a TOTP code or a recovery code |
+| POST `/api/v1/auth/reset` | implemented | ask for a password reset link; always answers the same |
+| POST `/api/v1/auth/reset/complete` | implemented | spend a reset or recovery link and set a password; returns to login |
+| POST `/api/v1/account/totp` | implemented | begin enrolling a second factor; needs recent authentication |
+| POST `/api/v1/account/totp/confirm` | implemented | prove the authenticator holds the secret |
 | POST `/api/v1/account/identities/{provider}` | implemented | start linking a provider to this account; needs recent authentication |
 | GET `/api/v1/account` | implemented | this account, and its live sessions |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
