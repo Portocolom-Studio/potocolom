@@ -1,25 +1,103 @@
-"""Request identity. Only AUTH_MODE=none exists so far: every request acts as
-the single local user. The local and oauth providers land with the accounts
-milestone behind the same dependency (docs/blueprint.md, the mode seam)."""
+"""Request identity, in both modes.
 
+AUTH_MODE=none resolves every request to the single implicit local user.
+AUTH_MODE=accounts resolves a session, presented as a bearer or as a cookie,
+and applies the role and account-state policy (docs/blueprint.md, the mode
+seam).
+"""
+
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import audit, db
+from app import audit, db, sessions
 from app.settings import get_settings
 from app.tables import User
 
 
-async def current_user(session: AsyncSession = Depends(db.get_session)) -> User:
+async def require_accounts_mode() -> None:
+    """An install that never enabled accounts does not answer account routes."""
+    if get_settings().auth_mode != "accounts":
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+CANNOT_SIGN_IN = frozenset({"disabled", "deletion_pending", "purging"})
+UNAUTHENTICATED = HTTPException(status_code=401, detail="authentication required")
+
+
+def _allowed_origins() -> set[str]:
+    settings = get_settings()
+    allowed = {settings.public_url.rstrip("/")}
+    allowed.update(
+        candidate.strip().rstrip("/")
+        for candidate in settings.allowed_origins.split(",")
+        if candidate.strip()
+    )
+    return allowed
+
+
+def _check_csrf(request: Request, csrf_cookie: str | None) -> None:
+    """Only for cookies: a cookie rides along on any request a page can cause.
+
+    A bearer is presented deliberately, so it needs neither check. An absent
+    Origin is refused rather than waved through, because browsers send one on
+    every unsafe request and only a non-browser caller can omit it.
+    """
+    if request.method in SAFE_METHODS:
+        return
+    origin = request.headers.get("origin")
+    if origin is None or origin.rstrip("/") not in _allowed_origins():
+        raise HTTPException(status_code=403, detail="origin not allowed")
+    sent = request.headers.get("x-csrf-token")
+    # Compared as bytes: compare_digest refuses non-ASCII strings, and headers
+    # and cookies decode as latin-1, so a planted value would raise here and
+    # turn every unsafe request that browser sends into a 500.
+    if not csrf_cookie or not sent or not secrets.compare_digest(
+        sent.encode("latin-1", "replace"), csrf_cookie.encode("latin-1", "replace")
+    ):
+        raise HTTPException(status_code=403, detail="missing or mismatched CSRF token")
+
+
+async def current_principal(request: Request) -> sessions.Resolved:
+    """The authenticated session behind this request, in accounts mode.
+
+    A bearer wins outright: a caller presenting one is making a claim about who
+    they are, and falling back to the cookie would let a page borrow the
+    browser's ambient credential after its own claim was rejected.
+    """
+    header = request.headers.get("authorization", "")
+    if header[:7].lower() == "bearer ":
+        resolved = await sessions.resolve(header[7:].strip())
+        if resolved is None:
+            raise UNAUTHENTICATED
+    else:
+        session_name, csrf_name = sessions.cookie_names(get_settings().public_url)
+        token = request.cookies.get(session_name)
+        if not token:
+            raise UNAUTHENTICATED
+        resolved = await sessions.resolve(token)
+        if resolved is None:
+            raise UNAUTHENTICATED
+        _check_csrf(request, request.cookies.get(csrf_name))
+    if resolved.user.state in CANNOT_SIGN_IN:
+        raise UNAUTHENTICATED
+    return resolved
+
+
+async def current_user(
+    request: Request,
+    session: AsyncSession = Depends(db.get_session),
+) -> User:
     if get_settings().auth_mode != "none":
-        # Accounts mode has no session yet, and the implicit local user is an
-        # administrator. Resolving to it here would hand every caller the
-        # owner's account, which is the one outcome enabling accounts must
-        # never produce. Sign-in arrives with sessions.
-        raise HTTPException(status_code=401, detail="authentication required")
+        principal = await current_principal(request)
+        if principal.user.state == "suspended" and request.method not in SAFE_METHODS:
+            # A pause, not a deletion: they may read their own work and settle
+            # their account, and may change nothing.
+            raise HTTPException(status_code=403, detail="account suspended")
+        return principal.user
     if db.local_user_id is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     user = await session.get(User, db.local_user_id)

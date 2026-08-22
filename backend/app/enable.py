@@ -10,13 +10,15 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from anyio import to_thread
 from sqlalchemy import delete, func, select, update
 from starlette.responses import Response
 
-from app import audit, db
+from app import audit, db, sessions
+from app.accounts import issue_session
+from app.auth import require_accounts_mode
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, AuthToken, User
@@ -131,15 +133,23 @@ class SetupRequest(BaseModel):
     password: str
 
 
-@router.post("/api/v1/auth/setup", status_code=204)
+@router.post("/api/v1/auth/setup", status_code=204,
+             dependencies=[Depends(require_accounts_mode)])
 async def setup(request: SetupRequest) -> Response:
-    if get_settings().auth_mode != "accounts":
-        # An install that never enabled accounts has no link to claim it with,
-        # and should not answer as though it might.
-        raise HTTPException(status_code=404, detail="Not Found")
     adopted = await claim(request.token, request.email, request.password)
     await audit.record("POST /api/v1/auth/setup", target_user_id=adopted)
-    return Response(status_code=204)
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        owner = await session.get(User, adopted)
+    if owner is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    # A clean session, and deliberately no recent-authentication grant: the
+    # link proved a capability, not a person, so it must not open the window
+    # that guards credential changes.
+    response = Response(status_code=204)
+    issue_session(response, await sessions.mint(owner, remember_me=False))
+    return response
 
 
 async def _enable() -> str:

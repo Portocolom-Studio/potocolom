@@ -24,6 +24,7 @@ from app.logs import setup_logging
 from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
+from app.accounts import router as accounts_router
 from app.enable import router as enable_router
 from app.registry import router as registry_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
@@ -111,6 +112,7 @@ if get_settings().benchmark_api:
     app.include_router(benchmark_router)
 
 app.include_router(benchmark_sessions_router)
+app.include_router(accounts_router)
 app.include_router(enable_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)
