@@ -179,7 +179,15 @@ failing the request that created it.
 
 An install configured for mail that cannot send refuses to start, naming the
 variable it is missing. That is deliberate: an operator who believes
-invitations are going out is worse off than one whose API will not boot.
+invitations are going out is worse off than one whose API will not boot. It
+also refuses a `PUBLIC_URL` that is not https, and plaintext SMTP to anywhere
+but a relay on this machine, because the link in the mail is the capability.
+`http://localhost` is the exception, which is what the dev loop uses.
+
+Switching `EMAIL_BACKEND` back to `none` does not simply pause the queue. The
+next sweep marks every queued row failed and drops its payload, because
+nothing can deliver those rows any more and each one still holds a live link.
+Re-mint the invitation rather than expecting the queue to resume.
 
 ## The local cloud simulation
 

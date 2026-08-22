@@ -1,5 +1,7 @@
-import pathlib
+import asyncio
 import smtplib
+import ssl
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -299,12 +301,18 @@ def test_only_a_five_hundred_refusal_means_the_address_is_wrong(codes, permanent
     assert mail._permanently_refused(codes) is permanent
 
 
-def test_a_sender_side_refusal_is_not_the_recipient_s_fault():
-    """MAIL FROM failing is a quota or a configuration problem. Suppressing on
-    it would retire every address the install writes to, one per sweep."""
-    assert not issubclass(smtplib.SMTPSenderRefused, mail.PermanentlyUndeliverable)
-    source = pathlib.Path(mail.__file__).read_text()
-    assert "SMTPSenderRefused" not in source
+@pytest.mark.db
+def test_a_sender_side_refusal_leaves_the_recipient_alone(connected, monkeypatch):
+    """MAIL FROM failing is a quota or configuration problem and says nothing
+    about who the mail was for. Suppressing on it would retire every address
+    the install writes to, one per sweep."""
+    _configure(monkeypatch, "smtp")
+    refusal = smtplib.SMTPSenderRefused(550, b"sender rejected", "potocolom@example.com")
+    monkeypatch.setattr(mail, "_deliver", _record([], error=refusal))
+    connected(_queue())
+    connected(mail.deliver_due())
+    assert connected(_rows())[0].state == "pending"
+    assert connected(mail.is_suppressed(TO)) is False
 
 
 def test_the_provider_suppression_list_is_the_only_permanent_ses_code():
@@ -313,18 +321,63 @@ def test_the_provider_suppression_list_is_the_only_permanent_ses_code():
     assert mail.SES_PERMANENT == ("AccountSuppressionListException",)
 
 
-def test_starttls_verifies_the_relay_certificate():
-    """Without a context smtplib builds one with no certificate check at all,
+def test_starttls_verifies_the_relay_certificate(monkeypatch):
+    """Without a context smtplib builds one that checks no certificate at all,
     so anyone on the path reads the credentials and the capability."""
-    source = pathlib.Path(mail.__file__).read_text()
-    assert "relay.starttls(context=ssl.create_default_context())" in source
+    seen = {}
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def starttls(self, context=None):
+            seen["context"] = context
+
+        def login(self, *_args):
+            pass
+
+        def send_message(self, message):
+            seen["to"] = message["To"]
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    row = MailOutbox(id=uuid.uuid4(), to_email=TO, template="invitation",
+                     payload={"link": "https://example.com/join#t"},
+                     next_attempt_at=datetime.now(timezone.utc))
+    mail._send_smtp(row, Settings(email_backend="smtp", smtp_host="mail.example.com",
+                                  mail_from="potocolom@example.com",
+                                  public_url="https://studio.example.com"))
+    context = seen["context"]
+    assert context is not None
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
 
 
 @pytest.mark.db
-def test_the_sweep_takes_one_row_at_a_time_so_two_processes_cannot_share_one(connected):
-    """A second sweep must not deliver a capability the first already has."""
-    source = pathlib.Path(mail.__file__).read_text()
-    assert "with_for_update(skip_locked=True)" in source
+def test_two_sweeps_at_once_deliver_one_capability_once(connected, monkeypatch):
+    """Two API tasks share the outbox. Without taking the row, both read it
+    and the same bearer link is mailed twice."""
+    _configure(monkeypatch, "smtp")
+    sent = []
+
+    async def slow(row, settings):
+        await asyncio.sleep(0.2)
+        sent.append(row.to_email)
+
+    monkeypatch.setattr(mail, "_deliver", slow)
+    connected(_queue())
+
+    async def both():
+        await asyncio.gather(mail.deliver_due(), mail.deliver_due())
+
+    connected(both())
+    assert sent == [TO]
+    assert connected(_rows())[0].state == "sent"
 
 
 @pytest.mark.db
@@ -376,3 +429,60 @@ def test_an_unknown_backend_never_counts_as_delivered(connected, monkeypatch):
                 await mail._deliver(row, Settings(email_backend="none"))
 
     connected(go())
+
+
+@pytest.mark.parametrize("settings, missing", [
+    ({"email_backend": "smtp", "smtp_host": "mail.example.com",
+      "mail_from": "a@b.co", "smtp_port": 0}, "SMTP_PORT"),
+    ({"email_backend": "smtp", "smtp_host": "mail.example.com",
+      "mail_from": "a@b.co", "smtp_port": 65536}, "SMTP_PORT"),
+])
+def test_a_port_that_cannot_be_dialled_refuses_to_start(settings, missing):
+    with pytest.raises(RuntimeError, match=missing):
+        mail.check_configuration(Settings(**settings))
+
+
+def test_plaintext_smtp_is_only_allowed_to_a_relay_on_this_machine():
+    """The message carries a capability and the login carries the password.
+    In the clear to another host, both are readable by anyone on the path."""
+    with pytest.raises(RuntimeError, match="localhost"):
+        mail.check_configuration(Settings(
+            email_backend="smtp", smtp_host="mail.example.com",
+            mail_from="a@b.co", smtp_starttls=False))
+    mail.check_configuration(Settings(
+        email_backend="smtp", smtp_host="127.0.0.1",
+        mail_from="a@b.co", smtp_starttls=False))
+
+
+def test_mail_needs_an_https_public_url_because_the_link_is_the_capability():
+    """Over plain HTTP the fragment is readable on the wire, and by script on
+    the page the recipient lands on."""
+    with pytest.raises(RuntimeError, match="https"):
+        mail.check_configuration(Settings(
+            email_backend="smtp", smtp_host="mail.example.com",
+            mail_from="a@b.co", public_url="http://studio.example.com"))
+    mail.check_configuration(Settings(
+        email_backend="smtp", smtp_host="mail.example.com",
+        mail_from="a@b.co", public_url="https://studio.example.com"))
+    # The dev loop is the exception, and only for a loopback host.
+    mail.check_configuration(Settings(
+        email_backend="smtp", smtp_host="mail.example.com",
+        mail_from="a@b.co", public_url="http://localhost:8000"))
+
+
+@pytest.mark.db
+def test_switching_mail_off_reaches_a_row_that_is_backed_off(connected, monkeypatch):
+    """The due-time filter would leave a retried row holding its live link for
+    the whole backoff, and longer if the process stops first."""
+    _configure(monkeypatch, "smtp")
+    monkeypatch.setattr(mail, "_deliver", _record([], error=OSError("down")))
+    connected(_queue(payload={"link": "https://example.com/join#backed-off"}))
+    connected(mail.deliver_due())
+    assert connected(_rows())[0].next_attempt_at > datetime.now(timezone.utc)
+
+    monkeypatch.setenv("EMAIL_BACKEND", "none")
+    get_settings.cache_clear()
+    connected(mail.deliver_due())
+    row = connected(_rows())[0]
+    assert row.state == "failed"
+    assert row.payload == {}

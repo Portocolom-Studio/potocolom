@@ -53,11 +53,49 @@ class PermanentlyUndeliverable(Exception):
 
 
 def check_configuration(settings: Settings) -> None:
-    """An install that believes it sends mail and cannot is worse than one that
-    never claimed to, so an incomplete backend refuses to start."""
-    for variable, field in REQUIRED.get(settings.email_backend, ()):
-        if not getattr(settings, field):
-            raise RuntimeError(f"EMAIL_BACKEND={settings.email_backend} requires {variable}")
+    """Refuse a mail configuration that cannot deliver, or cannot deliver safely.
+
+    An install that believes invitations are going out is worse off than one
+    whose API will not boot.
+    """
+    if settings.email_backend == "none":
+        return
+    if settings.email_backend == "smtp":
+        if not settings.smtp_host:
+            raise RuntimeError("EMAIL_BACKEND=smtp needs SMTP_HOST")
+        if not 1 <= settings.smtp_port <= 65535:
+            raise RuntimeError(f"SMTP_PORT must be between 1 and 65535, not {settings.smtp_port}")
+        if not settings.smtp_starttls and not _loopback(settings.smtp_host):
+            # The message carries a capability and the login carries the
+            # password. In the clear to another host, both are readable by
+            # anyone on the path. A relay on this machine is the operator's
+            # own loopback and their decision.
+            raise RuntimeError(
+                "SMTP_STARTTLS=false is only allowed for a relay on localhost; "
+                f"{settings.smtp_host} is not one"
+            )
+    if not settings.mail_from:
+        raise RuntimeError(f"EMAIL_BACKEND={settings.email_backend} needs MAIL_FROM")
+    if settings.email_backend == "ses" and not settings.ses_region:
+        raise RuntimeError("EMAIL_BACKEND=ses needs SES_REGION")
+    if not _safe_link_origin(settings.public_url):
+        # The mail carries a link whose fragment is the capability. Over plain
+        # HTTP anyone on the path reads it, and script on the page can too.
+        raise RuntimeError(
+            "sending mail needs an https PUBLIC_URL, because the invitation "
+            f"link is the capability; {settings.public_url} is not one"
+        )
+
+
+def _loopback(host: str) -> bool:
+    return host in {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _safe_link_origin(public_url: str) -> bool:
+    if public_url.startswith("https://"):
+        return True
+    host = public_url.split("//", 1)[-1].split("/")[0].split(":")[0]
+    return _loopback(host)
 
 
 def _now() -> datetime:
@@ -117,11 +155,14 @@ async def deliver_due() -> None:
     settings = get_settings()
     try:
         async with db.session_factory() as session:
+            pending = select(MailOutbox).where(MailOutbox.state == "pending")
+            if settings.email_backend != "none":
+                pending = pending.where(MailOutbox.next_attempt_at <= _now())
+            # With no backend there is nothing to wait for: a row backed off
+            # sixteen minutes would otherwise keep its live link that whole
+            # time, and longer if the process stops first.
             due = (await session.execute(
-                select(MailOutbox)
-                .where(MailOutbox.state == "pending", MailOutbox.next_attempt_at <= _now())
-                .order_by(MailOutbox.next_attempt_at)
-                .limit(BATCH_LIMIT)
+                pending.order_by(MailOutbox.next_attempt_at).limit(BATCH_LIMIT)
             )).scalars().all()
             ids = [row.id for row in due]
     except Exception:
