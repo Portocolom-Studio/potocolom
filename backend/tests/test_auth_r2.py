@@ -17,11 +17,18 @@ from app.settings import Settings
 from app.tables import Asset
 
 
-def test_accounts_mode_exposes_password_and_allowed_providers():
+def test_accounts_mode_exposes_password_and_configured_providers():
+    """Naming a provider is not the same as being able to use one. The
+    frontend renders a button per method, and a button that cannot complete
+    is worse than no button."""
     assert Settings(auth_mode="accounts").auth_methods == ["password"]
     assert Settings(auth_mode="accounts", oauth_providers="google, github, ").auth_methods == [
-        "password", "google", "github"
+        "password"
     ]
+    ready = Settings(auth_mode="accounts", oauth_providers="google, github, ",
+                     google_client_id="g", google_client_secret="gs",
+                     github_client_id="h", github_client_secret="hs")
+    assert ready.auth_methods == ["password", "google", "github"]
 
 
 def test_health_and_readiness_when_connect_fails(monkeypatch):
