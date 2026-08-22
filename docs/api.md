@@ -15,7 +15,7 @@ Every call a customer's browser makes, from first page load to account deletion.
   `require_role("member")`; the stored value is `user`.
 - In `AUTH_MODE=accounts` a request authenticates with a session: 32 random bytes, kept only as a SHA-256 hash. Over HTTPS the cookies are `__Host-potocolom_session` and `__Host-potocolom_csrf`; over plain HTTP, which is what LAN self-hosting uses, they are `potocolom_session` and `potocolom_csrf`, because the `__Host-` prefix requires `Secure` and a browser drops a `Secure` cookie on plain HTTP. The session cookie is `HttpOnly`, `SameSite=Lax`, host-only and `Path=/`. The CSRF cookie is readable, because the browser has to echo it back.
 - An unsafe request authenticated by cookie needs an exact `Origin` and an `X-CSRF-Token` header matching the CSRF cookie, or it answers 403. An absent `Origin` is refused. A request authenticated by `Authorization: Bearer` needs neither, because a bearer is presented deliberately rather than sent along by the browser. A bearer wins outright: an invalid one answers 401 and never falls back to the cookie.
-- Sessions last 12 hours. Remember-me lasts 30 days with a 7 day idle window. An administrator gets 12 hours with a 30 minute idle window and cannot be remembered. Recent authentication lasts 30 minutes, is granted by signing in, and is never granted by claiming the installation.
+- Sessions last 12 hours. Remember-me lasts 30 days with a 7-day idle window. An administrator gets 12 hours with a 30-minute idle window and cannot be remembered. Recent authentication lasts 30 minutes, is granted by signing in, and is never granted by claiming the installation.
 - `disabled`, `deletion_pending` and `purging` accounts cannot sign in, and their existing sessions stop resolving. A `suspended` account signs in read-only: safe methods answer normally and anything else answers 403.
 - Registration is invitation-only. An invitation is bound to one address, good once, and valid 72 hours. It may be copied and handed over by any means, because a self-hosted install is not required to have mail. Only the hash is stored, so the link is shown once at creation; revealing it again mints a fresh one and retires the previous, on the assumption that a link nobody could see may have leaked on the way.
 - Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
@@ -271,12 +271,15 @@ Request and response shapes below are the contract [blueprint.md](blueprint.md) 
 ### Authentication (issue #5)
 
 ```
-POST /api/v1/auth/register   {"email": "ana@example.com", "password": "...", "attest_18": true}
-                             201, verification email sent (cloud); 200 with session cookie (self-host, verification off)
-POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "persistent": true}
-                             204 + Set-Cookie: session=...; HttpOnly; SameSite=Lax (Secure over HTTPS)
-                             401 on bad credentials, 429 when rate limited
-POST /api/v1/auth/logout     204, session row deleted, cache invalidated across replicas
+POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}
+                             204 + the session cookies; the link is one use and lasts one hour
+POST /api/v1/auth/register   {"token": "...", "password": "..."}
+                             204 + the session cookies; the invitation carries the address
+POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "remember_me": true}
+                             204 + Set-Cookie: potocolom_session (HttpOnly, SameSite=Lax,
+                             Path=/, Secure and __Host- prefixed over HTTPS) and potocolom_csrf
+                             401 on bad credentials, and on an address nobody holds
+POST /api/v1/auth/logout     204, session revoked and both cookies cleared
 ```
 
 OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code, finds or creates the user, and ends in the same session cookie as local login. (Google and GitHub at launch; Apple is deferred.)

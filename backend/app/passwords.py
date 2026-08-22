@@ -1,9 +1,14 @@
 """Password policy and storage for account credentials.
 
-The length window and the bundled blocklist are enforced inside hash_password
-so that no caller can store a hash for a password the policy refuses. Both
-checks read the stripped, lowercased form, so surrounding whitespace or a
-change of case cannot carry a blocked password past them.
+The length window and the bundled blocklist are enforced inside hash_password,
+so no caller can store a hash for a password the policy refuses.
+
+Three separate checks. The raw string may be no longer than MAX_LENGTH, so
+padding cannot walk a password past the declared cap. The stripped string must
+fall inside the length window, so padding cannot pad a short one up to the
+minimum either. The stripped, lowercased string is what the blocklist sees, so
+a change of case or surrounding space cannot carry a blocked password through.
+The raw password is what gets hashed; the user's secret is never rewritten.
 """
 
 from functools import cache

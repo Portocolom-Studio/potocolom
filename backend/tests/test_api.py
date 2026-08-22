@@ -29,6 +29,12 @@ def test_auth_methods_by_mode():
         "google",
         "github",
     ]
+    # An unsupported provider is dropped rather than advertised: the frontend
+    # renders a button for every method this returns.
+    assert Settings(auth_mode="accounts", oauth_providers="google,facebook").auth_methods == [
+        "password",
+        "google",
+    ]
     # Whitespace around commas must not leak into method names.
     assert Settings(auth_mode="accounts", oauth_providers="google, github, ").auth_methods == [
         "password",

@@ -393,7 +393,7 @@ def test_an_administrator_cookie_is_never_remembered(accounts):
         assert "Max-Age=" not in session_header
 
 
-def test_a_non_ascii_csrf_value_is_refused_rather_than_crashing():
+def test_a_non_ascii_csrf_value_is_refused_rather_than_crashing(monkeypatch):
     """compare_digest raises on non-ASCII strings, and Starlette decodes both
     headers and cookies as latin-1, so a value httpx will not even send but a
     raw client will would turn every unsafe request into a 500."""
@@ -401,6 +401,10 @@ def test_a_non_ascii_csrf_value_is_refused_rather_than_crashing():
 
     from app.auth import _check_csrf
 
+    # Without this the origin check reads whatever PUBLIC_URL happens to be,
+    # and the test could pass on the origin branch rather than the one it names.
+    monkeypatch.setenv("PUBLIC_URL", ORIGIN)
+    get_settings.cache_clear()
     request = Request({
         "type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
         "path": "/api/v1/auth/logout", "raw_path": b"/api/v1/auth/logout",
@@ -414,3 +418,30 @@ def test_a_non_ascii_csrf_value_is_refused_rather_than_crashing():
     # And a value that genuinely matches still passes, rather than raising
     # TypeError on its way to becoming a 500.
     assert _check_csrf(Request({**request.scope}), "caf\xe9") is None
+
+
+@pytest.mark.db
+def test_an_expired_session_is_not_listed_as_a_live_device(accounts):
+    """A security page that lists dead devices as live is worse than one that
+    lists nothing: it invites someone to hunt a session that cannot act."""
+    user = _account(accounts, "devices@example.com")
+    with TestClient(app) as client:
+        stale = client.portal.call(sessions.mint, user, False)
+        assert _login(client, "devices@example.com").status_code == 204
+
+        async def expire() -> None:
+            from datetime import datetime, timedelta, timezone
+
+            from sqlalchemy import text
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE sessions SET absolute_expires_at = :past "
+                         "WHERE token_hash = :h"),
+                    {"past": datetime.now(timezone.utc) - timedelta(seconds=1),
+                     "h": sessions.token_hash(stale.token)})
+                await session.commit()
+
+        client.portal.call(expire)
+        listed = client.get("/api/v1/account").json()["sessions"]
+    assert len(listed) == 1
+    assert listed[0]["current"] is True

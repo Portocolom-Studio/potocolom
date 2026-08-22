@@ -275,3 +275,46 @@ def test_creating_an_invitation_is_audited(accounts):
 async def _audit():
     from app import audit
     return await audit.search()
+
+
+@pytest.mark.db
+def test_inviting_an_administrator_needs_the_same_evidence_as_promoting_one(accounts):
+    """Both routes end at a live administrator. Charging only one of them for
+    it means the cheaper one is the one an attacker uses."""
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+
+        async def go_stale():
+            from datetime import datetime, timedelta, timezone
+
+            from app import sessions
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE sessions SET recent_auth_at = :past"),
+                    {"past": datetime.now(timezone.utc) - sessions.RECENT_AUTH
+                     - timedelta(minutes=1)})
+                await session.commit()
+
+        client.portal.call(go_stale)
+        stale = client.post("/api/v1/invitations", headers=headers,
+                            json={"email": "climb@example.com", "role": "admin"})
+        assert stale.status_code == 403
+        # A lesser role is not the thing being guarded.
+        assert client.post("/api/v1/invitations", headers=headers,
+                           json={"email": "ordinary@example.com",
+                                 "role": "user"}).status_code == 201
+
+
+@pytest.mark.db
+def test_an_administrator_invitation_records_who_it_was_for(accounts):
+    """The generic record names the route and the caller. Without the address
+    and the role, the trail cannot say an administrator was created."""
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert client.post("/api/v1/invitations", headers=headers,
+                           json={"email": "Named@example.com",
+                                 "role": "admin"}).status_code == 201
+        rows = client.portal.call(_audit)
+    created = [row for row in rows if row["action"] == "invitation.created"]
+    assert len(created) == 1
+    assert created[0]["object_ids"] == ["Named@example.com", "admin"]

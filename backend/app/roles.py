@@ -5,16 +5,19 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
 from starlette.responses import Response
 
 from app import audit, db, sessions
 from app.auth import current_principal, require_accounts_mode, require_role
-from app.tables import User
+from app.tables import Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 ROLE_CHANGED = "user.role"
+# One key for every role change, so the last-administrator count cannot be
+# read by two callers at once.
+ROLE_CHANGE_LOCK = 184468
 
 
 class RoleChange(BaseModel):
@@ -50,9 +53,11 @@ async def change_role(
             target = await session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Not Found")
-            # No short circuit when the role already matches: the revocation
-            # below happens after this commits, so an operator retrying a call
-            # that failed halfway must still reach it.
+            # Two administrators demoting each other at the same moment each
+            # count the other as remaining, and the install ends with none.
+            # The lock is held to the end of this transaction.
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": ROLE_CHANGE_LOCK})
             if change.role == "admin":
                 if not sessions.is_recent(principal.session):
                     raise HTTPException(status_code=403,
@@ -69,9 +74,18 @@ async def change_role(
                 raise HTTPException(status_code=403,
                                     detail="the last administrator cannot be demoted")
             target.role = change.role
-    # The old session carries the old role's authority and its session shape,
-    # so it does not survive the change.
-    await sessions.revoke_all(user_id)
+            # In the same transaction as the change: a revocation that happens
+            # after the commit can fail on its own and leave a session holding
+            # the new authority in the old role's shape, remembered for thirty
+            # days where an administrator may not be remembered at all.
+            await session.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=func.now())
+            )
+    # The attestation is the only evidence a no-mail install has, so the row
+    # has to say whether the promotion rested on it or on a verified address.
     await audit.record(ROLE_CHANGED, actor=actor, target_user_id=user_id,
-                       object_ids=[change.role])
+                       object_ids=[change.role, "attested"] if change.attested
+                       else [change.role])
     return Response(status_code=204)

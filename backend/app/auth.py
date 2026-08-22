@@ -135,9 +135,14 @@ def require_role(minimum: RoleTier) -> Callable[..., Awaitable[User]]:
     required = "user" if minimum == "member" else minimum
 
     async def role_user(request: Request, user: User = Depends(current_user)) -> User:
+        unsafe_admin = required == "admin" and request.method not in SAFE_METHODS
         if _ROLE_RANK.get(user.role, -1) < _ROLE_RANK[required]:
+            if unsafe_admin:
+                # Someone with an account reaching for privileged work they do
+                # not have is the signal an audit exists to carry.
+                await audit.record(_action(request), actor=user, severity="high")
             raise HTTPException(status_code=403, detail="insufficient role")
-        if required == "admin" and request.method not in SAFE_METHODS:
+        if unsafe_admin:
             await audit.record(_action(request), actor=user)
         return user
 

@@ -16,9 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from starlette.responses import Response
 
-from app import db, sessions
+from app import audit, db, sessions
 from app.accounts import issue_session
-from app.auth import require_accounts_mode, require_role
+from app.auth import current_principal, require_accounts_mode, require_role
 from app.passwords import PasswordRejected, hash_password
 from app.tables import AuthIdentity, Invitation, User
 
@@ -54,7 +54,16 @@ class InviteRequest(BaseModel):
 
 
 @router.post("/api/v1/invitations", status_code=201)
-async def invite(request: InviteRequest, admin: User = Depends(require_role("admin"))) -> dict:
+async def invite(
+    request: InviteRequest,
+    admin: User = Depends(require_role("admin")),
+    principal: sessions.Resolved = Depends(current_principal),
+) -> dict:
+    if request.role == "admin" and not sessions.is_recent(principal.session):
+        # This route reaches the same end state as a promotion: a live
+        # administrator. Charging only the promotion for recent authentication
+        # would leave this one as the cheaper way to the same place.
+        raise HTTPException(status_code=403, detail="recent authentication required")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     address = request.email.strip()
@@ -87,6 +96,9 @@ async def invite(request: InviteRequest, admin: User = Depends(require_role("adm
                 token_hash=_token_hash(token),
                 expires_at=expires_at,
             ))
+    await audit.record("invitation.created", actor=admin,
+                       object_ids=[address, request.role],
+                       severity="high" if request.role == "admin" else "info")
     return _minted(invitation_id, address, request.role, token, expires_at)
 
 

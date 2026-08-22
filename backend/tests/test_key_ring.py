@@ -31,15 +31,32 @@ def test_parse_root_keys_reads_an_active_write_key_first():
     "1:{k},1:{k}",
     "2:{k},1:{k}",
     "32768:{k}",
+    "1:{k},2:{j}",
+    "1:{k},3:{j},2:{m}",
     "65535:{k}",
 ])
 def test_parse_root_keys_fails_closed_on_anything_it_cannot_trust(raw):
     """A misread key ring must refuse, never silently produce a weaker ring."""
     import base64
 
-    raw = raw.format(k=base64.b64encode(V1).decode())
+    raw = raw.format(k=base64.b64encode(V1).decode(),
+                     j=base64.b64encode(V2).decode(),
+                     m=base64.b64encode(bytes(range(64, 96))).decode())
     with pytest.raises(KeyRingError):
         parse_root_keys(raw)
+
+
+def test_a_ring_that_is_not_newest_first_is_refused():
+    """The first entry is the write key. An operator who lists the old key
+    first re-encrypts every row onto the version they meant to retire, and
+    removing it then destroys the secrets."""
+    import base64
+
+    old = base64.b64encode(V1).decode()
+    new = base64.b64encode(V2).decode()
+    with pytest.raises(KeyRingError):
+        parse_root_keys(f"1:{old},2:{new}")
+    assert parse_root_keys(f"2:{new},1:{old}") == [(2, V2), (1, V1)]
 
 
 def test_a_repeated_key_under_a_new_version_is_refused():

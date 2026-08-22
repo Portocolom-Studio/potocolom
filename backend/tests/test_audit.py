@@ -142,9 +142,11 @@ def test_a_spooled_event_is_flushed_by_the_next_successful_insert(connected, mon
     assert _stored(connected) == []
     connected(audit.record("second", actor=actor))
     # The flush carries the gap marker for the insert that failed.
-    assert [event.action for event in _stored(connected)] == [
-        "first", "second", audit.FALLBACK_ACTION
-    ]
+    # Ordered by occurred_at, and the flush writes these microseconds apart,
+    # so compare the set rather than the sequence.
+    assert sorted(event.action for event in _stored(connected)) == sorted(
+        ["first", "second", audit.FALLBACK_ACTION]
+    )
     assert not audit._spool
 
 
@@ -279,8 +281,21 @@ def test_exporting_the_audit_is_itself_audited(connected):
     actor = _actor(connected)
     connected(audit.record("GET /api/v1/studio/gpu", actor=actor))
     exported = json.loads(connected(audit.export(actor=actor)))
-    assert [row["action"] for row in exported] == ["GET /api/v1/studio/gpu"]
+    assert [row["action"] for row in exported["events"]] == ["GET /api/v1/studio/gpu"]
+    assert exported["truncated"] is False
     assert audit.EXPORT_ACTION in {event.action for event in _stored(connected)}
+
+
+@pytest.mark.db
+def test_an_export_says_when_it_is_not_the_whole_audit(connected, monkeypatch):
+    """A bare page of the newest rows, presented as the audit, is how an
+    operator concludes an incident left no trace."""
+    monkeypatch.setattr(audit, "SEARCH_LIMIT", 2)
+    for index in range(4):
+        connected(audit.record(f"action-{index}"))
+    exported = json.loads(connected(audit.export()))
+    assert len(exported["events"]) == 2
+    assert exported["truncated"] is True
 
 
 @pytest.mark.db

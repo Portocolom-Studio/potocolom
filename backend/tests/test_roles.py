@@ -55,7 +55,9 @@ def test_the_attestation_is_recorded_against_the_account_it_promoted(accounts):
     promoted = [row for row in rows if row["action"] == "user.role"]
     assert len(promoted) == 1
     assert promoted[0]["target_user_id"] == str(target.id)
-    assert promoted[0]["object_ids"] == ["admin"]
+    # The row has to say the promotion rested on an attestation, not on a
+    # verified address, or a later reader cannot tell them apart.
+    assert promoted[0]["object_ids"] == ["admin", "attested"]
 
 
 async def _audit():
@@ -205,3 +207,29 @@ def test_setting_the_same_role_again_still_ends_the_sessions(accounts):
         assert _change(client, headers, target.id, role="admin").status_code == 204
         assert client.get("/api/v1/account",
                           headers={"Authorization": f"Bearer {theirs.token}"}).status_code == 401
+
+
+@pytest.mark.db
+def test_a_denied_privileged_attempt_is_recorded_at_high_severity(accounts):
+    """Someone with an account reaching for privileged work they do not have
+    is exactly the signal the audit exists to carry."""
+    target = _account(accounts, "prize@example.com")
+    _account(accounts, "climber@example.com")
+    with TestClient(app) as client:
+        headers = _sign_in(client, "climber@example.com")
+        assert _change(client, headers, target.id, role="admin").status_code == 403
+        rows = client.portal.call(_audit)
+    denied = [row for row in rows if row["action"] == "POST /api/v1/users/{user_id}/role"]
+    assert len(denied) == 1
+    assert denied[0]["severity"] == "high"
+
+
+@pytest.mark.db
+def test_a_promotion_on_verified_mail_is_not_marked_attested(accounts):
+    target = _account(accounts, "verified@example.com", mail_verified=True)
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, target.id, role="admin").status_code == 204
+        rows = client.portal.call(_audit)
+    promoted = [row for row in rows if row["action"] == "user.role"]
+    assert promoted[0]["object_ids"] == ["admin"]

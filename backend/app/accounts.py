@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from anyio import to_thread
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from starlette.responses import Response
 
 from app import db, sessions
@@ -36,7 +36,7 @@ class LoginRequest(BaseModel):
 def issue_session(response: Response, issued: sessions.Issued) -> None:
     public_url = get_settings().public_url
     session_name, csrf_name = sessions.cookie_names(public_url)
-    secure = public_url.startswith("https")
+    secure = sessions.is_secure(public_url)
     # Host-only on purpose: no domain, so a sibling host cannot be handed it.
     response.set_cookie(session_name, issued.token, path="/", samesite="lax",
                         secure=secure, httponly=True, max_age=issued.max_age)
@@ -51,7 +51,7 @@ def _clear(response: Response) -> None:
     # Secure matters on the way out too: a __Host- cookie cleared without it
     # breaks the prefix rules, so the browser drops the whole Set-Cookie and
     # the credential the user asked to remove stays on disk.
-    secure = public_url.startswith("https")
+    secure = sessions.is_secure(public_url)
     response.delete_cookie(session_name, path="/", samesite="lax", secure=secure,
                            httponly=True)
     response.delete_cookie(csrf_name, path="/", samesite="lax", secure=secure)
@@ -59,9 +59,9 @@ def _clear(response: Response) -> None:
 
 @router.post("/api/v1/auth/login", status_code=204)
 async def login(request: LoginRequest, http: Request) -> Response:
-    presented = await _presented_session(http)
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    presented = await _presented_session(http)
     subject = request.email.strip().lower()
     async with db.session_factory() as session:
         found = (await session.execute(
@@ -102,7 +102,9 @@ async def account(principal: sessions.Resolved = Depends(current_principal)) -> 
     async with db.session_factory() as session:
         rows = (await session.execute(
             select(Session)
-            .where(Session.user_id == principal.user.id, Session.revoked_at.is_(None))
+            .where(Session.user_id == principal.user.id, Session.revoked_at.is_(None),
+                   Session.absolute_expires_at > func.now(),
+                   or_(Session.idle_expires_at.is_(None), Session.idle_expires_at > func.now()))
             .order_by(Session.created_at)
         )).scalars().all()
     return {
