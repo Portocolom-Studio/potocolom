@@ -10,6 +10,8 @@ logging in.
 import asyncio
 import logging
 import smtplib
+import ssl
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
@@ -38,7 +40,12 @@ REQUIRED = {
 SUBJECTS = {"invitation": "You have been invited to potocolom"}
 DEFAULT_SUBJECT = "potocolom"
 
-SES_PERMANENT = ("MessageRejected", "AccountSuppressionListException", "InvalidParameterValue")
+# Only the code that means this address is on the provider's own suppression
+# list. MessageRejected and InvalidParameterValue are account and
+# configuration problems: in the SES sandbox every unverified recipient
+# returns MessageRejected, which would retire every address an operator
+# invites before they leave it.
+SES_PERMANENT = ("AccountSuppressionListException",)
 
 
 class PermanentlyUndeliverable(Exception):
@@ -104,7 +111,7 @@ async def suppress(to_email: str, reason: str) -> None:
 
 
 async def deliver_due() -> None:
-    """Never raises. A sweep that dies on one row stops every row behind it."""
+    """Never raises, and never lets one row decide the fate of the others."""
     if db.session_factory is None:
         return
     settings = get_settings()
@@ -116,16 +123,48 @@ async def deliver_due() -> None:
                 .order_by(MailOutbox.next_attempt_at)
                 .limit(BATCH_LIMIT)
             )).scalars().all()
-            for row in due:
+            ids = [row.id for row in due]
+    except Exception:
+        logger.exception("could not read the mail outbox")
+        return
+    for row_id in ids:
+        await _deliver_one(row_id, settings)
+
+
+async def _deliver_one(row_id: uuid.UUID, settings: Settings) -> None:
+    """One row, one transaction, one commit.
+
+    A batch-wide transaction re-delivered everything it had already sent when
+    anything later in the batch failed, and never advanced attempts, so a
+    poison batch could repeat without end. Taking the row with SKIP LOCKED is
+    what stops a second process delivering the same capability.
+    """
+    if db.session_factory is None:
+        return
+    try:
+        async with db.session_factory() as session:
+            async with session.begin():
+                row = (await session.execute(
+                    select(MailOutbox)
+                    .where(MailOutbox.id == row_id, MailOutbox.state == "pending")
+                    .with_for_update(skip_locked=True)
+                )).scalar_one_or_none()
+                if row is None:
+                    return
+                if settings.email_backend == "none":
+                    # Switched off with rows still queued. Nothing can ever
+                    # deliver them, and each one still holds a live
+                    # capability, so settle them rather than leave them.
+                    row.state = "failed"
+                    row.last_error = "no mail backend configured"
+                    _forget_capability(row)
+                    return
                 await _attempt(row, settings)
-            await session.commit()
-    except Exception as error:
-        logger.warning("mail sweep failed: %s", error)
+    except Exception:
+        logger.exception("could not settle a mail outbox row")
 
 
 async def mail_loop() -> None:
-    if get_settings().email_backend == "none":
-        return
     while True:
         await deliver_due()
         await asyncio.sleep(SWEEP_INTERVAL)
@@ -189,11 +228,25 @@ async def _deliver(row: MailOutbox, settings: Settings) -> None:
         await to_thread.run_sync(_send_smtp, row, settings)
     elif settings.email_backend == "ses":
         await to_thread.run_sync(_send_ses, row, settings)
+    else:
+        # Never silently succeed: the caller marks a row sent on return, and a
+        # row marked sent that nobody sent is a capability nobody received.
+        raise RuntimeError(f"no mail backend to deliver with: {settings.email_backend}")
 
 
 def _render(row: MailOutbox) -> tuple[str, str]:
     subject = SUBJECTS.get(row.template, DEFAULT_SUBJECT)
     return subject, f"{subject}\n\n{row.payload.get('link', '')}\n"
+
+
+def _permanently_refused(recipients: dict) -> bool:
+    """True only when every recipient was refused with a 5xx.
+
+    A sender-side refusal is not here at all: MAIL FROM failing is a quota or
+    a configuration problem, and says nothing about who it was addressed to.
+    """
+    codes = [code for code, _ in recipients.values()]
+    return bool(codes) and all(500 <= code < 600 for code in codes)
 
 
 def _send_smtp(row: MailOutbox, settings: Settings) -> None:
@@ -206,12 +259,20 @@ def _send_smtp(row: MailOutbox, settings: Settings) -> None:
     try:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=SMTP_TIMEOUT) as relay:
             if settings.smtp_starttls:
-                relay.starttls()
+                # Without a context smtplib builds one with no certificate check
+                # at all, so anyone on the path to the relay reads the
+                # credentials below and the capability in the body.
+                relay.starttls(context=ssl.create_default_context())
             if settings.smtp_username:
                 relay.login(settings.smtp_username, settings.smtp_password)
             relay.send_message(message)
-    except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as error:
-        raise PermanentlyUndeliverable(str(error)) from error
+    except smtplib.SMTPRecipientsRefused as error:
+        # Only a 5xx says the address is wrong. A 4xx is greylisting, a full
+        # mailbox or a busy relay, and suppressing on those retires a working
+        # address for good, with nothing in this codebase to bring it back.
+        if _permanently_refused(error.recipients):
+            raise PermanentlyUndeliverable(str(error)) from error
+        raise
 
 
 def _send_ses(row: MailOutbox, settings: Settings) -> None:

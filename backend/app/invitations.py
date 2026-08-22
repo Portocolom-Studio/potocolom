@@ -18,6 +18,7 @@ from starlette.responses import Response
 
 from app import audit, db, mail, sessions
 from app.accounts import issue_session
+from app.enable import _checked_email
 from app.auth import current_principal, require_accounts_mode, require_role
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -71,7 +72,7 @@ async def invite(
         raise HTTPException(status_code=403, detail="recent authentication required")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    address = request.email.strip()
+    address = _checked_email(request.email)
     normalized = address.lower()
     invitation_id = uuid.uuid4()
     token = secrets.token_urlsafe(32)

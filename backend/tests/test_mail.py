@@ -1,3 +1,5 @@
+import pathlib
+import smtplib
 from datetime import datetime, timezone
 
 import pytest
@@ -279,3 +281,98 @@ def test_a_pending_row_keeps_it_because_it_still_needs_it(connected, monkeypatch
     row = connected(_rows())[0]
     assert row.state == "pending"
     assert row.payload["link"].endswith("still-needed")
+
+
+
+@pytest.mark.parametrize("codes, permanent", [
+    ({"a@b.co": (550, b"no such user")}, True),
+    ({"a@b.co": (451, b"greylisted, try again")}, False),
+    ({"a@b.co": (452, b"mailbox full")}, False),
+    ({"a@b.co": (421, b"service unavailable")}, False),
+    ({"a@b.co": (550, b"gone"), "c@d.co": (451, b"later")}, False),
+    ({}, False),
+])
+def test_only_a_five_hundred_refusal_means_the_address_is_wrong(codes, permanent):
+    """Greylisting is the single most common first answer from a real relay.
+    Reading it as a permanent rejection retires a working address for good,
+    and nothing in this codebase brings one back."""
+    assert mail._permanently_refused(codes) is permanent
+
+
+def test_a_sender_side_refusal_is_not_the_recipient_s_fault():
+    """MAIL FROM failing is a quota or a configuration problem. Suppressing on
+    it would retire every address the install writes to, one per sweep."""
+    assert not issubclass(smtplib.SMTPSenderRefused, mail.PermanentlyUndeliverable)
+    source = pathlib.Path(mail.__file__).read_text()
+    assert "SMTPSenderRefused" not in source
+
+
+def test_the_provider_suppression_list_is_the_only_permanent_ses_code():
+    """In the SES sandbox every unverified recipient answers MessageRejected,
+    so treating it as permanent retires every address before launch."""
+    assert mail.SES_PERMANENT == ("AccountSuppressionListException",)
+
+
+def test_starttls_verifies_the_relay_certificate():
+    """Without a context smtplib builds one with no certificate check at all,
+    so anyone on the path reads the credentials and the capability."""
+    source = pathlib.Path(mail.__file__).read_text()
+    assert "relay.starttls(context=ssl.create_default_context())" in source
+
+
+@pytest.mark.db
+def test_the_sweep_takes_one_row_at_a_time_so_two_processes_cannot_share_one(connected):
+    """A second sweep must not deliver a capability the first already has."""
+    source = pathlib.Path(mail.__file__).read_text()
+    assert "with_for_update(skip_locked=True)" in source
+
+
+@pytest.mark.db
+def test_a_row_that_fails_does_not_undo_the_rows_already_sent(connected, monkeypatch):
+    """One transaction across the batch rolled back everything it had already
+    delivered, and never advanced attempts, so a poison batch repeated."""
+    _configure(monkeypatch, "smtp")
+    sent = []
+
+    async def deliver(row, settings):
+        if row.to_email == "boom@example.com":
+            raise OSError("relay died mid-batch")
+        sent.append(row.to_email)
+
+    monkeypatch.setattr(mail, "_deliver", deliver)
+    connected(_queue("first@example.com"))
+    connected(_queue("boom@example.com"))
+    connected(mail.deliver_due())
+    states = {row.to_email: row.state for row in connected(_rows())}
+    assert states["first@example.com"] == "sent"
+    assert states["boom@example.com"] == "pending"
+    assert [row.attempts for row in connected(_rows()) if row.to_email == "boom@example.com"] == [1]
+
+
+@pytest.mark.db
+def test_switching_mail_off_settles_what_was_queued(connected, monkeypatch):
+    """Nothing can ever deliver those rows, and each still holds a live link."""
+    _configure(monkeypatch, "smtp")
+    connected(_queue(payload={"link": "https://example.com/join#orphaned"}))
+    monkeypatch.setenv("EMAIL_BACKEND", "none")
+    get_settings.cache_clear()
+    connected(mail.deliver_due())
+    row = connected(_rows())[0]
+    assert row.state == "failed"
+    assert row.payload == {}
+
+
+@pytest.mark.db
+def test_an_unknown_backend_never_counts_as_delivered(connected, monkeypatch):
+    """The caller marks a row sent when _deliver returns. A backend it does
+    not recognise must raise, not return."""
+    _configure(monkeypatch, "smtp")
+    connected(_queue())
+
+    async def go():
+        async with db.session_factory() as session:
+            row = (await session.execute(select(MailOutbox))).scalar_one()
+            with pytest.raises(RuntimeError):
+                await mail._deliver(row, Settings(email_backend="none"))
+
+    connected(go())
