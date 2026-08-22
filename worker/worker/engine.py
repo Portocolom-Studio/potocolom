@@ -110,10 +110,34 @@ def reject_degenerate_output(image: Image.Image, model_id: str) -> None:
         )
 
 
+def _empty_frame_stages() -> dict[str, int]:
+    return {
+        "adapter_ms": 0,
+        "text_encode_ms": 0,
+        "unet_ms": 0,
+        "taesd_ms": 0,
+        "overhead_ms": 0,
+        "text_encode_cache_hit": 0,
+        "unet_forwards": 0,
+    }
+
+
+def _finish_stage_overhead(stages: dict[str, int], gpu_ms: int) -> None:
+    stages["overhead_ms"] = max(
+        0,
+        gpu_ms
+        - stages["adapter_ms"]
+        - stages["text_encode_ms"]
+        - stages["unet_ms"]
+        - stages["taesd_ms"],
+    )
+
+
 @dataclass
 class GeneratedFrame:
     data: bytes
     gpu_ms: int
+    stages: dict[str, int] | None = None
 
 
 class NotResidentError(ValueError):
@@ -144,6 +168,7 @@ class Engine(Protocol):
     async def frame(
         self, manifest: Manifest, params: dict, payload: bytes,
         *, prompt_cache: PromptCache | None = None,
+        profile: bool = False,
     ) -> GeneratedFrame: ...
 
     def loaded_models(self) -> list[str]: ...
@@ -259,8 +284,9 @@ class SimulatedEngine:
             for request in requests:
                 if request.cancelled or request.future.done():
                     continue
+                stages = _empty_frame_stages() if request.profile else None
                 request.future.set_result(
-                    GeneratedFrame(request.payload, gpu_ms),
+                    GeneratedFrame(request.payload, gpu_ms, stages),
                 )
 
     def loaded_models(self) -> list[str]:
@@ -369,6 +395,7 @@ class SimulatedEngine:
     async def frame(
         self, manifest: Manifest, params: dict, payload: bytes,
         *, prompt_cache: PromptCache | None = None,
+        profile: bool = False,
     ) -> GeneratedFrame:
         session_key = (
             id(prompt_cache) if prompt_cache is not None
@@ -377,6 +404,7 @@ class SimulatedEngine:
         return await self._batch_collector.submit(
             session_key, manifest, params, payload, 0.0,
             prompt_cache=prompt_cache, resolution=REALTIME_SIZE,
+            profile=profile,
         )
 
 
@@ -1065,6 +1093,7 @@ class DiffusersEngine:
         pipeline_kwargs: dict[str, Any],
         *,
         preview_decoder: Any | None = None,
+        stages: dict[str, int] | None = None,
     ) -> Image.Image:
         if preview_decoder is None:
             preview_decoder = self._preview_decoder(pipeline, manifest)
@@ -1072,11 +1101,20 @@ class DiffusersEngine:
         if preview_decoder is not None:
             latents = pipeline(**pipeline_kwargs, output_type="latent").images
             try:
+                decode_started = 0.0
+                if stages is not None:
+                    self._sync_cuda()
+                    decode_started = time.perf_counter()
                 # AutoencoderTiny is trained to take the pipeline's SDXL latents
                 # directly. Unlike the full VAE path, dividing by
                 # pipeline.vae.config.scaling_factor here produces clipped noise.
                 with self.torch.inference_mode():
                     decoded = preview_decoder.decode(latents, return_dict=False)[0]
+                if stages is not None:
+                    self._sync_cuda()
+                    stages["taesd_ms"] += int(
+                        (time.perf_counter() - decode_started) * 1000
+                    )
                 image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
             except Exception as error:
                 # A bad decoder is not a poisoned pipeline. Letting this reach
@@ -1162,11 +1200,15 @@ class DiffusersEngine:
         results: list[tuple[Image.Image, int]] = []
         for request in requests:
             started = time.monotonic()
+            stages = _empty_frame_stages() if request.profile else None
             image, _ = self._frame(
                 request.manifest, request.params, request.payload, request.strength,
-                prompt_cache=request.prompt_cache,
+                prompt_cache=request.prompt_cache, stages=stages,
             )
             gpu_ms = int((time.monotonic() - started) * 1000)
+            if stages is not None:
+                _finish_stage_overhead(stages, gpu_ms)
+                request.stages = stages
             results.append((image, gpu_ms))
         return results
 
@@ -1239,20 +1281,26 @@ class DiffusersEngine:
         async with self._codec:
             data = await self._run_to_completion(encode_webp, image)
         if not request.cancelled and not request.future.done():
-            request.future.set_result(GeneratedFrame(data, gpu_ms))
+            request.future.set_result(GeneratedFrame(data, gpu_ms, request.stages))
 
     def _frame_batch(
         self, requests: list[FrameRequest],
     ) -> list[tuple[Image.Image, int]]:
         started = time.monotonic()
         manifest = requests[0].manifest
-        if len(requests) == 1:
+        if len(requests) == 1 or any(request.profile for request in requests):
+            if len(requests) > 1:
+                return self._frame_batch_sequential(requests)
             request = requests[0]
+            stages = _empty_frame_stages() if request.profile else None
             image, _ = self._frame(
                 manifest, request.params, request.payload, request.strength,
-                prompt_cache=request.prompt_cache,
+                prompt_cache=request.prompt_cache, stages=stages,
             )
             gpu_ms = int((time.monotonic() - started) * 1000)
+            if stages is not None:
+                _finish_stage_overhead(stages, gpu_ms)
+                request.stages = stages
             return [(image, gpu_ms)]
         if manifest.t2i_adapter:
             pipeline = self._pipeline(
@@ -1535,6 +1583,7 @@ class DiffusersEngine:
         negative_prompt: str | None,
         *,
         prompt_cache: PromptCache | None = None,
+        stages: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         # A realtime session calls this for every frame with the same prompt, and
         # encoding is a full pass through each text encoder: measured at 322 ms
@@ -1545,6 +1594,8 @@ class DiffusersEngine:
         cache_key = (manifest.id, prompt, negative_prompt)
         if prompt_cache is not None:
             if prompt_cache.entry is not None and prompt_cache.entry[0] == cache_key:
+                if stages is not None:
+                    stages["text_encode_cache_hit"] = 1
                 return prompt_cache.entry[1]
 
         prompt_kwargs: dict[str, Any] = {"prompt": prompt}
@@ -1842,9 +1893,87 @@ class DiffusersEngine:
         loop.call_soon_threadsafe(progress, 1.0)
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
+    def _sync_cuda(self) -> None:
+        if self.device != "cuda":
+            return
+        cuda = getattr(self.torch, "cuda", None)
+        synchronize = getattr(cuda, "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+
+    def _timed_prompt_kwargs(
+        self,
+        pipeline: Any,
+        manifest: Manifest,
+        params: dict,
+        prompt_cache: PromptCache | None,
+        stages: dict[str, int] | None,
+    ) -> dict[str, Any]:
+        negative_prompt = params.get("negative_prompt")
+        prompt_started = 0.0
+        if stages is not None:
+            self._sync_cuda()
+            prompt_started = time.perf_counter()
+        prompt_kwargs = self._prompt_kwargs(
+            pipeline,
+            manifest,
+            str(params.get("prompt", "")),
+            str(negative_prompt) if negative_prompt is not None else None,
+            prompt_cache=prompt_cache,
+            stages=stages,
+        )
+        if stages is not None:
+            self._sync_cuda()
+            stages["text_encode_ms"] = int(
+                (time.perf_counter() - prompt_started) * 1000
+            )
+        return prompt_kwargs
+
+    def _attach_stage_hooks(
+        self, pipeline: Any, stages: dict[str, int],
+    ) -> list[Any]:
+        handles: list[Any] = []
+        for name in ("adapter", "unet"):
+            module = getattr(pipeline, name, None)
+            pre_register = getattr(module, "register_forward_pre_hook", None)
+            post_register = getattr(module, "register_forward_hook", None)
+            if not callable(pre_register) or not callable(post_register):
+                continue
+            started_at: dict[str, float] = {}
+
+            def before(_module: Any, _inputs: Any, *, module_name: str = name) -> None:
+                self._sync_cuda()
+                started_at[module_name] = time.perf_counter()
+
+            def after(
+                _module: Any, _inputs: Any, _output: Any, *,
+                module_name: str = name,
+            ) -> None:
+                self._sync_cuda()
+                elapsed = (
+                    time.perf_counter()
+                    - started_at.pop(module_name, time.perf_counter())
+                ) * 1000
+                stages[f"{module_name}_ms"] += int(elapsed)
+                if module_name == "unet":
+                    stages["unet_forwards"] += 1
+
+            module_handles: list[Any] = []
+            try:
+                module_handles.append(pre_register(before))
+                module_handles.append(post_register(after))
+                handles.extend(module_handles)
+            except (AttributeError, TypeError):
+                for handle in module_handles:
+                    remove = getattr(handle, "remove", None)
+                    if callable(remove):
+                        remove()
+        return handles
+
     async def frame(
         self, manifest: Manifest, params: dict, payload: bytes,
         *, prompt_cache: PromptCache | None = None,
+        profile: bool = False,
     ) -> GeneratedFrame:
         if "realtime" not in manifest.capabilities:
             raise ValueError(f"model {manifest.id} does not support realtime frames")
@@ -1869,6 +1998,7 @@ class DiffusersEngine:
         return await self._batch_collector_or_create().submit(
             session_key, manifest, frame_params, canvas, strength,
             prompt_cache=prompt_cache, resolution=REALTIME_SIZE,
+            profile=profile,
         )
 
     def _frame(
@@ -1879,6 +2009,7 @@ class DiffusersEngine:
         strength: float,
         *,
         prompt_cache: PromptCache | None = None,
+        stages: dict[str, int] | None = None,
     ) -> tuple[Image.Image, int]:
         # The GPU lock already surrounds this call. Start the clock here so
         # GeneratedFrame.gpu_ms and calibration measure the same occupancy
@@ -1893,13 +2024,8 @@ class DiffusersEngine:
             pipeline = self._pipeline(
                 manifest, "realtime", allow_demotion=False,
             )
-            negative_prompt = params.get("negative_prompt")
-            prompt_kwargs = self._prompt_kwargs(
-                pipeline,
-                manifest,
-                str(params.get("prompt", "")),
-                str(negative_prompt) if negative_prompt is not None else None,
-                prompt_cache=prompt_cache,
+            prompt_kwargs = self._timed_prompt_kwargs(
+                pipeline, manifest, params, prompt_cache, stages,
             )
             properties = manifest.parameters.get("properties", {})
             structure_strength = float(params.get(
@@ -1929,36 +2055,36 @@ class DiffusersEngine:
                 "guidance_scale": 0.0,
                 "generator": generator,
             }
+        else:
+            pipeline = self._pipeline(
+                manifest, "i2i", allow_demotion=False,
+            )
+            prompt_kwargs = self._timed_prompt_kwargs(
+                pipeline, manifest, params, prompt_cache, stages,
+            )
+            preview_decoder = self._preview_decoder(pipeline, manifest)
+            pipeline_kwargs = {
+                **prompt_kwargs,
+                "image": canvas,
+                # Few-step img2img: diffusers runs ceil(steps * strength) steps,
+                # so keep the product at one or above.
+                "num_inference_steps": max(2, math.ceil(1 / strength)),
+                "strength": strength,
+                "guidance_scale": 0.0,
+            }
+        handles = (
+            self._attach_stage_hooks(pipeline, stages) if stages is not None else []
+        )
+        try:
             image = self._render_with_preview_decoder(
                 pipeline, manifest, pipeline_kwargs,
                 preview_decoder=preview_decoder,
+                stages=stages,
             )
-            gpu_ms = int((time.monotonic() - started) * 1000)
-            return image, gpu_ms
-        pipeline = self._pipeline(
-            manifest, "i2i", allow_demotion=False,
-        )
-        negative_prompt = params.get("negative_prompt")
-        prompt_kwargs = self._prompt_kwargs(
-            pipeline,
-            manifest,
-            str(params.get("prompt", "")),
-            str(negative_prompt) if negative_prompt is not None else None,
-            prompt_cache=prompt_cache,
-        )
-        preview_decoder = self._preview_decoder(pipeline, manifest)
-        pipeline_kwargs = {
-            **prompt_kwargs,
-            "image": canvas,
-            # Few-step img2img: diffusers runs ceil(steps * strength) steps,
-            # so keep the product at one or above.
-            "num_inference_steps": max(2, math.ceil(1 / strength)),
-            "strength": strength,
-            "guidance_scale": 0.0,
-        }
-        image = self._render_with_preview_decoder(
-            pipeline, manifest, pipeline_kwargs,
-            preview_decoder=preview_decoder,
-        )
+        finally:
+            for handle in handles:
+                remove = getattr(handle, "remove", None)
+                if callable(remove):
+                    remove()
         gpu_ms = int((time.monotonic() - started) * 1000)
         return image, gpu_ms
