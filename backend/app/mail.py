@@ -37,7 +37,10 @@ REQUIRED = {
     "ses": (("MAIL_FROM", "mail_from"), ("SES_REGION", "ses_region")),
 }
 
-SUBJECTS = {"invitation": "You have been invited to potocolom"}
+SUBJECTS = {
+    "invitation": "You have been invited to potocolom",
+    "reset": "Reset your potocolom password",
+}
 DEFAULT_SUBJECT = "potocolom"
 
 # Only the code that means this address is on the provider's own suppression
