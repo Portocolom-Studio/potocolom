@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -331,3 +332,85 @@ def test_the_host_prefix_appears_when_the_install_is_served_over_https(accounts,
                       if h.startswith("__Host-potocolom_session="))
         assert "Secure" in header and "HttpOnly" in header and "Path=/" in header
         assert "Domain" not in header
+
+
+@pytest.mark.db
+def test_logging_out_over_https_actually_clears_the_cookies(accounts, monkeypatch):
+    """A __Host- cookie cleared without Secure breaks the prefix rules, so the
+    browser drops the whole Set-Cookie and the credential stays on disk."""
+    _account(accounts, "httpsout@example.com")
+    monkeypatch.setenv("PUBLIC_URL", "https://studio.example.com")
+    get_settings.cache_clear()
+    secure_origin = "https://studio.example.com"
+    with TestClient(app, base_url=secure_origin) as client:
+        assert client.post("/api/v1/auth/login", headers={"Origin": secure_origin},
+                           json={"email": "httpsout@example.com", "password": PASSWORD,
+                                 "remember_me": False}).status_code == 204
+        csrf = next(c.value for c in client.cookies.jar if c.name.endswith("potocolom_csrf"))
+        out = client.post("/api/v1/auth/logout",
+                          headers={"Origin": secure_origin, "X-CSRF-Token": csrf})
+        assert out.status_code == 204
+        cleared = out.headers.get_list("set-cookie")
+        assert len(cleared) == 2
+        for header in cleared:
+            assert header.startswith("__Host-")
+            assert "Secure" in header
+            assert "Max-Age=0" in header
+
+
+@pytest.mark.db
+def test_remember_me_outlives_the_browser_session(accounts):
+    """The thirty day row is worthless if the cookie carrying it dies when the
+    browser process does."""
+    _account(accounts, "remembered@example.com")
+    with TestClient(app) as client:
+        response = _login(client, "remembered@example.com", remember_me=True)
+        assert response.status_code == 204
+        session_header = next(h for h in response.headers.get_list("set-cookie")
+                              if h.startswith("potocolom_session="))
+        assert "Max-Age=" in session_header
+        age = int(session_header.split("Max-Age=")[1].split(";")[0])
+        assert age == int(sessions.REMEMBER_ABSOLUTE.total_seconds())
+
+
+@pytest.mark.db
+def test_a_plain_login_stays_a_browser_session_cookie(accounts):
+    _account(accounts, "plain@example.com")
+    with TestClient(app) as client:
+        response = _login(client, "plain@example.com")
+        session_header = next(h for h in response.headers.get_list("set-cookie")
+                              if h.startswith("potocolom_session="))
+        assert "Max-Age=" not in session_header
+
+
+@pytest.mark.db
+def test_an_administrator_cookie_is_never_remembered(accounts):
+    _account(accounts, "boss@example.com", role="admin")
+    with TestClient(app) as client:
+        response = _login(client, "boss@example.com", remember_me=True)
+        session_header = next(h for h in response.headers.get_list("set-cookie")
+                              if h.startswith("potocolom_session="))
+        assert "Max-Age=" not in session_header
+
+
+def test_a_non_ascii_csrf_value_is_refused_rather_than_crashing():
+    """compare_digest raises on non-ASCII strings, and Starlette decodes both
+    headers and cookies as latin-1, so a value httpx will not even send but a
+    raw client will would turn every unsafe request into a 500."""
+    from fastapi import HTTPException
+
+    from app.auth import _check_csrf
+
+    request = Request({
+        "type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/v1/auth/logout", "raw_path": b"/api/v1/auth/logout",
+        "query_string": b"", "root_path": "", "server": ("testserver", 80), "client": None,
+        "headers": [(b"origin", ORIGIN.encode()), (b"x-csrf-token", "caf\xe9".encode("latin-1"))],
+    })
+    with pytest.raises(HTTPException) as refused:
+        _check_csrf(request, "cafe")
+    assert refused.value.status_code == 403
+
+    # And a value that genuinely matches still passes, rather than raising
+    # TypeError on its way to becoming a 500.
+    assert _check_csrf(Request({**request.scope}), "caf\xe9") is None

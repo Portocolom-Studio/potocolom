@@ -39,16 +39,22 @@ def issue_session(response: Response, issued: sessions.Issued) -> None:
     secure = public_url.startswith("https")
     # Host-only on purpose: no domain, so a sibling host cannot be handed it.
     response.set_cookie(session_name, issued.token, path="/", samesite="lax",
-                        secure=secure, httponly=True)
+                        secure=secure, httponly=True, max_age=issued.max_age)
     # The browser has to read this one to echo it back on unsafe requests.
     response.set_cookie(csrf_name, issued.csrf, path="/", samesite="lax",
-                        secure=secure, httponly=False)
+                        secure=secure, httponly=False, max_age=issued.max_age)
 
 
 def _clear(response: Response) -> None:
-    session_name, csrf_name = sessions.cookie_names(get_settings().public_url)
-    response.delete_cookie(session_name, path="/")
-    response.delete_cookie(csrf_name, path="/")
+    public_url = get_settings().public_url
+    session_name, csrf_name = sessions.cookie_names(public_url)
+    # Secure matters on the way out too: a __Host- cookie cleared without it
+    # breaks the prefix rules, so the browser drops the whole Set-Cookie and
+    # the credential the user asked to remove stays on disk.
+    secure = public_url.startswith("https")
+    response.delete_cookie(session_name, path="/", samesite="lax", secure=secure,
+                           httponly=True)
+    response.delete_cookie(csrf_name, path="/", samesite="lax", secure=secure)
 
 
 @router.post("/api/v1/auth/login", status_code=204)

@@ -28,6 +28,10 @@ TOUCH_INTERVAL = timedelta(minutes=1)
 class Issued:
     token: str
     csrf: str
+    # Seconds for the cookie, or None for one that dies with the browser. A
+    # remembered row is worthless if the cookie carrying it does not outlive
+    # the browser process.
+    max_age: int | None = None
 
 
 @dataclass
@@ -63,8 +67,11 @@ async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Is
     else:
         remembered, idle = False, None
     now = _now()
-    issued = Issued(token=secrets.token_urlsafe(TOKEN_BYTES),
-                    csrf=secrets.token_urlsafe(TOKEN_BYTES))
+    issued = Issued(
+        token=secrets.token_urlsafe(TOKEN_BYTES),
+        csrf=secrets.token_urlsafe(TOKEN_BYTES),
+        max_age=int(REMEMBER_ABSOLUTE.total_seconds()) if remembered else None,
+    )
     async with db.session_factory() as session:
         session.add(Session(
             user_id=user.id,

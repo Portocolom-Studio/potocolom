@@ -52,7 +52,12 @@ def _check_csrf(request: Request, csrf_cookie: str | None) -> None:
     if origin is None or origin.rstrip("/") not in _allowed_origins():
         raise HTTPException(status_code=403, detail="origin not allowed")
     sent = request.headers.get("x-csrf-token")
-    if not csrf_cookie or not sent or not secrets.compare_digest(sent, csrf_cookie):
+    # Compared as bytes: compare_digest refuses non-ASCII strings, and headers
+    # and cookies decode as latin-1, so a planted value would raise here and
+    # turn every unsafe request that browser sends into a 500.
+    if not csrf_cookie or not sent or not secrets.compare_digest(
+        sent.encode("latin-1", "replace"), csrf_cookie.encode("latin-1", "replace")
+    ):
         raise HTTPException(status_code=403, detail="missing or mismatched CSRF token")
 
 
