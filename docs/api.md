@@ -277,7 +277,9 @@ The capability expires after 15 minutes. The URL does not contain the storage ke
 
 Request and response shapes below are the contract [blueprint.md](blueprint.md) pseudocode implements; the issues fill in the behavior.
 
-### Authentication (issue #5)
+### Authentication (shipped, kept here for the exact shapes)
+
+These four routes and the OAuth flow below them are implemented. Only `GET /api/v1/auth/verify` is still open under issue #5.
 
 ```
 POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}
