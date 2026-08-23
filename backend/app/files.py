@@ -117,6 +117,21 @@ async def serve_retired() -> None:
     raise HTTPException(status_code=404, detail="file route retired")
 
 
+async def _serve(row: Asset, download_name: str | None = None, ttl: int | None = None):
+    storage = get_storage()
+    if not isinstance(storage, LocalStorage):
+        return RedirectResponse(await storage.url(row.storage_key, download_name, ttl))
+    try:
+        path = storage.path(row.storage_key)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="no such file")
+    if download_name is not None:
+        return FileResponse(path, filename=download_name)
+    return FileResponse(path)
+
+
 @router.get("/api/v1/assets/{asset_id}")
 async def asset(
     asset_id: uuid.UUID,
@@ -133,18 +148,29 @@ async def asset(
         download_name = validate_download_name(download) if download is not None else None
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    storage = get_storage()
-    if not isinstance(storage, LocalStorage):
-        return RedirectResponse(await storage.url(row.storage_key, download_name))
-    try:
-        path = storage.path(row.storage_key)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="no such file")
-    if download_name is not None:
-        return FileResponse(path, filename=download_name)
-    return FileResponse(path)
+    return await _serve(row, download_name)
+
+
+@router.get("/api/v1/shared-picture")
+async def shared_picture(
+    asset: uuid.UUID,
+    expires: int,
+    signature: str,
+    session: AsyncSession = Depends(db.get_session),
+):
+    """The bytes behind a share, addressed by a signature that lasts a minute.
+
+    Signed rather than stored, so any instance can answer it, and refused as
+    one 404 whatever is wrong with the address.
+    """
+    from app import shares
+
+    if not shares.picture_authorized(asset, expires, signature):
+        raise HTTPException(status_code=404, detail="no such picture")
+    row = await session.get(Asset, asset)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such picture")
+    return await _serve(row, ttl=shares.PICTURE_TTL)
 
 
 @router.get("/api/v1/worker-input")
