@@ -33,6 +33,7 @@
 	import {
 		FAST_INTERVAL_MS,
 		IDLE_TICKS_BEFORE_STOP,
+		afterParamsUpdated,
 		canvasFrame,
 		nextDelayMs,
 		openMessage,
@@ -529,6 +530,10 @@
 				appliedStructure = params.structure_strength;
 			}
 			if (typeof params.steps === 'number') appliedSteps = params.steps;
+			const wake = afterParamsUpdated();
+			changed = wake.changed;
+			idleTicks = wake.idleTicks;
+			if (sending) armCapture(FAST_INTERVAL_MS);
 		} else if (control.type === 'error') {
 			// A rejected update reports through the notice and leaves the
 			// session alone; the socket stays open either way.

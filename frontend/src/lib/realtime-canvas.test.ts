@@ -12,6 +12,7 @@ import {
 	FRAME_HEADER_BYTES,
 	GENERATED_FRAME,
 	SLOW_INTERVAL_MS,
+	afterParamsUpdated,
 	canvasFrame,
 	nextDelayMs,
 	nextIntervalMs,
@@ -114,6 +115,14 @@ test('a frame is sent only when there is a change, no encode, and an empty socke
 	assert.ok(!shouldSendFrame({ changed: true, encoding: true, buffered: 0 }));
 	// Anything still queued on the socket: the backlog would only grow.
 	assert.ok(!shouldSendFrame({ changed: true, encoding: false, buffered: 1 }));
+});
+
+test('a confirmed param update must resend the same canvas', () => {
+	const idle = { changed: false, encoding: false, buffered: 0 };
+	assert.ok(!shouldSendFrame(idle));
+	const wake = afterParamsUpdated();
+	assert.equal(wake.idleTicks, 0);
+	assert.ok(shouldSendFrame({ ...idle, changed: wake.changed }));
 });
 
 test('the cadence stays inside the two to four fps band', () => {
