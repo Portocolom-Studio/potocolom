@@ -1088,6 +1088,14 @@ Rejected alternatives: recent authentication alone (an unlocked laptop is then e
 
 Rejected alternative: keeping assurance and re-verifying in the background. It leaves a window in which an unproved address is marked proved, and assurance is exactly what promotion to administrator reads.
 
+## Sharing: a token in the fragment, resolved by POST
+
+A share link is `/shared#<token>`. The fragment is the one part of a URL a browser never sends to a server, so the page reads it and posts it to `POST /api/v1/shared`. A token in a path or a query would be written to access logs, proxy traces, and the `Referer` header of every request the shared page makes, which turns a link somebody forwarded once into a credential sitting in half a dozen systems. Only the SHA-256 of the token is stored, and the answer carries the picture, its prompt and its model plus an address for the original that is signed rather than stored and lasts 60 seconds.
+
+Shares live in `asset_shares`, one active row per asset held by a partial unique index. Sharing an asset that is already shared revokes the old row and inserts the new one in the same transaction, so revoking the link somebody can see can never leave an older one alive behind it. The token stays good until it is revoked or its 1, 7 or 30 days run out.
+
+Rejected alternatives: a public key-addressed GET on the storage key (the key is derivable, so the link is not the capability, and R1 retired those routes); `assets.share_token`, the retired column, which gives two answers to the question of whether an asset is shared and cannot express revocation or expiry at all; a one-use token (a share is meant to be forwarded and reopened, so a link that dies on the first view is not a share); a cached CDN behavior on `/shared/{token}` (the edge TTL then decides how long a revoked link keeps working).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

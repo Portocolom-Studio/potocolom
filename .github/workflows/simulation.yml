@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-host-ports
+
 jobs:
   simulation:
     # Self-hosted: docs/self-hosted-runner.md
