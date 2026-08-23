@@ -34,6 +34,7 @@ from app.oauth import router as oauth_router
 from app.recovery import router as recovery_router
 from app.registry import router as registry_router
 from app.roles import router as roles_router
+from app.states import router as states_router
 from app.shares import router as shares_router
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
@@ -140,6 +141,7 @@ app.include_router(invitations_router)
 app.include_router(oauth_router)
 app.include_router(recovery_router)
 app.include_router(roles_router)
+app.include_router(states_router)
 app.include_router(mail_router)
 app.include_router(shares_router)
 app.include_router(registry_router)

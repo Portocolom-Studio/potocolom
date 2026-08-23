@@ -95,16 +95,24 @@ async def pictured_asset(
 
 
 def _live_share(*conditions):
-    """One place decides what a live share is: not revoked, not run out, and
-    on an asset that has not expired under it."""
+    """One place decides what a live share is: not revoked, not run out, on an
+    asset that has not expired under it, and belonging to an account that is
+    still speaking.
+
+    A share is the account addressing the public, so a suspended account has
+    no live shares. Paused rather than revoked: restoring the account restores
+    the links it handed out, which a revocation could not undo.
+    """
     now = datetime.now(timezone.utc)
     return (
         select(Asset)
         .join(AssetShare, AssetShare.asset_id == Asset.id)
+        .join(User, User.id == Asset.user_id)
         .where(*conditions,
                AssetShare.revoked_at.is_(None),
                AssetShare.expires_at > now,
-               (Asset.expires_at.is_(None)) | (Asset.expires_at > now))
+               (Asset.expires_at.is_(None)) | (Asset.expires_at > now),
+               User.state == "active")
     )
 
 
