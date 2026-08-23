@@ -142,7 +142,9 @@ In flight:
 
 ### M4 Accounts
 
-- #5 / #9 auth modes (none, local, oauth behind one dependency seam), #10 account UI.
+- Still-open epics: #5 sessions and principal policy, #9 first-admin and adoption leftovers, and #10 account UI.
+- Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365, recorded in an issue; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367), Google and GitHub OAuth sign-in and linking (PR #369; linking only, never enrolment by email), and TOTP and recovery (PR #371).
+- In flight: PR #374 closes the credential-change issue for passwords, primary addresses, and linked providers.
 
 ### M5 Cloud readiness (largest)
 
@@ -159,6 +161,9 @@ In flight:
   four-step vega with three-frame lag. Do not adopt it. Do not vendor
   StreamDiffusion. SSF remains unstarted; CUDA compile, Sage and TensorRT stay
   last, fleet card only.
+- In flight: PR #339 adds four self-hosted runners and concurrency groups.
+  Shipped: PR #366 gives jobs isolated ports and compose projects; PR #382 lets
+  simulation choose a free port.
 
 ### M6 Launch and beta
 
