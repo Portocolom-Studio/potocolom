@@ -136,13 +136,13 @@ Shipped this pass:
 - PR #372 closed #294. Curve admission is on. Do not advertise four turbo
   sessions (N=4 homogeneous turbo is about 501 ms on this desk).
 - PR #373 closed #379. Stream Batch stays out of Engine.
+- PR #375 closed #380, the region-composite measurement. Engine is unchanged.
+  Product follow-up is #376.
 
-In flight:
+Still open:
 
-- PR #375 closes #380, the region-composite measurement. Do not wire Engine
-  until a person accepts the images. Product follow-up is #376.
-- #376 stays open: select and edit a region. It is blocked on looking at the
-  PR #375 images.
+- #376: select and edit a region. It is blocked on looking at the region
+  comparison images.
 
 ### M4 Accounts
 
@@ -197,7 +197,6 @@ In flight:
 
 ### Next steps after the realtime pass
 
-- Merge PR #375 as a measure record, not a worker behavior change.
 - Have a human look at the region PNGs, then decide #376 step 2 (Engine
   composite) or stop.
 - Drawing UI remains #3 and related issues.
