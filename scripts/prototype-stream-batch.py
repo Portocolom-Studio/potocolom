@@ -149,7 +149,8 @@ def stream_frame(
     adapter_buffer: list[list[Any]],
     latent_buffer: list[Any],
     timesteps: Any,
-    noise_sequence: list[Any],
+    latent: Any,
+    generator: Any,
     size: int,
     scale: float,
     is_lcm: bool,
@@ -163,17 +164,25 @@ def stream_frame(
             for _ in latent_buffer
         ]
     adapter_batch = [current_adapter, *adapter_buffer]
-    latent = noise_sequence[0]
-    noise_sequence.pop(0)
     latent_batch = assemble_batch(latent, latent_buffer)
+    batch_size = len(latent_batch)
+    step_timesteps = list(timesteps[:batch_size])
+    if not is_lcm:
+        pipeline.scheduler.set_timesteps(len(timesteps), device=timesteps.device)
     model_inputs = [
         pipeline.scheduler.scale_model_input(item, timestep)
-        for item, timestep in zip(latent_batch, timesteps, strict=True)
+        for item, timestep in zip(latent_batch, step_timesteps, strict=True)
     ]
     model_input = torch.cat(model_inputs, dim=0)
-    batch_size = len(latent_batch)
     prompt = embeds["prompt_embeds"].repeat(batch_size, 1, 1)
     pooled = embeds["pooled_prompt_embeds"].repeat(batch_size, 1)
+    timestep_cond = None
+    if pipeline.unet.config.time_cond_proj_dim is not None:
+        guidance_scale_tensor = torch.tensor(-1.0).repeat(batch_size)
+        timestep_cond = pipeline.get_guidance_scale_embedding(
+            guidance_scale_tensor,
+            embedding_dim=pipeline.unet.config.time_cond_proj_dim,
+        ).to(device=model_input.device, dtype=latent.dtype)
     time_ids = pipeline._get_add_time_ids(
         (size, size),
         (0, 0),
@@ -182,12 +191,13 @@ def stream_frame(
         text_encoder_projection_dim=pipeline.text_encoder_2.config.projection_dim,
     ).to(model_input.device).repeat(batch_size, 1)
     residuals = stack_adapter_states(
-        adapter_batch, lambda states: torch.cat(states, dim=0)
+        adapter_batch, lambda states: torch.cat([state.clone() for state in states], dim=0)
     )
     noise_pred = pipeline.unet(
         model_input,
-        torch.stack(list(timesteps)),
+        step_timesteps[0] if batch_size == 1 else torch.stack(step_timesteps),
         encoder_hidden_states=prompt,
+        timestep_cond=timestep_cond,
         added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
         down_intrablock_additional_residuals=residuals,
         return_dict=False,
@@ -196,7 +206,7 @@ def stream_frame(
         x0_batch = []
         alphas = []
         betas = []
-        for index, timestep in enumerate(timesteps):
+        for index, timestep in enumerate(step_timesteps):
             alpha_bar = pipeline.scheduler.alphas_cumprod[timestep.long()]
             alpha = alpha_bar**0.5
             beta = (1 - alpha_bar) ** 0.5
@@ -222,15 +232,15 @@ def stream_frame(
             do_add_noise=True,
         )
     else:
-        pipeline.scheduler.set_timesteps(len(timesteps), device=timesteps.device)
         stepped = [
             pipeline.scheduler.step(
                 noise_pred[index : index + 1],
                 timestep,
                 latent_batch[index],
+                **pipeline.prepare_extra_step_kwargs(generator, 0.0),
                 return_dict=False,
             )[0]
-            for index, timestep in enumerate(timesteps)
+            for index, timestep in enumerate(step_timesteps)
         ]
         finished, next_latents = stepped[-1], stepped[:-1]
     next_adapters = shift_condition_buffer(current_adapter, adapter_buffer)
@@ -260,17 +270,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     prompt = "mountains in the alps, a lake, photorealistic"
     embeds = prompt_embeds(pipeline, prompt, device)
     maps = [sketch_map(size, index * 7) for index in range(args.frames + steps - 1)]
-    generators = [
-        torch.Generator(device=device).manual_seed(args.seed + index)
-        for index in range(args.frames + steps)
-    ]
-    stream_generators = [
-        torch.Generator(device=device).manual_seed(args.seed + index)
-        for index in range(args.frames + steps)
-    ]
     serial_images: list[Any] = []
     serial_times: list[float] = []
     for index, image in enumerate(maps):
+        g_serial = torch.Generator(device=device).manual_seed(args.seed + index)
         torch.cuda.synchronize()
         started = time.perf_counter()
         with torch.inference_mode():
@@ -280,7 +283,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 num_inference_steps=steps,
                 guidance_scale=0.0,
                 adapter_conditioning_scale=scale,
-                generator=generators[index],
+                generator=g_serial,
                 height=size,
                 width=size,
                 output_type="latent",
@@ -292,25 +295,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             serial_times.append(elapsed)
     pipeline.scheduler.set_timesteps(steps, device=device)
     timesteps = pipeline.scheduler.timesteps
-    shape = (
-        1,
-        pipeline.unet.config.in_channels,
-        size // pipeline.vae_scale_factor,
-        size // pipeline.vae_scale_factor,
-    )
-    noise = [
-        torch.randn(shape, generator=generator, device=device, dtype=dtype)
-        * pipeline.scheduler.init_noise_sigma
-        for generator in stream_generators
-    ]
-    latent_buffer: list[Any] = [
-        torch.zeros_like(noise[0]) for _ in range(max(0, steps - 1))
-    ]
+    latent_buffer: list[Any] = []
     adapter_buffer: list[list[Any]] = []
     stream_times: list[float] = []
     paired: list[float] = []
     fill_started = time.perf_counter()
     for index in range(args.frames + steps - 1):
+        g_stream = torch.Generator(device=device).manual_seed(args.seed + index)
+        latent = pipeline.prepare_latents(
+            1,
+            pipeline.unet.config.in_channels,
+            size,
+            size,
+            dtype,
+            device,
+            g_stream,
+        )
+        if not latent_buffer:
+            latent_buffer = [
+                torch.zeros_like(latent) for _ in range(max(0, steps - 1))
+            ]
         torch.cuda.synchronize()
         started = time.perf_counter()
         with torch.inference_mode():
@@ -322,7 +326,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 adapter_buffer,
                 latent_buffer,
                 timesteps,
-                noise[index:],
+                latent,
+                g_stream,
                 size,
                 scale,
                 manifest.get("scheduler") == "lcm",
@@ -352,6 +357,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "lag_frames": steps - 1,
         "fill_ms": fill_ms,
         "quality_mean_channel_abs_diff": statistics.mean(paired) if paired else 0.0,
+        "quality_max_channel_abs_diff": max(paired) if paired else 0.0,
         "inside_500": stream_stats["p95_ms"] <= BAR_MS,
         "notes": "1-step should be near 1x; do not advertise N=4 turbo",
     }
