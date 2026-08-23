@@ -18,6 +18,7 @@ import random
 import time
 import uuid
 from collections.abc import Coroutine
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -58,6 +59,17 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 CLOSE_UNSUPPORTED_VERSION = 4002
 CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
+# Authentication outcomes, from the authentication contract: a missing cookie
+# fails the handshake outright, a cookie that resolves to nothing closes 4401,
+# and a principal without permission to spend a realtime slot closes 4403.
+CLOSE_UNAUTHORIZED = 4401
+CLOSE_FORBIDDEN = 4403
+# Only these may consume a slot. A viewer reads their own work; realtime is
+# not reading.
+REALTIME_ROLES = frozenset({"user", "admin"})
+# How long revocation waits for one socket to take its close. A wedged
+# transport must not hold the request that revoked it.
+CLOSE_TIMEOUT = 2.0
 FLEET_TOKEN_HEADER = "x-fleet-token"
 # Same 500 ms bar the worker uses in slots_from_frame_ms. Duplicated rather
 # than imported: the two packages have no shared module.
@@ -346,6 +358,9 @@ class Session:
     browser: WebSocket
     params: dict = field(default_factory=dict)
     user_id: uuid.UUID | None = None
+    # The account session this socket was opened under, so revoking that
+    # session can find and close this one.
+    auth_session_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     # queued and idle are in the enum so later work does not widen it;
@@ -611,10 +626,14 @@ async def release(session: Session) -> None:
     worker.slots_in_use -= 1
     generation = session.control_generation
     if workers.get(worker.id) is worker:  # still connected, same incarnation
-        await safe_send(worker.ws.send_json(with_generation(
-            {"type": "close_session", "session_id": str(session.id)},
-            worker, generation,
-        )))
+        # Bounded: the slot is already back, and a worker that stopped reading
+        # would otherwise hold up whatever asked for this session to end,
+        # including the revocation that has other sockets waiting behind it.
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
+                {"type": "close_session", "session_id": str(session.id)},
+                worker, generation,
+            ))), CLOSE_TIMEOUT)
 
 
 async def reassign(session: Session) -> None:
@@ -965,21 +984,81 @@ def session_seed(value: object) -> int | None:
     return None
 
 
+@dataclass
+class Handshake:
+    """How a realtime upgrade was judged.
+
+    close_code None admits the socket. Anything else is accepted and then
+    closed with that code, because a close code cannot be sent before accept.
+    """
+
+    user_id: uuid.UUID | None = None
+    auth_session_id: uuid.UUID | None = None
+    close_code: int | None = None
+
+
+async def _handshake_principal(ws: WebSocket) -> Handshake | None:
+    """The account behind this socket, or None to refuse before accepting.
+
+    Bind once: the principal is resolved here and never read from the browser,
+    which cannot select an identity. Revocation is explicit and closes the
+    socket, rather than being noticed on some later frame.
+    """
+    if get_settings().auth_mode == "none":
+        # The implicit local user, which is None while the database is down.
+        # That is not an authentication failure; it is the mode working.
+        return Handshake(user_id=db.local_user_id)
+    from app import sessions as account_sessions
+
+    name, _ = account_sessions.cookie_names(get_settings().public_url)
+    token = ws.cookies.get(name)
+    if not token:
+        return None
+    try:
+        resolved = await account_sessions.resolve(token)
+    except Exception:
+        # The none branch above tolerates a database that is down. This one
+        # must be equally defined: refuse, rather than raise out of the
+        # endpoint before accept and make every reconnect a traceback.
+        logger.warning("realtime handshake could not resolve a session")
+        return Handshake(close_code=CLOSE_UNAUTHORIZED)
+    if resolved is None:
+        return Handshake(close_code=CLOSE_UNAUTHORIZED)
+    if resolved.user.role not in REALTIME_ROLES or resolved.user.state != "active":
+        return Handshake(close_code=CLOSE_FORBIDDEN)
+    return Handshake(user_id=resolved.user.id, auth_session_id=resolved.session.id)
+
+
+async def _still_live(handshake: Handshake) -> bool:
+    if handshake.auth_session_id is None:
+        return True
+    from app import sessions as account_sessions
+
+    try:
+        return await account_sessions.is_live(handshake.auth_session_id)
+    except Exception:
+        # Cannot prove the session is alive, so treat it as dead. The socket
+        # is about to hold a GPU slot on the strength of this answer.
+        logger.warning("realtime could not confirm a session is still live")
+        return False
+
+
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
-    if get_settings().auth_mode != "none":
-        # This socket has never had a principal of its own: its only gate is
-        # Origin, and a non-browser client sends none. Serving it in accounts
-        # mode would spend the GPU for anyone who reaches the port and record
-        # the work against the implicit administrator. Session authentication
-        # for the socket arrives with sign-in.
-        await ws.close()
-        return
     if not origin_allowed(ws):
         logger.warning("realtime handshake refused from origin %s", ws.headers.get("origin"))
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
+    handshake = await _handshake_principal(ws)
+    if handshake is None:
+        # No credential at all: refused before accept, so the upgrade fails as
+        # HTTP 403 and no socket exists to admit anything.
+        await ws.close()
+        return
     await ws.accept()
+    if handshake.close_code is not None:
+        await refuse(ws, handshake.close_code, "not permitted to open a realtime session")
+        return
     try:
         opening = parse_control(await ws.receive_text())
         if opening["type"] != "open":
@@ -1019,10 +1098,15 @@ async def realtime(ws: WebSocket) -> None:
         return
     session = Session(
         id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
-        # WebSocket identity is not derived from current_user until upgrade auth
-        # gains a session cookie or one-time ticket.
-        user_id=db.local_user_id)
+        user_id=handshake.user_id, auth_session_id=handshake.auth_session_id)
     sessions[session.id] = session
+    # Registered first, then re-checked: a revocation that commits between the
+    # handshake and this line runs its close sweep before the session is in
+    # the dictionary, so nothing would ever close this socket.
+    if not await _still_live(handshake):
+        del sessions[session.id]
+        await refuse(ws, CLOSE_UNAUTHORIZED, "session revoked")
+        return
     try:
         accepted = await place_session(session)
         if not accepted:
@@ -1138,3 +1222,36 @@ async def realtime(ws: WebSocket) -> None:
             closing_sessions[session.id] = (
                 session.user_id, session.model_id, worker)
         await release(session)
+
+
+async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = None) -> None:
+    """Close every live socket a revoked account session was holding.
+
+    The principal binds once at the handshake, so nothing would notice the
+    revocation on its own. This is what makes logout, disable, deletion and a
+    role change actually reach a canvas that is already drawing.
+    """
+    doomed = [
+        session for session in list(sessions.values())
+        if session.user_id == user_id
+        and (auth_session_id is None or session.auth_session_id == auth_session_id)
+    ]
+    # Concurrently: refuse writes before it closes, and a browser that stopped
+    # reading blocks that write with no timeout. Sequentially, one such socket
+    # would keep every other socket on the account alive and hang the logout
+    # request that asked for them to go.
+    # The server side goes first and unconditionally. A wedged transport eats
+    # the write below and its close with it, and leaving the session
+    # registered would keep a revoked account holding a GPU slot for as long
+    # as it holds the connection.
+    for session in doomed:
+        sessions.pop(session.id, None)
+        transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
+        transition(session, "ending", "ended")
+        await release(session)
+    await asyncio.gather(
+        *(asyncio.wait_for(
+            refuse(session.browser, CLOSE_UNAUTHORIZED, "session revoked"), CLOSE_TIMEOUT)
+          for session in doomed),
+        return_exceptions=True,
+    )
