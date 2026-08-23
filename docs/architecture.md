@@ -577,7 +577,8 @@ flowchart LR
     end
     subgraph PG["PostgreSQL, source of truth"]
         J[("jobs<br>params incl. prompt, timings,<br>category, starred_at")]
-        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
+        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>expires_at")]
+        SH[("asset_shares<br>token hash, expires_at, revoked_at,<br>one active share per asset")]
     end
     B["Browser<br>history, gallery, favorites,<br>share links"]
     API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
@@ -655,6 +656,7 @@ erDiagram
     workers ||--o{ gpu_sample_rollups : summarized_by
     gpu_sample_rollups ||--o{ gpu_samples : condenses
     jobs |o--o{ assets : produces
+    assets ||--o| asset_shares : shared_by
 
     users {
         uuid id PK
@@ -729,8 +731,15 @@ erDiagram
         text mime
         int width
         int height
-        text share_token "null unless shared"
+        text share_token "retired, removed by the R18 cleanup"
         timestamptz expires_at "set for trial accounts"
+    }
+    asset_shares {
+        uuid id PK
+        uuid asset_id FK
+        bytea token_hash UK "sha256 of the token in the link fragment"
+        timestamptz expires_at "1, 7 or 30 days"
+        timestamptz revoked_at "null while the link works"
     }
     realtime_sessions {
         uuid id PK
