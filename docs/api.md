@@ -22,6 +22,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 - A role change revokes every session the account held, since the old session carries the old authority.
 - A second factor is optional for every role. When an account has enrolled and confirmed one, a correct password or a provider sign-in returns `200 {"totp_required": true}` and a short-lived challenge cookie instead of a session. `POST /api/v1/auth/totp` answers it with a TOTP code or a one-use recovery code and returns the session. The challenge lives ten minutes, allows ten attempts, and carries no authority of its own: an administrator part way through it can reach nothing. TOTP gates sign-in and nothing else; it does not gate setup, invitation acceptance, promotion or recovery, and it changes neither what an account may do nor how long its session lasts.
 - `POST /api/v1/auth/reset` always answers `202` with the same body, whether or not anybody holds that address. A non-administrator is emailed a one-use link valid 30 minutes. An administrator is emailed nothing, ever: their way back is `make auth-recover`, run at the machine, which prints a one-use link valid 10 minutes. Completing either sets the password, revokes every session that account held, and returns the person to the login screen with no session and no recent-authentication grant.
+- Changing how an account is proved needs recent authentication, and changing a password that already exists needs the current one as well: recent authentication says this browser was somebody's, and the current password says it is still theirs at this keyboard. Every such change ends the account's other sessions and leaves the browser making it signed in, because the usual reason to change a credential is that somebody else holds the old one.
+- Changing the primary address resets `mail_verified` and moves the password identity with it. A provider proved the old address and says nothing about the new one, and login matches on the identity, so leaving it behind would sign somebody in under an address they no longer hold. An address another account holds answers 409.
+- Unlinking a provider refuses when it is the only credential left, because an account with no way in can only be recovered offline.
 - A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
@@ -70,6 +73,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/account/totp` | implemented | begin enrolling a second factor; needs recent authentication |
 | POST `/api/v1/account/totp/confirm` | implemented | prove the authenticator holds the secret |
 | POST `/api/v1/account/identities/{provider}` | implemented | start linking a provider to this account; needs recent authentication |
+| DELETE `/api/v1/account/identities/{provider}` | implemented | unlink a provider; refuses the last way in |
+| POST `/api/v1/account/password` | implemented | change or add a password; needs recent authentication |
+| POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance |
 | GET `/api/v1/account` | implemented | this account, and its live sessions |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
