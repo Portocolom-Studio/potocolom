@@ -121,12 +121,13 @@ async def resolve(token: str) -> Resolved | None:
         return Resolved(session=row, user=user)
 
 
-async def close_sockets(user_id: uuid.UUID, session_id: uuid.UUID | None = None) -> None:
+async def close_sockets(user_id: uuid.UUID, session_id: uuid.UUID | None = None,
+                        keep: uuid.UUID | None = None) -> None:
     """A realtime socket binds its principal once, so revoking a session has
     to reach the socket explicitly or the canvas keeps drawing."""
     from app import realtime
 
-    await realtime.close_revoked(user_id, session_id)
+    await realtime.close_revoked(user_id, session_id, keep)
 
 
 async def revoke(session_id: uuid.UUID) -> None:

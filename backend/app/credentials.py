@@ -54,6 +54,16 @@ async def _revoke_others(session: AsyncSession, principal: sessions.Resolved) ->
     await _spend_capabilities(session, principal.user.id)
 
 
+async def _close_other_sockets(principal: sessions.Resolved) -> None:
+    """After the change is durable, and never inside its transaction.
+
+    A revoked row stops the next request; it does not reach a socket that
+    bound its principal at the handshake. Somebody changing a password to
+    evict a stranger would otherwise leave the stranger drawing.
+    """
+    await sessions.close_sockets(principal.user.id, keep=principal.session.id)
+
+
 async def _spend_capabilities(session: AsyncSession, user_id: uuid.UUID) -> None:
     await session.execute(
         update(AuthToken)
@@ -124,6 +134,7 @@ async def change_password(
                     update(AuthIdentity).where(AuthIdentity.id == existing.id)
                     .values(password_hash=password_hash))
             await _revoke_others(session, principal)
+    await _close_other_sockets(principal)
     return Response(status_code=204)
 
 
@@ -163,6 +174,7 @@ async def change_email(
                 await _revoke_others(session, principal)
     except IntegrityError as clash:
         raise HTTPException(status_code=409, detail=ADDRESS_TAKEN) from clash
+    await _close_other_sockets(principal)
     return Response(status_code=204)
 
 
@@ -194,4 +206,5 @@ async def unlink_identity(
                 raise HTTPException(status_code=409, detail="that is the only way in")
             await session.execute(delete(AuthIdentity).where(AuthIdentity.id == linked.id))
             await _revoke_others(session, principal)
+    await _close_other_sockets(principal)
     return Response(status_code=204)
