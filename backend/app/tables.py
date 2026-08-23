@@ -452,6 +452,27 @@ class OAuthFlow(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class AssetShare(Base):
+    """A link that shows one picture to whoever holds it.
+
+    One active share per asset, so revoking the link somebody can see cannot
+    leave an older one alive behind it. Only the hash is kept: the token lives
+    in the URL fragment the owner copied and nowhere else.
+    """
+
+    __tablename__ = "asset_shares"
+    __table_args__ = (
+        Index("asset_shares_one_active", "asset_id", unique=True,
+              postgresql_where=text("revoked_at IS NULL")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"))
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    expires_at: Mapped[datetime]
+    revoked_at: Mapped[datetime | None]
+
+
 class SuppressedAddress(Base):
     """An address the relay refused outright, or the provider reported back.
 

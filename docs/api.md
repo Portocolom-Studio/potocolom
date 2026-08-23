@@ -81,9 +81,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
 | DELETE `/api/v1/account` | issue #10 | deactivate now, hard delete within 30 days |
-| POST `/api/v1/assets/{id}/share` | issue #17 | mint a public share token |
-| DELETE `/api/v1/assets/{id}/share` | issue #17 | revoke the share token |
-| GET `/shared/{token}` | issue #17 | public share link target (CDN path in the cloud) |
+| POST `/api/v1/shares` | implemented | mint the link for one asset, for 1, 7 or 30 days |
+| DELETE `/api/v1/shares/{id}` | implemented | revoke a share; the link stops resolving |
+| POST `/api/v1/shared` | implemented | resolve a share token; no account needed |
 | GET `/api/v1/telemetry/preview` | implemented (#29) | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints
@@ -305,14 +305,24 @@ The flow is authorization code with PKCE S256. The state is minted here and only
 
 A provider-verified address raises this account's `mail_verified` only when it normalizes equal to the account's own primary address. A provider proving some other address says nothing about this one. (Google and GitHub; Apple is deferred.)
 
-### Sharing (issue #17)
+## Sharing
 
-Share operates on an asset id (assets are returned nested in the generations history). The share collection itself is not yet built.
+A share is a link that shows one picture to whoever holds it. The token lives in the URL fragment, which a browser never sends to a server, and comes back in a POST body. There is no GET that takes one: a token in a path or a query would sit in access logs, proxy traces and `Referer` headers all the way to whoever the link was forwarded to.
 
+```text
+POST   /api/v1/shares          {"asset_id": "...", "days": 1 | 7 | 30}
+                               201 {"id": "...", "url": "https://.../shared#<token>"}
+DELETE /api/v1/shares/{id}     204, the link stops resolving
+POST   /api/v1/shared          {"token": "..."}
+                               200 {"asset": {"id", "width", "height", "mime"},
+                                    "prompt": "...", "model": "...", "url": "..."}
 ```
-POST   /api/v1/assets/{id}/share    201 {"url": "https://.../shared/<unguessable token>"}
-DELETE /api/v1/assets/{id}/share    204, the token stops resolving (short CDN cache bounds the tail)
-```
+
+- One active share per asset. Sharing an asset that is already shared mints a new link and revokes the previous one in the same transaction, so revoking the link somebody can see never leaves an older one alive behind it.
+- The token is reusable until it is revoked or its 1, 7 or 30 days run out. Only its SHA-256 is stored, so a share cannot be read back out of the database and shown again.
+- The answer carries the picture and nothing about the account behind it: no address, no account id, no storage key. `url` is an address for the original asset that lasts 60 seconds, minted fresh on every resolve.
+- Every refusal is the same `404`, whether the token was never minted, was revoked, or expired.
+- Creating a share needs the owner's session at the `user` role, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
 
 ### Account and GDPR (issue #10)
 
@@ -388,11 +398,11 @@ sequenceDiagram
     participant B as Browser
     participant A as API server
     participant F as Friend's browser
-    B->>A: POST /api/v1/assets/42/share (issue 17)
-    A-->>B: https://app.potocolom.com/shared/x7Kf...
-    F->>A: GET /shared/x7Kf...
-    A-->>F: the image, no account needed
-    B->>A: DELETE /api/v1/assets/42/share (issue 17)
+    B->>A: POST /api/v1/shares, asset 42, 7 days
+    A-->>B: 201 https://app.potocolom.com/shared#x7Kf...
+    F->>A: POST /api/v1/shared, token x7Kf...
+    A-->>F: the picture, the prompt and the model, no account needed
+    B->>A: DELETE /api/v1/shares/{id}
     A-->>B: 204, the link stops resolving
     B->>A: GET /api/v1/account/export (issue 10)
     A-->>B: JSON + image archive

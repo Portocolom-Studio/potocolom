@@ -562,7 +562,7 @@ Generated images land in object storage through the storage adapter (local files
 
 Object keys are `{prefix}{asset_id}.png` for PNG masters with a sibling `{asset_id}-thumb.webp` WebP thumbnail. History is the `assets` table, never a bucket listing.
 
-**Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token on a `/shared/*` behavior with a short TTL. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
+**Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token carried in the `/shared#<token>` fragment and resolved by `POST /api/v1/shared`, which answers with a 60-second signed URL for the picture; no share is cached at the edge, so a revoked link stops working at once. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
 **Self-hosted:** master keys are `{user_id}/{job_id}.png` with `{user_id}/{job_id}-thumb.webp` thumbnails under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
 
@@ -577,7 +577,9 @@ flowchart LR
     end
     subgraph PG["PostgreSQL, source of truth"]
         J[("jobs<br>params incl. prompt, timings,<br>category, starred_at")]
-        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>share_token, expires_at")]
+        AS[("assets<br>storage_key, mime, dimensions,<br>thumbnail via parent_asset_id,<br>expires_at")]
+        SH[("asset_shares<br>token hash, expires_at, revoked_at,<br>one active share per asset")]
+        AS -->|"asset_id"| SH
     end
     B["Browser<br>history, gallery, favorites,<br>share links"]
     API["API: GET /api/v1/generations<br>limit, cursor, state, starred<br>category filter with issue #95"]
@@ -655,6 +657,7 @@ erDiagram
     workers ||--o{ gpu_sample_rollups : summarized_by
     gpu_sample_rollups ||--o{ gpu_samples : condenses
     jobs |o--o{ assets : produces
+    assets ||--o{ asset_shares : shared_by
 
     users {
         uuid id PK
@@ -729,8 +732,15 @@ erDiagram
         text mime
         int width
         int height
-        text share_token "null unless shared"
+        text share_token "retired, removed by the R18 cleanup"
         timestamptz expires_at "set for trial accounts"
+    }
+    asset_shares {
+        uuid id PK
+        uuid asset_id FK
+        bytea token_hash UK "sha256 of the token in the link fragment"
+        timestamptz expires_at "1, 7 or 30 days"
+        timestamptz revoked_at "null while the link works"
     }
     realtime_sessions {
         uuid id PK
