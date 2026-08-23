@@ -1096,6 +1096,16 @@ Shares live in `asset_shares`, one active row per asset held by a partial unique
 
 Rejected alternatives: a public key-addressed GET on the storage key (the key is derivable, so the link is not the capability, and R1 retired those routes); `assets.share_token`, the retired column, which gives two answers to the question of whether an asset is shared and cannot express revocation or expiry at all; a one-use token (a share is meant to be forwarded and reopened, so a link that dies on the first view is not a share); a cached CDN behavior on `/shared/{token}` (the edge TTL then decides how long a revoked link keeps working).
 
+## Account states carry the capability, and cancellation is cooperative
+
+An account's state is the single place that decides whether it may sign in, change anything, hold a GPU slot, or keep a share link resolving. Leaving `active` does all of the revocation in one transaction and then reaches the things a transaction cannot reach: the sockets that bound their principal at the handshake, and the workers holding its jobs.
+
+Suspension pauses shares rather than revoking them. A revoked share cannot be un-revoked without minting a new link and asking the owner to send it again, so revoking on suspension would make a reversible administrative act permanent for everybody who held the link.
+
+Job cancellation writes `cancelled` to PostgreSQL before the worker is told, and the message to the worker is best effort and bounded. The row is the authority: a worker that never hears the cancellation finishes its image, uploads it, and has it discarded by the terminal-state check that already guards every late verdict. Its measured GPU time is recorded and charged anyway.
+
+Rejected alternatives: cancelling the worker's task and treating its silence as the record (a worker that dies mid-cancel then leaves a job running forever in the row); waiting for the worker to confirm before marking the row (the caller waits on a machine that may be wedged, and the answer is already decided); discarding the GPU time a cancelled job spent (the hardware ran, the fleet paid for it, and a free cancel button is a way to run a GPU for nothing); a `cancelled` account state (a person is not a unit of work, and the states that stop an account already exist).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

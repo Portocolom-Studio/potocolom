@@ -304,6 +304,31 @@ Three orderings in that diagram are load bearing, and each one was a defect befo
 
 Every attempt writes to keys of its own, so nothing overwrites anything and every terminal path is responsible for collecting what the attempts left. Dispatch uploads sit under `dispatch/`; the winning object is copied into the library prefix on commit, so a replayed presigned PUT cannot recreate a durable asset (issue #278). A delete that fails is not lost: it is recorded and retried on a sweep, which is what keeps a denied permission from turning into an object nobody will ever name again. The token in the dispatch is what ties all of this to one attempt rather than to the job, so a worker still holding an old dispatch cannot speak for the attempt that replaced it, and cannot write to its keys.
 
+### Account states and cancelling work
+
+An account is `active`, `suspended`, `disabled`, `deletion_pending`, or `purging`, and that state is the single place that decides whether it may sign in, change anything, hold a GPU slot, or keep a share link resolving. `cancelled` is a job state and never an account state: a person is not a unit of work.
+
+```mermaid
+stateDiagram-v2
+    [*] --> active
+    active --> suspended: paused, read only
+    suspended --> active: restored
+    active --> disabled
+    suspended --> disabled
+    disabled --> active
+    active --> deletion_pending
+    suspended --> deletion_pending
+    disabled --> deletion_pending
+    deletion_pending --> purging: the deletion sweep
+    purging --> [*]
+```
+
+Transitions are compare-and-set inside one transaction and idempotent, so a retry after a timeout is not a second event and an illegal transition is a conflict rather than a silent overwrite. `purging` is reachable only from the sweep, never from an administrator's request. Restoring a `deletion_pending` account restores the data with it, which is the deletion round's work rather than this diagram's.
+
+Leaving `active` revokes every session in the same transaction as the state, then reaches what a transaction cannot: the realtime sockets that bound their principal at the handshake, and the workers holding that account's jobs.
+
+Cancellation is cooperative and PostgreSQL is the authority. The row is marked `cancelled` first, and the worker is told afterwards, best effort and bounded, because an `await` cannot interrupt the thread holding the GPU. A worker takes the cancellation between diffusion steps or between upscale tiles. One that never hears it finishes its image and uploads it, and the terminal-state check that already guards every late verdict discards what it wrote. The GPU milliseconds it measured are recorded and charged either way, because the hardware really did run for that long.
+
 ### Upscale (post-generation)
 
 Native generation stays at model training resolution (typically 512 or 1024). 2K and 4K output is a separate queued job that takes an existing asset and a factor (x2 or x4):
