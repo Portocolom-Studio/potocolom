@@ -110,6 +110,15 @@ async def change_password(
                 session.add(AuthIdentity(user_id=principal.user.id, provider="password",
                                          subject=address.strip().lower(),
                                          password_hash=password_hash))
+                try:
+                    await session.flush()
+                except IntegrityError as taken:
+                    # Two requests can both read no password identity. The one
+                    # that loses the unique index is a conflict, not a fault of
+                    # this install, and a 500 would say otherwise.
+                    raise HTTPException(
+                        status_code=409, detail="this account already has a password",
+                    ) from taken
             else:
                 await session.execute(
                     update(AuthIdentity).where(AuthIdentity.id == existing.id)

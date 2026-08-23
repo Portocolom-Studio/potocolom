@@ -368,3 +368,57 @@ def test_an_address_cannot_be_a_list_of_addresses(accounts):
         for bad in ("me@evil.com, victim@corp.com", "me@evil.com;victim@corp.com",
                     "a@b.co <victim@corp.com>", "two@@example.com", "sp ace@example.com"):
             assert _change_email(client, bad).status_code == 400, bad
+
+
+@pytest.mark.db
+def test_an_address_needs_something_on_both_sides_of_the_at(accounts):
+    """An empty local part or an empty domain reaches no mailbox, and an
+    account whose address reaches nobody can never be recovered by mail."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "halves@example.com")
+        assert _login(client, "halves@example.com").status_code == 204
+        for bad in ("@example.com", "nobody@", "@", " @example.com", "nobody@ "):
+            assert _change_email(client, bad).status_code == 400, bad
+
+
+@pytest.mark.db
+def test_two_requests_adding_a_password_at_once_leave_one_conflict(accounts):
+    """Both read no password identity, and the unique index decides. The one
+    that loses is a conflict, not a fault of this install."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app import credentials
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "twice@example.com")
+        client.portal.call(_link, user.id, "google", "g-twice")
+        assert _login(client, "twice@example.com").status_code == 204
+
+        async def drop_password():
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("DELETE FROM auth_identities WHERE user_id = :id "
+                         "AND provider = 'password'"), {"id": user.id})
+                await session.commit()
+
+        client.portal.call(drop_password)
+        principal = client.portal.call(sessions.resolve,
+                                       next(c.value for c in client.cookies.jar
+                                            if c.name.endswith("potocolom_session")))
+        body = credentials.PasswordChange(password=NEW)
+
+        async def both():
+            return await asyncio.gather(
+                credentials.change_password(body, principal),
+                credentials.change_password(body, principal),
+                return_exceptions=True,
+            )
+
+        outcomes = client.portal.call(both)
+        identities = client.portal.call(_identities, user.id)
+    codes = sorted(o.status_code for o in outcomes if isinstance(o, HTTPException))
+    assert codes in ([], [409])
+    assert all(not isinstance(o, Exception) or isinstance(o, HTTPException) for o in outcomes)
+    assert sum(1 for i in identities if i.provider == "password") == 1
