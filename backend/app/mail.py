@@ -209,9 +209,12 @@ async def _deliver_one(row_id: uuid.UUID, settings: Settings) -> None:
 
 
 async def mail_loop() -> None:
+    """Sleeps first. A sweep on startup makes every API start do database work
+    before it serves anything, and nothing is waiting that was not waiting a
+    moment earlier."""
     while True:
-        await deliver_due()
         await asyncio.sleep(SWEEP_INTERVAL)
+        await deliver_due()
 
 
 async def _attempt(row: MailOutbox, settings: Settings) -> None:
