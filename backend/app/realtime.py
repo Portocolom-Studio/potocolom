@@ -923,7 +923,8 @@ async def fleet(ws: WebSocket) -> None:
                             session.ready.set()
                         elif session.state == "live":
                             schedule_reassign(session)
-                    elif control["type"] in ("job_progress", "job_done", "job_failed"):
+                    elif control["type"] in ("job_progress", "job_done", "job_failed",
+                                             "job_cancelled"):
                         from app import jobs  # late import; jobs reads this module's state
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
