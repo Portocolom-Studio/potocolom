@@ -152,7 +152,7 @@ operators who follow compose do not hit this.
 
 ## Accounts
 
-There are none yet. `AUTH_MODE` defaults to `none`, every request resolves to a single local
+`AUTH_MODE` defaults to `none`. In that mode every request resolves to a single local
 user, and that user holds the `admin` role, so anyone who can reach the API can do anything
 the install can do. Keep it on a trusted network, and see the fleet secret above for the
 worker side of the same question.

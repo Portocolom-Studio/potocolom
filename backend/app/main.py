@@ -86,12 +86,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     async with AsyncExitStack() as running:
         if await db.connect():
-            await jobs.recover()
             if settings.auth_mode == "accounts":
-                # Held for the life of the process. Two accounts processes
-                # without Redis do not fail loudly, they disagree quietly
-                # about who owns a socket, so the second one refuses here.
+                # Before recovery, and held for the life of the process. Two
+                # accounts processes without Redis do not fail loudly, they
+                # disagree quietly about who owns a socket, and a process that
+                # is about to refuse must not requeue anybody's jobs first.
                 await running.enter_async_context(db.hold_accounts_startup_lock())
+            await jobs.recover()
         tasks = [
             asyncio.create_task(reap_dead_workers()),
             asyncio.create_task(jobs.dispatch_loop()),
