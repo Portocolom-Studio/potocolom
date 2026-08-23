@@ -153,21 +153,20 @@ async def asset(
 
 @router.get("/api/v1/shared-picture")
 async def shared_picture(
-    asset: uuid.UUID,
+    share: uuid.UUID,
     expires: int,
     signature: str,
     session: AsyncSession = Depends(db.get_session),
 ):
     """The bytes behind a share, addressed by a signature that lasts a minute.
 
-    Signed rather than stored, so any instance can answer it, and refused as
-    one 404 whatever is wrong with the address.
+    The signature is checked without a database round trip, and the share
+    behind it is read on every fetch, so revoking a share also ends the
+    addresses already handed out. One 404 whatever is wrong with the address.
     """
     from app import shares
 
-    if not shares.picture_authorized(asset, expires, signature):
-        raise HTTPException(status_code=404, detail="no such picture")
-    row = await session.get(Asset, asset)
+    row = await shares.pictured_asset(session, share, expires, signature)
     if row is None:
         raise HTTPException(status_code=404, detail="no such picture")
     return await _serve(row, ttl=shares.PICTURE_TTL)

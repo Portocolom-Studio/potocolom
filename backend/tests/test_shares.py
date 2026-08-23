@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -50,6 +51,15 @@ async def _owned_asset(user_id: uuid.UUID, prompt: str = "a red house on a hill"
         return asset
 
 
+async def _stored(asset: Asset) -> None:
+    """The picture route serves a file, so the row needs one behind it."""
+    from app.storage import get_storage
+
+    path = get_storage().path(asset.storage_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n not a real image, and nothing here reads it")
+
+
 async def _shares() -> list[AssetShare]:
     async with db.session_factory() as session:
         return list((await session.execute(select(AssetShare))).scalars().all())
@@ -64,8 +74,15 @@ def _resolve(client, token):
     return client.post("/api/v1/shared", headers={"Origin": ORIGIN}, json={"token": token})
 
 
-def _token_of(url: str) -> str:
+def _token_of_url(url: str) -> str:
     return url.split("#", 1)[1]
+
+
+def _token_of(made) -> str:
+    """Takes the response, not the URL: a share that was refused would
+    otherwise fail here as an IndexError with the status code lost."""
+    assert made.status_code == 201, made.status_code
+    return made.json()["url"].split("#", 1)[1]
 
 
 @pytest.mark.db
@@ -81,7 +98,7 @@ def test_a_share_is_a_fragment_link_and_only_its_hash_is_kept(library):
         url = made.json()["url"]
         assert url.startswith(f"{ORIGIN}/shared#")
         row = client.portal.call(_shares)[0]
-    assert _token_of(url).encode() not in row.token_hash
+    assert _token_of_url(url).encode() not in row.token_hash
 
 
 @pytest.mark.db
@@ -127,7 +144,7 @@ def test_a_share_resolves_without_any_credential_and_stays_reusable(library):
         user = client.portal.call(_make, "reuse@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "reuse@example.com").status_code == 204
-        token = _token_of(_share(client, asset.id).json()["url"])
+        token = _token_of(_share(client, asset.id))
     with TestClient(app, base_url=ORIGIN) as anyone:
         first = _resolve(anyone, token)
         assert first.status_code == 200
@@ -142,7 +159,7 @@ def test_the_answer_carries_the_picture_and_nothing_about_who_made_it(library):
         user = client.portal.call(_make, "allowlist@example.com")
         asset = client.portal.call(_owned_asset, user.id, "a cat in a hat")
         assert _login(client, "allowlist@example.com").status_code == 204
-        token = _token_of(_share(client, asset.id).json()["url"])
+        token = _token_of(_share(client, asset.id))
     with TestClient(app, base_url=ORIGIN) as anyone:
         body = _resolve(anyone, token).json()
     assert set(body) == {"asset", "prompt", "model", "url"}
@@ -161,12 +178,45 @@ def test_the_picture_url_lasts_sixty_seconds(library):
         user = client.portal.call(_make, "sixty@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "sixty@example.com").status_code == 204
-        token = _token_of(_share(client, asset.id).json()["url"])
+        token = _token_of(_share(client, asset.id))
     with TestClient(app, base_url=ORIGIN) as anyone:
-        from app import shares
+        minted = datetime.now(timezone.utc)
+        url = _resolve(anyone, token).json()["url"]
+    expires = int(parse_qs(urlsplit(url).query)["expires"][0])
+    lasts = datetime.fromtimestamp(expires, timezone.utc) - minted
+    assert timedelta(seconds=58) < lasts <= timedelta(seconds=60)
 
-        assert shares.PICTURE_TTL == 60
-        assert _resolve(anyone, token).json()["url"]
+
+@pytest.mark.db
+def test_revoking_a_share_ends_the_picture_addresses_it_handed_out(library):
+    """A minute is a bound on a leaked address, not on revocation: whoever
+    revoked a link meant it to stop showing the picture now."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "endsit@example.com")
+        asset = client.portal.call(_owned_asset, user.id)
+        assert _login(client, "endsit@example.com").status_code == 204
+        client.portal.call(_stored, asset)
+        made = _share(client, asset.id).json()
+        url = _resolve(client, _token_of_url(made["url"])).json()["url"]
+        path = urlsplit(url).path + "?" + urlsplit(url).query
+        assert client.get(path).status_code == 200
+        assert client.delete(f"/api/v1/shares/{made['id']}",
+                             headers=_csrf(client)).status_code == 204
+        assert client.get(path).status_code == 404
+
+
+@pytest.mark.db
+def test_a_picture_address_cannot_be_pointed_at_another_share(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "swapper@example.com")
+        mine = client.portal.call(_owned_asset, user.id)
+        assert _login(client, "swapper@example.com").status_code == 204
+        url = _resolve(client, _token_of(_share(client, mine.id))).json()["url"]
+        query = parse_qs(urlsplit(url).query)
+        other = uuid.uuid4()
+        forged = (f"{urlsplit(url).path}?share={other}&expires={query['expires'][0]}"
+                  f"&signature={query['signature'][0]}")
+        assert client.get(forged).status_code == 404
 
 
 @pytest.mark.db
@@ -176,7 +226,7 @@ def test_a_revoked_share_stops_resolving(library):
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "revoker@example.com").status_code == 204
         made = _share(client, asset.id).json()
-        token = _token_of(made["url"])
+        token = _token_of_url(made["url"])
         assert _resolve(client, token).status_code == 200
         assert client.delete(f"/api/v1/shares/{made['id']}",
                              headers=_csrf(client)).status_code == 204
@@ -189,7 +239,7 @@ def test_an_expired_share_stops_resolving(library):
         user = client.portal.call(_make, "expiry@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "expiry@example.com").status_code == 204
-        token = _token_of(_share(client, asset.id).json()["url"])
+        token = _token_of(_share(client, asset.id))
 
         async def age():
             async with db.session_factory() as session:
@@ -209,8 +259,8 @@ def test_sharing_again_replaces_the_link_it_had(library):
         user = client.portal.call(_make, "replacer@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "replacer@example.com").status_code == 204
-        first = _token_of(_share(client, asset.id).json()["url"])
-        second = _token_of(_share(client, asset.id, 30).json()["url"])
+        first = _token_of(_share(client, asset.id))
+        second = _token_of(_share(client, asset.id, 30))
         assert first != second
         assert _resolve(client, first).status_code == 404
         assert _resolve(client, second).status_code == 200
@@ -235,7 +285,7 @@ def test_only_the_owner_can_revoke(library):
         assert _login(other, "meddler@example.com").status_code == 204
         assert other.delete(f"/api/v1/shares/{made['id']}",
                             headers=_csrf(other)).status_code == 404
-        assert _resolve(other, _token_of(made["url"])).status_code == 200
+        assert _resolve(other, _token_of_url(made["url"])).status_code == 200
 
 
 @pytest.mark.db
@@ -246,7 +296,7 @@ def test_there_is_no_way_to_fetch_a_share_by_url(library):
         user = client.portal.call(_make, "noget@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "noget@example.com").status_code == 204
-        token = _token_of(_share(client, asset.id).json()["url"])
+        token = _token_of(_share(client, asset.id))
         assert client.get(f"/api/v1/shared/{token}").status_code == 404
         assert client.get("/api/v1/shared", params={"token": token}).status_code == 405
 
@@ -301,3 +351,55 @@ def test_two_requests_sharing_one_asset_leave_one_link(library):
         live = [row for row in client.portal.call(_shares) if row.revoked_at is None]
     assert len(live) == 1
     assert all(not isinstance(o, Exception) or isinstance(o, HTTPException) for o in outcomes)
+
+
+@pytest.mark.db
+def test_a_viewer_cannot_mint_a_link_but_can_take_one_down(library):
+    """Minting a public link is a mutation and belongs to the user tier. An
+    account demoted while a link was live must still be able to end it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "seer@example.com")
+        asset = client.portal.call(_owned_asset, user.id)
+        assert _login(client, "seer@example.com").status_code == 204
+        made = _share(client, asset.id).json()
+
+        async def demote() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("UPDATE users SET role = 'viewer' WHERE id = :id"),
+                                      {"id": user.id})
+                await session.commit()
+
+        client.portal.call(demote)
+        assert _share(client, asset.id).status_code == 403
+        assert client.delete(f"/api/v1/shares/{made['id']}",
+                             headers=_csrf(client)).status_code == 204
+
+
+@pytest.mark.db
+def test_an_install_with_no_key_ring_can_still_share(library, monkeypatch):
+    """none mode is the self-hosted default and has no ROOT_KEYS at all. The
+    picture address is signed for a minute, not stored, so a key that lives
+    only in this process is enough to make sharing work there."""
+    from app import keyring, shares
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "keyless@example.com")
+        asset = client.portal.call(_owned_asset, user.id)
+        client.portal.call(_stored, asset)
+        assert _login(client, "keyless@example.com").status_code == 204
+        token = _token_of(_share(client, asset.id))
+
+        monkeypatch.setattr(shares.keyring, "get_key_ring",
+                            _raises(keyring.KeyRingError("ROOT_KEYS is empty")))
+        url = _resolve(client, token).json()["url"]
+        assert client.get(urlsplit(url).path + "?" + urlsplit(url).query).status_code == 200
+
+
+def _raises(error):
+    def refuse():
+        raise error
+
+    # The accounts fixture clears this cache on the way out, and it is a
+    # cached function everywhere but here.
+    refuse.cache_clear = lambda: None
+    return refuse

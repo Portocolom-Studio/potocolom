@@ -309,7 +309,7 @@ A provider-verified address raises this account's `mail_verified` only when it n
 
 A share is a link that shows one picture to whoever holds it. The token lives in the URL fragment, which a browser never sends to a server, and comes back in a POST body. There is no GET that takes one: a token in a path or a query would sit in access logs, proxy traces and `Referer` headers all the way to whoever the link was forwarded to.
 
-```
+```text
 POST   /api/v1/shares          {"asset_id": "...", "days": 1 | 7 | 30}
                                201 {"id": "...", "url": "https://.../shared#<token>"}
 DELETE /api/v1/shares/{id}     204, the link stops resolving
@@ -322,7 +322,7 @@ POST   /api/v1/shared          {"token": "..."}
 - The token is reusable until it is revoked or its 1, 7 or 30 days run out. Only its SHA-256 is stored, so a share cannot be read back out of the database and shown again.
 - The answer carries the picture and nothing about the account behind it: no address, no account id, no storage key. `url` is an address for the original asset that lasts 60 seconds, minted fresh on every resolve.
 - Every refusal is the same `404`, whether the token was never minted, was revoked, or expired.
-- Creating and revoking a share need the owner's session; resolving one needs nothing at all, which is what makes it a share.
+- Creating a share needs the owner's session at the `user` role, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
 
 ### Account and GDPR (issue #10)
 
