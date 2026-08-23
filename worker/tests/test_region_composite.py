@@ -4,8 +4,35 @@ from PIL import Image
 from worker.region_composite import (
     composite_rgb,
     feather_change_mask,
+    max_channel_difference,
     sketch_change_mask,
 )
+
+
+def test_max_channel_difference_returns_all_zero_for_identical_images():
+    image = Image.new("RGB", (3, 2), (12, 34, 56))
+
+    result = max_channel_difference(image, image.copy())
+
+    assert result.mode == "L"
+    assert result.size == image.size
+    assert set(result.getdata()) == {0}
+
+
+def test_max_channel_difference_returns_single_channel_delta():
+    previous = Image.new("RGB", (3, 2), (10, 20, 30))
+    current = previous.copy()
+    current.putpixel((1, 1), (10, 77, 30))
+
+    result = max_channel_difference(previous, current)
+
+    assert result.getpixel((1, 1)) == 57
+    assert sum(pixel != 0 for pixel in result.getdata()) == 1
+
+
+def test_max_channel_difference_rejects_size_mismatch():
+    with pytest.raises(ValueError):
+        max_channel_difference(Image.new("RGB", (2, 2)), Image.new("RGB", (3, 2)))
 
 
 def test_sketch_change_mask_returns_all_zero_for_identical_images():

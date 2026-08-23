@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "worker"))
 region_composite = importlib.import_module("worker.region_composite")
 composite_rgb = region_composite.composite_rgb
 feather_change_mask = region_composite.feather_change_mask
+max_channel_difference = region_composite.max_channel_difference
 sketch_change_mask = region_composite.sketch_change_mask
 
 MODELS_DIR = ROOT / "worker" / "models"
@@ -46,20 +47,20 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[min(rank, len(ordered)) - 1]
 
 
+def threshold_map(image: Image.Image) -> Image.Image:
+    mapped = ImageOps.invert(image.convert("L"))
+    return mapped.point(lambda value: 255 if value >= 128 else 0).convert("RGB")
+
+
 def canvas_map(kind: str) -> Image.Image:
     canvas = Image.new("RGB", (SIZE, SIZE), "white")
     draw = ImageDraw.Draw(canvas)
     draw.line([(40, 390), (150, 250), (275, 320), (440, 190)], fill=(17, 24, 39), width=6)
-    if kind == "small_stroke":
+    if kind in ("small_stroke", "erasure"):
         draw.line([(315, 400), (350, 370)], fill=(17, 24, 39), width=6)
-    elif kind == "erasure":
-        draw.line([(315, 400), (350, 370)], fill=(17, 24, 39), width=6)
-    elif kind == "shape_close":
-        draw.arc([(130, 130), (380, 400)], 35, 320, fill=(17, 24, 39), width=6)
     elif kind != "base":
         raise ValueError(f"unknown case: {kind}")
-    mapped = ImageOps.invert(canvas.convert("L"))
-    return mapped.point(lambda value: 255 if value >= 128 else 0).convert("RGB")
+    return threshold_map(canvas)
 
 
 def case_maps(name: str) -> tuple[Image.Image, Image.Image]:
@@ -78,12 +79,8 @@ def case_maps(name: str) -> tuple[Image.Image, Image.Image]:
             width=6,
         )
         return (
-            ImageOps.invert(open_map.convert("L")).point(
-                lambda value: 255 if value >= 128 else 0
-            ).convert("RGB"),
-            ImageOps.invert(closed_map.convert("L")).point(
-                lambda value: 255 if value >= 128 else 0
-            ).convert("RGB"),
+            threshold_map(open_map),
+            threshold_map(closed_map),
         )
     raise ValueError(f"unknown case: {name}")
 
@@ -137,7 +134,11 @@ def encode_prompt(pipeline: Any) -> dict[str, Any]:
         "pooled_prompt_embeds",
         "negative_pooled_prompt_embeds",
     )
-    return {name: value for name, value in zip(names, encoded) if value is not None}
+    return {
+        name: value
+        for name, value in zip(names, encoded, strict=True)
+        if value is not None
+    }
 
 
 def render(
@@ -177,21 +178,15 @@ def decode_preview(pipeline: Any, decoder: Any, latent: Any) -> Image.Image:
 
 
 def changed_fraction(previous: Image.Image, current: Image.Image) -> float:
-    difference = ImageChops.difference(previous.convert("RGB"), current.convert("RGB"))
-    channels = difference.split()
-    changed = ImageChops.lighter(
-        ImageChops.lighter(channels[0], channels[1]), channels[2]
-    ).point(lambda value: 1 if value else 0)
+    changed = max_channel_difference(previous, current).point(
+        lambda value: 1 if value else 0
+    )
     return sum(changed.getdata()) / (previous.width * previous.height)
 
 
 def exact_where(alpha: Image.Image, left: Image.Image, right: Image.Image, value: int) -> bool:
     selected = alpha.point(lambda pixel: 255 if pixel == value else 0)
-    difference = ImageChops.difference(left.convert("RGB"), right.convert("RGB"))
-    channels = difference.split()
-    any_difference = ImageChops.lighter(
-        ImageChops.lighter(channels[0], channels[1]), channels[2]
-    )
+    any_difference = max_channel_difference(left, right)
     return ImageChops.multiply(selected, any_difference).getbbox() is None
 
 
@@ -201,12 +196,8 @@ def webp_round_trip(image: Image.Image) -> float:
     buffer.seek(0)
     with Image.open(buffer) as opened:
         decoded = opened.convert("RGB")
-    difference = ImageChops.difference(image.convert("RGB"), decoded)
-    channels = difference.split()
-    any_difference = ImageChops.lighter(
-        ImageChops.lighter(channels[0], channels[1]), channels[2]
-    )
-    return sum(any_difference.getdata()) / (SIZE * SIZE * 255)
+    any_difference = max_channel_difference(image, decoded)
+    return sum(any_difference.getdata()) / (image.width * image.height * 255)
 
 
 def save_image(image: Image.Image, path: Path | None) -> None:
@@ -240,64 +231,72 @@ def main() -> int:
         properties = manifest["parameters"]["properties"]
         steps = int(properties["steps"]["default"])
         scale = float(properties["structure_strength"]["default"])
-        pipeline = build_pipeline(manifest, torch.float16)
-        prompt_kwargs = encode_prompt(pipeline)
-        decoder = AutoencoderTiny.from_pretrained(
-            manifest["preview_decoder"], torch_dtype=torch.float16
-        ).to("cuda")
-        decoder.eval()
-        render(pipeline, prompt_kwargs, canvas_map("base"), steps, scale, SEED, "latent")
-        model_report: dict[str, Any] = {
-            "model": model_id,
-            "steps": steps,
-            "adapter_scale": scale,
-            "cases": [],
-        }
-        for case_name in ("small_stroke", "erasure", "shape_close"):
-            previous_map, current_map = case_maps(case_name)
-            previous_latent = render(
-                pipeline, prompt_kwargs, previous_map, steps, scale, SEED, "latent"
+        pipeline = None
+        decoder = None
+        try:
+            pipeline = build_pipeline(manifest, torch.float16)
+            prompt_kwargs = encode_prompt(pipeline)
+            decoder = AutoencoderTiny.from_pretrained(
+                manifest["preview_decoder"], torch_dtype=torch.float16
+            ).to("cuda")
+            decoder.eval()
+            render(
+                pipeline, prompt_kwargs, canvas_map("base"), steps, scale, SEED, "latent"
             )
-            current_latent = render(
-                pipeline, prompt_kwargs, current_map, steps, scale, SEED, "latent"
-            )
-            previous = decode_preview(pipeline, decoder, previous_latent)
-            current = decode_preview(pipeline, decoder, current_latent)
-            frame_times: list[float] = []
-            for _ in range(args.frames):
-                started = time.perf_counter()
-                frame_latent = render(
+            model_report: dict[str, Any] = {
+                "model": model_id,
+                "steps": steps,
+                "adapter_scale": scale,
+                "cases": [],
+            }
+            for case_name in ("small_stroke", "erasure", "shape_close"):
+                previous_map, current_map = case_maps(case_name)
+                previous_latent = render(
+                    pipeline, prompt_kwargs, previous_map, steps, scale, SEED, "latent"
+                )
+                current_latent = render(
                     pipeline, prompt_kwargs, current_map, steps, scale, SEED, "latent"
                 )
-                decode_preview(pipeline, decoder, frame_latent)
-                torch.cuda.synchronize()
-                frame_times.append((time.perf_counter() - started) * 1000)
-            raw_mask = sketch_change_mask(previous_map, current_map)
-            sweeps: list[dict[str, Any]] = []
-            for dilation_px, feather_px in SWEEP:
-                alpha = feather_change_mask(raw_mask, dilation_px, feather_px)
-                composited = composite_rgb(previous, current, alpha)
-                save_image(
-                    composited,
-                    save_dir / f"{model_id}-{case_name}-d{dilation_px}-f{feather_px}.png"
-                    if save_dir
-                    else None,
-                )
-                sweeps.append({
-                    "dilation_px": dilation_px,
-                    "feather_px": feather_px,
-                    "composited_changed_frac": changed_fraction(previous, composited),
-                    "outside_mask_prev_exact": exact_where(alpha, composited, previous, 0),
-                    "inside_mask_new_exact": exact_where(alpha, composited, current, 255),
+                previous = decode_preview(pipeline, decoder, previous_latent)
+                current = decode_preview(pipeline, decoder, current_latent)
+                frame_times: list[float] = []
+                for _ in range(args.frames):
+                    started = time.perf_counter()
+                    frame_latent = render(
+                        pipeline, prompt_kwargs, current_map, steps, scale, SEED, "latent"
+                    )
+                    decode_preview(pipeline, decoder, frame_latent)
+                    torch.cuda.synchronize()
+                    frame_times.append((time.perf_counter() - started) * 1000)
+                raw_mask = sketch_change_mask(previous_map, current_map)
+                sweeps: list[dict[str, Any]] = []
+                for dilation_px, feather_px in SWEEP:
+                    alpha = feather_change_mask(raw_mask, dilation_px, feather_px)
+                    composited = composite_rgb(previous, current, alpha)
+                    save_image(
+                        composited,
+                        save_dir / f"{model_id}-{case_name}-d{dilation_px}-f{feather_px}.png"
+                        if save_dir
+                        else None,
+                    )
+                    sweeps.append({
+                        "dilation_px": dilation_px,
+                        "feather_px": feather_px,
+                        "composited_changed_frac": changed_fraction(previous, composited),
+                        "outside_mask_prev_exact": exact_where(alpha, composited, previous, 0),
+                        "inside_mask_new_exact": exact_where(alpha, composited, current, 255),
+                    })
+                model_report["cases"].append({
+                    "name": case_name,
+                    "uncomposited_changed_frac": changed_fraction(previous, current),
+                    "p95_ms": percentile(frame_times, 95),
+                    "webp_round_trip_mean_max_channel_over_255": webp_round_trip(current),
+                    "sweeps": sweeps,
                 })
-            model_report["cases"].append({
-                "name": case_name,
-                "uncomposited_changed_frac": changed_fraction(previous, current),
-                "p95_ms": percentile(frame_times, 95),
-                "webp_round_trip_mean_abs_over_255": webp_round_trip(current),
-                "sweeps": sweeps,
-            })
-        report["models"].append(model_report)
+            report["models"].append(model_report)
+        finally:
+            del pipeline, decoder
+            torch.cuda.empty_cache()
     print(json.dumps(report, indent=2))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2) + "\n")

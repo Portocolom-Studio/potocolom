@@ -3,16 +3,20 @@ from __future__ import annotations
 from PIL import Image, ImageChops, ImageFilter
 
 
-def sketch_change_mask(previous: Image.Image, current: Image.Image) -> Image.Image:
+def max_channel_difference(
+    previous: Image.Image, current: Image.Image
+) -> Image.Image:
     if previous.size != current.size:
         raise ValueError("images must have the same size")
-    previous_rgb = previous.convert("RGB")
-    current_rgb = current.convert("RGB")
-    difference = ImageChops.difference(previous_rgb, current_rgb)
+    difference = ImageChops.difference(previous.convert("RGB"), current.convert("RGB"))
     channels = difference.split()
-    changed = ImageChops.lighter(
+    return ImageChops.lighter(
         ImageChops.lighter(channels[0], channels[1]), channels[2]
     )
+
+
+def sketch_change_mask(previous: Image.Image, current: Image.Image) -> Image.Image:
+    changed = max_channel_difference(previous, current)
     return changed.point(lambda value: 255 if value else 0, mode="L")
 
 
