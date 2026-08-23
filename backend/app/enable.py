@@ -66,8 +66,9 @@ _NOT_IN_AN_ADDRESS = set(',;<>"\\ \t\r\n')
 
 def _checked_email(email: str) -> str:
     address = email.strip()
-    if (address.count("@") != 1
-            or not 3 <= len(address) <= MAX_EMAIL_LENGTH
+    local, _, domain = address.partition("@")
+    if (address.count("@") != 1 or not local or not domain
+            or len(address) > MAX_EMAIL_LENGTH
             or _NOT_IN_AN_ADDRESS & set(address)):
         raise HTTPException(status_code=400, detail="invalid email address")
     return address
