@@ -174,6 +174,8 @@ class AuthFactor(Base):
     kind: Mapped[str] = mapped_column(Text)
     secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     key_version: Mapped[int] = mapped_column(SmallInteger)
+    # The last time step this factor accepted. A code is good once.
+    last_step: Mapped[int | None] = mapped_column(BigInteger)
     confirmed_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

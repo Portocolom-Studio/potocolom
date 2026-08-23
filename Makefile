@@ -22,7 +22,7 @@
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
-	auth-enable \
+	auth-enable auth-recover \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
@@ -38,6 +38,10 @@ PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 
 preflight: ## check this machine; write deploy/compose/.env when missing
 	@bash "$(CURDIR)/scripts/preflight.sh"
+
+auth-recover: ## print a one-use 10-minute recovery link for an administrator (EMAIL=...)
+	@test -n "$(EMAIL)" || { echo 'usage: make auth-recover EMAIL=admin@example.com' >&2; exit 1; }
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.recovery "$(EMAIL)"
 
 auth-enable: ## turn on accounts and print the one-use first-admin setup link
 	@bash "$(CURDIR)/scripts/auth-enable.sh"
