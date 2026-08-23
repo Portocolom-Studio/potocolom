@@ -616,6 +616,32 @@ def test_canvas_to_sketch_map_inverts_stroke_polarity():
     assert sketch.getpixel((REALTIME_SIZE // 2, REALTIME_SIZE // 4)) == (0, 0, 0)
 
 
+def test_canvas_to_sketch_map_reads_a_stroke_of_any_saturated_colour():
+    """Colour carries no meaning to the sketch adapter, but it must not decide
+    whether a stroke exists at all. Thresholding luminance did exactly that
+    once the studio canvas gained a palette: green weighs 150 and yellow 226
+    against the 128 threshold, so both reached the model as blank paper while
+    red at 76 and blue at 29 drew. A pale tint is still paper, which is the
+    constraint the studio palette is picked against."""
+    from PIL import ImageDraw
+
+    strokes = ((220, 38, 38), (250, 204, 21), (22, 163, 74), (37, 99, 235))
+    paper_tint = (255, 224, 224)
+    rows = (*strokes, paper_tint)
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    band = REALTIME_SIZE // (len(rows) + 1)
+    for index, colour in enumerate(rows, start=1):
+        draw.line((0, index * band, REALTIME_SIZE, index * band), fill=colour, width=8)
+
+    sketch = _canvas_to_sketch_map(canvas)
+
+    for index in range(1, len(strokes) + 1):
+        assert sketch.getpixel((REALTIME_SIZE // 2, index * band)) == (255, 255, 255)
+    assert sketch.getpixel((REALTIME_SIZE // 2, len(rows) * band)) == (0, 0, 0)
+    assert sketch.getpixel((REALTIME_SIZE // 2, band // 2)) == (0, 0, 0)
+
+
 def test_eviction_releases_every_entry_a_model_shares_weights_across():
     """A model's realtime and t2i entries share their UNet, text encoders and
     VAE, so freeing its memory means dropping both.

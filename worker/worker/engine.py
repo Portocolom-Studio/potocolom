@@ -22,7 +22,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from worker.manifests import Manifest
 from worker.frame_batch import (
@@ -213,13 +213,23 @@ def encode_webp(image: Image.Image) -> bytes:
 
 
 def _canvas_to_sketch_map(canvas: Image.Image, threshold: int = 128) -> Image.Image:
-    """Canvas (dark strokes on white) to the adapter's conditioning-map
+    """Canvas (strokes on white paper) to the adapter's conditioning-map
     convention (light strokes on black), with no learned preprocessor. The
     threshold variant (the prototype's stream default) binarizes at the
     midpoint, which kills WebP ring halos while the antialiased stroke cores
-    stay (scripts/prototype-canvas-conditioning.py)."""
-    gray = canvas.convert("L")
-    inverted = ImageOps.invert(gray)
+    stay (scripts/prototype-canvas-conditioning.py).
+
+    A stroke is a pixel far from paper white, measured as the darkest of its
+    three channels rather than as luminance. Luminance made the map depend on
+    hue once the canvas gained a palette: pure green weighs 150 and pure
+    yellow 226 against a 128 threshold, so both vanished into the paper while
+    red at 76 and blue at 29 drew. The darkest channel is 0 for all four, and
+    for a grey pixel it is the grey itself, so black on white is unchanged.
+    Which colour a stroke is still carries no meaning to the adapter (that is
+    issue #266); this only decides whether the adapter sees the stroke."""
+    red, green, blue = canvas.split()
+    darkest = ImageChops.darker(ImageChops.darker(red, green), blue)
+    inverted = ImageOps.invert(darkest)
     sketch = inverted.point(lambda value: 255 if value >= threshold else 0)
     return sketch.convert("RGB")
 
