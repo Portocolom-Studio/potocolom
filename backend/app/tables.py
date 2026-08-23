@@ -423,6 +423,33 @@ class InstallationAuthState(Base):
     enabled_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class OAuthFlow(Base):
+    """One redirect to a provider and back, and nothing else.
+
+    The verifier and the nonce never leave this row, so a callback cannot be
+    replayed or crafted: it has to match a flow this server started. Rows are
+    one-use and short lived.
+    """
+
+    __tablename__ = "oauth_flows"
+    # Named here as well as in the migration, so create_all and a migrated
+    # schema agree and the next autogenerate does not propose dropping it.
+    __table_args__ = (Index("oauth_flows_expires", "expires_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    state_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    provider: Mapped[str] = mapped_column(Text)
+    verifier: Mapped[str] = mapped_column(Text)
+    nonce: Mapped[str] = mapped_column(Text)
+    # Set when the flow was started from a live session to link a provider to
+    # it. Null means a sign-in attempt, which can only ever match an identity
+    # somebody already linked.
+    link_user_id: Mapped[uuid.UUID | None]
+    expires_at: Mapped[datetime]
+    consumed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class SuppressedAddress(Base):
     """An address the relay refused outright, or the provider reported back.
 

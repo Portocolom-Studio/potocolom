@@ -123,10 +123,12 @@ Environment for the API task, values resolved from SSM where secret:
 
 | Variable | Value |
 |---|---|
-| AUTH_MODE | `accounts` (password sign-in works; Google and GitHub land with #9, and the browser realtime socket refuses accounts mode until #19, so the studio is not usable on this stack yet) |
+| AUTH_MODE | `accounts`. Password, Google and GitHub sign-in all work. Registration stays invitation-only: a provider can sign in an identity somebody linked, and can never create an account |
 | ROOT_KEYS | versioned root key ring for account secrets, newest first; separate key material from the fleet secret, and required whenever AUTH_MODE is accounts |
 | EMAIL_BACKEND | `ses`, with `MAIL_FROM` and `SES_REGION`. The API refuses to start if either is missing, and refuses a `PUBLIC_URL` that is not https, because the invitation link is the capability. `MAIL_FROM` must equal the address allowed by the task role's `ses:FromAddress` condition; startup does not check the value, so a mismatch shows up only as AccessDenied on every send. Bounce and complaint feedback needs an SNS subscription, which is documentation only until the suppression webhook lands |
-| OAUTH_PROVIDERS | `google,github` (read only once #9 implements the providers; ignored before then) |
+| OAUTH_PROVIDERS | `google,github`. A provider is offered only when its client id and secret are also set, so a half configuration shows no button rather than a broken one |
+| GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET | required to offer Google. The authorized redirect URI must be exactly `{PUBLIC_URL}/api/v1/auth/callback/google` |
+| GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET | required to offer GitHub. The callback URL must be exactly `{PUBLIC_URL}/api/v1/auth/callback/github` |
 | BILLING_ENABLED | `true` |
 | SAFETY_CHECKS | `true` |
 | LOG_FORMAT | `json` |
@@ -190,7 +192,7 @@ The delivery workflow, recorded in [decisions.md](decisions.md) ("Cloud delivery
 ## 12. Go-live checklist
 
 1. `terraform apply` in staging; confirm `curl https://api-staging.../api/v1/health` returns `{"status": "ok"}` through the ALB.
-2. `curl .../api/v1/config` shows `auth_methods` for the configured providers and `billing_enabled: true`. Until #9 lands that is `["password"]`.
+2. `curl .../api/v1/config` shows `auth_methods` for the configured providers and `billing_enabled: true`. With no OAuth credentials configured that is `["password"]`.
 3. Start one rented GPU worker against staging; confirm registration in the logs and a full realtime session from a browser. The realtime socket refuses accounts mode until #19, so this check needs `AUTH_MODE=none` for now.
 4. Run the deploy pipeline once end to end: a tagged release reaches GHCR, ECR, and the staging service; the gated migration task runs before tasks roll.
 5. SES out of sandbox, a real verification email delivered.
