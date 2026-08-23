@@ -1158,6 +1158,130 @@ def test_an_api_that_sends_no_dispatch_token_gets_none_back():
     assert not any("dispatch_token" in r for r in reports)
 
 
+class JobSocket(RecordingSocket):
+    """RecordingSocket that stays open until the dispatched job has reported,
+    so teardown never cancels a job the test is still waiting on."""
+
+    VERDICTS = ("job_done", "job_failed", "job_cancelled")
+
+    async def __anext__(self):
+        if self.messages:
+            return self.messages.pop(0)
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if any(json.loads(m)["type"] in self.VERDICTS
+                   for m in self.sent if isinstance(m, str)):
+                break
+        raise StopAsyncIteration
+
+
+def cancel_control(job_id="j-1", token="dispatch-token"):
+    return {"type": "cancel_job", "job_id": job_id, "dispatch_token": token}
+
+
+def drive_job(monkeypatch, controls):
+    """Run serve_connection through a dispatch_job and whatever follows it."""
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    socket = JobSocket([json.dumps(control) for control in controls])
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-job"),
+                                 [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    return socket, [json.loads(m) for m in socket.sent if isinstance(m, str)]
+
+
+def test_cancel_job_stops_the_job_before_it_uploads(monkeypatch):
+    socket, reports = drive_job(monkeypatch, [dispatch_control(), cancel_control()])
+
+    assert FakeUpload.puts == []
+    assert not any(r["type"] == "job_done" for r in reports)
+    cancelled = [r for r in reports if r["type"] == "job_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["job_id"] == "j-1"
+    assert cancelled[0]["dispatch_token"] == "dispatch-token"
+    # The ask landed before the GPU ran, so there is nothing to charge.
+    assert cancelled[0]["gpu_ms"] == 0
+    assert socket.close_code is None
+
+
+def test_cancel_job_carrying_another_attempts_token_is_ignored(monkeypatch):
+    socket, reports = drive_job(monkeypatch, [
+        dispatch_control(), cancel_control(token="another-attempt"),
+    ])
+
+    assert not any(r["type"] == "job_cancelled" for r in reports)
+    assert len([r for r in reports if r["type"] == "job_done"]) == 1
+    assert len(FakeUpload.puts) == 2
+    assert socket.close_code is None
+
+
+def test_cancel_job_for_a_job_this_worker_is_not_running_is_ignored(monkeypatch):
+    socket, reports = drive_job(monkeypatch, [
+        dispatch_control(), cancel_control(job_id="j-2"),
+    ])
+
+    assert not any(r["type"] == "job_cancelled" for r in reports)
+    assert len([r for r in reports if r["type"] == "job_done"]) == 1
+    assert len(FakeUpload.puts) == 2
+    # An unknown job is a message that crossed a verdict on the wire, never a
+    # protocol violation.
+    assert socket.close_code is None
+
+
+def test_run_job_cancelled_between_steps_charges_what_the_gpu_spent(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    socket = FakeSocket()
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(run_job(socket, SimulatedEngine(0.2),
+                                           SIMULATED_MANIFEST, dispatch_control(), stop))
+        await asyncio.sleep(0.08)
+        stop.set()
+        await task
+
+    asyncio.run(scenario())
+
+    assert FakeUpload.puts == []
+    reports = [json.loads(m) for m in socket.sent]
+    assert not any(r["type"] in ("job_done", "job_failed") for r in reports)
+    cancelled = [r for r in reports if r["type"] == "job_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["dispatch_token"] == "dispatch-token"
+    # The GPU ran until the ask reached it, and that time is charged.
+    assert 0 < cancelled[0]["gpu_ms"] < 5000
+
+
+def test_run_job_cancelled_after_the_image_uploads_nothing(monkeypatch):
+    """The narrowest window there is: the image exists, and the API has already
+    decided to discard it."""
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    socket = FakeSocket()
+    stop = asyncio.Event()
+
+    class LateAsk(SimulatedEngine):
+        async def generate(self, manifest, params, progress, *, input_image=None,
+                           cancelled=None):
+            result = await super().generate(manifest, params, progress,
+                                            input_image=input_image)
+            stop.set()
+            return result
+
+    asyncio.run(run_job(socket, LateAsk(0.01), SIMULATED_MANIFEST,
+                        dispatch_control(), stop))
+
+    assert FakeUpload.puts == []
+    reports = [json.loads(m) for m in socket.sent]
+    assert not any(r["type"] == "job_done" for r in reports)
+    cancelled = [r for r in reports if r["type"] == "job_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["gpu_ms"] >= 0
+
+
 def test_session_runner_refuses_a_residency_load_failure(caplog):
     # A load that fails outside the rung ladder is an attempt failure, not a
     # silent frame loop. The runner sends session_refused and ends.

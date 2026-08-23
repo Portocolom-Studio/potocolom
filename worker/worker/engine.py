@@ -145,6 +145,15 @@ class NotResidentError(ValueError):
     """The model is not on the full realtime rung, so a frame cannot run."""
 
 
+class Cancelled(Exception):
+    """The job was asked to stop, and the work aborted where it stood.
+
+    Raising is how a diffusers pipeline is interrupted: the call runs on the
+    GPU thread and no await can reach into it. Nothing was produced, so the
+    caller reports what the GPU cost instead of a failure.
+    """
+
+
 @dataclass
 class PromptCache:
     """One cached prompt encoding, owned by the realtime session (issue #301).
@@ -164,6 +173,7 @@ class Engine(Protocol):
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> GeneratedImage: ...
 
     async def frame(
@@ -344,6 +354,7 @@ class SimulatedEngine:
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> GeneratedImage:
         if "upscale" in manifest.capabilities:
             if input_image is None:
@@ -377,6 +388,8 @@ class SimulatedEngine:
         start = time.monotonic()
         for step in range(steps):
             await asyncio.sleep(self.inference_seconds / steps)
+            if cancelled is not None and cancelled():
+                raise Cancelled()
             progress((step + 1) / steps)
         color = sha256(str(params.get("prompt", "")).encode()).digest()
         if input_image is not None:
@@ -1794,6 +1807,7 @@ class DiffusersEngine:
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
         *, input_image: bytes | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> GeneratedImage:
         if "upscale" in manifest.capabilities:
             if input_image is None:
@@ -1811,9 +1825,13 @@ class DiffusersEngine:
         async with self._gpu:
             try:
                 return await self._run_to_completion(runner, manifest, dict(params),
-                                                     progress, loop, input_image)
+                                                     progress, loop, input_image, cancelled)
             except self.torch.OutOfMemoryError:
                 pass  # retry outside: the live traceback pins failed tensors
+            except Cancelled:
+                # Stopped on request, not broken: the resident pipeline is
+                # exactly as sound as it was before the abandoned call.
+                raise
             except (ValueError, TypeError):
                 raise  # request/validation errors, not a corrupt resident
             except Exception:
@@ -1826,7 +1844,7 @@ class DiffusersEngine:
             self._evict_except(manifest.id)
             try:
                 return await self._run_to_completion(runner, manifest, dict(params),
-                                                     progress, loop, input_image)
+                                                     progress, loop, input_image, cancelled)
             except self.torch.OutOfMemoryError as error:
                 retry_error = error.with_traceback(None)
             if not self._demote_rung(manifest, phase="generation retry"):
@@ -1839,11 +1857,12 @@ class DiffusersEngine:
                 self._pipeline, manifest, mode, allow_demotion=False,
             )
             return await self._run_to_completion(runner, manifest, dict(params),
-                                                 progress, loop, input_image)
+                                                 progress, loop, input_image, cancelled)
 
     def _generate(self, manifest: Manifest, params: dict, progress: ProgressFn,
                   loop: asyncio.AbstractEventLoop,
-                  input_image: bytes | None = None) -> GeneratedImage:
+                  input_image: bytes | None = None,
+                  cancelled: Callable[[], bool] | None = None) -> GeneratedImage:
         load_start = time.monotonic()
         key = (manifest.id, "t2i")
         cold = key not in self._pipelines
@@ -1855,6 +1874,8 @@ class DiffusersEngine:
             generator = self.torch.Generator(self.device).manual_seed(int(params["seed"]))
 
         def on_step(pipe: Any, step: int, timestep: Any, kwargs: dict) -> dict:
+            if cancelled is not None and cancelled():
+                raise Cancelled()
             loop.call_soon_threadsafe(progress, (step + 1) / steps)
             return kwargs
 
@@ -1885,7 +1906,8 @@ class DiffusersEngine:
 
     def _generate_i2i(self, manifest: Manifest, params: dict, progress: ProgressFn,
                       loop: asyncio.AbstractEventLoop,
-                      input_image: bytes | None) -> GeneratedImage:
+                      input_image: bytes | None,
+                      cancelled: Callable[[], bool] | None = None) -> GeneratedImage:
         if input_image is None:
             raise ValueError("image_to_image job requires input_image")
         load_start = time.monotonic()
@@ -1907,6 +1929,8 @@ class DiffusersEngine:
             generator = self.torch.Generator(self.device).manual_seed(int(params["seed"]))
 
         def on_step(pipe: Any, step: int, timestep: Any, kwargs: dict) -> dict:
+            if cancelled is not None and cancelled():
+                raise Cancelled()
             loop.call_soon_threadsafe(progress, (step + 1) / actual_steps)
             return kwargs
 
@@ -1934,7 +1958,8 @@ class DiffusersEngine:
 
     def _generate_upscale(self, manifest: Manifest, params: dict, progress: ProgressFn,
                           loop: asyncio.AbstractEventLoop,
-                          input_image: bytes | None) -> GeneratedImage:
+                          input_image: bytes | None,
+                          cancelled: Callable[[], bool] | None = None) -> GeneratedImage:
         if input_image is None:
             raise ValueError("upscale job requires input_image")
         factor = int(params.get("factor", 0))
@@ -1959,7 +1984,7 @@ class DiffusersEngine:
         image = upscale_tiled(
             runtime.model, source, factor,
             device=self.device, dtype=self.dtype,
-            native_scale=runtime.native_scale, progress=on_tile,
+            native_scale=runtime.native_scale, progress=on_tile, cancelled=cancelled,
         )
         gpu_ms = int((time.monotonic() - start) * 1000)
         loop.call_soon_threadsafe(progress, 1.0)

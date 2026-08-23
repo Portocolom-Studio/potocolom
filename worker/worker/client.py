@@ -18,6 +18,7 @@ import httpx
 import websockets
 
 from worker.engine import (
+    Cancelled,
     Engine,
     NotResidentError,
     PromptCache,
@@ -236,6 +237,32 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
         logger.info("warmup realtime model=%s slots=%d", manifest.id, slots)
 
 
+class JobRun:
+    """A dispatched job and the flag that asks it to stop.
+
+    Cancellation is cooperative and best effort: the API cancels the row
+    before it asks, so a missed ask costs the fleet one wasted image and
+    nothing else. The token is what makes an ask believable, because a stall
+    requeue can dispatch the same job id to this worker twice and only the
+    dispatch that is running may be stopped.
+    """
+
+    def __init__(self, job_id: str, token: object) -> None:
+        self.job_id = job_id
+        # Filtered the way run_job filters what it stamps: a dispatch that
+        # carries no usable token cannot be cancelled at all, which is the
+        # same answer an older API gets by never sending cancel_job.
+        self.token = token if isinstance(token, str) and token else None
+        self.stop = asyncio.Event()
+
+    def stops(self, control: dict) -> bool:
+        """True when a cancel_job names this dispatch. A token that is missing
+        or belongs to another attempt is as stale here as it is at the API,
+        and is ignored the same way."""
+        return (control["job_id"] == self.job_id and self.token is not None
+                and control.get("dispatch_token") == self.token)
+
+
 class SessionRunner:
     """Holds at most one pending canvas frame; newer input overwrites older."""
 
@@ -386,10 +413,17 @@ class SessionRunner:
         self._task.cancel()
 
 
-async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None:
+async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
+                  stop: asyncio.Event | None = None) -> None:
     """One queued job: generate, upload to the given target, report the result.
-    Failures are reported, never raised: the connection outlives the job."""
+    Failures are reported, never raised: the connection outlives the job.
+
+    Setting `stop` asks the job to end where it can, and it then reports
+    job_cancelled with the GPU time it spent instead of uploading an image
+    the API would discard.
+    """
     job_id = control["job_id"]
+    stop = stop or asyncio.Event()
     # Echoed on every message about this job so the API can tell this dispatch
     # from an earlier attempt of the same job that reached the same worker
     # (docs/connection-handling.md). An older API sends none, so send none.
@@ -419,6 +453,16 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
             except Exception:
                 logger.exception("job %s progress keepalive failed", job_id)
 
+    async def report_cancelled(gpu_ms: int) -> None:
+        # The row is already cancelled at the API, so this says only what the
+        # GPU cost before the job stopped; that time is charged because it was
+        # spent. Nothing is uploaded: whatever this run produced is discarded
+        # there anyway.
+        logger.info("job %s cancelled after %d gpu_ms", job_id, gpu_ms)
+        with suppress(websockets.WebSocketException):
+            await ws.send(json.dumps({"type": "job_cancelled", "job_id": job_id,
+                                      "gpu_ms": gpu_ms, **stamp}))
+
     keepalive_task = asyncio.create_task(progress_keepalive())
     input_fetch_ms = 0
     postprocess_ms = 0
@@ -438,8 +482,26 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict) -> None
                 response.raise_for_status()
                 input_image = response.content
             input_fetch_ms = int((time.monotonic() - fetch_start) * 1000)
-        result = await engine.generate(manifest, params, progress,
-                                        input_image=input_image)
+        if stop.is_set():
+            # Asked to stop while the input was still downloading: the GPU
+            # never ran, so there is no time to charge and nothing to upload.
+            await report_cancelled(0)
+            return
+        gpu_started = time.monotonic()
+        try:
+            result = await engine.generate(manifest, params, progress,
+                                            input_image=input_image,
+                                            cancelled=stop.is_set)
+        except Cancelled:
+            # The engine stopped between steps or between tiles, so it has no
+            # image to hand back; the GPU still ran until it stopped.
+            await report_cancelled(int((time.monotonic() - gpu_started) * 1000))
+            return
+        if stop.is_set():
+            # The image is finished and already worthless: the API discards an
+            # upload for a cancelled job, so sending it is pure waste.
+            await report_cancelled(result.gpu_ms)
+            return
         post_start = time.monotonic()
         async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT) as client:
             response = await client.put(upload["url"], content=result.data,
@@ -593,7 +655,13 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     # so a delayed open cannot resurrect a finished session. Dropped when
     # this connection ends.
     highest_generation: dict[uuid.UUID, int] = {}
-    jobs: set[asyncio.Task] = set()
+    # Keyed by task rather than by job id: a requeued attempt of a job already
+    # running here would overwrite an id key and lose the first task, which
+    # the teardown below still has to cancel.
+    jobs: dict[asyncio.Task, JobRun] = {}
+
+    def forget(task: asyncio.Task) -> None:
+        jobs.pop(task, None)
 
     async def heartbeats() -> None:
         while True:
@@ -723,10 +791,19 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                             closed["category_score"] = score
                         await ws.send(json.dumps(closed))
                     elif control["type"] == "dispatch_job":
+                        job = JobRun(control["job_id"], control.get("dispatch_token"))
                         task = asyncio.create_task(run_job(
-                            ws, engine, by_id[control["model_id"]], control))
-                        jobs.add(task)
-                        task.add_done_callback(jobs.discard)
+                            ws, engine, by_id[control["model_id"]], control, job.stop))
+                        jobs[task] = job
+                        task.add_done_callback(forget)
+                    elif control["type"] == "cancel_job":
+                        # A job that already finished, or one this worker never
+                        # ran, leaves nothing to stop. That is not a violation:
+                        # the API sends this after cancelling the row, and the
+                        # two cross on the wire without either side being wrong.
+                        for job in jobs.values():
+                            if job.stops(control):
+                                job.stop.set()
                     elif control["type"] == "gpu_status":
                         gpu = await asyncio.to_thread(sample_gpu, settings.device)
                         await ws.send(json.dumps({
