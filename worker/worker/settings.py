@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     fleet_token: str = ""
     log_format: Literal["plain", "json"] = "plain"
     worker_id: str = Field(default_factory=lambda: f"worker-{uuid.uuid4().hex[:8]}")
-    realtime_slots: int = 2  # upper bound; DiffusersEngine calibrates down at warmup
+    realtime_slots: int = 4  # upper bound; DiffusersEngine calibrates down at warmup
     heartbeat_seconds: float = 30.0
     models_dir: str = ""  # manifests directory; empty runs the simulated engine
     # Exclusive flock path for a single local worker (make dev-start sets this).

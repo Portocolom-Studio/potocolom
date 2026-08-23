@@ -24,9 +24,8 @@ BATCH_WINDOW_MS = 40
 def occupancy_share_ms(cycle_ms: int, batch_size: int) -> int:
     """Split one GPU cycle across the sessions that occupied it.
 
-    Admission still sums serialized per-model p95. Reporting the whole
-    cycle on every session would raise that p95 after a handful of
-    batched frames and shed the extra sessions the batch was meant to serve.
+    Reporting the whole cycle on every session would raise the single-frame
+    p95 after a handful of batched frames and shed the extra sessions.
     """
     if batch_size <= 1:
         return cycle_ms

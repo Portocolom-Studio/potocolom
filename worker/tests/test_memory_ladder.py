@@ -9,6 +9,7 @@ from worker.memory_ladder import (
     measured_wire_manifests,
     model_offload_bytes,
     select_rung,
+    slots_from_batch_curve,
     slots_from_frame_ms,
 )
 
@@ -102,3 +103,11 @@ def test_slots_from_frame_ms():
     assert slots_from_frame_ms(501.0, 4) == 0
     assert slots_from_frame_ms(250.0, 0) == 0
     assert slots_from_frame_ms(0.0, 4) == 0
+
+
+def test_slots_from_batch_curve():
+    assert slots_from_batch_curve([139, 309, 404, 501], 8) == 3
+    assert slots_from_batch_curve([139, 309, 404, 501], 2) == 2
+    assert slots_from_batch_curve([501], 8) == 0
+    assert slots_from_batch_curve([], 8) == 0
+    assert slots_from_batch_curve([139], 0) == 0

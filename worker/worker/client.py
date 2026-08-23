@@ -71,6 +71,17 @@ def frame_p95_payload(engine: Engine) -> dict[str, int]:
     }
 
 
+def batch_ms_payload(engine: Engine) -> dict[str, list[int]]:
+    realtime_batch_ms = getattr(engine, "realtime_batch_ms", None)
+    if realtime_batch_ms is None:
+        return {}
+    return {
+        model_id: list(curve)
+        for model_id in engine.p95_model_ids()
+        if (curve := realtime_batch_ms(model_id))
+    }
+
+
 def default_steps(manifest: Manifest) -> object | None:
     """The manifest's declared default step count, or None if it declares none.
 
@@ -555,6 +566,9 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     # current workers already send that field.
     if p95_map:
         hello["realtime_p95_ms"] = p95_map
+        batch_map = batch_ms_payload(engine)
+        if batch_map:
+            hello["realtime_batch_ms"] = batch_map
     await ws.send(json.dumps(hello))
     try:
         response = json.loads(await ws.recv())

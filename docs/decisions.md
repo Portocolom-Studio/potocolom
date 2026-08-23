@@ -883,7 +883,7 @@ Rejected alternatives: clearing `benchmark_only` on its own, the one field that 
 
 ## Realtime concurrency comes from one GPU serving several sessions, by decode first and batching second
 
-> Shipped status (2026-08-20): **partially implemented.** The worker collects pending frames for 40 ms and denoises one compatibility class (model, steps, resolution) per GPU cycle, with round-robin across classes (issue #294). Admission still uses serialized per-model p95 (#285). Advertising slots from a measured batch curve does not ship.
+> Shipped status (2026-08-22): **shipped.** The worker collects pending frames for 40 ms and denoises one compatibility class (model, steps, resolution) per GPU cycle, with round-robin across classes (issue #294). Admission uses a measured per-class batch curve when present; counts above the curve are refused. The picker still shows the single-frame p95 from issue #288. On the reference card, the fourth turbo session is outside the bar once the window and WebP are included.
 
 Supersedes only the start trigger in "GPU session density: calibrated slots now, worker-internal batching later" and in "GPU session density: capacity-critical at 1000 active sessions". Their method, their slot abstraction and their adoption bar all stand: the scheduler keeps consuming calibrated slots, batching stays internal to the worker, and a technique is adopted only when end-to-end p95 stays inside the realtime bar with quality accepted.
 
@@ -973,10 +973,11 @@ realtime after measured_manifests, not only the default. Boot pays one extra
 cold load.
 
 Calibration times one _frame under the GPU lock. A compatible adapter
-batch times _frame_batch and reports occupancy share (cycle / N) so N
-sessions still sum to that cycle. Admission keeps the serialized p95
-until a batch curve replaces it. The picker and admission then read one
-advertised quantity (issue #288). After twenty observations, a higher
+batch times concurrent frame() calls for n=2..cap and records the complete
+cycle p95. Admission uses the measured batch curve when present and keeps
+the serialized p95 as fallback. The picker still reads the single-frame p95
+(issue #288), while admission reads the curve. A heartbeat raise drops that
+model's curve. After twenty observations, a higher
 p95 may lower admission. A lower p95 must not raise it on that
 connection.
 

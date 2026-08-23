@@ -528,6 +528,40 @@ def test_hello_carries_measured_realtime_p95_ms():
     assert hello["realtime_p95_ms"] == {"vega-rt": 408}
 
 
+def test_hello_carries_measured_realtime_batch_ms():
+    class BatchEngine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+
+        def realtime_p95_ms(self, model_id):
+            return 408 if model_id == "vega-rt" else None
+
+        def realtime_batch_ms(self, model_id):
+            return [408, 610] if model_id == "vega-rt" else None
+
+        def p95_model_ids(self):
+            return ["vega-rt"]
+
+    class HelloOnlySocket(FakeSocket):
+        async def recv(self):
+            return json.dumps({"type": "registered"})
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    socket = HelloOnlySocket()
+    manifests = [Manifest(id="vega-rt", name="VegaRT",
+                          capabilities=["text_to_image", "image_to_image", "realtime"],
+                          min_vram_gb=8)]
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-batch"),
+                                 manifests, BatchEngine()))
+    hello = json.loads(socket.sent[0])
+    assert hello["realtime_batch_ms"] == {"vega-rt": [408, 610]}
+
+
 def test_frame_p95_payload_reports_measured_models_even_evicted():
     class P95Engine(SimulatedEngine):
         def __init__(self):

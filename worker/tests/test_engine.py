@@ -4,7 +4,7 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image
 
@@ -2522,6 +2522,49 @@ def test_calibrated_slots_are_the_min_across_models():
     # whichever ran last. The honest scalar is the min.
     assert engine._recompute_calibrated_slots() == 1
     assert engine._calibrated_slots == 1
+
+
+def test_calibrated_slots_use_the_slowest_batch_curve():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._calibration_cap = 8
+    engine._realtime_p95_ms = {"fast": 139, "slow": 139}
+    engine._realtime_batch_ms = {
+        "fast": [139, 309, 404],
+        "slow": [139, 309],
+    }
+    engine._calibrated_slots = None
+    assert engine._recompute_calibrated_slots() == 2
+    assert engine._calibrated_slots == 2
+
+
+def test_calibrate_batch_curve_stops_at_the_bar():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._calibration_cap = 4
+    engine._realtime_p95_ms = {"vega-rt": 139}
+    engine._realtime_batch_ms = {}
+    engine._calibrated_slots = None
+    engine._measure_batch_p95 = AsyncMock(side_effect=[309, 404, 501])
+    manifest = _realtime_manifest()
+
+    asyncio.run(engine._calibrate_batch_curve(manifest, configured=4))
+
+    assert engine._realtime_batch_ms["vega-rt"] == [139, 309, 404]
+    assert engine._calibrated_slots == 3
+
+
+def test_measure_batch_p95_uses_one_prompt_cache_per_session():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.frame = AsyncMock()
+    manifest = _realtime_manifest()
+
+    asyncio.run(engine._measure_batch_p95(3, manifest, {"prompt": "x"}, b"canvas"))
+
+    assert engine.frame.call_count == (CALIBRATION_SAMPLES + 1) * 3
+    caches = [
+        call.kwargs["prompt_cache"]
+        for call in engine.frame.call_args_list
+    ]
+    assert len({id(cache) for cache in caches}) == 3
 
 
 def test_calibrate_failure_does_not_zero_a_sibling():
