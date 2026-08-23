@@ -4,11 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db, sessions, totp
+from app import db, sessions
 from app.main import app
 from app.passwords import verify_password
 from app.tables import AuthIdentity, User
-from tests.test_totp_flow import ORIGIN, PASSWORD, _csrf, _enrol, _login, _make, _now, accounts
+from tests.test_totp_flow import (
+    ORIGIN, PASSWORD, _csrf, _enrol, _login, _make, _next_code, accounts,
+)
 
 __all__ = ["accounts"]
 
@@ -255,7 +257,7 @@ def test_a_credential_change_by_an_enrolled_account_still_passes_the_factor(acco
         # Mid-challenge there is no session at all, so nothing can be changed.
         assert _change_password(fresh, PASSWORD, NEW).status_code == 401
         assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
-                          json={"code": totp.code_at(secret, int(_now()))}).status_code == 204
+                          json={"code": _next_code(secret)}).status_code == 204
         assert _change_password(fresh, PASSWORD, NEW).status_code == 204
 
 
