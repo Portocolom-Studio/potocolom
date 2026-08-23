@@ -143,8 +143,7 @@ In flight:
 ### M4 Accounts
 
 - Still-open epics: #5 sessions and principal policy, #9 first-admin and adoption leftovers, and #10 account UI.
-- Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365, recorded in an issue; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367), Google and GitHub OAuth sign-in and linking (PR #369; linking only, never enrolment by email), and TOTP and recovery (PR #371).
-- In flight: PR #374 closes the credential-change issue for passwords, primary addresses, and linked providers.
+- Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365 / #383; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367 / #385), Google and GitHub OAuth sign-in and linking (PR #369 / #386; linking only, never enrolment by email), TOTP and recovery (PR #371 / #387), and credential changes (PR #374 / #388).
 
 ### M5 Cloud readiness (largest)
 
