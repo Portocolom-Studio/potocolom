@@ -18,6 +18,7 @@ import random
 import time
 import uuid
 from collections.abc import Coroutine
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -625,10 +626,14 @@ async def release(session: Session) -> None:
     worker.slots_in_use -= 1
     generation = session.control_generation
     if workers.get(worker.id) is worker:  # still connected, same incarnation
-        await safe_send(worker.ws.send_json(with_generation(
-            {"type": "close_session", "session_id": str(session.id)},
-            worker, generation,
-        )))
+        # Bounded: the slot is already back, and a worker that stopped reading
+        # would otherwise hold up whatever asked for this session to end,
+        # including the revocation that has other sockets waiting behind it.
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
+                {"type": "close_session", "session_id": str(session.id)},
+                worker, generation,
+            ))), CLOSE_TIMEOUT)
 
 
 async def reassign(session: Session) -> None:

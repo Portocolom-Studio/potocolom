@@ -191,6 +191,39 @@ def test_revoking_the_account_session_closes_the_live_socket(accounts):
 
 
 @pytest.mark.db
+def test_a_worker_that_stopped_reading_does_not_hold_up_a_revocation(accounts):
+    """The slot is handed back before the worker is told it is gone, so the
+    notification is a courtesy. Waiting on it without a bound would leave the
+    revoked browser drawing for as long as that worker holds the connection."""
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, issued = _signed_in(client, "wedged@example.com")
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-wedged", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                answer_ready(worker_ws, worker_ws.receive_json())
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                resolved = client.portal.call(sessions.resolve, issued.token)
+                worker = _only_session().worker
+                assert worker is not None
+                never = asyncio.Event()
+
+                async def wedged(_message: dict) -> None:
+                    await never.wait()
+
+                worker.ws.send_json = wedged
+                client.portal.call(sessions.revoke, resolved.session.id)
+
+                closing = browser_ws.receive_json()
+                assert closing["type"] == "error"
+                assert closing["code"] == realtime.CLOSE_UNAUTHORIZED
+                assert realtime.sessions == {}
+                assert worker.slots_in_use == 0
+
+
+@pytest.mark.db
 def test_demoting_an_account_closes_the_socket_it_is_drawing_on(accounts):
     """Through the real endpoint, not through the helper it happens to call.
 
