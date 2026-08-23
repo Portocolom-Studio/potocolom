@@ -296,7 +296,8 @@ class Storage(Protocol):
 
     async def image_info(self, key: str) -> ImageInfo | None: ...
 
-    async def url(self, key: str, download_name: str | None = None) -> str: ...
+    async def url(self, key: str, download_name: str | None = None,
+                  ttl: int | None = None) -> str: ...
 
     async def worker_fetch_url(self, key: str) -> str: ...
 
@@ -357,7 +358,8 @@ class LocalStorage:
         # request and socket on this process.
         return await asyncio.to_thread(inspect)
 
-    async def url(self, key: str, download_name: str | None = None) -> str:
+    async def url(self, key: str, download_name: str | None = None,
+                  ttl: int | None = None) -> str:
         url = f"{self.public_url}/api/v1/files/{key}"
         if download_name is None:
             return url
@@ -505,7 +507,8 @@ class S3Storage:
             content_type=content_type,
         )
 
-    async def url(self, key: str, download_name: str | None = None) -> str:
+    async def url(self, key: str, download_name: str | None = None,
+                  ttl: int | None = None) -> str:
         params = {
             "Bucket": self.bucket,
             "Key": key,
@@ -517,7 +520,7 @@ class S3Storage:
         return self.client.generate_presigned_url(
             "get_object",
             Params=params,
-            ExpiresIn=SIGNED_URL_TTL,
+            ExpiresIn=SIGNED_URL_TTL if ttl is None else ttl,
         )
 
     async def worker_fetch_url(self, key: str) -> str:
