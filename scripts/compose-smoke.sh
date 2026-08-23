@@ -27,7 +27,8 @@ s.close()
 "
 }
 
-if [[ -n "${COMPOSE_SMOKE_PORT:-}" ]]; then
+REQUESTED_PORT="${COMPOSE_SMOKE_PORT:-}"
+if [[ -n "$REQUESTED_PORT" ]]; then
   # Asked for explicitly, so a clash is the operator's to resolve.
   PORT="$COMPOSE_SMOKE_PORT"
   if ! port_free "$PORT"; then
@@ -64,8 +65,15 @@ for attempt in 1 2 3; do
     echo "could not start the smoke stack after 3 attempts" >&2
     exit 1
   fi
-  echo "start failed on port ${PORT}; taking another and retrying" >&2
   "${COMPOSE[@]}" down -v --remove-orphans || true
+  if [[ -n "$REQUESTED_PORT" ]]; then
+    # The probe at the top already refused a busy requested port. Moving off it
+    # now would pass the smoke test on a port the caller never asked for, and
+    # whatever took it would go unreported.
+    echo "could not start the smoke stack on requested port ${PORT}" >&2
+    exit 1
+  fi
+  echo "start failed on port ${PORT}; taking another and retrying" >&2
   PORT="$(free_port)"
   export COMPOSE_SMOKE_PORT="$PORT"
   base="http://localhost:${PORT}"
