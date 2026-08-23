@@ -21,6 +21,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
@@ -95,7 +96,13 @@ async def share(
         expires_at=datetime.now(timezone.utc) + timedelta(days=request.days),
     )
     session.add(row)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as raced:
+        # Two requests can both revoke what they read and insert their own,
+        # and the partial unique index decides between them. The one that
+        # loses is a conflict, not a fault of this install.
+        raise HTTPException(status_code=409, detail="that asset was shared again") from raced
     return {"id": str(row.id), "url": f"{get_settings().public_url.rstrip('/')}/shared#{token}"}
 
 

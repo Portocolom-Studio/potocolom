@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db
+from app import db, sessions
 from app.main import app
 from app.tables import Asset, AssetShare, Job, Model
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
@@ -267,3 +267,37 @@ def test_the_retired_asset_column_is_left_alone(library):
                     select(Asset.share_token).where(Asset.id == asset.id))).scalar_one()
 
         assert client.portal.call(stored) is None
+
+
+@pytest.mark.db
+def test_two_requests_sharing_one_asset_leave_one_link(library):
+    """Both revoke what they read and insert their own, and the index decides.
+    Two live links for one asset would mean revoking the visible one leaves
+    the other working."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app import shares
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "racer12@example.com")
+        asset = client.portal.call(_owned_asset, user.id)
+        assert _login(client, "racer12@example.com").status_code == 204
+        principal = client.portal.call(sessions.resolve,
+                                       next(c.value for c in client.cookies.jar
+                                            if c.name.endswith("potocolom_session")))
+        body = shares.ShareRequest(asset_id=asset.id, days=7)
+
+        async def both():
+            async with db.session_factory() as one, db.session_factory() as two:
+                return await asyncio.gather(
+                    shares.share(body, principal.user, one),
+                    shares.share(body, principal.user, two),
+                    return_exceptions=True,
+                )
+
+        outcomes = client.portal.call(both)
+        live = [row for row in client.portal.call(_shares) if row.revoked_at is None]
+    assert len(live) == 1
+    assert all(not isinstance(o, Exception) or isinstance(o, HTTPException) for o in outcomes)
