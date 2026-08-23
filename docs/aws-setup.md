@@ -192,7 +192,7 @@ The delivery workflow, recorded in [decisions.md](decisions.md) ("Cloud delivery
 ## 12. Go-live checklist
 
 1. `terraform apply` in staging; confirm `curl https://api-staging.../api/v1/health` returns `{"status": "ok"}` through the ALB.
-2. `curl .../api/v1/config` shows `auth_methods` for the configured providers and `billing_enabled: true`. Until #9 lands that is `["password"]`.
+2. `curl .../api/v1/config` shows `auth_methods` for the configured providers and `billing_enabled: true`. With no OAuth credentials configured that is `["password"]`.
 3. Start one rented GPU worker against staging; confirm registration in the logs and a full realtime session from a browser. The realtime socket refuses accounts mode until #19, so this check needs `AUTH_MODE=none` for now.
 4. Run the deploy pipeline once end to end: a tagged release reaches GHCR, ECR, and the staging service; the gated migration task runs before tasks roll.
 5. SES out of sandbox, a real verification email delivered.
