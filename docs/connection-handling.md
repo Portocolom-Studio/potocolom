@@ -78,7 +78,7 @@ Realtime connection, API to browser:
 | type | Fields | Notes |
 |---|---|---|
 | `ready` | `session_id` | frames may flow |
-| `params_updated` | `params` | the merged parameters the API holds for the session: the browser's keys merged over the session's, the seed riding along. That is what later frames are rendered with once a worker has them; the worker may fill in the manifest's declared defaults for keys nobody has set, so what it applies can be a superset. Sent even when no worker holds the session at that moment (a reassignment in flight); the worker picks the update up when it arrives |
+| `params_updated` | `params` | the merged parameters the API holds for the session: the browser's keys merged over the session's, the seed riding along. That is what later frames are rendered with once a worker has them; the worker may fill in the manifest's declared defaults for keys nobody has set, so what it applies can be a superset. Sent even when no worker holds the session at that moment (a reassignment in flight); the worker picks the update up when it arrives. The browser re-sends the current canvas when this arrives, because a param change is not a pixel change and capture may have stopped |
 | `interrupted` | | worker lost; hold frames, reassignment in progress |
 | `resumed` | | new worker ready; re-send the current canvas |
 | `error` | `code`, `message` | terminal; the API closes after sending. The one exception is a rejected `update_params` (invalid params, a `seed` change, or an assigned worker that predates `update_session`): that error is a refusal and the session keeps running |

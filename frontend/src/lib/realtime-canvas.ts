@@ -84,6 +84,16 @@ export function shouldSendFrame(state: {
 }
 
 /**
+ * After params_updated, the same canvas must go out again. Capture stops
+ * once IDLE_TICKS_BEFORE_STOP ticks have had nothing to send, and a prompt
+ * or slider change does not paint, so without this the new params wait
+ * until the next stroke or a reconnect.
+ */
+export function afterParamsUpdated(): { changed: true; idleTicks: 0 } {
+	return { changed: true, idleTicks: 0 };
+}
+
+/**
  * The period to aim for between frame starts. Backs off to the slow end of the
  * band when encoding and queueing a frame already costs more than the fast
  * interval. This measures the browser's own cost, not the model's: the
