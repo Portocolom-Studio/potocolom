@@ -12,6 +12,7 @@ Run from the repository root, after the setup in docs/local-development.md:
 import asyncio
 import json
 import os
+import socket
 import struct
 import subprocess
 import sys
@@ -28,7 +29,17 @@ import websockets
 from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES
 
 ROOT = Path(__file__).resolve().parent.parent
-PORT = 8901
+
+
+def _free_port() -> int:
+    """Several self-hosted runners share one machine, so a fixed port meant
+    two simulations at once fought over it and the loser bound nothing."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+PORT = int(os.environ.get("SIMULATE_PORT") or _free_port())
 START = time.monotonic()
 # Pytest uses the same default. This script is not production; an unset key
 # now refuses to import the API (issues #245 and #260).
