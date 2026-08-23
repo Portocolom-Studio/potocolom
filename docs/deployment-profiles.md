@@ -48,7 +48,7 @@ flowchart LR
 
 The scaled self-hosted column deserves a note: it is not a separately designed product. Setting `REDIS_URL` switches dispatch and the frame relay to the Redis implementations, and additional worker containers simply dial the same fleet endpoint. A lab or studio with three GPU machines gets multi-worker scheduling with the exact scheduler the cloud runs (issue #20), for the cost of one Redis container.
 
-`AUTH_MODE` is `none` or `accounts`; the retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented for REST. `accounts` still refuses the realtime socket, which has no principal of its own until issue #19 gives it one, so the studio needs `none` today.
+`AUTH_MODE` is `none` or `accounts`; the retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented, for REST and for the realtime socket: in `accounts` the socket authenticates from the session cookie on the upgrade, and revoking the session closes it.
 
 > Shipped status (2026-07-30): **not yet implemented.** Setting `REDIS_URL` currently changes neither job dispatch nor realtime relay, and the backend has no Redis dependency. This remains the migration target under "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
 

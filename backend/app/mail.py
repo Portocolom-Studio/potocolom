@@ -14,6 +14,7 @@ import ssl
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from urllib.parse import urlsplit
 
 from anyio import to_thread
 from sqlalchemy import func, select
@@ -95,10 +96,18 @@ def _loopback(host: str) -> bool:
 
 
 def _safe_link_origin(public_url: str) -> bool:
-    if public_url.startswith("https://"):
+    """Parsed, not prefixed: "https://" and "http://localhost:not-a-port" both
+    pass a prefix test and neither makes a link a recipient can follow."""
+    parsed = urlsplit(public_url)
+    try:
+        _port = parsed.port
+    except ValueError:
+        return False
+    if not parsed.hostname:
+        return False
+    if parsed.scheme == "https":
         return True
-    host = public_url.split("//", 1)[-1].split("/")[0].split(":")[0]
-    return _loopback(host)
+    return parsed.scheme == "http" and _loopback(parsed.hostname)
 
 
 def _now() -> datetime:
@@ -209,9 +218,12 @@ async def _deliver_one(row_id: uuid.UUID, settings: Settings) -> None:
 
 
 async def mail_loop() -> None:
+    """Sleeps first. A sweep on startup makes every API start do database work
+    before it serves anything, and nothing is waiting that was not waiting a
+    moment earlier."""
     while True:
-        await deliver_due()
         await asyncio.sleep(SWEEP_INTERVAL)
+        await deliver_due()
 
 
 async def _attempt(row: MailOutbox, settings: Settings) -> None:

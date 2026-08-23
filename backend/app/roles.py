@@ -83,6 +83,11 @@ async def change_role(
                 .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                 .values(revoked_at=func.now())
             )
+    # The rows are revoked inside the transaction above, which never reaches
+    # sessions.revoke_all, so the sockets it revoked have to be closed here.
+    # They bind their principal once, so a demoted account would otherwise
+    # keep drawing on the slot the demotion was performed to take away.
+    await sessions.close_sockets(user_id)
     # The attestation is the only evidence a no-mail install has, so the row
     # has to say whether the promotion rested on it or on a verified address.
     await audit.record(ROLE_CHANGED, actor=actor, target_user_id=user_id,

@@ -470,6 +470,22 @@ def test_mail_needs_an_https_public_url_because_the_link_is_the_capability():
         mail_from="a@b.co", public_url="http://localhost:8000"))
 
 
+@pytest.mark.parametrize("public_url", [
+    "https://",
+    "https:///join",
+    "http://localhost:not-a-port",
+    "http://:8000",
+    "studio.example.com",
+])
+def test_a_public_url_that_makes_no_link_refuses_to_start(public_url):
+    """A malformed origin is refused as firmly as a plain-HTTP one: mail would
+    go out carrying capabilities in links nobody can follow."""
+    with pytest.raises(RuntimeError, match="https"):
+        mail.check_configuration(Settings(
+            email_backend="smtp", smtp_host="mail.example.com",
+            mail_from="a@b.co", public_url=public_url))
+
+
 @pytest.mark.db
 def test_switching_mail_off_reaches_a_row_that_is_backed_off(connected, monkeypatch):
     """The due-time filter would leave a retried row holding its live link for
