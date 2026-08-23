@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db, keyring, sessions, totp
+from app import db, factors, keyring, sessions, totp
 from app.main import app
 from app.passwords import hash_password
 from app.settings import get_settings
@@ -70,6 +70,11 @@ async def _factors() -> list[AuthFactor]:
         return list((await session.execute(select(AuthFactor))).scalars().all())
 
 
+async def _codes() -> list[RecoveryCode]:
+    async with db.session_factory() as session:
+        return list((await session.execute(select(RecoveryCode))).scalars().all())
+
+
 async def _challenges() -> list[AuthToken]:
     async with db.session_factory() as session:
         return list((await session.execute(
@@ -101,13 +106,20 @@ def _enrol(client):
     secret = started.json()["secret"]
     codes = started.json()["recovery_codes"]
     confirmed = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
-                            json={"code": totp.code_at(secret, int(_now()))})
+                            json={"enrolment": started.json()["enrolment"],
+                                  "code": totp.code_at(secret, int(_now()))})
     assert confirmed.status_code == 204
     return secret, codes
 
 
 def _now() -> float:
     return datetime.now(timezone.utc).timestamp()
+
+
+def _next_code(secret: str) -> str:
+    """Confirming an enrolment spends the code that confirmed it, so a sign-in
+    in the same thirty seconds needs the next one."""
+    return totp.code_at(secret, int(_now()) + totp.STEP)
 
 
 @pytest.mark.db
@@ -138,9 +150,9 @@ def test_enrolment_gives_a_secret_a_uri_and_recovery_codes(accounts):
         assert started["secret"]
         assert started["uri"].startswith("otpauth://totp/")
         assert len(started["recovery_codes"]) == totp.RECOVERY_CODES
-        # Unconfirmed until a code proves the authenticator actually has it.
-        factor = client.portal.call(_factors)[0]
-        assert factor.confirmed_at is None
+        # Nothing is written until a code proves the authenticator has it.
+        assert client.portal.call(_factors) == []
+        assert client.portal.call(_codes) == []
 
 
 @pytest.mark.db
@@ -175,11 +187,11 @@ def test_a_wrong_code_does_not_confirm_enrolment(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "typo@example.com")
         assert _login(client, "typo@example.com").status_code == 204
-        client.post("/api/v1/account/totp", headers=_csrf(client))
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
         refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
-                              json={"code": "000000"})
+                              json={"enrolment": started["enrolment"], "code": "000000"})
         assert refused.status_code == 403
-        assert client.portal.call(_factors)[0].confirmed_at is None
+        assert client.portal.call(_factors) == []
 
 
 @pytest.mark.db
@@ -207,7 +219,7 @@ def test_the_right_code_turns_the_challenge_into_a_session(accounts):
     with TestClient(app, base_url=ORIGIN) as fresh:
         assert _login(fresh, "gated2@example.com").status_code == 200
         passed = fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
-                            json={"code": totp.code_at(secret, int(_now()))})
+                            json={"code": _next_code(secret)})
         assert passed.status_code == 204
         me = fresh.get("/api/v1/account").json()
         assert me["email"] == "gated2@example.com"
@@ -222,7 +234,7 @@ def test_a_challenge_is_spent_once(accounts):
         secret, _ = _enrol(client)
     with TestClient(app, base_url=ORIGIN) as fresh:
         assert _login(fresh, "once@example.com").status_code == 200
-        code = totp.code_at(secret, int(_now()))
+        code = _next_code(secret)
         assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
                           json={"code": code}).status_code == 204
         replayed = fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
@@ -368,7 +380,7 @@ def test_a_code_that_worked_once_never_works_again(accounts):
         client.portal.call(_make, "replayed@example.com")
         assert _login(client, "replayed@example.com").status_code == 204
         secret, _ = _enrol(client)
-    code = totp.code_at(secret, int(_now()))
+    code = _next_code(secret)
     with TestClient(app, base_url=ORIGIN) as first:
         assert _login(first, "replayed@example.com").status_code == 200
         assert first.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
@@ -386,3 +398,65 @@ def test_a_recovery_code_is_long_enough_to_survive_a_stolen_database():
     alphabet = 32
     symbols = sum(len(part) for part in codes[0].split("-"))
     assert symbols * (alphabet.bit_length() - 1) >= 100
+
+
+@pytest.mark.db
+def test_an_abandoned_replacement_leaves_the_working_factor_alone(accounts):
+    """Starting a second enrolment and walking away used to turn the second
+    factor off: one request from a stolen session, no code, and no notice.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keeper@example.com")
+        assert _login(client, "keeper@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        before = client.portal.call(_factors)[0]
+
+        client.post("/api/v1/account/totp", headers=_csrf(client))
+
+        after = client.portal.call(_factors)
+        assert len(after) == 1
+        assert after[0].id == before.id
+        assert after[0].secret_ciphertext == before.secret_ciphertext
+        assert len(client.portal.call(_codes)) == totp.RECOVERY_CODES
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        gated = _login(fresh, "keeper@example.com")
+        assert gated.status_code == 200
+        assert gated.json()["totp_required"] is True
+        assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": _next_code(secret)}).status_code == 204
+    with TestClient(app, base_url=ORIGIN) as recovering:
+        assert _login(recovering, "keeper@example.com").status_code == 200
+        assert recovering.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                               json={"code": codes[0]}).status_code == 204
+
+
+@pytest.mark.db
+def test_an_enrolment_belongs_to_the_account_that_started_it(accounts):
+    """The pending enrolment is held by the browser, so it is bound to the
+    account it was minted for and useless anywhere else."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "minter@example.com")
+        assert _login(client, "minter@example.com").status_code == 204
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+    with TestClient(app, base_url=ORIGIN) as other:
+        other.portal.call(_make, "borrower@example.com")
+        assert _login(other, "borrower@example.com").status_code == 204
+        refused = other.post("/api/v1/account/totp/confirm", headers=_csrf(other),
+                             json={"enrolment": started["enrolment"],
+                                   "code": totp.code_at(started["secret"], int(_now()))})
+        assert refused.status_code == 403
+        assert other.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_an_enrolment_nobody_confirmed_in_time_is_no_longer_one(accounts, monkeypatch):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "slow@example.com")
+        assert _login(client, "slow@example.com").status_code == 204
+        monkeypatch.setattr(factors, "ENROLMENT_TTL", timedelta(seconds=-1))
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started["enrolment"],
+                                    "code": totp.code_at(started["secret"], int(_now()))})
+        assert refused.status_code == 403
+        assert client.portal.call(_factors) == []

@@ -20,6 +20,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Registration is invitation-only. An invitation is bound to one address, good once, and valid 72 hours. It may be copied and handed over by any means, because a self-hosted install is not required to have mail. Only the hash is stored, so the link is shown once at creation; revealing it again mints a fresh one and retires the previous, on the assumption that a link nobody could see may have leaked on the way.
 - Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
 - A role change revokes every session the account held, since the old session carries the old authority.
+- Enrolling a second factor writes nothing until it is confirmed. `POST /api/v1/account/totp` returns the secret, its `otpauth://` URI, the recovery codes, and an opaque `enrolment` value the browser hands back to `POST /api/v1/account/totp/confirm` along with a code from the authenticator. Only that confirmation writes the factor and its codes, replacing whatever the account had before in one transaction. An enrolment that is started and abandoned therefore leaves a working factor working, and the `enrolment` value is bound to the account that started it and expires in 30 minutes. The confirming code is spent like any other, so a sign-in inside the same 30 seconds needs the next one.
 - A second factor is optional for every role. When an account has enrolled and confirmed one, a correct password or a provider sign-in returns `200 {"totp_required": true}` and a short-lived challenge cookie instead of a session. `POST /api/v1/auth/totp` answers it with a TOTP code or a one-use recovery code and returns the session. The challenge lives ten minutes, allows ten attempts, and carries no authority of its own: an administrator part way through it can reach nothing. TOTP gates sign-in and nothing else; it does not gate setup, invitation acceptance, promotion or recovery, and it changes neither what an account may do nor how long its session lasts.
 - `POST /api/v1/auth/reset` always answers `202` with the same body, whether or not anybody holds that address. A non-administrator is emailed a one-use link valid 30 minutes. An administrator is emailed nothing, ever: their way back is `make auth-recover`, run at the machine, which prints a one-use link valid 10 minutes. Completing either sets the password, revokes every session that account held, and returns the person to the login screen with no session and no recent-authentication grant.
 - Changing how an account is proved needs recent authentication, and changing a password that already exists needs the current one as well: recent authentication says this browser was somebody's, and the current password says it is still theirs at this keyboard. Every such change ends the account's other sessions and leaves the browser making it signed in, because the usual reason to change a credential is that somebody else holds the old one.
@@ -71,7 +72,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/reset` | implemented | ask for a password reset link; always answers the same |
 | POST `/api/v1/auth/reset/complete` | implemented | spend a reset or recovery link and set a password; returns to login |
 | POST `/api/v1/account/totp` | implemented | begin enrolling a second factor; needs recent authentication |
-| POST `/api/v1/account/totp/confirm` | implemented | prove the authenticator holds the secret |
+| POST `/api/v1/account/totp/confirm` | implemented | prove the authenticator holds the secret, which is what enrols it |
 | POST `/api/v1/account/identities/{provider}` | implemented | start linking a provider to this account; needs recent authentication |
 | DELETE `/api/v1/account/identities/{provider}` | implemented | unlink a provider; refuses the last way in |
 | POST `/api/v1/account/password` | implemented | change or add a password; needs recent authentication |
@@ -282,7 +283,9 @@ The capability expires after 15 minutes. The URL does not contain the storage ke
 
 Request and response shapes below are the contract [blueprint.md](blueprint.md) pseudocode implements; the issues fill in the behavior.
 
-### Authentication (issue #5)
+### Authentication (shipped, kept here for the exact shapes)
+
+These four routes and the OAuth flow below them are implemented. Only `GET /api/v1/auth/verify` is still open under issue #5.
 
 ```
 POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}

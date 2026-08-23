@@ -7,8 +7,7 @@ This document sits between [architecture.md](architecture.md) and real code. It 
 All mode differences are environment variables read once at startup into a settings object. Nothing branches on "self-hosted or cloud"; code branches on the specific setting.
 
 ```
-AUTH_MODE            = none | local | oauth      # default none; local refuses to start until #5, oauth until #9
-OAUTH_PROVIDERS      = google,github             # only read when AUTH_MODE=oauth
+AUTH_MODE            = none | accounts           # default none; accounts is one-way, see auth-enable
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
 TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
@@ -261,9 +260,9 @@ async def oauth_callback(provider, code, state):
     claims = await providers[provider].exchange(code)   # id token or userinfo
     ident = await db.auth_identities.get(provider=provider, subject=claims.sub)
     if not ident:
-        user = await db.users.find_or_create(email=claims.email)
-        ident = await db.auth_identities.insert(user, provider, subject=claims.sub)
-    # from here identical to local login: mint token, insert session, set cookie
+        return refuse()                        # never by email: registration is invitation-only,
+                                               # and linking is a separate, deliberate act
+    # from here identical to a password login: mint token, insert session, set cookie
 ```
 
 ### The mode seam
