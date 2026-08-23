@@ -328,7 +328,7 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, optional realtime_batch_ms map of model id to batch p95 curve, gpu info |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
 | api to worker | `dispatch_job` | job id, model, params, dispatch_token, upload targets; `load_model` first if not loaded |

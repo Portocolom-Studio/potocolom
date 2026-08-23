@@ -38,6 +38,7 @@ from worker.memory_ladder import (
     measured_wire_manifests,
     rung_vram_bytes,
     select_rung,
+    slots_from_batch_curve,
     slots_from_frame_ms,
 )
 
@@ -183,6 +184,8 @@ class Engine(Protocol):
 
     def realtime_p95_ms(self, model_id: str) -> int | None: ...
 
+    def realtime_batch_ms(self, model_id: str) -> list[int] | None: ...
+
     def p95_model_ids(self) -> list[str]: ...
 
     async def load_model(self, manifest: Manifest) -> int: ...
@@ -315,6 +318,9 @@ class SimulatedEngine:
         # Simulated engine never measured a frame; nothing to advertise.
         return None
 
+    def realtime_batch_ms(self, model_id: str) -> list[int] | None:
+        return None
+
     def p95_model_ids(self) -> list[str]:
         # Simulated engine never measured a frame; nothing to advertise.
         return []
@@ -438,6 +444,7 @@ class DiffusersEngine:
         self._calibrated_slots: int | None = None
         self._calibration_cap: int = 0
         self._realtime_p95_ms: dict[str, int] = {}
+        self._realtime_batch_ms: dict[str, list[int]] = {}
         self._observed_frame_ms: dict[str, deque[float]] = {}
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
@@ -818,26 +825,43 @@ class DiffusersEngine:
             self._calibrated_slots = 0
             return 0
         self._calibrated_slots = min(
-            slots_from_frame_ms(float(p95), self._calibration_cap,
-                                bar_ms=REALTIME_BAR_MS)
-            for p95 in self._realtime_p95_ms.values()
+            slots_from_batch_curve(
+                self._realtime_batch_ms[model_id],
+                self._calibration_cap,
+                bar_ms=REALTIME_BAR_MS,
+            )
+            if model_id in getattr(self, "_realtime_batch_ms", {})
+            else slots_from_frame_ms(
+                float(p95), self._calibration_cap, bar_ms=REALTIME_BAR_MS,
+            )
+            for model_id, p95 in self._realtime_p95_ms.items()
         )
         return self._calibrated_slots
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         self._calibration_cap = configured
-        async with self._gpu:
-            try:
-                return await self._run_to_completion(self._calibrate_realtime,
-                                                     manifest, configured)
-            except Exception:
-                # Could not measure this model; advertise nothing for it
-                # rather than a guess, and never let a boot-time inference
-                # error kill the worker or wipe a sibling's measurement.
-                logger.exception("realtime calibration failed for %s", manifest.id)
-                self._realtime_p95_ms.pop(manifest.id, None)
-                self._recompute_calibrated_slots()
-                return 0
+        try:
+            async with self._gpu:
+                slots = await self._run_to_completion(
+                    self._calibrate_realtime, manifest, configured,
+                )
+        except Exception:
+            logger.exception("realtime calibration failed for %s", manifest.id)
+            self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._recompute_calibrated_slots()
+            return 0
+        slots = self._recompute_calibrated_slots()
+        if slots <= 0:
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            return slots
+        try:
+            await self._calibrate_batch_curve(manifest, configured)
+        except Exception:
+            logger.exception("realtime batch calibration failed for %s", manifest.id)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._recompute_calibrated_slots()
+        return self._calibrated_slots or 0
 
     def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
         """Record a completed realtime frame's worker-side inference time.
@@ -858,6 +882,10 @@ class DiffusersEngine:
             return round(_percentile_nearest(list(window), 95.0))
         return self._realtime_p95_ms.get(model_id)
 
+    def realtime_batch_ms(self, model_id: str) -> list[int] | None:
+        curve = getattr(self, "_realtime_batch_ms", {}).get(model_id)
+        return list(curve) if curve else None
+
     def p95_model_ids(self) -> list[str]:
         """Model ids this engine can report a frame p95 for, resident or not.
 
@@ -874,49 +902,30 @@ class DiffusersEngine:
     def _calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         """Measure single-frame p95 and advertise slots that still meet the bar.
 
-        Cross-session batching runs below this advertisement. Admission still
-        uses serialized per-model p95, so a batch of N still costs N times
-        one frame until a later curve replaces this number.
+        Batch calibration runs after this single-frame measurement.
         """
         self._calibration_cap = configured
         if self.device != "cuda":
             # CPU diffusion cannot hold the bar; skip the frames, advertise
             # nothing for this model. Sibling measurements stay.
             self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
             self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
         if self._select_rung(manifest) != "full":
             self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
             )
             return 0
-        if manifest.t2i_adapter:
-            # A manifest with a sketch adapter never runs img2img frames, so
-            # timing that path would size realtime_slots against a mode no
-            # session uses. Calibrate the conditioned path on the manifest's
-            # declared defaults, with a sparse sketch map rather than flat
-            # gray: a uniform map gives the adapter nothing to condition on
-            # and would time an unrealistically easy frame.
-            canvas = _sparse_sketch_map()
-            properties = manifest.parameters.get("properties", {})
-            strength = 0.0
-            params = {
-                "prompt": "calibration",
-                "structure_strength": float(
-                    properties.get("structure_strength", {}).get("default", 1.0)
-                ),
-                "steps": int(properties.get("steps", {}).get("default", 2)),
-            }
-        else:
-            canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128))
-            strength = 0.7
-            params = {"prompt": "calibration", "strength": strength}
+        params, canvas, strength = self._calibration_inputs(manifest)
         samples: list[float] = []
         # One discarded pass absorbs remaining compile/warmup cost.
         for index in range(CALIBRATION_SAMPLES + 1):
@@ -935,6 +944,69 @@ class DiffusersEngine:
             manifest.id, p95, slots, configured,
         )
         return slots
+
+    def _calibration_inputs(
+        self, manifest: Manifest,
+    ) -> tuple[dict[str, Any], Image.Image, float]:
+        if manifest.t2i_adapter:
+            canvas = _sparse_sketch_map()
+            properties = manifest.parameters.get("properties", {})
+            return (
+                {
+                    "prompt": "calibration",
+                    "structure_strength": float(
+                        properties.get("structure_strength", {}).get("default", 1.0)
+                    ),
+                    "steps": int(properties.get("steps", {}).get("default", 2)),
+                },
+                canvas,
+                0.0,
+            )
+        return (
+            {"prompt": "calibration", "strength": 0.7},
+            Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (128, 128, 128)),
+            0.7,
+        )
+
+    async def _measure_batch_p95(
+        self, count: int, manifest: Manifest, params: dict, payload: bytes,
+    ) -> int:
+        caches = [PromptCache() for _ in range(count)]
+        samples: list[float] = []
+        for index in range(CALIBRATION_SAMPLES + 1):
+            started = time.monotonic()
+            await asyncio.gather(*(
+                self.frame(manifest, params, payload, prompt_cache=caches[item])
+                for item in range(count)
+            ))
+            if index > 0:
+                samples.append((time.monotonic() - started) * 1000.0)
+        return round(_percentile_nearest(samples, 95.0))
+
+    async def _calibrate_batch_curve(
+        self, manifest: Manifest, configured: int,
+    ) -> None:
+        p95 = self._realtime_p95_ms.get(manifest.id)
+        if p95 is None or configured < 2:
+            self._realtime_batch_ms.pop(manifest.id, None)
+            self._recompute_calibrated_slots()
+            return
+        params, canvas, _strength = self._calibration_inputs(manifest)
+        payload = encode_png(canvas)
+        curve = [p95]
+        for count in range(2, configured + 1):
+            wall = await self._measure_batch_p95(count, manifest, params, payload)
+            if wall > REALTIME_BAR_MS:
+                break
+            if wall < curve[-1]:
+                wall = curve[-1]
+            curve.append(wall)
+        self._realtime_batch_ms[manifest.id] = curve
+        slots = self._recompute_calibrated_slots()
+        logger.info(
+            "realtime batch calibration model=%s curve=%s slots=%d (cap=%d)",
+            manifest.id, curve, slots, configured,
+        )
 
     def _load_realtime(self, manifest: Manifest) -> Any:
         """The sketch-conditioned realtime pipeline: the ordinary text-to-image

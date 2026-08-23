@@ -310,6 +310,33 @@ def parse_frame_p95(raw: object) -> dict[str, int] | None:
     return measured
 
 
+def parse_batch_ms(raw: object) -> dict[str, list[int]] | None:
+    if not isinstance(raw, dict):
+        return None
+    measured: dict[str, list[int]] = {}
+    for model_id, values in raw.items():
+        if not isinstance(model_id, str) or not isinstance(values, list):
+            continue
+        if not values or len(values) > 16:
+            continue
+        curve: list[int] = []
+        for value in values:
+            if isinstance(value, bool):
+                break
+            if isinstance(value, float):
+                if not value.is_integer():
+                    break
+                value = int(value)
+            if not isinstance(value, int) or value <= 0 or value > FRAME_P95_MAX_MS:
+                break
+            if curve and value < curve[-1]:
+                break
+            curve.append(value)
+        else:
+            measured[model_id] = curve
+    return measured
+
+
 @dataclass
 class Worker:
     id: str
@@ -338,6 +365,7 @@ class Worker:
     # None means the worker omitted the map (N-1 integer pool). Heartbeat
     # may raise entries; it must not lower them on this connection.
     admission_p95_ms: dict[str, int] | None = None
+    admission_batch_ms: dict[str, list[int]] | None = None
 
     @property
     def models(self) -> list[str]:
@@ -474,18 +502,42 @@ async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> 
         gpu_requests.pop(request_id, None)
 
 
-def live_admission_cost(worker: Worker) -> int:
-    """Serialized frame cost of sessions currently on this worker."""
+def session_counts_on_worker(
+    worker: Worker, excluding: set[uuid.UUID] | set[str] | None = None,
+) -> dict[str, int]:
+    excluded = {str(session_id) for session_id in (excluding or set())}
+    counts: dict[str, int] = {}
+    for session in sessions.values():
+        if session.worker is worker and str(session.id) not in excluded:
+            counts[session.model_id] = counts.get(session.model_id, 0) + 1
+    return counts
+
+
+def class_admission_cost(worker: Worker, counts: dict[str, int]) -> int:
+    total = 0
+    for model_id, count in counts.items():
+        if count <= 0:
+            continue
+        curve = (worker.admission_batch_ms or {}).get(model_id)
+        if curve is not None:
+            total += curve[count - 1] if count <= len(curve) else REALTIME_BAR_MS + 1
+            continue
+        p95 = (worker.admission_p95_ms or {}).get(model_id)
+        if p95 is not None:
+            total += count * p95
+    return total
+
+
+def live_admission_cost(
+    worker: Worker, *, extra: str | None = None,
+    excluding: set[uuid.UUID] | set[str] | None = None,
+) -> int:
     if worker.admission_p95_ms is None:
         return 0
-    total = 0
-    for session in sessions.values():
-        if session.worker is not worker:
-            continue
-        cost = worker.admission_p95_ms.get(session.model_id)
-        if cost:
-            total += cost
-    return total
+    counts = session_counts_on_worker(worker, excluding)
+    if extra is not None:
+        counts[extra] = counts.get(extra, 0) + 1
+    return class_admission_cost(worker, counts)
 
 
 def pick_worker(model_id: str, *, generation: int = 1,
@@ -505,10 +557,9 @@ def pick_worker(model_id: str, *, generation: int = 1,
             if worker.free_slots > 0:
                 ranked.append((worker.free_slots, worker))
             continue
-        cost = worker.admission_p95_ms.get(model_id)
-        if not cost:
+        if model_id not in worker.admission_p95_ms:
             continue
-        leftover = REALTIME_BAR_MS - live_admission_cost(worker) - cost
+        leftover = REALTIME_BAR_MS - live_admission_cost(worker, extra=model_id)
         if leftover >= 0:
             ranked.append((leftover, worker))
     if not ranked:
@@ -706,8 +757,7 @@ def over_capacity_sessions(worker: Worker) -> list[Session]:
     """
     if worker.admission_p95_ms is None or not speaks_generation(worker):
         return []
-    overflow = live_admission_cost(worker) - REALTIME_BAR_MS
-    if overflow <= 0:
+    if live_admission_cost(worker) <= REALTIME_BAR_MS:
         return []
     live = [
         session for session in sessions.values()
@@ -715,13 +765,12 @@ def over_capacity_sessions(worker: Worker) -> list[Session]:
     ]
     live.sort(key=lambda item: item.assigned_at, reverse=True)
     victims: list[Session] = []
-    shed = 0
+    excluding: set[uuid.UUID] = set()
     for session in live:
-        if shed >= overflow:
-            break
-        cost = worker.admission_p95_ms.get(session.model_id) or 0
+        excluding.add(session.id)
         victims.append(session)
-        shed += cost
+        if live_admission_cost(worker, excluding=excluding) <= REALTIME_BAR_MS:
+            break
     return victims
 
 
@@ -783,6 +832,13 @@ async def fleet(ws: WebSocket) -> None:
                 worker.admission_p95_ms = {
                     model_id: value
                     for model_id, value in worker.admission_p95_ms.items()
+                    if model_id in worker.models
+                }
+            if worker.admission_p95_ms is not None and "realtime_batch_ms" in hello:
+                batch = parse_batch_ms(hello.get("realtime_batch_ms"))
+                worker.admission_batch_ms = {
+                    model_id: values
+                    for model_id, values in (batch or {}).items()
                     if model_id in worker.models
                 }
         if not (isinstance(version, int) and isinstance(worker.id, str)
@@ -927,6 +983,8 @@ async def fleet(ws: WebSocket) -> None:
                                         continue
                                     if value > held:
                                         worker.admission_p95_ms[model_id] = value
+                                        if worker.admission_batch_ms is not None:
+                                            worker.admission_batch_ms.pop(model_id, None)
                                         raised = True
                                 if raised:
                                     schedule_shed_over_capacity(worker)

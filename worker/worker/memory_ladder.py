@@ -103,16 +103,29 @@ def slots_from_frame_ms(
 ) -> int:
     """Map a measured single-frame p95 to concurrent realtime slots.
 
-    Cross-session frame batching is deferred (docs/decisions.md "GPU session
-    density"), so N sessions serialize on the GPU lock. Admit the largest N
-    whose serialized inter-frame time still meets the 2 fps floor, capped by
-    the configured upper bound.
+    This is the serialized fallback when no measured batch curve exists.
     """
     if configured <= 0 or p95_ms <= 0:
         return 0
     if p95_ms > bar_ms:
         return 0
     return min(configured, max(1, int(bar_ms // p95_ms)))
+
+
+def slots_from_batch_curve(
+    curve: list[int],
+    configured: int,
+    *,
+    bar_ms: float = REALTIME_BAR_MS,
+) -> int:
+    if configured <= 0 or not curve:
+        return 0
+    count = 0
+    for index, p95 in enumerate(curve):
+        if index + 1 > configured or p95 <= 0 or p95 > bar_ms:
+            break
+        count = index + 1
+    return count
 
 
 def rung_vram_bytes(min_vram_gb: int, rung: MemoryRung) -> int:

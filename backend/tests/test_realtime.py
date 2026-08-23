@@ -21,6 +21,7 @@ from app.realtime import (
     fleet_token_allowed,
     forwarding_trusts_any_peer,
     origin_allowed,
+    parse_batch_ms,
     parse_frame_p95,
     peer_is_unroutable,
 )
@@ -1883,6 +1884,158 @@ def test_over_capacity_leaves_protocol_3_sessions():
         worker.admission_p95_ms["sd-sim"] = 600
         assert realtime.live_admission_cost(worker) == 600
         assert realtime.over_capacity_sessions(worker) == []
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_parse_batch_ms_accepts_whole_millisecond_floats():
+    assert parse_batch_ms({"turbo": [203, 309.0, 404]}) == {
+        "turbo": [203, 309, 404],
+    }
+
+
+def test_parse_batch_ms_skips_invalid_models_and_non_dict_payloads():
+    assert parse_batch_ms({
+        "good": [203, 309],
+        "decreasing": [203, 202],
+        "too-long": list(range(1, 18)),
+        "zero": [0],
+        "bool": [True],
+        "fractional": [203.5],
+    }) == {"good": [203, 309]}
+    assert parse_batch_ms("not-a-dict") is None
+
+
+def test_batch_curve_admits_three_sessions_and_refuses_the_fourth():
+    worker = realtime.Worker(
+        id="w-curve-three", ws=FakeSocket(),
+        manifests=[Manifest.model_validate(manifest("turbo"))],
+        realtime_slots=4, admission_p95_ms={"turbo": 139},
+        admission_batch_ms={"turbo": [203, 309, 404]},
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        for expected in (203, 309, 404):
+            assert realtime.pick_worker("turbo") is worker
+            session = realtime.Session(
+                id=uuid.uuid4(), model_id="turbo", browser=FakeSocket(),
+                worker=worker, state="live",
+            )
+            realtime.sessions[session.id] = session
+            assert realtime.live_admission_cost(worker) == expected
+        assert realtime.live_admission_cost(worker) == 404
+        assert realtime.pick_worker("turbo") is None
+        assert realtime.live_admission_cost(worker, extra="turbo") == 501
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_mixed_batch_curves_use_class_cost_for_admission():
+    turbo = Manifest.model_validate(manifest("turbo"))
+    vega = Manifest.model_validate(manifest("vega"))
+    worker = realtime.Worker(
+        id="w-mixed-curve", ws=FakeSocket(), manifests=[turbo, vega],
+        realtime_slots=4, admission_p95_ms={"turbo": 139, "vega": 209},
+        admission_batch_ms={"turbo": [203, 309, 404], "vega": [270]},
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        for _ in range(2):
+            session = realtime.Session(
+                id=uuid.uuid4(), model_id="turbo", browser=FakeSocket(),
+                worker=worker, state="live",
+            )
+            realtime.sessions[session.id] = session
+        assert realtime.live_admission_cost(worker) == 309
+        assert realtime.pick_worker("vega") is None
+        assert realtime.live_admission_cost(worker, extra="vega") == 579
+    finally:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers.update(saved_workers)
+        realtime.sessions.update(saved_sessions)
+
+
+def test_hello_stores_batch_curve_only_with_a_p95_map():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-curve-hello", models=("turbo",), slots=4)
+        msg["realtime_p95_ms"] = {"turbo": 139}
+        msg["realtime_batch_ms"] = {"turbo": [203, 309]}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-curve-hello"]
+        assert worker.admission_batch_ms == {"turbo": [203, 309]}
+
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-curve-no-p95", models=("turbo",), slots=4)
+        msg["realtime_batch_ms"] = {"turbo": [203, 309]}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        assert realtime.workers["w-curve-no-p95"].admission_batch_ms is None
+
+
+def test_heartbeat_p95_raise_drops_batch_curve_and_uses_new_p95():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        msg = hello(worker_id="w-curve-heartbeat", models=("turbo",), slots=4)
+        msg["realtime_p95_ms"] = {"turbo": 139}
+        msg["realtime_batch_ms"] = {"turbo": [203, 309, 404]}
+        worker_ws.send_json(msg)
+        assert worker_ws.receive_json()["type"] == "registered"
+        worker = realtime.workers["w-curve-heartbeat"]
+        for _ in range(3):
+            session = realtime.Session(
+                id=uuid.uuid4(), model_id="turbo", browser=FakeSocket(),
+                worker=worker, state="live",
+            )
+            realtime.sessions[session.id] = session
+        worker_ws.send_json({
+            "type": "heartbeat", "frame_p95_ms": {"turbo": 250},
+        })
+        client.get("/api/v1/health")
+        assert worker.admission_batch_ms == {}
+        assert realtime.class_admission_cost(worker, {"turbo": 3}) == 750
+
+
+def test_over_capacity_mixed_curve_sheds_newest_vega():
+    worker = realtime.Worker(
+        id="w-mixed-shed", ws=FakeSocket(),
+        manifests=[Manifest.model_validate(manifest("turbo")),
+                   Manifest.model_validate(manifest("vega"))],
+        realtime_slots=4, admission_p95_ms={"turbo": 139, "vega": 209},
+        admission_batch_ms={"turbo": [203, 309, 404], "vega": [270]},
+    )
+    turbo_sessions = [
+        realtime.Session(id=uuid.uuid4(), model_id="turbo", browser=FakeSocket(),
+                         worker=worker, state="live", assigned_at=index)
+        for index in (1.0, 2.0)
+    ]
+    vega_session = realtime.Session(
+        id=uuid.uuid4(), model_id="vega", browser=FakeSocket(),
+        worker=worker, state="live", assigned_at=3.0,
+    )
+    saved_workers = dict(realtime.workers)
+    saved_sessions = dict(realtime.sessions)
+    try:
+        realtime.workers.clear()
+        realtime.sessions.clear()
+        realtime.workers[worker.id] = worker
+        realtime.sessions.update({s.id: s for s in turbo_sessions + [vega_session]})
+        assert realtime.live_admission_cost(worker) == 579
+        assert realtime.over_capacity_sessions(worker) == [vega_session]
     finally:
         realtime.workers.clear()
         realtime.sessions.clear()

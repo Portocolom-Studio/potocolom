@@ -5,6 +5,7 @@ def test_defaults():
     settings = Settings()
     assert settings.device == "cpu"
     assert settings.api_url == "ws://localhost:8000/api/v1/fleet"
+    assert settings.realtime_slots == 4
     assert settings.torch_compile is False
     assert settings.attention_backend == ""
 
