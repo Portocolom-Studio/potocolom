@@ -93,7 +93,11 @@ async def connect(serving: bool = True) -> bool:
     except Exception as error:
         logger.warning("database unavailable (%s); generations and history are disabled", error)
         return False
-    engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10)
+        # hide_parameters: an outbox insert carries a live invitation link as a bind
+    # parameter, and SQLAlchemy prints parameters into the traceback that
+    # uvicorn then logs. Before the outbox no statement carried a capability.
+    engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10,
+                                 hide_parameters=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     if serving:
         await validate_startup_auth_mode(settings.auth_mode)

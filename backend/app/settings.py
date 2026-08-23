@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
 
+    # Mail is optional. EMAIL_BACKEND=none is the self-hosted default: an
+    # invitation link is copied by hand, so nothing here is required to add
+    # people to an install.
+    email_backend: Literal["none", "smtp", "ses"] = "none"
+    mail_from: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    ses_region: str = ""
+
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
     telemetry: bool = True
 
