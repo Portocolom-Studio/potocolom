@@ -5,9 +5,9 @@ milestones remain the planning source of truth; this file is the readable
 summary. Decisions and their rejected alternatives live in
 [docs/decisions.md](docs/decisions.md).
 
-Refreshed 2026-07-23 to cover the upscale, metrics and relicense work merged
-after the M2 snapshot. The GitHub issues and milestones remain the authoritative,
-grouped (M2-M8) view of what is open.
+Refreshed 2026-08-23 to cover the realtime density and region-composite pass.
+The GitHub issues and milestones remain the authoritative, grouped (M2-M8)
+view of what is open.
 
 > Correction: an earlier version of this file listed worker thumbnails (#56),
 > lineage columns (#57), self-hosted packaging (#18) under "To close M2" and the
@@ -129,6 +129,17 @@ tracker-verified detail (open issues and in-flight PRs).
   replay log, #55 vector masks and selections, #45 SPA/API version skew, #46
   status banner.
 
+In flight:
+
+- PR #368 closes #377, the Engine.frame baseline issue. Ship the measurement.
+- PR #370 closes #378, the two-session E2E issue. Ship the measurement.
+- PR #372 closes #294. Ship curve admission. Do not advertise four turbo
+  sessions (N=4 homogeneous turbo is about 501 ms on this desk).
+- PR #375 closes #380, the region-composite measurement. Do not wire Engine
+  until a person accepts the images. Product follow-up is #376.
+- #376 stays open: select and edit a region. It is blocked on looking at the
+  PR #375 images.
+
 ### M4 Accounts
 
 - #5 / #9 auth modes (none, local, oauth behind one dependency seam), #10 account UI.
@@ -144,6 +155,10 @@ tracker-verified detail (open issues and in-flight PRs).
 - Inference backlog note (#60): torch.compile warmup and measured realtime slots
   are in-flight in PR #141. That PR recommends against enabling torch.compile by
   default (measured ROCm speedup only 0.8-7.4% against a large cold-load cost).
+- PR #373 and #379 measured worker-internal Stream Batch on vega-rt: 1.42x on
+  four-step vega with three-frame lag. Do not adopt it. Do not vendor
+  StreamDiffusion. SSF remains unstarted; CUDA compile, Sage and TensorRT stay
+  last, fleet card only.
 
 ### M6 Launch and beta
 
@@ -166,6 +181,18 @@ tracker-verified detail (open issues and in-flight PRs).
 
 ### Deferred by recorded decision
 
-- Worker-internal batching (StreamDiffusion-class step batching, CFG drop) and
-  TAESD preview decode: the trigger is fleet spend, not local speed.
+- Worker-internal Stream Batch (StreamDiffusion-class step batching) was
+  measured and rejected because of lag and quality. TAESD preview decode is
+  shipped. The trigger for future batching work is fleet spend, not local
+  speed.
 - Dedicated realtime and batch pools: a configuration change at scaling stage 2.
+
+### Next steps after the realtime pass
+
+- Merge PRs #368, #370 and #372 as the #294 close-out.
+- Merge PRs #373 and #375 as measure records, not worker behavior changes.
+- Have a human look at the region PNGs, then decide #376 step 2 (Engine
+  composite) or stop.
+- Drawing UI remains #3 and related issues.
+- Do not shrink BATCH_WINDOW_MS. Do not start SSF, Sage, TRT, Flux or img2img
+  realtime.
