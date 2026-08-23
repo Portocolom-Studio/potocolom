@@ -422,32 +422,52 @@ dev: deps ## native studio on :5173 (postgres + API + frontend + worker)
 # GitHub Actions self-hosted runner (docs/self-hosted-runner.md). Requires Docker
 # for the backend workflow postgres service. Uses gh to fetch registration tokens.
 CI_RUNNER_DIR ?= $(HOME)/.local/share/potocolom-actions-runner
+CI_RUNNERS ?= 4
+CI_RUNNER_DIRS = $(CI_RUNNER_DIR) $(foreach n,$(shell seq 2 $(CI_RUNNERS)),$(CI_RUNNER_DIR)-$(n))
 
-ci-runner-install: ## register the self-hosted Actions runner (once)
-	@RUNNER_INSTALL_DIR="$(CI_RUNNER_DIR)" bash "$(CURDIR)/scripts/install-actions-runner.sh"
+ci-runner-install: ## register CI_RUNNERS self-hosted Actions runners (once)
+	@i=0; for dir in $(CI_RUNNER_DIRS); do \
+		i=$$((i+1)); \
+		name="$$(hostname -s)-potocolom"; \
+		[ $$i -gt 1 ] && name="$$name-$$i"; \
+		RUNNER_INSTALL_DIR="$$dir" RUNNER_NAME="$$name" \
+			bash "$(CURDIR)/scripts/install-actions-runner.sh" || exit 1; \
+	done
 	@echo "Next: make ci-runner-service-install && make ci-runner-start"
 
-ci-runner-service-install: ## install runner as a systemd service (sudo, once)
-	@test -f "$(CI_RUNNER_DIR)/svc.sh" || { echo "run make ci-runner-install first" >&2; exit 1; }
-	@cd "$(CI_RUNNER_DIR)" && sudo ./svc.sh install
+ci-runner-service-install: ## install the runners as systemd services (sudo, once)
+	@for dir in $(CI_RUNNER_DIRS); do \
+		test -f "$$dir/svc.sh" || { echo "run make ci-runner-install first" >&2; exit 1; }; \
+		if [ -f "$$dir/.service" ]; then \
+			echo "service already installed for $$dir, skipping"; \
+			continue; \
+		fi; \
+		(cd "$$dir" && sudo ./svc.sh install) || exit 1; \
+	done
 
-ci-runner-start: ## start the self-hosted CI runner (systemd)
-	@test -f "$(CI_RUNNER_DIR)/svc.sh" || { echo "run make ci-runner-install first" >&2; exit 1; }
-	@cd "$(CI_RUNNER_DIR)" && sudo ./svc.sh start
-	@cd "$(CI_RUNNER_DIR)" && sudo ./svc.sh status
+ci-runner-start: ## start the self-hosted CI runners (systemd)
+	@for dir in $(CI_RUNNER_DIRS); do \
+		test -f "$$dir/.service" || { echo "run make ci-runner-service-install first" >&2; exit 1; }; \
+		(cd "$$dir" && sudo ./svc.sh start) || exit 1; \
+	done
+	@$(MAKE) --no-print-directory ci-runner-status
 
-ci-runner-stop: ## stop the self-hosted CI runner
-	@test -f "$(CI_RUNNER_DIR)/svc.sh" || exit 0
-	@cd "$(CI_RUNNER_DIR)" && sudo ./svc.sh stop
+ci-runner-stop: ## stop the self-hosted CI runners
+	@for dir in $(CI_RUNNER_DIRS); do \
+		test -f "$$dir/.service" || continue; \
+		(cd "$$dir" && sudo ./svc.sh stop) || exit 1; \
+	done
 
-ci-runner-restart: ci-runner-stop ci-runner-start ## restart the self-hosted CI runner
+ci-runner-restart: ci-runner-stop ci-runner-start ## restart the self-hosted CI runners
 
 ci-runner-status: ## show self-hosted runner service status
-	@if [ -f "$(CI_RUNNER_DIR)/svc.sh" ]; then \
-		cd "$(CI_RUNNER_DIR)" && sudo ./svc.sh status; \
-	else \
-		echo "runner not installed ($(CI_RUNNER_DIR))"; \
-	fi
+	@for dir in $(CI_RUNNER_DIRS); do \
+		if [ -f "$$dir/.service" ]; then \
+			(cd "$$dir" && sudo ./svc.sh status); \
+		else \
+			echo "service not installed ($$dir)"; \
+		fi; \
+	done
 
 cleanup-failed: dev-db ## remove failed generation jobs from the database
 	backend/.venv/bin/python scripts/cleanup-failed-jobs.py
