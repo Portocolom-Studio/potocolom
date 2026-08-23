@@ -502,3 +502,33 @@ def test_switching_mail_off_reaches_a_row_that_is_backed_off(connected, monkeypa
     row = connected(_rows())[0]
     assert row.state == "failed"
     assert row.payload == {}
+
+
+def test_the_sweep_waits_before_its_first_pass():
+    """Sweeping on startup makes every API start do database work before it
+    serves anything, and there is nothing to deliver that was not there a
+    moment earlier. It also made a full test run, which starts hundreds of
+    clients, contend with itself until it stalled."""
+    import asyncio as _asyncio
+
+    order = []
+
+    async def sweep():
+        order.append("sweep")
+
+    async def sleep(_seconds):
+        order.append("sleep")
+        if len(order) >= 3:
+            raise _asyncio.CancelledError
+
+    async def drive():
+        with pytest.raises(_asyncio.CancelledError):
+            await mail.mail_loop()
+
+    real_sleep, real_due = _asyncio.sleep, mail.deliver_due
+    _asyncio.sleep, mail.deliver_due = sleep, sweep
+    try:
+        _asyncio.get_event_loop_policy().new_event_loop().run_until_complete(drive())
+    finally:
+        _asyncio.sleep, mail.deliver_due = real_sleep, real_due
+    assert order[0] == "sleep"

@@ -1073,6 +1073,20 @@ Accounts are unique on `lower(btrim(email))` through a unique functional index, 
 
 Rejected alternative: a normalized column filled on write. It duplicates a value the database can compute, adds a backfill to the migration, and goes stale the moment one write path forgets it, which is exactly the write path that also decides who owns an account.
 
+## Credential changes: recent authentication, plus the credential itself
+
+Changing a password requires the current one, not only a session that authenticated recently. The two answer different questions: recent authentication says this browser belonged to somebody a moment ago, and the current password says it still belongs to them at this keyboard. An unlocked laptop satisfies the first and not the second. An account with no password is adding one rather than changing it, and has none to give, so that case asks only for recent authentication.
+
+Every credential change ends the account's other sessions and spares the one making the change. The usual reason to change a credential is that somebody else holds the old one, so leaving their session alive defeats the change; signing the person out of the browser they are working in defeats nothing and is merely irritating.
+
+Rejected alternatives: recent authentication alone (an unlocked laptop is then enough to take an account permanently); requiring the current password for the add-password case too (there is nothing to require, so it would only block accounts that signed in with a provider); revoking every session including the current one (the person changing their password is immediately signed out, which reads as a failure and invites them to try again).
+
+## Changing the primary address resets assurance
+
+`mail_verified` becomes false whenever the primary address changes, and the password identity's subject moves with it. A provider verified the old address; that is not evidence about the new one. The identity has to move because login matches on it, so leaving it behind would let somebody sign in under an address they no longer hold.
+
+Rejected alternative: keeping assurance and re-verifying in the background. It leaves a window in which an unproved address is marked proved, and assurance is exactly what promotion to administrator reads.
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

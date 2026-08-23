@@ -10,7 +10,7 @@ from starlette.responses import Response
 
 from app import audit, db, sessions
 from app.auth import current_principal, require_accounts_mode, require_role
-from app.tables import Session, User
+from app.tables import AuthToken, Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
@@ -82,6 +82,17 @@ async def change_role(
                 update(Session)
                 .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                 .values(revoked_at=func.now())
+            )
+            # And the mailed capabilities. A reset is refused for an
+            # administrator, but a link minted while the account was not one
+            # and spent after it became one is an administrator password from
+            # mailbox control alone.
+            await session.execute(
+                update(AuthToken)
+                .where(AuthToken.user_id == user_id,
+                       AuthToken.purpose.in_(("reset", "recovery")),
+                       AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now())
             )
     # The rows are revoked inside the transaction above, which never reaches
     # sessions.revoke_all, so the sockets it revoked have to be closed here.

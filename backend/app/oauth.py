@@ -345,8 +345,16 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
                     status_code=409,
                     detail="that provider account is already linked to an account",
                 ) from taken
-            if _normalized(identity.email) == _normalized(user.email):
-                user.mail_verified = True
+            # Decided by the write, not by a read before it: a primary
+            # address change committing in between would otherwise mark the
+            # new, unproved address as proved, and assurance is what a
+            # promotion reads.
+            await session.execute(
+                update(User)
+                .where(User.id == user.id,
+                       func.lower(func.btrim(User.email)) == _normalized(identity.email))
+                .values(mail_verified=True)
+            )
     return RedirectResponse(settings.public_url, status_code=307)
 
 
