@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from json import loads
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -41,6 +41,31 @@ AUTHORIZE = {
 }
 
 REFUSED = HTTPException(status_code=403, detail="invalid or expired sign-in attempt")
+
+def check_configuration(settings: Settings) -> None:
+    """Refuse a provider sign-in this install cannot carry safely.
+
+    The authorization code comes back on the redirect URI, and over plain HTTP
+    anyone on the path reads it and can spend it before the browser does. Mail
+    refuses the same configuration for the same reason.
+    """
+    offered = [method for method in settings.auth_methods if method != "password"]
+    if not offered:
+        return
+    parsed = urlsplit(settings.public_url)
+    try:
+        _port = parsed.port
+    except ValueError:
+        parsed = urlsplit("")
+    loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+    if parsed.hostname and (parsed.scheme == "https"
+                            or (parsed.scheme == "http" and loopback)):
+        return
+    raise RuntimeError(
+        "OAuth needs an https PUBLIC_URL, because the authorization code comes "
+        f"back on it; {settings.public_url} is not one"
+    )
+
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
