@@ -216,11 +216,10 @@ def main() -> None:
     print("         \"password\": \"a password of fifteen characters or more\"}'")
     print()
     print("A password typed on a command line reaches your shell history.")
-    print("The browser page for this arrives with sign-in.")
     print()
     print("The link is one use and nothing durable holds it, only its hash.")
-    print("Running this again replaces it. Until sign-in ships, accounts mode")
-    print("authenticates nobody except through this call.")
+    print("Running this again replaces it. After you claim it, sign in at")
+    print("/api/v1/auth/login and invite everybody else from Settings.")
 
 
 if __name__ == "__main__":

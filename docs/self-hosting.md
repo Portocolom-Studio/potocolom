@@ -170,9 +170,9 @@ every request as an administrator. Undoing it needs an offline destructive reset
 The link lasts one hour, is good once, and is replaced if you run `make auth-enable`
 again. Nothing durable holds it, only its hash, so a lost link means minting another.
 
-Sign-in is not here yet. Until it lands, `AUTH_MODE=accounts` authenticates nobody
-except through that one call: every other request answers `401`. Do not switch a
-working install over until sign-in ships, tracked in issue #5.
+Sign-in is here: address and password, an optional second factor, and Google or
+GitHub when you configure them. A session is a cookie the browser never reads,
+and an administrator invites everybody else.
 
 Once accounts are on, adding people needs no mail service. An administrator
 creates an invitation for an address and a role, and the API returns the link
