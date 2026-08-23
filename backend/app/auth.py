@@ -68,6 +68,9 @@ async def current_principal(request: Request) -> sessions.Resolved:
     they are, and falling back to the cookie would let a page borrow the
     browser's ambient credential after its own claim was rejected.
     """
+    # Before anything reads a token: with the store down, resolving one raises
+    # and the caller sees a 500 for an outage the contract answers with 503.
+    await db.require_account_dependencies()
     header = request.headers.get("authorization", "")
     if header[:7].lower() == "bearer ":
         resolved = await sessions.resolve(header[7:].strip())

@@ -1282,7 +1282,8 @@ async def realtime(ws: WebSocket) -> None:
         await release(session)
 
 
-async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = None) -> None:
+async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = None,
+                        keep: uuid.UUID | None = None) -> None:
     """Close every live socket a revoked account session was holding.
 
     The principal binds once at the handshake, so nothing would notice the
@@ -1293,6 +1294,9 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
         session for session in list(sessions.values())
         if session.user_id == user_id
         and (auth_session_id is None or session.auth_session_id == auth_session_id)
+        # A credential change spares the session making it, so the canvas in
+        # front of the person changing their password stays up.
+        and (keep is None or session.auth_session_id != keep)
     ]
     # Concurrently: refuse writes before it closes, and a browser that stopped
     # reading blocks that write with no timeout. Sequentially, one such socket

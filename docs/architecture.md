@@ -430,7 +430,7 @@ sequenceDiagram
 
 There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
 
-> Shipped status (2026-07-28): the dependency and the endpoint are real, and starring writes `jobs.starred_at` as drawn. What the diagram describes ahead of the code is the session half: `AUTH_MODE=none` is the only mode implemented (backend/app/auth.py), so there is no cookie, no session row and no Redis lookup yet, and the per-user rate limit counter arrives with accounts (issue #5). Roles already exist on the user row and are checked beside `current_user`.
+> Shipped status (2026-08-23): the dependency, the endpoint and the session half are all real. `AUTH_MODE=accounts` mints an opaque session held in a `__Host-` cookie and stored only as a hash, and revocation is a `revoked_at` on the row plus an explicit close of any realtime socket bound to it. What the diagram still describes ahead of the code is the Redis session cache, which arrives with the cloud profile, and the per-user rate limit counter (deferred by recorded decision).
 
 ```mermaid
 sequenceDiagram

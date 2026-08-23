@@ -84,6 +84,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/shares` | implemented | mint the link for one asset, for 1, 7 or 30 days |
 | DELETE `/api/v1/shares/{id}` | implemented | revoke a share; the link stops resolving |
 | POST `/api/v1/shared` | implemented | resolve a share token; no account needed |
+| GET `/api/v1/mail/status` | implemented | what the mail outbox is doing; admin only |
 | GET `/api/v1/telemetry/preview` | implemented (#29) | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints

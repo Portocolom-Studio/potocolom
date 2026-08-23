@@ -106,16 +106,25 @@ async def _locked(event: Pending) -> None:
 
 async def _deliver_locked(event: Pending) -> None:
     global _dropped, _fell_back
+    sent = list(_spool)
+    dropped, fell_back = _dropped, _fell_back
     try:
-        await _insert([*_spool, event, *_markers()])
+        await _insert([*sent, event, *_markers()])
     except Exception:
         _fell_back += 1
         _log_fallback(event)
         _push(event)
         return
-    _spool.clear()
-    _dropped = 0
-    _fell_back = 0
+    # Only what this insert carried. A record whose own delivery timed out
+    # while this one was in flight was spooled behind it, and clearing the
+    # whole spool would destroy that record and zero the count that would
+    # have made the gap visible: silent loss, which is the one outcome this
+    # module exists to prevent.
+    for one in sent:
+        if _spool and _spool[0] is one:
+            _spool.popleft()
+    _dropped -= dropped
+    _fell_back -= fell_back
 
 
 def _markers() -> list[Pending]:

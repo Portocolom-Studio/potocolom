@@ -17,13 +17,15 @@ from email.message import EmailMessage
 from urllib.parse import urlsplit
 
 from anyio import to_thread
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.settings import Settings, get_settings
-from app.tables import MailOutbox, SuppressedAddress
+from app.auth import require_role
+from app.tables import MailOutbox, SuppressedAddress, User
 
 logger = logging.getLogger("potocolom.mail")
 
@@ -255,6 +257,21 @@ def _forget_capability(row: MailOutbox) -> None:
     What the mail was and who it was for stay, so an operator can still act.
     """
     row.payload = {}
+
+
+router = APIRouter()
+
+
+@router.get("/api/v1/mail/status")
+async def mail_status(_admin: User = Depends(require_role("admin"))) -> dict:
+    """What the outbox is doing, for the operator who configured it.
+
+    An install whose sends are quietly retrying looks exactly like one with
+    nothing to send until somebody can see the queue.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return await status()
 
 
 async def status() -> dict:

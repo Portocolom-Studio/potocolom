@@ -223,7 +223,7 @@ Logout and revocation delete the row, delete the cache key and publish on `inval
 ### Local registration and login
 
 ```python
-@app.post("/api/v1/auth/register")            # AUTH_MODE=local or oauth
+@app.post("/api/v1/auth/register")            # AUTH_MODE=accounts
 async def register(email, password, attest_18):
     await rate.check(f"rate:signup:{client_ip}", limit=5, window=3600)
     require(attest_18)                        # cloud terms

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -29,6 +29,7 @@ from app.credentials import router as credentials_router
 from app.enable import router as enable_router
 from app.factors import router as factors_router
 from app.invitations import router as invitations_router
+from app.oauth import check_configuration as check_oauth_configuration
 from app.oauth import router as oauth_router
 from app.recovery import router as recovery_router
 from app.registry import router as registry_router
@@ -39,6 +40,7 @@ from app.settings import get_settings
 from app.storage import get_storage
 from app.studio import router as studio_router
 from app.mail import check_configuration as check_mail_configuration, mail_loop
+from app.mail import router as mail_router
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
 
@@ -64,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the settings this process actually runs under.
     _reject_unset_fleet_token_key(settings.fleet_token_key)
     check_mail_configuration(settings)
+    check_oauth_configuration(settings)
     setup_logging(settings.log_format)
     if not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
@@ -82,23 +85,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger("potocolom.telemetry").info(
             "anonymous daily telemetry disabled by TELEMETRY=false"
         )
-    if await db.connect():
-        await jobs.recover()
-    tasks = [
-        asyncio.create_task(reap_dead_workers()),
-        asyncio.create_task(jobs.dispatch_loop()),
-        asyncio.create_task(maintain_loop()),
-        asyncio.create_task(maintain_deletes_loop()),
-        asyncio.create_task(telemetry_loop()),
-        asyncio.create_task(mail_loop()),
-    ]
-    yield
-    await jobs.drain_blob_cleanup()
-    for task in tasks:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    await db.dispose()
+    async with AsyncExitStack() as running:
+        if await db.connect():
+            if settings.auth_mode == "accounts":
+                # Before recovery, and held for the life of the process. Two
+                # accounts processes without Redis do not fail loudly, they
+                # disagree quietly about who owns a socket, and a process that
+                # is about to refuse must not requeue anybody's jobs first.
+                await running.enter_async_context(db.hold_accounts_startup_lock())
+            await jobs.recover()
+        tasks = [
+            asyncio.create_task(reap_dead_workers()),
+            asyncio.create_task(jobs.dispatch_loop()),
+            asyncio.create_task(maintain_loop()),
+            asyncio.create_task(maintain_deletes_loop()),
+            asyncio.create_task(telemetry_loop()),
+            asyncio.create_task(mail_loop()),
+        ]
+        yield
+        await jobs.drain_blob_cleanup()
+        for task in tasks:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        await db.dispose()
 
 
 _reject_unset_fleet_token_key(get_settings().fleet_token_key)
@@ -130,6 +140,7 @@ app.include_router(invitations_router)
 app.include_router(oauth_router)
 app.include_router(recovery_router)
 app.include_router(roles_router)
+app.include_router(mail_router)
 app.include_router(shares_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)

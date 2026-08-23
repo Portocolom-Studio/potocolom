@@ -18,7 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from app import db, mail
+from app import db, mail, sessions
 from app.auth import require_accounts_mode
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -178,6 +178,10 @@ async def complete(request: CompleteRequest) -> Response:
                 .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                 .values(revoked_at=func.now())
             )
+    # After the commit, and unconditionally: a revoked row stops the next
+    # request, but a socket bound its principal at the handshake and keeps
+    # drawing on the account this reset exists to take back.
+    await sessions.close_sockets(user_id)
     return Response(status_code=204)
 
 

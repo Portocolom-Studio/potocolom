@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
@@ -206,6 +207,51 @@ async def validate_startup_auth_mode(configured: str) -> None:
         raise RuntimeError("accounts mode requires explicit installation enable")
     if configured == "none" and persisted == "accounts":
         raise RuntimeError("accounts installation cannot start in none mode")
+
+
+_lock_holders = 0
+_lock_connection = None
+
+
+@asynccontextmanager
+async def hold_accounts_startup_lock() -> AsyncIterator[None]:
+    """One accounts process per installation, on a connection of its own.
+
+    Without Redis there is no shared state between processes: a realtime
+    socket binds in whichever process accepted it and dispatch refuses to
+    cross, so two processes do not fail loudly, they disagree quietly. This
+    refuses the second one at startup instead.
+
+    Counted, because the guard is about processes and an application started
+    twice inside one process is still one process. A second worker is a
+    separate process with its own count and its own connection, so it still
+    meets the lock.
+    """
+    global _lock_holders, _lock_connection
+    if _lock_holders == 0:
+        connection = await asyncpg.connect(get_settings().database_url)
+        try:
+            acquired = await connection.fetchval(
+                "SELECT pg_try_advisory_lock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
+            )
+        except BaseException:
+            await connection.close()
+            raise
+        if not acquired:
+            await connection.close()
+            raise RuntimeError("another accounts startup is in progress")
+        _lock_connection = connection
+    _lock_holders += 1
+    try:
+        yield
+    finally:
+        _lock_holders -= 1
+        if _lock_holders == 0 and _lock_connection is not None:
+            held, _lock_connection = _lock_connection, None
+            await held.fetchval(
+                "SELECT pg_advisory_unlock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
+            )
+            await held.close()
 
 
 @asynccontextmanager
