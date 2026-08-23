@@ -5,7 +5,9 @@ invitation acceptance, not promotion, not recovery, and it changes neither what
 an account may do nor how long its session lasts.
 """
 
+import base64
 import hashlib
+import json
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,6 +25,10 @@ from app.tables import AuthFactor, AuthToken, RecoveryCode, User
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 TOTP_PURPOSE = "totp-factors"
+# Its own purpose, so an enrolment nobody confirmed can never be presented as
+# a stored factor, nor a stored factor as an enrolment.
+ENROLMENT_PURPOSE = "totp-enrolment"
+ENROLMENT_TTL = timedelta(minutes=30)
 CHALLENGE_TTL = timedelta(minutes=10)
 MAX_ATTEMPTS = 10
 CHALLENGE_COOKIE = "potocolom_challenge"
@@ -33,6 +39,35 @@ REFUSED = HTTPException(status_code=403, detail="that code is not valid")
 
 def _hash(value: str) -> bytes:
     return hashlib.sha256(value.encode()).digest()
+
+
+def _sealed_enrolment(user_id: uuid.UUID, secret: str, codes: list[str]) -> str:
+    """The pending enrolment, held by the browser setting it up rather than by
+    this database, so an abandoned one leaves nothing behind to clean up or to
+    weaken the factor the account already has.
+
+    Encrypted under this installation's key ring and bound to the account, so
+    it is no more use to anyone else than the secret printed beside it.
+    """
+    sealed = keyring.get_key_ring().encrypt(
+        ENROLMENT_PURPOSE,
+        json.dumps({"secret": secret, "codes": codes,
+                    "expires": int(_now().timestamp() + ENROLMENT_TTL.total_seconds())}).encode(),
+        user_id.bytes,
+    )
+    return base64.urlsafe_b64encode(sealed).decode()
+
+
+def _opened_enrolment(user_id: uuid.UUID, sealed: str) -> tuple[str, list[str]]:
+    try:
+        opened = json.loads(keyring.get_key_ring().decrypt(
+            ENROLMENT_PURPOSE, base64.urlsafe_b64decode(sealed), user_id.bytes))
+        secret, codes, expires = opened["secret"], opened["codes"], opened["expires"]
+    except Exception as unreadable:
+        raise REFUSED from unreadable
+    if expires <= _now().timestamp():
+        raise REFUSED
+    return secret, codes
 
 
 def _cookie_name(settings: Settings) -> str:
@@ -94,6 +129,11 @@ async def begin_challenge(user: User, remember_me: bool,
 
 
 class CodeRequest(BaseModel):
+    code: str
+
+
+class ConfirmRequest(BaseModel):
+    enrolment: str
     code: str
 
 
@@ -205,17 +245,47 @@ async def _spend_recovery_code(user_id: uuid.UUID, code: str) -> bool:
 async def start_enrolment(
     principal: sessions.Resolved = Depends(current_principal),
 ) -> dict:
-    """Returns the only copy of the secret and the recovery codes."""
+    """Returns the only copy of the secret and the recovery codes.
+
+    Nothing is written here. An enrolment that is started and abandoned must
+    leave the account exactly as it was, and an account replacing its
+    authenticator keeps the working one until the new one answers. Writing
+    first made this endpoint the cheapest way to turn the second factor off:
+    one request from a stolen session, no code, and no notice to anybody.
+    """
     if not sessions.is_recent(principal.session):
         raise HTTPException(status_code=403, detail="recent authentication required")
     if principal.user.state != "active":
         raise HTTPException(status_code=403, detail="account suspended")
-    if db.session_factory is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
     secret = totp.new_secret()
     codes = totp.new_recovery_codes()
-    ring = keyring.get_key_ring()
+    return {
+        "secret": secret,
+        "uri": totp.enrolment_uri(secret, account=principal.user.email, issuer="potocolom"),
+        "recovery_codes": codes,
+        "enrolment": _sealed_enrolment(principal.user.id, secret, codes),
+    }
+
+
+@router.post("/api/v1/account/totp/confirm", status_code=204)
+async def confirm_enrolment(
+    body: ConfirmRequest,
+    principal: sessions.Resolved = Depends(current_principal),
+) -> Response:
+    """A code proves the authenticator really holds the secret.
+
+    Without it an operator can lock themselves out with a mistyped setup, and
+    the whole enrolment lands here: the factor and its codes replace what the
+    account had in one transaction, or the account keeps what it had.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
     user_id = principal.user.id
+    secret, codes = _opened_enrolment(user_id, body.enrolment)
+    step = totp.matched_step(secret, body.code)
+    if step is None:
+        raise REFUSED
+    ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
             # Replacing an enrolment replaces its codes with it: a code minted
@@ -226,44 +296,11 @@ async def start_enrolment(
                 user_id=user_id, kind="totp",
                 secret_ciphertext=ring.encrypt(TOTP_PURPOSE, secret.encode(), user_id.bytes),
                 key_version=ring.active_version,
+                confirmed_at=func.now(),
+                # The confirming code is spent, like every other one: it is
+                # live for another ninety seconds otherwise.
+                last_step=step,
             ))
             for code in codes:
                 session.add(RecoveryCode(user_id=user_id, code_hash=_hash(code)))
-    return {
-        "secret": secret,
-        "uri": totp.enrolment_uri(secret, account=principal.user.email, issuer="potocolom"),
-        "recovery_codes": codes,
-    }
-
-
-@router.post("/api/v1/account/totp/confirm", status_code=204)
-async def confirm_enrolment(
-    body: CodeRequest,
-    principal: sessions.Resolved = Depends(current_principal),
-) -> Response:
-    """A code proves the authenticator really holds the secret.
-
-    Without it an operator can lock themselves out with a mistyped setup.
-    """
-    if db.session_factory is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    user_id = principal.user.id
-    async with db.session_factory() as session:
-        factor = (await session.execute(
-            select(AuthFactor).where(AuthFactor.user_id == user_id)
-        )).scalar_one_or_none()
-    if factor is None:
-        raise REFUSED
-    try:
-        secret = keyring.get_key_ring().decrypt(
-            TOTP_PURPOSE, factor.secret_ciphertext, user_id.bytes).decode()
-    except Exception as unreadable:
-        raise REFUSED from unreadable
-    if not totp.verify(secret, body.code):
-        raise REFUSED
-    async with db.session_factory() as session:
-        await session.execute(
-            update(AuthFactor).where(AuthFactor.id == factor.id)
-            .values(confirmed_at=func.now()))
-        await session.commit()
     return Response(status_code=204)
