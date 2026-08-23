@@ -5,6 +5,8 @@ account's other sessions, because the usual reason to change a credential is
 that somebody else holds the old one.
 """
 
+import uuid
+
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,7 +19,7 @@ from app import db, sessions
 from app.auth import current_principal, require_accounts_mode
 from app.enable import _checked_email
 from app.passwords import PasswordRejected, hash_password, verify_password
-from app.tables import AuthIdentity, Session, User
+from app.tables import AuthIdentity, AuthToken, Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
@@ -37,12 +39,28 @@ async def recent_principal(
 
 async def _revoke_others(session: AsyncSession, principal: sessions.Resolved) -> None:
     """Everything but the browser making the change, which would otherwise sign
-    somebody out of the session they are changing the credential from."""
+    somebody out of the session they are changing the credential from.
+
+    Reset and recovery links go too. Changing an address after a mailbox is
+    compromised is meant to end what that mailbox can still do, and a link
+    already sent to it is exactly that.
+    """
     await session.execute(
         update(Session)
         .where(Session.user_id == principal.user.id, Session.id != principal.session.id,
                Session.revoked_at.is_(None))
         .values(revoked_at=func.now())
+    )
+    await _spend_capabilities(session, principal.user.id)
+
+
+async def _spend_capabilities(session: AsyncSession, user_id: uuid.UUID) -> None:
+    await session.execute(
+        update(AuthToken)
+        .where(AuthToken.user_id == user_id,
+               AuthToken.purpose.in_(("reset", "recovery")),
+               AuthToken.consumed_at.is_(None))
+        .values(consumed_at=func.now())
     )
 
 
@@ -82,8 +100,15 @@ async def change_password(
                 raise HTTPException(status_code=400,
                                     detail="password does not meet the policy") from rejected
             if existing is None:
+                # Read here, not from the principal loaded before this
+                # transaction: an address change committing in between would
+                # leave the identity on an address the account no longer holds,
+                # and login matches on the identity.
+                address = (await session.execute(
+                    select(User.email).where(User.id == principal.user.id).with_for_update()
+                )).scalar_one()
                 session.add(AuthIdentity(user_id=principal.user.id, provider="password",
-                                         subject=principal.user.email.strip().lower(),
+                                         subject=address.strip().lower(),
                                          password_hash=password_hash))
             else:
                 await session.execute(
@@ -145,9 +170,13 @@ async def unlink_identity(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            # Taken, not just read: two unlinks at once each saw two
+            # credentials, each removed a different one, and the account was
+            # left with none, which is what this guard exists to prevent.
             held = (await session.execute(
                 select(AuthIdentity.id, AuthIdentity.provider)
                 .where(AuthIdentity.user_id == principal.user.id)
+                .with_for_update()
             )).all()
             linked = next((row for row in held if row.provider == provider), None)
             if linked is None:

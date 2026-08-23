@@ -257,3 +257,114 @@ def test_a_credential_change_by_an_enrolled_account_still_passes_the_factor(acco
         assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
                           json={"code": totp.code_at(secret, int(_now()))}).status_code == 204
         assert _change_password(fresh, PASSWORD, NEW).status_code == 204
+
+
+async def _live_tokens(user_id: uuid.UUID) -> list:
+    from app.tables import AuthToken
+    async with db.session_factory() as session:
+        return list((await session.execute(
+            select(AuthToken).where(AuthToken.user_id == user_id,
+                                    AuthToken.consumed_at.is_(None))
+        )).scalars().all())
+
+
+@pytest.mark.db
+def test_changing_a_credential_kills_a_reset_link_already_in_flight(accounts):
+    """The reason to change an address after a mailbox is compromised is to
+    end what that mailbox can still do. A link already sent is exactly that."""
+    from app import recovery
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight@example.com")
+        token = client.portal.call(recovery.mint_reset, "inflight@example.com")
+        assert _login(client, "inflight@example.com").status_code == 204
+        assert _change_email(client, "safe@example.com").status_code == 204
+        assert client.portal.call(_live_tokens, user.id) == []
+        assert client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                           json={"token": token, "password": NEW}).status_code == 403
+
+
+@pytest.mark.db
+def test_changing_a_password_kills_a_reset_link_too(accounts):
+    from app import recovery
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight2@example.com")
+        token = client.portal.call(recovery.mint_reset, "inflight2@example.com")
+        assert _login(client, "inflight2@example.com").status_code == 204
+        assert _change_password(client, PASSWORD, NEW).status_code == 204
+        assert client.portal.call(_live_tokens, user.id) == []
+        assert client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                           json={"token": token, "password": NEW}).status_code == 403
+
+
+@pytest.mark.db
+def test_a_promotion_kills_a_reset_link_minted_before_it(accounts):
+    """A reset is refused for an administrator. A link minted while the account
+    was not one, and spent after it became one, is an administrator password
+    from mailbox control alone."""
+    from app import recovery
+    from tests.test_totp_flow import _make as make
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        target = client.portal.call(make, "climber@example.com")
+        token = client.portal.call(recovery.mint_reset, "climber@example.com")
+        boss = client.portal.call(make, "chief@example.com", "admin")
+        admin_token = client.portal.call(sessions.mint, boss, False, True).token
+        promoted = client.post(f"/api/v1/users/{target.id}/role",
+                               headers={"Authorization": f"Bearer {admin_token}"},
+                               json={"role": "admin", "attested": True})
+        assert promoted.status_code == 204
+        assert client.portal.call(_live_tokens, target.id) == []
+        assert client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                           json={"token": token, "password": NEW}).status_code == 403
+
+
+@pytest.mark.db
+def test_two_unlinks_at_once_cannot_empty_an_account(accounts):
+    """Each sees two credentials and removes a different one, and the account
+    is left with none, which is the state the guard exists to prevent."""
+    import asyncio
+
+    from app import credentials
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "racer@example.com")
+        client.portal.call(_link, user.id, "google", "g-race")
+        client.portal.call(_link, user.id, "github", "h-race")
+        assert _login(client, "racer@example.com").status_code == 204
+
+        async def drop_password():
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("DELETE FROM auth_identities WHERE user_id = :id "
+                         "AND provider = 'password'"), {"id": user.id})
+                await session.commit()
+
+        client.portal.call(drop_password)
+        principal = client.portal.call(sessions.resolve,
+                                       next(c.value for c in client.cookies.jar
+                                            if c.name.endswith("potocolom_session")))
+
+        async def both():
+            return await asyncio.gather(
+                credentials.unlink_identity("google", principal),
+                credentials.unlink_identity("github", principal),
+                return_exceptions=True,
+            )
+
+        client.portal.call(both)
+        left = client.portal.call(_identities, user.id)
+    assert len(left) >= 1
+
+
+@pytest.mark.db
+def test_an_address_cannot_be_a_list_of_addresses(accounts):
+    """It becomes the To header of mail this install sends, so a second
+    recipient there is the install addressing a stranger."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lister@example.com")
+        assert _login(client, "lister@example.com").status_code == 204
+        for bad in ("me@evil.com, victim@corp.com", "me@evil.com;victim@corp.com",
+                    "a@b.co <victim@corp.com>", "two@@example.com", "sp ace@example.com"):
+            assert _change_email(client, bad).status_code == 400, bad
