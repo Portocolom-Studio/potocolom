@@ -46,6 +46,13 @@ class User(Base):
     mail_verified: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     role: Mapped[str] = mapped_column(Text, default="user")
     state: Mapped[str] = mapped_column(Text, default="active", server_default=text("'active'"))
+    # Where a restore puts the account back. One level only: an account that
+    # was suspended when it asked to be deleted comes back suspended, and the
+    # state before that one is nobody's business.
+    prior_state: Mapped[str | None] = mapped_column(Text)
+    # When this account last asked to be deleted, kept after a restore: it is
+    # what tells a repeated restore from one that never had anything to undo.
+    deletion_requested_at: Mapped[datetime | None]
     deleted_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

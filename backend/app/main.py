@@ -26,6 +26,8 @@ from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.accounts import router as accounts_router
 from app.credentials import router as credentials_router
+from app.deletion import purge_loop
+from app.deletion import router as deletion_router
 from app.enable import router as enable_router
 from app.factors import router as factors_router
 from app.invitations import router as invitations_router
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             asyncio.create_task(maintain_deletes_loop()),
             asyncio.create_task(telemetry_loop()),
             asyncio.create_task(mail_loop()),
+            asyncio.create_task(purge_loop()),
         ]
         yield
         await jobs.drain_blob_cleanup()
@@ -135,6 +138,7 @@ if get_settings().benchmark_api:
 app.include_router(benchmark_sessions_router)
 app.include_router(accounts_router)
 app.include_router(credentials_router)
+app.include_router(deletion_router)
 app.include_router(enable_router)
 app.include_router(factors_router)
 app.include_router(invitations_router)
