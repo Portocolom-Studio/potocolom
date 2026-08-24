@@ -68,13 +68,24 @@ def test_an_administrator_moves_an_account_between_states(accounts, state):
 
 @pytest.mark.db
 def test_setting_the_state_an_account_already_holds_changes_nothing(accounts):
-    """Idempotent: a retry after a timeout must not be a second event."""
+    """Idempotent: a retry after a timeout must not be a second event, in the
+    row or in the record of who did what."""
+    from app.tables import AuditEvent
+
+    async def recorded(user_id) -> int:
+        async with db.session_factory() as session:
+            return len((await session.execute(
+                select(AuditEvent).where(AuditEvent.action == "account.state",
+                                         AuditEvent.target_user_id == user_id)
+            )).scalars().all())
+
     with TestClient(app, base_url=ORIGIN) as client:
         subject = client.portal.call(_make, "twice@example.com")
         _admin(client)
         assert _set_state(client, subject.id, "suspended").status_code == 204
         assert _set_state(client, subject.id, "suspended").status_code == 204
         assert client.portal.call(_state_of, subject.id) == "suspended"
+        assert client.portal.call(recorded, subject.id) == 1
 
 
 @pytest.mark.db
@@ -234,3 +245,32 @@ def test_only_an_administrator_can_change_a_state(accounts):
         assert _login(client, "meddler13@example.com").status_code == 204
         assert _set_state(client, subject.id, "suspended").status_code == 403
         assert client.portal.call(_state_of, subject.id) == "active"
+
+
+@pytest.mark.db
+def test_one_account_cannot_call_off_another_ones_work(accounts):
+    """A job belongs to whoever created it. An administrator may stop one,
+    because an administrator may take the whole account away."""
+    from tests.test_shares import _owned_asset
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        owner = client.portal.call(_make, "jobowner@example.com")
+        asset = client.portal.call(_owned_asset, owner.id)
+        job_id = asset.job_id
+
+        client.portal.call(_make, "stranger13@example.com")
+        assert _login(client, "stranger13@example.com").status_code == 204
+        assert client.post(f"/api/v1/generations/{job_id}/cancel",
+                           headers=_csrf(client)).status_code == 404
+
+        _admin(client, "canceller@example.com")
+        assert client.post(f"/api/v1/generations/{job_id}/cancel",
+                           headers=_csrf(client)).status_code == 204
+
+        async def clear() -> None:
+            async with db.session_factory() as session:
+                for table in ("asset_shares", "assets", "jobs"):
+                    await session.execute(text(f"DELETE FROM {table}"))
+                await session.commit()
+
+        client.portal.call(clear)

@@ -122,9 +122,14 @@ def test_what_a_cancelled_job_uploads_afterwards_is_discarded():
             worker.send_json({"type": "job_done", "job_id": job_id,
                               "dispatch_token": dispatch["dispatch_token"],
                               "gpu_ms": 1200, "width": 64, "height": 64})
-            time.sleep(0.3)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and uuid.UUID(job_id) in jobs.inflight:
+                time.sleep(0.05)
             assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "cancelled"
             assert client.portal.call(_assets, job_id) == []
+            # The attempt is finished with, whatever it uploaded. Leaving the
+            # entry would hold a dispatch slot until that worker reconnected.
+            assert uuid.UUID(job_id) not in jobs.inflight
 
 
 @pytest.mark.db
@@ -202,3 +207,32 @@ def test_only_the_owner_or_an_administrator_can_call_off_a_job():
             job_id = _create(client)
         assert client.post(f"/api/v1/generations/{uuid.uuid4()}/cancel").status_code == 404
         assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "queued"
+
+
+@pytest.mark.db
+def test_the_charge_lands_before_the_attempt_is_let_go(monkeypatch):
+    """Clearing first and then failing to commit would leave the charge
+    nowhere: a later report cannot retry it, because the attempt it names is
+    no longer the current one."""
+    seen: list[bool] = []
+    original = jobs._charge_cancelled
+
+    async def watch(job_id, gpu_ms, attempt, control):
+        seen.append(job_id in jobs.inflight)
+        await original(job_id, gpu_ms, attempt, control)
+
+    monkeypatch.setattr(jobs, "_charge_cancelled", watch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-order")
+            job_id = _create(client)
+            dispatch = _wait_dispatch(worker)
+            poll_until(client, job_id, "running")
+            assert client.post(f"/api/v1/generations/{job_id}/cancel").status_code == 204
+            assert worker.receive_json()["type"] == "cancel_job"
+            worker.send_json({"type": "job_cancelled", "job_id": job_id,
+                              "dispatch_token": dispatch["dispatch_token"], "gpu_ms": 99})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not seen:
+                time.sleep(0.05)
+    assert seen == [True]

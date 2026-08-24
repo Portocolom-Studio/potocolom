@@ -323,7 +323,7 @@ stateDiagram-v2
     purging --> [*]
 ```
 
-Transitions are compare-and-set inside one transaction and idempotent, so a retry after a timeout is not a second event and an illegal transition is a conflict rather than a silent overwrite. `purging` is reachable only from the sweep, never from an administrator's request. Restoring a `deletion_pending` account restores the data with it, which is the deletion round's work rather than this diagram's.
+Transitions are compare-and-set inside one transaction and idempotent, so a retry after a timeout is not a second event and an illegal transition is a conflict rather than a silent overwrite. `purging` is reachable only from the sweep, never from an administrator's request. `deletion_pending` is terminal as shipped and a request to restore one answers `409`: restoring an account means restoring the data with it, which is the deletion round's work rather than this one's.
 
 Leaving `active` revokes every session in the same transaction as the state, then reaches what a transaction cannot: the realtime sockets that bound their principal at the handshake, and the workers holding that account's jobs.
 

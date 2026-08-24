@@ -372,6 +372,10 @@ class SimulatedEngine:
             width, height = source.size[0] * factor, source.size[1] * factor
             start = time.monotonic()
             progress(0.5)
+            if cancelled is not None and cancelled():
+                # The real engine takes this between tiles. The simulated one
+                # has one resize, so between its halves is the same place.
+                raise Cancelled()
             image = source.resize((width, height), Image.Resampling.LANCZOS)
             progress(1.0)
             gpu_ms = int((time.monotonic() - start) * 1000)

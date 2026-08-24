@@ -1416,12 +1416,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         # The worker stopped where it was asked to. The row is already
         # cancelled, so this only says what the GPU cost before it stopped.
         gpu_ms = _worker_int(control.get("gpu_ms"))
-        inflight.pop(job_id, None)
-        live_progress.pop(job_id, None)
-        last_progress_at.pop(job_id, None)
-        release_job_slot(worker)
         if gpu_ms:
+            # Before the entry goes, like every other verdict here: clearing
+            # first and failing to commit would leave the charge nowhere, and
+            # a later report cannot retry it because the attempt it named is
+            # no longer the current one.
             await _charge_cancelled(job_id, gpu_ms, current.attempt, control)
+        clear_if_current(worker, job_id, current)
         return
     if control["type"] == "job_progress":
         # float() raises TypeError on the list or dict json.loads accepts, and
@@ -1483,7 +1484,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 logger.exception("could not mark job %s failed", job_id)
                 return
             if not committed:
-                return  # a requeue or another verdict owns the row now
+                # A requeue or another verdict owns the row now, and this
+                # attempt is finished with either way. clear_if_current only
+                # touches the entry this verdict still owns, so a requeue that
+                # replaced it keeps its own; a cancellation, which is terminal
+                # and leaves no later attempt, would otherwise hold a dispatch
+                # slot on this worker until it reconnected.
+                clear_if_current(worker, job_id, current)
+                return
             clear_if_current(worker, job_id, current)
             schedule_blob_cleanup(
                 purge_attempt_blobs(current.user_id, job_id, current.attempt),
@@ -1540,6 +1548,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 logger.exception("could not mark job %s failed after promote", job_id)
                 return
             if not committed:
+                clear_if_current(worker, job_id, current)
                 return
             clear_if_current(worker, job_id, current)
             schedule_blob_cleanup(
@@ -1571,8 +1580,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                             _purge_keys(promoted, job_id),
                             what=f"uncommitted library copies for job {job_id}",
                         )
-                    if (job is not None and job.state == "cancelled"
-                            and job.attempt == current.attempt and gpu_ms):
+                    cancelled_here = (job is not None and job.state == "cancelled"
+                                      and job.attempt == current.attempt)
+                    if cancelled_here and gpu_ms and job is not None:
                         # The output is discarded and the time is not: the GPU
                         # ran for however long it ran before the cancellation
                         # reached it, and somebody pays for that.
@@ -1580,6 +1590,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                         await session.commit()
                         from app import usage_events
                         usage_events.schedule_job(job_id, control)
+                    if cancelled_here:
+                        # This attempt is finished with, whatever it uploaded.
+                        # Leaving the entry would hold a dispatch slot on that
+                        # worker until it reconnected.
+                        clear_if_current(worker, job_id, current)
                     return
                 job.state = "succeeded"
                 job.gpu_ms = gpu_ms

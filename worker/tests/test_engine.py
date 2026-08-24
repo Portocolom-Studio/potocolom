@@ -2681,3 +2681,24 @@ def test_calibrate_elapsed_includes_the_frame_call():
     slots = engine._calibrate_realtime(manifest, configured=4)
     assert engine.realtime_p95_ms("vega-rt") >= 50
     assert slots == slots_from_frame_ms(engine.realtime_p95_ms("vega-rt"), 4)
+
+
+def test_a_simulated_upscale_stops_when_it_is_asked_to():
+    """An upscale is one long resize here and a tile loop on the real engine.
+    Both have to answer the same ask, or a cancelled upscale reports success."""
+    from worker.engine import Cancelled
+
+    pytest = __import__("pytest")
+    engine = SimulatedEngine(0.01)
+    manifest = Manifest(id="sim-upscale", name="Sim Upscale", capabilities=["upscale"])
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(buffer, format="PNG")
+    source = buffer.getvalue()
+
+    with pytest.raises(Cancelled):
+        asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
+                                    input_image=source, cancelled=lambda: True))
+
+    finished = asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
+                                           input_image=source, cancelled=lambda: False))
+    assert (finished.width, finished.height) == (16, 16)
