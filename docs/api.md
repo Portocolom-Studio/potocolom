@@ -84,6 +84,13 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON |
 | DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |
 | POST `/api/v1/users/{id}/restore` | implemented | put an account waiting to be deleted back where it was; admin only |
+| GET `/api/v1/users` | implemented | who is on this install and what state they are in; admin only |
+| GET `/api/v1/users/{id}` | implemented | one account, read only, and the read is recorded; admin only |
+| GET `/api/v1/users/{id}/generations` | implemented | that account's work, read only; admin only |
+| GET `/api/v1/audit` | implemented | search the audit; admin only |
+| GET `/api/v1/audit/summary` | implemented | seven days of privileged action, and the gaps in it; admin only |
+| GET `/api/v1/audit/anomalies` | implemented | administrators reading unusually many accounts; admin only |
+| GET `/api/v1/audit/export` | implemented | the filtered audit as JSON, and the export is audited; admin only |
 | POST `/api/v1/shares` | implemented | mint the link for one asset, for 1, 7 or 30 days |
 | DELETE `/api/v1/shares/{id}` | implemented | revoke a share; the link stops resolving |
 | POST `/api/v1/shared` | implemented | resolve a share token; no account needed |
@@ -313,6 +320,25 @@ OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exc
 The flow is authorization code with PKCE S256. The state is minted here and only its hash is stored, the verifier and nonce never leave the server, the redirect URI is exact, and the flow row is one use and expires in ten minutes. Google's `id_token` must carry a valid issuer, audience, expiry and nonce, and a verified email. GitHub's address is the primary verified entry from `/user/emails`. The provider's access token is discarded as soon as the identity is read; nothing here acts as an agent for the provider.
 
 A provider-verified address raises this account's `mail_verified` only when it normalizes equal to the account's own primary address. A provider proving some other address says nothing about this one. (Google and GitHub; Apple is deferred.)
+
+## Administration
+
+An administrator reads any one account completely and mutates none of them. There is no view that crosses accounts: the way in is always a named user.
+
+```text
+GET /api/v1/users                     every account, with role and state, no work and no credential
+GET /api/v1/users/{id}                one account, plus how much work it holds
+GET /api/v1/users/{id}/generations    that account's generations, read only
+GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
+GET /api/v1/audit/summary             {"actions": {...}, "gaps": [...]} over seven days
+GET /api/v1/audit/anomalies           administrators who opened unusually many accounts
+GET /api/v1/audit/export              the same filters, as a JSON download
+```
+
+- A privileged read records itself with the account it reached. The role check that guards these routes cannot know which account a read touched, so the route says so, and `GET /api/v1/audit?action=user.read` is the list of who looked at whom.
+- Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
+- Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
+- There is no global gallery and no cross-user search. An administrator answering a complaint names the account.
 
 ## Account states
 
