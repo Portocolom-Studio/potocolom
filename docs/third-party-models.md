@@ -12,10 +12,37 @@ select them. Reference timings may still appear on `/benchmark`.
 
 | Model | License | Product status |
 | --- | --- | --- |
-| sdxl-hypersd | Open RAIL++-M base + Hyper-SD LoRA with NO declared license | Benchmark reference (issue #75); not promotable until ByteDance declares terms |
+| sdxl-hypersd | Open RAIL++-M base + CreativeML Open RAIL++-M LoRA | Benchmark reference (issue #75); no license blocker, held back on measurement (see below) |
 | sd-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
 | sdxl-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
 | dreamshaper-lcm | CreativeML Open RAIL-M | Benchmark / self-host reference; hidden from studio for quality |
+
+### Hyper-SD carries three licenses in one file
+
+Earlier revisions of this file and of `docs/decisions.md` recorded that the
+Hyper-SD LoRA has no declared license. That was wrong, and it is corrected here
+(2026-08-24). `ByteDance/Hyper-SD` ships a single `LICENSE.md` that assigns
+terms per model family rather than one license for the repository:
+
+| Checkpoints in the repo | License |
+| --- | --- |
+| FLUX.1-dev Hyper LoRAs | FLUX.1 [dev] Non-Commercial. Commercial use only by discretionary grant from Black Forest Labs. No revenue tier. |
+| SD3 Hyper checkpoints | Stability AI Community. Free commercial use under USD $1,000,000 annual revenue. |
+| All other SD checkpoints, which is where `Hyper-SDXL-1step-lora` and `Hyper-SDXL-2steps-lora` sit | CreativeML Open RAIL++-M, dated 2024-04-11, ByteDance Inc. |
+
+`sdxl-hypersd` fuses an SDXL LoRA, so it falls in the third row: the same
+license family as `sdxl-base` and the `ssd-1b-lightning` Lightning LoRA already
+shipped, with use restrictions but no revenue cap and no attribution banner.
+
+The manifest keeps `benchmark_only: true` anyway. The reason is now purely a
+measurement one: `sdxl-hypersd` runs 3.77 s at 1024/8, within 0.01 s of the
+`sdxl-fast` path already in the studio, so promoting it would add a model
+without adding a capability. See
+[gpu-performance.md](gpu-performance.md).
+
+Read the license file per family before adopting any other Hyper-SD variant. A
+repository-level license tag is not a reliable summary when the file is
+structured this way.
 
 ## Stability Community License product models
 

@@ -71,8 +71,10 @@ Read across the table and the spread is 258x, from `sd-turbo` at 0.43 s to
 `sd35-medium` at 110.94 s. The distilled 8-step models cluster tightly around
 2 to 4 seconds and are the practical working tier. `sdxl-fast` and
 `sdxl-hypersd` are within 0.01 s of each other, which is worth remembering
-given `sdxl-hypersd` remains benchmark-only over its undeclared LoRA license:
-there is nothing to gain by promoting it.
+given `sdxl-hypersd` remains benchmark-only: there is nothing to gain by
+promoting it. This measurement is the reason, not licensing; the Hyper-SD SDXL
+LoRA is CreativeML Open RAIL++-M (see
+[third-party-models.md](third-party-models.md)).
 
 `sd35-medium` is 3x its own 20-step default for a quality difference that did
 not survive inspection at a fixed seed, which is why the manifest defaults to
