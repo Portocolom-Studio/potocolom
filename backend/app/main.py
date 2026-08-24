@@ -25,6 +25,7 @@ from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
 from app.accounts import router as accounts_router
+from app.admin import router as admin_router
 from app.credentials import router as credentials_router
 from app.deletion import purge_loop
 from app.deletion import router as deletion_router
@@ -137,6 +138,7 @@ if get_settings().benchmark_api:
 
 app.include_router(benchmark_sessions_router)
 app.include_router(accounts_router)
+app.include_router(admin_router)
 app.include_router(credentials_router)
 app.include_router(deletion_router)
 app.include_router(enable_router)

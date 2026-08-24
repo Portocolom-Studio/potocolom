@@ -1118,6 +1118,14 @@ The last administrator may delete their own account. An install with no administ
 
 Rejected alternatives: deleting on the spot (a person who deletes an account in anger, or by mistake, has no way back, and no export they forgot to take); a full state history to restore from (nobody has asked what an account was two states ago, and keeping it means keeping a record of every suspension forever); deleting the user row and letting cascades take the rest (the objects in storage are named only by the rows the cascade would remove, so they would leak silently); refusing the last administrator's own deletion (an install can be recovered offline, a person cannot be un-trapped).
 
+## Administration reads one account at a time, and says so
+
+There is no cross-user gallery and no cross-user search. An administrator answering a complaint names the account, and that read writes an audit row carrying the target: the role check sees the caller and the route, never which account the answer came from, so the route records what only it knows.
+
+Reading unusually many accounts raises a flag and refuses nothing. An administrator working a queue of reports and a stolen administrator session produce the same pattern, and a limit would stop the first while barely inconveniencing the second, who only has to go slower.
+
+Rejected alternatives: a global gallery for moderation (one compromised administrator session then reads everybody's work in one request, and the feature exists for cases that name an account anyway); auditing reads in the role check (it cannot know the target, so every row would say only that somebody looked at something); refusing past the anomaly threshold (it turns a support queue into an outage and teaches the attacker to pace themselves).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:

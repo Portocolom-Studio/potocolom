@@ -304,6 +304,12 @@ Three orderings in that diagram are load bearing, and each one was a defect befo
 
 Every attempt writes to keys of its own, so nothing overwrites anything and every terminal path is responsible for collecting what the attempts left. Dispatch uploads sit under `dispatch/`; the winning object is copied into the library prefix on commit, so a replayed presigned PUT cannot recreate a durable asset (issue #278). A delete that fails is not lost: it is recorded and retried on a sweep, which is what keeps a denied permission from turning into an object nobody will ever name again. The token in the dispatch is what ties all of this to one attempt rather than to the job, so a worker still holding an old dispatch cannot speak for the attempt that replaced it, and cannot write to its keys.
 
+### Administration
+
+An administrator has complete read of any one account and mutation of none. The install has no cross-user gallery and no cross-user search: every privileged read names an account, and naming one writes an audit row against it. That is the half the role check cannot do for itself, because it sees the caller and the route and not the target.
+
+Reading many different accounts quickly is what a stolen administrator session looks like from the outside, and it is also what an administrator working through a queue of complaints looks like. The install counts distinct targets per administrator over thirty minutes, raises one high-severity event past the threshold, and refuses nothing: the panel is for a person to look at, and only a person can tell those two apart. The counting is in process, beside the rest of the self-hosted path; the cloud profile moves it to Redis with the rate limiting it belongs next to.
+
 ### Account states and cancelling work
 
 An account is `active`, `suspended`, `disabled`, `deletion_pending`, or `purging`, and that state is the single place that decides whether it may sign in, change anything, hold a GPU slot, or keep a share link resolving. `cancelled` is a job state and never an account state: a person is not a unit of work.
