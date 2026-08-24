@@ -152,6 +152,12 @@ operators who follow compose do not hit this.
 
 ## Accounts
 
+An account can take everything this install holds about it with `GET /api/v1/account/export`,
+and can ask to be deleted with `DELETE /api/v1/account`. Deleting stops the account
+immediately and destroys nothing for 30 days: an administrator restores it with
+`POST /api/v1/users/{id}/restore` until the sweep runs. After that the objects, the rows
+that named them and the user row are gone, in that order.
+
 `AUTH_MODE` defaults to `none`. In that mode every request resolves to a single local
 user, and that user holds the `admin` role, so anyone who can reach the API can do anything
 the install can do. Keep it on a trusted network, and see the fleet secret above for the

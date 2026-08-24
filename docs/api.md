@@ -81,8 +81,9 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance |
 | GET `/api/v1/account` | implemented | this account, and its live sessions |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
-| GET `/api/v1/account/export` | issue #10 | GDPR data export (JSON plus image archive) |
-| DELETE `/api/v1/account` | issue #10 | deactivate now, hard delete within 30 days |
+| GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON |
+| DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |
+| POST `/api/v1/users/{id}/restore` | implemented | put an account waiting to be deleted back where it was; admin only |
 | POST `/api/v1/shares` | implemented | mint the link for one asset, for 1, 7 or 30 days |
 | DELETE `/api/v1/shares/{id}` | implemented | revoke a share; the link stops resolving |
 | POST `/api/v1/shared` | implemented | resolve a share token; no account needed |
@@ -354,14 +355,25 @@ POST   /api/v1/shared          {"token": "..."}
 - Every refusal is the same `404`, whether the token was never minted, was revoked, or expired.
 - Creating a share needs the owner's session at the `user` role, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
 
-### Account and GDPR (issue #10)
+### Account, export and deletion
 
-```
+```text
 GET    /api/v1/account            profile, plan (cloud), active sessions with created/last-used
 DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
-GET    /api/v1/account/export     the account's data as JSON plus an archive of images
-DELETE /api/v1/account            204, deactivated now, rows and assets hard deleted within 30 days
+GET    /api/v1/account/export     200 application/json, streamed:
+                                  {"account": {...}, "identities": [...],
+                                   "generations": [{..., "assets": [...]}, ...]}
+DELETE /api/v1/account            204, the account stops now and is purged in 30 days
+POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an account
+                                  that was never waiting to be deleted, and for
+                                  one that passed its 30 day window
 ```
+
+- The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
+- Deleting an account stops it immediately: the state becomes `deletion_pending`, every session is revoked, every outstanding link is spent, the realtime sockets close, and the queued and running jobs are cancelled. Nothing is destroyed yet.
+- The account remembers the state it was in, one level deep, and a restore inside the window puts it back there. An account that was suspended when it asked to be deleted comes back suspended: a restore undoes the deletion, not everything before it. Past the window the account belongs to the sweep, and a restore answers 409 rather than handing back something the next pass destroys.
+- After 30 days a sweep purges it: the objects first, because the row is the only thing that names them, then the assets, then the jobs, and only then the user row, which is the order the foreign keys demand. A purged user row no longer exists. Audit rows carry plain ids with no foreign key, so what an administrator did survives the account they did it to.
+- The last administrator may delete their own account. An install with nobody in charge can be recovered offline; an administrator held hostage by their own install cannot.
 
 ## User journeys
 
@@ -434,10 +446,10 @@ sequenceDiagram
     A-->>F: the picture, the prompt and the model, no account needed
     B->>A: DELETE /api/v1/shares/{id}
     A-->>B: 204, the link stops resolving
-    B->>A: GET /api/v1/account/export (issue 10)
-    A-->>B: JSON + image archive
-    B->>A: DELETE /api/v1/account (issue 10)
-    A-->>B: 204, deactivated now, purged within 30 days
+    B->>A: GET /api/v1/account/export
+    A-->>B: streamed JSON, no secret in it
+    B->>A: DELETE /api/v1/account
+    A-->>B: 204, stopped now, purged in 30 days
 ```
 
 ## Trying it today
