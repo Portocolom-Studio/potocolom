@@ -26,7 +26,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Changing how an account is proved needs recent authentication, and changing a password that already exists needs the current one as well: recent authentication says this browser was somebody's, and the current password says it is still theirs at this keyboard. Every such change ends the account's other sessions and leaves the browser making it signed in, because the usual reason to change a credential is that somebody else holds the old one.
 - Changing the primary address resets `mail_verified` and moves the password identity with it. A provider proved the old address and says nothing about the new one, and login matches on the identity, so leaving it behind would sign somebody in under an address they no longer hold. An address another account holds answers 409.
 - Unlinking a provider refuses when it is the only credential left, because an account with no way in can only be recovered offline.
-- A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. Admin reads are not audited; a read that reaches another user's data will record its own target when those routes exist. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). No audit route is exposed yet.
+- A route requiring `admin` with an unsafe method is audited before it runs, with the actor, the role, and the route template as the action name. A read that reaches another user's data records its own target, because the role check sees the caller and the route and never which account the answer came from. The studio's own admin polls are not audited: they carry no target and recording them would bury real administrator work under millions of rows any caller can drive for free. The record is durable in PostgreSQL and kept 90 days. Audit fails open: an action still proceeds when only its record fails, and the gap becomes visible instead of silent (see [SECURITY.md](../SECURITY.md)). The audit is read through `GET /api/v1/audit` and the routes beside it.
 - REST errors use FastAPI's shape: `{"detail": "..."}` with a conventional status code.
 - Responses under `/api/v1/` include `Cache-Control: no-store`.
 - WebSocket errors are control messages `{"type": "error", "code": <int>, "message": "..."}` followed by a close with the same code; the code table is in [connection-handling.md](connection-handling.md).
@@ -326,7 +326,8 @@ A provider-verified address raises this account's `mail_verified` only when it n
 An administrator reads any one account completely and mutates none of them. There is no view that crosses accounts: the way in is always a named user.
 
 ```text
-GET /api/v1/users                     every account, with role and state, no work and no credential
+GET /api/v1/users                     every account, with role and state, no work and no credential;
+                                      recorded, because it reaches every account at once
 GET /api/v1/users/{id}                one account, plus how much work it holds
 GET /api/v1/users/{id}/generations    that account's generations, read only
 GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
@@ -336,7 +337,7 @@ GET /api/v1/audit/export              the same filters, as a JSON download
 ```
 
 - A privileged read records itself with the account it reached. The role check that guards these routes cannot know which account a read touched, so the route says so, and `GET /api/v1/audit?action=user.read` is the list of who looked at whom.
-- Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
+- Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. The twentieth account is not the anomaly; the twenty-first is. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
 - There is no global gallery and no cross-user search. An administrator answering a complaint names the account.
 

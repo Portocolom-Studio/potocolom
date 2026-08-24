@@ -8,7 +8,7 @@ these routes cannot know which account a read reached.
 
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -22,6 +22,7 @@ from app.tables import Asset, Job, User
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 USER_READ = "user.read"
+USER_LIST = "user.list"
 ANOMALY = "admin.anomaly"
 # One administrator opening account after account is what a stolen
 # administrator session looks like from the outside. The number is a
@@ -29,7 +30,11 @@ ANOMALY = "admin.anomaly"
 ANOMALY_TARGETS = 20
 ANOMALY_WINDOW = 1800.0  # seconds
 
-_reads: dict[uuid.UUID, deque[tuple[float, uuid.UUID]]] = defaultdict(deque)
+# When each administrator last opened each account. One entry per account
+# rather than per read, so an administrator refreshing the same page all day
+# costs one entry: the question is how many different accounts, and a list of
+# every read would grow with the traffic it is watching.
+_reads: dict[uuid.UUID, dict[uuid.UUID, float]] = defaultdict(dict)
 _flagged: set[uuid.UUID] = set()
 
 
@@ -42,22 +47,33 @@ def _note_read(actor_id: uuid.UUID, target_id: uuid.UUID) -> int:
     """
     now = time.monotonic()
     seen = _reads[actor_id]
-    seen.append((now, target_id))
-    while seen and seen[0][0] < now - ANOMALY_WINDOW:
-        seen.popleft()
-    return len({target for _, target in seen})
+    seen[target_id] = now
+    _forget_old(seen, now)
+    return len(seen)
+
+
+def _forget_old(seen: dict[uuid.UUID, float], now: float) -> None:
+    for target in [t for t, at in seen.items() if at < now - ANOMALY_WINDOW]:
+        del seen[target]
 
 
 def anomalies() -> list[dict]:
     now = time.monotonic()
     panel = []
-    for actor_id, seen in _reads.items():
-        recent = [target for at, target in seen if at >= now - ANOMALY_WINDOW]
-        if len(set(recent)) >= ANOMALY_TARGETS:
+    for actor_id in list(_reads):
+        seen = _reads[actor_id]
+        _forget_old(seen, now)
+        if not seen:
+            # An administrator who has not looked at anything this window is
+            # not state worth keeping: this is what stops the map growing by
+            # one entry per administrator the install has ever had.
+            del _reads[actor_id]
+            _flagged.discard(actor_id)
+            continue
+        if len(seen) > ANOMALY_TARGETS:
             panel.append({
                 "actor_user_id": str(actor_id),
-                "distinct_targets": len(set(recent)),
-                "reads": len(recent),
+                "distinct_targets": len(seen),
                 "window_seconds": int(ANOMALY_WINDOW),
             })
     return sorted(panel, key=lambda row: row["distinct_targets"], reverse=True)
@@ -66,13 +82,13 @@ def anomalies() -> list[dict]:
 async def _seen(actor: User, target_id: uuid.UUID) -> None:
     await audit.record(USER_READ, actor=actor, target_user_id=target_id)
     distinct = _note_read(actor.id, target_id)
-    if distinct >= ANOMALY_TARGETS and actor.id not in _flagged:
+    if distinct > ANOMALY_TARGETS and actor.id not in _flagged:
         # Once per administrator per window: the point is that somebody looks,
         # and one row a second would bury the thing it is reporting.
         _flagged.add(actor.id)
         await audit.record(ANOMALY, actor=actor, object_ids=[str(distinct)],
                            severity="high")
-    elif distinct < ANOMALY_TARGETS:
+    elif distinct <= ANOMALY_TARGETS:
         _flagged.discard(actor.id)
 
 
@@ -82,8 +98,14 @@ async def list_users(
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     """Who is on this install, and what state they are in. Not a gallery: it
-    carries no work and no credential, only what user management needs."""
-    rows = (await session.execute(select(User).order_by(User.created_at))).scalars().all()
+    carries no work and no credential, only what user management needs.
+
+    Recorded like every other privileged read. It reaches every account at
+    once, which is more than a selected-user page reaches, not less.
+    """
+    rows = list((await session.execute(select(User).order_by(User.created_at))).scalars().all())
+    await audit.record(USER_LIST, actor=actor, object_ids=[str(row.id) for row in rows],
+                       object_count=len(rows))
     return [_account_row(row) for row in rows]
 
 

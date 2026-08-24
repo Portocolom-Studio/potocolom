@@ -20,6 +20,19 @@ from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 __all__ = ["accounts"]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_panel():
+    """The anomaly panel is process state, so one test's administrator would
+    otherwise still be on it while the next one reads it."""
+    from app import admin
+
+    admin._reads.clear()
+    admin._flagged.clear()
+    yield
+    admin._reads.clear()
+    admin._flagged.clear()
+
+
 @pytest.fixture
 def library(accounts):
     yield accounts
@@ -237,3 +250,51 @@ def test_the_administrator_list_shows_who_is_here_and_what_state_they_are_in(lib
         rows = {row["email"]: row for row in listed.json()}
     assert rows["listed@example.com"]["state"] == "suspended"
     assert "password_hash" not in str(rows)
+
+
+@pytest.mark.db
+def test_the_threshold_is_more_than_twenty_and_not_twenty(library):
+    """The number in the documentation is the number in the code, or the
+    panel says something nobody promised."""
+    from app import admin
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client, "boundary@example.com")
+        subjects = [client.portal.call(_make, f"edge{n}@example.com")
+                    for n in range(admin.ANOMALY_TARGETS + 1)]
+        for subject in subjects[:admin.ANOMALY_TARGETS]:
+            assert client.get(f"/api/v1/users/{subject.id}").status_code == 200
+        assert client.get("/api/v1/audit/anomalies").json() == []
+        assert client.portal.call(_events, "admin.anomaly") == []
+
+        assert client.get(f"/api/v1/users/{subjects[-1].id}").status_code == 200
+        _wait_for_audit(client, "admin.anomaly")
+        assert client.get("/api/v1/audit/anomalies").json() != []
+
+
+@pytest.mark.db
+def test_reading_one_account_over_and_over_costs_one_entry(library):
+    """The state is bounded by how many accounts exist, not by how many
+    requests arrive: a page that refreshes all day must not fill the process."""
+    from app import admin
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "refreshed@example.com")
+        actor = client.portal.call(_make, "repeater@example.com", "admin")
+        assert _login(client, "repeater@example.com").status_code == 204
+        for _ in range(30):
+            assert client.get(f"/api/v1/users/{subject.id}").status_code == 200
+        assert len(admin._reads[actor.id]) == 1
+        assert client.get("/api/v1/audit/anomalies").json() == []
+
+
+@pytest.mark.db
+def test_listing_every_account_is_recorded_as_reaching_every_account(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "one@example.com")
+        client.portal.call(_make, "two@example.com")
+        _admin(client)
+        listed = client.get("/api/v1/users")
+        assert listed.status_code == 200
+        recorded = _wait_for_audit(client, "user.list")
+    assert recorded[0].object_count == len(listed.json())
