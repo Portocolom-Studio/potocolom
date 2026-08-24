@@ -22,7 +22,7 @@
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
-	auth-enable auth-recover \
+	auth-enable auth-recover auth-reclaim auth-rotate-keys auth-configure auth-collapse \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
@@ -45,6 +45,21 @@ auth-recover: ## print a one-use 10-minute recovery link for an administrator (E
 
 auth-enable: ## turn on accounts and print the one-use first-admin setup link
 	@bash "$(CURDIR)/scripts/auth-enable.sh"
+
+auth-reclaim: ## get back into a locked-out install (CLAIM=1, or EMAIL=someone@example.com)
+	@test -n "$(CLAIM)$(EMAIL)" || { echo 'usage: make auth-reclaim CLAIM=1' >&2; \
+		echo '   or: make auth-reclaim EMAIL=someone@example.com' >&2; exit 1; }
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator reclaim \
+		$(if $(CLAIM),--claim,) $(if $(EMAIL),--restore "$(EMAIL)",)
+
+auth-rotate-keys: ## re-encrypt every stored secret under the newest ROOT_KEYS entry (CHECK=1 to report only)
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator rotate-keys $(if $(CHECK),--check,)
+
+auth-configure: ## what mail and OAuth would do if the API started right now
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator configure
+
+auth-collapse: ## turn accounts OFF, destroying every account (CONFIRM="...")
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator collapse --confirm "$(CONFIRM)"
 
 ensure-env: ## write deploy/compose/.env; fill empty FLEET_SECRET / POSTGRES_PASSWORD
 	@bash "$(CURDIR)/scripts/ensure-env.sh"
