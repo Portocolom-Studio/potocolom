@@ -189,7 +189,24 @@ Staging and production are separate member accounts, so the section 1 state boot
 
 The delivery workflow, recorded in [decisions.md](decisions.md) ("Cloud delivery"): `terraform plan` posts on every private-repo pull request and merging applies to staging; application deploys follow the pipeline in [repository-boundary.md](repository-boundary.md) (GHCR to ECR by digest, contract simulation, gated migration task, ECS staging roll); production waits behind a manual approval. Rollout is ECS rolling update with the deployment circuit breaker and alarm-based rollback. A scheduled nightly `terraform plan` reports drift. There is no Kubernetes anywhere in this deployment. The full picture - accounts, every principal's permissions, the stage-by-stage promotion path and rollback - is in [cloud-delivery.md](cloud-delivery.md).
 
-## 12. Go-live checklist
+## 12. Operator recovery
+
+The commands that get back into a locked-out installation are the same ones a self-hoster runs, and in the cloud they run inside the API task rather than on a laptop: they need `DATABASE_URL` and `ROOT_KEYS`, which the task role already has and nobody else should.
+
+```bash
+aws ecs execute-command --cluster potocolom --task <task-id> --container api --interactive \
+  --command "python -m app.operator reclaim --restore admin@example.com"
+```
+
+- `reclaim --restore EMAIL` makes one account an active administrator again, for the case where every administrator was suspended, deleted or demoted at once.
+- `reclaim --claim` mints a fresh setup link and retires whatever was outstanding.
+- `python -m app.recovery EMAIL` prints a one-use ten-minute password link for one administrator. It is printed and never mailed: a credential recoverable from a mailbox is only as strong as that mailbox.
+- `rotate-keys` and `rotate-keys --check` move stored secrets onto a new `ROOT_KEYS` entry. Put the new key at the front of the SSM parameter, roll the tasks so every replica can read both, rotate, check, and only then remove the old one.
+- `collapse` is not a cloud command. Turning accounts off on a multi-tenant install is not an operation with a sensible cloud meaning.
+
+ECS Exec needs `enableExecuteCommand` on the service and `ssmmessages` permissions on the task role. Leave it off by default and turn it on for the incident: a shell in the API task is a shell with the root key ring.
+
+## 13. Go-live checklist
 
 1. `terraform apply` in staging; confirm `curl https://api-staging.../api/v1/health` returns `{"status": "ok"}` through the ALB.
 2. `curl .../api/v1/config` shows `auth_methods` for the configured providers and `billing_enabled: true`. With no OAuth credentials configured that is `["password"]`.

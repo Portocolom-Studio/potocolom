@@ -1126,7 +1126,17 @@ Reading unusually many accounts raises a flag and refuses nothing. An administra
 
 Rejected alternatives: a global gallery for moderation (one compromised administrator session then reads everybody's work in one request, and the feature exists for cases that name an account anyway); auditing reads in the role check (it cannot know the target, so every row would say only that somebody looked at something); refusing past the anomaly threshold (it turns a support queue into an outage and teaches the attacker to pace themselves).
 
-## Supporting defaults
+## Every way back into a locked install is a command at the machine
+
+Recovering an administrator, reclaiming an install, collapsing accounts and rotating the root key are commands run at the machine, and none of them is reachable over HTTP. A route that can mint an administrator, or turn authentication off, is a route worth stealing a session for, and no amount of guarding it changes what it is worth.
+
+Collapsing destroys the accounts and keeps the work. The images belong to the installation and end up on the implicit local user, because ending the accounts is not a reason to burn what people made. The confirmation is a phrase typed out rather than a flag: a flag is too easy to pass by accident and too easy to copy out of a forum post.
+
+Key rotation is two steps with a check between them, and refuses to rewrite a blob it cannot read. `ROOT_KEYS` keeps every version so a running install can still open what an older key sealed; the rotation moves the ciphertext, the check says whether anything is left behind, and only then is the old key safe to delete. An install that rewrote what it could not read would have destroyed a second factor rather than moved it.
+
+Rejected alternatives: an administrator route for any of this (the value of the route is exactly what makes it a target); an automatic rotation on startup (an operator who has not yet added the new key would then have their install rewrite itself into a state it cannot read); collapsing by deleting every row the accounts touched (people lose work they made, for an operational decision that was never about their images).
+
+
 
 Chosen as conventional defaults rather than debated decisions:
 

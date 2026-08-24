@@ -171,7 +171,18 @@ existed belongs to them; nothing is stranded and nothing is copied.
 
 Enabling accounts is one way. An install that has enabled them refuses to start in
 `none` mode again, because falling back would return a multi-user install to answering
-every request as an administrator. Undoing it needs an offline destructive reset.
+every request as an administrator. Undoing it needs an offline destructive reset:
+
+```bash
+make auth-collapse CONFIRM="destroy the accounts on this installation"
+```
+
+That destroys every account, session, second factor and invitation on the install,
+and keeps the work: generations and assets move to the single local user, because
+the images belong to the installation and ending the accounts is not a reason to
+burn them. The phrase is typed out rather than a flag, because a flag is too easy
+to pass by accident and too easy to copy out of a forum post. Set `AUTH_MODE=none`
+and restart the API afterwards.
 
 The link lasts one hour, is good once, and is replaced if you run `make auth-enable`
 again. Nothing durable holds it, only its hash, so a lost link means minting another.
@@ -179,6 +190,40 @@ again. Nothing durable holds it, only its hash, so a lost link means minting ano
 Sign-in is here: address and password, an optional second factor, and Google or
 GitHub when you configure them. A session is a cookie the browser never reads,
 and an administrator invites everybody else.
+
+### When nobody can get in
+
+Every way back is a command at the machine, never a route, because a route that
+can do any of this is a route worth stealing a session for.
+
+```bash
+make auth-recover EMAIL=admin@example.com   # a one-use ten-minute link for one administrator
+make auth-reclaim EMAIL=admin@example.com   # make that account an active administrator again
+make auth-reclaim CLAIM=1                   # a fresh setup link; whoever spends it is an admin
+make auth-configure                         # what mail and OAuth would do if the API started now
+```
+
+`auth-recover` is for an administrator who forgot a password. `auth-reclaim EMAIL=`
+is for an install where every administrator was suspended, deleted or demoted at
+once and there is nobody left to press the button that would fix it. `CLAIM=1`
+mints a new setup link and retires whatever was outstanding, because whoever held
+the old one is not who is standing at the machine.
+
+### Changing the root key
+
+`ROOT_KEYS` carries every version, newest first, so a running install can still
+read what an older key sealed. Nothing moves on its own:
+
+```bash
+# 1. Put a new key at the front of ROOT_KEYS in deploy/compose/.env, keep the old.
+make auth-rotate-keys           # re-encrypt everything under the newest key
+make auth-rotate-keys CHECK=1   # nothing left under an older one?
+# 2. Only then remove the old key from ROOT_KEYS and restart.
+```
+
+A rotation refuses outright if any stored secret is sealed under a version that is
+no longer in `ROOT_KEYS`. Rewriting a blob the install cannot read would destroy
+the secret behind it, which is somebody's second factor.
 
 Once accounts are on, adding people needs no mail service. An administrator
 creates an invitation for an address and a role, and the API returns the link
