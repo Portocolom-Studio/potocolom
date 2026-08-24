@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -303,3 +304,103 @@ def test_only_an_administrator_can_restore_somebody_else(library):
 def test_an_export_needs_a_session_of_its_own(library):
     with TestClient(app, base_url=ORIGIN) as client:
         assert client.get("/api/v1/account/export").status_code == 401
+
+
+@pytest.mark.db
+def test_a_restore_between_the_sweep_reading_and_writing_saves_the_account(library):
+    """The ids are read in one transaction and the account destroyed in
+    another. A restore that lands in between is somebody saving an account,
+    and the sweep must not delete it anyway."""
+    from app import deletion
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "saved@example.com")
+        client.portal.call(_owned_work, user.id)
+        _admin(client)
+
+        async def request_deletion() -> None:
+            async with db.session_factory() as session:
+                await deletion.request(session, user.id)
+                await session.commit()
+
+        client.portal.call(request_deletion)
+        client.portal.call(_age_request, user.id, deletion.RESTORE_WINDOW_DAYS + 1)
+
+        async def restore_now() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET state = 'active', prior_state = NULL "
+                         "WHERE id = :id"), {"id": user.id})
+                await session.commit()
+
+        keep = deletion._purge
+        restored: list[bool] = []
+
+        async def purge_one(user_id, cutoff):
+            # The window in the middle: the sweep has this account's id and has
+            # not claimed it yet.
+            await restore_now()
+            restored.append(True)
+            await keep(user_id, cutoff)
+
+        deletion._purge = purge_one
+        try:
+            client.portal.call(deletion.purge_due)
+        finally:
+            deletion._purge = keep
+
+        assert restored == [True]
+        assert client.portal.call(_user, user.id) is not None
+        assert client.portal.call(_rows, "assets", user.id) == 1
+
+
+@pytest.mark.db
+def test_an_account_past_its_window_is_the_sweeps_and_not_an_administrators(library):
+    """Restoring here hands back an account the next pass destroys, which is
+    worse than saying no."""
+    from app import deletion
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "toolate@example.com")
+        _admin(client)
+
+        async def request_deletion() -> None:
+            async with db.session_factory() as session:
+                await deletion.request(session, user.id)
+                await session.commit()
+
+        client.portal.call(request_deletion)
+        assert client.post(f"/api/v1/users/{user.id}/restore",
+                           headers=_csrf(client)).status_code == 204
+
+        client.portal.call(request_deletion)
+        client.portal.call(_age_request, user.id, deletion.RESTORE_WINDOW_DAYS + 1)
+        refused = client.post(f"/api/v1/users/{user.id}/restore", headers=_csrf(client))
+        assert refused.status_code == 409
+        assert client.portal.call(_state_of, user.id) == "deletion_pending"
+
+
+@pytest.mark.db
+def test_an_export_stops_when_the_account_it_belongs_to_does(library):
+    """The stream outlives the request that authorised it. An account stopped
+    halfway through must stop receiving its own data."""
+    from app import deletion
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "midexport@example.com")
+        client.portal.call(_owned_work, user.id)
+
+        async def stopped_stream() -> list[str]:
+            produced: list[str] = []
+            async for chunk in deletion._export_document(user):
+                produced.append(chunk)
+                if len(produced) == 2:
+                    async with db.session_factory() as session:
+                        await session.execute(
+                            text("UPDATE users SET state = 'deletion_pending' WHERE id = :id"),
+                            {"id": user.id})
+                        await session.commit()
+            return produced
+
+        with pytest.raises(HTTPException):
+            client.portal.call(stopped_stream)

@@ -91,6 +91,7 @@ async def export_account(
 
 async def _export_document(user: User) -> AsyncIterator[str]:
     assert db.session_factory is not None
+    stopped = HTTPException(status_code=409, detail="account no longer active")
     yield '{"account":' + json.dumps({
         "id": str(user.id),
         "email": user.email,
@@ -115,6 +116,12 @@ async def _export_document(user: User) -> AsyncIterator[str]:
         first = True
         after: uuid.UUID | None = None
         while True:
+            # Between pages, because a page is where this can stop. An account
+            # that is stopped while its export runs must stop receiving it: the
+            # session behind this request was revoked at the same moment.
+            if (await session.execute(
+                    select(User.state).where(User.id == user.id))).scalar_one_or_none() != "active":
+                raise stopped
             page = list((await session.execute(
                 select(Job).where(Job.user_id == user.id,
                                   *( [Job.id > after] if after is not None else [] ))
@@ -195,6 +202,15 @@ async def restore(
             target = await session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Not Found")
+            if (target.state == "deletion_pending"
+                    and target.deletion_requested_at is not None
+                    and target.deletion_requested_at
+                    < datetime.now(timezone.utc) - timedelta(days=RESTORE_WINDOW_DAYS)):
+                # Past the window the account is the sweep's, and a restore
+                # here would hand back something the next pass destroys.
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"that account passed its {RESTORE_WINDOW_DAYS} day restore window")
             if target.state != "deletion_pending":
                 if target.deletion_requested_at is None:
                     raise HTTPException(
@@ -228,22 +244,33 @@ async def purge_due() -> None:
         )).scalars().all())
     for user_id in due:
         try:
-            await _purge(user_id)
+            await _purge(user_id, cutoff)
         except Exception:
             # One account that cannot be finished must not stop the others,
             # and the next pass finds it again exactly where it was.
             logger.exception("could not purge account %s", user_id)
 
 
-async def _purge(user_id: uuid.UUID) -> None:
+async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
     assert db.session_factory is not None
     async with db.session_factory() as session:
         async with session.begin():
-            # Says what is happening to anybody reading the row, and makes a
-            # second pass over the same account a no-op rather than a race.
-            await session.execute(
-                update(User).where(User.id == user_id, User.state == "deletion_pending")
-                .values(state="purging"))
+            # Claimed, not announced. The ids were read in an earlier
+            # transaction, and a restore between that read and this write puts
+            # the account back in service: destroying it then would delete a
+            # live account somebody just saved. Nothing below runs unless this
+            # statement is the one that moved the row.
+            claimed = (await session.execute(
+                update(User)
+                .where(User.id == user_id,
+                       User.state.in_(("deletion_pending", "purging")),
+                       User.deletion_requested_at < cutoff)
+                .values(state="purging")
+                .returning(User.id)
+            )).first()
+        if claimed is None:
+            logger.info("account %s is no longer due to be purged", user_id)
+            return
         keys = list((await session.execute(
             select(Asset.storage_key).where(Asset.user_id == user_id))).scalars().all())
     # Before the rows: a key nothing names any more is an object nobody will

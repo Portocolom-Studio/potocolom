@@ -1112,7 +1112,7 @@ Rejected alternatives: cancelling the worker's task and treating its silence as 
 
 Deleting an account stops it immediately and destroys nothing for thirty days. Stopping is what the person asked for; destroying is what they cannot undo, and the two do not have to happen at the same moment. The account records the state it held when it asked, and a restore puts it back there rather than to `active`: an account that was suspended when it asked to be deleted comes back suspended, because a restore undoes the deletion and not everything before it.
 
-The purge orders itself by the foreign keys: the objects first, since the asset row is the only thing that names them, then the assets, then the jobs, then the user row. One account per transaction, so a sweep that dies halfway loses nothing and the next pass finds the rest exactly where it was.
+The purge orders itself by the foreign keys: the objects first, since the asset row is the only thing that names them, then the assets, then the jobs, then the user row. One account per transaction, so a sweep that dies halfway loses nothing and the next pass finds the rest exactly where it was. The sweep reads the ids it is going to purge in one transaction and destroys each account in another, so it claims the row before it deletes anything: a restore that lands in between is somebody saving an account, and the claim is what stops the pass from destroying it anyway.
 
 The last administrator may delete their own account. An install with no administrator can be recovered offline, and an administrator who cannot leave their own install is a worse outcome than one that needs a console.
 
