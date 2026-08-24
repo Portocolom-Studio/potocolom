@@ -206,7 +206,7 @@ aws ecs execute-command --cluster potocolom --task <task-id> --container api --i
 
 ECS Exec is off between incidents, because a shell in the API task is a shell with the root key ring in its environment. Turning it on and off is a deployment each way: the setting applies to new tasks only.
 
-Three prerequisites, all of which fail as a hanging `execute-command` rather than a clear error:
+Four prerequisites. The first three fail as a hanging `execute-command` rather than a clear error; the fourth says what is wrong but not where:
 
 - `enableExecuteCommand` on the service.
 - `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` on the **task role**, not the execution role.

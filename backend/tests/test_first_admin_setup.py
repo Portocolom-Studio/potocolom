@@ -263,13 +263,35 @@ def test_accounts_mode_authenticates_nobody_through_the_implicit_admin(accounts)
 
 @pytest.mark.db
 def test_setup_is_refused_once_the_installation_is_claimed(accounts):
+    from datetime import datetime, timedelta, timezone
+
+    from app.tables import AuthToken
+
     token = accounts(enable.mint_setup_token())
     with TestClient(app) as client:
         assert _claim(client, token).status_code == 204
-        # A fresh link is valid, and still refused: the installation has an
-        # owner, and a second setup would hand it to someone else.
-        second = client.portal.call(enable.mint_setup_token)
-        assert _claim(client, second, email="later@example.com").status_code == 409
+        # Minting refuses now, which is the early half: a link handed over for
+        # a claimed installation is refused when somebody finally spends it,
+        # and that is the worst moment to find out.
+        with pytest.raises(enable.AlreadyClaimed):
+            client.portal.call(enable.mint_setup_token)
+
+        # And the route keeps its own guard. Nothing mints a link for a
+        # claimed installation any more, so this puts one there directly:
+        # a link that outlived the moment it was valid in must still fail.
+        leftover = "a-link-minted-before-the-claim"
+
+        async def plant() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    session.add(AuthToken(
+                        purpose="setup",
+                        token_hash=enable._token_hash(leftover),
+                        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    ))
+
+        client.portal.call(plant)
+        assert _claim(client, leftover, email="later@example.com").status_code == 409
 
 
 @pytest.mark.db

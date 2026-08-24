@@ -41,31 +41,40 @@ def _token_hash(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
+class AlreadyClaimed(Exception):
+    """Somebody holds an identity, so a setup link would only be refused."""
+
+
 async def mint_setup_token(session: AsyncSession | None = None) -> str:
     """Returns the only copy of the link. Nothing durable holds it.
 
-    Takes a session when the caller has one open: reclaiming an install checks
-    that nobody has claimed it and mints in the same transaction, and a mint
-    that opened its own would leave a gap for a claim to land in.
+    Takes a session when the caller has one open, so a reclaim can decide and
+    mint in one transaction. Either way the work happens behind SETUP_LOCK,
+    which claim() holds too: a link minted for an installation somebody
+    claimed a moment ago is refused when it is finally spent, which is the
+    worst moment to discover it.
     """
     token = secrets.token_urlsafe(32)
     if session is not None:
-        await _replace_setup_token(session, token)
+        await _mint_locked(session, token)
         return token
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
     async with db.session_factory() as owned:
         async with owned.begin():
-            # The same lock the caller-supplied branch is already inside, so
-            # every way of minting a setup link is serialized with claiming
-            # one however it was reached.
-            await owned.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                {"key": SETUP_LOCK})
-            await _replace_setup_token(owned, token)
+            await _mint_locked(owned, token)
     return token
 
 
-async def _replace_setup_token(session: AsyncSession, token: str) -> None:
+async def _mint_locked(session: AsyncSession, token: str) -> None:
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SETUP_LOCK})
+    # Under the lock, not before it: the setup link adopts the implicit local
+    # user, which claim() allows only while nobody holds an identity.
+    claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
+    if claimed is not None:
+        raise AlreadyClaimed(
+            "this installation has already been claimed, so a setup link would be "
+            "refused; use reclaim --restore EMAIL to make an account an administrator")
     # Minting replaces: an operator who runs this twice must not leave an
     # older link alive for whoever saw it first.
     await session.execute(delete(AuthToken).where(

@@ -15,7 +15,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, keyring
-from app.enable import SETUP_LOCK, mint_setup_token
+from app.enable import AlreadyClaimed, mint_setup_token
 from app.settings import get_settings
 from app.tables import (
     Asset, AuthFactor, AuthIdentity, AuthToken, Invitation, Job, RecoveryCode, Session, User,
@@ -77,22 +77,14 @@ async def reclaim_claim() -> str:
     assert db.session_factory is not None
     async with db.session_factory() as session:
         async with session.begin():
-            # The check and the mint in one transaction, behind the lock the
-            # claim route takes: a claim landing between them would leave this
-            # command handing over a link that is refused when it is spent.
-            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                  {"key": SETUP_LOCK})
-            claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
-            if claimed is not None:
-                # The setup link adopts the implicit local user, which the
-                # claim route allows only on an install nobody has claimed.
-                raise LookupError(
-                    "this installation still has accounts, so a setup link would be "
-                    "refused; use reclaim --restore EMAIL to make one of them an "
-                    "administrator again")
+            # One transaction, so the decision about whether this install can
+            # be claimed and the link that acts on it cannot disagree.
             # Minting retires whatever link was outstanding, which is the
             # point: whoever held the old one is not who is at the machine.
-            return await mint_setup_token(session)
+            try:
+                return await mint_setup_token(session)
+            except AlreadyClaimed as refused:
+                raise LookupError(str(refused)) from None
 
 
 async def reclaim_restore(email: str) -> str:

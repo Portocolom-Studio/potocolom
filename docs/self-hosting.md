@@ -203,9 +203,10 @@ make auth-reclaim CLAIM=1                   # a fresh setup link; whoever spends
 make auth-configure                         # what mail and OAuth would do if the API started now
 ```
 
-`auth-reclaim CLAIM=1` is refused while the install still has accounts, because
-the setup link adopts the implicit local user and the claim route allows that
-only on an install nobody has claimed. `auth-recover` is for an administrator who forgot a password. `auth-reclaim EMAIL=`
+`auth-reclaim CLAIM=1` and `auth-enable` both refuse once the installation has
+been claimed, because the setup link adopts the implicit local user and the
+claim route allows that only while nobody holds an identity. A link minted for
+a claimed install would be refused the moment somebody spends it. `auth-recover` is for an administrator who forgot a password. `auth-reclaim EMAIL=`
 is for an install where every administrator was suspended, deleted or demoted at
 once and there is nobody left to press the button that would fix it. `CLAIM=1`
 mints a new setup link and retires whatever was outstanding, because whoever held
