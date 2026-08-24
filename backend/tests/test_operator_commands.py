@@ -95,8 +95,11 @@ def test_collapsing_destroys_the_accounts_and_keeps_the_work(library):
         assert counted["accounts"] == 1
         assert counted["generations"] == 1
         assert client.portal.call(_count, "users") == 1
-        assert client.portal.call(_count, "sessions") == 0
-        assert client.portal.call(_count, "auth_identities") == 0
+        # Every credential the accounts held, and the invitations that would
+        # have made more of them.
+        for emptied in ("sessions", "auth_identities", "auth_tokens", "auth_factors",
+                        "recovery_codes", "invitations"):
+            assert client.portal.call(_count, emptied) == 0, emptied
         assert client.portal.call(_count, "jobs") == 1
         assert client.portal.call(_count, "assets") == 1
         assert client.portal.call(_mode) == "none"
@@ -148,10 +151,28 @@ def test_reclaiming_an_address_nobody_holds_says_so(library):
 
 
 @pytest.mark.db
+def test_a_setup_link_is_refused_while_the_install_still_has_accounts(library):
+    """The setup link adopts the implicit local user and the claim route
+    refuses once anybody holds an identity, so minting one here would hand
+    over something that fails when it is spent."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "holder@example.com")
+        with pytest.raises(LookupError):
+            client.portal.call(operator.reclaim_claim)
+
+
+@pytest.mark.db
 def test_reclaiming_mints_a_setup_link_and_retires_the_old_one(library):
     from app.tables import AuthToken
 
     with TestClient(app, base_url=ORIGIN) as client:
+
+        async def strip_identities() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM auth_identities"))
+                await session.commit()
+
+        client.portal.call(strip_identities)
         first = client.portal.call(operator.reclaim_claim)
         second = client.portal.call(operator.reclaim_claim)
         assert first != second
@@ -253,6 +274,8 @@ def test_the_configuration_report_says_what_would_happen(monkeypatch):
     assert report["public_url"] == ORIGIN
     assert "SMTP_HOST" in report["mail"]
     assert report["oauth"] == "ok"
+    # The resolved list, not the property object behind it.
+    assert isinstance(report["auth_methods"], list)
 
 
 def test_reclaim_takes_one_of_the_two_things_it_can_do():
@@ -260,3 +283,35 @@ def test_reclaim_takes_one_of_the_two_things_it_can_do():
         operator.main(["reclaim"])
     with pytest.raises(SystemExit):
         operator.main(["reclaim", "--claim", "--restore", "someone@example.com"])
+
+
+@pytest.mark.db
+def test_the_commands_reach_their_work_through_the_command_line(library, capsys):
+    """Through main, not the functions under it: an argument parsed into the
+    wrong call is exactly the kind of thing that only shows up here."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        locked = client.portal.call(_make, "cli@example.com")
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                    {"id": locked.id})
+                await session.commit()
+
+        client.portal.call(suspend)
+        client.portal.call(db.dispose)
+
+        operator.main(["reclaim", "--restore", "cli@example.com"])
+        assert "active administrator again" in capsys.readouterr().out
+
+        operator.main(["rotate-keys", "--check"])
+        assert "can be removed" in capsys.readouterr().out
+
+        operator.main(["configure"])
+        assert "public_url" in capsys.readouterr().out
+
+        with pytest.raises(SystemExit):
+            operator.main(["collapse", "--confirm", "no"])
+
+        client.portal.call(db.connect)

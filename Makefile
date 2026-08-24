@@ -50,7 +50,7 @@ auth-reclaim: ## get back into a locked-out install (CLAIM=1, or EMAIL=someone@e
 	@test -n "$(CLAIM)$(EMAIL)" || { echo 'usage: make auth-reclaim CLAIM=1' >&2; \
 		echo '   or: make auth-reclaim EMAIL=someone@example.com' >&2; exit 1; }
 	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator reclaim \
-		$(if $(EMAIL),--restore "$(EMAIL)",--claim)
+		$(if $(CLAIM),--claim,) $(if $(EMAIL),--restore "$(EMAIL)",)
 
 auth-rotate-keys: ## re-encrypt every stored secret under the newest ROOT_KEYS entry (CHECK=1 to report only)
 	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator rotate-keys $(if $(CHECK),--check,)

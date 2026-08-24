@@ -74,6 +74,16 @@ async def reclaim_claim() -> str:
     The same link `make auth-enable` prints, minted again. Whoever opens it
     becomes the administrator, so it replaces any link still outstanding.
     """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
+    if claimed is not None:
+        # The setup link adopts the implicit local user, and the claim route
+        # refuses once anybody holds an identity. Saying so here beats minting
+        # a link that is refused when somebody finally spends it.
+        raise LookupError(
+            "this installation still has accounts, so a setup link would be refused; "
+            "use reclaim --restore EMAIL to make one of them an administrator again")
     # mint_setup_token retires whatever link was outstanding, which is the
     # point: whoever held the old one is not who is standing at the machine.
     return await mint_setup_token()
@@ -242,7 +252,10 @@ def _run_reclaim(parsed: argparse.Namespace) -> None:
         print(f"{parsed.restore} is an active administrator again (it was {was}).")
         print("Its old sessions are still revoked; it signs in from the login page.")
         return
-    token = asyncio.run(_connected(reclaim_claim))
+    try:
+        token = asyncio.run(_connected(reclaim_claim))
+    except LookupError as refused:
+        raise SystemExit(str(refused)) from None
     base = get_settings().public_url.rstrip("/")
     print()
     print("Whoever spends this becomes an administrator of this installation.")

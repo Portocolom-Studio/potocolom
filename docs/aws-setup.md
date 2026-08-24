@@ -191,7 +191,7 @@ The delivery workflow, recorded in [decisions.md](decisions.md) ("Cloud delivery
 
 ## 12. Operator recovery
 
-The commands that get back into a locked-out installation are the same ones a self-hoster runs, and in the cloud they run inside the API task rather than on a laptop: they need `DATABASE_URL` and `ROOT_KEYS`, which the task role already has and nobody else should.
+The commands that get back into a locked-out installation are the same ones a self-hoster runs, and in the cloud they run inside the API task rather than on a laptop. They need `DATABASE_URL` and `ROOT_KEYS`. The execution role reads those from SSM and KMS when the task starts and injects them; the API task role itself needs neither, and a shell in a running task simply inherits the values already in its environment.
 
 ```bash
 aws ecs execute-command --cluster potocolom --task <task-id> --container api --interactive \
@@ -199,12 +199,20 @@ aws ecs execute-command --cluster potocolom --task <task-id> --container api --i
 ```
 
 - `reclaim --restore EMAIL` makes one account an active administrator again, for the case where every administrator was suspended, deleted or demoted at once.
-- `reclaim --claim` mints a fresh setup link and retires whatever was outstanding.
+- `reclaim --claim` mints a fresh setup link and retires whatever was outstanding. It is refused while the install still has accounts: the setup link adopts the implicit local user, which the claim route allows only on an install nobody has claimed. On a running cloud installation `--restore` is the command.
 - `python -m app.recovery EMAIL` prints a one-use ten-minute password link for one administrator. It is printed and never mailed: a credential recoverable from a mailbox is only as strong as that mailbox.
-- `rotate-keys` and `rotate-keys --check` move stored secrets onto a new `ROOT_KEYS` entry. Put the new key at the front of the SSM parameter, roll the tasks so every replica can read both, rotate, check, and only then remove the old one.
+- `rotate-keys` moves stored secrets onto a new `ROOT_KEYS` entry; `rotate-keys --check` changes nothing and reports which older versions are still holding something. Put the new key at the front of the SSM parameter, roll the tasks so every replica can read both, rotate, check, and only then remove the old one.
 - `collapse` is not a cloud command. Turning accounts off on a multi-tenant install is not an operation with a sensible cloud meaning.
 
-ECS Exec needs `enableExecuteCommand` on the service and `ssmmessages` permissions on the task role. Leave it off by default and turn it on for the incident: a shell in the API task is a shell with the root key ring.
+ECS Exec needs `enableExecuteCommand` on the service and `ssmmessages` permissions on the task role. Enabling it takes effect on new tasks only, so force a fresh deployment after turning it on:
+
+```bash
+aws ecs update-service --cluster potocolom --service api --enable-execute-command --force-new-deployment
+```
+
+Leave it off by default and turn it on for the incident. A shell in the API task is a shell with the root key ring in its environment.
+
+Set `executeCommandConfiguration.logging` to `NONE` on the cluster before running the recovery command. `python -m app.recovery EMAIL` prints a live one-use link to stdout, and ECS Exec's `DEFAULT` logging copies the session into the task's CloudWatch stream, where it sits for the retention period as a working credential anybody with log access can spend. The same goes for any restricted sink: whatever holds these sessions holds recovery links, and has to be treated as credential-bearing.
 
 ## 13. Go-live checklist
 
