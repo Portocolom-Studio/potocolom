@@ -202,17 +202,45 @@ aws ecs execute-command --cluster potocolom --task <task-id> --container api --i
 - `reclaim --claim` mints a fresh setup link and retires whatever was outstanding. It is refused while the install still has accounts: the setup link adopts the implicit local user, which the claim route allows only on an install nobody has claimed. On a running cloud installation `--restore` is the command.
 - `python -m app.recovery EMAIL` prints a one-use ten-minute password link for one administrator. It is printed and never mailed: a credential recoverable from a mailbox is only as strong as that mailbox.
 - `rotate-keys` moves stored secrets onto a new `ROOT_KEYS` entry; `rotate-keys --check` changes nothing and reports which older versions are still holding something. Put the new key at the front of the SSM parameter, roll the tasks so every replica can read both, rotate, check, and only then remove the old one.
-- `collapse` is not a cloud command. Turning accounts off on a multi-tenant install is not an operation with a sensible cloud meaning.
+- `collapse` has no sensible cloud meaning: turning accounts off on a multi-tenant install would destroy every customer's account and answer every request as an administrator. Nothing in the code stops it, and this is a policy rather than a guard: anybody who can open an ECS Exec session in the API task can run it, which is one more reason Exec stays off between incidents. If that is not tolerable for your installation, drop the confirmation phrase from an environment the task cannot read, or run the API image with the operator module removed.
 
-ECS Exec needs `enableExecuteCommand` on the service and `ssmmessages` permissions on the task role. Enabling it takes effect on new tasks only, so force a fresh deployment after turning it on:
+ECS Exec is off between incidents, because a shell in the API task is a shell with the root key ring in its environment. Turning it on and off is a deployment each way: the setting applies to new tasks only.
+
+Four prerequisites. The first three fail as a hanging `execute-command` rather than a clear error; the fourth says what is wrong but not where:
+
+- `enableExecuteCommand` on the service.
+- `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` on the **task role**, not the execution role.
+- A network path to SSM. The API tasks run in private subnets, so that is either NAT egress on 443 or an `ssmmessages` interface VPC endpoint the task security group can reach on 443.
+- On the operator's own machine: `ecs:ExecuteCommand` for that cluster, and the Session Manager plugin installed beside the AWS CLI. Without the plugin the command fails with `SessionManagerPlugin is not found`, which reads like a service problem and is not one.
 
 ```bash
-aws ecs update-service --cluster potocolom --service api --enable-execute-command --force-new-deployment
+# Before: no session logging, because the recovery command prints a live credential.
+aws ecs update-cluster --cluster potocolom \
+  --configuration 'executeCommandConfiguration={logging=NONE}'
+aws ecs update-service --cluster potocolom --service api \
+  --enable-execute-command --force-new-deployment
+aws ecs wait services-stable --cluster potocolom --services api
+
+# The setting applies to new tasks, and the agent starts a moment after the
+# task does. Check the task you are about to use, not the service.
+aws ecs describe-tasks --cluster potocolom --tasks <new-task-id> \
+  --query 'tasks[].{exec:enableExecuteCommand,
+                    agent:containers[?name==`api`].managedAgents[?name==`ExecuteCommandAgent`].lastStatus}'
+# exec: true, agent: RUNNING
+
+# ... run the recovery command against that task ...
+
+# After: close it again and put the cluster's logging back.
+aws ecs update-service --cluster potocolom --service api \
+  --disable-execute-command --force-new-deployment
+aws ecs wait services-stable --cluster potocolom --services api
+aws ecs describe-tasks --cluster potocolom --tasks <replacement-task-id> \
+  --query 'tasks[].enableExecuteCommand'   # false on the replacements
+aws ecs update-cluster --cluster potocolom \
+  --configuration 'executeCommandConfiguration={logging=DEFAULT}'
 ```
 
-Leave it off by default and turn it on for the incident. A shell in the API task is a shell with the root key ring in its environment.
-
-Set `executeCommandConfiguration.logging` to `NONE` on the cluster before running the recovery command. `python -m app.recovery EMAIL` prints a live one-use link to stdout, and ECS Exec's `DEFAULT` logging copies the session into the task's CloudWatch stream, where it sits for the retention period as a working credential anybody with log access can spend. The same goes for any restricted sink: whatever holds these sessions holds recovery links, and has to be treated as credential-bearing.
+`logging=NONE` comes first for a reason. `python -m app.recovery EMAIL` prints a live one-use link to stdout, and Exec's `DEFAULT` logging copies the session into the task's CloudWatch stream, where it sits for the retention period as a working credential anybody with log access can spend. Any other sink is the same: whatever holds these sessions holds recovery links and has to be treated as credential-bearing. Put the logging configuration back afterwards, or the next Exec session anybody opens for an unrelated reason goes unrecorded.
 
 ## 13. Go-live checklist
 

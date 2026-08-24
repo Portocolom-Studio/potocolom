@@ -6,6 +6,7 @@ to change the key everything else is sealed with.
 """
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +15,10 @@ from sqlalchemy import func, select, text
 from app import db, keyring, operator
 from app.main import app
 from app.tables import Job, User
-from tests.test_totp_flow import ORIGIN, ROOT_KEYS, _factors, _login, _make, accounts
+from app.passwords import hash_password
+from tests.test_totp_flow import (
+    ORIGIN, PASSWORD, ROOT_KEYS, _factors, _login, _make, accounts,
+)
 
 __all__ = ["accounts"]
 
@@ -315,3 +319,123 @@ def test_the_commands_reach_their_work_through_the_command_line(library, capsys)
             operator.main(["collapse", "--confirm", "no"])
 
         client.portal.call(db.connect)
+
+
+@pytest.mark.db
+def test_a_reclaim_refuses_an_identity_that_landed_while_it_waited(library):
+    """The check and the mint are one transaction behind the setup lock, so
+    an identity committed while the reclaim waits is one the reclaim sees.
+
+    Deterministic on purpose: the blocker takes the lock first, so a reclaim
+    that read outside the lock would look before the insert and mint a link
+    that is refused the moment somebody spends it.
+    """
+    import asyncio
+
+    from app import enable
+
+    with TestClient(app, base_url=ORIGIN) as client:
+
+        async def strip_identities() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM auth_identities"))
+                await session.commit()
+
+        client.portal.call(strip_identities)
+        holding = asyncio.Event()
+
+        async def claim_it_first() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": enable.SETUP_LOCK})
+                    holding.set()
+                    # Long enough that the reclaim is certainly queued behind
+                    # this lock rather than merely slower.
+                    await asyncio.sleep(0.3)
+                    local = (await session.execute(
+                        text("SELECT id FROM users LIMIT 1"))).scalar_one()
+                    await session.execute(
+                        text("INSERT INTO auth_identities "
+                             "(id, user_id, provider, subject, password_hash) "
+                             "VALUES (gen_random_uuid(), :id, 'password', "
+                             "'raced@example.com', :hash)"),
+                        {"id": local, "hash": hash_password(PASSWORD)})
+
+        async def reclaim_behind_it():
+            first = asyncio.create_task(claim_it_first())
+            await holding.wait()
+            try:
+                return await operator.reclaim_claim()
+            finally:
+                await first
+
+        with pytest.raises(LookupError):
+            client.portal.call(reclaim_behind_it)
+
+        async def live_tokens() -> int:
+            async with db.session_factory() as session:
+                return int(await session.scalar(text(
+                    "SELECT count(*) FROM auth_tokens WHERE purpose = 'setup' "
+                    "AND consumed_at IS NULL")) or 0)
+
+        # And nothing was minted on the way to refusing.
+        assert client.portal.call(live_tokens) == 0
+
+
+@pytest.mark.db
+def test_claiming_the_installation_waits_for_the_setup_lock(library):
+    """The reclaim's check means nothing unless the claim route takes the same
+    lock: without it a claim commits between that check and its mint."""
+    import asyncio
+    import time
+
+    from app import enable
+    from tests.test_first_admin_setup import PASSWORD as SETUP_PASSWORD
+
+    with TestClient(app, base_url=ORIGIN) as client:
+
+        async def strip_identities() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM auth_identities"))
+                await session.commit()
+
+        client.portal.call(strip_identities)
+        token = client.portal.call(enable.mint_setup_token)
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_the_lock() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": enable.SETUP_LOCK})
+                    holding.set()
+                    await release.wait()
+
+        held = client.portal.start_task_soon(hold_the_lock)
+        client.portal.call(holding.wait)
+
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            claiming = pool.submit(
+                client.post, "/api/v1/auth/setup",
+                json={"token": token, "email": "locked@example.com",
+                      "password": SETUP_PASSWORD})
+            try:
+                time.sleep(0.4)
+                waited = not claiming.done()
+            finally:
+                # Always, even when the assertion below is going to fail: a
+                # transaction left holding this lock wedges every test after it.
+                client.portal.call(_set, release)
+                answered = claiming.result(timeout=10)
+                held.cancel()
+
+        assert waited, "the claim did not wait for the lock"
+        assert answered.status_code == 204
+        assert time.monotonic() - started >= 0.4
+
+
+async def _set(event) -> None:
+    event.set()
