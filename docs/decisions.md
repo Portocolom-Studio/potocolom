@@ -1108,6 +1108,16 @@ Job cancellation writes `cancelled` to PostgreSQL and commits, and only then tel
 
 Rejected alternatives: cancelling the worker's task and treating its silence as the record (a worker that dies mid-cancel then leaves a job running forever in the row); waiting for the worker to confirm before marking the row (the caller waits on a machine that may be wedged, and the answer is already decided); discarding the GPU time a cancelled job spent (the hardware ran, the fleet paid for it, and a free cancel button is a way to run a GPU for nothing); a `cancelled` account state (a person is not a unit of work, and the states that stop an account already exist).
 
+## Deletion waits, and a restore is one level deep
+
+Deleting an account stops it immediately and destroys nothing for thirty days. Stopping is what the person asked for; destroying is what they cannot undo, and the two do not have to happen at the same moment. The account records the state it held when it asked, and a restore puts it back there rather than to `active`: an account that was suspended when it asked to be deleted comes back suspended, because a restore undoes the deletion and not everything before it.
+
+The purge orders itself by the foreign keys: the objects first, since the asset row is the only thing that names them, then the assets, then the jobs, then the user row. One account per transaction, so a sweep that dies halfway loses nothing and the next pass finds the rest exactly where it was.
+
+The last administrator may delete their own account. An install with no administrator can be recovered offline, and an administrator who cannot leave their own install is a worse outcome than one that needs a console.
+
+Rejected alternatives: deleting on the spot (a person who deletes an account in anger, or by mistake, has no way back, and no export they forgot to take); a full state history to restore from (nobody has asked what an account was two states ago, and keeping it means keeping a record of every suspension forever); deleting the user row and letting cascades take the rest (the objects in storage are named only by the rows the cascade would remove, so they would leak silently); refusing the last administrator's own deletion (an install can be recovered offline, a person cannot be un-trapped).
+
 ## Supporting defaults
 
 Chosen as conventional defaults rather than debated decisions:
