@@ -90,6 +90,33 @@ def test_upscale_tiled_downsamples_when_factor_below_native_scale():
     assert result.size == (64, 48)
 
 
+def test_upscale_tiled_stops_between_tiles_when_cancelled():
+    torch = __import__("pytest").importorskip("torch")
+    from PIL import Image
+
+    from worker.engine import Cancelled
+    from worker.upscale import upscale_tiled
+
+    class CountingNearest2x(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, x):
+            self.calls += 1
+            return torch.nn.functional.interpolate(x, scale_factor=2, mode="nearest")
+
+    model = CountingNearest2x()
+    source = Image.new("RGB", (1024, 512), (10, 20, 30))
+    with pytest.raises(Cancelled):
+        upscale_tiled(
+            model, source, 2, device="cpu", dtype=torch.float32,
+            tile=512, overlap=32, cancelled=lambda: model.calls >= 1,
+        )
+    # One tile ran and the rest did not: a tile holds the GPU until it returns.
+    assert model.calls == 1
+
+
 def test_upscale_tiled_rejects_factor_above_native_scale():
     torch = __import__("pytest").importorskip("torch")
     from PIL import Image

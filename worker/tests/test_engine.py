@@ -10,6 +10,7 @@ from PIL import Image
 
 from worker.engine import (
     CALIBRATION_SAMPLES,
+    Cancelled,
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
     NotResidentError,
@@ -778,6 +779,46 @@ def test_simulated_upscale_resizes_by_factor():
     assert result.height == 192
     assert progress_values[-1] == 1.0
     assert result.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_simulated_generate_stops_between_steps_when_cancelled():
+    engine = SimulatedEngine(0.01)
+    progress_values: list[float] = []
+
+    async def scenario():
+        await engine.generate(SIMULATED_MANIFEST, {"prompt": "x"},
+                              progress_values.append, cancelled=lambda: True)
+
+    try:
+        asyncio.run(scenario())
+    except Cancelled:
+        assert progress_values == []
+    else:
+        raise AssertionError("expected Cancelled")
+
+
+def test_job_step_callbacks_abort_when_cancelled():
+    """Raising from callback_on_step_end is the only way to stop a pipeline
+    already running on the GPU thread, so every job path must do it."""
+    pipeline = _JobPipeline(dual=True)
+    engine = _job_engine(pipeline)
+    manifest = _sdxl_job_manifest()
+    params = {"prompt": "w0 w1", "guidance": 6.0}
+    loop = asyncio.new_event_loop()
+    try:
+        engine._generate(manifest, params, lambda _: None, loop, None, lambda: True)
+        engine._generate_i2i(manifest, params, lambda _: None, loop,
+                             _input_image_bytes(), lambda: True)
+    finally:
+        loop.close()
+
+    assert len(pipeline.call_kwargs) == 2
+    for kwargs in pipeline.call_kwargs:
+        try:
+            kwargs["callback_on_step_end"](pipeline, 0, None, {})
+        except Cancelled:
+            continue
+        raise AssertionError("a step callback ran on without aborting")
 
 
 def test_simulated_upscale_requires_input():
@@ -2666,3 +2707,24 @@ def test_calibrate_elapsed_includes_the_frame_call():
     slots = engine._calibrate_realtime(manifest, configured=4)
     assert engine.realtime_p95_ms("vega-rt") >= 50
     assert slots == slots_from_frame_ms(engine.realtime_p95_ms("vega-rt"), 4)
+
+
+def test_a_simulated_upscale_stops_when_it_is_asked_to():
+    """An upscale is one long resize here and a tile loop on the real engine.
+    Both have to answer the same ask, or a cancelled upscale reports success."""
+    from worker.engine import Cancelled
+
+    pytest = __import__("pytest")
+    engine = SimulatedEngine(0.01)
+    manifest = Manifest(id="sim-upscale", name="Sim Upscale", capabilities=["upscale"])
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(buffer, format="PNG")
+    source = buffer.getvalue()
+
+    with pytest.raises(Cancelled):
+        asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
+                                    input_image=source, cancelled=lambda: True))
+
+    finished = asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
+                                           input_image=source, cancelled=lambda: False))
+    assert (finished.width, finished.height) == (16, 16)

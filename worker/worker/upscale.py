@@ -18,6 +18,8 @@ from typing import Any
 
 from PIL import Image
 
+from worker.engine import Cancelled
+
 logger = logging.getLogger("potocolom.worker")
 
 UPSCALE_TILE = 512
@@ -180,6 +182,7 @@ def upscale_tiled(
     dtype: Any,
     native_scale: int | None = None,
     progress: Callable[[float], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
     tile: int = UPSCALE_TILE,
     overlap: int = UPSCALE_OVERLAP,
 ) -> Image.Image:
@@ -213,6 +216,10 @@ def upscale_tiled(
 
     with torch.no_grad():
         for index, (x0, y0, x1, y1) in enumerate(tiles):
+            if cancelled is not None and cancelled():
+                # Between tiles is the only place a long upscale can stop: the
+                # network call for one tile holds the GPU until it returns.
+                raise Cancelled()
             patch = src[:, :, y0:y1, x0:x1]
             ph, pw = patch.shape[-2], patch.shape[-1]
             pad_h = max(tile - ph, 0) if height >= tile else 0

@@ -371,6 +371,49 @@ async def create_generation(req, user = require_user()):
     return {"job_id": job.id}
 ```
 
+```python
+@app.post("/api/v1/users/{user_id}/state")            # admin only
+async def change_state(user_id, req, actor = require_role("admin")):
+    if user_id == actor.id:
+        raise Forbidden("an administrator cannot change their own state")
+    async with db.transaction():
+        await db.advisory_xact_lock(STATE_CHANGE_LOCK)   # shared with role changes
+        target = await db.users.get_for_update(user_id)
+        if target.state == req.state:
+            return 204                                   # idempotent, not a second event
+        if req.state not in TRANSITIONS[target.state]:    # compare and set
+            raise Conflict(f"an account cannot go from {target.state} to {req.state}")
+        if req.state != "active" and target.role == "admin" and last_administrator(target):
+            raise Forbidden("the last administrator cannot be suspended")
+        target.state = req.state
+        if req.state != "active":
+            await db.sessions.revoke_all(user_id)         # in this transaction
+            await db.auth_tokens.spend(user_id, ("reset", "recovery"))
+            stopping = await db.jobs.ids(user_id, states=("queued", "running"))
+    if req.state != "active":
+        await sessions.close_sockets(user_id)             # binds once, needs telling
+        for job_id in stopping:
+            await jobs.cancel(job_id, reason="account suspended")
+    await audit.record("account.state", actor=actor, target=user_id, object_ids=[req.state])
+
+
+async def cancel(job_id, reason) -> bool:
+    """PostgreSQL first, the worker second. The row is the authority."""
+    async with db.transaction():
+        job = await db.jobs.get_for_update(job_id)
+        if job is None or job.state in TERMINAL_STATES:   # succeeded, failed, cancelled
+            return False
+        job.state, job.failure_reason, job.finished_at = "cancelled", reason, now()
+    publish(job_id, {"state": "cancelled", "reason": reason})
+    entry = inflight.get(job_id)
+    if entry is not None:                                 # best effort, bounded
+        await tell_worker({"type": "cancel_job", "job_id": job_id,
+                           "dispatch_token": entry.dispatch_token})
+    return True
+```
+
+An account state is the one place that says what an account may do, and `cancelled` is a job state that never appears on a person. Whatever a worker uploads for a job that is already cancelled is discarded by the terminal-state check on the verdict, and the GPU milliseconds it measured are still recorded and charged.
+
 Worker death mid job: the scheduler's reconcile step requeues `attempt=1` jobs as `attempt=2`; a job failing at `attempt=2` becomes `state=failed`, `quota.refund(reservation_id)`, and the frontend shows the retry button. Completion runs the output safety check on the worker, uploads to a presigned URL, then `quota.commit(reservation_id, actual_gpu_ms, images)`. Actual usage may exceed the estimate; commit charges actuals, and a balance briefly going negative only blocks new reservations until the next grant. Idempotency, expiry and the outage posture of these calls are specified under Quota contract semantics below.
 
 ## Prompt screening
@@ -476,7 +519,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-api:v0.x
     ports: ["8080:8080"]
     environment:
-      AUTH_MODE: none            # the only mode that starts; local lands with #5, oauth with #9
+      AUTH_MODE: none            # accounts is the other one; make auth-enable turns it on, one way
       DATABASE_URL: postgresql://potocolom:...@postgres/potocolom
       STORAGE_BACKEND: local
       FLEET_TOKEN_KEY: ${FLEET_SECRET}

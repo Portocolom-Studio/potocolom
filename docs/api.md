@@ -68,6 +68,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
 | POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
+| POST `/api/v1/users/{id}/state` | implemented | suspend, disable, or mark an account for deletion; admin only |
+| POST `/api/v1/generations/{id}/cancel` | implemented | stop a queued or running job |
 | POST `/api/v1/auth/totp` | implemented | answer a sign-in challenge with a TOTP code or a recovery code |
 | POST `/api/v1/auth/reset` | implemented | ask for a password reset link; always answers the same |
 | POST `/api/v1/auth/reset/complete` | implemented | spend a reset or recovery link and set a password; returns to login |
@@ -176,7 +178,7 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
                              402 when credits are insufficient, 422 when params fail the model's schema
 
-GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed",
+GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed|cancelled",
                               "asset": {...} when succeeded, "thumbnail_url": "...",
                               "source_asset_id": "..." (img2img/upscale),
                               "has_derivatives": true when any job uses one of its assets,
@@ -192,6 +194,11 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              come from the same filtered result and retain created_at/id ordering.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
+
+POST /api/v1/generations/{id}/cancel  204; idempotent, and open to the owner whatever their
+                                      role, since calling off your own work is not a mutation
+                                      of anybody else's. 404 for a job that is not yours.
+                                      A job that already finished stays finished.
 
 POST /api/v1/generations/{id}/star    user or admin; 204; idempotent, 403 for viewer,
                                       404 for another user's or missing job
@@ -305,6 +312,28 @@ OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exc
 The flow is authorization code with PKCE S256. The state is minted here and only its hash is stored, the verifier and nonce never leave the server, the redirect URI is exact, and the flow row is one use and expires in ten minutes. Google's `id_token` must carry a valid issuer, audience, expiry and nonce, and a verified email. GitHub's address is the primary verified entry from `/user/emails`. The provider's access token is discarded as soon as the identity is read; nothing here acts as an agent for the provider.
 
 A provider-verified address raises this account's `mail_verified` only when it normalizes equal to the account's own primary address. A provider proving some other address says nothing about this one. (Google and GitHub; Apple is deferred.)
+
+## Account states
+
+An account is `active`, `suspended`, `disabled`, `deletion_pending`, or `purging`. `cancelled` is a job state and never an account state.
+
+```text
+POST /api/v1/users/{id}/state   {"state": "active" | "suspended" | "disabled" | "deletion_pending"}
+                                204; admin only; idempotent
+                                409 when that transition does not exist
+                                403 for an administrator's own account
+```
+
+- Compare and set: the transition is checked against the state the account holds inside the same transaction that writes the new one. Setting the state an account already holds is a no-op `204`, so a retry after a timeout is not a second event.
+- `purging` is absent from the request on purpose: the deletion sweep moves an account there, never an administrator with a form.
+- Leaving `active` revokes every session the account holds, closes the realtime sockets bound to them, spends its outstanding reset and recovery links, and cancels its queued and running jobs.
+- A `suspended` account may sign in and read: its own work, its account settings, its billing. It may change nothing, hold no GPU slot, and its share links resolve `404` until it is restored. The links are paused rather than revoked, so restoring the account restores what it shared.
+- `disabled`, `deletion_pending` and `purging` cannot sign in at all, through any door: password, provider, or a link that was already in a mailbox.
+- An administrator cannot change their own state, and the last active administrator cannot be suspended: an install with no administrator can only be recovered offline.
+
+## Cancelling work
+
+Cancellation is cooperative and PostgreSQL is the authority. The row is marked `cancelled` first, and the worker holding the job is told afterwards, best effort and bounded. A worker that never hears, or that runs an older protocol, changes nothing: whatever it uploads afterwards is discarded, and the GPU milliseconds it reports are still recorded against the job and charged as usage, because the GPU really did run for that long.
 
 ## Sharing
 

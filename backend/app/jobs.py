@@ -54,7 +54,7 @@ TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
 JOB_DISPATCH_DEPTH = 2  # queued jobs per worker; overlap encode/upload with denoise
 
-TERMINAL_STATES = ("succeeded", "failed")
+TERMINAL_STATES = ("succeeded", "failed", "cancelled")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
 DOWNLOAD_SLUG_MAX_LENGTH = 48
 DOWNLOAD_SLUG_MAX_WORDS = 6
@@ -1107,6 +1107,27 @@ async def unstar_generation(
     return Response(status_code=204)
 
 
+@router.post("/api/v1/generations/{job_id}/cancel", status_code=204)
+async def cancel_generation(
+    job_id: uuid.UUID,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+) -> Response:
+    """Stopping your own work needs no role: a viewer whose account was
+    demoted mid-generation must still be able to call it off.
+
+    Idempotent, because the answer to "stop it" and "it already stopped" is
+    the same to whoever asked.
+    """
+    owner = (await session.execute(
+        select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
+    if owner is None or (owner != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404, detail="no such generation")
+    await cancel(job_id, reason="cancelled by the owner"
+                 if owner == user.id else "cancelled by an administrator")
+    return Response(status_code=204)
+
+
 @router.get("/api/v1/generations/{job_id}/events")
 async def generation_events(
     job_id: uuid.UUID,
@@ -1391,6 +1412,18 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             logger.warning("worker %s sent a stale dispatch token for job %s; ignored",
                            worker.id, job_id)
             return
+    if control["type"] == "job_cancelled":
+        # The worker stopped where it was asked to. The row is already
+        # cancelled, so this only says what the GPU cost before it stopped.
+        gpu_ms = _worker_int(control.get("gpu_ms"))
+        if gpu_ms:
+            # Before the entry goes, like every other verdict here: clearing
+            # first and failing to commit would leave the charge nowhere, and
+            # a later report cannot retry it because the attempt it named is
+            # no longer the current one.
+            await _charge_cancelled(job_id, gpu_ms, current.attempt, control)
+        clear_if_current(worker, job_id, current)
+        return
     if control["type"] == "job_progress":
         # float() raises TypeError on the list or dict json.loads accepts, and
         # OverflowError on the arbitrary-precision int it also accepts.
@@ -1451,7 +1484,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 logger.exception("could not mark job %s failed", job_id)
                 return
             if not committed:
-                return  # a requeue or another verdict owns the row now
+                # A requeue or another verdict owns the row now, and this
+                # attempt is finished with either way. clear_if_current only
+                # touches the entry this verdict still owns, so a requeue that
+                # replaced it keeps its own; a cancellation, which is terminal
+                # and leaves no later attempt, would otherwise hold a dispatch
+                # slot on this worker until it reconnected.
+                clear_if_current(worker, job_id, current)
+                return
             clear_if_current(worker, job_id, current)
             schedule_blob_cleanup(
                 purge_attempt_blobs(current.user_id, job_id, current.attempt),
@@ -1508,6 +1548,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 logger.exception("could not mark job %s failed after promote", job_id)
                 return
             if not committed:
+                clear_if_current(worker, job_id, current)
                 return
             clear_if_current(worker, job_id, current)
             schedule_blob_cleanup(
@@ -1539,6 +1580,21 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                             _purge_keys(promoted, job_id),
                             what=f"uncommitted library copies for job {job_id}",
                         )
+                    cancelled_here = (job is not None and job.state == "cancelled"
+                                      and job.attempt == current.attempt)
+                    if cancelled_here and gpu_ms and job is not None:
+                        # The output is discarded and the time is not: the GPU
+                        # ran for however long it ran before the cancellation
+                        # reached it, and somebody pays for that.
+                        job.gpu_ms = gpu_ms
+                        await session.commit()
+                        from app import usage_events
+                        usage_events.schedule_job(job_id, control)
+                    if cancelled_here:
+                        # This attempt is finished with, whatever it uploaded.
+                        # Leaving the entry would hold a dispatch slot on that
+                        # worker until it reconnected.
+                        clear_if_current(worker, job_id, current)
                     return
                 job.state = "succeeded"
                 job.gpu_ms = gpu_ms
@@ -1841,6 +1897,61 @@ async def mark_failed(job_id: uuid.UUID, reason: str,
     publish(job_id, {"state": "failed", "reason": reason})
     logger.warning("job %s failed: %s", job_id, reason)
     return True
+
+
+async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
+    """PostgreSQL first, the worker second.
+
+    The row is the authority and the message is a courtesy: a worker that is
+    gone, wedged, or running an older protocol changes nothing about whether
+    the job is cancelled. Whatever it uploads afterwards is discarded by the
+    terminal-state check on the verdict, and the GPU time it measured is still
+    charged, because it was still spent.
+    """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        job = await locked_job(session, job_id)
+        if job is None or job.state in TERMINAL_STATES:
+            return False
+        job.state = "cancelled"
+        job.failure_reason = reason
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+    publish(job_id, {"state": "cancelled", "reason": reason})
+    logger.info("job %s cancelled: %s", job_id, reason)
+    entry = inflight.get(job_id)
+    if entry is not None:
+        await _ask_worker_to_stop(job_id, entry)
+    return True
+
+
+async def _charge_cancelled(job_id: uuid.UUID, gpu_ms: int, attempt: int,
+                            control: dict) -> None:
+    """The output is discarded and the time is not: the GPU ran for however
+    long it ran before the cancellation reached it."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        job = await locked_job(session, job_id)
+        if job is None or job.state != "cancelled" or job.attempt != attempt:
+            return
+        job.gpu_ms = gpu_ms
+        await session.commit()
+    from app import usage_events
+    usage_events.schedule_job(job_id, control)
+
+
+async def _ask_worker_to_stop(job_id: uuid.UUID, entry: InFlight) -> None:
+    """Best effort and bounded. The job is already cancelled in PostgreSQL, so
+    a worker that never reads this costs the fleet one wasted image, and a
+    worker that stopped reading must not hold up whoever asked."""
+    if realtime.workers.get(entry.worker.id) is not entry.worker:
+        return
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(realtime.safe_send(entry.worker.ws.send_json({
+            "type": "cancel_job",
+            "job_id": str(job_id),
+            "dispatch_token": entry.dispatch_token,
+        })), realtime.CLOSE_TIMEOUT)
 
 
 async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:
