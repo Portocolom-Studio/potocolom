@@ -6,6 +6,7 @@ to change the key everything else is sealed with.
 """
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -315,3 +316,113 @@ def test_the_commands_reach_their_work_through_the_command_line(library, capsys)
             operator.main(["collapse", "--confirm", "no"])
 
         client.portal.call(db.connect)
+
+
+@pytest.mark.db
+def test_a_reclaim_checks_and_mints_in_one_transaction(library):
+    """A claim landing between the two would leave this command handing over
+    a link that is refused when somebody finally spends it."""
+    import asyncio
+
+    from app import enable
+
+    with TestClient(app, base_url=ORIGIN) as client:
+
+        async def strip_identities() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM auth_identities"))
+                await session.commit()
+
+        client.portal.call(strip_identities)
+
+        async def claim_while_reclaiming():
+            return await asyncio.gather(
+                operator.reclaim_claim(),
+                _identity_behind_the_lock(),
+                return_exceptions=True,
+            )
+
+        async def _identity_behind_the_lock() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": enable.SETUP_LOCK})
+                    local = (await session.execute(
+                        text("SELECT id FROM users LIMIT 1"))).scalar_one()
+                    await session.execute(
+                        text("INSERT INTO auth_identities (id, user_id, provider, subject) "
+                             "VALUES (gen_random_uuid(), :id, 'password', 'raced@example.com')"),
+                        {"id": local})
+
+        minted, _ = client.portal.call(claim_while_reclaiming)
+
+        async def live_tokens() -> int:
+            async with db.session_factory() as session:
+                return int(await session.scalar(text(
+                    "SELECT count(*) FROM auth_tokens WHERE purpose = 'setup' "
+                    "AND consumed_at IS NULL")) or 0)
+
+        # Either the reclaim went first and its link is real, or the identity
+        # did and the reclaim refused without minting anything.
+        if isinstance(minted, LookupError):
+            assert client.portal.call(live_tokens) == 0
+        else:
+            assert isinstance(minted, str)
+
+
+@pytest.mark.db
+def test_claiming_the_installation_waits_for_the_setup_lock(library):
+    """The reclaim's check means nothing unless the claim route takes the same
+    lock: without it a claim commits between that check and its mint."""
+    import asyncio
+    import time
+
+    from app import enable
+    from tests.test_first_admin_setup import PASSWORD as SETUP_PASSWORD
+
+    with TestClient(app, base_url=ORIGIN) as client:
+
+        async def strip_identities() -> None:
+            async with db.session_factory() as session:
+                await session.execute(text("DELETE FROM auth_identities"))
+                await session.commit()
+
+        client.portal.call(strip_identities)
+        token = client.portal.call(enable.mint_setup_token)
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_the_lock() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": enable.SETUP_LOCK})
+                    holding.set()
+                    await release.wait()
+
+        held = client.portal.start_task_soon(hold_the_lock)
+        client.portal.call(holding.wait)
+
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            claiming = pool.submit(
+                client.post, "/api/v1/auth/setup",
+                json={"token": token, "email": "locked@example.com",
+                      "password": SETUP_PASSWORD})
+            try:
+                time.sleep(0.4)
+                waited = not claiming.done()
+            finally:
+                # Always, even when the assertion below is going to fail: a
+                # transaction left holding this lock wedges every test after it.
+                client.portal.call(_set, release)
+                answered = claiming.result(timeout=10)
+                held.cancel()
+
+        assert waited, "the claim did not wait for the lock"
+        assert answered.status_code == 204
+        assert time.monotonic() - started >= 0.4
+
+
+async def _set(event) -> None:
+    event.set()

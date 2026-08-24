@@ -13,8 +13,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from anyio import to_thread
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from starlette.responses import Response
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import audit, db, sessions
 from app.accounts import issue_session
@@ -25,6 +27,8 @@ from app.tables import AuthIdentity, AuthToken, User
 
 SETUP_TTL = timedelta(hours=1)
 SETUP_PURPOSE = "setup"
+# One key for claiming this installation, shared with the offline reclaim.
+SETUP_LOCK = 184469
 # One answer for unknown, expired, spent and replaced, so the link is not an
 # oracle for which of those it was.
 INVALID_LINK = "invalid or expired setup link"
@@ -37,25 +41,37 @@ def _token_hash(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
-async def mint_setup_token() -> str:
-    """Returns the only copy of the link. Nothing durable holds it."""
+async def mint_setup_token(session: AsyncSession | None = None) -> str:
+    """Returns the only copy of the link. Nothing durable holds it.
+
+    Takes a session when the caller has one open: reclaiming an install checks
+    that nobody has claimed it and mints in the same transaction, and a mint
+    that opened its own would leave a gap for a claim to land in.
+    """
+    token = secrets.token_urlsafe(32)
+    if session is not None:
+        await _replace_setup_token(session, token)
+        return token
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
-    token = secrets.token_urlsafe(32)
-    async with db.session_factory() as session:
-        async with session.begin():
-            # Minting replaces: an operator who runs this twice must not leave
-            # an older link alive for whoever saw it first.
-            await session.execute(delete(AuthToken).where(
-                AuthToken.purpose == SETUP_PURPOSE,
-                AuthToken.consumed_at.is_(None),
-            ))
-            session.add(AuthToken(
-                purpose=SETUP_PURPOSE,
-                token_hash=_token_hash(token),
-                expires_at=datetime.now(timezone.utc) + SETUP_TTL,
-            ))
+    async with db.session_factory() as owned:
+        async with owned.begin():
+            await _replace_setup_token(owned, token)
     return token
+
+
+async def _replace_setup_token(session: AsyncSession, token: str) -> None:
+    # Minting replaces: an operator who runs this twice must not leave an
+    # older link alive for whoever saw it first.
+    await session.execute(delete(AuthToken).where(
+        AuthToken.purpose == SETUP_PURPOSE,
+        AuthToken.consumed_at.is_(None),
+    ))
+    session.add(AuthToken(
+        purpose=SETUP_PURPOSE,
+        token_hash=_token_hash(token),
+        expires_at=datetime.now(timezone.utc) + SETUP_TTL,
+    ))
 
 
 # It becomes the To header of mail this install sends, and smtplib takes the
@@ -85,6 +101,12 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            # One claim at a time, and one reclaim at a time beside it: the
+            # offline command checks that nobody holds an identity before it
+            # mints a link, and without this that check and this insert can
+            # both believe they went first.
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": SETUP_LOCK})
             # The link is judged before anything else, so a caller without one
             # cannot learn whether the installation is claimed. Raising after
             # this rolls the consumption back with it.
