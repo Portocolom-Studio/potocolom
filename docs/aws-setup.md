@@ -211,6 +211,7 @@ Three prerequisites, all of which fail as a hanging `execute-command` rather tha
 - `enableExecuteCommand` on the service.
 - `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` on the **task role**, not the execution role.
 - A network path to SSM. The API tasks run in private subnets, so that is either NAT egress on 443 or an `ssmmessages` interface VPC endpoint the task security group can reach on 443.
+- On the operator's own machine: `ecs:ExecuteCommand` for that cluster, and the Session Manager plugin installed beside the AWS CLI. Without the plugin the command fails with `SessionManagerPlugin is not found`, which reads like a service problem and is not one.
 
 ```bash
 # Before: no session logging, because the recovery command prints a live credential.
@@ -220,13 +221,20 @@ aws ecs update-service --cluster potocolom --service api \
   --enable-execute-command --force-new-deployment
 aws ecs wait services-stable --cluster potocolom --services api
 
-# ... run the recovery command against a task from the new deployment ...
+# The setting applies to new tasks, and the agent starts a moment after the
+# task does. Check the task you are about to use, not the service.
+aws ecs describe-tasks --cluster potocolom --tasks <new-task-id> \
+  --query 'tasks[].{exec:enableExecuteCommand,
+                    agent:containers[?name==`api`].managedAgents[?name==`ExecuteCommandAgent`].lastStatus}'
+# exec: true, agent: RUNNING
+
+# ... run the recovery command against that task ...
 
 # After: close it again and put the cluster's logging back.
 aws ecs update-service --cluster potocolom --service api \
-  --no-enable-execute-command --force-new-deployment
+  --disable-execute-command --force-new-deployment
 aws ecs wait services-stable --cluster potocolom --services api
-aws ecs describe-tasks --cluster potocolom --tasks <new-task-id> \
+aws ecs describe-tasks --cluster potocolom --tasks <replacement-task-id> \
   --query 'tasks[].enableExecuteCommand'   # false on the replacements
 aws ecs update-cluster --cluster potocolom \
   --configuration 'executeCommandConfiguration={logging=DEFAULT}'

@@ -56,6 +56,11 @@ async def mint_setup_token(session: AsyncSession | None = None) -> str:
         raise RuntimeError("database unavailable")
     async with db.session_factory() as owned:
         async with owned.begin():
+            # The same lock the caller-supplied branch is already inside, so
+            # every way of minting a setup link is serialized with claiming
+            # one however it was reached.
+            await owned.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                {"key": SETUP_LOCK})
             await _replace_setup_token(owned, token)
     return token
 

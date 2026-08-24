@@ -15,7 +15,10 @@ from sqlalchemy import func, select, text
 from app import db, keyring, operator
 from app.main import app
 from app.tables import Job, User
-from tests.test_totp_flow import ORIGIN, ROOT_KEYS, _factors, _login, _make, accounts
+from app.passwords import hash_password
+from tests.test_totp_flow import (
+    ORIGIN, PASSWORD, ROOT_KEYS, _factors, _login, _make, accounts,
+)
 
 __all__ = ["accounts"]
 
@@ -319,9 +322,14 @@ def test_the_commands_reach_their_work_through_the_command_line(library, capsys)
 
 
 @pytest.mark.db
-def test_a_reclaim_checks_and_mints_in_one_transaction(library):
-    """A claim landing between the two would leave this command handing over
-    a link that is refused when somebody finally spends it."""
+def test_a_reclaim_refuses_an_identity_that_landed_while_it_waited(library):
+    """The check and the mint are one transaction behind the setup lock, so
+    an identity committed while the reclaim waits is one the reclaim sees.
+
+    Deterministic on purpose: the blocker takes the lock first, so a reclaim
+    that read outside the lock would look before the insert and mint a link
+    that is refused the moment somebody spends it.
+    """
     import asyncio
 
     from app import enable
@@ -334,27 +342,36 @@ def test_a_reclaim_checks_and_mints_in_one_transaction(library):
                 await session.commit()
 
         client.portal.call(strip_identities)
+        holding = asyncio.Event()
 
-        async def claim_while_reclaiming():
-            return await asyncio.gather(
-                operator.reclaim_claim(),
-                _identity_behind_the_lock(),
-                return_exceptions=True,
-            )
-
-        async def _identity_behind_the_lock() -> None:
+        async def claim_it_first() -> None:
             async with db.session_factory() as session:
                 async with session.begin():
                     await session.execute(
                         text("SELECT pg_advisory_xact_lock(:key)"), {"key": enable.SETUP_LOCK})
+                    holding.set()
+                    # Long enough that the reclaim is certainly queued behind
+                    # this lock rather than merely slower.
+                    await asyncio.sleep(0.3)
                     local = (await session.execute(
                         text("SELECT id FROM users LIMIT 1"))).scalar_one()
                     await session.execute(
-                        text("INSERT INTO auth_identities (id, user_id, provider, subject) "
-                             "VALUES (gen_random_uuid(), :id, 'password', 'raced@example.com')"),
-                        {"id": local})
+                        text("INSERT INTO auth_identities "
+                             "(id, user_id, provider, subject, password_hash) "
+                             "VALUES (gen_random_uuid(), :id, 'password', "
+                             "'raced@example.com', :hash)"),
+                        {"id": local, "hash": hash_password(PASSWORD)})
 
-        minted, _ = client.portal.call(claim_while_reclaiming)
+        async def reclaim_behind_it():
+            first = asyncio.create_task(claim_it_first())
+            await holding.wait()
+            try:
+                return await operator.reclaim_claim()
+            finally:
+                await first
+
+        with pytest.raises(LookupError):
+            client.portal.call(reclaim_behind_it)
 
         async def live_tokens() -> int:
             async with db.session_factory() as session:
@@ -362,12 +379,8 @@ def test_a_reclaim_checks_and_mints_in_one_transaction(library):
                     "SELECT count(*) FROM auth_tokens WHERE purpose = 'setup' "
                     "AND consumed_at IS NULL")) or 0)
 
-        # Either the reclaim went first and its link is real, or the identity
-        # did and the reclaim refused without minting anything.
-        if isinstance(minted, LookupError):
-            assert client.portal.call(live_tokens) == 0
-        else:
-            assert isinstance(minted, str)
+        # And nothing was minted on the way to refusing.
+        assert client.portal.call(live_tokens) == 0
 
 
 @pytest.mark.db
