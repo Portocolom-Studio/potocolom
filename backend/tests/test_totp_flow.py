@@ -9,7 +9,7 @@ from app import db, factors, keyring, sessions, totp
 from app.main import app
 from app.passwords import hash_password
 from app.settings import get_settings
-from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, User
+from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, Session, User
 
 PASSWORD = "a-long-enough-account-password"
 ORIGIN = "https://studio.example.com"
@@ -569,3 +569,68 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
 
         answered = fresh.portal.call(together)
     assert sorted(answered) == [204, 403], answered
+
+
+def _remove(client, code):
+    return client.request("DELETE", "/api/v1/account/totp", headers=_csrf(client),
+                          json={"code": code})
+
+
+@pytest.mark.db
+def test_removing_the_factor_needs_the_factor(accounts):
+    """A session alone must not disarm it. Enrolment already refuses to write
+    anything until a code answers, for exactly this reason: one request from a
+    stolen session, no code and no notice, would otherwise be the cheapest way
+    to turn the second factor off."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keepit@example.com")
+        assert _login(client, "keepit@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, "000000").status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_code_removes_the_factor_and_takes_its_codes_with_it(accounts):
+    """The codes go with it. A recovery code minted against a secret nobody
+    holds any more is a way in nobody expects."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "dropit@example.com")
+        assert _login(client, "dropit@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
+        assert client.portal.call(_codes) == []
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        # And the next sign-in is a session rather than a challenge.
+        assert _login(fresh, "dropit@example.com").status_code == 204
+
+
+@pytest.mark.db
+def test_a_recovery_code_removes_the_factor_too(accounts):
+    """Whoever lost the authenticator but kept a code can still turn it off,
+    which is the case that otherwise ends in a locked account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lostit@example.com")
+        assert _login(client, "lostit@example.com").status_code == 204
+        _, codes = _enrol(client)
+        assert _remove(client, codes[0]).status_code == 204
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_removing_needs_recent_authentication(accounts):
+    """Same bar as adding one, and as every other credential change."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "stale@example.com")
+        assert _login(client, "stale@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def age() -> None:
+            async with db.session_factory() as session:
+                await session.execute(update(Session).values(recent_auth_at=None))
+                await session.commit()
+
+        client.portal.call(age)
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert len(client.portal.call(_factors)) == 1

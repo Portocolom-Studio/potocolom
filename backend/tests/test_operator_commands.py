@@ -439,3 +439,41 @@ def test_claiming_the_installation_waits_for_the_setup_lock(library):
 
 async def _set(event) -> None:
     event.set()
+
+
+@pytest.mark.db
+def test_clearing_a_factor_gets_an_account_back_when_everything_is_lost(library):
+    """The way back for somebody who lost the authenticator and every recovery
+    code. Nothing over HTTP can help them: a route that clears a factor
+    without presenting one is a route worth stealing a session for."""
+    from app import factors
+    from app.tables import AuthFactor, RecoveryCode
+
+    async def enrol(user_id: uuid.UUID) -> None:
+        ring = keyring.get_key_ring()
+        async with db.session_factory() as session:
+            session.add(AuthFactor(
+                user_id=user_id, kind="totp",
+                secret_ciphertext=ring.encrypt(factors.TOTP_PURPOSE, b"S" * 32, user_id.bytes),
+                key_version=ring.active_version, confirmed_at=func.now()))
+            session.add(RecoveryCode(user_id=user_id, code_hash=b"h" * 32))
+            await session.commit()
+
+    async def remaining() -> tuple[int, int]:
+        async with db.session_factory() as session:
+            return (
+                len((await session.execute(select(AuthFactor))).scalars().all()),
+                len((await session.execute(select(RecoveryCode))).scalars().all()),
+            )
+
+    user = library(_make("nophone@example.com"))
+    library(enrol(user.id))
+    assert library(remaining()) == (1, 1)
+
+    assert library(operator.clear_factor("nophone@example.com")) is True
+    assert library(remaining()) == (0, 0)
+
+    # Nothing to clear says so rather than reporting work it did not do.
+    assert library(operator.clear_factor("nophone@example.com")) is False
+    with pytest.raises(LookupError):
+        library(operator.clear_factor("nobody@example.com"))
