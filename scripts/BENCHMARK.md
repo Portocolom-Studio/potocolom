@@ -204,15 +204,14 @@ Two candidate-specific traps, both `sana-sprint-06b`:
   defaults it to 4.5. The other distilled candidates default it to 0. Do not
   "correct" it to 0; that is not the no-CFG case, it is a different conditioning
   value.
-- Only 1024 px checkpoints exist, and the pipeline's `use_resolution_binning`
-  maps a smaller request onto the nearest 1024 bin, so the 512 and 768 rows are
-  binned rather than native and the model runs off its training resolution.
-  `_generate_i2i` used to compound this: it resized the source but passed no
-  width or height, and SanaSprint defaults both to 1024, so a 512 canvas frame
-  rendered at 1024 and allocated 4x the activations. That is what OOMed the
-  first run, at 4.50 GiB with the weights already resident. It now passes the
+- 1024 is the only resolution it has. `use_resolution_binning` maps a request
+  onto `ASPECT_RATIO_1024_BIN`, a 512x512 request bins to 1024x1024, and the
+  whole table holds no entry below 704x1344. There is no 512 or 768 checkpoint
+  either, so the manifest offers 1024 alone. `_generate_i2i` now passes the
   size to any pipeline whose signature accepts one, and omits it for SD and
-  SDXL img2img, which take no width/height and read the size off the source.
+  SDXL img2img which take neither, but that cannot defeat the binning: forcing
+  512 would need `use_resolution_binning=False` and would run the model off
+  the distribution it was trained on.
 
 ```bash
 # Latency + VRAM envelope per rung, no API needed (engine-direct):
@@ -224,6 +223,32 @@ worker/.venv/bin/python scripts/profile-candidates.py \
 make benchmark BENCHMARK_MODELS=flux2-klein-4b,z-image-turbo,sana-sprint-06b \
   BENCHMARK_QUICK=1
 ```
+
+### Measured: sana-sprint-06b does not beat vega-rt (2026-08-25)
+
+First numbers on the reference RX 7600 XT, `--memory-mode full`, weights cached,
+clear GPU:
+
+| Phase | Result |
+| --- | --- |
+| load | 13.39 s, rung `full`, 15.93 GB free before |
+| t2i 1024 / 2 steps / guidance 4.5 | **1469 ms median**, 1470 ms p95, peak 11.97 GB |
+| i2i (frame analog) | OOM: wanted 4.50 GiB with 14.79 GiB already resident |
+
+`vega-rt` is 219.8 ms p95 at 512 with TAESD and a 452 ms warm realtime frame.
+SANA-Sprint is **6.7x** the former and **3.2x** the latter, at a resolution it
+cannot go below. Even a hypothetical 4x saving at 512 lands near 367 ms, still
+no win, and 512 is not reachable for this model anyway. The DC-AE latent-token
+argument (a 1024 px image is a 32x32 latent against vega-rt's 64x64 at 512) did
+not survive contact with the hardware.
+
+The published 0.31 s on an RTX 4090 against 1469 ms here is a 4.7x gap, which is
+in the plausible range for the two cards and does not need another explanation.
+
+Second finding: image-to-image does not fit on this card at all. t2i peaks at
+11.97 GB, and i2i adds a VAE encode of the source on top, which is the 4.50 GiB
+that fails. So `sana-sprint-06b` stays `benchmark_only`, and is not a realtime
+candidate on 16 GB hardware. Retest only on a card with materially more VRAM.
 
 Promotion bar, same rule as #75/#84: measured frame-analog p95 under the
 500 ms realtime bar at 512 px plus acceptable i2i quality is what earns a
