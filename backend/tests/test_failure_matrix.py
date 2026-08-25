@@ -17,7 +17,7 @@ from sqlalchemy import func, select, text
 from app import db, invitations, jobs, sessions
 from app.main import app
 from app.tables import Invitation, User
-from tests.test_totp_flow import ORIGIN, PASSWORD, _csrf, _login, _make, accounts
+from tests.test_totp_flow import ORIGIN, PASSWORD, _login, _make, accounts
 
 __all__ = ["accounts"]
 
@@ -105,9 +105,18 @@ def test_two_administrators_revoking_one_invitation_at_once_agree(invited):
                     .where(Invitation.email == "revoked@example.com"))).scalar_one()
 
         which = client.portal.call(invitation_id)
-        first = client.delete(f"/api/v1/invitations/{which}", headers=_csrf(client))
-        second = client.delete(f"/api/v1/invitations/{which}", headers=_csrf(client))
-        assert (first.status_code, second.status_code) in ((204, 204), (204, 404))
+        async def both():
+            # Dispatched together: awaiting the first would only prove that
+            # revoking twice in a row is safe, which nobody doubted.
+            return await asyncio.gather(
+                invitations.revoke(which), invitations.revoke(which),
+                return_exceptions=True,
+            )
+
+        outcomes = client.portal.call(both)
+        refused = [one for one in outcomes if isinstance(one, HTTPException)]
+        assert len(refused) <= 1
+        assert all(one.status_code == 404 for one in refused)
         # And the link is dead either way.
         spent = client.post("/api/v1/auth/register", headers={"Origin": ORIGIN},
                             json={"token": token, "password": NEW_PASSWORD})
@@ -156,8 +165,11 @@ def test_a_storage_outage_leaves_the_job_where_the_next_pass_finds_it(monkeypatc
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-storage-out")
 
+            attempted: list[str] = []
+
             class Refusing:
                 async def upload_target(self, key, token=None):
+                    attempted.append(key)
                     raise RuntimeError("storage is down")
 
             monkeypatch.setattr(jobs, "get_storage", Refusing)
@@ -167,9 +179,19 @@ def test_a_storage_outage_leaves_the_job_where_the_next_pass_finds_it(monkeypatc
             assert created.status_code == 202
             job_id = created.json()["job_id"]
 
-            # Long enough for the dispatch loop to have tried and failed.
-            time.sleep(0.5)
-            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "queued"
+            # Wait for the attempt rather than for the clock: queued is also
+            # what a job looks like before anybody has tried to dispatch it.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not attempted:
+                time.sleep(0.05)
+            assert attempted, "the dispatch never reached the storage"
+
+            # And it stays queued. Reading the state the instant the attempt
+            # is recorded would read it before dispatch had finished failing.
+            for _ in range(6):
+                time.sleep(0.05)
+                assert client.get(
+                    f"/api/v1/generations/{job_id}").json()["state"] == "queued"
             assert uuid.UUID(job_id) not in jobs.inflight
 
 

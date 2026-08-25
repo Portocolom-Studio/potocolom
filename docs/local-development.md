@@ -157,11 +157,14 @@ To exercise the account path, `make auth-enable` writes `ROOT_KEYS`, sets
 that claims the administrator account. It is one way: the same database refuses
 to start in `none` mode afterwards. Point it at a throwaway database, or expect
 to drop and recreate the one you use, because there is no undo short of an
-offline destructive reset.
+offline destructive reset, which is `make auth-collapse` and destroys every
+account on the installation.
 
-Sign-in is not implemented yet, so accounts mode answers `401` for everything
-except that one call. The password policy is fifteen to one hundred and twenty
-eight characters against a bundled blocklist.
+Sign-in is here: address and password, an optional second factor, and Google or
+GitHub when they are configured. After claiming the administrator account, sign
+in at `POST /api/v1/auth/login` and invite everybody else. The password policy
+is fifteen to one hundred and twenty eight characters against a bundled
+blocklist.
 
 ## Mail, and doing without it
 
@@ -284,7 +287,7 @@ Everything below is a rung-1 test already, so the checklist is a reading rather 
 - `make verify` is green, which is the whole matrix.
 - The authentication rounds' own files pass in both modes: `test_endpoint_hardening.py` and `test_first_admin_setup.py` cover `AUTH_MODE=none`, everything under the `accounts` fixture covers the other.
 - `test_failure_matrix.py` passes, which is where the concurrency and outage cases live.
-- One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, invite somebody, sign in as them, and revoke that session from the first account. Nothing else in the ladder drives a real browser at a real cookie.
+- One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, sign in, invite somebody, sign in as them, and revoke that session from the first account. Nothing else in the ladder drives a real browser at a real cookie, so this is the only place the `__Host-` prefix and the CSRF header are exercised by something that implements them rather than by a test client.
 - `make auth-rotate-keys CHECK=1` reports nothing left under an older key, if a rotation happened in this cycle.
 
 ## Testing ladder
