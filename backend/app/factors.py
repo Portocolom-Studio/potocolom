@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.exc import OperationalError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -110,8 +111,18 @@ async def begin_challenge(user: User, remember_me: bool,
             # ten guesses per login and a six-digit code had unlimited tries
             # against it (issue #421). A collision with another key here costs
             # two accounts a moment of waiting and nothing else.
-            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                  {"key": _budget_lock(user.id)})
+            # A waiter holds its pooled connection, and the pool is fifteen
+            # deep, so an unbounded wait would let a flood of logins for one
+            # account starve every other request. Giving up is safe here:
+            # nothing has been written yet, and the caller is told to come
+            # back rather than handed a challenge that skipped the carry.
+            await session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            try:
+                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                      {"key": _budget_lock(user.id)})
+            except OperationalError as busy:
+                raise HTTPException(status_code=503,
+                                    detail="too many sign-ins at once") from busy
             # The budget belongs to the account, not to one challenge. Minted
             # per challenge it counts nothing, because starting another is
             # free to anyone who already has the password.

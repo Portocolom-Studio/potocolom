@@ -496,15 +496,31 @@ def test_the_guess_budget_survives_logins_that_overlap(accounts):
     accounts(factors.begin_challenge(user, remember_me=False))
     accounts(_spend(7))
 
+    started = asyncio.Event()
+    waiting = 0
+
+    async def begin() -> None:
+        """Every caller reaches begin_challenge before any of them proceeds.
+
+        Without this the scheduler is free to run them one after another,
+        which is the case that always worked, so the test would pass against
+        the unlocked code whenever it happened to serialise them.
+        """
+        nonlocal waiting
+        waiting += 1
+        if waiting == 4:
+            started.set()
+        await started.wait()
+        await factors.begin_challenge(user, remember_me=False)
+
     async def overlapping() -> None:
-        await asyncio.gather(*[
-            factors.begin_challenge(user, remember_me=False) for _ in range(4)
-        ])
+        await asyncio.gather(*[begin() for _ in range(4)])
 
     accounts(overlapping())
-    live = accounts(_live_challenges())
-    assert live, "a challenge should still be live"
-    assert all(spent == 7 for spent in live), live
+    # Exactly one, not merely several that each carried the seven: each begin
+    # consumes the one before it, so four that overlap must still leave one
+    # challenge behind. Four rows at seven would be twelve guesses, not three.
+    assert accounts(_live_challenges()) == [7]
 
 
 @pytest.mark.db
@@ -526,9 +542,23 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
         assert _login(fresh, "twice@example.com").status_code == 200
         held = {cookie.name: cookie.value for cookie in fresh.cookies.jar}
 
+        ready = asyncio.Event()
+        arrived = 0
+
         async def answer(code: str) -> int:
+            """Both requests are in flight before either is allowed to post.
+
+            Left to the scheduler one can finish before the other starts,
+            which is the sequential case that always worked, so the test
+            would pass against the unconditional consume by luck.
+            """
+            nonlocal arrived
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url=ORIGIN, cookies=held) as caller:
+                arrived += 1
+                if arrived == 2:
+                    ready.set()
+                await ready.wait()
                 answered = await caller.post("/api/v1/auth/totp",
                                              headers={"Origin": ORIGIN},
                                              json={"code": code})
