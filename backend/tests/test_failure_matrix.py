@@ -114,9 +114,20 @@ def test_two_administrators_revoking_one_invitation_at_once_agree(invited):
             )
 
         outcomes = client.portal.call(both)
-        refused = [one for one in outcomes if isinstance(one, HTTPException)]
-        assert len(refused) <= 1
-        assert all(one.status_code == 404 for one in refused)
+        # Revoking is idempotent by overwrite rather than one use: the update
+        # matches on accepted_at, so both callers may legitimately be told it
+        # worked. What must not happen is either of them seeing a fault.
+        for one in outcomes:
+            assert not isinstance(one, Exception) or (
+                isinstance(one, HTTPException) and one.status_code == 404), one
+
+        async def revoked_at():
+            async with db.session_factory() as session:
+                return (await session.execute(
+                    select(Invitation.revoked_at)
+                    .where(Invitation.id == which))).scalar_one()
+
+        assert client.portal.call(revoked_at) is not None
         # And the link is dead either way.
         spent = client.post("/api/v1/auth/register", headers={"Origin": ORIGIN},
                             json={"token": token, "password": NEW_PASSWORD})

@@ -163,7 +163,7 @@ account on the installation.
 Sign-in is here: address and password, an optional second factor, and Google or
 GitHub when they are configured. After claiming the administrator account, sign
 in at `POST /api/v1/auth/login` and invite everybody else. The password policy
-is fifteen to one hundred and twenty eight characters against a bundled
+is fifteen to one hundred and twenty-eight characters against a bundled
 blocklist.
 
 ## Mail, and doing without it
