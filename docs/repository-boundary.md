@@ -19,7 +19,7 @@ The public repository is AGPL-3.0, with commercial exceptions sold by the projec
 
 | | potocolom (public, AGPL-3.0) | potocolom-cloud (private) |
 |---|---|---|
-| Contents | frontend, backend, worker, compose, docs, the fake QuotaService | billing service (Stripe, credit ledger), fleet autoscaler (RunPod), Terraform environments, alert runbooks |
+| Contents | frontend, backend, worker, compose, docs; the fake QuotaService when it lands | billing service (Stripe, credit ledger), fleet autoscaler (RunPod), Terraform environments, alert runbooks |
 | Talks to the other via | nothing; it defines the contracts | `QUOTA_SERVICE_URL` HTTP, metering events, fleet token minting |
 | Images | GHCR, built by public CI | pulls public images from GHCR, mirrors to ECR, adds its two private images |
 | CI responsibility | ends at "images published" | begins at "images published" |

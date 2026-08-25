@@ -94,11 +94,27 @@ def _api():
             client.portal.call(_clear)
 
 
+# Written out rather than read from the module under test. Deriving the
+# canonical string from SIGNED_FIELDS made the signer and the verifier agree
+# on whatever the module happened to say, so a wrong field list or a wrong
+# order would have been signed and verified consistently and every positive
+# test would still have passed. These are the orders AWS documents.
+AWS_SIGNED_FIELDS = {
+    "Notification": ("Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"),
+    "SubscriptionConfirmation": (
+        "Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type",
+    ),
+    "UnsubscribeConfirmation": (
+        "Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type",
+    ),
+}
+
+
 def _signed(key, message: dict, sign: bool = True) -> dict:
     """An SNS envelope, signed the way SNS signs one."""
     canonical = "".join(
         f"{field}\n{message[field]}\n"
-        for field in ses_feedback.SIGNED_FIELDS[message["Type"]]
+        for field in AWS_SIGNED_FIELDS[message["Type"]]
         if field in message
     )
     signature = key.sign(canonical.encode(), padding.PKCS1v15(), hashes.SHA256())
@@ -249,10 +265,10 @@ def test_a_subscription_is_confirmed_only_for_our_own_topic(configured, monkeypa
     key, _ = configured
     confirmed: list[str] = []
 
-    async def visit(url: str) -> None:
-        confirmed.append(url)
+    async def visit(topic: str, token: str) -> None:
+        confirmed.append((topic, token))
 
-    monkeypatch.setattr(ses_feedback, "_visit_subscribe_url", visit)
+    monkeypatch.setattr(ses_feedback, "_confirm_subscription", visit)
     subscribe = "https://sns.eu-west-1.amazonaws.com/?Action=ConfirmSubscription&Token=t"
     message = {
         "Type": "SubscriptionConfirmation",
@@ -267,10 +283,10 @@ def test_a_subscription_is_confirmed_only_for_our_own_topic(configured, monkeypa
     with _api() as client:
         assert client.post("/api/v1/mail/feedback",
                            json=_signed(key, message)).status_code == 204
-        assert confirmed == [subscribe]
+        assert confirmed == [(TOPIC, "t")]
         assert client.post("/api/v1/mail/feedback",
                            json=_signed(key, stranger)).status_code == 403
-        assert confirmed == [subscribe]
+        assert confirmed == [(TOPIC, "t")]
 
 
 @pytest.mark.db
@@ -284,3 +300,97 @@ def test_feedback_without_a_configured_topic_is_refused(configured, monkeypatch)
     with _api() as client:
         assert client.post("/api/v1/mail/feedback", json=body).status_code == 403
         assert client.portal.call(_suppressed) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("body", [
+    {"Type": ["Notification"]},
+    {"Type": "Notification", "TopicArn": TOPIC, "SignatureVersion": "2",
+     "SigningCertURL": ["https://sns.eu-west-1.amazonaws.com/x.pem"], "Signature": "AA=="},
+    {"Type": "Notification", "TopicArn": TOPIC, "SignatureVersion": "2",
+     "SigningCertURL": CERT_URL, "Signature": ["AA=="]},
+    {"Type": "Notification", "TopicArn": {"nested": "object"}},
+    ["not", "an", "envelope"],
+])
+def test_a_field_of_the_wrong_type_is_refused_rather_than_raised(configured, body):
+    """The body decides these types, and an unauthenticated caller must not be
+    able to pick between a 403 and a 500. Each of these reached urlsplit,
+    b64decode or a dict lookup and came back 500."""
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback", json=body).status_code == 403
+        assert client.portal.call(_suppressed) == []
+
+
+@pytest.mark.db
+def test_a_body_larger_than_any_sns_message_is_refused_before_it_is_parsed(configured):
+    """SNS caps a message at 256 KiB. Nothing here is authenticated until the
+    body has been read, so the read needs a ceiling of its own."""
+    with _api() as client:
+        response = client.post(
+            "/api/v1/mail/feedback",
+            content=b'{"Type": "Notification", "pad": "' + b"a" * (600 * 1024) + b'"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 413
+        assert client.portal.call(_suppressed) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("url", [
+    "https://sns.eu-west-1.amazonaws.com/?Action=Publish&TopicArn=theirs",
+    "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-abc.pem?Action=Publish",
+    "https://sns.eu-west-1.amazonaws.com/../secrets",
+    "http://sns.eu-west-1.amazonaws.com/SimpleNotificationService-abc.pem",
+])
+def test_only_the_published_certificate_path_is_ever_fetched(configured, url):
+    """The host is not the whole of it: an unconstrained path aims an
+    unauthenticated GET at any endpoint on that host, chosen by the sender."""
+    key, fetched = configured
+    body = _signed(key, _notification(_bounce("Permanent")))
+    body["SigningCertURL"] = url
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback", json=body).status_code == 403
+        assert fetched == []
+
+
+@pytest.mark.db
+def test_a_configuration_set_event_retires_the_address_too(configured):
+    """An identity notification says notificationType and a configuration-set
+    event destination says eventType, for the same verdict. Reading one only
+    would leave an install wired the other way silently bouncing."""
+    key, _ = configured
+    payload = {"eventType": "Bounce",
+               "bounce": {"bounceType": "Permanent",
+                          "bouncedRecipients": [{"emailAddress": BOUNCED}]}}
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback",
+                           json=_signed(key, _notification(payload))).status_code == 204
+        rows = client.portal.call(_suppressed)
+    assert [row.email for row in rows] == ["bounced@example.com"]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("payload", [
+    {"notificationType": "Bounce", "bounce": "not an object"},
+    {"notificationType": "Bounce",
+     "bounce": {"bounceType": "Permanent", "bouncedRecipients": "not a list"}},
+    {"notificationType": "Bounce",
+     "bounce": {"bounceType": "Permanent", "bouncedRecipients": [{"emailAddress": None}]}},
+    {"notificationType": "Complaint", "complaint": ["not", "an", "object"]},
+    {"notificationType": "Delivery"},
+])
+def test_a_signed_message_of_an_unexpected_shape_suppresses_nobody(configured, payload):
+    """Past the signature the sender is SES, so this is not an attack surface.
+    It is still a 500 waiting for the first payload shape nobody predicted."""
+    key, _ = configured
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback",
+                           json=_signed(key, _notification(payload))).status_code == 204
+        assert client.portal.call(_suppressed) == []
+
+
+def test_the_signed_field_orders_are_the_ones_aws_documents():
+    """The suite signs with its own copy of these orders. If the module's copy
+    drifts, every other test in this file still passes, because the signer and
+    the verifier would drift together."""
+    assert ses_feedback.SIGNED_FIELDS == AWS_SIGNED_FIELDS

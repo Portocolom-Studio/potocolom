@@ -136,7 +136,7 @@ Environment for the API task, values resolved from SSM where secret:
 | REDIS_URL | ElastiCache endpoint |
 | STORAGE_BACKEND | `s3`, plus bucket and the CloudFront signing key reference |
 | PUBLIC_URL | `https://app.potocolom.com` |
-| QUOTA_SERVICE_URL | the billing service through Service Connect |
+| QUOTA_SERVICE_URL | the billing service, reached and authenticated as described under "Cloud contracts" in [cloud-infrastructure.md](cloud-infrastructure.md); designed, and no such call is made yet |
 | FLEET_TOKEN_KEY | SSM `/potocolom/prod/fleet_token_key` |
 | SENTRY_DSN | SSM `/potocolom/prod/sentry_dsn_api` |
 
@@ -162,12 +162,13 @@ Verify the domain (Route 53 DKIM records land automatically when both are in the
 
 Bounce and complaint feedback reaches the API rather than a mailbox, because a bounced address has to stop being invited and only the API holds that list:
 
-1. Create an SNS topic, `potocolom-ses-feedback`, and set its `SignatureVersion` to `2`. The API accepts only version 2; version 1 signs with SHA-1, and refusing it is the reason this setting is a step rather than a default.
-2. Set the topic as the Bounce and Complaint destination on the configuration set the API sends with. Delivery notifications are not needed and cost money to receive.
-3. Subscribe the topic to `https://api.potocolom.com/api/v1/mail/feedback` over HTTPS. The API confirms the subscription itself: it fetches the `SubscribeURL` once it has verified the signature and matched the topic.
-4. Set `SES_FEEDBACK_TOPIC_ARN` on the API task to that topic's ARN. Unset, the endpoint refuses every notification, because a valid SNS signature only says that some AWS customer sent the message.
+1. Create an SNS topic, `potocolom-ses-feedback`, and set its `SignatureVersion` to `2`. The API accepts only version 2; version 1 signs with SHA-1, and refusing it is the reason this is a step rather than a default.
+2. Give the topic an access policy that lets only SES publish to it: `sns:Publish` for principal `ses.amazonaws.com`, with `aws:SourceAccount` set to this account and `aws:SourceArn` set to the verified identity's ARN. Without it SES cannot publish at all, and without the conditions the topic ARN stops being evidence of who sent a message, which is the thing the API checks.
+3. Set that topic as the Bounce and Complaint notification topic on the verified identity (`SetIdentityNotificationTopic`, or Notifications on the identity in the console). Not delivery notifications: nothing here reads them and they are charged for. A configuration-set event destination also works and the API reads both shapes, but the API does not send a `ConfigurationSetName`, so on this deployment the identity is where it has to be set.
+4. Subscribe the topic to `https://api.potocolom.com/api/v1/mail/feedback` over HTTPS, and grant the API task role `sns:ConfirmSubscription` on the topic. The API confirms the subscription itself once it has verified the signature and matched the topic, by calling SNS rather than by fetching the `SubscribeURL`, so the one-use token never reaches a log.
+5. Set `SES_FEEDBACK_TOPIC_ARN` on the API task to that topic's ARN. Unset, the endpoint refuses every notification, because a valid SNS signature only says that some AWS customer sent the message.
 
-The endpoint presents no credential of its own and needs none: SNS signs each message with the regional key, and the topic ARN is what makes a signed message ours. A permanent bounce and a complaint retire the address; a transient bounce does not, because a full mailbox is not a dead address.
+The endpoint presents no credential of its own and needs none: SNS signs each message with the regional key, the topic ARN says the message is ours, and the topic policy in step 2 is what keeps anybody else from publishing to it. A permanent bounce and a complaint retire the address; a transient bounce does not, because a full mailbox is not a dead address.
 
 ## 9. GPU fleet and the weights mirror
 
