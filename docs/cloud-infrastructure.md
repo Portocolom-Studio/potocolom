@@ -112,6 +112,24 @@ Rented GPU machines sit on untrusted networks outside the VPC. The rules:
 - Prompts and canvas frames are necessarily processed in plaintext on rented hardware during inference. TLS covers transit, nothing persists on the machine beyond the weights cache, results upload straight to S3, and the privacy policy names the GPU providers as subprocessors. This is stated plainly rather than implied.
 - The self-hosted worker uses the exact same code path, dialing the API service on the compose network instead of a public hostname.
 
+## Cloud contracts
+
+Nothing in this document is running. No AWS account holds these resources, no Terraform in the private repository has been applied, and none of the hostnames resolve. The contracts below are written down so the code that will meet them is not invented twice at the moment it is needed, and each one says whether it exists today.
+
+**Private calls between services** are authenticated with VPC Lattice IAM and SigV4, never by network position. The API reaching the billing service, and the autoscaler reaching the API, both sign their requests, and each service's auth policy names the actions and resources a caller may reach rather than allowing the caller wholesale. A private subnet is not a credential: without this, anything that lands in the subnet can call the billing service as the API. Designed; there is no service network.
+
+**Fleet tokens.** Shipped: a worker presents `X-Fleet-Token` on the upgrade and the API compares it against `FLEET_TOKEN_KEY` in constant time, one secret, no rotation window. The cloud shape is an Ed25519 JWS carrying a lease, with the machine's identity, an expiry short enough that a stolen token dies with the machine, and a `jti` the API revokes when the autoscaler releases it; `FLEET_AUTH` selects which is in force, and a self-hosted rotation window accepting the current and previous secret belongs with it. Deferred by recorded decision ("Fleet token verification: static shared secret first, signed tokens with the cloud"): verification lands with the autoscaler that mints these tokens, because before that the open repository would carry a verifier with no producer and a token format fixed before anything writes one. Issue #225.
+
+**Gateway realtime tickets.** A browser asks the API for a ticket, spends it as the first message on the gateway socket, and the gateway trades it for a principal binding. Thirty seconds, one use, first message only, in regional Redis. Minting fails closed: no Redis, no ticket, and the socket is refused rather than opened unauthenticated. Designed; there is no gateway, and the backend has no Redis dependency to mint against. Issue #193.
+
+**CloudFront and the API.** The API is not behind CloudFront. `api.potocolom.com` aliases the ALB, so no cache sits between a browser and an authenticated response, and `Cache-Control: no-store` on sensitive responses is the whole of the contract. The two distributions carry static things only: the SPA distribution caches the build and rewrites 403 and 404 to `/index.html`, and the images distribution serves signed private objects with no cached share behavior, because an edge TTL on a share path would decide how long a revoked link keeps working. Designed.
+
+**SES feedback.** Shipped. `POST /api/v1/mail/feedback` accepts SNS bounce and complaint notifications, verifies the signature against the regional SNS key, and honours only the topic named by `SES_FEEDBACK_TOPIC_ARN`. The signature says an AWS customer sent the message; the topic is what says it was ours. Setup is step 8 of [aws-setup.md](aws-setup.md).
+
+**Operator recovery.** Shipped: `python -m app.recovery EMAIL` prints a one-use ten-minute link at the machine, which in the cloud means an ECS Exec session with session logging deliberately off, because the command prints a live credential. The designed alternative writes that link to a short-lived Secrets Manager secret and logs only its ARN, which keeps the credential out of a terminal transcript entirely. Both keep the property that matters: no route mints a way back in, so there is nothing to steal a session for.
+
+**Billing.** The API never talks to Stripe. It calls a QuotaService over HTTP with reserve, commit and refund, and emits metering events; the credit ledger, the subscriptions and the Stripe webhooks all live in the private repository behind that boundary, which is also the license boundary. Designed: no QuotaService implementation ships in this repository yet, fake or real, and the interface arrives with its first caller rather than ahead of one.
+
 ## Image delivery and retention
 
 - The images bucket is private. The API mints short lived CloudFront signed URLs when it lists a user's history or completes a job, so an asset URL leaking does not leak the asset for long. The images distribution is a different CloudFront domain from the API, so a browser that sniffed those bytes could not steal API cookies.

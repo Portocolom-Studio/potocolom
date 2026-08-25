@@ -86,7 +86,7 @@ Buckets: `potocolom-spa` (private, CloudFront OAC only), `potocolom-images` (pri
 CloudFront: two distributions with Origin Access Control.
 
 - SPA distribution (app.potocolom.com): default root `index.html`, and 403/404 responses rewritten to `/index.html` with status 200, which is the SPA fallback the static adapter expects.
-- Images distribution (img.potocolom.com): trusted key group for signed URLs (the API holds the private key via SSM and signs short-lived GETs); a `/shared/*` behavior with a short TTL (60 s) for revocable share links.
+- Images distribution (img.potocolom.com): trusted key group for signed URLs (the API holds the private key via SSM and signs short-lived GETs). No cached behavior for shares, and no path that carries a share token: the browser posts the token to `POST /api/v1/shared` and the answer carries a signed URL for the picture that lasts 60 seconds. An edge TTL on a share path would decide how long a revoked link keeps working, which is the design [decisions.md](decisions.md) rejected under "Sharing: a token in the fragment, resolved by POST".
 
 Certificates: ACM in us-east-1 for both CloudFront domains, ACM in eu-west-1 for api.potocolom.com on the ALB. Route 53: `app` and `img` alias to their distributions, `api` alias to the ALB.
 
@@ -125,7 +125,7 @@ Environment for the API task, values resolved from SSM where secret:
 |---|---|
 | AUTH_MODE | `accounts`. Password, Google and GitHub sign-in all work. Registration stays invitation-only: a provider can sign in an identity somebody linked, and can never create an account |
 | ROOT_KEYS | versioned root key ring for account secrets, newest first; separate key material from the fleet secret, and required whenever AUTH_MODE is accounts |
-| EMAIL_BACKEND | `ses`, with `MAIL_FROM` and `SES_REGION`. The API refuses to start if either is missing, and refuses a `PUBLIC_URL` that is not https, because the invitation link is the capability. `MAIL_FROM` must equal the address allowed by the task role's `ses:FromAddress` condition; startup does not check the value, so a mismatch shows up only as AccessDenied on every send. Bounce and complaint feedback needs an SNS subscription, which is documentation only until the suppression webhook lands |
+| EMAIL_BACKEND | `ses`, with `MAIL_FROM` and `SES_REGION`. The API refuses to start if either is missing, and refuses a `PUBLIC_URL` that is not https, because the invitation link is the capability. `MAIL_FROM` must equal the address allowed by the task role's `ses:FromAddress` condition; startup does not check the value, so a mismatch shows up only as AccessDenied on every send. Bounce and complaint feedback needs the SNS topic and subscription in step 8, plus `SES_FEEDBACK_TOPIC_ARN` |
 | OAUTH_PROVIDERS | `google,github`. A provider is offered only when its client id and secret are also set, so a half configuration shows no button rather than a broken one |
 | GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET | required to offer Google. The authorized redirect URI must be exactly `{PUBLIC_URL}/api/v1/auth/callback/google` |
 | GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET | required to offer GitHub. The callback URL must be exactly `{PUBLIC_URL}/api/v1/auth/callback/github` |
@@ -158,7 +158,16 @@ All SecureString under one prefix per environment; the execution roles are scope
 
 ## 8. SES
 
-Verify the domain (Route 53 DKIM records land automatically when both are in the same account), set a custom MAIL FROM subdomain (`mail.potocolom.com`), and file the production access request to leave the sandbox before launch; approval takes about a day and asks how bounces and complaints are handled (SNS topic, wired to the admin email).
+Verify the domain (Route 53 DKIM records land automatically when both are in the same account), set a custom MAIL FROM subdomain (`mail.potocolom.com`), and file the production access request to leave the sandbox before launch; approval takes about a day and asks how bounces and complaints are handled.
+
+Bounce and complaint feedback reaches the API rather than a mailbox, because a bounced address has to stop being invited and only the API holds that list:
+
+1. Create an SNS topic, `potocolom-ses-feedback`, and set its `SignatureVersion` to `2`. The API accepts only version 2; version 1 signs with SHA-1, and refusing it is the reason this setting is a step rather than a default.
+2. Set the topic as the Bounce and Complaint destination on the configuration set the API sends with. Delivery notifications are not needed and cost money to receive.
+3. Subscribe the topic to `https://api.potocolom.com/api/v1/mail/feedback` over HTTPS. The API confirms the subscription itself: it fetches the `SubscribeURL` once it has verified the signature and matched the topic.
+4. Set `SES_FEEDBACK_TOPIC_ARN` on the API task to that topic's ARN. Unset, the endpoint refuses every notification, because a valid SNS signature only says that some AWS customer sent the message.
+
+The endpoint presents no credential of its own and needs none: SNS signs each message with the regional key, and the topic ARN is what makes a signed message ours. A permanent bounce and a complaint retire the address; a transient bounce does not, because a full mailbox is not a dead address.
 
 ## 9. GPU fleet and the weights mirror
 

@@ -1150,6 +1150,17 @@ One retired route stays declared. `GET /api/v1/files/{key}` answers `404` becaus
 Rejected alternatives: leaving the column in place unused (it survived one design change already by being ignored, which is how a second answer about a revoked link stays available to be believed); copying the retired values somewhere before dropping them (nothing consults them, so the copy is a second retired thing to explain); deleting the retired file route with the column (the absence stops being a `404`); keeping the retired mode names in the documents as history (the documents are the contract and git holds the history, so a name kept there costs a reader a wrong belief and saves nobody a lookup).
 
 
+## Provider feedback is believed by its topic, not by its signature
+
+`POST /api/v1/mail/feedback` takes SES bounce and complaint notifications from SNS and retires the addresses they name. It presents no account credential and needs none, but the signature alone is not what makes it trustworthy: SNS signs every topic in a region with the same key, so a valid signature says an AWS customer sent this message and not that our provider said this. `SES_FEEDBACK_TOPIC_ARN` is the second half, and unset means refuse rather than accept anything, because a wildcard here lets whoever can create a topic retire any address on the install.
+
+Suppression is a denial of mail to a real person, so the verdict has to be permanent. A transient bounce is a full mailbox or a server having a bad afternoon, and retiring an address for one locks somebody out of the reset link they are waiting for. Only a permanent bounce and a complaint count.
+
+Both URLs in an SNS message point somewhere, and this API is the thing that would go there, from inside the private subnet, at a sender's choosing. The certificate URL is checked against an SNS host before the fetch rather than after, and the subscribe URL before the confirmation. Only `SignatureVersion` 2 is accepted: version 1 signs with SHA-1, a topic can be told to use 2, and taking both would keep the weaker one alive for the sake of one setup step.
+
+Rejected alternatives: trusting the signature alone (every AWS customer can produce one); a shared secret in the subscription URL (SNS puts the whole URL in its own delivery logs and in the subscription record, and rotating it means resubscribing); polling the SES suppression list instead (it answers about the account's list rather than about our sends, it costs a scheduled call forever, and the delay is exactly the window in which the address keeps being invited); accepting transient bounces to be safe (that is safe for the sender and not for the person who cannot receive their link); confirming subscriptions by hand (a resubscription then needs an operator, which is how a feedback path quietly stops working).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
