@@ -221,3 +221,44 @@ def test_min_vram_gb_is_bounded_where_the_operator_sees_it(tmp_path):
         "source": "x/y", "min_vram_gb": 12,
     }))
     assert load_manifests(str(tmp_path))[0].min_vram_gb == 12
+
+
+def test_dtype_round_trips_and_stays_worker_side():
+    manifest = Manifest(**{**SD_TURBO, "dtype": "bfloat16"})
+    assert manifest.dtype == "bfloat16"
+    assert "dtype" not in manifest.wire()
+
+
+def test_unknown_dtype_is_loud():
+    with pytest.raises(ValidationError):
+        Manifest(**{**SD_TURBO, "dtype": "fp8"})
+
+
+def test_pipeline_round_trips_and_stays_worker_side():
+    manifest = Manifest(**{**SD_TURBO, "pipeline": "SanaSprint"})
+    assert manifest.pipeline == "SanaSprint"
+    assert "pipeline" not in manifest.wire()
+
+
+def test_pipeline_defaults_to_empty_so_autopipeline_still_applies():
+    assert Manifest(**SD_TURBO).pipeline == ""
+
+
+@pytest.mark.parametrize("value", ["sanaSprint", "Sana_Sprint", "Sana Sprint", "1Sana"])
+def test_unknown_pipeline_stem_is_loud(value):
+    with pytest.raises(ValidationError):
+        Manifest(**{**SD_TURBO, "pipeline": value})
+
+
+CANDIDATE_MANIFESTS = ("flux2-klein-4b", "z-image-turbo", "sana-sprint-06b")
+
+
+@pytest.mark.parametrize("model_id", CANDIDATE_MANIFESTS)
+def test_shipped_candidate_manifests_are_apache_benchmark_only(model_id):
+    path = Path(__file__).resolve().parents[1] / "models" / f"{model_id}.json"
+    manifest = Manifest.model_validate_json(path.read_text())
+    assert manifest.benchmark_only is True
+    assert manifest.license_id == "apache-2.0"
+    assert manifest.dtype == "bfloat16"
+    assert manifest.commercial_max_revenue_usd is None
+    assert "realtime" not in manifest.capabilities

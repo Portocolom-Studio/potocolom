@@ -10,6 +10,7 @@ inference thread directly.
 
 import asyncio
 import contextlib
+import inspect
 import io
 import math
 import os
@@ -761,9 +762,7 @@ class DiffusersEngine:
                     f"manifest {manifest.id} has no t2i_adapter for realtime conditioning"
                 )
             return self._load_realtime(manifest)
-        from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
-
-        cls = AutoPipelineForText2Image if mode == "t2i" else AutoPipelineForImage2Image
+        cls = self._pipeline_class(manifest, mode)
         loaded = self._pipelines.get((manifest.id, "i2i" if mode == "t2i" else "t2i"))
         if loaded is not None:
             pipeline = cls.from_pipe(loaded)  # shares weights already on the device
@@ -1609,17 +1608,41 @@ class DiffusersEngine:
         async with self._gpu:
             await self._run_to_completion(self._evict_all)
 
+    def _pipeline_class(self, manifest: Manifest, mode: str) -> Any:
+        import diffusers
+
+        if not manifest.pipeline:
+            return (
+                diffusers.AutoPipelineForText2Image if mode == "t2i"
+                else diffusers.AutoPipelineForImage2Image
+            )
+        suffix = "Pipeline" if mode == "t2i" else "Img2ImgPipeline"
+        name = f"{manifest.pipeline}{suffix}"
+        cls = getattr(diffusers, name, None)
+        if cls is None:
+            raise ValueError(
+                f"manifest {manifest.id}: diffusers has no pipeline class {name}"
+            )
+        return cls
+
+    def _pipeline_dtype(self, manifest: Manifest) -> Any:
+        declared = manifest.dtype
+        if declared:
+            return getattr(self.torch, declared)
+        return self.dtype
+
     def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
         source = manifest.source or manifest.id
-        kwargs: dict[str, Any] = {"torch_dtype": self.dtype}
+        dtype = self._pipeline_dtype(manifest)
+        kwargs: dict[str, Any] = {"torch_dtype": dtype}
         if manifest.vae:
             from diffusers import AutoencoderKL
 
             # SDXL's stock VAE upcasts itself to fp32 at decode time (fp16
             # overflows), which spikes VRAM past a 16 GB card; manifests name
             # an fp16-safe replacement instead.
-            kwargs["vae"] = AutoencoderKL.from_pretrained(manifest.vae, torch_dtype=self.dtype)
-        if self.dtype is self.torch.float16:
+            kwargs["vae"] = AutoencoderKL.from_pretrained(manifest.vae, torch_dtype=dtype)
+        if dtype is self.torch.float16:
             try:
                 # fp16 variants halve the download and the disk footprint;
                 # not every repository ships one.
@@ -1710,6 +1733,19 @@ class DiffusersEngine:
         ):
             # SD3 requires joint CLIP+T5 prompt embeddings. This CLIP-only
             # chunker cannot satisfy that contract, so let diffusers encode it.
+            return prompt_kwargs
+
+        encoder_model_types = {
+            str(getattr(getattr(encoder, "config", None), "model_type", ""))
+            for encoder in (getattr(pipeline, "text_encoder", None),
+                            getattr(pipeline, "text_encoder_2", None))
+            if encoder is not None
+        }
+        if not encoder_model_types <= {"", "clip"}:
+            # The declared window still feeds the studio warning, but encoders
+            # outside the CLIP family need their own embedding recipe (Qwen3
+            # concatenates hidden layers), so manual chunking would corrupt
+            # the conditioning. Let diffusers encode it.
             return prompt_kwargs
 
         tokenizer_2 = getattr(pipeline, "tokenizer_2", None)
@@ -1932,8 +1968,16 @@ class DiffusersEngine:
         source = decode_input_image(input_image)
         width = params.get("width")
         height = params.get("height")
+        size_kwargs: dict[str, int] = {}
         if width and height:
             source = source.resize((int(width), int(height)), Image.Resampling.LANCZOS)
+            # SD and SDXL img2img take the output size from the source image and
+            # accept no width/height at all. Newer DiT pipelines default to their
+            # training resolution instead (SanaSprint to 1024), so resizing the
+            # source is not enough: without these they upsize the request back to
+            # 1024 and a 512 canvas frame allocates 4x the activations it should.
+            if "width" in inspect.signature(pipeline.__call__).parameters:
+                size_kwargs = {"width": int(width), "height": int(height)}
         steps = max(1, int(params.get("steps", 2)))
         strength = min(max(float(params.get("strength", 0.75)), 0.05), 1.0)
         # diffusers img2img floors the step count: int(steps * strength).
@@ -1958,6 +2002,7 @@ class DiffusersEngine:
         start = time.monotonic()
         image = pipeline(
             **prompt_kwargs,
+            **size_kwargs,
             image=source,
             num_inference_steps=steps,
             strength=strength,

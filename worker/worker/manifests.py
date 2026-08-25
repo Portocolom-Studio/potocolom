@@ -38,6 +38,14 @@ class Manifest(BaseModel):
         default="",
         pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:int8)?$",
     )  # optional component:scheme, worker side only
+    # Torch dtype override for architectures whose checkpoints are trained in
+    # bfloat16 and degrade when cast to the worker's fp16 default. Empty means
+    # the engine default applies. Worker side only.
+    dtype: str = Field(default="", pattern=r"^(?:float16|bfloat16|float32)?$")
+    # Diffusers pipeline class stem for architectures AutoPipeline cannot
+    # resolve. "SanaSprint" selects SanaSprintPipeline and
+    # SanaSprintImg2ImgPipeline. Empty means AutoPipeline. Worker side only.
+    pipeline: str = Field(default="", pattern=r"^(?:[A-Z][A-Za-z0-9]*)?$")
     license_id: str = ""  # e.g. stability-ai-community, apache-2.0
     license_url: str = ""
     commercial_max_revenue_usd: int | None = None  # None = no cap
@@ -52,7 +60,7 @@ class Manifest(BaseModel):
     def wire(self) -> dict:
         return self.model_dump(exclude={
             "source", "vae", "preview_decoder", "scheduler", "lora", "quantize",
-            "t2i_adapter",
+            "t2i_adapter", "dtype", "pipeline",
         })
 
     def with_defaults(self, params: dict) -> dict:

@@ -137,6 +137,101 @@ make benchmark BENCHMARK_INCLUDE_CAPPED=1
 
 License obligations if you ever ship them to users: [docs/third-party-models.md](../docs/third-party-models.md).
 
+## Apache candidates under evaluation (2026-08)
+
+Research snapshot and full license analysis: local
+`.local/model-research-2026-08.md` (gitignored). All three candidates carry no
+revenue cap, no registration, and no attribution requirement, unlike every row
+above. `flux2-klein-4b` and `z-image-turbo` are Apache 2.0 end to end.
+`sana-sprint-06b` is Apache 2.0 for the weights and the code, but its
+Gemma-2-2B-IT text encoder is governed by the Google Gemma Terms of Use and
+Prohibited Use Policy: no revenue cap, but use restrictions in the RAIL mould.
+They ship as `benchmark_only: true` manifests and live in a `candidates` group
+in `benchmark-matrix.json`, reachable only through an explicit `--models`
+filter.
+
+| Model | Params | Steps | VRAM (manifest) | Notes |
+| --- | --- | --- | --- | --- |
+| **flux2-klein-4b** | 4B + Qwen3-4B encoder | 4 distilled | 13 GB BF16 | Unified FLUX.2 family; editing/i2i path deliberately not declared yet |
+| **z-image-turbo** | 6B S3-DiT | 8 NFEs | 20 GB BF16 (offload rung on a 16 GB card) | Photorealism focus; native img2img pipeline; no CFG |
+| **sana-sprint-06b** | 0.6B DiT + Gemma-2-2B-IT encoder | 1-4, step-adaptive | 10 GB BF16 | DC-AE 32x latent compression; linear attention; 1024 px checkpoints only |
+
+`sana-sprint-06b` additionally declares `"pipeline": "SanaSprint"`. The engine
+resolves a manifest's pipeline classes through `AutoPipelineFor*` by default,
+and diffusers 0.39 has no mapping entry for `SanaSprintPipeline`, so
+`AutoPipeline` raises for it while `ZImagePipeline` and `Flux2KleinPipeline`
+resolve fine. The stem names the class family, and the engine appends
+`Pipeline` and `Img2ImgPipeline`. `test_autopipeline_cannot_resolve_sana_sprint`
+guards the premise: when diffusers adds the mapping, that test fails and the
+override can be deleted.
+
+The other two are bf16-native flow transformers: their manifests declare
+`"dtype": "bfloat16"` so `_from_pretrained` loads them without the fp16 cast.
+The `dtype` manifest field is worker-side only and never crosses the wire.
+Their text encoders are Qwen3, not CLIP: the declared 512-token window matches
+the pipelines' `max_sequence_length` so the studio warns past it, and
+`_prompt_kwargs` lets diffusers encode whenever an encoder is outside the CLIP
+family instead of applying the CLIP chunker.
+
+Run these on a clear GPU, and never at the default `auto` memory mode on the
+reference card. On 2026-08-24 `profile-candidates.py --models flux2-klein-4b`
+at 1024 px ran for over four hours, produced no image, held 16.85 GB of a
+16 GB card that also drives the display, and wedged the amdgpu driver in an
+unkillable D state that only a reboot cleared. The rung is not decided once at
+load: `_demote_rung` slides `full -> model_offload -> group_offload` on OOM, so
+a model that picks `full` can still end up streaming every leaf module from
+disk mid-run. `profile-candidates.py` therefore defaults to
+`--memory-mode full`, which pins the rung so an oversized model raises instead
+of degrading, and it refuses outright if a run still lands on `group_offload`.
+One model failing no longer cancels the others in the same invocation.
+
+Declared `min_vram_gb` against roughly 16 GB free tells you what to expect:
+`sana-sprint-06b` (10) and `vega-rt` (8) select `full`, `z-image-turbo` (20)
+selects `model_offload`, and `flux2-klein-4b` (13) selects `full` but is the
+one that OOMed and degraded in practice.
+
+The profiler also checks free VRAM before each phase and skips that phase if
+under 2 GB remain. The engine's own guard cannot cover this: `_ensure_vram`
+sizes a model by `min_vram_gb`, which describes weights at rest with no term
+for resolution or activations, it only evicts and never refuses, and under a
+pinned `--memory-mode` it does not run at all. Phases are also banked as they
+complete, so a phase that still runs out of memory costs its own numbers
+rather than the whole model's.
+
+Two candidate-specific traps, both `sana-sprint-06b`:
+
+- `guidance` is the model's own embedded guidance, not CFG, so the manifest
+  defaults it to 4.5. The other distilled candidates default it to 0. Do not
+  "correct" it to 0; that is not the no-CFG case, it is a different conditioning
+  value.
+- Only 1024 px checkpoints exist, and the pipeline's `use_resolution_binning`
+  maps a smaller request onto the nearest 1024 bin, so the 512 and 768 rows are
+  binned rather than native and the model runs off its training resolution.
+  `_generate_i2i` used to compound this: it resized the source but passed no
+  width or height, and SanaSprint defaults both to 1024, so a 512 canvas frame
+  rendered at 1024 and allocated 4x the activations. That is what OOMed the
+  first run, at 4.50 GiB with the weights already resident. It now passes the
+  size to any pipeline whose signature accepts one, and omits it for SD and
+  SDXL img2img, which take no width/height and read the size off the source.
+
+```bash
+# Latency + VRAM envelope per rung, no API needed (engine-direct):
+worker/.venv/bin/python scripts/profile-candidates.py \
+  --models flux2-klein-4b,z-image-turbo,sana-sprint-06b \
+  --save-dir /tmp/candidate-samples
+
+# Queued-job quality suite through the running stack:
+make benchmark BENCHMARK_MODELS=flux2-klein-4b,z-image-turbo,sana-sprint-06b \
+  BENCHMARK_QUICK=1
+```
+
+Promotion bar, same rule as #75/#84: measured frame-analog p95 under the
+500 ms realtime bar at 512 px plus acceptable i2i quality is what earns a
+follow-up PR that flips capabilities to include `realtime` and re-measures
+`min_vram_gb`. For flux2-klein-4b that PR also decides the conditioning path
+(reference-image editing vs latent strength blending) before any `realtime`
+or `image_to_image` capability ships.
+
 ## Execution flow
 
 1. **Preflight** - `GET /api/v1/benchmark/gpu`. If any model is resident, abort
