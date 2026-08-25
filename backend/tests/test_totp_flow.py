@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app import db, factors, keyring, sessions, totp
 from app.main import app
@@ -460,3 +460,82 @@ def test_an_enrolment_nobody_confirmed_in_time_is_no_longer_one(accounts, monkey
                                     "code": totp.code_at(started["secret"], int(_now()))})
         assert refused.status_code == 403
         assert client.portal.call(_factors) == []
+
+
+async def _live_challenges() -> list[int]:
+    async with db.session_factory() as session:
+        return sorted((await session.execute(
+            select(AuthToken.attempts).where(AuthToken.purpose == "challenge",
+                                             AuthToken.consumed_at.is_(None))
+        )).scalars().all())
+
+
+async def _spend(count: int) -> None:
+    """What answering wrong `count` times leaves on the live challenge."""
+    async with db.session_factory() as session:
+        await session.execute(
+            update(AuthToken)
+            .where(AuthToken.purpose == "challenge", AuthToken.consumed_at.is_(None))
+            .values(attempts=count))
+        await session.commit()
+
+
+@pytest.mark.db
+def test_the_guess_budget_survives_logins_that_overlap(accounts):
+    """Ten guesses per account, not ten per login. Starting a login costs
+    nothing to whoever already has the password, so a budget that resets on a
+    new challenge is no budget: they open more.
+
+    One at a time this held. Overlapping, every login but one used to come
+    back with a fresh challenge at zero, which is a six-digit code with
+    unlimited tries against it.
+    """
+    import asyncio
+
+    user = accounts(_make("racer@example.com"))
+    accounts(factors.begin_challenge(user, remember_me=False))
+    accounts(_spend(7))
+
+    async def overlapping() -> None:
+        await asyncio.gather(*[
+            factors.begin_challenge(user, remember_me=False) for _ in range(4)
+        ])
+
+    accounts(overlapping())
+    live = accounts(_live_challenges())
+    assert live, "a challenge should still be live"
+    assert all(spent == 7 for spent in live), live
+
+
+@pytest.mark.db
+def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
+    """A challenge is one use. The attempt was counted and committed, then the
+    code checked, then the token consumed, and between the first commit and
+    the last a second request carrying the same cookie still found it
+    unspent, so two valid recovery codes both bought a session (issue #421).
+    """
+    import asyncio
+
+    import httpx
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "twice@example.com")
+        assert _login(client, "twice@example.com").status_code == 204
+        _, codes = _enrol(client)
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "twice@example.com").status_code == 200
+        held = {cookie.name: cookie.value for cookie in fresh.cookies.jar}
+
+        async def answer(code: str) -> int:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url=ORIGIN, cookies=held) as caller:
+                answered = await caller.post("/api/v1/auth/totp",
+                                             headers={"Origin": ORIGIN},
+                                             json={"code": code})
+                return answered.status_code
+
+        async def together() -> list[int]:
+            return list(await asyncio.gather(answer(codes[0]), answer(codes[1])))
+
+        answered = fresh.portal.call(together)
+    assert sorted(answered) == [204, 403], answered
