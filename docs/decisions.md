@@ -1175,6 +1175,19 @@ The certificate URL in an SNS message points somewhere, and this API is the thin
 Rejected alternatives: trusting the signature alone (every AWS customer can produce one); a shared secret in the subscription URL (SNS puts the whole URL in its own delivery logs and in the subscription record, and rotating it means resubscribing); polling the SES suppression list instead (it answers about the account's list rather than about our sends, it costs a scheduled call forever, and the delay is exactly the window in which the address keeps being invited); accepting transient bounces to be safe (that is safe for the sender and not for the person who cannot receive their link); confirming subscriptions by hand (a resubscription then needs an operator, which is how a feedback path quietly stops working).
 
 
+## Replacing a second factor costs the factor being replaced
+
+Enrolling a second factor writes nothing until a code confirms it, so an abandoned enrolment leaves a working factor working. That protects a factor from being destroyed and did not protect it from being replaced. The confirming code was checked against the secret the enrolment had just minted, and the account's existing factor was then deleted to make room, so proving the new authenticator was the whole price of removing the old one.
+
+Whoever asked for the new secret holds the new authenticator by definition, which makes that proof worth nothing against the case it needs to stop. A session with recent authentication could enrol a factor it controlled and take the account's own out in two requests, silently; the owner discovered it when their authenticator stopped working. Recent authentication means a password entered in the last half hour, and an attacker who has phished a password and opened a session is inside that window, so the factor stopped them at the challenge and then did not stop them at enrolment.
+
+Replacing therefore costs a code from the factor being retired, or one of its recovery codes. A first enrolment has nothing to replace and is asked for nothing, because requiring proof of a factor that does not exist would mean an account could never enrol at all. Somebody moving to a new phone still has the old one; somebody whose phone is gone has the codes, and using one to enrol a replacement is exactly what they want to do.
+
+The delete is bound to the factor that was proved, and the request continues only if it is the one that removed it. Deleting by account instead would let two replacements racing each remove a factor that was already gone and each insert their own, leaving the account holding two factors with nothing to say which one gates a login.
+
+Rejected alternatives: asking for the old code when the enrolment starts rather than when it is confirmed (starting one writes nothing, so refusing there only tells a caller to come back by another route, and it costs an honest person a code before they have set anything up); accepting the new code alone and notifying the account by mail (mail is optional on a self-hosted install, and a notice that arrives after the factor is gone is a record rather than a control); requiring recent authentication and nothing more, which is what shipped (it is the property an attacker with a phished password already has).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
