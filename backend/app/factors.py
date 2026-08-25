@@ -301,6 +301,54 @@ async def start_enrolment(
     }
 
 
+@router.delete("/api/v1/account/totp", status_code=204)
+async def remove_factor(
+    body: CodeRequest,
+    principal: sessions.Resolved = Depends(current_principal),
+) -> Response:
+    """Turning the factor off costs a code, the same as turning it on.
+
+    A session by itself must not be enough. Enrolment already refuses to write
+    anything until a code answers, because one request from a stolen session,
+    with no code and no notice to anybody, would otherwise be the cheapest way
+    to disarm somebody's second factor; removal is the same act from the other
+    side and gets the same bar. A recovery code counts, which is what lets
+    whoever lost the authenticator but kept a code turn it off themselves
+    rather than lose the account (issue #419).
+
+    An account holding neither has nothing to present here, and no route can
+    safely help it. That way back is `make auth-clear-factor`, at the machine.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    if not sessions.is_recent(principal.session):
+        raise HTTPException(status_code=403, detail="recent authentication required")
+    user_id = principal.user.id
+    async with db.session_factory() as session:
+        factor = await enrolled_factor(session, user_id)
+    if factor is None or not await _accepted(body.code, principal.user, factor):
+        raise REFUSED
+    await forget_factor(user_id)
+    return Response(status_code=204)
+
+
+async def forget_factor(user_id: uuid.UUID) -> bool:
+    """The factor and its recovery codes leave together.
+
+    A code minted against a secret nobody holds any more is a way in nobody
+    expects, which is the same reason confirm_enrolment replaces both at once.
+    """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        async with session.begin():
+            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+            removed = (await session.execute(
+                delete(AuthFactor).where(AuthFactor.user_id == user_id)
+                .returning(AuthFactor.id)
+            )).first()
+    return removed is not None
+
+
 @router.post("/api/v1/account/totp/confirm", status_code=204)
 async def confirm_enrolment(
     body: ConfirmRequest,

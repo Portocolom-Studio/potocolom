@@ -112,6 +112,29 @@ async def reclaim_restore(email: str) -> str:
     return was
 
 
+async def clear_factor(email: str) -> bool:
+    """Take the second factor off one account, from the machine.
+
+    An account that enrolled a factor and then lost both the authenticator and
+    every recovery code cannot be helped over HTTP: a route that removes a
+    factor without presenting one is exactly the route worth stealing a
+    session for. So this is a command here, like every other way back in.
+
+    It removes the factor and nothing else. The account keeps its password,
+    its role and its sessions, and can enrol again whenever it likes.
+    """
+    from app import factors
+
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        target = (await session.execute(
+            select(User).where(func.lower(func.btrim(User.email)) == email.strip().lower())
+        )).scalar_one_or_none()
+    if target is None:
+        raise LookupError(f"no account holds {email}")
+    return await factors.forget_factor(target.id)
+
+
 async def rotate_keys() -> dict:
     """Re-encrypt everything sealed with an older root key under the newest.
 
@@ -211,6 +234,9 @@ def main(argv: list[str] | None = None) -> None:
     rotating = commands.add_parser("rotate-keys", help="re-encrypt under the newest root key")
     rotating.add_argument("--check", action="store_true",
                           help="report which older versions are still in use")
+    clearing = commands.add_parser("clear-factor",
+                                   help="remove one account's second factor")
+    clearing.add_argument("email")
     commands.add_parser("configure", help="what mail and OAuth would do right now")
     parsed = parser.parse_args(argv)
 
@@ -220,9 +246,23 @@ def main(argv: list[str] | None = None) -> None:
         _run_reclaim(parsed)
     elif parsed.command == "rotate-keys":
         _run_rotate(parsed.check)
+    elif parsed.command == "clear-factor":
+        _run_clear_factor(parsed.email)
     else:
         for key, value in _configured().items():
             print(f"{key}: {value}")
+
+
+def _run_clear_factor(email: str) -> None:
+    try:
+        removed = _connected(clear_factor(email))
+    except LookupError as missing:
+        raise SystemExit(str(missing)) from missing
+    if not removed:
+        print(f"{email} had no second factor; nothing to remove.")
+        return
+    print(f"Removed the second factor on {email}, and the recovery codes with it.")
+    print("They sign in with their password alone now, and can enrol again.")
 
 
 def _run_collapse(confirmation: str) -> None:

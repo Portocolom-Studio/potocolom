@@ -23,6 +23,7 @@
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
 	auth-enable auth-recover auth-reclaim auth-rotate-keys auth-configure auth-collapse \
+	auth-clear-factor \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
@@ -54,6 +55,10 @@ auth-reclaim: ## get back into a locked-out install (CLAIM=1, or EMAIL=someone@e
 
 auth-rotate-keys: ## re-encrypt every stored secret under the newest ROOT_KEYS entry (CHECK=1 to report only)
 	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator rotate-keys $(if $(CHECK),--check,)
+
+auth-clear-factor: ## remove one account's second factor when the authenticator and codes are both gone (EMAIL=...)
+	@test -n "$(EMAIL)" || { echo 'usage: make auth-clear-factor EMAIL=someone@example.com' >&2; exit 1; }
+	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator clear-factor "$(EMAIL)"
 
 auth-configure: ## what mail and OAuth would do if the API started right now
 	@cd "$(CURDIR)/backend" && .venv/bin/python -m app.operator configure
