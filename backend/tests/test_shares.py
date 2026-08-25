@@ -302,21 +302,28 @@ def test_there_is_no_way_to_fetch_a_share_by_url(library):
 
 
 @pytest.mark.db
-def test_the_retired_asset_column_is_left_alone(library):
-    """assets.share_token is the old design. Writing it would give two
-    answers to the question of whether an asset is shared."""
+def test_a_shared_asset_holds_no_share_state_of_its_own(library):
+    """assets.share_token was the old design and R18 dropped it. Leaving the
+    column unwritten was never the guarantee: a second place recording whether
+    an asset is shared is a second answer about a revoked link, so the assets
+    table has to stay clear of share state rather than merely be ignored."""
     with TestClient(app, base_url=ORIGIN) as client:
         user = client.portal.call(_make, "retired@example.com")
         asset = client.portal.call(_owned_asset, user.id)
         assert _login(client, "retired@example.com").status_code == 204
-        _share(client, asset.id)
+        assert _share(client, asset.id).status_code == 201
 
-        async def stored() -> str | None:
+        async def asset_columns() -> list[str]:
             async with db.session_factory() as session:
-                return (await session.execute(
-                    select(Asset.share_token).where(Asset.id == asset.id))).scalar_one()
+                return list((await session.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'assets'"
+                ))).scalars().all())
 
-        assert client.portal.call(stored) is None
+        columns = client.portal.call(asset_columns)
+        assert columns, "the assets table should have been read"
+        assert [name for name in columns if "share" in name] == []
+        assert len(client.portal.call(_shares)) == 1
 
 
 @pytest.mark.db

@@ -55,6 +55,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/metrics/gpu/history` | implemented | GPU telemetry over a time range (raw, or 5-minute rollups); admin only |
 | GET, POST `/api/v1/benchmark/*` | implemented, `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking; admin only |
 | PUT `/api/v1/files/{key}` | implemented | local-storage upload target; capability-bound worker writes |
+| GET `/api/v1/files/{key}` | retired | answers `404`. Key-addressed asset reads were removed in R1; assets are read by id. The route is still declared, because the `PUT` above matches the same path and removing it would answer `405` instead |
 | GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |

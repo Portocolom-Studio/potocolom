@@ -47,7 +47,7 @@ The frontend learns everything it needs at runtime:
 @app.get("/api/v1/config")
 async def config():
     return {
-        "auth_methods": auth_provider.methods(),   # e.g. [] | ["local"] | ["local","google","github"]
+        "auth_methods": settings.auth_methods,     # e.g. [] | ["password"] | ["password","google","github"]
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
     }
@@ -198,6 +198,8 @@ resource "aws_lb_target_group" "api" {
 
 ## Authentication
 
+> Shipped status (2026-08-25): **partially implemented.** Sessions, password login, invitation-only registration, Google and GitHub, optional TOTP and the two-mode seam are real; `app/accounts.py`, `app/invitations.py`, `app/oauth.py` and `app/factors.py` are where to read them. The pseudocode below is the designed shape and not the shipped signatures. Absent: the Redis session cache and its invalidation channel, the rate limits, the new-sign-in notification, and the cloud-only age attestation. Different: every primary login, provider sign-ins included, answers a TOTP challenge rather than a session when that account has enrolled a factor.
+
 ### Session middleware
 
 Every request passes one middleware. Opaque token in an httpOnly cookie, hash stored server side, cache in front of PostgreSQL.
@@ -220,24 +222,25 @@ async def session_middleware(request, call_next):
 
 Logout and revocation delete the row, delete the cache key and publish on `invalidate:sessions` so every replica drops its copy; the five minute cache TTL is only the backstop.
 
-### Local registration and login
+### Registration and login
+
+Registration is invitation-only in both deployments, so `register` accepts an invitation rather than opening an account: the address comes from the invitation and never from the caller.
 
 ```python
 @app.post("/api/v1/auth/register")            # AUTH_MODE=accounts
-async def register(email, password, attest_18):
-    await rate.check(f"rate:signup:{client_ip}", limit=5, window=3600)
+async def register(token, password, attest_18):
+    invitation = await db.invitations.claim(token_hash=sha256(token))  # one use, 72 hours
+    require(invitation)                       # unknown, expired, revoked and spent answer alike
     require(attest_18)                        # cloud terms
-    require(not disposable_domain(email))     # cloud only
-    user = await db.users.insert(email=email, role="user")
-    await db.auth_identities.insert(user, provider="local",
+    user = await db.users.insert(email=invitation.email, role=invitation.role)
+    await db.auth_identities.insert(user, provider="password",
                                     password_hash=argon2id.hash(password))  # OWASP parameters
-    await email_backend.send_verification(user)   # EMAIL_BACKEND=none skips, marks verified
 
 @app.post("/api/v1/auth/login")
 async def login(email, password, persistent: bool):
     await rate.check(f"rate:login:{client_ip}", limit=10, window=300)
     await rate.check(f"rate:login:{email}",     limit=10, window=300)
-    ident = await db.auth_identities.get(provider="local", subject=email)
+    ident = await db.auth_identities.get(provider="password", subject=email)
     if not ident or not argon2id.verify(ident.password_hash, password):
         raise Unauthorized                    # same response either way
     token = secrets.token_urlsafe(32)
@@ -267,15 +270,14 @@ async def oauth_callback(provider, code, state):
 
 ### The mode seam
 
-```python
-class AuthProvider(Protocol):
-    def methods(self) -> list[str]
-    def mounts(self) -> list[Route]           # which endpoints exist in this mode
+There are two modes and no provider objects behind them. `AUTH_MODE` decides whether a request resolves to the implicit local administrator or to a session, and `Settings.auth_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
 
-NoneAuth   # methods() = [];        middleware maps every request to the single local user
-LocalAuth  # methods() = ["local"]; register, login, verify, reset
-OAuthAuth  # methods() = ["local", *providers]; LocalAuth plus redirect and callback routes
+```python
+AUTH_MODE = "none"       # auth_methods == []; every request is the one implicit local admin
+AUTH_MODE = "accounts"   # auth_methods == ["password", *configured_providers]
 ```
+
+The routes do not move between modes. Every account route is mounted in both and answers `404` in `none`, which is what keeps a mode switch a configuration change rather than a different application.
 
 ## Scheduler
 

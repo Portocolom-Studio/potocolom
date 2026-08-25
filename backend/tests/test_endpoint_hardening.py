@@ -134,6 +134,10 @@ def test_storage_key_get_is_retired_but_worker_put_remains_capability_bound(tmp_
         assert client.get(f"/api/v1/files/{key}").status_code == 404
         assert client.get(f"/api/v1/files/{key}", headers={"Authorization": "Bearer ordinary"}).status_code == 404
         assert client.put(f"/api/v1/files/{key}", content=b"bytes").status_code == 403
+        # A retired route that a generated client still offers is a route that
+        # still exists, whatever it answers.
+        assert sorted(client.get("/openapi.json").json()
+                      ["paths"]["/api/v1/files/{key}"]) == ["put"]
 
 
 @pytest.mark.db

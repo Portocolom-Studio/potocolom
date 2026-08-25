@@ -58,7 +58,7 @@ Self-hosted: a single docker compose file, one machine, no Redis, no billing, au
 flowchart LR
     B["Browser"]
     subgraph H["Self-hosted machine, docker compose"]
-        A["API server, FastAPI<br>serves the SPA build<br>auth: none or local<br>quota: no-op, unlimited"]
+        A["API server, FastAPI<br>serves the SPA build<br>auth: none or accounts<br>quota: no-op, unlimited"]
         P[("PostgreSQL")]
         D[("Local disk<br>storage adapter")]
         W["Inference worker<br>diffusers + PyTorch<br>user's own GPU"]
@@ -76,7 +76,7 @@ flowchart TB
     B["Browser"]
     CDN["CDN<br>SPA assets and images"]
     LB["Load balancer"]
-    A["API replicas<br>same image, stateless<br>auth: local + oauth<br>dispatch + WS relay"]
+    A["API replicas<br>same image, stateless<br>auth: accounts<br>dispatch + WS relay"]
     P[("Managed PostgreSQL")]
     R[("Redis")]
     S[("S3 object storage")]
@@ -171,7 +171,7 @@ Reading the boxes against the seams: `AUTH` is the authentication seam (`none` s
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single local user), `local` (email and password, persistent login option) or `oauth` (Google and GitHub at cloud launch). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
+- Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
@@ -421,9 +421,8 @@ Issues #5 and #9.
 ```mermaid
 flowchart TB
     M{"AUTH_MODE"}
-    M -->|"none"| N["Auto-login as a single local user<br>account UI hidden"]
-    M -->|"local"| L["Email and password forms<br>DB-backed session cookie<br>persistent login option"]
-    M -->|"oauth"| O["Provider buttons, Google first<br>after the token exchange the session<br>behaves exactly like local mode"]
+    M -->|"none"| N["Auto-login as one implicit local administrator<br>account UI hidden"]
+    M -->|"accounts"| A["Email and password forms<br>provider buttons where configured<br>DB-backed session cookie"]
 ```
 
 The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`.
@@ -432,28 +431,28 @@ The frontend never hardcodes this: it builds the login screen from the `auth_met
 
 Cloud deployments verify email addresses through the email service; self-hosted installs can disable verification. Both paths end in the same DB backed session cookie. Cloud signups attest to being 18 or older, which keeps the terms simple and avoids parental consent machinery entirely.
 
-Local accounts launch with argon2 password hashing, rate limited login attempts and an email notification on new sign ins; the schema reserves room for TOTP two factor authentication as a fast follow, so adding it needs no migration. OAuth users carry their provider's two factor already.
+There is no open registration in either deployment: an administrator invites an address, and accepting that one-use link is what creates the account and sets its password. A provider sign-in enters an identity somebody already linked and never creates one, so Google and GitHub add a way in without adding a way to appear. Passwords are stored with Argon2id, and TOTP is optional for every role: every primary login passes the same gate, provider sign-ins included, because a provider proving who somebody is does not answer for the factor they enrolled here.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant A as API server
     participant G as OAuth provider
-    participant E as Email service
     B->>A: GET /api/v1/config
     A-->>B: auth_methods and credential types
-    alt local registration
-        B->>A: register with email and password
-        A->>E: send verification link
-        B->>A: open verification link
+    alt invitation acceptance
+        B->>A: register with the invitation token and a password
         A-->>B: session cookie
-    else oauth login
+    else password login
+        B->>A: login with email and password
+        A-->>B: session cookie, or a TOTP challenge when enrolled
+    else provider login
         B->>G: authorization redirect
         G-->>B: authorization code
         B->>A: callback with code
         A->>G: exchange code for identity
-        A->>A: find or create user
-        A-->>B: session cookie
+        A->>A: find the linked identity, never create one
+        A-->>B: session cookie, or a TOTP challenge when enrolled
     end
 ```
 
@@ -484,7 +483,7 @@ sequenceDiagram
     A->>P: single row update of jobs.starred_at
     P-->>A: ok
     A-->>B: 204
-    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In the accounts modes, an install without Redis<br>reads the session row from PostgreSQL every time.
+    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In accounts mode, an install without Redis<br>reads the session row from PostgreSQL every time.
 ```
 
 ### Adding a new model
@@ -661,7 +660,7 @@ no client side analytics anywhere.
 
 ## Data model
 
-The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
+The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets are private, and a share is a row in `asset_shares` rather than a flag on the asset. They carry an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
 Thirteen of these tables exist at migration head 0013. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
@@ -700,9 +699,9 @@ erDiagram
     auth_identities {
         uuid id PK
         uuid user_id FK
-        text provider "local, google, github, ..."
+        text provider "password, google, or github"
         text subject "provider user id"
-        text password_hash "local only, argon2"
+        text password_hash "password identities only, argon2id"
         text totp_secret "reserved for 2FA"
     }
     sessions {
@@ -763,7 +762,6 @@ erDiagram
         text mime
         int width
         int height
-        text share_token "retired, removed by the R18 cleanup"
         timestamptz expires_at "set for trial accounts"
     }
     asset_shares {

@@ -282,7 +282,7 @@
         <mxCell id="selfhost" value="Self-hosted install (one machine, one GPU)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1000" y="60" width="420" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="selfhost_inner" value="docker compose: api (serves the SPA build),&#10;postgres, worker (:v0.x-cuda or -rocm)&#10;No Redis, no billing: in-process seams,&#10;UnlimitedQuota, AUTH_MODE none or local" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+        <mxCell id="selfhost_inner" value="docker compose: api (serves the SPA build),&#10;postgres, worker (:v0.x-cuda or -rocm)&#10;No Redis, no billing: in-process seams,&#10;UnlimitedQuota, AUTH_MODE none or accounts" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="1030" y="100" width="360" height="150" as="geometry" />
         </mxCell>
         <mxCell id="aws" value="AWS staging (scaled down) + production" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#8C4FFF;fontStyle=1;" vertex="1" parent="1">
@@ -338,10 +338,10 @@
         <mxCell id="pcL2" value="Authentication" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
           <mxGeometry x="60" y="230" width="220" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pcS2" value="AUTH_MODE=none (auto login, account UI hidden)&#10;or local email and password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="pcS2" value="AUTH_MODE=none (auto login, account UI hidden)&#10;or AUTH_MODE=accounts: email and password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="320" y="230" width="520" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pcC2" value="AUTH_MODE=oauth: email and password signup&#10;plus Google, GitHub and Apple; same session cookie" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="pcC2" value="AUTH_MODE=accounts: invitation-only email and&#10;password, plus Google and GitHub; same session cookie" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="880" y="230" width="540" height="70" as="geometry" />
         </mxCell>
         <mxCell id="pcL3" value="Payments and quota" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -689,7 +689,7 @@
         <mxCell id="t_users" value="users&#10;id, email, role (user|admin)&#10;deleted_at (30 day purge), created_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="540" y="80" width="320" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="t_ident" value="auth_identities&#10;user_id, provider (local|google|github|apple)&#10;subject, password_hash (argon2), totp_secret (reserved)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="t_ident" value="auth_identities&#10;user_id, provider (password|google|github)&#10;subject, password_hash (argon2), totp_secret (reserved)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="60" y="220" width="380" height="80" as="geometry" />
         </mxCell>
         <mxCell id="t_sess" value="sessions&#10;user_id, token_hash, persistent, expires_at&#10;(opaque cookie tokens, instantly revocable)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
@@ -704,7 +704,7 @@
         <mxCell id="t_jobs" value="jobs&#10;user_id, model_id, params, state&#10;(queued|running|succeeded|failed), gpu_ms, created_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="540" y="460" width="380" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="t_assets" value="assets&#10;user_id, job_id, storage_key, mime, width, height&#10;share_token (null unless shared), expires_at (trial)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="t_assets" value="assets&#10;user_id, job_id, storage_key, mime, width, height&#10;expires_at (trial)" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
           <mxGeometry x="540" y="580" width="380" height="80" as="geometry" />
         </mxCell>
         <mxCell id="t_rts" value="realtime_sessions&#10;user_id, model_id, worker_id&#10;gpu_ms, frames, started_at, ended_at" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1" vertex="1" parent="1">
