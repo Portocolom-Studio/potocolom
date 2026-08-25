@@ -431,7 +431,7 @@ The frontend never hardcodes this: it builds the login screen from the `auth_met
 
 Cloud deployments verify email addresses through the email service; self-hosted installs can disable verification. Both paths end in the same DB backed session cookie. Cloud signups attest to being 18 or older, which keeps the terms simple and avoids parental consent machinery entirely.
 
-There is no open registration in either deployment: an administrator invites an address, and accepting that one-use link is what creates the account and sets its password. A provider sign-in enters an identity somebody already linked and never creates one, so Google and GitHub add a way in without adding a way to appear. Passwords are stored with Argon2id, and TOTP is optional for every role: it is asked for after a successful password or provider login, and only when that account has enrolled it. A provider carries its own second factor already.
+There is no open registration in either deployment: an administrator invites an address, and accepting that one-use link is what creates the account and sets its password. A provider sign-in enters an identity somebody already linked and never creates one, so Google and GitHub add a way in without adding a way to appear. Passwords are stored with Argon2id, and TOTP is optional for every role: every primary login passes the same gate, provider sign-ins included, because a provider proving who somebody is does not answer for the factor they enrolled here.
 
 ```mermaid
 sequenceDiagram
@@ -452,7 +452,7 @@ sequenceDiagram
         B->>A: callback with code
         A->>G: exchange code for identity
         A->>A: find the linked identity, never create one
-        A-->>B: session cookie
+        A-->>B: session cookie, or a TOTP challenge when enrolled
     end
 ```
 
@@ -660,7 +660,7 @@ no client side analytics anywhere.
 
 ## Data model
 
-The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets carry an optional share token (private otherwise) and an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
+The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets are private, and a share is a row in `asset_shares` rather than a flag on the asset. They carry an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
 Thirteen of these tables exist at migration head 0013. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 

@@ -116,8 +116,9 @@ async def upload(key: str, request: Request) -> dict:
 # keeps its absence a 404. Deleting it does not leave a 404 behind: the PUT
 # above still matches the path, so the same request answers 405 on a bare API
 # and 404 only where the SPA mount happens to swallow it, and a 405 tells a
-# caller the key-addressed route is there after all.
-@router.get("/api/v1/files/{key:path}")
+# caller the key-addressed route is there after all. Kept out of the schema so
+# a generated client cannot offer a route whose only answer is 404.
+@router.get("/api/v1/files/{key:path}", include_in_schema=False)
 async def serve_retired() -> None:
     raise HTTPException(status_code=404, detail="file route retired")
 
