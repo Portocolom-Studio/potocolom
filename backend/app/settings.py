@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_starttls: bool = True
     ses_region: str = ""
+    # The SNS topic SES bounce and complaint notifications arrive on. Unset
+    # refuses every notification: a signature says an AWS customer sent it,
+    # and only the topic says it was ours (docs/aws-setup.md).
+    ses_feedback_topic_arn: str = ""
 
     benchmark_api: bool = False  # expose /api/v1/benchmark/* for scripts/benchmark.py
     telemetry: bool = True
