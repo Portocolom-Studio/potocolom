@@ -195,6 +195,15 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         raise REFUSED
     if not await _accepted(body.code, user, factor):
         raise REFUSED
+    # Answering a challenge proves the authenticator is in the right hands,
+    # which is what the replacement budget is there to wait for. An attacker
+    # holding only a session cannot reach this line.
+    async with db.session_factory() as session:
+        await session.execute(
+            update(AuthFactor).where(AuthFactor.id == factor.id,
+                                     AuthFactor.replace_attempts > 0)
+            .values(replace_attempts=0))
+        await session.commit()
     async with db.session_factory() as session:
         # The session is contingent on winning this. The attempt was counted
         # and committed before the code was checked, so a second request
@@ -304,6 +313,28 @@ async def start_enrolment(
     }
 
 
+async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
+    """Counts the try before the code is looked at, so a wrong one costs.
+
+    Without this the ask is free to repeat: whoever asked for the new secret
+    can answer that half correctly every time, and the enrolment they hold is
+    good for thirty minutes, so the old half is a six-digit space to grind at
+    leisure. The login challenge's budget does not reach here, because this
+    caller already has a session (issue #427).
+    """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        spent = (await session.execute(
+            update(AuthFactor)
+            .where(AuthFactor.id == factor_id,
+                   AuthFactor.replace_attempts < MAX_ATTEMPTS)
+            .values(replace_attempts=AuthFactor.replace_attempts + 1)
+            .returning(AuthFactor.id)
+        )).first()
+        await session.commit()
+    return spent is not None
+
+
 @router.post("/api/v1/account/totp/confirm", status_code=204)
 async def confirm_enrolment(
     body: ConfirmRequest,
@@ -317,6 +348,11 @@ async def confirm_enrolment(
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    if principal.user.state != "active":
+        # current_principal admits a suspended account, which may read and
+        # change nothing. Enrolment started while active must not complete
+        # after that.
+        raise HTTPException(status_code=403, detail="account suspended")
     user_id = principal.user.id
     secret, codes = _opened_enrolment(user_id, body.enrolment)
     step = totp.matched_step(secret, body.code)
@@ -334,6 +370,10 @@ async def confirm_enrolment(
     if replacing is not None:
         if body.current_code is None:
             raise REFUSED
+        if not await _spend_replacement_attempt(replacing.id):
+            # The budget is gone. Signing in with the factor clears it, which
+            # is the one thing an attacker holding only a session cannot do.
+            raise REFUSED
         if not await _accepted(body.current_code, principal.user, replacing):
             raise REFUSED
 
@@ -343,20 +383,23 @@ async def confirm_enrolment(
             # Replacing an enrolment replaces its codes with it: a code minted
             # for a secret nobody holds any more is a way in nobody expects.
             await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
-            retired = delete(AuthFactor).where(AuthFactor.user_id == user_id)
-            if replacing is None:
-                await session.execute(retired)
-            else:
-                # Bound to the factor that was proved, and the request is only
-                # allowed to continue if it is the one that removed it. Two
-                # replacements racing would otherwise each delete a factor that
-                # was already gone and each insert their own, leaving the
-                # account with two and no way to say which one gates a login.
+            if replacing is not None:
+                # Bound to the factor that was proved, and the request only
+                # continues if it is the one that removed it. An account-wide
+                # delete would let the last writer replace a factor it never
+                # proved, which is the hole this route is closing.
                 gone = (await session.execute(
-                    retired.where(AuthFactor.id == replacing.id).returning(AuthFactor.id)
+                    delete(AuthFactor)
+                    .where(AuthFactor.user_id == user_id, AuthFactor.id == replacing.id)
+                    .returning(AuthFactor.id)
                 )).first()
                 if gone is None:
                     raise REFUSED
+            # A first enrolment deletes nothing at all. Deleting by account
+            # here is what let two of them race: both read no factor, the
+            # first installed one, and the second removed it and installed
+            # its own having proved nothing. With no delete, the unique
+            # constraint on (user_id, kind) refuses the second.
             session.add(AuthFactor(
                 user_id=user_id, kind="totp",
                 secret_ciphertext=ring.encrypt(TOTP_PURPOSE, secret.encode(), user_id.bytes),
