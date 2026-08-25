@@ -125,22 +125,17 @@ def _addresses(payload: dict) -> tuple[str, list[str]]:
     they are waiting for, so only a permanent verdict counts.
     """
     kind = payload.get("notificationType")
-    if kind == "Bounce":
+    if kind == "Complaint":
+        reason = "complaint"
+        entries = (payload.get("complaint") or {}).get("complainedRecipients") or []
+    elif kind == "Bounce":
+        reason = "bounce"
         bounce = payload.get("bounce") or {}
-        if bounce.get("bounceType") != "Permanent":
-            return "bounce", []
-        recipients = bounce.get("bouncedRecipients") or []
-    elif kind == "Complaint":
-        recipients = (payload.get("complaint") or {}).get("complainedRecipients") or []
-        return "complaint", [
-            address for entry in recipients
-            if (address := entry.get("emailAddress"))
-        ]
+        entries = (bounce.get("bouncedRecipients") or []
+                   if bounce.get("bounceType") == "Permanent" else [])
     else:
         return "", []
-    return "bounce", [
-        address for entry in recipients if (address := entry.get("emailAddress"))
-    ]
+    return reason, [address for entry in entries if (address := entry.get("emailAddress"))]
 
 
 @router.post("/api/v1/mail/feedback", status_code=204)

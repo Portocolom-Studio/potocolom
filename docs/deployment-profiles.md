@@ -43,6 +43,7 @@ flowchart LR
 | STORAGE_BACKEND | local | local | local | s3 (MinIO) | s3 + CloudFront signing |
 | QUOTA_SERVICE_URL | empty | empty | empty | fake service | billing service |
 | EMAIL_BACKEND | none or Mailpit | none | smtp | Mailpit | SES |
+| SES_FEEDBACK_TOPIC_ARN | | | | | the SNS topic SES bounces and complaints arrive on |
 | LOG_FORMAT | plain | plain | plain | plain | json |
 | Workers | 1, native | 1, compose | N, compose | 1-2 | rented fleet, autoscaled |
 
