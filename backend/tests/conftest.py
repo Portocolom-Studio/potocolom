@@ -38,8 +38,51 @@ import shutil
 import tempfile
 from urllib.parse import urlsplit
 
+import anyio
 import pytest
 from sqlalchemy import text
+from starlette.testclient import WebSocketTestSession
+
+# Generous on purpose. The slowest whole test that drives a socket is under
+# two seconds and a single read is milliseconds, so this fires only on a read
+# that is never coming. Tight enough to be flaky on a loaded machine would be
+# worse than the hang it replaces.
+WS_RECEIVE_TIMEOUT_S = 15
+
+
+async def _receive_within(stream, seconds):
+    with anyio.fail_after(seconds):
+        return await stream.receive()
+
+
+def _bounded_receive(self):
+    try:
+        return self.portal.call(_receive_within, self._send_rx, WS_RECEIVE_TIMEOUT_S)
+    except TimeoutError:
+        raise AssertionError(f"no websocket message within {WS_RECEIVE_TIMEOUT_S}s") from None
+
+
+# Every TestClient socket read goes through one starlette method, so this is
+# the only place a deadline can go: receive_json, receive_bytes, receive_text
+# and the handshake in __enter__ all call WebSocketTestSession.receive, which
+# is `self.portal.call(self._send_rx.receive)` and takes no timeout. Without a
+# bound, a message that never arrives stops the whole suite rather than failing
+# one test, and CI reports a job timeout with no test name (issue #414).
+#
+# It lives in conftest because seven test files open sockets and any of them
+# can be run on its own. Patching from a test module would leave the other six
+# unbounded whenever that module was not imported.
+#
+# The deadline is raised inside the app's event loop, so anyio cancels the
+# pending read and drops the receiver rather than leaving it parked on the
+# memory stream to consume a later message.
+#
+# Replacing a library method is worth the coupling only because the
+# alternative is the same change at two hundred call sites, and reads added
+# later would arrive unbounded. It tracks two starlette internals, `portal`
+# and `_send_rx`; if either is renamed this fails loudly on the first read
+# rather than quietly going back to waiting forever.
+WebSocketTestSession.receive = _bounded_receive
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"
