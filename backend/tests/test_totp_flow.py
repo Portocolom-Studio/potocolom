@@ -569,3 +569,133 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
 
         answered = fresh.portal.call(together)
     assert sorted(answered) == [204, 403], answered
+
+
+def _replace(client, secret_and_code, current=None):
+    """Enrol again on an account that already has a factor."""
+    started = client.post("/api/v1/account/totp", headers=_csrf(client))
+    assert started.status_code == 200
+    body = {"enrolment": started.json()["enrolment"],
+            "code": totp.code_at(started.json()["secret"], int(_now()))}
+    if current is not None:
+        body["current_code"] = current
+    return started.json()["secret"], client.post(
+        "/api/v1/account/totp/confirm", headers=_csrf(client), json=body)
+
+
+@pytest.mark.db
+def test_replacing_a_factor_needs_the_one_being_replaced(accounts):
+    """A session with recent authentication could enrol a factor it controlled
+    and the account's real one was deleted to make room for it, in two
+    requests, with nothing sent to anybody. The factor stopped an attacker at
+    the challenge and then did not stop them here."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "replaced@example.com")
+        assert _login(client, "replaced@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        _, refused = _replace(client, None)
+        assert refused.status_code == 403
+        # The factor they already had is untouched.
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext, stored[0].user_id.bytes).decode() == secret
+
+
+@pytest.mark.db
+def test_a_code_from_the_old_factor_replaces_it(accounts):
+    """Somebody moving to a new phone still has the old one in their hand."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "newphone@example.com")
+        assert _login(client, "newphone@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        new_secret, replaced = _replace(client, None, current=_next_code(old_secret))
+        assert replaced.status_code == 204
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == new_secret
+
+
+@pytest.mark.db
+def test_a_recovery_code_replaces_the_factor_too(accounts):
+    """The phone is gone, the codes are not, and enrolling a new authenticator
+    is exactly what somebody in that position wants to do."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lostphone2@example.com")
+        assert _login(client, "lostphone2@example.com").status_code == 204
+        _, codes = _enrol(client)
+        _, replaced = _replace(client, None, current=codes[0])
+        assert replaced.status_code == 204
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_wrong_code_for_the_old_factor_changes_nothing(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "wrongold@example.com")
+        assert _login(client, "wrongold@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        _, refused = _replace(client, None, current="000000")
+        assert refused.status_code == 403
+        stored = client.portal.call(_factors)
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == old_secret
+
+
+@pytest.mark.db
+def test_a_first_enrolment_has_nothing_to_prove(accounts):
+    """Nothing to replace, so nothing to ask for. Requiring a code here would
+    mean an account could never enrol at all."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "firsttime@example.com")
+        assert _login(client, "firsttime@example.com").status_code == 204
+        _enrol(client)
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_two_replacements_at_once_leave_one_factor(accounts):
+    """Both prove the factor they are replacing, and only one of them can
+    have removed it. Deleting by account rather than by the factor that was
+    proved would have left two, with nothing to say which gates a login."""
+    import asyncio
+
+    import httpx
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "racer2@example.com")
+        assert _login(client, "racer2@example.com").status_code == 204
+        _, codes = _enrol(client)
+        held = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        starts = [client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+                  for _ in range(2)]
+        ready = asyncio.Event()
+        arrived = 0
+
+        async def confirm(started: dict, recovery: str) -> int:
+            nonlocal arrived
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url=ORIGIN, cookies=held) as caller:
+                arrived += 1
+                if arrived == 2:
+                    ready.set()
+                await ready.wait()
+                answered = await caller.post(
+                    "/api/v1/account/totp/confirm",
+                    headers={"Origin": ORIGIN, "X-CSRF-Token": held[
+                        next(name for name in held if name.endswith("potocolom_csrf"))]},
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(started["secret"], int(_now())),
+                          "current_code": recovery})
+                return answered.status_code
+
+        async def together() -> list[int]:
+            return list(await asyncio.gather(confirm(starts[0], codes[0]),
+                                             confirm(starts[1], codes[1])))
+
+        answered = client.portal.call(together)
+        assert len(client.portal.call(_factors)) == 1, answered
+    assert sorted(answered) == [204, 403], answered
