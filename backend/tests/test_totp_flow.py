@@ -659,8 +659,13 @@ def test_a_first_enrolment_has_nothing_to_prove(accounts):
 @pytest.mark.db
 def test_two_replacements_at_once_leave_one_factor(accounts):
     """Both prove the factor they are replacing, and only one of them can
-    have removed it. Deleting by account rather than by the factor that was
-    proved would have left two, with nothing to say which gates a login."""
+    have removed it, so the other is refused rather than served.
+
+    Deleting by account instead would let the loser replace a factor it never
+    proved: it would remove whatever it found and install its own, and end up
+    owning the account's second factor. The account cannot hold two either
+    way, since auth_factors is one row per account by unique constraint.
+    """
     import asyncio
 
     import httpx
