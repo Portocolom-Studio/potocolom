@@ -1175,6 +1175,17 @@ The certificate URL in an SNS message points somewhere, and this API is the thin
 Rejected alternatives: trusting the signature alone (every AWS customer can produce one); a shared secret in the subscription URL (SNS puts the whole URL in its own delivery logs and in the subscription record, and rotating it means resubscribing); polling the SES suppression list instead (it answers about the account's list rather than about our sends, it costs a scheduled call forever, and the delay is exactly the window in which the address keeps being invited); accepting transient bounces to be safe (that is safe for the sender and not for the person who cannot receive their link); confirming subscriptions by hand (a resubscription then needs an operator, which is how a feedback path quietly stops working).
 
 
+## Turning the second factor off costs a code, the same as turning it on
+
+An account may remove its second factor, and doing so needs recent authentication and either a current code or a recovery code. A session by itself is not enough. Enrolment already refuses to write anything until a code answers, because one request from a stolen session, with no code and no notice to anybody, would otherwise be the cheapest way to disarm somebody's second factor; removal is the same act from the other side and gets the same bar. The recovery codes leave with the factor, for the reason a replacement takes them too: a code minted against a secret nobody holds any more is a way in nobody expects.
+
+A factor that could not be removed at all was the other half of the problem, and it was the shipped behaviour. "Optional for every role" is not true of something you can turn on and never turn off, and it left an account whose authenticator broke with no way back except spending recovery codes until they ran out. For the last administrator it was worse: the offline command prints a password link, and the challenge still stood behind it, so an install could reach a state that only `auth-collapse` could recover, which destroys every account on it.
+
+The account that has lost the authenticator and every recovery code has nothing to present, and no route can safely help it, so `make auth-clear-factor` is a command at the machine like every other way back in. That keeps "every way back into a locked install is a command at the machine" true, which it was not while a lost authenticator was unrecoverable by any means.
+
+Rejected alternatives: a removal route that takes only a session and recent authentication (it is the disarm-from-a-stolen-session hole that enrolment is written to avoid, and it would be the weakest point in the whole second-factor design); letting a password reset clear the factor (the link proves a capability rather than a person, so control of an inbox would be enough to remove it, and mail is exactly what the second factor exists to survive); an administrator route to clear another account's factor (the same route worth stealing a session for, one privilege level up, and an administrator who needs it can run the command); leaving it unremovable and documenting the lockout (it makes an account's own security setting a trap, and hands the install a state recoverable only by destroying every account).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
