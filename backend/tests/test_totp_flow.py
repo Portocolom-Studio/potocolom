@@ -699,3 +699,44 @@ def test_two_replacements_at_once_leave_one_factor(accounts):
         answered = client.portal.call(together)
         assert len(client.portal.call(_factors)) == 1, answered
     assert sorted(answered) == [204, 403], answered
+
+
+@pytest.mark.db
+def test_a_refused_replacement_keeps_the_recovery_codes(accounts, monkeypatch):
+    """The transaction deletes the codes before it learns it lost the factor.
+
+    If that did not roll back, losing the race would strip the account's
+    recovery codes and leave it holding a factor with no way past it but the
+    authenticator, which is the position the codes exist to prevent. Forced
+    here rather than raced, because the interleaving that reaches it is not
+    one a barrier can arrange.
+    """
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "rolledback@example.com")
+        assert _login(client, "rolledback@example.com").status_code == 204
+        _enrol(client)
+        before = len(client.portal.call(_codes))
+        assert before == totp.RECOVERY_CODES
+
+        stale = client.portal.call(_factors)[0]
+        stale.id = uuid.uuid4()
+
+        async def vanished(session, user_id):
+            return stale
+
+        async def accepted(code, user, factor):
+            return True
+
+        monkeypatch.setattr(factors, "enrolled_factor", vanished)
+        monkeypatch.setattr(factors, "_accepted", accepted)
+
+        started = client.post("/api/v1/account/totp", headers=_csrf(client))
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started.json()["enrolment"],
+                                    "code": totp.code_at(started.json()["secret"],
+                                                         int(_now())),
+                                    "current_code": "whatever"})
+        assert refused.status_code == 403
+        assert len(client.portal.call(_codes)) == before
