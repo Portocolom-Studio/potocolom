@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -90,6 +90,11 @@ async def enrolled_factor(session, user_id: uuid.UUID) -> AuthFactor | None:
     )).scalar_one_or_none()
 
 
+def _budget_lock(user_id: uuid.UUID) -> int:
+    """A per-account advisory key, the way enable.py takes SETUP_LOCK."""
+    return int.from_bytes(user_id.bytes[:8], "big", signed=True)
+
+
 async def begin_challenge(user: User, remember_me: bool,
                           redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
@@ -99,6 +104,14 @@ async def begin_challenge(user: User, remember_me: bool,
     token = secrets.token_urlsafe(32)
     async with db.session_factory() as session:
         async with session.begin():
+            # Serialised per account, because the carry-forward below is a read
+            # and then a write. Two logins that overlap both found nothing
+            # outstanding and both seeded a fresh budget, so ten guesses became
+            # ten guesses per login and a six-digit code had unlimited tries
+            # against it (issue #421). A collision with another key here costs
+            # two accounts a moment of waiting and nothing else.
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": _budget_lock(user.id)})
             # The budget belongs to the account, not to one challenge. Minted
             # per challenge it counts nothing, because starting another is
             # free to anyone who already has the password.
@@ -169,9 +182,19 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
     if not await _accepted(body.code, user, factor):
         raise REFUSED
     async with db.session_factory() as session:
-        await session.execute(
-            update(AuthToken).where(AuthToken.id == claimed.id).values(consumed_at=func.now()))
+        # The session is contingent on winning this. The attempt was counted
+        # and committed before the code was checked, so a second request
+        # carrying the same challenge reaches here too, and only the one that
+        # actually spends the token is let in (issue #421).
+        spent = (await session.execute(
+            update(AuthToken)
+            .where(AuthToken.id == claimed.id, AuthToken.consumed_at.is_(None))
+            .values(consumed_at=func.now())
+            .returning(AuthToken.id)
+        )).first()
         await session.commit()
+    if spent is None:
+        raise REFUSED
     remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
     response = Response(status_code=204)
     from app.accounts import issue_session
