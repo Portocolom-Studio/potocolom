@@ -50,7 +50,9 @@ SIGNED_FIELDS = {
     ),
 }
 
-_SNS_HOST = re.compile(r"^sns\.[a-z0-9-]+\.amazonaws\.com$")
+# The China partition answers on amazonaws.com.cn, so a `.com`-only pattern
+# refuses every genuine notification there rather than failing visibly.
+_SNS_HOST = re.compile(r"^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$")
 # AWS publishes the signing certificate under this one name shape. Pinning the
 # path as well as the host leaves nowhere else on that host to aim the fetch,
 # and the fetch is a request this API makes unauthenticated, from inside the
@@ -72,14 +74,22 @@ _CERTIFICATE_LIMIT = 8
 FETCH_TIMEOUT = 5.0
 
 
-def _well_typed(message: dict) -> bool:
-    """Every field this module reads has to be a string before it is read.
+# Every field this module reads, whether to verify or to act on. Checked
+# rather than trusted because a JSON body decides these types: an array where
+# a string belongs would otherwise reach `urlsplit`, `b64decode` or a dict
+# lookup and raise, so an unauthenticated caller would be choosing between a
+# 403 and a 500. Only these, not every field, because SNS sends
+# MessageAttributes as an object and refusing that would refuse real
+# notifications.
+_STRING_FIELDS = (
+    "Type", "MessageId", "TopicArn", "Message", "Subject", "Timestamp",
+    "SignatureVersion", "Signature", "SigningCertURL", "SubscribeURL", "Token",
+)
 
-    A JSON body decides these types. An array where a string belongs would
-    otherwise reach `urlsplit`, `b64decode` or a dict lookup and raise, so an
-    unauthenticated caller would be choosing between a 403 and a 500.
-    """
-    return all(isinstance(value, str) for value in message.values())
+
+def _well_typed(message: dict) -> bool:
+    return all(isinstance(message[field], str)
+               for field in _STRING_FIELDS if field in message)
 
 
 def _certificate_url_is_sns(url: str) -> bool:
@@ -103,7 +113,11 @@ def _confirm(topic: str, token: str) -> None:
     import boto3
 
     boto3.client("sns", region_name=get_settings().ses_region).confirm_subscription(
-        TopicArn=topic, Token=token
+        TopicArn=topic, Token=token,
+        # Without this, whoever holds an UnsubscribeURL can end the
+        # subscription with no AWS credential, and that URL is in every
+        # notification SNS delivers here.
+        AuthenticateOnUnsubscribe="true",
     )
 
 

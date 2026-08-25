@@ -394,3 +394,29 @@ def test_the_signed_field_orders_are_the_ones_aws_documents():
     drifts, every other test in this file still passes, because the signer and
     the verifier would drift together."""
     assert ses_feedback.SIGNED_FIELDS == AWS_SIGNED_FIELDS
+
+
+@pytest.mark.db
+def test_a_message_attribute_object_does_not_refuse_the_notification(configured):
+    """SNS sends MessageAttributes as an object. Requiring every envelope field
+    to be a string refused genuine notifications, not just malformed ones."""
+    key, _ = configured
+    body = _signed(key, _notification(_bounce("Permanent")))
+    body["MessageAttributes"] = {"kind": {"Type": "String", "Value": "bounce"}}
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback", json=body).status_code == 204
+        rows = client.portal.call(_suppressed)
+    assert [row.email for row in rows] == ["bounced@example.com"]
+
+
+@pytest.mark.db
+def test_a_china_partition_certificate_url_is_accepted(configured, monkeypatch):
+    """sns.cn-north-1.amazonaws.com.cn is a real SNS host. A .com-only pattern
+    refuses every notification in that partition."""
+    key, fetched = configured
+    china = "https://sns.cn-north-1.amazonaws.com.cn/SimpleNotificationService-abc123.pem"
+    body = _signed(key, _notification(_bounce("Permanent")))
+    body["SigningCertURL"] = china
+    with _api() as client:
+        assert client.post("/api/v1/mail/feedback", json=body).status_code == 204
+        assert fetched == [china]
