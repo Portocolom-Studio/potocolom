@@ -74,7 +74,7 @@ Stage by stage:
 ## Rollback
 
 - Application: revert the promotion PR; the pipeline redeploys the previous digests. A deploy that fails its health checks never needs this - the ECS circuit breaker rolls it back on its own.
-- Schema: never rolled back. Migrations are expand-contract, so release N-1 code runs against schema N - the same discipline as the worker protocol's N-1 promise.
+- Schema: never rolled back. Migrations are expand-contract, so release N-1 code runs against schema N - the same discipline as the worker protocol's N-1 promise. Migration 0022 is the one recorded exception, taken while no cloud resources exist; see "Retiring something means removing it, and a dropped column does not come back" in [decisions.md](decisions.md).
 - Infrastructure: `git revert` plus apply, reviewed like any other change.
 
 ## Secrets
