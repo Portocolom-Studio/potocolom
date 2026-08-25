@@ -266,7 +266,6 @@ class Asset(Base):
     mime: Mapped[str] = mapped_column(Text)
     width: Mapped[int]
     height: Mapped[int]
-    share_token: Mapped[str | None] = mapped_column(Text)  # null unless shared
     expires_at: Mapped[datetime | None]  # set for trial accounts in the cloud
 
 

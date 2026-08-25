@@ -112,6 +112,11 @@ async def upload(key: str, request: Request) -> dict:
     return {"stored": key}
 
 
+# R1 removed the key-addressed asset GET; assets are read by id. This is what
+# keeps its absence a 404. Deleting it does not leave a 404 behind: the PUT
+# above still matches the path, so the same request answers 405 on a bare API
+# and 404 only where the SPA mount happens to swallow it, and a 405 tells a
+# caller the key-addressed route is there after all.
 @router.get("/api/v1/files/{key:path}")
 async def serve_retired() -> None:
     raise HTTPException(status_code=404, detail="file route retired")
