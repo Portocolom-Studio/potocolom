@@ -277,6 +277,16 @@ flowchart LR
 
 GPU inference is never in CI. The release checklist runs it manually twice: ROCm on this desktop, CUDA on a rented machine for an hour.
 
+### Before a release, with accounts on
+
+Everything below is a rung-1 test already, so the checklist is a reading rather than a run: it is here so that a release is not the moment somebody discovers a guarantee had no test behind it.
+
+- `make verify` is green, which is the whole matrix.
+- The authentication rounds' own files pass in both modes: `test_endpoint_hardening.py` and `test_first_admin_setup.py` cover `AUTH_MODE=none`, everything under the `accounts` fixture covers the other.
+- `test_failure_matrix.py` passes, which is where the concurrency and outage cases live.
+- One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, invite somebody, sign in as them, and revoke that session from the first account. Nothing else in the ladder drives a real browser at a real cookie.
+- `make auth-rotate-keys CHECK=1` reports nothing left under an older key, if a rotation happened in this cycle.
+
 ## Testing ladder
 
 Each rung is cheaper and faster than the next; a change climbs only as far as it needs.
@@ -293,3 +303,9 @@ flowchart TB
 ```
 
 Until rung 6 is reached, the monthly infrastructure cost of this entire plan is zero.
+
+### What rung 1 covers, and what it deliberately does not
+
+Rung 1 is where the authentication guarantees live, including the ones that only appear when something goes wrong. `backend/tests/test_failure_matrix.py` holds the cases that cross a boundary rather than exercising one route: two callers arriving at the same instant, a store that is down, a storage backend that will not answer, and the cookie names a browser will actually accept over each scheme. The per-round files hold the rest, and each one is named for the promise it keeps rather than the function it calls.
+
+There are no browser journeys yet, and that is a deliberate gap rather than an oversight. The studio has no sign-in, invitation, or account surface to drive: `frontend/src/routes/app` is the canvas, and every authentication route in this program is reached over HTTP. A Playwright suite today would test a login page that does not exist. It arrives with that UI, and the matrix above is what stands in for it: every locked guarantee has a test at the layer where the guarantee is actually made.
