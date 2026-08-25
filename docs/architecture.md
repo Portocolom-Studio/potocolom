@@ -662,7 +662,7 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets are private, and a share is a row in `asset_shares` rather than a flag on the asset. They carry an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Thirteen of these tables exist at migration head 0013. Six are designed and not yet created: `auth_identities` and `sessions` arrive with accounts (issue #5), `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
+Twenty-five of these tables exist at migration head 0022. Four are designed and not yet created: `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
 One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. The terminal paths swallow per-key failures so one bad key does not stop the rest, and without this the failure was visible only in a log line, so a denied permission left the object forever. A sweep retries them, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
 
@@ -672,6 +672,10 @@ Two of the shipped tables are measurement streams rather than records, and both 
 erDiagram
     users ||--o{ auth_identities : has
     users ||--o{ sessions : has
+    users ||--o{ auth_factors : enrolls
+    users ||--o{ recovery_codes : holds
+    users |o--o{ auth_tokens : holds
+    users |o--o{ invitations : sends
     users ||--o{ jobs : creates
     users ||--o{ assets : owns
     users ||--o{ realtime_sessions : opens
@@ -700,16 +704,99 @@ erDiagram
         uuid id PK
         uuid user_id FK
         text provider "password, google, or github"
-        text subject "provider user id"
+        text subject "the account's address for password, the provider's user id otherwise"
         text password_hash "password identities only, argon2id"
-        text totp_secret "reserved for 2FA"
+        timestamptz last_login_at
     }
     sessions {
         uuid id PK
         uuid user_id FK
-        text token_hash
-        boolean persistent
+        bytea token_hash UK "sha256 of the token, which is never stored"
+        boolean remember_me
+        timestamptz absolute_expires_at
+        timestamptz idle_expires_at "null when the session has no idle window"
+        timestamptz recent_auth_at "the window that guards credential changes"
+        timestamptz revoked_at "null while the session works"
+        timestamptz last_seen_at
+    }
+    auth_tokens {
+        uuid id PK
+        uuid user_id FK "null for setup, which no account owns yet"
+        text purpose "setup, reset, recovery, or challenge"
+        bytea token_hash UK
+        int attempts
         timestamptz expires_at
+        timestamptz consumed_at "null until spent; one use only"
+    }
+    auth_factors {
+        uuid id PK
+        uuid user_id FK
+        text kind "totp"
+        bytea secret_ciphertext "encrypted under a root key ring purpose key"
+        smallint key_version "makes rotation a bounded indexed sweep"
+        bigint last_step "the last time step accepted; a code is good once"
+        timestamptz confirmed_at
+    }
+    recovery_codes {
+        uuid id PK
+        uuid user_id FK
+        bytea code_hash
+        timestamptz consumed_at "null until spent"
+    }
+    invitations {
+        uuid id PK
+        text email
+        text role "viewer, user, or admin"
+        uuid invited_by FK
+        uuid accepted_user_id FK
+        bytea token_hash UK
+        timestamptz expires_at
+        timestamptz accepted_at
+        timestamptz revoked_at
+    }
+    oauth_flows {
+        uuid id PK
+        bytea state_hash UK
+        text provider "google or github"
+        text verifier "never leaves this row"
+        text nonce "never leaves this row"
+        uuid link_user_id "set when linking to a live session, deliberately no FK"
+        timestamptz expires_at
+        timestamptz consumed_at "one use only"
+    }
+    mail_outbox {
+        uuid id PK
+        text to_email
+        text template
+        jsonb payload
+        text state "pending, sent, or failed"
+        int attempts
+        timestamptz next_attempt_at "due time; the sender reads by this"
+        text last_error
+        timestamptz sent_at
+    }
+    suppressed_addresses {
+        text email PK "normalized, so a repeated bounce is the same row"
+        text reason
+        timestamptz created_at
+    }
+    audit_events {
+        uuid id PK
+        timestamptz occurred_at
+        uuid actor_user_id "deliberately no FK, so deleting an account cannot erase the record"
+        text actor_role
+        text action
+        uuid target_user_id "deliberately no FK"
+        jsonb object_ids
+        int object_count
+        boolean truncated
+        text severity "info or high"
+    }
+    installation_auth_state {
+        smallint id PK "always 1, one row per installation"
+        text auth_mode
+        smallint root_key_version
+        timestamptz enabled_at
     }
     models {
         text id PK
