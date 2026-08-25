@@ -1137,6 +1137,16 @@ Key rotation is two steps with a check between them, and refuses to rewrite a bl
 Rejected alternatives: an administrator route for any of this (the value of the route is exactly what makes it a target); an automatic rotation on startup (an operator who has not yet added the new key would then have their install rewrite itself into a state it cannot read); collapsing by deleting every row the accounts touched (people lose work they made, for an operational decision that was never about their images).
 
 
+## Retiring something means removing it, and a dropped column does not come back
+
+A retired thing is deleted rather than left in place and ignored. `assets.share_token` is dropped from the schema, and the retired `local` and `oauth` mode names are gone from the documents as well as from the code. A column nobody writes still answers when somebody selects it, and a mode name that appears only in a diagram is indistinguishable, to a reader, from one that still works.
+
+The drop is not undone by its downgrade. The downgrade recreates a nullable, unfilled column so a previous release starts against the schema, and the values are gone. Nothing has written that column since `asset_shares` landed, so on any install that reached that release there is nothing to lose, and saying so in the migration is what stops somebody reading `downgrade` as a way back.
+
+One retired route stays declared. `GET /api/v1/files/{key}` answers `404` because R1 removed key-addressed asset reads, and the stub is what makes that a `404`: the `PUT` on the same path still matches, so deleting the stub answers `405` on a bare API and `404` only where the SPA mount happens to swallow it. A `405` says the route is there after all, and an answer that depends on whether the API also serves the frontend is not a contract.
+
+Rejected alternatives: leaving the column in place unused (it survived one design change already by being ignored, which is how a second answer about a revoked link stays available to be believed); copying the retired values somewhere before dropping them (nothing consults them, so the copy is a second retired thing to explain); deleting the retired file route with the column (the absence stops being a `404`); keeping the retired mode names in the documents as history (the documents are the contract and git holds the history, so a name kept there costs a reader a wrong belief and saves nobody a lookup).
+
 
 Chosen as conventional defaults rather than debated decisions:
 
