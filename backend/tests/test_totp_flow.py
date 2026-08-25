@@ -740,3 +740,76 @@ def test_a_refused_replacement_keeps_the_recovery_codes(accounts, monkeypatch):
                                     "current_code": "whatever"})
         assert refused.status_code == 403
         assert len(client.portal.call(_codes)) == before
+
+
+@pytest.mark.db
+def test_the_old_factor_cannot_be_guessed_at_leisure(accounts):
+    """The caller holds the new secret, so they answer that half every time.
+    Without a budget the old half is a six-digit space and the sealed
+    enrolment is good for thirty minutes."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "grinder@example.com")
+        assert _login(client, "grinder@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        def guess(current):
+            return client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now())),
+                                     "current_code": current}).status_code
+
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert guess("000000") == 403
+        # The budget is spent, so even the right code is refused now.
+        assert guess(_next_code(old_secret)) == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_signing_in_with_the_factor_gives_the_budget_back(accounts):
+    """Otherwise ten wrong guesses by anybody would stop the owner ever
+    moving to a new phone, which is a denial of service against a setting
+    they chose for their own safety."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "recovers@example.com")
+        assert _login(client, "recovers@example.com").status_code == 204
+        old_secret, codes = _enrol(client)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now())),
+                                     "current_code": "000000"}).status_code == 403
+
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "recovers@example.com").status_code == 200
+        # A recovery code for the challenge, so the authenticator's current
+        # code is still unspent for the replacement: one code, one use.
+        assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": codes[0]}).status_code == 204
+        new_secret, replaced = _replace(fresh, None, current=_next_code(old_secret))
+        assert replaced.status_code == 204
+
+
+@pytest.mark.db
+def test_a_suspended_account_cannot_finish_an_enrolment_it_started(accounts):
+    """Suspended is read-only, and current_principal admits it. An enrolment
+    begun while active must not land after the account was paused."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "paused@example.com")
+        assert _login(client, "paused@example.com").status_code == 204
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    update(User).where(User.id == user.id).values(state="suspended"))
+                await session.commit()
+
+        client.portal.call(suspend)
+        assert client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                           json={"enrolment": started["enrolment"],
+                                 "code": totp.code_at(started["secret"],
+                                                      int(_now()))}).status_code == 403
+        assert client.portal.call(_factors) == []
