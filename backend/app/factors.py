@@ -159,6 +159,9 @@ class CodeRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     enrolment: str
     code: str
+    # Only when there is a factor to replace, and then it is required: a code
+    # from the authenticator being retired, or one of its recovery codes.
+    current_code: str | None = None
 
 
 @router.post("/api/v1/auth/totp", status_code=204)
@@ -319,13 +322,41 @@ async def confirm_enrolment(
     step = totp.matched_step(secret, body.code)
     if step is None:
         raise REFUSED
+
+    # Replacing a factor costs the factor being replaced. Proving the new
+    # secret only proves the caller controls the new authenticator, which a
+    # stolen session does by definition: it asked for the secret. Without
+    # this, two requests from a session with recent authentication replaced
+    # somebody's second factor with one the caller held, and the account
+    # found out when its own authenticator stopped working (issue #427).
+    async with db.session_factory() as session:
+        replacing = await enrolled_factor(session, user_id)
+    if replacing is not None:
+        if body.current_code is None:
+            raise REFUSED
+        if not await _accepted(body.current_code, principal.user, replacing):
+            raise REFUSED
+
     ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
             # Replacing an enrolment replaces its codes with it: a code minted
             # for a secret nobody holds any more is a way in nobody expects.
             await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
-            await session.execute(delete(AuthFactor).where(AuthFactor.user_id == user_id))
+            retired = delete(AuthFactor).where(AuthFactor.user_id == user_id)
+            if replacing is None:
+                await session.execute(retired)
+            else:
+                # Bound to the factor that was proved, and the request is only
+                # allowed to continue if it is the one that removed it. Two
+                # replacements racing would otherwise each delete a factor that
+                # was already gone and each insert their own, leaving the
+                # account with two and no way to say which one gates a login.
+                gone = (await session.execute(
+                    retired.where(AuthFactor.id == replacing.id).returning(AuthFactor.id)
+                )).first()
+                if gone is None:
+                    raise REFUSED
             session.add(AuthFactor(
                 user_id=user_id, kind="totp",
                 secret_ciphertext=ring.encrypt(TOTP_PURPOSE, secret.encode(), user_id.bytes),
