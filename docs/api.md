@@ -96,6 +96,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/shares/{id}` | implemented | revoke a share; the link stops resolving |
 | POST `/api/v1/shared` | implemented | resolve a share token; no account needed |
 | GET `/api/v1/mail/status` | implemented | what the mail outbox is doing; admin only |
+| POST `/api/v1/mail/feedback` | implemented | SES bounce and complaint notifications from SNS; `404` unless `EMAIL_BACKEND=ses`, `403` unless SNS signed it and the topic matches `SES_FEEDBACK_TOPIC_ARN`. No account credential: the signature and the topic are the credential |
 | GET `/api/v1/telemetry/preview` | implemented (#29) | the exact telemetry payload that would be sent, see [metrics.md](metrics.md) |
 
 ## Implemented endpoints

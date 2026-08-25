@@ -71,6 +71,8 @@ Stage by stage:
 3. Merging deploys staging: images mirrored from GHCR to ECR by digest (never by mutable tag), the public contract simulation runs against the real billing service, the Alembic migration task runs as a gated one-off before any task rolls, then the ECS services roll behind the deployment circuit breaker, then smoke checks.
 4. A human approves the `production` environment. The same pipeline replays against the production account with the same digests. Nothing is rebuilt between staging and production.
 
+Nothing described here has been run. No environment exists, no pipeline has deployed anything, and the contracts the cloud will have to meet are collected under "Cloud contracts" in [cloud-infrastructure.md](cloud-infrastructure.md), each marked with whether it is implemented today.
+
 ## Rollback
 
 - Application: revert the promotion PR; the pipeline redeploys the previous digests. A deploy that fails its health checks never needs this - the ECS circuit breaker rolls it back on its own.

@@ -210,7 +210,7 @@ flowchart TB
     P[("PostgreSQL")]
     M[("MinIO<br>S3 compatible")]
     MP["Mailpit<br>catches SES-bound mail"]
-    Q["Fake quota service<br>QuotaService over HTTP"]
+    Q["Fake quota service<br>QuotaService over HTTP<br>designed, not built"]
     W["Worker<br>rocm on this desktop"]
     B <--> N
     N --> A1
@@ -235,7 +235,7 @@ flowchart TB
 | S3 + presigned URLs | MinIO | the S3 storage adapter, direct worker uploads |
 | CloudFront signed URLs | MinIO presigned GET | approximate; real CloudFront signing is staging-only |
 | SES | Mailpit (SMTP catcher with web UI) | verification and sign-in notification emails, end to end |
-| Billing service (private repo) | a 100-line fake implementing QuotaService | reserve, commit, refund, insufficient-credits paths |
+| Billing service (private repo) | a 100-line fake implementing QuotaService, designed and not built | reserve, commit, refund, insufficient-credits paths |
 | Stripe | Stripe CLI in test mode, against the fake | webhook handling, later, when the billing service exists |
 | GPU fleet on RunPod | the local worker | dispatch, streaming, drain; N-1 by running the previous image tag |
 

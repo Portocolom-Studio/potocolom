@@ -45,6 +45,7 @@ from app.storage import get_storage
 from app.studio import router as studio_router
 from app.mail import check_configuration as check_mail_configuration, mail_loop
 from app.mail import router as mail_router
+from app.ses_feedback import router as ses_feedback_router
 from app.telemetry import DESTINATION, telemetry_loop
 from app.telemetry import router as telemetry_router
 
@@ -149,6 +150,7 @@ app.include_router(recovery_router)
 app.include_router(roles_router)
 app.include_router(states_router)
 app.include_router(mail_router)
+app.include_router(ses_feedback_router)
 app.include_router(shares_router)
 app.include_router(registry_router)
 app.include_router(jobs_router)

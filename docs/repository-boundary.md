@@ -19,7 +19,7 @@ The public repository is AGPL-3.0, with commercial exceptions sold by the projec
 
 | | potocolom (public, AGPL-3.0) | potocolom-cloud (private) |
 |---|---|---|
-| Contents | frontend, backend, worker, compose, docs, the fake QuotaService | billing service (Stripe, credit ledger), fleet autoscaler (RunPod), Terraform environments, alert runbooks |
+| Contents | frontend, backend, worker, compose, docs; the fake QuotaService when it lands | billing service (Stripe, credit ledger), fleet autoscaler (RunPod), Terraform environments, alert runbooks |
 | Talks to the other via | nothing; it defines the contracts | `QUOTA_SERVICE_URL` HTTP, metering events, fleet token minting |
 | Images | GHCR, built by public CI | pulls public images from GHCR, mirrors to ECR, adds its two private images |
 | CI responsibility | ends at "images published" | begins at "images published" |
@@ -28,7 +28,7 @@ The public repository is AGPL-3.0, with commercial exceptions sold by the projec
 What lives where, at the edges:
 
 - The Terraform environments (state, sizes, account wiring) are commercial operational data and live in the private repository. The [aws-setup.md](aws-setup.md) guide stays public: it documents how anyone could stand up their own cloud, which is good open source citizenship and costs nothing, because the moat is operations, not configuration.
-- The fake QuotaService ships in the public repository as part of cloud-sim ([local-development.md](local-development.md)). It is not just a development convenience; it is the executable contract.
+- The fake QuotaService belongs in the public repository as part of cloud-sim ([local-development.md](local-development.md)). It is not just a development convenience; it is the executable contract. Designed: no implementation ships yet, and it arrives with its first caller. `cloud-sim` today is Redis, MinIO and Mailpit.
 
 ## Boundary rules
 
