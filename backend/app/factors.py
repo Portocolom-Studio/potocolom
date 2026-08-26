@@ -436,6 +436,16 @@ async def confirm_enrolment(
     async with db.session_factory() as session:
         async with session.begin():
             if replacing is not None:
+                # The factor row first, always, whichever kind of proof this
+                # is. Spending a recovery code touches recovery_codes and then
+                # auth_factors, and spending a step touches auth_factors and
+                # then the code sweep touches recovery_codes: two replacements
+                # of different kinds would take the two tables in opposite
+                # orders and deadlock, and PostgreSQL resolves that by killing
+                # one of them, which reaches the caller as a 500.
+                await session.execute(
+                    select(AuthFactor.id).where(AuthFactor.id == replacing.id)
+                    .with_for_update())
                 # Inside the transaction, so a replacement that turns out to
                 # be impossible gives the code or the step back instead of
                 # keeping them for a change that did not happen (#430).

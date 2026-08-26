@@ -739,47 +739,6 @@ def test_two_replacements_at_once_leave_one_factor(accounts, monkeypatch):
 
 
 @pytest.mark.db
-def test_a_refused_replacement_keeps_the_recovery_codes(accounts, monkeypatch):
-    """The transaction deletes the codes before it learns it lost the factor.
-
-    If that did not roll back, losing the race would strip the account's
-    recovery codes and leave it holding a factor with no way past it but the
-    authenticator, which is the position the codes exist to prevent. Forced
-    here rather than raced, because the interleaving that reaches it is not
-    one a barrier can arrange.
-    """
-    from app import factors
-
-    with TestClient(app, base_url=ORIGIN) as client:
-        client.portal.call(_make, "rolledback@example.com")
-        assert _login(client, "rolledback@example.com").status_code == 204
-        _enrol(client)
-        before = len(client.portal.call(_codes))
-        assert before == totp.RECOVERY_CODES
-
-        stale = client.portal.call(_factors)[0]
-        stale.id = uuid.uuid4()
-
-        async def vanished(session, user_id):
-            return stale
-
-        async def proved(code, user, factor):
-            return factors.Proof(step=1)
-
-        monkeypatch.setattr(factors, "enrolled_factor", vanished)
-        monkeypatch.setattr(factors, "_verify", proved)
-
-        started = client.post("/api/v1/account/totp", headers=_csrf(client))
-        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
-                              json={"enrolment": started.json()["enrolment"],
-                                    "code": totp.code_at(started.json()["secret"],
-                                                         int(_now())),
-                                    "current_code": "whatever"})
-        assert refused.status_code == 403
-        assert len(client.portal.call(_codes)) == before
-
-
-@pytest.mark.db
 def test_the_old_factor_cannot_be_guessed_at_leisure(accounts):
     """The caller holds the new secret, so they answer that half every time.
     Without a budget the old half is a six-digit space and the sealed
@@ -874,6 +833,10 @@ def test_a_first_enrolment_that_races_a_factor_is_refused_not_a_crash(accounts, 
                                json={"enrolment": started["enrolment"],
                                      "code": totp.code_at(started["secret"], int(_now()))})
         assert answered.status_code == 409
+        # The sweep ran before the insert that failed, so the account's
+        # recovery codes were deleted inside the transaction that then rolled
+        # back. Losing this race must not cost them.
+        assert len(client.portal.call(_unspent_codes)) == totp.RECOVERY_CODES
         # The factor that was already there is the one still there.
         stored = client.portal.call(_factors)
         assert len(stored) == 1
