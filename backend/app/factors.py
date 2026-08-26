@@ -10,11 +10,13 @@ import hashlib
 import json
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -196,31 +198,33 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         factor = await enrolled_factor(session, claimed.user_id)
     if user is None or factor is None or user.state in CANNOT_SIGN_IN:
         raise REFUSED
-    if not await _accepted(body.code, user, factor):
+    proof = await _verify(body.code, user, factor)
+    if proof is None:
         raise REFUSED
-    # Answering a challenge proves the authenticator is in the right hands,
-    # which is what the replacement budget is there to wait for. An attacker
-    # holding only a session cannot reach this line.
     async with db.session_factory() as session:
-        await session.execute(
-            update(AuthFactor).where(AuthFactor.id == factor.id,
-                                     AuthFactor.replace_attempts > 0)
-            .values(replace_attempts=0))
-        await session.commit()
-    async with db.session_factory() as session:
-        # The session is contingent on winning this. The attempt was counted
-        # and committed before the code was checked, so a second request
-        # carrying the same challenge reaches here too, and only the one that
-        # actually spends the token is let in (issue #421).
-        spent = (await session.execute(
-            update(AuthToken)
-            .where(AuthToken.id == claimed.id, AuthToken.consumed_at.is_(None))
-            .values(consumed_at=func.now())
-            .returning(AuthToken.id)
-        )).first()
-        await session.commit()
-    if spent is None:
-        raise REFUSED
+        async with session.begin():
+            # The session is contingent on winning this. The attempt was
+            # counted and committed before the code was checked, so a second
+            # request carrying the same challenge reaches here too, and only
+            # the one that actually spends the token is let in (issue #421).
+            won = (await session.execute(
+                update(AuthToken)
+                .where(AuthToken.id == claimed.id, AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now())
+                .returning(AuthToken.id)
+            )).first()
+            # The proof is spent here rather than when it was checked, so the
+            # request that loses the race rolls back and gives the code or the
+            # step back with it (#424).
+            if won is None or not await _spend(session, factor, proof):
+                raise REFUSED
+            # Answering a challenge proves the authenticator is in the right
+            # hands, which is what the replacement budget waits for. An
+            # attacker holding only a session cannot reach this line.
+            await session.execute(
+                update(AuthFactor).where(AuthFactor.id == factor.id,
+                                         AuthFactor.replace_attempts > 0)
+                .values(replace_attempts=0))
     remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
     response = Response(status_code=204)
     from app.accounts import issue_session
@@ -239,55 +243,75 @@ def _clear_challenge(response: Response, settings: Settings) -> None:
                            httponly=True)
 
 
-async def _accepted(code: str, user: User, factor: AuthFactor) -> bool:
-    if await _spend_recovery_code(user.id, code):
-        return True
+@dataclass(frozen=True)
+class Proof:
+    """What a presented code turned out to be, and what spending it will cost.
+
+    Checking and spending are separate because the caller decides whether the
+    thing the proof authorises actually happens. Spent at the moment it is
+    checked, a code is gone whether or not the request that presented it
+    succeeded, and a one-use credential consumed for nothing is a way into the
+    account that its holder no longer has and cannot know about (#424, #430).
+    """
+
+    recovery_code_id: uuid.UUID | None = None
+    step: int | None = None
+
+
+async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
+    """What this code is, without consuming it. None if it is nothing."""
+    if db.session_factory is None:
+        return None
+    async with db.session_factory() as session:
+        found = (await session.execute(
+            select(RecoveryCode.id).where(
+                RecoveryCode.user_id == user.id,
+                RecoveryCode.code_hash == _hash(code.strip().lower()),
+                RecoveryCode.consumed_at.is_(None))
+        )).first()
+    if found is not None:
+        return Proof(recovery_code_id=found.id)
     try:
         secret = keyring.get_key_ring().decrypt(
             TOTP_PURPOSE, factor.secret_ciphertext, user.id.bytes).decode()
     except Exception:
         # A secret this installation can no longer read is a factor nobody can
         # pass, which is the fail-closed direction.
-        return False
+        return None
     step = totp.matched_step(secret, code)
     if step is None:
-        return False
-    return await _claim_step(factor.id, step)
+        return None
+    return Proof(step=step)
 
 
-async def _claim_step(factor_id: uuid.UUID, step: int) -> bool:
-    """A code is good once, which RFC 6238 requires and the drift window makes
-    necessary: without this one stays live for ninety seconds, long enough for
-    whoever phished it to spend it."""
-    if db.session_factory is None:
-        return False
-    async with db.session_factory() as session:
-        claimed = (await session.execute(
-            update(AuthFactor)
-            .where(AuthFactor.id == factor_id,
-                   (AuthFactor.last_step.is_(None)) | (AuthFactor.last_step < step))
-            .values(last_step=step)
-            .returning(AuthFactor.id)
-        )).first()
-        await session.commit()
-    return claimed is not None
+async def _spend(session: AsyncSession, factor: AuthFactor, proof: Proof) -> bool:
+    """Consume the proof inside the caller's transaction.
 
-
-async def _spend_recovery_code(user_id: uuid.UUID, code: str) -> bool:
-    """One use, and consumed by the same statement that finds it."""
-    if db.session_factory is None:
-        return False
-    async with db.session_factory() as session:
+    Conditional on it still being unspent, so of two requests holding the same
+    proof only one is told it spent it, and the caller that loses gives the
+    credential back by rolling the transaction it was part of.
+    """
+    if proof.recovery_code_id is not None:
         spent = (await session.execute(
             update(RecoveryCode)
-            .where(RecoveryCode.user_id == user_id,
-                   RecoveryCode.code_hash == _hash(code.strip().lower()),
+            .where(RecoveryCode.id == proof.recovery_code_id,
                    RecoveryCode.consumed_at.is_(None))
             .values(consumed_at=func.now())
             .returning(RecoveryCode.id)
         )).first()
-        await session.commit()
-    return spent is not None
+        return spent is not None
+    claimed = (await session.execute(
+        update(AuthFactor)
+        .where(AuthFactor.id == factor.id,
+               (AuthFactor.last_step.is_(None)) | (AuthFactor.last_step < proof.step))
+        .values(last_step=proof.step)
+        .returning(AuthFactor.id)
+    )).first()
+    return claimed is not None
+
+
+
+
 
 
 @router.post("/api/v1/account/totp")
@@ -394,6 +418,7 @@ async def confirm_enrolment(
     # this, two requests from a session with recent authentication replaced
     # somebody's second factor with one the caller held, and the account
     # found out when its own authenticator stopped working (issue #427).
+    proof: Proof | None = None
     async with db.session_factory() as session:
         replacing = await enrolled_factor(session, user_id)
     if replacing is not None:
@@ -403,16 +428,23 @@ async def confirm_enrolment(
             # The budget is gone. Signing in with the factor clears it, which
             # is the one thing an attacker holding only a session cannot do.
             raise REFUSED
-        if not await _accepted(body.current_code, principal.user, replacing):
+        proof = await _verify(body.current_code, principal.user, replacing)
+        if proof is None:
             raise REFUSED
 
     ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
-            # Replacing an enrolment replaces its codes with it: a code minted
-            # for a secret nobody holds any more is a way in nobody expects.
-            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
             if replacing is not None:
+                # Inside the transaction, so a replacement that turns out to
+                # be impossible gives the code or the step back instead of
+                # keeping them for a change that did not happen (#430).
+                #
+                # Before the codes are cleared, not after: spending a recovery
+                # code means marking the row consumed, and the delete below
+                # would have taken the row out from under it.
+                if proof is None or not await _spend(session, replacing, proof):
+                    raise REFUSED
                 # Bound to the factor that was proved, and the request only
                 # continues if it is the one that removed it. An account-wide
                 # delete would let the last writer replace a factor it never
@@ -424,6 +456,9 @@ async def confirm_enrolment(
                 )).first()
                 if gone is None:
                     raise REFUSED
+            # Replacing an enrolment replaces its codes with it: a code minted
+            # for a secret nobody holds any more is a way in nobody expects.
+            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
             # A first enrolment deletes nothing at all. Deleting by account
             # here is what let two of them race: both read no factor, the
             # first installed one, and the second removed it and installed
