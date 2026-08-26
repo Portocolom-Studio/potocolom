@@ -558,7 +558,7 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
                 arrived += 1
                 if arrived == 2:
                     ready.set()
-                await ready.wait()
+                await asyncio.wait_for(ready.wait(), timeout=10)
                 answered = await caller.post("/api/v1/auth/totp",
                                              headers={"Origin": ORIGIN},
                                              json={"code": code})
@@ -703,7 +703,7 @@ def test_two_replacements_at_once_leave_one_factor(accounts, monkeypatch):
             read += 1
             if read == 2:
                 ready.set()
-            await ready.wait()
+            await asyncio.wait_for(ready.wait(), timeout=10)
             return found
 
         monkeypatch.setattr(factors, "enrolled_factor", both_have_read)

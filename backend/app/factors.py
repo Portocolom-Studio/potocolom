@@ -326,10 +326,18 @@ def _violated(error: IntegrityError) -> str | None:
     an exception assembled by hand.
     """
     cause: BaseException | None = getattr(error, "orig", None)
-    while cause is not None:
-        name = getattr(cause, "constraint_name", None)
-        if name:
-            return str(name)
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        try:
+            name = getattr(cause, "constraint_name", None)
+            if name:
+                return str(name)
+        except Exception:
+            # A driver that raises while being asked its own attribute is not
+            # one to take an answer from, and this runs inside an exception
+            # handler where a second exception would replace the first.
+            return None
         cause = cause.__cause__
     return None
 

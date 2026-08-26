@@ -1,4 +1,4 @@
-"""how many times somebody has failed to prove the factor they are replacing
+"""how many times somebody has tried to prove the factor they are replacing
 
 Revision ID: 0023
 Revises: 0022
