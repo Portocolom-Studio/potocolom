@@ -9,7 +9,7 @@ from app import db, factors, keyring, sessions, totp
 from app.main import app
 from app.passwords import hash_password
 from app.settings import get_settings
-from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, User
+from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, Session, User
 
 PASSWORD = "a-long-enough-account-password"
 ORIGIN = "https://studio.example.com"
@@ -957,3 +957,105 @@ def test_a_replacement_that_is_refused_keeps_the_code_it_was_given(accounts, mon
                                     "current_code": codes[0]})
         assert refused.status_code == 403
         assert len(client.portal.call(_unspent_codes)) == before
+
+
+async def _live_sessions_for(user_id: uuid.UUID) -> list[Session]:
+    async with db.session_factory() as db_session:
+        return list((await db_session.execute(
+            select(Session).where(Session.user_id == user_id,
+                                  Session.revoked_at.is_(None))
+        )).scalars().all())
+
+
+def _session_cookie(client) -> str:
+    return next(c.value for c in client.cookies.jar
+                if c.name.endswith("potocolom_session"))
+
+
+def _signed_out(client) -> None:
+    """Drop the session cookie without putting one back, so the next login is
+    a clean start rather than a rotation of the one being held."""
+    for name in ("__Host-potocolom_session", "potocolom_session"):
+        client.cookies.delete(name, path="/")
+
+
+def _wearing(client, token: str) -> None:
+    """One client, two people. Nesting TestClients works until the inner
+    lifespan disposes the engine the outer one is still using."""
+    for name in ("__Host-potocolom_session", "potocolom_session"):
+        client.cookies.delete(name, path="/")
+    client.cookies.set("__Host-potocolom_session", token)
+
+
+@pytest.mark.db
+def test_enrolling_a_factor_signs_the_other_sessions_out(accounts):
+    """Turning on a second factor is what somebody does when they think their
+    account is at risk, and it is the moment where signing everything else out
+    is most obviously what they meant. A stolen session is untouched by a
+    factor that only gates the next sign-in (issue #433)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "twoplaces@example.com")
+        assert _login(client, "twoplaces@example.com").status_code == 204
+        elsewhere = _session_cookie(client)
+        # Signing in again while holding the first cookie would retire it:
+        # login refuses to let a token planted before authentication be the
+        # one that comes out of it. Two live sessions needs two clean starts.
+        _signed_out(client)
+        assert _login(client, "twoplaces@example.com").status_code == 204
+        here = _session_cookie(client)
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 2
+
+        _enrol(client)
+        # The one that enrolled keeps working; the other does not.
+        assert client.get("/api/v1/account").status_code == 200
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+        _wearing(client, elsewhere)
+        assert client.get("/api/v1/account").status_code == 401
+        _wearing(client, here)
+        assert client.get("/api/v1/account").status_code == 200
+
+
+@pytest.mark.db
+def test_replacing_a_factor_signs_the_other_sessions_out(accounts):
+    """Somebody replacing a factor has usually lost the old authenticator,
+    which is the same worry wearing a different hat."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "moved@example.com")
+        assert _login(client, "moved@example.com").status_code == 204
+        old_secret, codes = _enrol(client)
+        here = _session_cookie(client)
+
+        # A second session has to be earned now: once a factor is enrolled a
+        # login answers with a challenge rather than a session, so this one
+        # comes through the front door like anybody else's would.
+        _signed_out(client)
+        assert _login(client, "moved@example.com").status_code == 200
+        assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": codes[0]}).status_code == 204
+        _wearing(client, here)
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 2
+
+        _, replaced = _replace(client, None, current=_next_code(old_secret))
+        assert replaced.status_code == 204
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+
+
+@pytest.mark.db
+def test_the_other_realtime_sockets_are_closed_too(accounts, monkeypatch):
+    """A revoked row stops the next request and does not reach a socket that
+    bound its principal at the handshake, so the eviction has to be told to
+    the relay as well."""
+    from app import factors
+
+    closed: list[tuple] = []
+
+    async def close(user_id, session_id=None, keep=None):
+        closed.append((user_id, session_id, keep))
+
+    monkeypatch.setattr(factors.sessions, "close_sockets", close)
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "sockets@example.com")
+        assert _login(client, "sockets@example.com").status_code == 204
+        _enrol(client)
+    assert [call[0] for call in closed] == [user.id], closed
+    assert closed[0][2] is not None, "the enrolling session is kept"
