@@ -75,6 +75,15 @@ async def _codes() -> list[RecoveryCode]:
         return list((await session.execute(select(RecoveryCode))).scalars().all())
 
 
+async def _unspent_codes() -> list[RecoveryCode]:
+    """Spending a code sets consumed_at rather than deleting the row, so a
+    count of rows says nothing about how many are still good."""
+    async with db.session_factory() as session:
+        return list((await session.execute(
+            select(RecoveryCode).where(RecoveryCode.consumed_at.is_(None))
+        )).scalars().all())
+
+
 async def _challenges() -> list[AuthToken]:
     async with db.session_factory() as session:
         return list((await session.execute(
@@ -754,11 +763,11 @@ def test_a_refused_replacement_keeps_the_recovery_codes(accounts, monkeypatch):
         async def vanished(session, user_id):
             return stale
 
-        async def accepted(code, user, factor):
-            return True
+        async def proved(code, user, factor):
+            return factors.Proof(step=1)
 
         monkeypatch.setattr(factors, "enrolled_factor", vanished)
-        monkeypatch.setattr(factors, "_accepted", accepted)
+        monkeypatch.setattr(factors, "_verify", proved)
 
         started = client.post("/api/v1/account/totp", headers=_csrf(client))
         refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
@@ -893,3 +902,95 @@ def test_only_the_one_factor_constraint_reads_as_a_lost_race(accounts, monkeypat
                               "code": totp.code_at(started["secret"], int(_now()))})
         assert "recovery_codes_unique" in str(raised.value)
         assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_losing_the_challenge_race_keeps_the_recovery_code(accounts, monkeypatch):
+    """The loser is refused and must be refused having spent nothing.
+
+    A code consumed for a session nobody got is a way in the account no longer
+    has, and the person holding it has no way to know (issue #424).
+    """
+    import asyncio
+
+    import httpx
+
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keepcode@example.com")
+        assert _login(client, "keepcode@example.com").status_code == 204
+        _, codes = _enrol(client)
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "keepcode@example.com").status_code == 200
+        held = {cookie.name: cookie.value for cookie in fresh.cookies.jar}
+
+        # Both requests verify before either consumes the challenge, which is
+        # the window the loser used to spend its code in.
+        ready = asyncio.Event()
+        verified = 0
+        real_verify = factors._verify
+
+        async def both_have_verified(code, user, factor):
+            nonlocal verified
+            proof = await real_verify(code, user, factor)
+            verified += 1
+            if verified == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=10)
+            return proof
+
+        monkeypatch.setattr(factors, "_verify", both_have_verified)
+
+        async def answer(code: str) -> int:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url=ORIGIN, cookies=held) as caller:
+                answered = await caller.post("/api/v1/auth/totp",
+                                             headers={"Origin": ORIGIN},
+                                             json={"code": code})
+                return answered.status_code
+
+        async def together() -> list[int]:
+            return list(await asyncio.gather(answer(codes[0]), answer(codes[1])))
+
+        answered = fresh.portal.call(together)
+        # One got in. The other's code is still good, so it is still unspent.
+        assert sorted(answered) == [204, 403], answered
+        # fresh, not client: the first one's lifespan is over and its portal
+        # with it.
+        assert len(fresh.portal.call(_unspent_codes)) == totp.RECOVERY_CODES - 1
+
+
+@pytest.mark.db
+def test_a_replacement_that_is_refused_keeps_the_code_it_was_given(accounts, monkeypatch):
+    """Same rule on the other route: proof presented to a replacement that
+    does not happen is proof that was never spent (issue #430)."""
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keepcode2@example.com")
+        assert _login(client, "keepcode2@example.com").status_code == 204
+        _, codes = _enrol(client)
+        before = len(client.portal.call(_unspent_codes))
+
+        stale = client.portal.call(_factors)[0]
+        stale.id = uuid.uuid4()
+
+        async def vanished(session, user_id):
+            return stale
+
+        async def budget_is_fine(factor_id):
+            return True
+
+        monkeypatch.setattr(factors, "enrolled_factor", vanished)
+        # Past the budget on purpose: the window this test is about opens
+        # after the proof has been checked and closes when the replacement
+        # turns out to be impossible. Refusing earlier never reaches it.
+        monkeypatch.setattr(factors, "_spend_replacement_attempt", budget_is_fine)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started["enrolment"],
+                                    "code": totp.code_at(started["secret"], int(_now())),
+                                    "current_code": codes[0]})
+        assert refused.status_code == 403
+        assert len(client.portal.call(_unspent_codes)) == before
