@@ -7,6 +7,10 @@ Replacing a factor asks for a code from the one being retired, and without a
 count that ask is free to retry: the caller already holds the new secret, so
 they can answer the new half correctly every time and grind the old half. The
 counter is what makes the ask cost something.
+
+Every attempt counts, not only the wrong ones. A correct proof whose
+replacement then fails is paid for too, because counting after the check is
+what would let a guess be free.
 """
 
 import sqlalchemy as sa

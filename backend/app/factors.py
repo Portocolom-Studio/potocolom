@@ -26,6 +26,9 @@ from app.tables import AuthFactor, AuthToken, RecoveryCode, User
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 TOTP_PURPOSE = "totp-factors"
+# The unique index that makes an account hold one factor, named so the race
+# it refuses can be told apart from any other integrity failure.
+ONE_FACTOR_PER_ACCOUNT = "auth_factors_one_per_kind"
 # Its own purpose, so an enrolment nobody confirmed can never be presented as
 # a stored factor, nor a stored factor as an enrolment.
 ENROLMENT_PURPOSE = "totp-enrolment"
@@ -313,6 +316,24 @@ async def start_enrolment(
     }
 
 
+def _violated(error: IntegrityError) -> str | None:
+    """The constraint a driver refused on, dug out of the wrapping.
+
+    Three layers: SQLAlchemy's IntegrityError wraps the adapter's, which
+    carries only a message, and the asyncpg error holding `constraint_name`
+    hangs off it as `__cause__`. Walking `__cause__` rather than reading one
+    level is what makes this work against the real driver instead of against
+    an exception assembled by hand.
+    """
+    cause: BaseException | None = getattr(error, "orig", None)
+    while cause is not None:
+        name = getattr(cause, "constraint_name", None)
+        if name:
+            return str(name)
+        cause = cause.__cause__
+    return None
+
+
 async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
     """Counts the try before the code is looked at, so a wrong one costs.
 
@@ -418,6 +439,13 @@ async def confirm_enrolment(
                 # on (user_id, kind) is what refuses a second one that read no
                 # factor at the same moment. Letting the violation out would
                 # answer a case the design expects with a 500.
+                #
+                # Only that constraint. Labelling every integrity error a race
+                # would give a foreign key or a recovery-code collision the
+                # same friendly answer and keep a real fault out of the 500s
+                # somebody is watching.
+                if _violated(raced) != ONE_FACTOR_PER_ACCOUNT:
+                    raise
                 raise HTTPException(
                     status_code=409,
                     detail="a second factor was enrolled already") from raced

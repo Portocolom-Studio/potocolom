@@ -871,3 +871,25 @@ def test_a_first_enrolment_that_races_a_factor_is_refused_not_a_crash(accounts, 
         assert keyring.get_key_ring().decrypt(
             "totp-factors", stored[0].secret_ciphertext,
             stored[0].user_id.bytes).decode() == secret
+
+
+@pytest.mark.db
+def test_only_the_one_factor_constraint_reads_as_a_lost_race(accounts, monkeypatch):
+    """A 409 says somebody else enrolled first. Any other integrity failure is
+    a fault, and giving it the same friendly answer would keep a real one out
+    of the 500s somebody is watching."""
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "collide@example.com")
+        assert _login(client, "collide@example.com").status_code == 204
+        # Every recovery code hashes the same, so the second one violates
+        # recovery_codes_unique rather than the factor constraint.
+        monkeypatch.setattr(factors, "_hash", lambda value: b"c" * 32)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        with pytest.raises(Exception) as raised:
+            client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                        json={"enrolment": started["enrolment"],
+                              "code": totp.code_at(started["secret"], int(_now()))})
+        assert "recovery_codes_unique" in str(raised.value)
+        assert client.portal.call(_factors) == []
