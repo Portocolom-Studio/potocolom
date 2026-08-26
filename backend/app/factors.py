@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -411,4 +411,14 @@ async def confirm_enrolment(
             ))
             for code in codes:
                 session.add(RecoveryCode(user_id=user_id, code_hash=_hash(code)))
+            try:
+                await session.flush()
+            except IntegrityError as raced:
+                # A first enrolment deletes nothing, so the unique constraint
+                # on (user_id, kind) is what refuses a second one that read no
+                # factor at the same moment. Letting the violation out would
+                # answer a case the design expects with a 500.
+                raise HTTPException(
+                    status_code=409,
+                    detail="a second factor was enrolled already") from raced
     return Response(status_code=204)

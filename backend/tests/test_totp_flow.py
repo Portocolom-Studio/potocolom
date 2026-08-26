@@ -818,3 +818,33 @@ def test_a_suspended_account_cannot_finish_an_enrolment_it_started(accounts):
                                  "code": totp.code_at(started["secret"],
                                                       int(_now()))}).status_code == 403
         assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_a_first_enrolment_that_races_a_factor_is_refused_not_a_crash(accounts, monkeypatch):
+    """A first enrolment deletes nothing, so the unique constraint is what
+    stops two of them. Relying on it is right and letting the violation reach
+    the client is not: the caller lost a race and should be told so, rather
+    than shown a 500 for a case the design expects."""
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "raced@example.com")
+        assert _login(client, "raced@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def blind(session, user_id):
+            return None
+
+        monkeypatch.setattr(factors, "enrolled_factor", blind)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        answered = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now()))})
+        assert answered.status_code == 409
+        # The factor that was already there is the one still there.
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == secret
