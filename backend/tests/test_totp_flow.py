@@ -626,23 +626,32 @@ def test_a_recovery_code_replaces_the_factor_too(accounts):
         client.portal.call(_make, "lostphone2@example.com")
         assert _login(client, "lostphone2@example.com").status_code == 204
         _, codes = _enrol(client)
-        _, replaced = _replace(client, None, current=codes[0])
+        new_secret, replaced = _replace(client, None, current=codes[0])
         assert replaced.status_code == 204
-        assert len(client.portal.call(_factors)) == 1
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        # A 204 that replaced nothing would pass without this.
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == new_secret
 
 
 @pytest.mark.db
-def test_a_wrong_code_for_the_old_factor_changes_nothing(accounts):
+def test_a_wrong_code_for_the_old_factor_keeps_the_factor_and_its_codes(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "wrongold@example.com")
         assert _login(client, "wrongold@example.com").status_code == 204
         old_secret, _ = _enrol(client)
+        before = len(client.portal.call(_codes))
         _, refused = _replace(client, None, current="000000")
         assert refused.status_code == 403
         stored = client.portal.call(_factors)
         assert keyring.get_key_ring().decrypt(
             "totp-factors", stored[0].secret_ciphertext,
             stored[0].user_id.bytes).decode() == old_secret
+        # The guess costs an attempt, deliberately, and nothing else.
+        assert len(client.portal.call(_codes)) == before
+        assert stored[0].replace_attempts == 1
 
 
 @pytest.mark.db
@@ -657,7 +666,7 @@ def test_a_first_enrolment_has_nothing_to_prove(accounts):
 
 
 @pytest.mark.db
-def test_two_replacements_at_once_leave_one_factor(accounts):
+def test_two_replacements_at_once_leave_one_factor(accounts, monkeypatch):
     """Both prove the factor they are replacing, and only one of them can
     have removed it, so the other is refused rather than served.
 
@@ -670,6 +679,8 @@ def test_two_replacements_at_once_leave_one_factor(accounts):
 
     import httpx
 
+    from app import factors
+
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "racer2@example.com")
         assert _login(client, "racer2@example.com").status_code == 204
@@ -677,17 +688,29 @@ def test_two_replacements_at_once_leave_one_factor(accounts):
         held = {cookie.name: cookie.value for cookie in client.cookies.jar}
         starts = [client.post("/api/v1/account/totp", headers=_csrf(client)).json()
                   for _ in range(2)]
+        # The barrier goes where the race is: both requests must have read the
+        # factor they intend to replace before either is allowed to delete it.
+        # Held outside the application it proves nothing, because one request
+        # can finish before the other starts and the sequential order passes
+        # against the account-wide delete this guard replaced.
         ready = asyncio.Event()
-        arrived = 0
+        read = 0
+        real_enrolled_factor = factors.enrolled_factor
+
+        async def both_have_read(session, user_id):
+            nonlocal read
+            found = await real_enrolled_factor(session, user_id)
+            read += 1
+            if read == 2:
+                ready.set()
+            await ready.wait()
+            return found
+
+        monkeypatch.setattr(factors, "enrolled_factor", both_have_read)
 
         async def confirm(started: dict, recovery: str) -> int:
-            nonlocal arrived
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url=ORIGIN, cookies=held) as caller:
-                arrived += 1
-                if arrived == 2:
-                    ready.set()
-                await ready.wait()
                 answered = await caller.post(
                     "/api/v1/account/totp/confirm",
                     headers={"Origin": ORIGIN, "X-CSRF-Token": held[
