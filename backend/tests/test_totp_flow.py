@@ -558,7 +558,7 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
                 arrived += 1
                 if arrived == 2:
                     ready.set()
-                await ready.wait()
+                await asyncio.wait_for(ready.wait(), timeout=10)
                 answered = await caller.post("/api/v1/auth/totp",
                                              headers={"Origin": ORIGIN},
                                              json={"code": code})
@@ -569,3 +569,327 @@ def test_one_challenge_answered_twice_at_once_gets_in_once(accounts):
 
         answered = fresh.portal.call(together)
     assert sorted(answered) == [204, 403], answered
+
+
+def _replace(client, secret_and_code, current=None):
+    """Enrol again on an account that already has a factor."""
+    started = client.post("/api/v1/account/totp", headers=_csrf(client))
+    assert started.status_code == 200
+    body = {"enrolment": started.json()["enrolment"],
+            "code": totp.code_at(started.json()["secret"], int(_now()))}
+    if current is not None:
+        body["current_code"] = current
+    return started.json()["secret"], client.post(
+        "/api/v1/account/totp/confirm", headers=_csrf(client), json=body)
+
+
+@pytest.mark.db
+def test_replacing_a_factor_needs_the_one_being_replaced(accounts):
+    """A session with recent authentication could enrol a factor it controlled
+    and the account's real one was deleted to make room for it, in two
+    requests, with nothing sent to anybody. The factor stopped an attacker at
+    the challenge and then did not stop them here."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "replaced@example.com")
+        assert _login(client, "replaced@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        _, refused = _replace(client, None)
+        assert refused.status_code == 403
+        # The factor they already had is untouched.
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext, stored[0].user_id.bytes).decode() == secret
+
+
+@pytest.mark.db
+def test_a_code_from_the_old_factor_replaces_it(accounts):
+    """Somebody moving to a new phone still has the old one in their hand."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "newphone@example.com")
+        assert _login(client, "newphone@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        new_secret, replaced = _replace(client, None, current=_next_code(old_secret))
+        assert replaced.status_code == 204
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == new_secret
+
+
+@pytest.mark.db
+def test_a_recovery_code_replaces_the_factor_too(accounts):
+    """The phone is gone, the codes are not, and enrolling a new authenticator
+    is exactly what somebody in that position wants to do."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lostphone2@example.com")
+        assert _login(client, "lostphone2@example.com").status_code == 204
+        _, codes = _enrol(client)
+        new_secret, replaced = _replace(client, None, current=codes[0])
+        assert replaced.status_code == 204
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        # A 204 that replaced nothing would pass without this.
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == new_secret
+
+
+@pytest.mark.db
+def test_a_wrong_code_for_the_old_factor_keeps_the_factor_and_its_codes(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "wrongold@example.com")
+        assert _login(client, "wrongold@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        before = len(client.portal.call(_codes))
+        _, refused = _replace(client, None, current="000000")
+        assert refused.status_code == 403
+        stored = client.portal.call(_factors)
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == old_secret
+        # The guess costs an attempt, deliberately, and nothing else.
+        assert len(client.portal.call(_codes)) == before
+        assert stored[0].replace_attempts == 1
+
+
+@pytest.mark.db
+def test_a_first_enrolment_has_nothing_to_prove(accounts):
+    """Nothing to replace, so nothing to ask for. Requiring a code here would
+    mean an account could never enrol at all."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "firsttime@example.com")
+        assert _login(client, "firsttime@example.com").status_code == 204
+        _enrol(client)
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_two_replacements_at_once_leave_one_factor(accounts, monkeypatch):
+    """Both prove the factor they are replacing, and only one of them can
+    have removed it, so the other is refused rather than served.
+
+    Deleting by account instead would let the loser replace a factor it never
+    proved: it would remove whatever it found and install its own, and end up
+    owning the account's second factor. The account cannot hold two either
+    way, since auth_factors is one row per account by unique constraint.
+    """
+    import asyncio
+
+    import httpx
+
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "racer2@example.com")
+        assert _login(client, "racer2@example.com").status_code == 204
+        _, codes = _enrol(client)
+        held = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        starts = [client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+                  for _ in range(2)]
+        # The barrier goes where the race is: both requests must have read the
+        # factor they intend to replace before either is allowed to delete it.
+        # Held outside the application it proves nothing, because one request
+        # can finish before the other starts and the sequential order passes
+        # against the account-wide delete this guard replaced.
+        ready = asyncio.Event()
+        read = 0
+        real_enrolled_factor = factors.enrolled_factor
+
+        async def both_have_read(session, user_id):
+            nonlocal read
+            found = await real_enrolled_factor(session, user_id)
+            read += 1
+            if read == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=10)
+            return found
+
+        monkeypatch.setattr(factors, "enrolled_factor", both_have_read)
+
+        async def confirm(started: dict, recovery: str) -> int:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url=ORIGIN, cookies=held) as caller:
+                answered = await caller.post(
+                    "/api/v1/account/totp/confirm",
+                    headers={"Origin": ORIGIN, "X-CSRF-Token": held[
+                        next(name for name in held if name.endswith("potocolom_csrf"))]},
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(started["secret"], int(_now())),
+                          "current_code": recovery})
+                return answered.status_code
+
+        async def together() -> list[int]:
+            return list(await asyncio.gather(confirm(starts[0], codes[0]),
+                                             confirm(starts[1], codes[1])))
+
+        answered = client.portal.call(together)
+        assert len(client.portal.call(_factors)) == 1, answered
+    assert sorted(answered) == [204, 403], answered
+
+
+@pytest.mark.db
+def test_a_refused_replacement_keeps_the_recovery_codes(accounts, monkeypatch):
+    """The transaction deletes the codes before it learns it lost the factor.
+
+    If that did not roll back, losing the race would strip the account's
+    recovery codes and leave it holding a factor with no way past it but the
+    authenticator, which is the position the codes exist to prevent. Forced
+    here rather than raced, because the interleaving that reaches it is not
+    one a barrier can arrange.
+    """
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "rolledback@example.com")
+        assert _login(client, "rolledback@example.com").status_code == 204
+        _enrol(client)
+        before = len(client.portal.call(_codes))
+        assert before == totp.RECOVERY_CODES
+
+        stale = client.portal.call(_factors)[0]
+        stale.id = uuid.uuid4()
+
+        async def vanished(session, user_id):
+            return stale
+
+        async def accepted(code, user, factor):
+            return True
+
+        monkeypatch.setattr(factors, "enrolled_factor", vanished)
+        monkeypatch.setattr(factors, "_accepted", accepted)
+
+        started = client.post("/api/v1/account/totp", headers=_csrf(client))
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started.json()["enrolment"],
+                                    "code": totp.code_at(started.json()["secret"],
+                                                         int(_now())),
+                                    "current_code": "whatever"})
+        assert refused.status_code == 403
+        assert len(client.portal.call(_codes)) == before
+
+
+@pytest.mark.db
+def test_the_old_factor_cannot_be_guessed_at_leisure(accounts):
+    """The caller holds the new secret, so they answer that half every time.
+    Without a budget the old half is a six-digit space and the sealed
+    enrolment is good for thirty minutes."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "grinder@example.com")
+        assert _login(client, "grinder@example.com").status_code == 204
+        old_secret, _ = _enrol(client)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        def guess(current):
+            return client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now())),
+                                     "current_code": current}).status_code
+
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert guess("000000") == 403
+        # The budget is spent, so even the right code is refused now.
+        assert guess(_next_code(old_secret)) == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_signing_in_with_the_factor_gives_the_budget_back(accounts):
+    """Otherwise ten wrong guesses by anybody would stop the owner ever
+    moving to a new phone, which is a denial of service against a setting
+    they chose for their own safety."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "recovers@example.com")
+        assert _login(client, "recovers@example.com").status_code == 204
+        old_secret, codes = _enrol(client)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now())),
+                                     "current_code": "000000"}).status_code == 403
+
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "recovers@example.com").status_code == 200
+        # A recovery code for the challenge, so the authenticator's current
+        # code is still unspent for the replacement: one code, one use.
+        assert fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                          json={"code": codes[0]}).status_code == 204
+        new_secret, replaced = _replace(fresh, None, current=_next_code(old_secret))
+        assert replaced.status_code == 204
+
+
+@pytest.mark.db
+def test_a_suspended_account_cannot_finish_an_enrolment_it_started(accounts):
+    """Suspended is read-only, and current_principal admits it. An enrolment
+    begun while active must not land after the account was paused."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "paused@example.com")
+        assert _login(client, "paused@example.com").status_code == 204
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    update(User).where(User.id == user.id).values(state="suspended"))
+                await session.commit()
+
+        client.portal.call(suspend)
+        assert client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                           json={"enrolment": started["enrolment"],
+                                 "code": totp.code_at(started["secret"],
+                                                      int(_now()))}).status_code == 403
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_a_first_enrolment_that_races_a_factor_is_refused_not_a_crash(accounts, monkeypatch):
+    """A first enrolment deletes nothing, so the unique constraint is what
+    stops two of them. Relying on it is right and letting the violation reach
+    the client is not: the caller lost a race and should be told so, rather
+    than shown a 500 for a case the design expects."""
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "raced@example.com")
+        assert _login(client, "raced@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def blind(session, user_id):
+            return None
+
+        monkeypatch.setattr(factors, "enrolled_factor", blind)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        answered = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                               json={"enrolment": started["enrolment"],
+                                     "code": totp.code_at(started["secret"], int(_now()))})
+        assert answered.status_code == 409
+        # The factor that was already there is the one still there.
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == secret
+
+
+@pytest.mark.db
+def test_only_the_one_factor_constraint_reads_as_a_lost_race(accounts, monkeypatch):
+    """A 409 says somebody else enrolled first. Any other integrity failure is
+    a fault, and giving it the same friendly answer would keep a real one out
+    of the 500s somebody is watching."""
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "collide@example.com")
+        assert _login(client, "collide@example.com").status_code == 204
+        # Every recovery code hashes the same, so the second one violates
+        # recovery_codes_unique rather than the factor constraint.
+        monkeypatch.setattr(factors, "_hash", lambda value: b"c" * 32)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        with pytest.raises(Exception) as raised:
+            client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                        json={"enrolment": started["enrolment"],
+                              "code": totp.code_at(started["secret"], int(_now()))})
+        assert "recovery_codes_unique" in str(raised.value)
+        assert client.portal.call(_factors) == []

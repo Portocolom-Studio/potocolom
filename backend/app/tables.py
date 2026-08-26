@@ -183,6 +183,8 @@ class AuthFactor(Base):
     key_version: Mapped[int] = mapped_column(SmallInteger)
     # The last time step this factor accepted. A code is good once.
     last_step: Mapped[int | None] = mapped_column(BigInteger)
+    replace_attempts: Mapped[int] = mapped_column(
+        SmallInteger, default=0, server_default=text("0"))
     confirmed_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

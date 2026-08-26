@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -26,6 +26,9 @@ from app.tables import AuthFactor, AuthToken, RecoveryCode, User
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 TOTP_PURPOSE = "totp-factors"
+# The unique index that makes an account hold one factor, named so the race
+# it refuses can be told apart from any other integrity failure.
+ONE_FACTOR_PER_ACCOUNT = "auth_factors_one_per_kind"
 # Its own purpose, so an enrolment nobody confirmed can never be presented as
 # a stored factor, nor a stored factor as an enrolment.
 ENROLMENT_PURPOSE = "totp-enrolment"
@@ -159,6 +162,9 @@ class CodeRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     enrolment: str
     code: str
+    # Only when there is a factor to replace, and then it is required: a code
+    # from the authenticator being retired, or one of its recovery codes.
+    current_code: str | None = None
 
 
 @router.post("/api/v1/auth/totp", status_code=204)
@@ -192,6 +198,15 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         raise REFUSED
     if not await _accepted(body.code, user, factor):
         raise REFUSED
+    # Answering a challenge proves the authenticator is in the right hands,
+    # which is what the replacement budget is there to wait for. An attacker
+    # holding only a session cannot reach this line.
+    async with db.session_factory() as session:
+        await session.execute(
+            update(AuthFactor).where(AuthFactor.id == factor.id,
+                                     AuthFactor.replace_attempts > 0)
+            .values(replace_attempts=0))
+        await session.commit()
     async with db.session_factory() as session:
         # The session is contingent on winning this. The attempt was counted
         # and committed before the code was checked, so a second request
@@ -301,6 +316,54 @@ async def start_enrolment(
     }
 
 
+def _violated(error: IntegrityError) -> str | None:
+    """The constraint a driver refused on, dug out of the wrapping.
+
+    Three layers: SQLAlchemy's IntegrityError wraps the adapter's, which
+    carries only a message, and the asyncpg error holding `constraint_name`
+    hangs off it as `__cause__`. Walking `__cause__` rather than reading one
+    level is what makes this work against the real driver instead of against
+    an exception assembled by hand.
+    """
+    cause: BaseException | None = getattr(error, "orig", None)
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        try:
+            name = getattr(cause, "constraint_name", None)
+            if name:
+                return str(name)
+        except Exception:
+            # A driver that raises while being asked its own attribute is not
+            # one to take an answer from, and this runs inside an exception
+            # handler where a second exception would replace the first.
+            return None
+        cause = cause.__cause__
+    return None
+
+
+async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
+    """Counts the try before the code is looked at, so a wrong one costs.
+
+    Without this the ask is free to repeat: whoever asked for the new secret
+    can answer that half correctly every time, and the enrolment they hold is
+    good for thirty minutes, so the old half is a six-digit space to grind at
+    leisure. The login challenge's budget does not reach here, because this
+    caller already has a session (issue #427).
+    """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        spent = (await session.execute(
+            update(AuthFactor)
+            .where(AuthFactor.id == factor_id,
+                   AuthFactor.replace_attempts < MAX_ATTEMPTS)
+            .values(replace_attempts=AuthFactor.replace_attempts + 1)
+            .returning(AuthFactor.id)
+        )).first()
+        await session.commit()
+    return spent is not None
+
+
 @router.post("/api/v1/account/totp/confirm", status_code=204)
 async def confirm_enrolment(
     body: ConfirmRequest,
@@ -314,18 +377,58 @@ async def confirm_enrolment(
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    if principal.user.state != "active":
+        # current_principal admits a suspended account, which may read and
+        # change nothing. Enrolment started while active must not complete
+        # after that.
+        raise HTTPException(status_code=403, detail="account suspended")
     user_id = principal.user.id
     secret, codes = _opened_enrolment(user_id, body.enrolment)
     step = totp.matched_step(secret, body.code)
     if step is None:
         raise REFUSED
+
+    # Replacing a factor costs the factor being replaced. Proving the new
+    # secret only proves the caller controls the new authenticator, which a
+    # stolen session does by definition: it asked for the secret. Without
+    # this, two requests from a session with recent authentication replaced
+    # somebody's second factor with one the caller held, and the account
+    # found out when its own authenticator stopped working (issue #427).
+    async with db.session_factory() as session:
+        replacing = await enrolled_factor(session, user_id)
+    if replacing is not None:
+        if body.current_code is None:
+            raise REFUSED
+        if not await _spend_replacement_attempt(replacing.id):
+            # The budget is gone. Signing in with the factor clears it, which
+            # is the one thing an attacker holding only a session cannot do.
+            raise REFUSED
+        if not await _accepted(body.current_code, principal.user, replacing):
+            raise REFUSED
+
     ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
             # Replacing an enrolment replaces its codes with it: a code minted
             # for a secret nobody holds any more is a way in nobody expects.
             await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
-            await session.execute(delete(AuthFactor).where(AuthFactor.user_id == user_id))
+            if replacing is not None:
+                # Bound to the factor that was proved, and the request only
+                # continues if it is the one that removed it. An account-wide
+                # delete would let the last writer replace a factor it never
+                # proved, which is the hole this route is closing.
+                gone = (await session.execute(
+                    delete(AuthFactor)
+                    .where(AuthFactor.user_id == user_id, AuthFactor.id == replacing.id)
+                    .returning(AuthFactor.id)
+                )).first()
+                if gone is None:
+                    raise REFUSED
+            # A first enrolment deletes nothing at all. Deleting by account
+            # here is what let two of them race: both read no factor, the
+            # first installed one, and the second removed it and installed
+            # its own having proved nothing. With no delete, the unique
+            # constraint on (user_id, kind) refuses the second.
             session.add(AuthFactor(
                 user_id=user_id, kind="totp",
                 secret_ciphertext=ring.encrypt(TOTP_PURPOSE, secret.encode(), user_id.bytes),
@@ -337,4 +440,21 @@ async def confirm_enrolment(
             ))
             for code in codes:
                 session.add(RecoveryCode(user_id=user_id, code_hash=_hash(code)))
+            try:
+                await session.flush()
+            except IntegrityError as raced:
+                # A first enrolment deletes nothing, so the unique constraint
+                # on (user_id, kind) is what refuses a second one that read no
+                # factor at the same moment. Letting the violation out would
+                # answer a case the design expects with a 500.
+                #
+                # Only that constraint. Labelling every integrity error a race
+                # would give a foreign key or a recovery-code collision the
+                # same friendly answer and keep a real fault out of the 500s
+                # somebody is watching.
+                if _violated(raced) != ONE_FACTOR_PER_ACCOUNT:
+                    raise
+                raise HTTPException(
+                    status_code=409,
+                    detail="a second factor was enrolled already") from raced
     return Response(status_code=204)
