@@ -833,9 +833,11 @@ def test_a_first_enrolment_that_races_a_factor_is_refused_not_a_crash(accounts, 
                                json={"enrolment": started["enrolment"],
                                      "code": totp.code_at(started["secret"], int(_now()))})
         assert answered.status_code == 409
-        # The sweep ran before the insert that failed, so the account's
-        # recovery codes were deleted inside the transaction that then rolled
-        # back. Losing this race must not cost them.
+        # The sweep never runs: it sits after the insert that failed. Losing
+        # this race cost the codes nothing when the sweep ran first either,
+        # because the transaction rolled back, so this assertion holds under
+        # both orders and is not what keeps the sweep where it is. That is
+        # test_every_route_takes_the_factor_before_the_codes.
         assert len(client.portal.call(_unspent_codes)) == totp.RECOVERY_CODES
         # The factor that was already there is the one still there.
         stored = client.portal.call(_factors)
@@ -1158,15 +1160,16 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
     from sqlalchemy import event
 
     transactions: list[list[str]] = []
-    current: list[str] = []
+    # Keyed by connection, because two of them interleaving would otherwise
+    # read as one transaction taking both tables, and a reversal on either
+    # could hide inside the merge.
+    open_now: dict[int, list[str]] = {}
 
     def record(conn, cursor, statement, parameters, context, executemany):
-        current.append(statement)
+        open_now.setdefault(id(conn), []).append(statement)
 
     def close(conn):
-        nonlocal current
-        transactions.append(current)
-        current = []
+        transactions.append(open_now.pop(id(conn), []))
 
     with TestClient(app, base_url=ORIGIN) as client:
         # Inside the lifespan, never before it: startup connects and builds a
@@ -1197,6 +1200,6 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
                                   ("commit", close), ("rollback", close)):
                 event.remove(engine, name, handler)
 
-    orders = _lock_orders(transactions + [current])
+    orders = _lock_orders(transactions + list(open_now.values()))
     assert orders, "no transaction locked both tables, so this proved nothing"
     assert all(order == ["auth_factors", "recovery_codes"] for order in orders), orders
