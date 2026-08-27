@@ -1190,6 +1190,21 @@ Asking costs something, or it is not an ask. Ten tries end it, counted before th
 Rejected alternatives: asking for the old code when the enrolment starts rather than when it is confirmed (starting one writes nothing, so refusing there only tells a caller to come back by another route, and it costs an honest person a code before they have set anything up); accepting the new code alone and notifying the account by mail (mail is optional on a self-hosted install, and a notice that arrives after the factor is gone is a record rather than a control); requiring recent authentication and nothing more, which is what shipped (it is the property a stolen session already has, and a session is what this needs to stop rather than a password: with a factor enrolled the password answers with a challenge).
 
 
+## Turning a second factor off costs what turning it on costs
+
+An account may remove its second factor, and doing so needs recent authentication and a code: a current one from the authenticator, or a recovery code. That is the same bar replacing one asks for, and for the same reason. A session by itself must not disarm a factor, or the factor protects an account only until somebody steals a cookie, which is the situation it exists for.
+
+A factor that could not be removed at all was the shipped behaviour, and "optional for every role" is not true of something you can turn on and never turn off. It left an account whose authenticator broke spending recovery codes until they ran out, and then unreachable. For the last administrator it was worse: the offline command prints a password link and the challenge still stood behind it, so an install could reach a state that only `auth-collapse` could recover, and that destroys every account on it.
+
+Guessing at removal spends the budget replacing a factor spends. Two doors onto the same six digits with a counter on only one of them is not a counter.
+
+Removing a factor ends the account's other sessions, as enrolling one does. The argument is stronger here rather than weaker: the account is less protected afterwards than it was before, so whoever else is holding a session should not be carried across the change.
+
+The account that has lost the authenticator and every recovery code has nothing to present, and no route can safely help it, so `make auth-clear-factor` is a command at the machine like every other way back in. It ends that account's sessions too, because somebody running it has lost control of the second factor and whether anybody else has hold of the account is exactly what nobody knows. It records an actorless high-severity audit row: nobody signed in did this, and a factor disappearing is the kind of thing somebody should be able to find afterwards.
+
+Rejected alternatives: a removal route that takes only a session and recent authentication (it is the disarm-from-a-stolen-session hole that enrolment is written to avoid, and it would be the weakest point in the whole design); letting a password reset clear the factor (the link proves control of a mailbox, and mail is what the second factor exists to survive); an administrator route to clear another account's factor (the same route worth stealing a session for, one privilege level up, and an administrator who needs it can run the command); leaving it unremovable and documenting the lockout (it makes an account's own security setting a trap, and hands the install a state recoverable only by destroying every account).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

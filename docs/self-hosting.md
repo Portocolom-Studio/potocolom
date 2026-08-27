@@ -201,7 +201,16 @@ make auth-recover EMAIL=admin@example.com   # a one-use ten-minute link for one 
 make auth-reclaim EMAIL=admin@example.com   # make that account an active administrator again
 make auth-reclaim CLAIM=1                   # a fresh setup link; whoever spends it is an admin
 make auth-configure                         # what mail and OAuth would do if the API started now
+make auth-clear-factor EMAIL=someone@example.com   # take a second factor off an account
 ```
+
+`auth-clear-factor` is for somebody who turned on a second factor and then
+lost both the authenticator and every recovery code. Anyone who still holds
+either takes it off themselves with `DELETE /api/v1/account/totp`; this is the
+case where nothing over HTTP can help, because a route that removes a factor
+without asking for one is a route worth stealing a session for. It removes the
+factor and its codes, ends every session the account had open, and records an
+audit row. The account keeps its password and its role, and can enrol again.
 
 `auth-reclaim CLAIM=1` and `auth-enable` both refuse once the installation has
 been claimed, because the setup link adopts the implicit local user and the
