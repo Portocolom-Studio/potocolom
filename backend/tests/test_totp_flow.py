@@ -1096,3 +1096,75 @@ def test_enrolling_leaves_a_reset_link_alone(accounts):
         assert client.portal.call(live_resets) == 1
         _enrol(client)
         assert client.portal.call(live_resets) == 1
+
+
+def _locks_taken(statements: list[str]) -> list[str]:
+    """The order the two tables that can deadlock were first LOCKED.
+
+    Only statements that take a row lock count: an UPDATE, a DELETE, or a
+    SELECT ... FOR UPDATE. A plain SELECT reads without locking and cannot be
+    half of a cycle, and counting one made an earlier version of this test
+    pass with the fix removed, because enrolled_factor reads auth_factors
+    before the transaction either way.
+    """
+    order: list[str] = []
+    for statement in statements:
+        lowered = " ".join(statement.lower().split())
+        locking = (lowered.startswith(("update", "delete"))
+                   or (lowered.startswith("select") and "for update" in lowered))
+        if not locking:
+            continue
+        # The attempt counter runs in a transaction of its own and commits, so
+        # its lock is gone before the one that matters begins. Counting it hid
+        # the replacement half of this test: auth_factors looked locked first
+        # whether or not the route that has to lock it did.
+        if "replace_attempts" in lowered:
+            continue
+        for table in ("auth_factors", "recovery_codes"):
+            if table in lowered and table not in order:
+                order.append(table)
+    return order
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("route", ["challenge", "replacement"])
+def test_both_routes_take_the_factor_before_the_codes(accounts, route):
+    """One lock order, or the two deadlock against each other.
+
+    Spending a recovery code writes recovery_codes and the budget reset writes
+    auth_factors, so a challenge answered with a code touches both, and so
+    does a replacement. Taken in opposite orders they are a cycle, and
+    PostgreSQL breaks a cycle by killing one of them, which reaches a caller
+    as a 500 on a sign-in (issue #438).
+
+    Asserted on the order the statements go out rather than by staging a real
+    deadlock: making one happen means holding a transaction open inside the
+    spend while another starts, which is how a suite hangs instead of failing.
+    """
+    from sqlalchemy import event
+
+    seen: list[str] = []
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "ordered@example.com")
+        assert _login(client, "ordered@example.com").status_code == 204
+        secret, codes = _enrol(client)
+
+        def record(conn, cursor, statement, parameters, context, executemany):
+            seen.append(statement)
+
+        event.listen(db.engine.sync_engine, "before_cursor_execute", record)
+        try:
+            if route == "challenge":
+                _signed_out(client)
+                assert _login(client, "ordered@example.com").status_code == 200
+                assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                                   json={"code": codes[0]}).status_code == 204
+            else:
+                _, replaced = _replace(client, None, current=codes[0])
+                assert replaced.status_code == 204
+        finally:
+            event.remove(db.engine.sync_engine, "before_cursor_execute", record)
+
+    taken = _locks_taken(seen)
+    assert taken[:2] == ["auth_factors", "recovery_codes"], taken
