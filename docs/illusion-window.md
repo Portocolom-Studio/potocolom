@@ -857,10 +857,25 @@ carries no weight alone.
 
 ### The bottleneck did not move
 
-Clean keepers at >= 4: 4 of 96 bases. No image has scored 5 in any window. 84 of
-192 items scored 0 and 117 of 192 scored below 3, so most cells still show one
-subject or neither. What improved is the supply of merely readable images, not of
-gallery-grade ones.
+Clean keepers at >= 4: 4 of 96 bases. 84 of 192 items scored 0 and 117 of 192
+scored below 3, so most cells still show one subject or neither. What improved is
+the supply of merely readable images, not of gallery-grade ones.
+
+The top of the distribution has not recovered since window 2, and this is the
+largest unexplained thing in the data:
+
+| window | items | score 4 | score 5 | clean keepers, bases |
+|---|---|---|---|---|
+| 2 | 206 | 21 | 22 | 17/98 = 17.3% |
+| 3 | 194 | 1 | 0 | 1/97 = 1.0% |
+| 4 | 192 | 5 | 0 | 4/96 = 4.2% |
+
+386 items across windows 3 and 4 produced zero fives against window 2's 22 in 206.
+The available explanation is corpus, since 144 of window 2's 206 observations came
+from six pairs proven across several windows while the new corpus calls a pair
+proven on one clean observation. That explanation is untested, and the "no
+optimizer regression" result above is established at the >= 3 endpoint, which is
+the coarse one. At the keeper bar nothing run so far separates corpus from code.
 
 Joint against independent, paired inside the same base: joint-only clean 12,
 indep-only clean 9, p=0.66. Window 2's joint win (p=0.0003, replicated at 0.0075)
