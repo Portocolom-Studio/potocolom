@@ -203,16 +203,6 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         raise REFUSED
     async with db.session_factory() as session:
         async with session.begin():
-            # auth_factors before recovery_codes, the one order every route
-            # that touches both has to take. Spending a recovery proof writes
-            # recovery_codes and the budget reset below writes auth_factors,
-            # so without this the pair runs backwards from confirm_enrolment
-            # and a recovery-code login racing a replacement deadlocks: two
-            # transactions each holding what the other wants, resolved by
-            # PostgreSQL killing one, which the caller sees as a 500 on a
-            # sign-in (issue #438).
-            await session.execute(
-                select(AuthFactor.id).where(AuthFactor.id == factor.id).with_for_update())
             # The session is contingent on winning this. The attempt was
             # counted and committed before the code was checked, so a second
             # request carrying the same challenge reaches here too, and only
@@ -223,10 +213,27 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
                 .values(consumed_at=func.now())
                 .returning(AuthToken.id)
             )).first()
+            if won is None:
+                raise REFUSED
+            # auth_factors before recovery_codes, the one order every route
+            # that touches both has to take. Spending a recovery proof writes
+            # recovery_codes and the budget reset below writes auth_factors,
+            # so without this the pair runs backwards from confirm_enrolment
+            # and a recovery-code login racing a replacement deadlocks: two
+            # transactions each holding what the other wants, resolved by
+            # PostgreSQL killing one, which the caller sees as a 500 on a
+            # sign-in (issue #438).
+            #
+            # After the token claim, not before it: operator.collapse deletes
+            # auth_tokens before auth_factors, so locking the factor first
+            # would trade the cycle this closes for one against a collapse run
+            # while the API is still up.
+            await session.execute(
+                select(AuthFactor.id).where(AuthFactor.id == factor.id).with_for_update())
             # The proof is spent here rather than when it was checked, so the
             # request that loses the race rolls back and gives the code or the
             # step back with it (#424).
-            if won is None or not await _spend(session, factor, proof):
+            if not await _spend(session, factor, proof):
                 raise REFUSED
             # Answering a challenge proves the authenticator is in the right
             # hands, which is what the replacement budget waits for. An
@@ -478,9 +485,6 @@ async def confirm_enrolment(
                 )).first()
                 if gone is None:
                     raise REFUSED
-            # Replacing an enrolment replaces its codes with it: a code minted
-            # for a secret nobody holds any more is a way in nobody expects.
-            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
             # A first enrolment deletes nothing at all. Deleting by account
             # here is what let two of them race: both read no factor, the
             # first installed one, and the second removed it and installed
@@ -495,8 +499,6 @@ async def confirm_enrolment(
                 # live for another ninety seconds otherwise.
                 last_step=step,
             ))
-            for code in codes:
-                session.add(RecoveryCode(user_id=user_id, code_hash=_hash(code)))
             try:
                 await session.flush()
             except IntegrityError as raced:
@@ -514,6 +516,19 @@ async def confirm_enrolment(
                 raise HTTPException(
                     status_code=409,
                     detail="a second factor was enrolled already") from raced
+            # Replacing an enrolment replaces its codes with it: a code minted
+            # for a secret nobody holds any more is a way in nobody expects.
+            #
+            # After the factor insert, never before it, and this is the whole
+            # of the first enrolment's share of the one lock order. An insert
+            # whose unique key collides with a row some other transaction has
+            # deleted and not yet committed waits for that transaction, so a
+            # first enrolment that ran the delete first would be holding
+            # recovery_codes while waiting on auth_factors, which is the cycle
+            # every other route here is arranged to avoid (issue #438).
+            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+            for code in codes:
+                session.add(RecoveryCode(user_id=user_id, code_hash=_hash(code)))
             # After the guarded flush, not before it. Any statement issued
             # while the new factor is still pending autoflushes it, and that
             # flush happens outside the try, so the constraint violation this

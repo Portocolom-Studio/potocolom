@@ -1098,27 +1098,23 @@ def test_enrolling_leaves_a_reset_link_alone(accounts):
         assert client.portal.call(live_resets) == 1
 
 
-def _locks_taken(statements: list[str]) -> list[str]:
-    """The order the two tables that can deadlock were first LOCKED.
+def _order_within(statements: list[str]) -> list[str]:
+    """The order one transaction first took a lock on each of the two tables.
 
-    Only statements that take a row lock count: an UPDATE, a DELETE, or a
-    SELECT ... FOR UPDATE. A plain SELECT reads without locking and cannot be
-    half of a cycle, and counting one made an earlier version of this test
-    pass with the fix removed, because enrolled_factor reads auth_factors
-    before the transaction either way.
+    Only statements that take a lock another transaction can wait behind
+    count. An UPDATE, a DELETE and a SELECT ... FOR UPDATE lock the rows they
+    match; an INSERT locks the unique key it claims, which is enough to wait
+    on a conflicting row some other transaction has deleted and not committed.
+    A plain SELECT locks nothing and cannot be half of a cycle: counting one
+    made an earlier version of this test pass with the fix removed, because
+    enrolled_factor reads auth_factors before the transaction either way.
     """
     order: list[str] = []
     for statement in statements:
         lowered = " ".join(statement.lower().split())
-        locking = (lowered.startswith(("update", "delete"))
+        locking = (lowered.startswith(("update", "delete", "insert"))
                    or (lowered.startswith("select") and "for update" in lowered))
         if not locking:
-            continue
-        # The attempt counter runs in a transaction of its own and commits, so
-        # its lock is gone before the one that matters begins. Counting it hid
-        # the replacement half of this test: auth_factors looked locked first
-        # whether or not the route that has to lock it did.
-        if "replace_attempts" in lowered:
             continue
         for table in ("auth_factors", "recovery_codes"):
             if table in lowered and table not in order:
@@ -1126,45 +1122,81 @@ def _locks_taken(statements: list[str]) -> list[str]:
     return order
 
 
+def _lock_orders(transactions: list[list[str]]) -> list[list[str]]:
+    """Per transaction that locked BOTH tables, the order it took them.
+
+    Grouped by transaction, because only locks held at the same time can be
+    half of a cycle, and a transaction that commits releases everything it
+    held. Counting across the whole request instead let the replacement
+    attempt counter, which runs in a transaction of its own and commits before
+    the one that matters begins, stand in for the lock the route under test is
+    supposed to take.
+
+    A transaction touching one table cannot deadlock against anything on this
+    pair, so only those touching both are judged.
+    """
+    orders = [_order_within(statements) for statements in transactions]
+    return [order for order in orders if len(order) == 2]
+
+
 @pytest.mark.db
-@pytest.mark.parametrize("route", ["challenge", "replacement"])
-def test_both_routes_take_the_factor_before_the_codes(accounts, route):
-    """One lock order, or the two deadlock against each other.
+@pytest.mark.parametrize("route", ["challenge", "replacement", "first enrolment"])
+def test_every_route_takes_the_factor_before_the_codes(accounts, route):
+    """One lock order, or these deadlock against each other.
 
     Spending a recovery code writes recovery_codes and the budget reset writes
-    auth_factors, so a challenge answered with a code touches both, and so
-    does a replacement. Taken in opposite orders they are a cycle, and
-    PostgreSQL breaks a cycle by killing one of them, which reaches a caller
-    as a 500 on a sign-in (issue #438).
+    auth_factors, so a challenge answered with a code touches both; so does a
+    replacement; and a first enrolment inserts a factor and clears the account
+    codes. Taken in opposite orders they are a cycle, and PostgreSQL breaks a
+    cycle by killing one of them, which reaches a caller as a 500 on a sign-in
+    (issue #438).
 
-    Asserted on the order the statements go out rather than by staging a real
+    Asserted on the order the locks go out rather than by staging a real
     deadlock: making one happen means holding a transaction open inside the
     spend while another starts, which is how a suite hangs instead of failing.
     """
     from sqlalchemy import event
 
-    seen: list[str] = []
+    transactions: list[list[str]] = []
+    current: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        current.append(statement)
+
+    def close(conn):
+        nonlocal current
+        transactions.append(current)
+        current = []
 
     with TestClient(app, base_url=ORIGIN) as client:
+        # Inside the lifespan, never before it: startup connects and builds a
+        # new engine, so a listener attached to the one that is here now
+        # records nothing and the assertions below all pass on no evidence.
+        engine = db.engine.sync_engine
         client.portal.call(_make, "ordered@example.com")
         assert _login(client, "ordered@example.com").status_code == 204
-        secret, codes = _enrol(client)
+        if route != "first enrolment":
+            secret, codes = _enrol(client)
 
-        def record(conn, cursor, statement, parameters, context, executemany):
-            seen.append(statement)
-
-        event.listen(db.engine.sync_engine, "before_cursor_execute", record)
+        for name, handler in (("before_cursor_execute", record),
+                              ("commit", close), ("rollback", close)):
+            event.listen(engine, name, handler)
         try:
             if route == "challenge":
                 _signed_out(client)
                 assert _login(client, "ordered@example.com").status_code == 200
                 assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
                                    json={"code": codes[0]}).status_code == 204
-            else:
+            elif route == "replacement":
                 _, replaced = _replace(client, None, current=codes[0])
                 assert replaced.status_code == 204
+            else:
+                _enrol(client)
         finally:
-            event.remove(db.engine.sync_engine, "before_cursor_execute", record)
+            for name, handler in (("before_cursor_execute", record),
+                                  ("commit", close), ("rollback", close)):
+                event.remove(engine, name, handler)
 
-    taken = _locks_taken(seen)
-    assert taken[:2] == ["auth_factors", "recovery_codes"], taken
+    orders = _lock_orders(transactions + [current])
+    assert orders, "no transaction locked both tables, so this proved nothing"
+    assert all(order == ["auth_factors", "recovery_codes"] for order in orders), orders
