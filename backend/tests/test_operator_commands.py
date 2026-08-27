@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
-from app import db, keyring, operator
+from app import db, keyring, operator, sessions
 from app.main import app
 from app.tables import Job, User
 from app.passwords import hash_password
@@ -439,3 +439,60 @@ def test_claiming_the_installation_waits_for_the_setup_lock(library):
 
 async def _set(event) -> None:
     event.set()
+
+
+@pytest.mark.db
+def test_clear_factor_command_removes_it_and_ends_the_sessions(library, capsys):
+    """The way back for somebody who lost the authenticator and every code.
+    Driven through main() rather than the helper underneath it: the first
+    version of this command built a coroutine, never awaited it, and printed
+    success while the factor stayed exactly where it was."""
+    from app import factors
+    from app.tables import AuthFactor, RecoveryCode, Session
+
+    async def enrolled(user_id: uuid.UUID) -> None:
+        ring = keyring.get_key_ring()
+        async with db.session_factory() as session:
+            session.add(AuthFactor(
+                user_id=user_id, kind="totp",
+                secret_ciphertext=ring.encrypt(factors.TOTP_PURPOSE, b"S" * 32, user_id.bytes),
+                key_version=ring.active_version, confirmed_at=func.now()))
+            session.add(RecoveryCode(user_id=user_id, code_hash=b"h" * 32))
+            await session.commit()
+
+    async def counts() -> tuple[int, int, int]:
+        async with db.session_factory() as session:
+            return (
+                len((await session.execute(select(AuthFactor))).scalars().all()),
+                len((await session.execute(select(RecoveryCode))).scalars().all()),
+                len((await session.execute(
+                    select(Session).where(Session.revoked_at.is_(None)))).scalars().all()),
+            )
+
+    async def enrolled_with_a_session() -> uuid.UUID:
+        user = await _make("nophone@example.com")
+        await enrolled(user.id)
+        await sessions.mint(user, remember_me=False, authenticated=True)
+        return user.id
+
+    # One loop throughout: mixing the portal runner's with a TestClient's is
+    # how a coroutine ends up awaiting a future attached to the other one.
+    library(enrolled_with_a_session())
+    factors_before, codes_before, sessions_before = library(counts())
+    assert (factors_before, codes_before) == (1, 1)
+    assert sessions_before >= 1
+
+    operator.main(["clear-factor", "nophone@example.com"])
+    assert "Removed" in capsys.readouterr().out
+    # The command opens its own connection and disposes it on the way out, so
+    # anything read afterwards needs one of its own.
+    library(db.connect(serving=False))
+    assert library(counts()) == (0, 0, 0)
+
+    # Saying so when there is nothing to do, rather than reporting work.
+    operator.main(["clear-factor", "nophone@example.com"])
+    assert "no second factor" in capsys.readouterr().out
+    library(db.connect(serving=False))
+
+    with pytest.raises(SystemExit):
+        operator.main(["clear-factor", "nobody@example.com"])

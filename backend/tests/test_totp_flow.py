@@ -1203,3 +1203,118 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
     orders = _lock_orders(transactions + list(open_now.values()))
     assert orders, "no transaction locked both tables, so this proved nothing"
     assert all(order == ["auth_factors", "recovery_codes"] for order in orders), orders
+def _remove(client, code):
+    return client.request("DELETE", "/api/v1/account/totp", headers=_csrf(client),
+                          json={"code": code})
+
+
+@pytest.mark.db
+def test_removing_a_factor_costs_the_factor(accounts):
+    """The same bar as replacing one, which is now a real bar. A session by
+    itself must not disarm a second factor, or the factor protects an account
+    only until somebody steals a cookie (issue #419)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keepit@example.com")
+        assert _login(client, "keepit@example.com").status_code == 204
+        _enrol(client)
+        assert _remove(client, "000000").status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_code_removes_the_factor_and_its_codes(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "dropit@example.com")
+        assert _login(client, "dropit@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
+        assert client.portal.call(_codes) == []
+        _signed_out(client)
+        # The next sign-in is a session again, not a challenge.
+        assert _login(client, "dropit@example.com").status_code == 204
+
+
+@pytest.mark.db
+def test_a_recovery_code_removes_the_factor_too(accounts):
+    """Whoever lost the authenticator but kept a code can still turn it off,
+    which is the case that otherwise ends in an unreachable account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lostit@example.com")
+        assert _login(client, "lostit@example.com").status_code == 204
+        _, codes = _enrol(client)
+        assert _remove(client, codes[0]).status_code == 204
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_removing_needs_recent_authentication(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "stale@example.com")
+        assert _login(client, "stale@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def age() -> None:
+            async with db.session_factory() as session:
+                await session.execute(update(Session).values(recent_auth_at=None))
+                await session.commit()
+
+        client.portal.call(age)
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_suspended_account_cannot_remove_its_factor(accounts):
+    """Suspended is read-only, and current_principal admits it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "paused2@example.com")
+        assert _login(client, "paused2@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    update(User).where(User.id == user.id).values(state="suspended"))
+                await session.commit()
+
+        client.portal.call(suspend)
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_guessing_at_removal_spends_the_same_budget_as_replacing(accounts):
+    """Otherwise removal is the cheap way round the replacement budget: same
+    factor, same six digits, a second door with no counter on it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "twodoors@example.com")
+        assert _login(client, "twodoors@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert _remove(client, "000000").status_code == 403
+        # Spent through the removal door, and the replacement door is shut too.
+        _, refused = _replace(client, None, current=_next_code(secret))
+        assert refused.status_code == 403
+
+
+@pytest.mark.db
+def test_removing_a_factor_signs_the_other_sessions_out(accounts):
+    """Removing one is a security change like enrolling one, and the account
+    is less protected afterwards rather than more, which makes ending the
+    other sessions matter more here rather than less."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "removeout@example.com")
+        assert _login(client, "removeout@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        here = _session_cookie(client)
+        _signed_out(client)
+        assert _login(client, "removeout@example.com").status_code == 200
+        assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": codes[0]}).status_code == 204
+        _wearing(client, here)
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 2
+
+        assert _remove(client, _next_code(secret)).status_code == 204
+        live = client.portal.call(_live_sessions_for, user.id)
+        assert [row.token_hash for row in live] == [sessions.token_hash(here)]
