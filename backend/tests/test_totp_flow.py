@@ -1037,7 +1037,10 @@ def test_replacing_a_factor_signs_the_other_sessions_out(accounts):
 
         _, replaced = _replace(client, None, current=_next_code(old_secret))
         assert replaced.status_code == 204
-        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+        # The one that replaced the factor is the one still standing. Counting
+        # to one would pass just as well if it were the other way round.
+        live = client.portal.call(_live_sessions_for, user.id)
+        assert [row.token_hash for row in live] == [sessions.token_hash(here)]
 
 
 @pytest.mark.db
@@ -1056,6 +1059,40 @@ def test_the_other_realtime_sockets_are_closed_too(accounts, monkeypatch):
     with TestClient(app, base_url=ORIGIN) as client:
         user = client.portal.call(_make, "sockets@example.com")
         assert _login(client, "sockets@example.com").status_code == 204
+        kept = client.portal.call(sessions.resolve, _session_cookie(client)).session.id
         _enrol(client)
     assert [call[0] for call in closed] == [user.id], closed
-    assert closed[0][2] is not None, "the enrolling session is kept"
+    # Named, not merely present: keeping the wrong session would close the
+    # browser doing the enrolling and leave the one being evicted drawing.
+    assert closed[0][2] == kept, closed
+
+
+@pytest.mark.db
+def test_enrolling_leaves_a_reset_link_alone(accounts):
+    """A password change spends outstanding reset links, because the link and
+    the password are the same credential. A factor is not: the link proves
+    control of a mailbox, which is not what changed, and spending it would
+    take a way back in from somebody who has just secured their account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "keepsreset@example.com")
+        assert _login(client, "keepsreset@example.com").status_code == 204
+
+        async def mint_reset() -> None:
+            async with db.session_factory() as session:
+                session.add(AuthToken(user_id=user.id, purpose="reset",
+                                      token_hash=b"r" * 32,
+                                      expires_at=datetime.now(timezone.utc)
+                                      + timedelta(minutes=30)))
+                await session.commit()
+
+        async def live_resets() -> int:
+            async with db.session_factory() as session:
+                return len((await session.execute(
+                    select(AuthToken).where(AuthToken.purpose == "reset",
+                                            AuthToken.consumed_at.is_(None))
+                )).scalars().all())
+
+        client.portal.call(mint_reset)
+        assert client.portal.call(live_resets) == 1
+        _enrol(client)
+        assert client.portal.call(live_resets) == 1
