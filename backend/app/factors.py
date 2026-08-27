@@ -502,4 +502,20 @@ async def confirm_enrolment(
                 raise HTTPException(
                     status_code=409,
                     detail="a second factor was enrolled already") from raced
+            # After the guarded flush, not before it. Any statement issued
+            # while the new factor is still pending autoflushes it, and that
+            # flush happens outside the try, so the constraint violation this
+            # route expects would escape as a 500 instead of a 409.
+            # Turning a second factor on, or moving it to a new authenticator,
+            # is what somebody does when they think their account is at risk.
+            # A factor gates the next sign-in and says nothing about a session
+            # already open, so the eviction has to be explicit (issue #433).
+            #
+            # Reset and recovery links are left alone: they prove control of a
+            # mailbox, which is not what changed here, and spending them would
+            # strip a way back in from somebody who just secured their account.
+            await sessions.revoke_others(session, principal, spend_capabilities=False)
+    # After the transaction, never inside it: a revoked row stops the next
+    # request and does not reach a socket that already bound its principal.
+    await sessions.close_other_sockets(principal)
     return Response(status_code=204)

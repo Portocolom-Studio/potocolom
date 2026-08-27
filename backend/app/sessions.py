@@ -10,10 +10,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app import db
-from app.tables import Session, User
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.tables import AuthToken, Session, User
 
 ABSOLUTE = timedelta(hours=12)
 REMEMBER_ABSOLUTE = timedelta(days=30)
@@ -119,6 +121,45 @@ async def resolve(token: str) -> Resolved | None:
             row.last_seen_at = now
             await session.commit()
         return Resolved(session=row, user=user)
+
+
+async def revoke_others(db_session: AsyncSession, resolved: "Resolved",
+                        spend_capabilities: bool = True) -> None:
+    """Every session but the one making the change.
+
+    Signing somebody out of the browser they are changing their own security
+    settings in reads as a failure and invites them to try again, so that one
+    stays. Lives here rather than beside any one caller because more than one
+    kind of change owes this: a credential, an address, a linked identity, a
+    second factor.
+    """
+    await db_session.execute(
+        update(Session)
+        .where(Session.user_id == resolved.user.id, Session.id != resolved.session.id,
+               Session.revoked_at.is_(None))
+        .values(revoked_at=func.now())
+    )
+    if spend_capabilities:
+        # Reset and recovery links go with them. Changing a credential after a
+        # mailbox is compromised is meant to end what that mailbox can still
+        # do, and a link already sent to it is exactly that.
+        await db_session.execute(
+            update(AuthToken)
+            .where(AuthToken.user_id == resolved.user.id,
+                   AuthToken.purpose.in_(("reset", "recovery")),
+                   AuthToken.consumed_at.is_(None))
+            .values(consumed_at=func.now())
+        )
+
+
+async def close_other_sockets(resolved: "Resolved") -> None:
+    """After the change is durable, and never inside its transaction.
+
+    A revoked row stops the next request; it does not reach a socket that
+    bound its principal at the handshake, so somebody evicting a stranger
+    would otherwise leave the stranger drawing.
+    """
+    await close_sockets(resolved.user.id, keep=resolved.session.id)
 
 
 async def close_sockets(user_id: uuid.UUID, session_id: uuid.UUID | None = None,

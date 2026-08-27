@@ -5,21 +5,19 @@ account's other sessions, because the usual reason to change a credential is
 that somebody else holds the old one.
 """
 
-import uuid
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import db, sessions
 from app.auth import current_principal, require_accounts_mode
 from app.enable import _checked_email
 from app.passwords import PasswordRejected, hash_password, verify_password
-from app.tables import AuthIdentity, AuthToken, Session, User
+from app.tables import AuthIdentity, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
@@ -37,41 +35,10 @@ async def recent_principal(
     return principal
 
 
-async def _revoke_others(session: AsyncSession, principal: sessions.Resolved) -> None:
-    """Everything but the browser making the change, which would otherwise sign
-    somebody out of the session they are changing the credential from.
-
-    Reset and recovery links go too. Changing an address after a mailbox is
-    compromised is meant to end what that mailbox can still do, and a link
-    already sent to it is exactly that.
-    """
-    await session.execute(
-        update(Session)
-        .where(Session.user_id == principal.user.id, Session.id != principal.session.id,
-               Session.revoked_at.is_(None))
-        .values(revoked_at=func.now())
-    )
-    await _spend_capabilities(session, principal.user.id)
 
 
-async def _close_other_sockets(principal: sessions.Resolved) -> None:
-    """After the change is durable, and never inside its transaction.
-
-    A revoked row stops the next request; it does not reach a socket that
-    bound its principal at the handshake. Somebody changing a password to
-    evict a stranger would otherwise leave the stranger drawing.
-    """
-    await sessions.close_sockets(principal.user.id, keep=principal.session.id)
 
 
-async def _spend_capabilities(session: AsyncSession, user_id: uuid.UUID) -> None:
-    await session.execute(
-        update(AuthToken)
-        .where(AuthToken.user_id == user_id,
-               AuthToken.purpose.in_(("reset", "recovery")),
-               AuthToken.consumed_at.is_(None))
-        .values(consumed_at=func.now())
-    )
 
 
 class PasswordChange(BaseModel):
@@ -133,8 +100,8 @@ async def change_password(
                 await session.execute(
                     update(AuthIdentity).where(AuthIdentity.id == existing.id)
                     .values(password_hash=password_hash))
-            await _revoke_others(session, principal)
-    await _close_other_sockets(principal)
+            await sessions.revoke_others(session, principal)
+    await sessions.close_other_sockets(principal)
     return Response(status_code=204)
 
 
@@ -171,10 +138,10 @@ async def change_email(
                     .where(AuthIdentity.user_id == principal.user.id,
                            AuthIdentity.provider == "password")
                     .values(subject=normalized))
-                await _revoke_others(session, principal)
+                await sessions.revoke_others(session, principal)
     except IntegrityError as clash:
         raise HTTPException(status_code=409, detail=ADDRESS_TAKEN) from clash
-    await _close_other_sockets(principal)
+    await sessions.close_other_sockets(principal)
     return Response(status_code=204)
 
 
@@ -205,6 +172,6 @@ async def unlink_identity(
             if len(held) == 1:
                 raise HTTPException(status_code=409, detail="that is the only way in")
             await session.execute(delete(AuthIdentity).where(AuthIdentity.id == linked.id))
-            await _revoke_others(session, principal)
-    await _close_other_sockets(principal)
+            await sessions.revoke_others(session, principal)
+    await sessions.close_other_sockets(principal)
     return Response(status_code=204)
