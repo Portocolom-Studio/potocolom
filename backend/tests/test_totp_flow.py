@@ -1142,14 +1142,15 @@ def _lock_orders(transactions: list[list[str]]) -> list[list[str]]:
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("route", ["challenge", "replacement", "first enrolment"])
+@pytest.mark.parametrize(
+    "route", ["challenge", "replacement", "first enrolment", "removal"])
 def test_every_route_takes_the_factor_before_the_codes(accounts, route):
     """One lock order, or these deadlock against each other.
 
     Spending a recovery code writes recovery_codes and the budget reset writes
     auth_factors, so a challenge answered with a code touches both; so does a
-    replacement; and a first enrolment inserts a factor and clears the account
-    codes. Taken in opposite orders they are a cycle, and PostgreSQL breaks a
+    replacement; a first enrolment inserts a factor and clears the account
+    codes; and removal deletes both. Taken in opposite orders they are a cycle, and PostgreSQL breaks a
     cycle by killing one of them, which reaches a caller as a 500 on a sign-in
     (issue #438).
 
@@ -1193,6 +1194,8 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
             elif route == "replacement":
                 _, replaced = _replace(client, None, current=codes[0])
                 assert replaced.status_code == 204
+            elif route == "removal":
+                assert _remove(client, codes[0]).status_code == 204
             else:
                 _enrol(client)
         finally:
