@@ -405,6 +405,70 @@ async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
     return spent is not None
 
 
+@router.delete("/api/v1/account/totp", status_code=204)
+async def remove_factor(
+    body: CodeRequest,
+    principal: sessions.Resolved = Depends(current_principal),
+) -> Response:
+    """Turning the factor off costs a code, the same as replacing it.
+
+    A session by itself must not be enough, or the factor protects an account
+    only until somebody steals a cookie. A recovery code counts, which is what
+    lets whoever lost the authenticator but kept a code turn it off themselves
+    rather than lose the account (issue #419).
+
+    An account holding neither has nothing to present, and no route can safely
+    help it: one that removed a factor without asking for one is exactly the
+    route worth stealing a session for. That way back is the command at the
+    machine, `make auth-clear-factor`.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    if principal.user.state != "active":
+        # current_principal admits a suspended account, which reads and
+        # changes nothing. Only current_user carries that check.
+        raise HTTPException(status_code=403, detail="account suspended")
+    if not sessions.is_recent(principal.session):
+        raise HTTPException(status_code=403, detail="recent authentication required")
+    user_id = principal.user.id
+    async with db.session_factory() as session:
+        factor = await enrolled_factor(session, user_id)
+    if factor is None:
+        raise REFUSED
+    # The same budget replacing one spends. Two doors onto the same six digits
+    # with a counter on only one of them is no counter at all.
+    if not await _spend_replacement_attempt(factor.id):
+        raise REFUSED
+    proof = await _verify(body.code, principal.user, factor)
+    if proof is None:
+        raise REFUSED
+
+    async with db.session_factory() as session:
+        async with session.begin():
+            # The factor row first, the way a replacement takes it, so the two
+            # routes cannot deadlock against each other by touching
+            # auth_factors and recovery_codes in opposite orders.
+            await session.execute(
+                select(AuthFactor.id).where(AuthFactor.id == factor.id).with_for_update())
+            if not await _spend(session, factor, proof):
+                raise REFUSED
+            gone = (await session.execute(
+                delete(AuthFactor)
+                .where(AuthFactor.user_id == user_id, AuthFactor.id == factor.id)
+                .returning(AuthFactor.id)
+            )).first()
+            if gone is None:
+                raise REFUSED
+            # The codes go with it. A code minted against a secret nobody
+            # holds any more is a way in nobody expects.
+            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+            # The account is less protected after this than before, which
+            # makes ending the other sessions matter more here, not less.
+            await sessions.revoke_others(session, principal, spend_capabilities=False)
+    await sessions.close_other_sockets(principal)
+    return Response(status_code=204)
+
+
 @router.post("/api/v1/account/totp/confirm", status_code=204)
 async def confirm_enrolment(
     body: ConfirmRequest,

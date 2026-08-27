@@ -14,7 +14,7 @@ import uuid
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import db, keyring
+from app import audit, db, keyring, sessions
 from app.enable import AlreadyClaimed, mint_setup_token
 from app.settings import get_settings
 from app.tables import (
@@ -110,6 +110,47 @@ async def reclaim_restore(email: str) -> str:
             target.prior_state = None
             target.deletion_requested_at = None
     return was
+
+
+async def clear_factor(email: str) -> bool:
+    """Take the second factor off one account, from the machine.
+
+    An account that enrolled a factor and then lost both the authenticator and
+    every recovery code cannot be helped over HTTP: a route that removes a
+    factor without presenting one is exactly the route worth stealing a
+    session for. So this is a command here, like every other way back in.
+
+    It ends the account's sessions as well. Somebody running this has lost
+    control of the second factor, and whether anybody else has hold of the
+    account is precisely what nobody knows.
+    """
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        target = (await session.execute(
+            select(User).where(func.lower(func.btrim(User.email)) == email.strip().lower())
+        )).scalar_one_or_none()
+    if target is None:
+        raise LookupError(f"no account holds {email}")
+    async with db.session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                select(AuthFactor.id).where(AuthFactor.user_id == target.id)
+                .with_for_update())
+            removed = (await session.execute(
+                delete(AuthFactor).where(AuthFactor.user_id == target.id)
+                .returning(AuthFactor.id)
+            )).first()
+            await session.execute(
+                delete(RecoveryCode).where(RecoveryCode.user_id == target.id))
+            await session.execute(
+                update(Session).where(Session.user_id == target.id,
+                                      Session.revoked_at.is_(None))
+                .values(revoked_at=func.now()))
+    await sessions.close_sockets(target.id)
+    # Actorless and high: nobody signed in did this, and a second factor
+    # disappearing is the kind of thing somebody should be able to find later.
+    await audit.record("factor.cleared", target_user_id=target.id, severity="high")
+    return removed is not None
 
 
 async def rotate_keys() -> dict:
@@ -211,6 +252,9 @@ def main(argv: list[str] | None = None) -> None:
     rotating = commands.add_parser("rotate-keys", help="re-encrypt under the newest root key")
     rotating.add_argument("--check", action="store_true",
                           help="report which older versions are still in use")
+    clearing = commands.add_parser("clear-factor",
+                                   help="remove one account's second factor")
+    clearing.add_argument("email")
     commands.add_parser("configure", help="what mail and OAuth would do right now")
     parsed = parser.parse_args(argv)
 
@@ -220,9 +264,24 @@ def main(argv: list[str] | None = None) -> None:
         _run_reclaim(parsed)
     elif parsed.command == "rotate-keys":
         _run_rotate(parsed.check)
+    elif parsed.command == "clear-factor":
+        _run_clear_factor(parsed.email)
     else:
         for key, value in _configured().items():
             print(f"{key}: {value}")
+
+
+def _run_clear_factor(email: str) -> None:
+    try:
+        removed = asyncio.run(_connected(lambda: clear_factor(email)))
+    except LookupError as missing:
+        raise SystemExit(str(missing)) from missing
+    if not removed:
+        print(f"{email} had no second factor; nothing to remove.")
+        return
+    print(f"Removed the second factor on {email}, its recovery codes, and every")
+    print("session it had open. They sign in with their password alone now,")
+    print("and can enrol again whenever they like.")
 
 
 def _run_collapse(confirmation: str) -> None:
