@@ -608,7 +608,13 @@ second SDS phase, which is cheaper than any predictor could be.
 
 ## Window 3: acquisition
 
-Planned, not yet run. `worker.illusion_campaign --phase window3`, 116 bases and
+Ran 2026-08-14 to 2026-08-16, 116 bases and zero failed cells. What follows is
+the plan as written before it. What it produced, and the five claims retracted
+after review, are in the 2026-08-17 entry of
+`.local/illusion-reliability/JOURNAL.md`; the short version is 24 of 97 pairs
+clean readable and 1 clean keeper, which is what window 4 was built to explain.
+
+`worker.illusion_campaign --phase window3`, 116 bases and
 232 observations at 55.9h (52.6h at the anchor's measured rate), inside a 68h
 deadline for a 70h window. Two blocks: 98 acquisition bases, then an 18-base
 wording screen that runs last. The plan is
@@ -767,6 +773,109 @@ window has slack and because an unrun diagnostic keeps being deferred.
 Predeclare that it is diagnostic only. Whatever it shows, it does not become an
 improvised SDXL pivot inside this window; SD 1.5 remains the backbone for the 98
 bases either way.
+
+## Window 4: results
+
+Ran 2026-08-20 to 2026-08-22, `--phase window4`: window 3's 24 clean-readable
+pairs re-run at two already-validated wordings, `reference_sketch` and `oil`, at
+two fixed seeds, both Dream arms forked from one SDS state. 98 cells completed,
+zero failed cells, zero busy refusals, across one pause and two resumes. Seeds 11
+and 23 are complete at 48 cells each; the seed-37 block reached 2 of 48 at the
+deadline and is abandoned, so its 4 rated items are excluded from every number
+here. All 196 items were rated blind on stage, mode and seed.
+
+The recipe is provably window 3's: `build_window4` calls `_window3_flags()` and
+reuses `WINDOW3_BASE_ESTIMATE_S`, so wording, pairs and seeds are the only things
+that changed.
+
+### The window-3 question is answered
+
+| | clean readable >= 3 | CLEAN KEEPER >= 4 |
+|---|---|---|
+| window 4, 96 bases, both wordings | 37/96 = 38.5% | 4/96 = 4.2% |
+| window 4, `oil` only, 48 bases | 31/48 = 65% | 3/48 |
+| window 3 block A, 97 new pairs, oil, one seed | 24/97 = 24.7% | 1/97 |
+
+Window 3's poor output was attributed to three things: an untested corpus, one
+seed per pair, and an unvalidated wording. Holding the code fixed and changing
+only those three moves the clean rate from 24.7 to 65 percent on oil. That is
+consistent with all three and isolates none of them, which is what this design can
+do. No optimizer regression, now on evidence rather than on a diff read.
+
+### `reference_sketch` fails on the frame, not on the illusion
+
+| style, 48 bases each | readable >= 3 | clean readable | lost to the frame |
+|---|---|---|---|
+| `oil` | 33/48 | 31/48 | 2 |
+| `reference_sketch` | 20/48 | 6/48 | 14 |
+
+At item level 66 of 96 `reference_sketch` items carry a disqualifying frame, 69
+percent against oil's 9. Among items already readable it is starker: 18 of 27
+sketch items disqualified against 4 of 48 oil. Sketch is making illusions and then
+throwing most of them away. Paired on (pair, seed), oil is clean on 31 of 48
+against sketch's 6, discordant 27 to 2, exact p < 0.0001.
+
+**The artifact is not a frame.** Five of the 66 disqualifying sketch images were
+inspected, spanning both seeds, both arms and five pairs. Every one renders the
+photographic CONTEXT of a sketch instead of a drawing: spiral notebook binding
+down an edge, loose pencils on the desk, in one case a hand holding a pencil over
+a tilted sheet. The illusion is drawn correctly on the page inside the photograph.
+The template is `"an intricate detailed hb pencil sketch of {}"`, and a reference
+sketch is a thing that gets photographed on a desk.
+
+This refines the 2026-08-12 finding rather than replacing it. Frame behaviour still
+belongs to the specific phrase and still cannot be derived from the medium or from
+paper-boundness. What is added is what the artifact IS in this case: a full
+photographic scene the phrase names, which is why it costs so much canvas.
+
+### What this does not establish
+
+**Oil is not shown to beat sketch.** These 24 pairs ARE window 3's oil winners,
+selected on one oil observation each, so oil enters with an unknown head start.
+The available control points the other way: on window 2's six proven pairs, chosen
+for neither wording, the two were level at 11/18 oil against 9/18 sketch, and
+sketch LED on clean keepers, 7 to 5. Window 4 measures the size of sketch's frame
+tax on fresh pairs; it does not rank the wordings.
+
+The same selection makes 65 percent an upper bound on these pairs and no estimate
+at all for a fresh corpus. Only 3 of the 24 were selected at a seed window 4 re-ran,
+so the other 21 are genuine fresh-seed tests and the figure is not pure replication.
+
+### Reliability replicated out of sample
+
+Whether a pair clean at one seed is clean at the other:
+
+| style | both seeds | one seed | neither | repeats |
+|---|---|---|---|---|
+| `oil` | 11 | 9 | 4 | 11/20 = 55% |
+| `reference_sketch` | 1 | 4 | 19 | 1/5 = 20% |
+
+Oil's 55 percent sits on the 54.9 percent measured in earlier windows, on
+different pairs, a different corpus and an independent rating session. That number
+has now survived an out-of-sample test. The sketch figure rests on 5 pairs and
+carries no weight alone.
+
+### The bottleneck did not move
+
+Clean keepers at >= 4: 4 of 96 bases. No image has scored 5 in any window. 84 of
+192 items scored 0 and 117 of 192 scored below 3, so most cells still show one
+subject or neither. What improved is the supply of merely readable images, not of
+gallery-grade ones.
+
+Joint against independent, paired inside the same base: joint-only clean 12,
+indep-only clean 9, p=0.66. Window 2's joint win (p=0.0003, replicated at 0.0075)
+is not visible here. Window 4 was not designed to test it and its pairs are
+oil-selected, so this is not a retraction, but the effect should not be quoted as
+settled.
+
+### Next
+
+Screen replacement strings for `reference_sketch` with the 8-minute smoke, per the
+method note above: candidate phrases are rendered, not reasoned about. The
+hypothesis is that a phrase naming a DRAWING rather than a photographed sketch
+drops the artifact, and the smoke decides it. If one survives, re-run the 24 pairs
+at that wording alone, 48 bases at about 8h, to see whether sketch's 20 readable
+become 20 usable.
 
 ## Running it
 
