@@ -203,6 +203,16 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
         raise REFUSED
     async with db.session_factory() as session:
         async with session.begin():
+            # auth_factors before recovery_codes, the one order every route
+            # that touches both has to take. Spending a recovery proof writes
+            # recovery_codes and the budget reset below writes auth_factors,
+            # so without this the pair runs backwards from confirm_enrolment
+            # and a recovery-code login racing a replacement deadlocks: two
+            # transactions each holding what the other wants, resolved by
+            # PostgreSQL killing one, which the caller sees as a 500 on a
+            # sign-in (issue #438).
+            await session.execute(
+                select(AuthFactor.id).where(AuthFactor.id == factor.id).with_for_update())
             # The session is contingent on winning this. The attempt was
             # counted and committed before the code was checked, so a second
             # request carrying the same challenge reaches here too, and only
@@ -437,7 +447,9 @@ async def confirm_enrolment(
         async with session.begin():
             if replacing is not None:
                 # The factor row first, always, whichever kind of proof this
-                # is. Spending a recovery code touches recovery_codes and then
+                # is, and answer_challenge takes it first too: auth_factors
+                # before recovery_codes is the order every route that touches
+                # both must take (issue #438). Spending a recovery code touches recovery_codes and then
                 # auth_factors, and spending a step touches auth_factors and
                 # then the code sweep touches recovery_codes: two replacements
                 # of different kinds would take the two tables in opposite
