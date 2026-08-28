@@ -131,9 +131,16 @@ async def _hold_the_account(session: AsyncSession, user_id: uuid.UUID,
         # The wide class, deliberately: asyncpg raises LockNotAvailableError,
         # which has no DBAPI class of its own, so SQLAlchemy wraps it as a
         # plain DBAPIError and the narrower OperationalError never arrives.
-        # Nothing has been written yet, and every way this one statement can
-        # fail is a reason to tell the caller to come back rather than a 500.
+        # This transaction has written nothing, so telling the caller to come
+        # back is safe. An attempt a previous transaction already counted
+        # stays counted, which is what a refused guess costs anyway.
         raise HTTPException(status_code=503, detail=busy_detail) from busy
+    # Only this wait was meant to be bounded, and SET LOCAL lasts for the whole
+    # transaction. Left on, a row lock taken further down times out into a
+    # DBAPIError no handler here expects, and the caller gets a 500 in place of
+    # the wait it used to do. Nothing after this line queues behind an
+    # unrelated account, because the key above is already held.
+    await session.execute(text("SET LOCAL lock_timeout = '0'"))
 
 
 async def begin_challenge(user: User, remember_me: bool,
@@ -302,8 +309,19 @@ class Proof:
     step: int | None = None
 
 
-async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
-    """What this code is, without consuming it. None if it is nothing."""
+async def _recovery_proof(user: User, code: str) -> Proof | None:
+    """A recovery code, told apart from anything else without spending a try.
+
+    Its own step because the replacement budget bounds a six-digit space, and
+    a recovery code is not one: twenty symbols from an alphabet of thirty-two,
+    which no online guessing reaches. Charging the budget before knowing which
+    kind of code this is let anyone holding a session fill it with rubbish and
+    leave the owner holding the one credential these routes exist to accept
+    and no way to present it (issue #419).
+
+    A plain SELECT in a session of its own, so it takes no lock and cannot be
+    half of the auth_factors-before-recovery_codes cycle (issue #438).
+    """
     if db.session_factory is None:
         return None
     async with db.session_factory() as session:
@@ -313,8 +331,11 @@ async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
                 RecoveryCode.code_hash == _hash(code.strip().lower()),
                 RecoveryCode.consumed_at.is_(None))
         )).first()
-    if found is not None:
-        return Proof(recovery_code_id=found.id)
+    return None if found is None else Proof(recovery_code_id=found.id)
+
+
+def _totp_proof(code: str, user: User, factor: AuthFactor) -> Proof | None:
+    """What the authenticator's own code is worth, without consuming it."""
     try:
         secret = keyring.get_key_ring().decrypt(
             TOTP_PURPOSE, factor.secret_ciphertext, user.id.bytes).decode()
@@ -323,9 +344,13 @@ async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
         # pass, which is the fail-closed direction.
         return None
     step = totp.matched_step(secret, code)
-    if step is None:
-        return None
-    return Proof(step=step)
+    return None if step is None else Proof(step=step)
+
+
+async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
+    """What this code is, without consuming it. None if it is nothing."""
+    recovered = await _recovery_proof(user, code)
+    return recovered if recovered is not None else _totp_proof(code, user, factor)
 
 
 async def _spend(session: AsyncSession, factor: AuthFactor, proof: Proof) -> bool:
@@ -462,11 +487,18 @@ async def remove_factor(
         factor = await enrolled_factor(session, user_id)
     if factor is None:
         raise REFUSED
-    # The same budget replacing one spends. Two doors onto the same six digits
-    # with a counter on only one of them is no counter at all.
-    if not await _spend_replacement_attempt(factor.id):
-        raise REFUSED
-    proof = await _verify(body.code, principal.user, factor)
+    # The recovery code is looked for before anything is charged, because the
+    # budget below is not what guards it: a stolen session that spent all ten
+    # on rubbish would otherwise leave somebody holding a working code and no
+    # route that would look at it.
+    proof = await _recovery_proof(principal.user, body.code)
+    if proof is None:
+        # The same budget replacing one spends, and spent before the digits
+        # are looked at. Two doors onto the same six digits with a counter on
+        # only one of them is no counter at all.
+        if not await _spend_replacement_attempt(factor.id):
+            raise REFUSED
+        proof = _totp_proof(body.code, principal.user, factor)
     if proof is None:
         raise REFUSED
 
@@ -533,11 +565,16 @@ async def confirm_enrolment(
     if replacing is not None:
         if body.current_code is None:
             raise REFUSED
-        if not await _spend_replacement_attempt(replacing.id):
-            # The budget is gone. Signing in with the factor clears it, which
-            # is the one thing an attacker holding only a session cannot do.
-            raise REFUSED
-        proof = await _verify(body.current_code, principal.user, replacing)
+        # Ahead of the charge, for the reason remove_factor gives: the budget
+        # bounds six digits, and a recovery code is not six digits.
+        proof = await _recovery_proof(principal.user, body.current_code)
+        if proof is None:
+            if not await _spend_replacement_attempt(replacing.id):
+                # The budget is gone. Signing in with the factor clears it,
+                # which is the one thing an attacker holding only a session
+                # cannot do.
+                raise REFUSED
+            proof = _totp_proof(body.current_code, principal.user, replacing)
         if proof is None:
             raise REFUSED
 
