@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
@@ -6,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db, sessions
+from app import db, sessions, shares
 from app.main import app
 from app.tables import Asset, AssetShare, Job, Model
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
@@ -180,11 +181,15 @@ def test_the_picture_url_lasts_sixty_seconds(library):
         assert _login(client, "sixty@example.com").status_code == 204
         token = _token_of(_share(client, asset.id))
     with TestClient(app, base_url=ORIGIN) as anyone:
-        minted = datetime.now(timezone.utc)
+        # A reading either side of the call, not one before it: the address is
+        # minted at an instant somewhere between them, and subtracting a single
+        # reading charges the round trip to the minute the URL is meant to last,
+        # so a loaded machine fails a test the server passed.
+        before = int(time.time())
         url = _resolve(anyone, token).json()["url"]
+        after = int(time.time())
     expires = int(parse_qs(urlsplit(url).query)["expires"][0])
-    lasts = datetime.fromtimestamp(expires, timezone.utc) - minted
-    assert timedelta(seconds=58) < lasts <= timedelta(seconds=60)
+    assert before + shares.PICTURE_TTL <= expires <= after + shares.PICTURE_TTL
 
 
 @pytest.mark.db
