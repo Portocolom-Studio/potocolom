@@ -1198,6 +1198,8 @@ A factor that could not be removed at all was the shipped behaviour, and "option
 
 Guessing at removal spends the budget replacing a factor spends. Two doors onto the same six digits with a counter on only one of them is not a counter.
 
+The counter is on the digits alone. A recovery code is twenty symbols from an alphabet of thirty-two, which no online guessing reaches, so charging the same ten tries for one bought nothing and cost the account its way back: whoever held a stolen session could spend all ten on rubbish and leave the owner holding a working code that no route would look at. A presented value is matched against the account's unspent recovery codes before anything is charged, and only a value that is not one of them costs a try.
+
 Removing a factor ends the account's other sessions, as enrolling one does. The argument is stronger here rather than weaker: the account is less protected afterwards than it was before, so whoever else is holding a session should not be carried across the change.
 
 The account that has lost the authenticator and every recovery code has nothing to present, and no route can safely help it, so `make auth-clear-factor` is a command at the machine like every other way back in. It ends that account's sessions too, because somebody running it has lost control of the second factor and whether anybody else has hold of the account is exactly what nobody knows. It records an actorless high-severity audit row: nobody signed in did this, and a factor disappearing is the kind of thing somebody should be able to find afterwards.
@@ -1212,7 +1214,7 @@ A first enrolment has no factor row, so there is nothing for a row lock to hold,
 
 The lock is always acquired before any row lock, by every route that takes it. That ordering is what makes it safe to add to routes already arranged against deadlock: a lock every holder takes first can serialise them, but can never be the second edge of a cycle.
 
-A route refuses with 503 rather than queueing on it, because a waiter holds a connection out of a pool fifteen deep and nothing has been written at that point. The offline command waits instead: it owns its process, has no pool to starve, and an operator at a terminal can afford a short transaction.
+A route refuses with 503 rather than queueing on it, because a waiter holds a connection out of a pool fifteen deep and its transaction has written nothing at that point. The bound is on that wait alone and is lifted once the key is held: a row lock taken afterwards waits as it always did, because leaving the timeout on would turn it into a failure no handler expects. An attempt a previous transaction already counted stays counted, which is what a refused guess costs anyway. The offline command waits instead: it owns its process, has no pool to starve, and an operator at a terminal can afford a short transaction.
 
 Rejected alternatives: widening the row lock to the account's rows, which still locks nothing when the account has none; a unique constraint alone, which does refuse a second factor but says nothing about the recovery codes written beside it; serialisable isolation for these routes, which turns a rare interleave into a retry loop every caller has to implement; and one global lock, which would serialise unrelated accounts on the login path.
 
