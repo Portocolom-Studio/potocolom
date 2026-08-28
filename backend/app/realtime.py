@@ -76,6 +76,9 @@ FLEET_TOKEN_HEADER = "x-fleet-token"
 REALTIME_BAR_MS = 500
 
 SESSION_READY_TIMEOUT = 10.0
+# How often the socket-owning process re-asks PostgreSQL which of the
+# account sessions behind its sockets are still live.
+SESSION_SWEEP_SECONDS = 30.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
 
 # One bound for every session seed, shared with the worker's SEED_BOUND
@@ -1318,3 +1321,52 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
           for session in doomed),
         return_exceptions=True,
     )
+
+
+async def close_dead_sessions() -> None:
+    """Close the sockets whose account session died where this process cannot see.
+
+    close_revoked walks a dictionary that only exists inside the process
+    holding the socket, so a revocation performed anywhere else - an operator
+    command in its own process, direct SQL, a second replica - never reaches
+    the canvas. PostgreSQL is the account-session source of truth, so the
+    process that owns the sockets asks it.
+
+    This is not the per-frame re-authorization docs/decisions.md rejects under
+    "Realtime authorization: bind once, invalidate explicitly". Nothing is
+    checked on the hot path: this is one bulk query on a timer.
+    """
+    # auth_mode "none" binds no account session, so there is nothing to ask about.
+    held = {
+        session.auth_session_id: session.user_id
+        for session in list(sessions.values())
+        if session.auth_session_id is not None and session.user_id is not None
+    }
+    if not held:
+        return
+    from app import sessions as account_sessions
+
+    try:
+        live = await account_sessions.live_among(set(held))
+    except Exception:
+        # Fails open where _still_live fails closed, deliberately. That one
+        # judges the single socket it is about to grant a GPU slot to; this
+        # one judges every socket on the installation at once, and a database
+        # blip must not sign everybody out of a live canvas. Each of these
+        # sockets already passed the closed check at admission.
+        logger.warning("realtime could not confirm which sessions are still live")
+        return
+    for auth_session_id, user_id in held.items():
+        if auth_session_id not in live:
+            await close_revoked(user_id, auth_session_id)
+
+
+async def sweep_dead_sessions() -> None:
+    while True:
+        await asyncio.sleep(SESSION_SWEEP_SECONDS)
+        try:
+            await close_dead_sessions()
+        except Exception:
+            # One failure must not stop the sweep for the life of the process:
+            # that would silently restore the defect this exists to fix.
+            logger.warning("realtime session sweep failed")
