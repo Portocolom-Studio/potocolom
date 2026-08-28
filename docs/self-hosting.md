@@ -210,7 +210,9 @@ either takes it off themselves with `DELETE /api/v1/account/totp`; this is the
 case where nothing over HTTP can help, because a route that removes a factor
 without asking for one is a route worth stealing a session for. It removes the
 factor and its codes, ends every session the account had open, and records an
-audit row. The account keeps its password and its role, and can enrol again.
+audit row. A canvas still drawing on one of those sessions closes within half a
+minute, when the API next asks the database which of its sockets are still
+signed in; the command runs in its own process and cannot reach them itself. The account keeps its password and its role, and can enrol again.
 
 `auth-reclaim CLAIM=1` and `auth-enable` both refuse once the installation has
 been claimed, because the setup link adopts the implicit local user and the
