@@ -1324,6 +1324,32 @@ def test_a_spent_budget_does_not_take_the_recovery_code_with_it(accounts):
 
 
 @pytest.mark.db
+def test_a_spent_budget_does_not_shut_the_replace_door_on_a_code_either(accounts):
+    """The same door, one route along. Removal and replacement share the
+    counter, so they have to share the rule about what it counts, and a test
+    that only drives one of them lets the other be reverted in silence.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "burntreplace@example.com")
+        assert _login(client, "burntreplace@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            _, refused = _replace(client, None, current="000000")
+            assert refused.status_code == 403
+        # Shut to the digits it was counting.
+        _, still_shut = _replace(client, None, current=_next_code(secret))
+        assert still_shut.status_code == 403
+        # Open to the hundred bits it never was.
+        fresh, replaced = _replace(client, None, current=codes[0])
+        assert replaced.status_code == 204, replaced.text
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == fresh
+
+
+@pytest.mark.db
 def test_removing_a_factor_signs_the_other_sessions_out(accounts):
     """Removing one is a security change like enrolling one, and the account
     is less protected afterwards rather than more, which makes ending the
