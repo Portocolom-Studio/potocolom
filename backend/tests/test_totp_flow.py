@@ -1302,6 +1302,28 @@ def test_guessing_at_removal_spends_the_same_budget_as_replacing(accounts):
 
 
 @pytest.mark.db
+def test_a_spent_budget_does_not_take_the_recovery_code_with_it(accounts):
+    """The budget bounds six digits, and a recovery code is not six digits.
+
+    Twenty symbols from an alphabet of thirty-two is not a space anybody
+    guesses at, so counting a recovery code against the same ten tries bought
+    nothing and cost something real: whoever stole a session could spend all
+    ten on rubbish and leave the owner holding a working code that no route
+    would look at, which is the one way back this route exists to give them.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "burnt@example.com")
+        assert _login(client, "burnt@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert _remove(client, "000000").status_code == 403
+        # Still shut to the digits, which is the budget doing its job.
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert _remove(client, codes[0]).status_code == 204
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
 def test_removing_a_factor_signs_the_other_sessions_out(accounts):
     """Removing one is a security change like enrolling one, and the account
     is less protected afterwards rather than more, which makes ending the

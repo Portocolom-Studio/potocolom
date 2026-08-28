@@ -424,17 +424,31 @@ def test_a_sweep_that_cannot_reach_the_database_keeps_live_sockets(accounts, mon
                 assert worker.slots_in_use == 1
 
 
-async def _running_task_names() -> set[str]:
-    return {getattr(task.get_coro(), "__qualname__", "") for task in asyncio.all_tasks()}
+async def _settle() -> None:
+    await asyncio.sleep(0.05)
 
 
 @pytest.mark.db
-def test_the_running_app_schedules_the_sweep(accounts):
-    """The sweep is a fix only if something runs it.
+def test_the_running_app_runs_the_sweep(accounts, monkeypatch):
+    """The sweep is a fix only if something runs it, on its own.
 
-    Every test above calls close_dead_sessions by hand, so the one line in the
-    lifespan that schedules it could be deleted with all of them still green
-    and out-of-band revocation would reach no socket at all.
+    Every test above calls close_dead_sessions by hand, so both the line in
+    the lifespan that schedules the loop and the line in the loop that calls
+    it could go with all of them still green and no socket ever swept. This
+    drives the scheduled loop itself and waits for it to come round.
     """
+    swept: list[int] = []
+
+    async def counting() -> None:
+        swept.append(1)
+
+    # Before the client starts, because the loop reads both of these when the
+    # lifespan creates it.
+    monkeypatch.setattr(realtime, "SESSION_SWEEP_SECONDS", 0.05)
+    monkeypatch.setattr(realtime, "close_dead_sessions", counting)
     with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
-        assert "sweep_dead_sessions" in client.portal.call(_running_task_names)
+        for _ in range(100):
+            if swept:
+                break
+            client.portal.call(_settle)
+    assert swept, "the scheduled loop never called close_dead_sessions"
