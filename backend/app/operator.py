@@ -14,7 +14,7 @@ import uuid
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import audit, db, keyring, sessions
+from app import audit, db, factors, keyring, sessions
 from app.enable import AlreadyClaimed, mint_setup_token
 from app.settings import get_settings
 from app.tables import (
@@ -133,6 +133,17 @@ async def clear_factor(email: str) -> bool:
         raise LookupError(f"no account holds {email}")
     async with db.session_factory() as session:
         async with session.begin():
+            # The key the enrolment routes take, from the same function so the
+            # two processes lock the same thing, and taken first, before the
+            # row lock below. An account with no factor yet leaves that row
+            # lock holding nothing, so this is what keeps a first enrolment
+            # and this command apart.
+            #
+            # No lock_timeout here, unlike the routes: this is one short
+            # transaction in a process of its own with no connection pool to
+            # starve, and an operator at a terminal can wait.
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": factors._budget_lock(target.id)})
             await session.execute(
                 select(AuthFactor.id).where(AuthFactor.user_id == target.id)
                 .with_for_update())
@@ -140,6 +151,13 @@ async def clear_factor(email: str) -> bool:
                 delete(AuthFactor).where(AuthFactor.user_id == target.id)
                 .returning(AuthFactor.id)
             )).first()
+            if removed is None:
+                # Nothing to clear, so nothing is written: not the codes, not
+                # the sessions, and not a record saying a second factor was
+                # taken off an account that never had one. Under the lock
+                # above that is the account's answer for the whole
+                # transaction rather than a guess about one moment in it.
+                return False
             await session.execute(
                 delete(RecoveryCode).where(RecoveryCode.user_id == target.id))
             await session.execute(
@@ -150,7 +168,7 @@ async def clear_factor(email: str) -> bool:
     # Actorless and high: nobody signed in did this, and a second factor
     # disappearing is the kind of thing somebody should be able to find later.
     await audit.record("factor.cleared", target_user_id=target.id, severity="high")
-    return removed is not None
+    return True
 
 
 async def rotate_keys() -> dict:

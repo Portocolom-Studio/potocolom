@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -101,6 +101,41 @@ def _budget_lock(user_id: uuid.UUID) -> int:
     return int.from_bytes(user_id.bytes[:8], "big", signed=True)
 
 
+async def _hold_the_account(session: AsyncSession, user_id: uuid.UUID,
+                            busy_detail: str = "too many changes to this account at once",
+                            ) -> None:
+    """The account to itself for the rest of the caller's transaction.
+
+    A first enrolment has no factor row, so the SELECT ... FOR UPDATE the
+    other routes exclude each other with locks nothing against it, and
+    operator.clear_factor is free to interleave: its delete of the factor
+    finding none, and its delete of the recovery codes taking the ones an
+    enrolment committed in between, leaving a factor nobody has a way back
+    past. This key holds whether or not a row exists.
+
+    Taken first, before any row lock, the way begin_challenge takes it. A lock
+    every holder acquires before anything else can serialise them but can
+    never be the second edge of a cycle, which is what makes adding it to
+    routes already arranged against deadlock safe.
+
+    Giving up rather than queueing: a waiter holds its pooled connection, and
+    the pool is fifteen deep, so an unbounded wait would let a flood aimed at
+    one account starve every other request. Nothing has been written when this
+    runs, so the caller can safely be told to come back.
+    """
+    await session.execute(text("SET LOCAL lock_timeout = '3s'"))
+    try:
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                              {"key": _budget_lock(user_id)})
+    except DBAPIError as busy:
+        # The wide class, deliberately: asyncpg raises LockNotAvailableError,
+        # which has no DBAPI class of its own, so SQLAlchemy wraps it as a
+        # plain DBAPIError and the narrower OperationalError never arrives.
+        # Nothing has been written yet, and every way this one statement can
+        # fail is a reason to tell the caller to come back rather than a 500.
+        raise HTTPException(status_code=503, detail=busy_detail) from busy
+
+
 async def begin_challenge(user: User, remember_me: bool,
                           redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
@@ -116,18 +151,10 @@ async def begin_challenge(user: User, remember_me: bool,
             # ten guesses per login and a six-digit code had unlimited tries
             # against it (issue #421). A collision with another key here costs
             # two accounts a moment of waiting and nothing else.
-            # A waiter holds its pooled connection, and the pool is fifteen
-            # deep, so an unbounded wait would let a flood of logins for one
-            # account starve every other request. Giving up is safe here:
-            # nothing has been written yet, and the caller is told to come
-            # back rather than handed a challenge that skipped the carry.
-            await session.execute(text("SET LOCAL lock_timeout = '3s'"))
-            try:
-                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                      {"key": _budget_lock(user.id)})
-            except OperationalError as busy:
-                raise HTTPException(status_code=503,
-                                    detail="too many sign-ins at once") from busy
+            # Refused rather than queued, so a flood of logins for one account
+            # cannot starve the pool: the caller is told to come back rather
+            # than handed a challenge that skipped the carry.
+            await _hold_the_account(session, user.id, "too many sign-ins at once")
             # The budget belongs to the account, not to one challenge. Minted
             # per challenge it counts nothing, because starting another is
             # free to anyone who already has the password.
@@ -445,6 +472,7 @@ async def remove_factor(
 
     async with db.session_factory() as session:
         async with session.begin():
+            await _hold_the_account(session, user_id)
             # The factor row first, the way a replacement takes it, so the two
             # routes cannot deadlock against each other by touching
             # auth_factors and recovery_codes in opposite orders.
@@ -513,9 +541,22 @@ async def confirm_enrolment(
         if proof is None:
             raise REFUSED
 
+    # After the factor read, and that ordering is the whole of the guard.
+    # Removing a factor deletes it and revokes the other sessions in one
+    # transaction, so this request reads no factor only once that transaction
+    # has committed, and a reading of the session taken afterwards sees the
+    # revocation with it. Asked before the read it would prove nothing: a
+    # stolen session holds a sealed enrolment for thirty minutes and cannot
+    # confirm it while the factor stands, and the owner taking that factor off
+    # is exactly what turns the request into a first enrolment, which asks for
+    # no proof at all.
+    if not await sessions.is_live(principal.session.id):
+        raise REFUSED
+
     ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
+            await _hold_the_account(session, user_id)
             if replacing is not None:
                 # The factor row first, always, whichever kind of proof this
                 # is, and answer_challenge takes it first too: auth_factors
