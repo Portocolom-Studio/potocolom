@@ -1321,3 +1321,135 @@ def test_removing_a_factor_signs_the_other_sessions_out(accounts):
         assert _remove(client, _next_code(secret)).status_code == 204
         live = client.portal.call(_live_sessions_for, user.id)
         assert [row.token_hash for row in live] == [sessions.token_hash(here)]
+
+
+@pytest.mark.db
+def test_a_confirm_whose_session_died_in_flight_installs_nothing(accounts, monkeypatch):
+    """A stolen session holds a sealed enrolment it cannot confirm, because
+    the account has a factor and it has no code from it. The owner taking
+    their factor off is what makes that confirm a first enrolment, which asks
+    for no proof at all, so the stolen session must lose its authority in the
+    same moment it stops needing to prove anything.
+    """
+    import httpx
+
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "inflight@example.com")
+        assert _login(client, "inflight@example.com").status_code == 204
+        _, codes = _enrol(client)
+        stolen = _session_cookie(client)
+        _signed_out(client)
+        assert _login(client, "inflight@example.com").status_code == 200
+        assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": codes[0]}).status_code == 204
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        _wearing(client, stolen)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        # The window is between the confirm reading the factor it would have
+        # to prove and the write that installs the new one. Staged on the read
+        # itself, because that read is what decides which of the two the
+        # request is.
+        removed = {"done": False}
+        real_enrolled_factor = factors.enrolled_factor
+
+        async def the_owner_removes_it_first(session, user_id):
+            if not removed["done"]:
+                removed["done"] = True
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                             base_url=ORIGIN, cookies=owner) as caller:
+                    gone = await caller.request(
+                        "DELETE", "/api/v1/account/totp",
+                        headers={"Origin": ORIGIN, "X-CSRF-Token": owner[
+                            next(name for name in owner if name.endswith("potocolom_csrf"))]},
+                        json={"code": codes[1]})
+                assert gone.status_code == 204, gone.text
+            return await real_enrolled_factor(session, user_id)
+
+        monkeypatch.setattr(factors, "enrolled_factor", the_owner_removes_it_first)
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started["enrolment"],
+                                    "code": totp.code_at(started["secret"], int(_now()))})
+        assert refused.status_code == 403, refused.text
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_removing_a_factor_and_enrolling_a_fresh_one_here_still_works(accounts):
+    """Somebody who lost their authenticator turns the factor off with a
+    recovery code and sets a new one up in the same browser, which is the
+    ordinary way through this pair of routes. revoke_others spares the session
+    making the change, so the browser that just removed a factor is still the
+    one allowed to enrol the next.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "again@example.com")
+        assert _login(client, "again@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
+        _enrol(client)
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("route", ["first enrolment", "removal", "challenge"])
+def test_a_route_gives_up_rather_than_queue_on_the_account(accounts, route):
+    """The account lock these routes take, seen from the outside.
+
+    A first enrolment locks no factor row, because there is not one yet, so
+    the row lock the other routes exclude each other with holds nothing and
+    the account lock is what serialises them. Held elsewhere it is answered
+    with a 503 rather than an unbounded wait: a waiter holds its pooled
+    connection, and the pool is fifteen deep (issue #421).
+
+    The challenge case is the one that was wrong. begin_challenge has taken
+    this lock since #421 and caught OperationalError, which never arrives: a
+    lock timeout reaches SQLAlchemy as a plain DBAPIError, so the refusal it
+    meant to give was a 500 until every caller was routed through one helper.
+    """
+    import asyncio
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "queued@example.com")
+        assert _login(client, "queued@example.com").status_code == 204
+        secret = _enrol(client)[0] if route in ("removal", "challenge") else None
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_the_lock() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                          {"key": factors._budget_lock(user.id)})
+                    holding.set()
+                    await release.wait()
+
+        async def let_go() -> None:
+            release.set()
+
+        held = client.portal.start_task_soon(hold_the_lock)
+        client.portal.call(holding.wait)
+        try:
+            if route == "removal":
+                answered = _remove(client, _next_code(secret))
+            elif route == "challenge":
+                answered = _login(client, "queued@example.com")
+            else:
+                answered = client.post(
+                    "/api/v1/account/totp/confirm", headers=_csrf(client),
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(started["secret"], int(_now()))})
+        finally:
+            # Always, even when the assertion below is going to fail: a
+            # transaction left holding this lock wedges every test after it.
+            client.portal.call(let_go)
+            held.cancel()
+
+        assert answered.status_code == 503, answered.text
+        expected = 0 if route == "first enrolment" else 1
+        assert len(client.portal.call(_factors)) == expected
