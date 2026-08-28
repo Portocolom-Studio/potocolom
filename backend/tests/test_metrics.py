@@ -266,6 +266,53 @@ def test_usage_event_maintenance_rolls_up_prunes_and_is_idempotent(monkeypatch):
 
 
 @pytest.mark.db
+def test_a_blank_tier_and_no_tier_roll_up_as_one_row():
+    """The unique index arbitrates on COALESCE(tier, ''), so a blank tier and
+    an absent one are one rollup row to it. Grouped apart they become two rows
+    offered to that one row, and PostgreSQL refuses the whole statement rather
+    than half of it, which takes every other account's rollup down with it and
+    the pruning that shares the transaction (issue #408).
+    """
+    now = datetime(2026, 7, 28, 15, tzinfo=timezone.utc)
+    cutoff = gpu_samples._usage_raw_cutoff(now)
+    user_id = uuid.uuid4()
+    old_at = cutoff - timedelta(days=2) + timedelta(hours=3)
+
+    def event(tier: str | None) -> UsageEvent:
+        return UsageEvent(
+            id=uuid.uuid4(), user_id=user_id, kind="job", action="generate",
+            model_id="sd-test", tier=tier, category="art", category_score=None,
+            gpu_ms=10, duration_ms=None, frames=1, created_at=old_at,
+        )
+
+    async def exercise() -> list[tuple]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add(User(id=user_id, email=f"{user_id}@example.test"))
+            await session.flush()
+            session.add_all([event(None), event("")])
+            await session.commit()
+        async with db.session_factory() as session:
+            await gpu_samples._rebuild_usage_rollups(session, cutoff)
+            await session.commit()
+        async with db.session_factory() as session:
+            rows = (await session.execute(
+                select(UsageEventRollup).where(UsageEventRollup.user_id == user_id)
+            )).scalars().all()
+            counted = [(row.tier, row.event_count) for row in rows]
+        async with db.session_factory() as session:
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+        return counted
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        rolled = client.portal.call(exercise)
+
+    # One row holding both, rather than a statement that wrote nothing at all.
+    assert rolled == [(None, 2)]
+
+
+@pytest.mark.db
 def test_usage_event_rollups_are_hard_deleted_with_user():
     user_id = uuid.uuid4()
     rollup_id = uuid.uuid4()
