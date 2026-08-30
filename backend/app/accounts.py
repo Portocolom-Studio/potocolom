@@ -8,7 +8,7 @@ from anyio import to_thread
 from sqlalchemy import func, or_, select
 from starlette.responses import Response
 
-from app import db, factors, sessions
+from app import db, factors, rate_limit, sessions
 from app.auth import current_principal, require_accounts_mode
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
@@ -61,8 +61,9 @@ def _clear(response: Response) -> None:
 async def login(request: LoginRequest, http: Request) -> Response:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    presented = await _presented_session(http)
     subject = request.email.strip().lower()
+    await rate_limit.charge_login(subject, http)
+    presented = await _presented_session(http)
     async with db.session_factory() as session:
         found = (await session.execute(
             select(AuthIdentity, User)

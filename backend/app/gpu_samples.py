@@ -12,7 +12,7 @@ from sqlalchemy import Date, cast, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import audit, db, estimates, oauth
+from app import audit, db, estimates, oauth, rate_limit
 from app.tables import (
     GpuSample,
     GpuSampleRollup,
@@ -313,6 +313,7 @@ async def maintain_once() -> None:
     # with it, or these tables stop being pruned at all.
     await audit.prune()
     await oauth.prune()
+    await rate_limit.prune()
 
 
 async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: datetime) -> None:
