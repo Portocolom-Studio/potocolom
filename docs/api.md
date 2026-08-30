@@ -60,7 +60,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
 | GET `/api/v1/auth/verify` | issue #5 | email verification link target |
 | POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
-| POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies |
+| POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies; rate limited per identifier and per address |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials |
 | GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account |
@@ -315,6 +315,9 @@ POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "re
                              204 + Set-Cookie: potocolom_session (HttpOnly, SameSite=Lax,
                              Path=/, Secure and __Host- prefixed over HTTPS) and potocolom_csrf
                              401 on bad credentials, and on an address nobody holds
+                             429 past 10 attempts for one identifier or 30 for one address in
+                             10 minutes; from the sixth, the answer is held back 0.5s doubling
+                             to 8s, whether or not the credentials are right
 POST /api/v1/auth/logout     204, session revoked and both cookies cleared
 ```
 
