@@ -64,6 +64,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _issued(remembered: bool) -> Issued:
+    return Issued(
+        token=secrets.token_urlsafe(TOKEN_BYTES),
+        csrf=secrets.token_urlsafe(TOKEN_BYTES),
+        max_age=int(REMEMBER_ABSOLUTE.total_seconds()) if remembered else None,
+    )
+
+
 async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Issued:
     """authenticated defaults to False because setup proves a link, not a
     person, and must not open the window that guards credential changes."""
@@ -76,11 +84,7 @@ async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Is
     else:
         remembered, idle = False, None
     now = _now()
-    issued = Issued(
-        token=secrets.token_urlsafe(TOKEN_BYTES),
-        csrf=secrets.token_urlsafe(TOKEN_BYTES),
-        max_age=int(REMEMBER_ABSOLUTE.total_seconds()) if remembered else None,
-    )
+    issued = _issued(remembered)
     async with db.session_factory() as session:
         session.add(Session(
             user_id=user.id,
@@ -123,21 +127,51 @@ async def resolve(token: str) -> Resolved | None:
         return Resolved(session=row, user=user)
 
 
-async def revoke_others(db_session: AsyncSession, resolved: "Resolved",
-                        spend_capabilities: bool = True) -> None:
-    """Every session but the one making the change.
+async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved",
+                                   spend_capabilities: bool = True) -> Issued:
+    """Every other session ends, and this one gets a new token to carry on with.
 
-    Signing somebody out of the browser they are changing their own security
-    settings in reads as a failure and invites them to try again, so that one
-    stays. Lives here rather than beside any one caller because more than one
-    kind of change owes this: a credential, an address, a linked identity, a
-    second factor.
+    Revoking the others is what a credential change is usually for, and until
+    #436 it never reached the copy that matters most: a stolen cookie is a
+    copy of the token belonging to the browser making the change, so leaving
+    that one alone left the intruder holding it. Signing the owner out instead
+    reads as a failure and invites them to try again, so the token is replaced
+    under them and they never notice.
+
+    Replaced on the row, rather than by revoking it and inserting another. The
+    session keeps its id, its clocks and its recent authentication, so nothing
+    downstream has to learn that a rotation happened: a socket bound to this
+    id at its handshake stays bound to a live session, and the window that
+    guards the next credential change carries on rather than restarting.
+
+    Inside the caller's transaction on purpose. The token this returns is
+    handed to a browser, and a change that rolls back must not leave that
+    browser holding the only working credential on the account.
+
+    Lives here rather than beside any one caller because more than one kind of
+    change owes this: a credential, an address, a linked identity, a second
+    factor.
     """
+    # Every transaction takes the account's session rows in one order, or two
+    # credential changes racing on the same account deadlock: each revocation
+    # holds the row the other one is about to rotate.
+    await db_session.execute(
+        select(Session.id)
+        .where(Session.user_id == resolved.user.id, Session.revoked_at.is_(None))
+        .order_by(Session.id)
+        .with_for_update()
+    )
     await db_session.execute(
         update(Session)
         .where(Session.user_id == resolved.user.id, Session.id != resolved.session.id,
                Session.revoked_at.is_(None))
         .values(revoked_at=func.now())
+    )
+    issued = _issued(resolved.session.remember_me)
+    await db_session.execute(
+        update(Session)
+        .where(Session.id == resolved.session.id, Session.revoked_at.is_(None))
+        .values(token_hash=token_hash(issued.token))
     )
     if spend_capabilities:
         # Reset and recovery links go with them. Changing a credential after a
@@ -150,6 +184,7 @@ async def revoke_others(db_session: AsyncSession, resolved: "Resolved",
                    AuthToken.consumed_at.is_(None))
             .values(consumed_at=func.now())
         )
+    return issued
 
 
 async def close_other_sockets(resolved: "Resolved") -> None:
