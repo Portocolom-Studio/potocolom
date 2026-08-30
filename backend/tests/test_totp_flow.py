@@ -1004,11 +1004,12 @@ def test_enrolling_a_factor_signs_the_other_sessions_out(accounts):
         # one that comes out of it. Two live sessions needs two clean starts.
         _signed_out(client)
         assert _login(client, "twoplaces@example.com").status_code == 204
-        here = _session_cookie(client)
         assert len(client.portal.call(_live_sessions_for, user.id)) == 2
 
         _enrol(client)
-        # The one that enrolled keeps working; the other does not.
+        # The one that enrolled keeps working, on the token the enrolment
+        # rotated it onto; the other does not.
+        here = _session_cookie(client)
         assert client.get("/api/v1/account").status_code == 200
         assert len(client.portal.call(_live_sessions_for, user.id)) == 1
         _wearing(client, elsewhere)
@@ -1042,7 +1043,9 @@ def test_replacing_a_factor_signs_the_other_sessions_out(accounts):
         # The one that replaced the factor is the one still standing. Counting
         # to one would pass just as well if it were the other way round.
         live = client.portal.call(_live_sessions_for, user.id)
-        assert [row.token_hash for row in live] == [sessions.token_hash(here)]
+        # On the token the change rotated it onto, not the one it arrived with.
+        assert [row.token_hash for row in live] == [
+            sessions.token_hash(_session_cookie(client))]
 
 
 @pytest.mark.db
@@ -1368,7 +1371,9 @@ def test_removing_a_factor_signs_the_other_sessions_out(accounts):
 
         assert _remove(client, _next_code(secret)).status_code == 204
         live = client.portal.call(_live_sessions_for, user.id)
-        assert [row.token_hash for row in live] == [sessions.token_hash(here)]
+        # On the token the change rotated it onto, not the one it arrived with.
+        assert [row.token_hash for row in live] == [
+            sessions.token_hash(_session_cookie(client))]
 
 
 @pytest.mark.db
@@ -1428,9 +1433,10 @@ def test_a_confirm_whose_session_died_in_flight_installs_nothing(accounts, monke
 def test_removing_a_factor_and_enrolling_a_fresh_one_here_still_works(accounts):
     """Somebody who lost their authenticator turns the factor off with a
     recovery code and sets a new one up in the same browser, which is the
-    ordinary way through this pair of routes. revoke_others spares the session
-    making the change, so the browser that just removed a factor is still the
-    one allowed to enrol the next.
+    ordinary way through this pair of routes. The removal rotates that session
+    rather than ending it, and rotating keeps the recent authentication the
+    enrolment below is gated on, so the browser that just removed a factor is
+    still the one allowed to enrol the next.
     """
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "again@example.com")
@@ -1501,3 +1507,55 @@ def test_a_route_gives_up_rather_than_queue_on_the_account(accounts, route):
         assert answered.status_code == 503, answered.text
         expected = 0 if route == "first enrolment" else 1
         assert len(client.portal.call(_factors)) == expected
+
+
+@pytest.mark.db
+def test_confirming_an_enrolment_rotates_the_token_that_confirmed_it(accounts):
+    """Enrolling a factor ends the account's other sessions, and until #436 it
+    left the one it was enrolled from exactly as it was, so a copy of that
+    cookie survived the change made to evict it.
+
+    Presented, not inferred from a Set-Cookie header: a response handing back
+    a cookie for a session nobody revoked would look identical.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "rotenrol@example.com")
+        assert _login(client, "rotenrol@example.com").status_code == 204
+        stolen = _session_cookie(client)
+        _enrol(client)
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {stolen}"}).status_code == 401
+        assert _session_cookie(client) != stolen
+        assert client.get("/api/v1/account").status_code == 200
+
+
+@pytest.mark.db
+def test_removing_a_factor_rotates_the_token_that_removed_it(accounts):
+    """Taking the factor off leaves the account less protected than before,
+    which makes ending every copy of this session matter more, not less."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "rotremove@example.com")
+        assert _login(client, "rotremove@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        stolen = _session_cookie(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {stolen}"}).status_code == 401
+        assert _session_cookie(client) != stolen
+        assert client.get("/api/v1/account").status_code == 200
+
+
+@pytest.mark.db
+def test_a_rotation_keeps_the_window_the_next_factor_change_needs(accounts):
+    """Enrol, then think better of it and take it off, in one sitting.
+
+    Both doors are gated on recent authentication, so a rotation that minted a
+    session without the window the old one had would answer the second request
+    with "prove yourself again" a second after the first proved it.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "stillwindowed@example.com")
+        assert _login(client, "stillwindowed@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
