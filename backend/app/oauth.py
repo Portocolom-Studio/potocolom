@@ -305,7 +305,7 @@ async def callback(provider: str, state: str, code: str, request: Request) -> Re
     if flow.link_user_id is None:
         response = await _sign_in(provider, identity, settings, request)
     else:
-        response = await _link(provider, identity, flow.link_user_id, settings)
+        response = await _link(provider, identity, flow.link_user_id, settings, request)
     response.delete_cookie(_flow_cookie_name(settings), path="/",
                            samesite="lax", secure=sessions.is_secure(settings.public_url),
                            httponly=True)
@@ -355,9 +355,22 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
 
 
 async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
-                settings: Settings) -> Response:
+                settings: Settings, request: Request) -> Response:
+    """A link adds a way into the account, so it ends the account's other
+    sessions and replaces the token of the browser making it, the way a
+    password, an address and a second factor do.
+
+    That needs the session the flow started from, so a browser whose session
+    died while it was away at the provider is refused: the link would add a
+    way in and end nothing, which is the reverse of what revoking that session
+    meant.
+    """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    presented = request.cookies.get(sessions.cookie_names(settings.public_url)[0])
+    linker = await sessions.resolve(presented) if presented else None
+    if linker is None or linker.user.id != user_id:
+        raise REFUSED
     async with db.session_factory() as session:
         async with session.begin():
             user = await session.get(User, user_id)
@@ -382,7 +395,19 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
                        func.lower(func.btrim(User.email)) == _normalized(identity.email))
                 .values(mail_verified=True)
             )
-    return RedirectResponse(settings.public_url, status_code=307)
+            # Reset and recovery links go too, which the factor routes spare.
+            # A factor stands in front of the password a reset link sets, so
+            # the link there is a way back in that costs nothing; a provider
+            # gates nothing, so one left alive still hands the account to
+            # whoever holds the mailbox, and closing that is what somebody
+            # linking to secure their account means by it.
+            issued = await sessions.rotate_and_revoke_others(session, linker)
+    # After the transaction, never inside it: a revoked row stops the next
+    # request and does not reach a socket that already bound its principal.
+    await sessions.close_other_sockets(linker)
+    response = RedirectResponse(settings.public_url, status_code=307)
+    issue_session(response, issued)
+    return response
 
 
 @router.post("/api/v1/account/identities/{provider}")
