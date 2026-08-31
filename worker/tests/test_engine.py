@@ -1235,7 +1235,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
         frame, stored, stored_i2i = asyncio.run(scenario())
 
     autoencoder_tiny.from_pretrained.assert_called_once_with(
-        "madebyollin/taesdxl", torch_dtype=dtype,
+        "madebyollin/taesdxl", torch_dtype=dtype, revision=None,
     )
     decoder.to.assert_called_once_with("cpu")
     # Identity proves the tiny decoder receives the pipeline latents directly,
@@ -2872,3 +2872,194 @@ def test_from_pretrained_loads_in_declared_dtype_without_fp16_variant():
     assert source == "black-forest-labs/FLUX.2-klein-4B"
     assert kwargs["torch_dtype"] is torch.bfloat16
     assert "variant" not in kwargs
+
+
+# One distinct sha per reference. A shared constant would pass even if a load
+# path read the wrong manifest field, which is the mistake these tests exist
+# to catch (issue #319).
+SOURCE_PIN = "a" * 40
+VAE_PIN = "b" * 40
+LORA_PIN = "c" * 40
+ADAPTER_PIN = "d" * 40
+DECODER_PIN = "e" * 40
+
+
+def test_pipeline_load_pins_the_source_on_both_fp16_attempts():
+    """The fp16 variant attempt and the plain retry are two separate calls, so
+    the pin has to ride on both or the fallback silently loads the default
+    branch."""
+    import torch
+
+    calls: list[dict] = []
+
+    class FakeRepo:
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("variant") == "fp16":
+                raise OSError("this repository ships no fp16 variant")
+            return object()
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.float16
+    manifest = Manifest(
+        id="sdxl-base", name="SDXL", capabilities=["text_to_image"],
+        source="stabilityai/stable-diffusion-xl-base-1.0",
+        source_revision=SOURCE_PIN,
+    )
+    engine._from_pretrained(FakeRepo, manifest)
+
+    assert [call["revision"] for call in calls] == [SOURCE_PIN, SOURCE_PIN]
+    assert calls[0]["variant"] == "fp16"
+    assert "variant" not in calls[1]
+
+
+def test_vae_load_pins_the_vae_and_leaves_the_source_pin_alone():
+    import torch
+
+    autoencoder_kl = MagicMock()
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderKL = autoencoder_kl
+
+    class FakeRepo:
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            return kwargs
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.bfloat16
+    manifest = Manifest(
+        id="sdxl-base", name="SDXL", capabilities=["text_to_image"],
+        source="stabilityai/stable-diffusion-xl-base-1.0",
+        source_revision=SOURCE_PIN,
+        vae="madebyollin/sdxl-vae-fp16-fix", vae_revision=VAE_PIN,
+        dtype="bfloat16",
+    )
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        kwargs = engine._from_pretrained(FakeRepo, manifest)
+
+    autoencoder_kl.from_pretrained.assert_called_once_with(
+        "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.bfloat16,
+        revision=VAE_PIN,
+    )
+    assert kwargs["revision"] == SOURCE_PIN
+
+
+def test_lora_fuse_pins_the_lora_repository():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine._pipelines = {}
+    pipeline = MagicMock()
+    engine._pipeline_class = MagicMock(return_value=object())
+    engine._from_pretrained = MagicMock(return_value=pipeline)
+    engine._pick_rung = MagicMock(return_value="full")
+    engine._apply_rung = MagicMock(return_value=pipeline)
+    engine._optimize_resident = MagicMock()
+    manifest = Manifest(
+        id="sdxl-fast", name="SDXL Fast", capabilities=["text_to_image"],
+        source="stabilityai/stable-diffusion-xl-base-1.0",
+        source_revision=SOURCE_PIN,
+        lora="ByteDance/SDXL-Lightning/sdxl_lightning_8step_lora.safetensors",
+        lora_revision=LORA_PIN,
+    )
+
+    engine._load(manifest, "t2i")
+
+    pipeline.load_lora_weights.assert_called_once_with(
+        "ByteDance/SDXL-Lightning",
+        weight_name="sdxl_lightning_8step_lora.safetensors",
+        revision=LORA_PIN,
+    )
+    pipeline.fuse_lora.assert_called_once_with()
+
+
+def test_realtime_adapter_load_pins_the_adapter():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = _FakeTorch()
+    engine.device = "cpu"
+    engine.dtype = object()
+    engine._pipelines = {}
+    base = MagicMock()
+    base.unet = object()
+    pipeline = MagicMock()
+    pipeline.unet = base.unet
+    diffusers = ModuleType("diffusers")
+    diffusers.T2IAdapter = MagicMock()
+    diffusers.StableDiffusionXLAdapterPipeline = MagicMock()
+    diffusers.StableDiffusionXLAdapterPipeline.from_pipe = MagicMock(
+        return_value=pipeline,
+    )
+    manifest = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        source="segmind/Segmind-Vega", source_revision=SOURCE_PIN,
+        t2i_adapter="TencentARC/t2i-adapter-sketch-sdxl-1.0",
+        t2i_adapter_revision=ADAPTER_PIN,
+    )
+    engine._load = MagicMock(return_value=base)
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        engine._load_realtime(manifest)
+
+    diffusers.T2IAdapter.from_pretrained.assert_called_once_with(
+        "TencentARC/t2i-adapter-sketch-sdxl-1.0", torch_dtype=engine.dtype,
+        revision=ADAPTER_PIN,
+    )
+
+
+def test_preview_decoder_load_pins_the_decoder():
+    """_preview_decoder swallows every load failure, so this asserts the
+    decoder came back as well as how it was asked for: a stub that rejected
+    the call would otherwise leave the assertion unreached."""
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cpu"
+    engine.dtype = object()
+    decoder = MagicMock()
+    decoder.to.return_value = decoder
+    autoencoder_tiny = MagicMock()
+    autoencoder_tiny.from_pretrained.return_value = decoder
+    diffusers = ModuleType("diffusers")
+    diffusers.AutoencoderTiny = autoencoder_tiny
+    manifest = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        source="segmind/Segmind-Vega", source_revision=SOURCE_PIN,
+        preview_decoder="madebyollin/taesdxl",
+        preview_decoder_revision=DECODER_PIN,
+    )
+
+    with patch.dict(sys.modules, {"diffusers": diffusers}):
+        loaded = engine._preview_decoder(SimpleNamespace(), manifest)
+
+    assert loaded is decoder
+    autoencoder_tiny.from_pretrained.assert_called_once_with(
+        "madebyollin/taesdxl", torch_dtype=engine.dtype, revision=DECODER_PIN,
+    )
+
+
+def test_a_missing_source_is_never_substituted_by_the_model_id():
+    """A manifest id is a slug, not a repository id. Falling back to it sent an
+    unpinned id to the hub for every id that happens to name a real repository
+    there, and validate_revision_pins cannot see that reference because the
+    manifest names none (issue #319)."""
+    import torch
+
+    asked: list[str] = []
+
+    class FakeRepo:
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            asked.append(source)
+            return object()
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.bfloat16
+    manifest = Manifest(id="gpt2", name="No source", capabilities=["text_to_image"])
+
+    engine._from_pretrained(FakeRepo, manifest)
+
+    assert asked == [""]

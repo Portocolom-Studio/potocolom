@@ -788,7 +788,10 @@ class DiffusersEngine:
                 # Hyper-SD class) fused into the weights while still on the
                 # CPU, so the device move carries the final tensors.
                 repo, _, weight = manifest.lora.rpartition("/")
-                pipeline.load_lora_weights(repo, weight_name=weight)
+                pipeline.load_lora_weights(
+                    repo, weight_name=weight,
+                    revision=manifest.lora_revision or None,
+                )
                 pipeline.fuse_lora()
             rung = self._pick_rung(manifest)
             # NHWC helps full-resident GPU UNets. self.device is "cuda" for both
@@ -1063,6 +1066,7 @@ class DiffusersEngine:
         # in step count (scripts/prototype-canvas-conditioning.py).
         adapter = T2IAdapter.from_pretrained(
             manifest.t2i_adapter, torch_dtype=self.dtype,
+            revision=manifest.t2i_adapter_revision or None,
         )
         pipeline = StableDiffusionXLAdapterPipeline.from_pipe(
             base,
@@ -1149,6 +1153,7 @@ class DiffusersEngine:
 
             decoder = AutoencoderTiny.from_pretrained(
                 manifest.preview_decoder, torch_dtype=self.dtype,
+                revision=manifest.preview_decoder_revision or None,
             ).to(self.device)
         except Exception as error:
             # Every failure is treated as transient. frame()'s evict-and-retry
@@ -1632,16 +1637,21 @@ class DiffusersEngine:
         return self.dtype
 
     def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
-        source = manifest.source or manifest.id
+        source = manifest.source
         dtype = self._pipeline_dtype(manifest)
-        kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        kwargs: dict[str, Any] = {
+            "torch_dtype": dtype, "revision": manifest.source_revision or None,
+        }
         if manifest.vae:
             from diffusers import AutoencoderKL
 
             # SDXL's stock VAE upcasts itself to fp32 at decode time (fp16
             # overflows), which spikes VRAM past a 16 GB card; manifests name
             # an fp16-safe replacement instead.
-            kwargs["vae"] = AutoencoderKL.from_pretrained(manifest.vae, torch_dtype=dtype)
+            kwargs["vae"] = AutoencoderKL.from_pretrained(
+                manifest.vae, torch_dtype=dtype,
+                revision=manifest.vae_revision or None,
+            )
         if dtype is self.torch.float16:
             try:
                 # fp16 variants halve the download and the disk footprint;

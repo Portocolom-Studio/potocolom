@@ -1,10 +1,13 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
+
+PIN = "0" * 40  # shape-valid stand-in; the shipped pins live in the manifests
 
 SD_TURBO = {
     "id": "sd-turbo",
@@ -13,6 +16,7 @@ SD_TURBO = {
     "min_vram_gb": 8,
     "prompt_token_limit": 77,
     "source": "stabilityai/sd-turbo",
+    "source_revision": "b261bac6fd2cf515557d5d0707481eafa0485ec2",
     "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
 }
 
@@ -29,8 +33,10 @@ def test_load_manifests_and_wire_shape(tmp_path):
     (tmp_path / "sd-turbo.json").write_text(
         json.dumps({**SD_TURBO,
                     "preview_decoder": "madebyollin/taesd",
+                    "preview_decoder_revision": PIN,
                     "quantize": "text_encoder_3:int8",
-                    "t2i_adapter": "TencentARC/t2i-adapter-sketch-sdxl-1.0"})
+                    "t2i_adapter": "TencentARC/t2i-adapter-sketch-sdxl-1.0",
+                    "t2i_adapter_revision": PIN})
     )
     manifests = load_manifests(str(tmp_path))
     assert [m.id for m in manifests] == ["sd-turbo"]
@@ -44,6 +50,9 @@ def test_load_manifests_and_wire_shape(tmp_path):
     assert "preview_decoder" not in wire
     assert "quantize" not in wire
     assert "t2i_adapter" not in wire
+    for field in ("source_revision", "vae_revision", "preview_decoder_revision",
+                  "lora_revision", "t2i_adapter_revision"):
+        assert field not in wire  # a pin locates weights as much as its reference
 
 
 def test_studio_capabilities_round_trips_through_wire():
@@ -210,7 +219,7 @@ def test_min_vram_gb_is_bounded_where_the_operator_sees_it(tmp_path):
     # caused it (issue #232).
     (tmp_path / "bad.json").write_text(json.dumps({
         "id": "bad", "name": "bad", "capabilities": ["text_to_image"],
-        "source": "x/y", "min_vram_gb": 3_000_000_000,
+        "source": "x/y", "source_revision": PIN, "min_vram_gb": 3_000_000_000,
     }))
     with pytest.raises(ValidationError):
         load_manifests(str(tmp_path))
@@ -218,7 +227,7 @@ def test_min_vram_gb_is_bounded_where_the_operator_sees_it(tmp_path):
     (tmp_path / "bad.json").unlink()
     (tmp_path / "good.json").write_text(json.dumps({
         "id": "good", "name": "good", "capabilities": ["text_to_image"],
-        "source": "x/y", "min_vram_gb": 12,
+        "source": "x/y", "source_revision": PIN, "min_vram_gb": 12,
     }))
     assert load_manifests(str(tmp_path))[0].min_vram_gb == 12
 
@@ -262,3 +271,111 @@ def test_shipped_candidate_manifests_are_apache_benchmark_only(model_id):
     assert manifest.dtype == "bfloat16"
     assert manifest.commercial_max_revenue_usd is None
     assert "realtime" not in manifest.capabilities
+
+
+def test_unpinned_reference_is_refused(tmp_path):
+    """An unpinned repository id follows its default branch, so the same
+    release renders differently on two installs (issue #319)."""
+    (tmp_path / "bad.json").write_text(
+        json.dumps({k: v for k, v in SD_TURBO.items() if k != "source_revision"})
+    )
+    with pytest.raises(ValueError, match="needs a source_revision"):
+        load_manifests(str(tmp_path))
+
+
+@pytest.mark.parametrize("field,reference", [
+    ("vae", "madebyollin/sdxl-vae-fp16-fix"),
+    ("preview_decoder", "madebyollin/taesdxl"),
+    ("lora", "ByteDance/SDXL-Lightning/sdxl_lightning_8step_lora.safetensors"),
+    ("t2i_adapter", "TencentARC/t2i-adapter-sketch-sdxl-1.0"),
+])
+def test_every_reference_needs_its_own_pin(tmp_path, field, reference):
+    """One pin per reference, because a manifest names up to five repositories
+    and they move independently."""
+    (tmp_path / "bad.json").write_text(json.dumps({**SD_TURBO, field: reference}))
+    with pytest.raises(ValueError, match=f"needs a {field}_revision"):
+        load_manifests(str(tmp_path))
+
+
+@pytest.mark.parametrize("revision", [
+    "main",                                      # a branch moves
+    "v1.0",                                      # so does a tag
+    "b261bac",                                   # short shas grow ambiguous
+    "B261BAC6FD2CF515557D5D0707481EAFA0485EC2",  # the hub serves lowercase
+    "b261bac6fd2cf515557d5d0707481eafa0485ec",   # 39 characters
+    "b261bac6fd2cf515557d5d0707481eafa0485ec2z",
+])
+def test_malformed_revision_is_refused(tmp_path, revision):
+    (tmp_path / "bad.json").write_text(
+        json.dumps({**SD_TURBO, "source_revision": revision})
+    )
+    with pytest.raises(ValidationError):
+        load_manifests(str(tmp_path))
+
+
+def test_pin_without_a_reference_is_refused(tmp_path):
+    """A pin on an absent reference silently pins nothing."""
+    (tmp_path / "bad.json").write_text(json.dumps({**SD_TURBO, "vae_revision": PIN}))
+    with pytest.raises(ValueError, match="vae_revision pins nothing"):
+        load_manifests(str(tmp_path))
+
+
+@pytest.mark.parametrize("source", [
+    "https://github.com/xinntao/Real-ESRGAN/releases/download",
+    "/srv/weights/my-model",
+    "./weights/my-model",
+])
+def test_references_with_nothing_to_pin_stay_loadable(tmp_path, source):
+    """A release URL carries its own version and a local path has no history,
+    so requiring a sha of either would refuse manifests that are already as
+    reproducible as they can be."""
+    (tmp_path / "ok.json").write_text(json.dumps({
+        **{k: v for k, v in SD_TURBO.items() if k != "source_revision"},
+        "source": source,
+    }))
+    assert load_manifests(str(tmp_path))[0].source == source
+
+
+def test_every_shipped_reference_is_pinned_to_a_commit():
+    """The shipped fleet, not just the schema: an added manifest that names a
+    repository without a sha fails here."""
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    checked = 0
+    for manifest in load_manifests(str(models_dir)):
+        for field in ("source", "vae", "preview_decoder", "lora", "t2i_adapter"):
+            reference = getattr(manifest, field)
+            if not reference or "://" in reference:
+                continue
+            revision = getattr(manifest, f"{field}_revision")
+            assert re.fullmatch(r"[0-9a-f]{40}", revision), (manifest.id, field)
+            checked += 1
+    # A floor, not a census: it fails if the loop degenerates to checking
+    # nothing, and adding a manifest does not make it lie.
+    assert checked >= 28
+
+
+def test_one_repository_is_pinned_to_one_commit_across_manifests():
+    """Six manifests share the fp16 VAE and three share a base. Pinning one
+    copy and not its siblings would load two revisions of one repository into
+    one fleet."""
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    pins: dict[str, set[str]] = {}
+    for manifest in load_manifests(str(models_dir)):
+        for field in ("source", "vae", "preview_decoder", "lora", "t2i_adapter"):
+            reference = getattr(manifest, field)
+            if not reference or "://" in reference:
+                continue
+            repo = reference.rpartition("/")[0] if field == "lora" else reference
+            pins.setdefault(repo, set()).add(getattr(manifest, f"{field}_revision"))
+    assert {repo: found for repo, found in pins.items() if len(found) > 1} == {}
+
+
+def test_dreamshaper_names_the_canonical_repository_case():
+    """The hub answers `lykon/...` with a 307 to `Lykon/...`, so the old
+    lowercase id worked while nothing pinned it. A pin should name the
+    repository the sha belongs to rather than lean on a redirect."""
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    dreamshaper = next(
+        m for m in load_manifests(str(models_dir)) if m.id == "dreamshaper-lcm"
+    )
+    assert dreamshaper.source == "Lykon/dreamshaper-8-lcm"

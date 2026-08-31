@@ -5,6 +5,7 @@
   "min_vram_gb": 13,
   "prompt_token_limit": 512,
   "source": "black-forest-labs/FLUX.2-klein-4B",
+  "source_revision": "e7b7dc27f91deacad38e78976d1f2b499d76a294",
   "dtype": "bfloat16",
   "license_id": "apache-2.0",
   "license_url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/main/README.md",

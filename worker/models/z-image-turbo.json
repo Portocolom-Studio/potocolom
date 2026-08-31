@@ -5,6 +5,7 @@
   "min_vram_gb": 20,
   "prompt_token_limit": 512,
   "source": "Tongyi-MAI/Z-Image-Turbo",
+  "source_revision": "f332072aa78be7aecdf3ee76d5c247082da564a6",
   "dtype": "bfloat16",
   "license_id": "apache-2.0",
   "license_url": "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/blob/main/LICENSE.txt",

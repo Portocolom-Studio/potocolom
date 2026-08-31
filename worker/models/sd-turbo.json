@@ -5,6 +5,7 @@
   "min_vram_gb": 8,
   "prompt_token_limit": 77,
   "source": "stabilityai/sd-turbo",
+  "source_revision": "b261bac6fd2cf515557d5d0707481eafa0485ec2",
   "license_id": "stability-ai-community",
   "license_url": "https://huggingface.co/stabilityai/sd-turbo/blob/main/LICENSE.md",
   "commercial_max_revenue_usd": 1000000,

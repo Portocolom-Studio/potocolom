@@ -7,7 +7,9 @@
   "min_vram_gb": 8,
   "prompt_token_limit": 77,
   "source": "segmind/SSD-1B",
+  "source_revision": "60987f37e94cd59c36b1cba832b9f97b57395a10",
   "vae": "madebyollin/sdxl-vae-fp16-fix",
+  "vae_revision": "207b116dae70ace3637169f1ddd2434b91b3a8cd",
   "scheduler": "dpmsolver",
   "parameters": {
     "type": "object",
