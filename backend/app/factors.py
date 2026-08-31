@@ -143,6 +143,41 @@ async def _hold_the_account(session: AsyncSession, user_id: uuid.UUID,
     await session.execute(text("SET LOCAL lock_timeout = '0'"))
 
 
+async def mint_behind_the_gate(user: User, remember_me: bool,
+                               expected: uuid.UUID | None) -> sessions.Issued | None:
+    """A sign-in session, and only while the account's factor is still the one
+    this request got past. None when it is not, and then nothing was written.
+
+    The check and the insert are one transaction holding the account key,
+    because a factor change revokes the sessions that exist when it commits
+    and cannot reach one that is not there yet. A login that read no factor,
+    an enrolment that committed and revoked, and then the insert, left the
+    account a live session past a gate that had just gone up, and its owner
+    believing they had ended it (issue #435). Re-reading the factor after the
+    insert narrows that window instead of closing it: two transactions that
+    never touch a common row do not serialise, so the re-read sees no factor
+    and the revocation sees no session.
+
+    Expected is the factor the caller proved, or None for a password login,
+    which passed the gate by there being nothing to prove.
+
+    The key is released with this transaction, before the caller decides what
+    to do about a gate it found closed. begin_challenge takes the same key in
+    a transaction of its own, so calling it from inside this one waits three
+    seconds on a key this request is holding and answers a correct password
+    with a 503.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        async with session.begin():
+            await _hold_the_account(session, user.id, "too many sign-ins at once")
+            current = await enrolled_factor(session, user.id)
+            if (current.id if current is not None else None) != expected:
+                return None
+            return sessions.mint_in(session, user, remember_me, authenticated=True)
+
+
 async def begin_challenge(user: User, remember_me: bool,
                           redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
@@ -277,11 +312,21 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
                                          AuthFactor.replace_attempts > 0)
                 .values(replace_attempts=0))
     remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
+    # The factor this proved is the one the account still has to have. A
+    # replacement or a removal that commits between the proof and the session
+    # revokes what exists at that moment, so a session minted afterwards is one
+    # it could not reach (issue #435).
+    issued = await mint_behind_the_gate(user, remembered, factor.id)
+    if issued is None:
+        # Refused the way every other failure on this route is: the code was
+        # good for a factor this account no longer has, so there is nothing to
+        # tell apart. What the proof cost went with the factor it belonged to,
+        # because both routes that close this gate take the codes with them.
+        raise REFUSED
     response = Response(status_code=204)
     from app.accounts import issue_session
 
-    issue_session(response, await sessions.mint(user, remember_me=remembered,
-                                                authenticated=True))
+    issue_session(response, issued)
     _clear_challenge(response, settings)
     return response
 

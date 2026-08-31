@@ -1563,3 +1563,222 @@ def test_a_rotation_keeps_the_window_the_next_factor_change_needs(accounts):
         secret, _ = _enrol(client)
         assert _remove(client, _next_code(secret)).status_code == 204
         assert client.portal.call(_factors) == []
+
+
+def _csrf_for(held: dict[str, str]) -> dict[str, str]:
+    """The headers an httpx caller wearing somebody else's cookies needs."""
+    return {"Origin": ORIGIN,
+            "X-CSRF-Token": next(value for name, value in held.items()
+                                 if name.endswith("potocolom_csrf"))}
+
+
+def _while_the_gate_moves(monkeypatch, signing_in, factor_change):
+    """Run the two so the change commits in the window a sign-in mints in.
+
+    The change revokes the account's sessions and then holds the account key
+    until the sign-in is waiting for it, which is the interleave issue #435 is
+    about: the revocation runs while the session it would have reached is not
+    there yet, and the sign-in commits it afterwards.
+
+    Staged on the gate rather than asserted from a reading of the code, and
+    both waits are bounded so a version that does not take the key fails
+    rather than hangs.
+    """
+    import asyncio
+    import contextlib
+
+    at_the_gate = asyncio.Event()
+    holding = asyncio.Event()
+    finished = asyncio.Event()
+    real_gate = factors.mint_behind_the_gate
+    real_revoke = sessions.rotate_and_revoke_others
+
+    async def announced(user, remember_me, expected):
+        at_the_gate.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(holding.wait(), 10)
+        return await real_gate(user, remember_me, expected)
+
+    async def revoked_and_waiting(db_session, resolved, spend_capabilities=True):
+        issued = await real_revoke(db_session, resolved, spend_capabilities)
+        holding.set()
+        # Expected to expire: the sign-in cannot reach the end of the gate
+        # while this transaction holds the key. One second, so the sign-in is
+        # still well inside the three _hold_the_account gives it to wait. A
+        # sign-in that does not take the key returns inside this second
+        # instead, with a session the revocation above has already missed.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(finished.wait(), 1)
+        return issued
+
+    monkeypatch.setattr(factors, "mint_behind_the_gate", announced)
+    monkeypatch.setattr(sessions, "rotate_and_revoke_others", revoked_and_waiting)
+
+    async def together():
+        signing = asyncio.create_task(signing_in())
+        signing.add_done_callback(lambda _: finished.set())
+        await asyncio.wait_for(at_the_gate.wait(), 10)
+        changed = await factor_change()
+        return await signing, changed
+
+    return together
+
+
+def _caller(cookies: dict[str, str] | None = None):
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN,
+                             cookies=cookies)
+
+
+@pytest.mark.db
+def test_a_login_in_flight_when_a_factor_arrives_is_sent_to_the_challenge(
+        accounts, monkeypatch):
+    """Enrolling is what somebody does about an intruder, and the intruder is
+    the one signing in. A login that read no factor must not come away with a
+    session the enrolment's revocation could not reach (issue #435)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight-login@example.com")
+        assert _login(client, "inflight-login@example.com").status_code == 204
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        async def signing_in():
+            async with _caller() as caller:
+                return await caller.post(
+                    "/api/v1/auth/login", headers={"Origin": ORIGIN},
+                    json={"email": "inflight-login@example.com", "password": PASSWORD,
+                          "remember_me": False})
+
+        async def enrolling():
+            async with _caller(owner) as caller:
+                return await caller.post(
+                    "/api/v1/account/totp/confirm", headers=_csrf_for(owner),
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(started["secret"], int(_now()))})
+
+        signed_in, enrolled = client.portal.call(
+            _while_the_gate_moves(monkeypatch, signing_in, enrolling))
+
+        assert enrolled.status_code == 204, enrolled.text
+        # A challenge, never a session: the account has a factor now.
+        assert signed_in.status_code == 200, signed_in.text
+        assert signed_in.json() == {"totp_required": True}
+        assert not [cookie for cookie in signed_in.cookies.jar
+                    if cookie.name.endswith("potocolom_session")]
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+
+
+@pytest.mark.db
+def test_a_challenge_in_flight_when_the_factor_is_replaced_mints_nothing(
+        accounts, monkeypatch):
+    """The proof was good for the factor the account had. A replacement that
+    commits first revokes what exists at that moment, and the session this
+    would have minted is not one of them (issue #435)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight-swap@example.com")
+        assert _login(client, "inflight-swap@example.com").status_code == 204
+        _, codes = _enrol(client)
+        # Asked for while the owner is still wearing their own cookie. Nothing
+        # is written by it, so it can be held until the race needs it.
+        fresh = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        _signed_out(client)
+        assert _login(client, "inflight-swap@example.com").status_code == 200
+        challenger = {cookie.name: cookie.value for cookie in client.cookies.jar}
+
+        async def answering():
+            async with _caller(challenger) as caller:
+                return await caller.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                                         json={"code": codes[0]})
+
+        async def replacing():
+            async with _caller(owner) as caller:
+                return await caller.post(
+                    "/api/v1/account/totp/confirm", headers=_csrf_for(owner),
+                    json={"enrolment": fresh["enrolment"],
+                          "code": totp.code_at(fresh["secret"], int(_now())),
+                          "current_code": codes[1]})
+
+        answered, replaced = client.portal.call(
+            _while_the_gate_moves(monkeypatch, answering, replacing))
+
+        assert replaced.status_code == 204, replaced.text
+        assert answered.status_code == 403, answered.text
+        assert not [cookie for cookie in answered.cookies.jar
+                    if cookie.name.endswith("potocolom_session")]
+        # The owner's own, rotated by the replacement, and nothing else.
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+
+
+@pytest.mark.db
+def test_a_challenge_in_flight_when_the_factor_is_removed_mints_nothing(
+        accounts, monkeypatch):
+    """Same gate from the other side: the factor the proof belonged to is gone,
+    and so are the sessions it protected (issue #435)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight-gone@example.com")
+        assert _login(client, "inflight-gone@example.com").status_code == 204
+        _, codes = _enrol(client)
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        _signed_out(client)
+        assert _login(client, "inflight-gone@example.com").status_code == 200
+        challenger = {cookie.name: cookie.value for cookie in client.cookies.jar}
+
+        async def answering():
+            async with _caller(challenger) as caller:
+                return await caller.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                                         json={"code": codes[0]})
+
+        async def removing():
+            async with _caller(owner) as caller:
+                return await caller.request("DELETE", "/api/v1/account/totp",
+                                            headers=_csrf_for(owner),
+                                            json={"code": codes[1]})
+
+        answered, removed = client.portal.call(
+            _while_the_gate_moves(monkeypatch, answering, removing))
+
+        assert removed.status_code == 204, removed.text
+        assert answered.status_code == 403, answered.text
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+
+
+@pytest.mark.db
+def test_a_login_with_nothing_racing_reads_and_mints_in_one_transaction(accounts):
+    """The gate and the session commit together, and nobody pays a round trip
+    for it: reading the factor in a transaction of its own is both the race and
+    a second query."""
+    from sqlalchemy import event
+
+    transactions: list[list[str]] = []
+    open_now: dict[int, list[str]] = {}
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        open_now.setdefault(id(conn), []).append(statement)
+
+    def close(conn):
+        transactions.append(open_now.pop(id(conn), []))
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        # Inside the lifespan, never before it: startup builds a new engine, so
+        # a listener attached to the one that is here now records nothing.
+        engine = db.engine.sync_engine
+        client.portal.call(_make, "onetrip@example.com")
+        listeners = (("before_cursor_execute", record), ("commit", close),
+                     ("rollback", close))
+        for name, handler in listeners:
+            event.listen(engine, name, handler)
+        try:
+            assert _login(client, "onetrip@example.com").status_code == 204
+        finally:
+            for name, handler in listeners:
+                event.remove(engine, name, handler)
+        assert client.get("/api/v1/account").status_code == 200
+
+    read_it = [[" ".join(statement.lower().split()) for statement in group]
+               for group in transactions + list(open_now.values())
+               if any("auth_factors" in statement.lower() for statement in group)]
+    assert len(read_it) == 1, read_it
+    assert any(statement.startswith("insert into sessions") for statement in read_it[0]), \
+        read_it[0]

@@ -333,22 +333,24 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         resolved = await sessions.resolve(presented)
         if resolved is not None:
             await sessions.revoke(resolved.session.id)
-    if db.session_factory is not None:
-        async with db.session_factory() as session:
-            gated = await factors.enrolled_factor(session, user.id)
-        if gated is not None:
-            # Every primary login passes the same gate. A provider proving who
-            # somebody is does not answer for the factor they enrolled.
-            #
-            # The browser arrived here by navigation, not by fetch, so it is
-            # sent back to a page that can ask for the code. Answering with
-            # JSON would leave the person looking at raw JSON with nowhere to
-            # type it.
-            return await factors.begin_challenge(
-                user, remember_me=False,
-                redirect_to=f"{settings.public_url.rstrip('/')}/?totp=required")
+    # The same gate the password login passes, and read in the transaction that
+    # mints for the same reason: a factor enrolled while this callback was in
+    # flight revokes the account's sessions and cannot reach one that is not
+    # there yet (issue #435).
+    issued = await factors.mint_behind_the_gate(user, remember_me=False, expected=None)
+    if issued is None:
+        # Every primary login passes the same gate. A provider proving who
+        # somebody is does not answer for the factor they enrolled.
+        #
+        # The browser arrived here by navigation, not by fetch, so it is
+        # sent back to a page that can ask for the code. Answering with
+        # JSON would leave the person looking at raw JSON with nowhere to
+        # type it.
+        return await factors.begin_challenge(
+            user, remember_me=False,
+            redirect_to=f"{settings.public_url.rstrip('/')}/?totp=required")
     response = RedirectResponse(settings.public_url, status_code=307)
-    issue_session(response, await sessions.mint(user, remember_me=False, authenticated=True))
+    issue_session(response, issued)
     return response
 
 

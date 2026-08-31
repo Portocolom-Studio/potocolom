@@ -82,13 +82,14 @@ async def login(request: LoginRequest, http: Request) -> Response:
     # here is retired, so signing in on one device does not sign out another.
     if presented is not None:
         await sessions.revoke(presented.session.id)
-    async with db.session_factory() as session:
-        gated = await factors.enrolled_factor(session, user.id)
-    if gated is not None:
+    # Read and minted together, or a factor enrolled while this login was in
+    # flight commits between the two, and the revocation it runs cannot reach a
+    # session that is not there yet (issue #435).
+    issued = await factors.mint_behind_the_gate(user, request.remember_me, None)
+    if issued is None:
         # The password was right, and that is not enough for this account. What
         # comes back is a capability to answer a challenge, never a session.
         return await factors.begin_challenge(user, request.remember_me)
-    issued = await sessions.mint(user, remember_me=request.remember_me, authenticated=True)
     response = Response(status_code=204)
     issue_session(response, issued)
     return response
