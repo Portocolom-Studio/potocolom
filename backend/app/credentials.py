@@ -1,8 +1,9 @@
 """Changing how an account is proved: its password, its address, its providers.
 
 Every route here needs recent authentication, and every change ends the
-account's other sessions, because the usual reason to change a credential is
-that somebody else holds the old one.
+account's other sessions and rotates the token of the one making it, because
+the usual reason to change a credential is that somebody else holds the old
+one, and a stolen session is a copy of this browser's cookie.
 """
 
 
@@ -14,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.responses import Response
 
 from app import db, sessions
+from app.accounts import issue_session
 from app.auth import current_principal, require_accounts_mode
 from app.enable import _checked_email
 from app.passwords import PasswordRejected, hash_password, verify_password
@@ -100,9 +102,11 @@ async def change_password(
                 await session.execute(
                     update(AuthIdentity).where(AuthIdentity.id == existing.id)
                     .values(password_hash=password_hash))
-            await sessions.revoke_others(session, principal)
+            issued = await sessions.rotate_and_revoke_others(session, principal)
     await sessions.close_other_sockets(principal)
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    issue_session(response, issued)
+    return response
 
 
 class AddressChange(BaseModel):
@@ -138,11 +142,13 @@ async def change_email(
                     .where(AuthIdentity.user_id == principal.user.id,
                            AuthIdentity.provider == "password")
                     .values(subject=normalized))
-                await sessions.revoke_others(session, principal)
+                issued = await sessions.rotate_and_revoke_others(session, principal)
     except IntegrityError as clash:
         raise HTTPException(status_code=409, detail=ADDRESS_TAKEN) from clash
     await sessions.close_other_sockets(principal)
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    issue_session(response, issued)
+    return response
 
 
 @router.delete("/api/v1/account/identities/{provider}", status_code=204)
@@ -172,6 +178,8 @@ async def unlink_identity(
             if len(held) == 1:
                 raise HTTPException(status_code=409, detail="that is the only way in")
             await session.execute(delete(AuthIdentity).where(AuthIdentity.id == linked.id))
-            await sessions.revoke_others(session, principal)
+            issued = await sessions.rotate_and_revoke_others(session, principal)
     await sessions.close_other_sockets(principal)
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    issue_session(response, issued)
+    return response

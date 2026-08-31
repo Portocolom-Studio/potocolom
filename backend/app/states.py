@@ -75,6 +75,17 @@ async def change_state(
                                     detail="the last administrator cannot be suspended")
             target.state = change.state
             if change.state != "active":
+                # The mailed capabilities before the sessions, because that is
+                # the order operator.collapse deletes them in and the other way
+                # round deadlocks against a collapse running while the API
+                # serves.
+                await session.execute(
+                    update(AuthToken)
+                    .where(AuthToken.user_id == user_id,
+                           AuthToken.purpose.in_(("reset", "recovery")),
+                           AuthToken.consumed_at.is_(None))
+                    .values(consumed_at=func.now())
+                )
                 # In the same transaction as the state: a revocation that
                 # happens after the commit can fail on its own and leave a
                 # session holding capability the state was changed to remove.
@@ -82,13 +93,6 @@ async def change_state(
                     update(Session)
                     .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                     .values(revoked_at=func.now())
-                )
-                await session.execute(
-                    update(AuthToken)
-                    .where(AuthToken.user_id == user_id,
-                           AuthToken.purpose.in_(("reset", "recovery")),
-                           AuthToken.consumed_at.is_(None))
-                    .values(consumed_at=func.now())
                 )
                 stopping = list((await session.execute(
                     select(Job.id).where(Job.user_id == user_id,

@@ -9,7 +9,7 @@ from app.main import app
 from app.passwords import verify_password
 from app.tables import AuthIdentity, User
 from tests.test_totp_flow import (
-    ORIGIN, PASSWORD, _csrf, _enrol, _login, _make, _next_code, accounts,
+    ORIGIN, PASSWORD, _csrf, _enrol, _login, _make, _next_code, _session_cookie, accounts,
 )
 
 __all__ = ["accounts"]
@@ -424,3 +424,172 @@ def test_two_requests_adding_a_password_at_once_leave_one_conflict(accounts):
     assert codes in ([], [409])
     assert all(not isinstance(o, Exception) or isinstance(o, HTTPException) for o in outcomes)
     assert sum(1 for i in identities if i.provider == "password") == 1
+
+
+def _csrf_token(client) -> str:
+    return next(c.value for c in client.cookies.jar if c.name.endswith("potocolom_csrf"))
+
+
+def _unlink(client):
+    return client.delete("/api/v1/account/identities/google", headers=_csrf(client))
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("change", ["password", "address", "identity"])
+def test_a_credential_change_rotates_the_token_that_made_it(accounts, change):
+    """A copy of this browser's cookie is what a credential change is usually
+    for, and revoking the other sessions never reached it.
+
+    Asserted by presenting the old token, not by seeing a new cookie come
+    back: a response that sets a cookie for a session nobody revoked would
+    satisfy that and change nothing (issue #436).
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, f"rotate-{change}@example.com")
+        client.portal.call(_link, user.id, "google", f"g-rot-{change}")
+        assert _login(client, f"rotate-{change}@example.com").status_code == 204
+        stolen, stolen_csrf = _session_cookie(client), _csrf_token(client)
+
+        made = {"password": lambda: _change_password(client, PASSWORD, NEW),
+                "address": lambda: _change_email(client, f"moved-{change}@example.com"),
+                "identity": lambda: _unlink(client)}[change]()
+        assert made.status_code == 204, made.text
+
+        # The copy is dead, which is the whole of the fix.
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {stolen}"}).status_code == 401
+        assert _session_cookie(client) != stolen
+        # And the person who made the change is still signed in, reading and
+        # writing, with the CSRF token that came back beside the new session.
+        assert client.get("/api/v1/account").status_code == 200
+        assert _csrf_token(client) != stolen_csrf
+        assert _change_email(client, f"again-{change}@example.com").status_code == 204
+
+
+@pytest.mark.db
+def test_a_rotated_session_keeps_the_authentication_it_already_proved(accounts):
+    """A rotation replaces a credential, not the person holding it. Dropping
+    the recent-authentication window would tell somebody who proved themselves
+    a moment ago to prove themselves again, in the middle of securing their
+    own account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "stillrecent@example.com")
+        assert _login(client, "stillrecent@example.com").status_code == 204
+        assert _change_password(client, PASSWORD, NEW).status_code == 204
+        assert client.get("/api/v1/account").json()["recent_auth"] is True
+        assert _change_email(client, "stillrecent2@example.com").status_code == 204
+
+
+class _Drains:
+    """A browser that reads what it is sent, so the close completes."""
+
+    async def send_json(self, _payload) -> None:
+        return None
+
+    async def close(self, **_kwargs) -> None:
+        return None
+
+
+@pytest.mark.db
+def test_a_credential_change_leaves_its_own_canvas_up(accounts):
+    """The canvas in front of the person changing their password stays, and
+    every other socket on the account goes.
+
+    Through the sweep as well, not only the explicit close. The sweep asks
+    PostgreSQL which account sessions are still live rather than trusting the
+    id the change asked it to spare, so a rotation that replaced the session
+    row instead of its token would pass the line above and close this canvas
+    thirty seconds later, for no reason its owner could see.
+    """
+    from app import realtime
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "canvas@example.com")
+        elsewhere = client.portal.call(sessions.mint, user, False)
+        theirs = client.portal.call(sessions.resolve, elsewhere.token)
+        assert _login(client, "canvas@example.com").status_code == 204
+        ours = client.portal.call(sessions.resolve, _session_cookie(client))
+
+        drawing = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=_Drains(),
+                                   user_id=user.id, auth_session_id=ours.session.id)
+        watched = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=_Drains(),
+                                   user_id=user.id, auth_session_id=theirs.session.id)
+        realtime.sessions[drawing.id] = drawing
+        realtime.sessions[watched.id] = watched
+        try:
+            assert _change_password(client, PASSWORD, NEW).status_code == 204
+            assert watched.id not in realtime.sessions
+            assert drawing.id in realtime.sessions
+            client.portal.call(realtime.close_dead_sessions)
+            assert drawing.id in realtime.sessions
+        finally:
+            realtime.sessions.pop(drawing.id, None)
+            realtime.sessions.pop(watched.id, None)
+
+
+async def _address_of(user_id: uuid.UUID) -> str:
+    async with db.session_factory() as session:
+        return (await session.execute(
+            select(User.email).where(User.id == user_id))).scalar_one()
+
+
+def _issued_token(response) -> str:
+    from http.cookies import SimpleCookie
+
+    for header in response.headers.getlist("set-cookie"):
+        jar = SimpleCookie(header)
+        if "__Host-potocolom_session" in jar:
+            return jar["__Host-potocolom_session"].value
+    raise AssertionError("that response carried no session cookie")
+
+
+@pytest.mark.db
+def test_two_changes_presenting_one_token_leave_one_winner(accounts):
+    """Only the request that presents the stored token may replace it.
+
+    The principal is resolved in an earlier transaction, so a stolen cookie
+    and the browser it was copied from both reach the swap holding the same
+    token. Matching on the id alone let the second overwrite the first: the
+    owner's change committed and set a cookie, the copy's change replaced that
+    cookie a moment later, and the owner was signed out holding a dead token
+    while whoever held the copy kept the session and landed their change as
+    well. Before the rotation both cookies simply went on working, so losing
+    this race is what costs the owner exclusive access (#443).
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app import credentials
+    from tests.test_totp_flow import _live_sessions_for
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "onewinner@example.com")
+        assert _login(client, "onewinner@example.com").status_code == 204
+        presented = _session_cookie(client)
+        principal = client.portal.call(sessions.resolve, presented)
+        wanted = ("won@example.com", "lost@example.com")
+
+        async def both():
+            return await asyncio.gather(*(
+                credentials.change_email(credentials.AddressChange(email=address), principal)
+                for address in wanted), return_exceptions=True)
+
+        outcomes = client.portal.call(both)
+        live = client.portal.call(_live_sessions_for, user.id)
+        won = wanted[0] if not isinstance(outcomes[0], Exception) else wanted[1]
+        landed = client.portal.call(_address_of, user.id)
+
+    refused = [out for out in outcomes if isinstance(out, HTTPException)]
+    assert [out.status_code for out in refused] == [409], outcomes
+    # Refused by raising, which is what rolls the loser's transaction back:
+    # a browser handed a token for a change that did not happen is the hole
+    # this closes, not a smaller version of it.
+    served = [out for out in outcomes if not isinstance(out, Exception)]
+    assert len(served) == 1
+    assert len(live) == 1
+    assert sessions.token_hash(_issued_token(served[0])) == live[0].token_hash
+    assert sessions.token_hash(presented) != live[0].token_hash
+    # And the winner's change stands rather than being rolled back with the
+    # loser's.
+    assert landed == won

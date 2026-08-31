@@ -74,6 +74,19 @@ async def change_role(
                 raise HTTPException(status_code=403,
                                     detail="the last administrator cannot be demoted")
             target.role = change.role
+            # The mailed capabilities first, then the sessions, because that is
+            # the order operator.collapse deletes them in and the other way
+            # round deadlocks against a collapse running while the API serves.
+            # A reset is refused for an administrator, but a link minted while
+            # the account was not one and spent after it became one is an
+            # administrator password from mailbox control alone.
+            await session.execute(
+                update(AuthToken)
+                .where(AuthToken.user_id == user_id,
+                       AuthToken.purpose.in_(("reset", "recovery")),
+                       AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now())
+            )
             # In the same transaction as the change: a revocation that happens
             # after the commit can fail on its own and leave a session holding
             # the new authority in the old role's shape, remembered for thirty
@@ -82,17 +95,6 @@ async def change_role(
                 update(Session)
                 .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                 .values(revoked_at=func.now())
-            )
-            # And the mailed capabilities. A reset is refused for an
-            # administrator, but a link minted while the account was not one
-            # and spent after it became one is an administrator password from
-            # mailbox control alone.
-            await session.execute(
-                update(AuthToken)
-                .where(AuthToken.user_id == user_id,
-                       AuthToken.purpose.in_(("reset", "recovery")),
-                       AuthToken.consumed_at.is_(None))
-                .values(consumed_at=func.now())
             )
     # The rows are revoked inside the transaction above, which never reaches
     # sessions.revoke_all, so the sockets it revoked have to be closed here.

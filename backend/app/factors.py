@@ -457,6 +457,18 @@ async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
     return spent is not None
 
 
+def _carrying(issued: sessions.Issued) -> Response:
+    """Nothing to report, with the rotated session cookie riding on it."""
+    # Imported here rather than at the top, the way begin_challenge does it:
+    # app.accounts imports this module, so the other direction can only be a
+    # local import.
+    from app.accounts import issue_session
+
+    response = Response(status_code=204)
+    issue_session(response, issued)
+    return response
+
+
 @router.delete("/api/v1/account/totp", status_code=204)
 async def remove_factor(
     body: CodeRequest,
@@ -524,9 +536,10 @@ async def remove_factor(
             await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
             # The account is less protected after this than before, which
             # makes ending the other sessions matter more here, not less.
-            await sessions.revoke_others(session, principal, spend_capabilities=False)
+            issued = await sessions.rotate_and_revoke_others(
+                session, principal, spend_capabilities=False)
     await sessions.close_other_sockets(principal)
-    return Response(status_code=204)
+    return _carrying(issued)
 
 
 @router.post("/api/v1/account/totp/confirm", status_code=204)
@@ -683,8 +696,9 @@ async def confirm_enrolment(
             # Reset and recovery links are left alone: they prove control of a
             # mailbox, which is not what changed here, and spending them would
             # strip a way back in from somebody who just secured their account.
-            await sessions.revoke_others(session, principal, spend_capabilities=False)
+            issued = await sessions.rotate_and_revoke_others(
+                session, principal, spend_capabilities=False)
     # After the transaction, never inside it: a revoked row stops the next
     # request and does not reach a socket that already bound its principal.
     await sessions.close_other_sockets(principal)
-    return Response(status_code=204)
+    return _carrying(issued)

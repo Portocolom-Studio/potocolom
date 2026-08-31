@@ -17,7 +17,7 @@ from app.main import app
 from app.tables import Job, User
 from app.passwords import hash_password
 from tests.test_totp_flow import (
-    ORIGIN, PASSWORD, ROOT_KEYS, _factors, _login, _make, accounts,
+    ORIGIN, PASSWORD, ROOT_KEYS, _csrf, _factors, _login, _make, accounts,
 )
 
 __all__ = ["accounts"]
@@ -583,3 +583,139 @@ def test_clear_factor_waits_for_the_account_lock(library):
     assert waited, "the command did not wait for the account lock"
     assert removed
     assert library(_factors()) == []
+
+
+COLLAPSE_ORDER = ("auth_tokens", "auth_factors", "recovery_codes", "sessions",
+                  "auth_identities")
+
+
+@pytest.mark.db
+def test_collapse_deletes_in_the_order_the_routes_lock(library):
+    """One lock order with the routes a collapse can overlap, or it deadlocks.
+
+    The command is offline, but nothing stops the API serving while somebody
+    runs it, and the routes it meets there are arranged among themselves
+    already. A challenge claims its token before it locks the factor, and
+    enrolling or removing a factor holds auth_factors and recovery_codes while
+    it rotates the session making the change. Deleting sessions first, which
+    is how this read until #443, put the collapse on the far side of that
+    pair: measured on PostgreSQL, a confirm or a removal overlapping a
+    collapse was a DeadlockDetected, which reaches the operator as a failed
+    command and the caller as a 500.
+
+    Asserted on the order the deletes go out rather than by staging a real
+    deadlock, the way test_every_route_takes_the_factor_before_the_codes is:
+    making one happen means holding a transaction open while another starts,
+    which is how a suite hangs instead of failing.
+    """
+    from sqlalchemy import event
+
+    from tests.test_totp_flow import _lock_orders
+
+    transactions: list[list[str]] = []
+    open_now: dict[int, list[str]] = {}
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        open_now.setdefault(id(conn), []).append(statement)
+
+    def close(conn):
+        transactions.append(open_now.pop(id(conn), []))
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        # Inside the lifespan, never before it: startup builds a new engine,
+        # so a listener attached to the one that is here now records nothing
+        # and the assertion below passes on no evidence.
+        engine = db.engine.sync_engine
+        client.portal.call(_make, "ordered-collapse@example.com")
+        assert _login(client, "ordered-collapse@example.com").status_code == 204
+        listeners = (("before_cursor_execute", record), ("commit", close),
+                     ("rollback", close))
+        for name, handler in listeners:
+            event.listen(engine, name, handler)
+        try:
+            client.portal.call(operator.collapse, operator.COLLAPSE_PHRASE)
+        finally:
+            for name, handler in listeners:
+                event.remove(engine, name, handler)
+
+    orders = _lock_orders(transactions + list(open_now.values()), COLLAPSE_ORDER)
+    assert orders, "no transaction touched all five tables, so this proved nothing"
+    assert all(order == list(COLLAPSE_ORDER) for order in orders), orders
+
+
+ROTATION_ORDER = ("auth_tokens", "sessions")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("change", ["password", "role", "state", "deletion"])
+def test_every_change_spends_the_capabilities_before_it_takes_the_sessions(accounts, change):
+    """The route side of the order the collapse deletes in.
+
+    Four transactions end the mailed reset and recovery links and revoke the
+    account's sessions in the same breath: the rotation every credential change
+    shares, and the role, state and deletion changes that each write the two
+    statements themselves. Taken the other way round they are a cycle with a
+    collapse, which deletes auth_tokens first: measured on PostgreSQL, each of
+    these overlapping a collapse with a live reset link present was a
+    DeadlockDetected that killed the collapse (issue #443).
+
+    Asserted on the order the locks go out rather than by staging a real
+    deadlock, for the reason the collapse order above is: making one happen
+    means holding a transaction open while another runs into it, which is how a
+    suite hangs instead of failing.
+    """
+    from sqlalchemy import event
+
+    from tests.test_totp_flow import _lock_orders
+
+    transactions: list[list[str]] = []
+    open_now: dict[int, list[str]] = {}
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        open_now.setdefault(id(conn), []).append(statement)
+
+    def close(conn):
+        transactions.append(open_now.pop(id(conn), []))
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        # Inside the lifespan, never before it: startup builds a new engine, so
+        # a listener attached to the one that is here now records nothing and
+        # the assertion below passes on no evidence.
+        engine = db.engine.sync_engine
+        if change in ("role", "state"):
+            actor = "order-actor@example.com"
+            client.portal.call(_make, actor, "admin")
+            target = client.portal.call(_make, "order-target@example.com")
+        else:
+            actor = "order-self@example.com"
+            target = client.portal.call(_make, actor)
+        assert _login(client, actor).status_code == 204
+        listeners = (("before_cursor_execute", record), ("commit", close),
+                     ("rollback", close))
+        for name, handler in listeners:
+            event.listen(engine, name, handler)
+        try:
+            if change == "password":
+                answered = client.post(
+                    "/api/v1/account/password", headers=_csrf(client),
+                    json={"current_password": PASSWORD,
+                          "password": "another-long-enough-password"})
+            elif change == "role":
+                answered = client.post(f"/api/v1/users/{target.id}/role",
+                                       headers=_csrf(client),
+                                       json={"role": "admin", "attested": True})
+            elif change == "state":
+                answered = client.post(f"/api/v1/users/{target.id}/state",
+                                       headers=_csrf(client),
+                                       json={"state": "suspended"})
+            else:
+                answered = client.request("DELETE", "/api/v1/account",
+                                          headers=_csrf(client))
+            assert answered.status_code == 204, answered.text
+        finally:
+            for name, handler in listeners:
+                event.remove(engine, name, handler)
+
+    orders = _lock_orders(transactions + list(open_now.values()), ROTATION_ORDER)
+    assert orders, "no transaction touched both tables, so this proved nothing"
+    assert all(order == list(ROTATION_ORDER) for order in orders), orders
