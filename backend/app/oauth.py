@@ -364,12 +364,19 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
     died while it was away at the provider is refused: the link would add a
     way in and end nothing, which is the reverse of what revoking that session
     meant.
+
+    The account has to still be active, which is what start_link asked for
+    before sending the browser away. Ten minutes is long enough for an
+    administrator to suspend an account in, and suspension is the one state
+    that leaves its sessions alive, so without this the flow that started a
+    moment before the suspension lands a moment after it and adds a way into
+    an account somebody has just closed off.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     presented = request.cookies.get(sessions.cookie_names(settings.public_url)[0])
     linker = await sessions.resolve(presented) if presented else None
-    if linker is None or linker.user.id != user_id:
+    if linker is None or linker.user.id != user_id or linker.user.state != "active":
         raise REFUSED
     async with db.session_factory() as session:
         async with session.begin():

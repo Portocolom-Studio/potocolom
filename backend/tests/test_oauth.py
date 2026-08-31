@@ -407,6 +407,38 @@ def _linked_through(client, provider):
     return _callback(client, provider, state)
 
 
+async def _suspend(user_id: uuid.UUID) -> None:
+    """Suspension only, and directly, because it is the one state that leaves
+    the account's sessions alive. Every other state a link must not land on
+    revokes them, so the callback's live-session guard already refuses those
+    and this is the case that slips past it."""
+    async with db.session_factory() as session:
+        await session.execute(
+            text("UPDATE users SET prior_state = state, state = 'suspended' WHERE id = :id"),
+            {"id": user_id})
+        await session.commit()
+
+
+@pytest.mark.db
+def test_a_link_started_while_active_does_not_land_after_a_suspension(accounts, monkeypatch):
+    """start_link asks for an active account and then sends the browser away
+    for up to ten minutes, which is long enough for an administrator to close
+    the account in. Suspension keeps its sessions, so the callback's own guard
+    lets that browser back in (issue #448)."""
+    _fake_provider(monkeypatch, "github", subject="h-susp", email="susp@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "susp@example.com")
+        _sign_in(client, "susp@example.com")
+        started = client.post("/api/v1/account/identities/github", headers=_csrf(client))
+        assert started.status_code == 200, started.text
+        state = parse_qs(urlsplit(started.json()["redirect"]).query)["state"][0]
+
+        client.portal.call(_suspend, user.id)
+
+        assert _callback(client, "github", state).status_code == 403
+        assert [row.provider for row in client.portal.call(_identities, user.id)] == ["password"]
+
+
 @pytest.mark.db
 def test_linking_a_provider_rotates_the_token_that_linked_it(accounts, monkeypatch):
     """A link adds a way into the account, which is the same kind of event as
