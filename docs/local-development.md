@@ -1,6 +1,6 @@
 # Local development and testing
 
-How the project is developed and tested without paying for any cloud infrastructure. The self-hosted profile is implemented and tested first; the cloud profile is then validated locally against a simulated topology built from generic containers, and only after that against real AWS (the scaled-down staging in [cloud-infrastructure.md](cloud-infrastructure.md)).
+How the project is developed and tested without paying for any cloud infrastructure. The self-hosted profile is implemented and tested first; the cloud profile is then validated locally against a simulated topology built from generic containers, and only after that against real AWS.
 
 ## The development machine
 

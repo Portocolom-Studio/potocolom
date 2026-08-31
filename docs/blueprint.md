@@ -150,7 +150,7 @@ An availability replica is not a frame-throughput plan. The cloud-sim profile ru
 
 ## Load balancer
 
-The ALB definition, as Terraform-shaped pseudocode. The commentary in [cloud-infrastructure.md](cloud-infrastructure.md) explains each number.
+The ALB definition, as Terraform-shaped pseudocode.
 
 ```hcl
 resource "aws_lb" "main" {

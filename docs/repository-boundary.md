@@ -27,7 +27,7 @@ The public repository is AGPL-3.0, with commercial exceptions sold by the projec
 
 What lives where, at the edges:
 
-- The Terraform environments (state, sizes, account wiring) are commercial operational data and live in the private repository. The [aws-setup.md](aws-setup.md) guide stays public: it documents how anyone could stand up their own cloud, which is good open source citizenship and costs nothing, because the moat is operations, not configuration.
+- The Terraform environments (state, sizes, account wiring) are commercial operational data and live in the private repository, together with the infrastructure specification, the provisioning runbook and the delivery model that describe them. What a self-hoster needs is the compose file and [self-hosting.md](self-hosting.md), which stay here; the cloud runbook describes one operated deployment rather than the product.
 - The fake QuotaService belongs in the public repository as part of cloud-sim ([local-development.md](local-development.md)). It is not just a development convenience; it is the executable contract. Designed: no implementation ships yet, and it arrives with its first caller. `cloud-sim` today is Redis, MinIO and Mailpit.
 
 ## Boundary rules
