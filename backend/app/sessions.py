@@ -73,11 +73,15 @@ def _issued(remembered: bool) -> Issued:
     )
 
 
-async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Issued:
-    """authenticated defaults to False because setup proves a link, not a
-    person, and must not open the window that guards credential changes."""
-    if db.session_factory is None:
-        raise RuntimeError("database unavailable")
+def mint_in(db_session: AsyncSession, user: User, remember_me: bool,
+            authenticated: bool = False) -> Issued:
+    """The row, in the caller's transaction, the way rotate_and_revoke_others is.
+
+    Split out because a sign-in has to decide whether it may mint in the same
+    transaction that mints: decided in one of its own, a factor change commits
+    in between, and the revocation that change runs cannot reach a row that is
+    not there yet (issue #435).
+    """
     if user.role == "admin":
         remembered, idle = False, ADMIN_IDLE
     elif remember_me:
@@ -86,15 +90,24 @@ async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Is
         remembered, idle = False, None
     now = _now()
     issued = _issued(remembered)
+    db_session.add(Session(
+        user_id=user.id,
+        token_hash=token_hash(issued.token),
+        remember_me=remembered,
+        absolute_expires_at=now + (REMEMBER_ABSOLUTE if remembered else ABSOLUTE),
+        idle_expires_at=now + idle if idle is not None else None,
+        recent_auth_at=now if authenticated else None,
+    ))
+    return issued
+
+
+async def mint(user: User, remember_me: bool, authenticated: bool = False) -> Issued:
+    """authenticated defaults to False because setup proves a link, not a
+    person, and must not open the window that guards credential changes."""
+    if db.session_factory is None:
+        raise RuntimeError("database unavailable")
     async with db.session_factory() as session:
-        session.add(Session(
-            user_id=user.id,
-            token_hash=token_hash(issued.token),
-            remember_me=remembered,
-            absolute_expires_at=now + (REMEMBER_ABSOLUTE if remembered else ABSOLUTE),
-            idle_expires_at=now + idle if idle is not None else None,
-            recent_auth_at=now if authenticated else None,
-        ))
+        issued = mint_in(session, user, remember_me, authenticated)
         await session.commit()
     return issued
 
