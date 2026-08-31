@@ -1,11 +1,18 @@
 """How often the sign-in path may be asked, per identifier and per caller.
 
-Ten per identifier and thirty per address in ten minutes, with a wait that
-starts after five and doubles to eight seconds (docs/blueprint.md). The wait is
-half the control. A ceiling on its own says where the line is and hands anybody
-who knows an address a way to keep its owner out; a wait that grows costs an
-attacker the whole window and costs somebody who mistyped their password twice
-nothing at all.
+Both subjects are counted in a ten minute window, with a wait that starts after
+five attempts and doubles to eight seconds (docs/blueprint.md). Only the
+identifier carries a ceiling: ten, and past it the answer is 429. The address
+is counted and waited on and never refused, because one NAT, one proxy uvicorn
+has not been told to trust, or the loopback publish the compose file ships
+arrives here as a single address (docs/decisions.md).
+
+The wait is half the control. A ceiling on its own says where the line is and
+hands anybody who knows an address a way to keep its owner out; a wait that
+grows costs an attacker the whole window and costs somebody who mistyped their
+password twice nothing at all. Against one address the wait is the whole
+bound, and an eight second cap is what takes a flood from thousands of attempts
+a second down to a few hundred an hour.
 
 Every attempt is counted, right or wrong. What this exists to bound is an
 attacker who already holds the password and is grinding the second factor by
@@ -31,7 +38,6 @@ from app.tables import LoginAttempt
 
 WINDOW = timedelta(minutes=10)
 IDENTIFIER_LIMIT = 10
-ADDRESS_LIMIT = 30
 FREE_ATTEMPTS = 5
 MAX_DELAY_S = 8.0
 
@@ -101,7 +107,12 @@ async def charge_login(subject: str, http: Request) -> None:
         identifier = await _charge(session, "identifier", subject)
         address = 0 if peer is None else await _charge(session, "address", peer)
         await session.commit()
-    if identifier > IDENTIFIER_LIMIT or address > ADDRESS_LIMIT:
+    # Only the identifier refuses. The address is shared by everybody behind one
+    # NAT or one proxy this deployment has not told uvicorn to trust, so a
+    # ceiling here would be an installation-wide outage anybody could trigger;
+    # its count feeds the wait below instead, which bounds that peer without
+    # ever locking a bystander out.
+    if identifier > IDENTIFIER_LIMIT:
         raise REFUSED
     # Outside the session on purpose: the pool is fifteen deep and this waits
     # up to eight seconds, so a delay served with a connection in hand would
