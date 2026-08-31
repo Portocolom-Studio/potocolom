@@ -54,6 +54,20 @@ def _one_event_loop():
         client.portal = None
 
 
+def test_every_socket_in_this_file_shares_one_event_loop():
+    """The fixture above is the whole of the #431 and #440 fix, and nothing
+    else in this file would notice it gone. On an idle machine the wrong loop
+    is woken in time anyway, so every test here stays green and the flake comes
+    back only under the load of a full run, which is where it started.
+    """
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-portal"))
+        expect(ws, "registered")
+        # Without the fixture every connection builds a portal of its own and
+        # client.portal is None, so this is the assertion that notices.
+        assert ws.portal is client.portal
+
+
 def manifest(model_id="sd-sim", parameters=None) -> dict:
     return {"id": model_id, "name": model_id, "capabilities": ["realtime"],
             "parameters": {} if parameters is None else parameters}
