@@ -91,6 +91,10 @@ async def _charge(session: AsyncSession, scope: str, value: str) -> tuple[int, d
             set_={
                 "attempts": case((fresh, 1), else_=LoginAttempt.attempts + 1),
                 "expires_at": case((fresh, now + WINDOW), else_=LoginAttempt.expires_at),
+                # The turn goes with the window it belonged to. Kept across a
+                # reset, a queue left deep by the last window is served again
+                # by the first attempt of the next one.
+                "not_before": case((fresh, None), else_=LoginAttempt.not_before),
             },
         ).returning(LoginAttempt.attempts, LoginAttempt.not_before)
     )).one()
@@ -149,9 +153,17 @@ async def charge_login(subject: str, http: Request) -> None:
     peer = http.client.host if http.client else None
     async with db.session_factory() as session:
         identifier, _ = await _charge(session, "identifier", subject)
-        queued = 0.0 if peer is None else await _reserve(session, peer)
+        # A refused attempt takes no turn. Reserving before the ceiling was
+        # checked let one spent identifier hold every slot on its address:
+        # each 429 moved the turn on without ever waiting for it, so the peer
+        # stayed full while nobody queued, and a bystander behind that NAT met
+        # a queue the refusals had never joined. That is the shared-peer
+        # outage the address bucket gave up its ceiling to avoid, reached
+        # through the one path the rule about not extending it did not cover.
+        spent = identifier > IDENTIFIER_LIMIT
+        queued = 0.0 if peer is None or spent else await _reserve(session, peer)
         await session.commit()
-    if identifier > IDENTIFIER_LIMIT:
+    if spent:
         raise REFUSED
     if queued is None:
         raise BUSY
