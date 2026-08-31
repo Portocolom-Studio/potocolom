@@ -4,13 +4,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from app import db, oauth, sessions
 from app.main import app
 from app.passwords import hash_password
 from app.settings import Settings, get_settings
-from app.tables import AuthIdentity, OAuthFlow, User
+from app.tables import AuthFactor, AuthIdentity, OAuthFlow, User
 
 PASSWORD = "a-long-enough-account-password"
 ORIGIN = "https://studio.example.com"
@@ -71,6 +71,15 @@ async def _link(user_id: uuid.UUID, provider: str, subject: str) -> None:
     async with db.session_factory() as session:
         session.add(AuthIdentity(id=uuid.uuid4(), user_id=user_id, provider=provider,
                                  subject=subject))
+        await session.commit()
+
+
+async def _enrolled(user_id: uuid.UUID) -> None:
+    """A confirmed factor, without the enrolment dance. This file is about what
+    the provider gate does with one, not about how it got there."""
+    async with db.session_factory() as session:
+        session.add(AuthFactor(user_id=user_id, kind="totp", secret_ciphertext=b"sealed",
+                               key_version=1, confirmed_at=func.now()))
         await session.commit()
 
 
@@ -220,6 +229,23 @@ def test_a_linked_identity_signs_in(accounts, monkeypatch):
         me = client.get("/api/v1/account").json()
         assert me["email"] == "known@example.com"
         assert me["recent_auth"] is True
+
+
+@pytest.mark.db
+def test_a_linked_identity_with_a_factor_is_sent_to_the_challenge(accounts, monkeypatch):
+    """A provider proving who somebody is does not answer for the factor they
+    enrolled. The gate is read in the transaction that would have minted, so an
+    enrolment cannot commit between the two (issue #435)."""
+    _fake_provider(monkeypatch, "google", subject="g-2", email="gated@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "gated@example.com")
+        client.portal.call(_link, user.id, "google", "g-2")
+        client.portal.call(_enrolled, user.id)
+        gated = _callback(client, "google", _start(client, "google"))
+        assert gated.status_code == 307
+        assert gated.headers["location"] == f"{ORIGIN}/?totp=required"
+        # A capability to answer a challenge, and no session behind it.
+        assert client.get("/api/v1/account").status_code == 401
 
 
 @pytest.mark.db
