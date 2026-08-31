@@ -23,6 +23,7 @@ ROLES = ("viewer", "user", "admin")
 ACCOUNT_STATES = ("active", "suspended", "disabled", "deletion_pending", "purging")
 IDENTITY_PROVIDERS = ("password", "google", "github")
 AUTH_TOKEN_PURPOSES = ("setup", "reset", "recovery", "challenge")
+LOGIN_ATTEMPT_SCOPES = ("identifier", "address")
 OUTBOX_STATES = ("pending", "sent", "failed")
 AUDIT_SEVERITIES = ("info", "high")
 NORMALIZED_EMAIL = text("lower(btrim(email))")
@@ -136,6 +137,32 @@ class AuthToken(Base):
     expires_at: Mapped[datetime]
     consumed_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class LoginAttempt(Base):
+    """How many sign-ins one identifier, or one caller, has started in a window.
+
+    The subject is a digest and never the value itself. Both are supplied by
+    whoever is calling: the identifier is the address they typed, so the plain
+    column would be a list of addresses anybody could write to, including
+    people who hold no account here, and the peer address is raw IP, which
+    docs/blueprint.md keeps to expiring keys only. A digest counts the same and
+    reads back as nothing.
+    """
+
+    __tablename__ = "login_attempts"
+    __table_args__ = (
+        CheckConstraint(_one_of("scope", LOGIN_ATTEMPT_SCOPES), name="login_attempts_scope"),
+    )
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    subject: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    expires_at: Mapped[datetime]
+    # When this subject's next attempt may be answered. Only the address scope
+    # sets it: it is what makes the wait a queue rather than a latency every
+    # overlapping attempt serves at the same moment (app/rate_limit.py).
+    not_before: Mapped[datetime | None]
 
 
 class Invitation(Base):

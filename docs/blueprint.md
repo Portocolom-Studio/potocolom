@@ -198,7 +198,7 @@ resource "aws_lb_target_group" "api" {
 
 ## Authentication
 
-> Shipped status (2026-08-25): **partially implemented.** Sessions, password login, invitation-only registration, Google and GitHub, optional TOTP and the two-mode seam are real; `app/accounts.py`, `app/invitations.py`, `app/oauth.py` and `app/factors.py` are where to read them. The pseudocode below is the designed shape and not the shipped signatures. Absent: the Redis session cache and its invalidation channel, the rate limits, the new-sign-in notification, and the cloud-only age attestation. Different: every primary login, provider sign-ins included, answers a TOTP challenge rather than a session when that account has enrolled a factor.
+> Shipped status (2026-08-30): **partially implemented.** Sessions, password login, invitation-only registration, Google and GitHub, optional TOTP and the two-mode seam are real; `app/accounts.py`, `app/invitations.py`, `app/oauth.py` and `app/factors.py` are where to read them. The pseudocode below is the designed shape and not the shipped signatures. Absent: the Redis session cache and its invalidation channel, the new-sign-in notification, and the cloud-only age attestation. Different: the login rate limit is implemented, counts in PostgreSQL rather than Redis, which this deployment does not run, and refuses on the identifier bucket alone, because one address here can be a whole NAT (`app/rate_limit.py`, decisions.md); and every primary login, provider sign-ins included, answers a TOTP challenge rather than a session when that account has enrolled a factor.
 
 ### Session middleware
 
