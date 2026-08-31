@@ -152,6 +152,7 @@ def test_one_address_queues_however_many_identifiers_it_uses(accounts, waits):
     assert codes[:rate_limit.FREE_ATTEMPTS] == [401] * rate_limit.FREE_ATTEMPTS
     assert codes[-1] == 503
     assert sorted(set(codes)) == [401, 503]
+    assert waits, "no turn was ever served, so the order proves nothing"
     assert waits == sorted(waits)
 
 
@@ -199,6 +200,56 @@ def test_a_turn_past_the_cap_is_told_to_come_back_and_does_not_take_the_slot(acc
     # is the outage the address bucket has no ceiling in order to avoid.
     assert before == after
     assert len(waits) == 11
+
+
+@pytest.mark.db
+def test_a_fresh_window_hands_back_the_turn_the_old_one_held(accounts, waits):
+    """The queue belongs to the window that built it.
+
+    Carried across a reset, a turn left deep by the last window is served
+    again by the first attempt of the next one, which owes nothing.
+    """
+    peer = "198.51.100.18"
+
+    async def go() -> list[float]:
+        for _ in range(rate_limit.FREE_ATTEMPTS + 3):
+            await rate_limit.charge_login("stale@example.com", _request(peer))
+        assert await _not_before("address", peer) is not None
+        await _expire()
+        waits.clear()
+        await rate_limit.charge_login("stale@example.com", _request(peer))
+        return list(waits)
+
+    served = accounts(go())
+    assert served == [0.0]
+
+
+@pytest.mark.db
+def test_an_identifier_past_its_ceiling_takes_no_turn_on_its_address(accounts, waits):
+    """One spent identifier must not be able to hold a whole peer's queue.
+
+    Reserving the turn before the ceiling was checked meant every refusal
+    moved the queue on without ever waiting for it, so the address stayed full
+    while nobody was in it, and the next person behind that NAT was answered
+    503 by attempts that had never queued. That is the shared-peer outage the
+    address bucket gave up its ceiling to avoid, reached down the one path the
+    rule about a refusal not extending the queue did not cover.
+    """
+    peer = "198.51.100.17"
+
+    async def go() -> tuple[datetime | None, datetime | None]:
+        for _ in range(rate_limit.IDENTIFIER_LIMIT):
+            await rate_limit.charge_login("spent@example.com", _request(peer))
+        before = await _not_before("address", peer)
+        for _ in range(rate_limit.IDENTIFIER_LIMIT):
+            with pytest.raises(HTTPException) as refusal:
+                await rate_limit.charge_login("spent@example.com", _request(peer))
+            assert refusal.value.status_code == 429
+        return before, await _not_before("address", peer)
+
+    before, after = accounts(go())
+    assert before is not None, "the address never took a turn, so this proved nothing"
+    assert before == after
 
 
 @pytest.mark.db
