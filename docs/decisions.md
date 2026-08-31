@@ -48,7 +48,7 @@ Rejected alternative: everything public. Maximum transparency, but anyone could 
 
 ## Cloud provider: AWS as the reference deployment
 
-The cloud profile is documented against concrete AWS services: Route 53, CloudFront and S3, an Application Load Balancer, ECS Fargate for the API and private services, RDS PostgreSQL, ElastiCache Redis and SES. AWS has a managed version of every piece the architecture needs and the largest documentation and hiring pool. GPU workers intentionally do not run on AWS: rented GPU providers (RunPod, vast.ai) cost several times less per GPU hour, and the fleet connects outbound so it never needs to be inside the VPC. Details in [cloud-infrastructure.md](cloud-infrastructure.md).
+The cloud profile is documented against concrete AWS services: Route 53, CloudFront and S3, an Application Load Balancer, ECS Fargate for the API and private services, RDS PostgreSQL, ElastiCache Redis and SES. AWS has a managed version of every piece the architecture needs and the largest documentation and hiring pool. GPU workers intentionally do not run on AWS: rented GPU providers (RunPod, vast.ai) cost several times less per GPU hour, and the fleet connects outbound so it never needs to be inside the VPC.
 
 Rejected alternatives: Cloudflare plus Hetzner, the cheapest baseline but the database and Redis become self-operated; GCP, comparable but with no advantage that outweighed AWS familiarity.
 
@@ -419,7 +419,7 @@ Rejected alternative: AGPL-3.0 as a defense against competitors hosting the prod
 
 ## Cloud infrastructure code: private repository
 
-The Terraform environments, state, sizes and account wiring live in the private repository alongside the billing service and autoscaler; they are commercial operational data. The public [aws-setup.md](aws-setup.md) guide stays, documenting how anyone could stand up their own cloud. The public repository's `deploy/` carries compose files only.
+The Terraform environments, state, sizes and account wiring live in the private repository alongside the billing service and autoscaler; they are commercial operational data, and the provisioning runbook that describes them moved there with them (see "Cloud operations documentation lives with the cloud"). The public repository's `deploy/` carries compose files only.
 
 Rejected alternative: public Terraform under `deploy/terraform/` (as earlier drafts sketched). It would publish the commercial deployment's exact shape and sizes for zero community benefit, since a self-hoster deploying to AWS follows the guide with their own parameters anyway.
 
@@ -521,7 +521,7 @@ Rejected alternatives: EKS with ArgoCD or Flux (pull-based GitOps needs a Kubern
 
 ## AWS accounts: an Organization with staging and production members
 
-An AWS Organization with two member accounts, staging and production; the management account holds consolidated billing, the organization CloudTrail and nothing else. Account boundaries make blast radius and IAM trivial - a staging mistake cannot touch production by construction - and each account gets its own OIDC deploy roles and its own Terraform state bootstrap. Humans go through IAM Identity Center with short-lived credentials: read-only for daily inspection, administrator as break-glass only. The full access model is in [cloud-delivery.md](cloud-delivery.md).
+An AWS Organization with two member accounts, staging and production; the management account holds consolidated billing, the organization CloudTrail and nothing else. Account boundaries make blast radius and IAM trivial - a staging mistake cannot touch production by construction - and each account gets its own OIDC deploy roles and its own Terraform state bootstrap. Humans go through IAM Identity Center with short-lived credentials: read-only for daily inspection, administrator as break-glass only.
 
 Rejected alternatives: a single account separated by names and tags (soft IAM boundaries, and splitting into accounts later is a painful migration); Control Tower (audit and log-archive accounts plus SCP guardrails are enterprise machinery this scale does not pay for; guardrails can be added to the plain Organization later).
 
@@ -1037,7 +1037,7 @@ Thumbnails are verified like masters. `has_thumbnail: true` used to create an as
 
 Two limits are deliberate. Proving an image decodes means decoding it, and both readers stay parse-only because an earlier PNG version that decompressed was twice a denial of service; a header with no bitstream therefore still passes, which is issue #281. And a presigned S3 PUT outlives the object it was minted for, so a key deleted by cleanup can be recreated by a replay within the hour: `If-None-Match` only refuses a write when a current object exists. Issue #278 addresses that on the cloud profile by uploading under `dispatch/{user_id}/` and promoting the winning attempt into the durable `{user_id}/` library prefix on commit, with an S3 lifecycle rule expiring `dispatch/` after 24 hours as a backstop. Because `potocolom-images` is versioned, that rule has to expire current objects, expire noncurrent versions, and drop expired delete markers, or the replay remains as a noncurrent version.
 
-> Shipped status (2026-08-20): **implemented** for the dispatch prefix split and library promote on commit (issue #278). The `dispatch/` lifecycle rule is documented in `docs/cloud-infrastructure.md` and `docs/aws-setup.md`, including noncurrent-version expiry on the versioned images bucket; Terraform or console application of that rule is operator-side.
+> Shipped status (2026-08-20): **implemented** for the dispatch prefix split and library promote on commit (issue #278). The `dispatch/` lifecycle rule is documented with the cloud deployment, including noncurrent-version expiry on the versioned images bucket; Terraform or console application of that rule is operator-side.
 
 Rejected alternatives: publishing the local upload straight into its key with `O_EXCL`, which was written first and replaced, because the key exists and is readable while the body is still landing, so a `job_done` racing its own PUT could have a truncated prefix inspected and approved; signing the upload URL with the attempt so the key carries its own authority, which puts a secret in a path that is logged by every proxy and cannot be revoked when an attempt is superseded; making the worker send a nonce it chooses, which authenticates nothing the API can check; keeping the key-only authorisation and relying on per-attempt keys alone, which is what shipped and is exactly what a previously dispatched worker can derive; refusing a message with no token from every worker, which is correct at the next floor move and breaks every N-1 worker today; and verifying uploads by decoding them, which is the denial of service the PNG reader already learned to avoid.
 
@@ -1310,6 +1310,17 @@ It spends the account's outstanding reset and recovery links, which the factor r
 The rotation needs the session the flow started from, so the callback resolves the browser's session cookie and refuses with the same 403 as everything else this route will not do, when that session is gone or belongs to another account. A flow lasts ten minutes; a session that ended inside them was signed out or revoked, and completing the link then would add a way into the account and end nothing, which is the reverse of what revoking it meant.
 
 Rejected alternatives: leaving the links alone as a factor change does, which reads as the same argument and is not, because what keeps a reset link harmless there is the gate the factor puts in front of it and a provider has no such gate; linking from a browser whose session has ended and revoking every session instead, which holds no token to rotate and hands a credential change to a browser that can no longer prove anything; and rotating after the link commits, in a transaction of its own, which leaves the identity standing and nothing rotated on exactly the 409 the credential routes already answer.
+
+## Cloud operations documentation lives with the cloud
+
+The infrastructure specification, the provisioning runbook and the delivery and access model describe one deployment: the cloud service this project operates. They moved to the private repository that holds the Terraform, the pipeline and the services they describe.
+
+This reverses part of an earlier position, recorded under "Repository boundary", that the AWS setup guide should stay public because it documents how anyone could stand up their own cloud. That reasoning was about a guide read as a generic recipe. What the document actually became is an operator runbook for one installation: account structure, IAM role names, secret names, instance sizes, cost figures and a go-live checklist. Those are the details of a specific deployment, and they are more useful sitting beside the Terraform that implements them than in a repository where nobody can act on them.
+
+Nothing a self-hoster needs moved. The compose file, [self-hosting.md](self-hosting.md), the deployment profiles and every contract the application actually has to honour stay public: the QuotaService `/v1` contract, the worker protocol and its N-1 promise, and the telemetry payload. The architecture documents still describe the cloud profile in general terms, because the code carries seams for it and a reader of that code needs to know what they are for.
+
+Rejected alternatives: keeping all three public (the earlier position, which treats an operator runbook as a tutorial and asks a public repository to carry the account layout of a private deployment); moving the general cloud-profile prose out of `architecture.md` and `blueprint.md` as well (the code has Redis, ALB and multi-replica seams whose rationale lives there, and stripping it would leave the seams unexplained); and keeping stub files that point at a private repository (a link nobody reading the public repository can follow is worse than a clean absence).
+
 
 
 Chosen as conventional defaults rather than debated decisions:

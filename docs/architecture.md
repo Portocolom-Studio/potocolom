@@ -40,7 +40,7 @@ Python inference worker built on Hugging Face diffusers and PyTorch. It loads mo
 
 The worker supports three device targets behind one `DEVICE` setting: `cuda` (NVIDIA, what the cloud fleet runs), `rocm` (AMD, a supported target with its own image variant) and `cpu` (no GPU; used by CI with a tiny model and by contributors without one). Everything above the device layer is identical code.
 
-The worker accepts no inbound connections. It dials out to the API server's fleet endpoint and holds one persistent connection; registration, job dispatch, real time frames and heartbeats are all multiplexed over it. The direction is identical in both modes, which is what lets the same worker image run on a home GPU and on rented cloud machines (see [cloud-infrastructure.md](cloud-infrastructure.md)).
+The worker accepts no inbound connections. It dials out to the API server's fleet endpoint and holds one persistent connection; registration, job dispatch, real time frames and heartbeats are all multiplexed over it. The direction is identical in both modes, which is what lets the same worker image run on a home GPU and on rented cloud machines.
 
 The connection protocol carries a version, and each API release keeps supporting workers from the previous release (N-1). Cloud deploys therefore never require draining the whole fleet at once, and a self-hosted install that upgrades the API before the worker keeps working for one release, with an outdated worker warning in the logs and admin view.
 
@@ -69,7 +69,7 @@ flowchart LR
     W -->|"dials the fleet endpoint<br>one persistent connection"| A
 ```
 
-Cloud: the same three container images, plus orchestration and the private repository services. The worker pool runs on rented GPU machines. The concrete AWS services, network layout and costs are specified in [cloud-infrastructure.md](cloud-infrastructure.md).
+Cloud: the same three container images, plus orchestration and the private repository services. The worker pool runs on rented GPU machines.
 
 ```mermaid
 flowchart TB
@@ -460,7 +460,7 @@ sequenceDiagram
 
 There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
 
-> Shipped status (2026-08-23): the dependency, the endpoint and the session half are all real. `AUTH_MODE=accounts` mints an opaque session held in a `__Host-` cookie and stored only as a hash, and revocation is a `revoked_at` on the row plus an explicit close of any realtime socket bound to it. What the diagram still describes ahead of the code is the Redis session cache, which arrives with the cloud profile, and the per-user rate limit counter (deferred by recorded decision).
+> Shipped status (2026-08-31): the dependency, the endpoint and the session half are all real. `AUTH_MODE=accounts` mints an opaque session held in a `__Host-` cookie and stored only as a hash. Revocation is a `revoked_at` on the row plus an explicit close of any realtime socket bound to it, and, since that close only reaches sockets the revoking process is holding, a periodic sweep asks the database which of this process's bound sessions are still live and closes the rest. The sign-in rate limit is implemented, in PostgreSQL rather than Redis: ten attempts per identifier and a queued wait per address, both counted against a digest rather than the value. What the diagram still describes ahead of the code is the Redis session cache, which arrives with the cloud profile.
 
 ```mermaid
 sequenceDiagram
@@ -662,9 +662,11 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets are private, and a share is a row in `asset_shares` rather than a flag on the asset. They carry an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Twenty-five of these tables exist at migration head 0022. Four are designed and not yet created: `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
+Twenty-six of these tables exist at migration head 0024. Four are designed and not yet created: `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
 One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. The terminal paths swallow per-key failures so one bad key does not stop the rest, and without this the failure was visible only in a log line, so a denied permission left the object forever. A sweep retries them, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
+
+One shipped table has no foreign key to anything on purpose. `login_attempts` counts how often the sign-in path has been asked for one identifier or from one address, and it stores a SHA-256 digest rather than either value: the identifier is whatever a caller typed, so the column would otherwise be a list of addresses anybody can write to, including people who hold no account here, and the peer is raw IP. A digest counts the same and reads back as nothing, which is also why the table cannot reference `users`. Rows outlive their window only until the maintenance loop prunes them.
 
 Two of the shipped tables are measurement streams rather than records, and both are stored the same way: raw rows for recent detail, a rollup table for history, and a retention window on each so neither grows without bound. GPU samples arrive on the heartbeat and keep 48 hours raw against 30 days of five-minute buckets; usage events keep 90 days raw against daily per-dimension rollups that outlive them. The maintenance loop that builds the rollups and prunes the raw rows is described in [metrics.md](metrics.md). Neither GPU table takes a foreign key to `workers`, because a worker row is pruned on its own 30 day schedule and a departed machine's samples should neither block that nor vanish with it.
 
@@ -692,6 +694,13 @@ erDiagram
     gpu_sample_rollups ||--o{ gpu_samples : condenses
     jobs |o--o{ assets : produces
     assets ||--o{ asset_shares : shared_by
+    login_attempts {
+        text scope PK "identifier or address"
+        bytea subject PK "sha256, never the value"
+        int attempts
+        timestamptz expires_at "the window this count belongs to"
+        timestamptz not_before "this subject's next turn"
+    }
 
     users {
         uuid id PK
@@ -1042,6 +1051,6 @@ They integrate over HTTP through interfaces defined in this repository (QuotaSer
 | Packaging | Docker images, docker compose for self-hosting |
 | GPU targets | NVIDIA CUDA and AMD ROCm; CPU mode for CI and development |
 | Observability | CloudWatch and Sentry in the cloud; plain logs self-hosted |
-| Cloud reference | AWS, detailed in [cloud-infrastructure.md](cloud-infrastructure.md) |
+| Cloud reference | AWS |
 
 See [decisions.md](decisions.md) for why each was chosen.
