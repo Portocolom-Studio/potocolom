@@ -4,6 +4,43 @@ potocolom ships model manifests that point at weights hosted on Hugging Face.
 Each model is governed by its upstream license. This file summarizes obligations
 for models bundled in `worker/models/`. It is not legal advice.
 
+## What each model is pinned to
+
+Every repository a manifest names is pinned to a commit, so the license terms
+below describe weights that do not change under the installation reading them
+(issue #319). A manifest carries a `<field>_revision` beside each reference, and
+a manifest that names a repository without a sha does not load.
+
+One repository is pinned to one commit across the fleet: seven manifests share
+the fp16 VAE and three share the SDXL base, and pinning one copy without its
+siblings would put two revisions of one repository in one worker.
+
+| Repository | Commit | Manifests |
+| --- | --- | --- |
+| `black-forest-labs/FLUX.2-klein-4B` | `e7b7dc27f91deacad38e78976d1f2b499d76a294` | flux2-klein-4b |
+| `ByteDance/Hyper-SD` | `bc08d970a87c74c71209491d64e3525845698863` | sdxl-hypersd |
+| `ByteDance/SDXL-Lightning` | `c9a24f48e1c025556787b0c58dd67a091ece2e44` | sdxl-fast, ssd-1b-lightning |
+| `Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers` | `aa76e7f4f4928f378716b6716a2130fba3caf5b1` | sana-sprint-06b |
+| `Lykon/dreamshaper-8-lcm` | `4645d8bc6a8e6b106d21606d63e8460cdad4f1a6` | dreamshaper-lcm |
+| `madebyollin/sdxl-vae-fp16-fix` | `207b116dae70ace3637169f1ddd2434b91b3a8cd` | sdxl-base, sdxl-fast, sdxl-hypersd, sdxl-turbo, ssd-1b, ssd-1b-lightning, vega-rt |
+| `madebyollin/taesdxl` | `b20258aaef75ef61e659c1e0f14f251cf0ad153e` | sdxl-turbo, vega-rt |
+| `segmind/Segmind-Vega` | `7714c4363e5856ff974a4f4b068e8691f26d0b40` | vega-rt |
+| `segmind/Segmind-VegaRT` | `3162e917016cef536fa040ceeeeadd9e09d93e7a` | vega-rt |
+| `segmind/SSD-1B` | `60987f37e94cd59c36b1cba832b9f97b57395a10` | ssd-1b, ssd-1b-lightning |
+| `stabilityai/sd-turbo` | `b261bac6fd2cf515557d5d0707481eafa0485ec2` | sd-turbo |
+| `stabilityai/sdxl-turbo` | `71153311d3dbb46851df1931d3ca6e939de83304` | sdxl-turbo |
+| `stabilityai/stable-diffusion-3.5-medium` | `b940f670f0eda2d07fbb75229e779da1ad11eb80` | sd35-medium |
+| `stabilityai/stable-diffusion-xl-base-1.0` | `462165984030d82259a11f4367a4eed129e94a7b` | sdxl-base, sdxl-fast, sdxl-hypersd |
+| `TencentARC/t2i-adapter-sketch-sdxl-1.0` | `cc3c4e3362296c6825c370b83838306723ece983` | sdxl-turbo, vega-rt |
+| `Tongyi-MAI/Z-Image-Turbo` | `f332072aa78be7aecdf3ee76d5c247082da564a6` | z-image-turbo |
+
+`realesrgan` and `realesrgan-fast` are absent because they fetch a release URL,
+which already names its own version and has no commit to pin.
+
+Moving a model means editing the sha and committing that, which is the point:
+see "A model is pinned to a commit, and moving it costs a commit" in
+[decisions.md](decisions.md).
+
 ## Benchmark-only models (not offered to users)
 
 These manifests set `benchmark_only: true`. The worker can load them for the

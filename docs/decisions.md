@@ -1322,6 +1322,50 @@ Nothing a self-hoster needs moved. The compose file, [self-hosting.md](self-host
 Rejected alternatives: keeping all three public (the earlier position, which treats an operator runbook as a tutorial and asks a public repository to carry the account layout of a private deployment); moving the general cloud-profile prose out of `architecture.md` and `blueprint.md` as well (the code has Redis, ALB and multi-replica seams whose rationale lives there, and stripping it would leave the seams unexplained); and keeping stub files that point at a private repository (a link nobody reading the public repository can follow is worse than a clean absence).
 
 
+## A model is pinned to a commit, and moving it costs a commit
+
+A manifest used to name a repository and nothing else, so the weights a worker
+loaded were whatever sat on that repository's default branch the first time it
+fetched them. Two installs of the same release could hold different weights,
+and the promise that a prompt and a seed reproduce an image stopped at the
+process boundary. Upstream does not have to do anything unusual for that to
+happen: a re-export, a config fix or a new safetensors shard is a normal day on
+the hub, and the worker had no way to say which day it wanted.
+
+Every reference now carries a commit beside it. `source_revision` pins
+`source`, `vae_revision` pins `vae`, and the same for the preview decoder, the
+distillation LoRA and the sketch adapter. The worker passes each one at the
+call that loads that reference, and validation refuses a manifest that names a
+repository without a full 40-character sha, so an added model cannot reach a
+worker unpinned. References that carry their own version already are exempt by
+shape rather than by a list: a download URL or a local path has nothing to pin,
+which is what keeps the two Real-ESRGAN manifests loadable.
+
+The pin is derived rather than declared. The map from a reference to its pin is
+built from the model fields, so a reference added later is validated and kept
+off the wire without anyone remembering to name it in a second place.
+
+What this costs is that adopting a newer upstream revision is now an edit and a
+commit, reviewed like any other change, instead of something that happened on
+its own between two `docker compose pull` runs. That is the trade taken
+deliberately: a model moves when somebody decides it moves, and the benchmark
+numbers, the memory ladder rungs and the license terms recorded against a model
+describe weights that are still there.
+
+Rejected alternatives: pinning to a tag or a branch, which reads like a version
+and is not one, because both are mutable refs that upstream can repoint at any
+commit, which leaves exactly the defect this closes while looking closed;
+pinning only `source` and letting the VAE, the LoRA, the preview decoder and
+the adapter float, which pins the smaller half of the problem, since the fp16
+VAE and the Lightning LoRA change what an image looks like as surely as the
+base does, and the SDXL VAE incident in `scripts/BENCHMARK.md` is what happens
+when a supporting repository is treated as an implementation detail; and a
+lockfile beside the manifests, which is a second file to keep in step with the
+first, is edited by a different act than the one that adds the model, and can
+disagree with the manifest it locks, whereas a field on the manifest cannot be
+out of step with itself.
+
+
 
 Chosen as conventional defaults rather than debated decisions:
 

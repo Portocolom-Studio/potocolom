@@ -566,7 +566,10 @@ Every model the worker can serve is described by a manifest. Example:
 The parameters field is JSON Schema. `GET /api/v1/models` exposes the manifests to the frontend, which renders generic controls from the schema. This is what keeps newly added models usable before any model specific frontend work exists (issue #11). Not every model needs to offer every capability.
 
 Loading fields such as `source`, `vae`, `preview_decoder`, `scheduler`,
-`lora`, `quantize` and `t2i_adapter` stay inside the worker and never cross the wire. `quantize` names
+`lora`, `quantize` and `t2i_adapter` stay inside the worker and never cross the
+wire, and so do the `<field>_revision` pins beside them: every repository a
+manifest names is pinned to a commit, and a manifest that names one without a
+sha does not load (issue #319, and see [decisions.md](decisions.md)). `quantize` names
 exactly one pipeline component and scheme as `component:scheme`; the only
 shipped use is `text_encoder_3:int8` on `sd35-medium`. Two manifest fields do
 cross the wire: `studio_capabilities`, which narrows what the studio offers
