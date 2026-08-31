@@ -810,32 +810,77 @@ do. No optimizer regression, now on evidence rather than on a diff read.
 | `reference_sketch` | 20/48 | 6/48 | 14 |
 
 At item level 66 of 96 `reference_sketch` items carry a disqualifying frame, 69
-percent against oil's 9. Among items already readable it is starker: 18 of 27
-sketch items disqualified against 4 of 48 oil. Sketch is making illusions and then
-throwing most of them away. Paired on (pair, seed), oil is clean on 31 of 48
-against sketch's 6, discordant 27 to 2, exact p < 0.0001.
+percent against oil's 9. Paired on (pair, seed), oil is clean on 31 of 48 against
+sketch's 6, discordant 27 to 2, exact p < 0.0001.
 
-**The artifact is not a frame.** Five of the 66 disqualifying sketch images were
-inspected, spanning both seeds, both arms and five pairs. Every one renders the
-photographic CONTEXT of a sketch instead of a drawing: spiral notebook binding
-down an edge, loose pencils on the desk, in one case a hand holding a pencil over
-a tilted sheet. The illusion is drawn correctly on the page inside the photograph.
-The template is `"an intricate detailed hb pencil sketch of {}"`, and a reference
-sketch is a thing that gets photographed on a desk.
+**The heading overstates it, and the base numbers say so.** Sketch's 25-base
+deficit against oil splits almost evenly: 13 bases from being unreadable at all
+(28 against oil's 15) and 12 from the frame (14 against oil's 2). A perfect wording
+fix therefore moves sketch from 6/48 clean to at most 20/48, still behind oil's
+31/48, and its keepers from 1 to perhaps 3. Read the heading as "the frame is
+sketch's larger loss AMONG READABLE bases", never as "the frame is the only loss".
+
+The same correction applies to the window as a whole. Of 96 bases: **43 lost to
+unreadability, 33 clean but below score 4, 16 lost to the frame.** The frame is the
+SMALLEST of the three losses, not the largest thing in the pipeline.
+
+**The artifact is not a frame.** It renders the photographic CONTEXT of a sketch
+instead of a drawing, with the illusion drawn correctly on the page inside the
+photograph. The template is `"an intricate detailed hb pencil sketch of {}"`, and a
+reference sketch is a thing that gets photographed.
+
+This was first read off five inspected images and has since been **checked at
+n=96** by `campaigns/window4/frame-stats.py`, with no human opening 66 files. The
+statistic `corner_dark` (inner mean luminance minus the mean of the four 10 percent
+corners) ranks disqualifying against clean sketch items at **AUC 0.863**, rising to
+0.892 combined with chroma. The 66 span 20 distinct pairs, so the five were
+representative.
+
+That check also corrected the description. "Loose pencils on the desk" predicts
+disqualifying items are MORE colourful; they are markedly LESS (chroma 10.2 against
+26.0). Window 4's artifact is a **bright tilted page on a dark ground**, greyscale,
+sometimes with a hand and a pencil, not a warm wooden desk.
 
 This refines the 2026-08-12 finding rather than replacing it. Frame behaviour still
 belongs to the specific phrase and still cannot be derived from the medium or from
-paper-boundness. What is added is what the artifact IS in this case: a full
-photographic scene the phrase names, which is why it costs so much canvas.
+paper-boundness.
+
+**And the artifact has more than one visual form, so it cannot be screened.**
+`campaigns/window4/frame-screen-holdout.py` fitted a threshold on window 4 and
+applied it unchanged to window 2's 128 sketch items, which the statistic had never
+seen. AUC falls to **0.713**, below the 0.75 bar and within noise of the 0.706 that
+the CLIP screen was rejected on. The falsifier was declared before the run, so no
+frame screen is adopted. Opening a window-2 item the screen misses shows why: the
+same mechanism appears there as loose pencils on a FULL-BLEED sheet, with bright
+corners, which is the user's original window-1 complaint. One statistic cannot catch
+both forms. This is a frame screen, not a quality screen, so it does not reopen the
+recorded decision about quality aborts.
 
 ### What this does not establish
 
 **Oil is not shown to beat sketch.** These 24 pairs ARE window 3's oil winners,
 selected on one oil observation each, so oil enters with an unknown head start.
-The available control points the other way: on window 2's six proven pairs, chosen
-for neither wording, the two were level at 11/18 oil against 9/18 sketch, and
-sketch LED on clean keepers, 7 to 5. Window 4 measures the size of sketch's frame
-tax on fresh pairs; it does not rank the wordings.
+
+The control that was offered for this was wrong twice, and the conclusion survives
+both corrections. It is window 2's six proven pairs, matched on (pair, seed):
+
+| arm | oil clean >= 3 | sketch clean >= 3 | oil >= 4 | sketch >= 4 |
+|---|---|---|---|---|
+| negative prompt OFF, what windows 3 and 4 run | 7/18 | 6/18 | 5 | 6 |
+| negative prompt ON, rejected | 11/18 | 6/18 | 5 | 3 |
+
+The "11 against 9, sketch leading 7 to 5" quoted earlier is neither arm alone: it is
+what you get pooling BOTH arms into one (pair, style, seed) cell and taking the best
+of all four, on the 18 cells where both styles exist. Those figures are arithmetically
+right. They are simply not the configuration windows 3 and 4 run, which is the OFF
+arm: 7 against 6, and 5 against 6 at the keeper bar. Report the OFF arm.
+
+Worse, those six pairs are **not** "chosen for neither wording". `campaigns/window/plan.json`
+is **182 of 182 `reference_sketch`**, and all six came out of window 1. The control
+is sketch-selected. So window 4's corpus is oil-selected and window 2's control is
+sketch-selected, and the two bracket the truth from opposite sides without
+measuring it. Window 4 measures the size of sketch's frame tax; it does not rank
+the wordings, and neither does the control.
 
 The same selection makes 65 percent an upper bound on these pairs and no estimate
 at all for a fresh corpus. Only 3 of the 24 were selected at a seed window 4 re-ran,
@@ -850,10 +895,22 @@ Whether a pair clean at one seed is clean at the other:
 | `oil` | 11 | 9 | 4 | 11/20 = 55% |
 | `reference_sketch` | 1 | 4 | 19 | 1/5 = 20% |
 
-Oil's 55 percent sits on the 54.9 percent measured in earlier windows, on
-different pairs, a different corpus and an independent rating session. That number
-has now survived an out-of-sample test. The sketch figure rests on 5 pairs and
-carries no weight alone.
+**RETRACTED 2026-08-30. The two numbers are different quantities.** The earlier
+54.9 percent is a MARGINAL per-seed-cell success rate on workable pairs
+(`reanalysis.py:127`, `p = 1 - miss/len(cells)`). The 55 percent above is a
+CONDITIONAL repeat rate, both seeds divided by both-or-one. They are not comparable.
+
+Window 4's matching marginal is **31/48 = 65 percent**, not 55. Under a
+no-heterogeneity model at that marginal the conditional would be p/(2-p) = 47.7
+percent, and 55 percent is consistent with it; the earlier p = 0.549 predicts a
+conditional of 37.8 percent instead. Two different estimands landing on the same
+two digits is a coincidence, not a replication.
+
+Nothing here retracts the underlying point that the seed is the lottery. What is
+retracted is the claim that any number has replicated out of sample. Note also that
+window 1's `capable` filter selects pairs on the same cells it then averages, so
+54.9 percent is itself inflated by within-sample selection. The sketch figure rests
+on 5 pairs and carries no weight alone.
 
 ### The bottleneck did not move
 
@@ -861,8 +918,7 @@ Clean keepers at >= 4: 4 of 96 bases. 84 of 192 items scored 0 and 117 of 192
 scored below 3, so most cells still show one subject or neither. What improved is
 the supply of merely readable images, not of gallery-grade ones.
 
-The top of the distribution has not recovered since window 2, and this is the
-largest unexplained thing in the data:
+The top of the distribution has not recovered since window 2:
 
 | window | items | score 4 | score 5 | clean keepers, bases |
 |---|---|---|---|---|
@@ -870,27 +926,162 @@ largest unexplained thing in the data:
 | 3 | 194 | 1 | 0 | 1/97 = 1.0% |
 | 4 | 192 | 5 | 0 | 4/96 = 4.2% |
 
-386 items across windows 3 and 4 produced zero fives against window 2's 22 in 206.
-The available explanation is corpus, since 144 of window 2's 206 observations came
-from six pairs proven across several windows while the new corpus calls a pair
-proven on one clean observation. That explanation is untested, and the "no
-optimizer regression" result above is established at the >= 3 endpoint, which is
-the coarse one. At the keeper bar nothing run so far separates corpus from code.
+**CORRECTED 2026-08-30. This was written up as the largest unexplained thing in the
+data. It is explained, and the explanation needed no GPU time.** The corpus account
+was called untested; it is testable inside window 2 alone. Split window 2 by whether
+a pair had already been proven in an earlier window:
+
+| window 2 subset | items | score 5 | score 4 | >= 4 | clean keeper |
+|---|---|---|---|---|---|
+| 6 PROVEN pairs | 164 | 21 | 20 | 25.0% | 15.2% |
+| 21 FRESH pairs, one observation each | 42 | 1 | 1 | **4.8%** | 2.4% |
+| window 3 block A, fresh | 194 | 0 | 1 | 0.5% | 0.5% |
+| window 4, all | 192 | 0 | 5 | **2.6%** | 2.1% |
+
+21 of window 2's 22 fives come from those six pairs, which supply 164 of the 206
+observations. Within window 2, one rating session and no cross-window confound at
+all, proven against fresh is 41/164 to 2/42, Fisher exact **p = 0.0026**. Window 2's
+FRESH subset against window 4 is 2/42 to 5/192, Fisher **p = 0.61**, indistinguishable;
+against window 3, p = 0.083.
+
+On comparable ground, a pair nobody has proven observed once, window 2 gave 4.8
+percent at >= 4 and window 4 gave 2.6 percent. There is no collapse to explain. The
+apparent collapse is the loss of six pairs that had been selected across several
+windows for producing fives, which is the winner's-curse shape already recorded in
+this programme's error log.
+
+Two further defects in the table itself. Window 2's 206 items are **126 distinct
+(pair, style, seed, mode) cells**: 54 observed once, 68 twice (negative prompt on
+and off) and 4 four times, which is 54 + 136 + 16 = 206. Windows 3 and 4 have no
+such duplication, so the row comparison mixes units. Restricted to negative=None, what windows 3 and 4 run,
+window 2 is 13 fives in 134 items.
+
+This removes the NEED to posit a regression to explain the mixed totals. It does
+NOT close the code question at the keeper bar, and a second reviewer was right to
+push back on an earlier draft that said it did: **the six pairs that produced 21 of
+the 22 fives have never been rendered on the current oil recipe.** They appear in
+none of window 3 block A's 97 pairs and none of window 4's 24. The one time current
+code saw them, in block W at `charcoal`, they returned 0 clean keepers in 18 bases
+and zero fives against window 2's 5 keepers in 18 at oil, with five of the six
+topping out at score 3. That is confounded by an unvalidated wording, so it is a
+hint and not the test. The test is an 18-base oil replay at 8.0 GPU-hours, and it is
+now the first GPU spend. The `optimizer_fingerprint` did move over
+the interval, from `6b6e0b0a07476b47` to `d1138c88247228b0`, and that is benign: it
+was `sha256(illusions.py)` and the diff is a comment block plus one template. Model
+ids are byte-identical across all three windows. The fingerprint has since been
+widened to cover `illusion_experiment.py` as well, because the run harness gained
+213 lines over that same interval without moving it.
 
 Joint against independent, paired inside the same base: joint-only clean 12,
-indep-only clean 9, p=0.66. Window 2's joint win (p=0.0003, replicated at 0.0075)
-is not visible here. Window 4 was not designed to test it and its pairs are
+indep-only clean 9, p=0.66. Window 2's joint win is not visible here. State the
+comparison at matched endpoints, because the two p-values quoted above are not:
+window 2's 0.0003 is a RAW-SCORE test and window 4's 0.66 is a CLEAN test.
+
+Pairing structure has to be matched too, not just the endpoint: window 2 contains
+both FORKED bases (one shared SDS state, `arm` set) and UNFORKED ones (two separate
+SDS runs), and pooling them is the same error one level down.
+
+| | n | raw joint up/down | p | clean joint-only/indep-only | p |
+|---|---|---|---|---|---|
+| window 2, forked | 72 | 38/12 | 0.0003 | **16/6** | **0.0525** |
+| window 2, unforked | 27 | 17/3 | 0.0026 | 4/2 | 0.69 |
+| window 4, all | 96 | 28/21 | 0.39 | 12/9 | 0.66 |
+| window 4, oil only | 48 | 14/13 | 1.00 | 9/9 | 1.00 |
+
+The joint default was settled on RAW SCORE, where the forked result is strong. At
+the clean bar on forked bases window 2 was already p = 0.0525, so window 4's null is
+less surprising than a pooled table makes it look. The conclusion holds: do not quote
+the joint advantage as settled. Note also that the 15/3/6 "replication" quoted
+elsewhere is the UNFORKED design, not a shared SDS state. Window 4 was not designed to test it and its pairs are
 oil-selected, so this is not a retraction, but the effect should not be quoted as
 settled.
 
 ### Next
 
-Screen replacement strings for `reference_sketch` with the 8-minute smoke, per the
-method note above: candidate phrases are rendered, not reasoned about. The
-hypothesis is that a phrase naming a DRAWING rather than a photographed sketch
-drops the artifact, and the smoke decides it. If one survives, re-run the 24 pairs
-at that wording alone, 48 bases at about 8h, to see whether sketch's 20 readable
-become 20 usable.
+**The cost figures used to order this work were wrong, and so was the first
+correction of them.** Read `total_s` from the 98 cell-level manifests: `total_s`
+already includes `sds_s` and `dream_s`, so summing the three keys double-counts, and
+arm manifests repeat their cell's totals. The measurement is **1,608 s per base =
+0.447 GPU-hours**. Window 4 was 43.8 GPU-hours of compute against about 59.7 h of
+wall clock; the missing 16 h is the overnight pause when the Actions runner blocked
+the launcher. Calendar time is not GPU time.
+
+| work | bases | GPU-hours |
+|---|---|---|
+| six proven pairs x 3 seeds | 18 | **8.0** |
+| sketch wording follow-up | 48 | 21.4 |
+| six proven pairs x 8 seeds | 48 | 21.4 |
+| Codex regression design | 144 | 64.3 |
+
+So "about 8h" for 48 bases was out by 2.7x; the true figure is 21.4.
+
+Order of work, cheapest first. Steps 2 and 3 below replace an earlier draft's
+depth-and-family pair, which a second reviewer showed were both mis-specified: the
+depth window included the 3 window-4 keeper pairs whose oil keeper repeat across
+their two seeds is 0 of 3, and the family window drew from "never-carried" pairs,
+which are the pairs that FAILED the >= 3 bar and so are negatively selected.
+
+| step | GPU-hours | what it settles |
+|---|---|---|
+| P0 mixed re-rate | 0 | rater drift between sessions |
+| P1 wording smoke | ~1.3 | whether `reference_sketch` is repairable |
+| P2 oil replay, six proven pairs, 18 bases | **8.0** | the code question, at the keeper bar |
+| P3 depth, six proven pairs, 48 bases | 21.4 | only if P2 holds |
+| P4 Codex regression, 144 bases | 64.3 | only if P2 fails |
+
+1. **P0, zero GPU, and nothing else should run first.** Every window was rated in a
+   separate session and no drift check has ever been run, while this programme has
+   already withdrawn one cross-window score comparison for a schedule confound.
+   Shuffle window 2's 22 fives with 22 window-4 items that scored 3, hide window,
+   stage, mode and seed, re-rate in one session. Unit: item. Endpoint: score on the
+   same instrument. Falsifier: if the old fives do not average at least 1.0 point
+   above the new threes, part of the collapse is the rater and every cross-window
+   score table here is unsafe.
+
+   Also free, and settled: select any future carry-forward on the KEEPER bar, never
+   on >= 3. Window 3's four structural families rank in opposite directions at the
+   two bars. `SCENE_LANDFORM` leads at >= 3 (10/23 = 43.5 percent, Fisher p = 0.026
+   against the rest) and has zero keepers in 43 observations across both windows,
+   while `UPRIGHT_PENDANT` is mediocre at >= 3 and supplied 2 of the 3 distinct
+   keeper pairs in window 4 from only 6 of the 24 carried. Selecting on >= 3 is what
+   loaded window 4 with 10 `SCENE_LANDFORM` pairs. The keeper counts alone are
+   p = 0.156, suggestive not significant, but the inversion appears in both windows
+   and acting on it costs nothing.
+
+2. **P1, the wording smoke, about 1.3 GPU-hours.** Screen replacement strings for
+   `reference_sketch`: candidate phrases are rendered, not reasoned about. **Do not
+   buy the 21.4-hour follow-up block on a survivor**: the ceiling computed above is
+   about 20/48 clean and 3 keepers against oil's 31/48 and 3, because half of
+   sketch's deficit is unreadability. Fold a survivor into a later window as an extra
+   arm.
+
+3. **P2, oil replay of the six proven pairs. 18 bases, 8.0 GPU-hours, one evening.**
+   This is the code test, and it is the first GPU spend. `oil`, seeds 11, 23 and 37,
+   both arms, current recipe (`_window3_flags()`), matched to window 2's block A oil
+   negative-off grid, where window 2 got 5 clean keepers in 18. Unit: base = (pair,
+   seed), better of two arms. Predeclared endpoint: clean keeper >= 4. Secondary: any
+   score 5. **Falsifier: fewer than 2 clean keepers in 18.** If it also returns zero
+   fives, the top of the distribution is gone on the only pairs that ever produced
+   it, and that is a regression finding rather than a corpus one. Rate it mixed with
+   a sample of the original window-2 keepers so P0 and P2 share one session.
+
+4. **P3, depth on the six proven pairs, 48 bases, 21.4 GPU-hours, only if P2 returns
+   4 or more keepers in 18.** Four windows have bought breadth and none has bought
+   depth. `campaigns/window4/depth-vs-breadth.py` measures the lift out of sample and
+   free, leave-one-out on window 1 so no cell proves itself: at the keeper bar a cell
+   whose pair is proven at another seed hits 5/16 = 31.2 percent against 5/74 = 6.8
+   percent, an honest 4.6x, Fisher p = 0.014. n = 16 is small and the figure is raw
+   score at a sketch wording, so it sizes the bet rather than settling it. Design:
+   the six proven pairs, `oil`, 8 fresh seeds, both arms. Do NOT add window 4's three
+   keeper pairs; their oil keeper repeat is 0 of 3, so they would import the same
+   winner's curse this section spent its length objecting to. Falsifier: fewer than 6
+   keepers in 48.
+
+5. **P4, Codex's powered regression test, 144 bases, 64.3 GPU-hours. Still last.**
+   Its motivating observation, the keeper-bar collapse in the mixed table, is
+   explained above for free, and a failed P2 would already be most of the answer for
+   an eighth of the cost. Run it only if P2 fails and the failure needs sizing across
+   a broad corpus.
 
 ## Running it
 

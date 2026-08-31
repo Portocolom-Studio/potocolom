@@ -522,6 +522,59 @@ def test_window3_plan_passes_dry_run(tmp_path: Path) -> None:
     assert main(["dry-run", "--plan", str(path)]) == 0
 
 
+def test_window5_replays_window2s_oil_grid_and_only_the_code_differs() -> None:
+    """The whole point of window 5 is that nothing but the code changed.
+
+    If any of these drift, the window stops separating corpus from code and
+    silently becomes a fourth confounded comparison.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW5_SEEDS,
+        _window3_flags,
+        build_window5,
+    )
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    entries = build_window5()
+    assert len(entries) == 18
+    assert {e.tier for e in entries} == {"window5"}
+    assert {e.pair_id for e in entries} == set(WINDOW2_PROVEN)
+    assert {e.seed for e in entries} == set(WINDOW5_SEEDS)
+    # Window 2 ran oil on these pairs at exactly these seeds.
+    assert WINDOW5_SEEDS == (11, 23, 37)
+    assert {e.style for e in entries} == {"oil"}
+    # Current recipe, unmodified: this is what makes the code the only variable.
+    assert all(list(e.flags) == _window3_flags() for e in entries)
+    # One cell per base, and the two Dream arms are forked inside the cell.
+    assert len({e.entry_id for e in entries}) == 18
+
+    # Seed-major: a short window drops a whole seed, not half the pairs.
+    assert [e.seed for e in entries] == [s for s in WINDOW5_SEEDS for _ in WINDOW2_PROVEN]
+
+    # The oil template must resolve to window 2's exact strings. Five of the six
+    # pairs bake "oil", so resolve_pair_prompts returns their verbatim prompts;
+    # giraffe_penguin_calibration bakes reference_sketch and gets the template
+    # applied. Both paths landed on "an oil painting of ..." in window 2.
+    for pair_id in WINDOW2_PROVEN:
+        _subjects, effective = resolve_pair_prompts(PAIR_BY_ID[pair_id], "oil")
+        assert all(text.startswith("an oil painting of ") for text in effective), pair_id
+
+
+def test_window5_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window5",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
 def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
     from worker.illusion_campaign import build_phase_plan, main
 

@@ -581,6 +581,15 @@ WINDOW4_PAIRS = (
 WINDOW4_STYLES = ("reference_sketch", "oil")
 WINDOW4_SEEDS = (11, 23, 37)
 
+# Window 5 replays window 2's oil grid on the current recipe. The pairs, the seeds
+# and the oil template are window 2's; the code is today's. Window 2 produced 5
+# clean keepers in these exact 18 bases and windows 3 and 4 never rendered these
+# pairs at all, so this is the only design that separates corpus from code at the
+# bar that controls the deliverable.
+WINDOW5_PAIRS = WINDOW2_PROVEN
+WINDOW5_STYLE = "oil"
+WINDOW5_SEEDS = (11, 23, 37)
+
 
 def _window2_flags(
     *,
@@ -842,6 +851,38 @@ def build_window4() -> list[CampaignEntry]:
                     )
                 )
                 priority += 1
+    return entries
+
+
+def build_window5() -> list[CampaignEntry]:
+    """The six proven pairs replayed at oil on the current recipe. 18 bases.
+
+    Every other window since window 2 changed the corpus at the same time as the
+    code, so "the fives went away because we stopped rendering the pairs that made
+    fives" and "the optimizer stopped making fives" are both still live. This holds
+    the pairs, the seeds and the oil template at window 2's values and changes only
+    the code, which is the one comparison nobody has run.
+
+    Seed-major, so a window that runs short drops a whole seed rather than half the
+    pairs and leaves a balanced block behind.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in WINDOW5_SEEDS:
+        for pair_id in WINDOW5_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window5",
+                    profile=WINDOW5_STYLE,
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window3_flags(),
+                    priority=priority,
+                    style=WINDOW5_STYLE,
+                    estimate_s=WINDOW3_BASE_ESTIMATE_S,
+                )
+            )
+            priority += 1
     return entries
 
 
@@ -1347,8 +1388,21 @@ def run_entry(
 
 
 def _optimizer_fingerprint() -> str:
-    optimizer = repo_root() / "worker" / "worker" / "illusions.py"
-    return hashlib.sha256(optimizer.read_bytes()).hexdigest()[:16]
+    """Hash every module whose code can change a rated image.
+
+    spec_hash already covers the resolved prompts, flags, seed and model ids, so
+    what is left to guard is the CODE. illusions.py alone was not enough: over the
+    window 2 to window 3 interval illusion_experiment.py gained 213 lines while the
+    fingerprint moved only for a comment block, and a review then used the
+    unchanged-looking fingerprint as evidence that the harness could not have
+    regressed. illusion_campaign.py is deliberately absent: it only builds plans,
+    and its choices are already in the plan that plan_sha covers.
+    """
+    worker = repo_root() / "worker" / "worker"
+    digest = hashlib.sha256()
+    for name in ("illusions.py", "illusion_experiment.py"):
+        digest.update((worker / name).read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def _profile_map() -> dict[str, list[str]]:
@@ -1436,6 +1490,8 @@ def build_phase_plan(
         entries = build_window3()
     elif phase == "window4":
         entries = build_window4()
+    elif phase == "window5":
+        entries = build_window5()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1452,7 +1508,7 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "window", "window2", "window3", "early-dream-backup")
+            if phase in ("reference60h", "window", "window2", "window3", "window5", "early-dream-backup")
             else _blocked_rotated(entries)
         ),
     )
@@ -1532,6 +1588,7 @@ def main(argv: list[str] | None = None) -> int:
             "window2",
             "window3",
             "window4",
+            "window5",
             "early-dream-backup",
         ),
         required=True,
@@ -1673,6 +1730,13 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window4", 0) not in (0, window4_expected):
             print(
                 f"FAIL: window4 expected {window4_expected} got {counts.get('window4')}",
+                file=sys.stderr,
+            )
+            return 1
+        window5_expected = len(WINDOW5_PAIRS) * len(WINDOW5_SEEDS)
+        if counts.get("window5", 0) not in (0, window5_expected):
+            print(
+                f"FAIL: window5 expected {window5_expected} got {counts.get('window5')}",
                 file=sys.stderr,
             )
             return 1
