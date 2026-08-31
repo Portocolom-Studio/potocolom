@@ -54,7 +54,16 @@ async def collapse(confirmation: str) -> dict:
             # to, and moving it is the whole reason the accounts can go.
             await session.execute(update(Job).where(Job.user_id != local).values(user_id=local))
             await session.execute(update(Asset).where(Asset.user_id != local).values(user_id=local))
-            for table in (Session, AuthToken, AuthFactor, RecoveryCode, AuthIdentity):
+            # Sessions after the factor, not before it, which is how this read
+            # until #443. No foreign key ties these five together, so the order
+            # is free to choose, and this is the one every route that touches
+            # more than one of them already takes: a challenge claims its token
+            # before it locks the factor, and enrolling or removing a factor
+            # holds auth_factors and recovery_codes while it rotates the
+            # session making the change. Deleting sessions first put this
+            # transaction on the far side of that pair, and a collapse run
+            # while the API was still up died of a deadlock instead.
+            for table in (AuthToken, AuthFactor, RecoveryCode, Session, AuthIdentity):
                 await session.execute(delete(table))
             await session.execute(delete(Invitation))
             await session.execute(delete(User).where(User.id != local))

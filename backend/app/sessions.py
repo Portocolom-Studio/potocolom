@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import func, or_, select, update
 
 from app import db
@@ -151,6 +152,10 @@ async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved
     Lives here rather than beside any one caller because more than one kind of
     change owes this: a credential, an address, a linked identity, a second
     factor.
+
+    Refuses with 409 when the token the caller presented is no longer the one
+    on the row, which is what keeps two requests holding the same cookie from
+    both being answered.
     """
     # Every transaction takes the account's session rows in one order, or two
     # credential changes racing on the same account deadlock: each revocation
@@ -168,11 +173,29 @@ async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved
         .values(revoked_at=func.now())
     )
     issued = _issued(resolved.session.remember_me)
-    await db_session.execute(
+    swapped = (await db_session.execute(
         update(Session)
-        .where(Session.id == resolved.session.id, Session.revoked_at.is_(None))
+        .where(Session.id == resolved.session.id,
+               Session.token_hash == resolved.session.token_hash,
+               Session.revoked_at.is_(None))
         .values(token_hash=token_hash(issued.token))
-    )
+        .returning(Session.id)
+    )).first()
+    if swapped is None:
+        # The presented token is no longer the stored one. Matching on the id
+        # alone is not enough, because the principal was resolved in an
+        # earlier transaction: two requests carrying the same cookie both
+        # reach here, and the second overwrote what the first had just
+        # handed out. An owner's password change committed, a stolen copy of
+        # the same cookie changed the address a moment later, and the owner
+        # was signed out holding a dead token while the intruder kept the
+        # session and got their change as well.
+        #
+        # Raising rather than reissuing, so the caller's transaction rolls
+        # back: the loser's change must not stand, and it must not be given a
+        # cookie either.
+        raise HTTPException(status_code=409,
+                            detail="this session changed while that was in flight")
     if spend_capabilities:
         # Reset and recovery links go with them. Changing a credential after a
         # mailbox is compromised is meant to end what that mailbox can still
