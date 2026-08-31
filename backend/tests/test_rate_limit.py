@@ -2,14 +2,14 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from app import accounts as accounts_module
 from app import db, gpu_samples, rate_limit
 from app.main import app
-from app.tables import LoginAttempt
+from app.tables import AuthIdentity, LoginAttempt, User
 from tests.test_session_policy import _account, _login, accounts
 
 __all__ = ["accounts"]
@@ -41,9 +41,12 @@ def waits(monkeypatch):
     return recorded
 
 
-async def _forget() -> None:
+async def _forget(scope: str | None = None) -> None:
     async with db.session_factory() as session:
-        await session.execute(LoginAttempt.__table__.delete())
+        statement = LoginAttempt.__table__.delete()
+        if scope is not None:
+            statement = statement.where(LoginAttempt.scope == scope)
+        await session.execute(statement)
         await session.commit()
 
 
@@ -58,6 +61,15 @@ async def _expires_at(scope: str, value: str) -> datetime:
     async with db.session_factory() as session:
         return (await session.execute(
             select(LoginAttempt.expires_at).where(
+                LoginAttempt.scope == scope,
+                LoginAttempt.subject == rate_limit._digest(value))
+        )).scalar_one()
+
+
+async def _not_before(scope: str, value: str) -> datetime | None:
+    async with db.session_factory() as session:
+        return (await session.execute(
+            select(LoginAttempt.not_before).where(
                 LoginAttempt.scope == scope,
                 LoginAttempt.subject == rate_limit._digest(value))
         )).scalar_one()
@@ -84,13 +96,20 @@ def test_the_delay_is_free_for_five_then_doubles_to_an_eight_second_cap():
 def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits, monkeypatch):
     _account(accounts, "ceiling@example.com")
     hashed: list[str] = []
+    searched: list[tuple] = []
     real = accounts_module.verify_password
+    real_select = accounts_module.select
 
     def counting(stored: str, password: str) -> bool:
         hashed.append(stored)
         return real(stored, password)
 
+    def recording(*entities):
+        searched.append(entities)
+        return real_select(*entities)
+
     monkeypatch.setattr(accounts_module, "verify_password", counting)
+    monkeypatch.setattr(accounts_module, "select", recording)
     with TestClient(app) as client:
         for _ in range(rate_limit.IDENTIFIER_LIMIT):
             assert _login(client, "ceiling@example.com", password="wrong").status_code == 401
@@ -99,27 +118,103 @@ def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits, monkey
         # before the password is looked at, or the limit would bound only the
         # guesses that were going to fail anyway.
         assert _login(client, "ceiling@example.com").status_code == 429
-    assert waits == [0.0] * 5 + [0.5, 1.0, 2.0, 4.0, 8.0]
+    # A refusal is answered at once. The two that were turned away are not
+    # also held for the delay the tenth attempt earned.
+    assert len(waits) == rate_limit.IDENTIFIER_LIMIT
     # Argon2id is the cost this limit exists to bound, so a refused attempt has
     # to be refused before it: ten verifications for ten attempts, and not one
     # more for the two that were turned away.
     assert len(hashed) == rate_limit.IDENTIFIER_LIMIT
+    # And before the account is looked up, not merely before the password is
+    # checked. A limit consulted after the lookup would answer differently for
+    # an address that exists and give away by refusal what the constant time
+    # verification refuses to give away by timing.
+    assert searched == [(AuthIdentity, User)] * rate_limit.IDENTIFIER_LIMIT
 
 
 @pytest.mark.db
-def test_one_address_waits_longer_and_longer_however_many_identifiers_it_uses(accounts, waits):
-    spread = 31
+def test_one_address_queues_however_many_identifiers_it_uses(accounts, waits):
+    spread = 16
     with TestClient(app) as client:
-        for n in range(spread):
-            # A different identifier every time, so each of those buckets holds
-            # one attempt and owes no wait: every delay below is the address.
-            assert _login(client, f"spread{n}@example.com", password="x").status_code == 401
-    assert waits[:10] == [0.0] * 5 + [0.5, 1.0, 2.0, 4.0, 8.0]
-    # And past the cap it keeps paying the cap, but is never refused. One NAT,
-    # one proxy uvicorn has not been told to trust, or the loopback publish the
-    # shipped compose file uses is a single address here, so a ceiling would
-    # sign a whole installation out of this route ten minutes at a time.
-    assert waits[10:] == [rate_limit.MAX_DELAY_S] * (spread - 10)
+        # A different identifier every time, so each of those buckets holds one
+        # attempt and owes no wait: every answer below is the address alone.
+        codes = [_login(client, f"spread{n}@example.com", password="x").status_code
+                 for n in range(spread)]
+    # Never 429. One NAT, one proxy uvicorn has not been told to trust, or the
+    # loopback publish the shipped compose file uses is a single address here,
+    # so a ceiling would sign a whole installation out of this route ten
+    # minutes at a time.
+    assert 429 not in codes
+    # The turns are handed out one at a time and each is deeper than the last,
+    # so a peer that keeps knocking eventually asks for one past the cap and is
+    # told to come back. The wait is stubbed here, so no turn is ever served
+    # and the queue only grows: what this measures is what a burst is charged.
+    assert codes[:rate_limit.FREE_ATTEMPTS] == [401] * rate_limit.FREE_ATTEMPTS
+    assert codes[-1] == 503
+    assert sorted(set(codes)) == [401, 503]
+    assert waits == sorted(waits)
+
+
+@pytest.mark.db
+def test_overlapping_attempts_from_one_address_take_turns(accounts, waits):
+    # Eleven is what the queue holds: a twelfth turn falls past the cap.
+    overlapping = 11
+
+    async def go() -> None:
+        await asyncio.gather(*[
+            rate_limit.charge_login(f"turns{n}@example.com", _request("198.51.100.13"))
+            for n in range(overlapping)])
+
+    accounts(go())
+    # Sleeping is latency for one task and not a rate. Attempts that overlap
+    # used to serve the same eight seconds together, so twenty of them finished
+    # inside one cap period and a flood paid for one attempt; what each is
+    # charged now is its turn behind the one before it, and the last of these
+    # is past a whole cap period on its own.
+    assert sorted(waits) == pytest.approx(
+        [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.5, 3.5, 7.5, 15.5, 23.5], abs=0.2)
+    assert max(waits) > rate_limit.MAX_DELAY_S
+
+
+@pytest.mark.db
+def test_a_turn_past_the_cap_is_told_to_come_back_and_does_not_take_the_slot(accounts, waits):
+    peer = "198.51.100.14"
+
+    async def go() -> tuple[HTTPException, datetime | None, datetime | None]:
+        for n in range(11):
+            await rate_limit.charge_login(f"full{n}@example.com", _request(peer))
+        before = await _not_before("address", peer)
+        with pytest.raises(HTTPException) as refusal:
+            await rate_limit.charge_login("full11@example.com", _request(peer))
+        return refusal.value, before, await _not_before("address", peer)
+
+    refused, before, after = accounts(go())
+    # 503 and not 429: 429 on a sign-in reads as the account being shut, and
+    # this has nothing to do with any account. Retry-After is honest because
+    # the queue is never allowed to reach further out than the cap.
+    assert refused.status_code == 503
+    assert refused.headers == {"Retry-After": str(int(rate_limit.MAX_QUEUE_S))}
+    # And the refused attempt does not push the queue out. If it did, a flood
+    # would drive a shared peer past the cap for the rest of its window, which
+    # is the outage the address bucket has no ceiling in order to avoid.
+    assert before == after
+    assert len(waits) == 11
+
+
+@pytest.mark.db
+def test_the_wait_answers_to_the_identifier_when_the_address_is_new(accounts, waits):
+    async def go() -> None:
+        for _ in range(rate_limit.FREE_ATTEMPTS + 1):
+            await rate_limit.charge_login("pinned@example.com", _request("198.51.100.15"))
+        waits.clear()
+        await rate_limit.charge_login("pinned@example.com", _request("198.51.100.16"))
+
+    accounts(go())
+    # An address on its first attempt owes nothing, so the wait left is what
+    # the identifier owes for its seventh. A wait taken from the address alone
+    # would be zero here, and an account already being ground would be free to
+    # grind from the next address the attacker holds.
+    assert waits == [rate_limit.delay_for(rate_limit.FREE_ATTEMPTS + 2)]
 
 
 @pytest.mark.db
@@ -130,6 +225,11 @@ def test_an_account_spending_its_ten_leaves_another_account_free(accounts, waits
         for _ in range(rate_limit.IDENTIFIER_LIMIT):
             _login(client, "loud@example.com", password="wrong")
         assert _login(client, "loud@example.com").status_code == 429
+        # Every request here comes from one peer, and the wait is stubbed, so
+        # that peer's queue never drains the way the twenty-three seconds those
+        # ten attempts really take would drain it. Dropped, so what the quiet
+        # account meets below is the identifier ceiling alone.
+        client.portal.call(_forget, "address")
         assert _login(client, "quiet@example.com").status_code == 204
 
 
@@ -153,7 +253,10 @@ def test_an_address_nobody_holds_is_charged_exactly_like_one_somebody_does(accou
 
     assert known == [401] * rate_limit.IDENTIFIER_LIMIT + [429]
     assert unknown == known
-    assert list(waits) == known_waits
+    # To within the time each run spent in Argon2id rather than exactly: the
+    # address queue is measured against the clock, so a wait shortens by
+    # whatever real time passed while the attempts before it were answered.
+    assert list(waits) == pytest.approx(known_waits, abs=1.0)
 
 
 @pytest.mark.db
