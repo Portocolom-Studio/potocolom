@@ -24,6 +24,7 @@ from app.logs import setup_logging
 from app.metrics import router as metrics_router
 from app.realtime import reap_dead_workers
 from app.realtime import router as realtime_router
+from app.realtime import sweep_dead_sessions
 from app.accounts import router as accounts_router
 from app.admin import router as admin_router
 from app.credentials import router as credentials_router
@@ -101,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await jobs.recover()
         tasks = [
             asyncio.create_task(reap_dead_workers()),
+            asyncio.create_task(sweep_dead_sessions()),
             asyncio.create_task(jobs.dispatch_loop()),
             asyncio.create_task(maintain_loop()),
             asyncio.create_task(maintain_deletes_loop()),

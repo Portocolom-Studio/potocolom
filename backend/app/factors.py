@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
@@ -101,6 +101,48 @@ def _budget_lock(user_id: uuid.UUID) -> int:
     return int.from_bytes(user_id.bytes[:8], "big", signed=True)
 
 
+async def _hold_the_account(session: AsyncSession, user_id: uuid.UUID,
+                            busy_detail: str = "too many changes to this account at once",
+                            ) -> None:
+    """The account to itself for the rest of the caller's transaction.
+
+    A first enrolment has no factor row, so the SELECT ... FOR UPDATE the
+    other routes exclude each other with locks nothing against it, and
+    operator.clear_factor is free to interleave: its delete of the factor
+    finding none, and its delete of the recovery codes taking the ones an
+    enrolment committed in between, leaving a factor nobody has a way back
+    past. This key holds whether or not a row exists.
+
+    Taken first, before any row lock, the way begin_challenge takes it. A lock
+    every holder acquires before anything else can serialise them but can
+    never be the second edge of a cycle, which is what makes adding it to
+    routes already arranged against deadlock safe.
+
+    Giving up rather than queueing: a waiter holds its pooled connection, and
+    the pool is fifteen deep, so an unbounded wait would let a flood aimed at
+    one account starve every other request. Nothing has been written when this
+    runs, so the caller can safely be told to come back.
+    """
+    await session.execute(text("SET LOCAL lock_timeout = '3s'"))
+    try:
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                              {"key": _budget_lock(user_id)})
+    except DBAPIError as busy:
+        # The wide class, deliberately: asyncpg raises LockNotAvailableError,
+        # which has no DBAPI class of its own, so SQLAlchemy wraps it as a
+        # plain DBAPIError and the narrower OperationalError never arrives.
+        # This transaction has written nothing, so telling the caller to come
+        # back is safe. An attempt a previous transaction already counted
+        # stays counted, which is what a refused guess costs anyway.
+        raise HTTPException(status_code=503, detail=busy_detail) from busy
+    # Only this wait was meant to be bounded, and SET LOCAL lasts for the whole
+    # transaction. Left on, a row lock taken further down times out into a
+    # DBAPIError no handler here expects, and the caller gets a 500 in place of
+    # the wait it used to do. Nothing after this line queues behind an
+    # unrelated account, because the key above is already held.
+    await session.execute(text("SET LOCAL lock_timeout = '0'"))
+
+
 async def begin_challenge(user: User, remember_me: bool,
                           redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
@@ -116,18 +158,10 @@ async def begin_challenge(user: User, remember_me: bool,
             # ten guesses per login and a six-digit code had unlimited tries
             # against it (issue #421). A collision with another key here costs
             # two accounts a moment of waiting and nothing else.
-            # A waiter holds its pooled connection, and the pool is fifteen
-            # deep, so an unbounded wait would let a flood of logins for one
-            # account starve every other request. Giving up is safe here:
-            # nothing has been written yet, and the caller is told to come
-            # back rather than handed a challenge that skipped the carry.
-            await session.execute(text("SET LOCAL lock_timeout = '3s'"))
-            try:
-                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                      {"key": _budget_lock(user.id)})
-            except OperationalError as busy:
-                raise HTTPException(status_code=503,
-                                    detail="too many sign-ins at once") from busy
+            # Refused rather than queued, so a flood of logins for one account
+            # cannot starve the pool: the caller is told to come back rather
+            # than handed a challenge that skipped the carry.
+            await _hold_the_account(session, user.id, "too many sign-ins at once")
             # The budget belongs to the account, not to one challenge. Minted
             # per challenge it counts nothing, because starting another is
             # free to anyone who already has the password.
@@ -275,8 +309,19 @@ class Proof:
     step: int | None = None
 
 
-async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
-    """What this code is, without consuming it. None if it is nothing."""
+async def _recovery_proof(user: User, code: str) -> Proof | None:
+    """A recovery code, told apart from anything else without spending a try.
+
+    Its own step because the replacement budget bounds a six-digit space, and
+    a recovery code is not one: twenty symbols from an alphabet of thirty-two,
+    which no online guessing reaches. Charging the budget before knowing which
+    kind of code this is let anyone holding a session fill it with rubbish and
+    leave the owner holding the one credential these routes exist to accept
+    and no way to present it (issue #419).
+
+    A plain SELECT in a session of its own, so it takes no lock and cannot be
+    half of the auth_factors-before-recovery_codes cycle (issue #438).
+    """
     if db.session_factory is None:
         return None
     async with db.session_factory() as session:
@@ -286,8 +331,11 @@ async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
                 RecoveryCode.code_hash == _hash(code.strip().lower()),
                 RecoveryCode.consumed_at.is_(None))
         )).first()
-    if found is not None:
-        return Proof(recovery_code_id=found.id)
+    return None if found is None else Proof(recovery_code_id=found.id)
+
+
+def _totp_proof(code: str, user: User, factor: AuthFactor) -> Proof | None:
+    """What the authenticator's own code is worth, without consuming it."""
     try:
         secret = keyring.get_key_ring().decrypt(
             TOTP_PURPOSE, factor.secret_ciphertext, user.id.bytes).decode()
@@ -296,9 +344,13 @@ async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
         # pass, which is the fail-closed direction.
         return None
     step = totp.matched_step(secret, code)
-    if step is None:
-        return None
-    return Proof(step=step)
+    return None if step is None else Proof(step=step)
+
+
+async def _verify(code: str, user: User, factor: AuthFactor) -> Proof | None:
+    """What this code is, without consuming it. None if it is nothing."""
+    recovered = await _recovery_proof(user, code)
+    return recovered if recovered is not None else _totp_proof(code, user, factor)
 
 
 async def _spend(session: AsyncSession, factor: AuthFactor, proof: Proof) -> bool:
@@ -405,6 +457,78 @@ async def _spend_replacement_attempt(factor_id: uuid.UUID) -> bool:
     return spent is not None
 
 
+@router.delete("/api/v1/account/totp", status_code=204)
+async def remove_factor(
+    body: CodeRequest,
+    principal: sessions.Resolved = Depends(current_principal),
+) -> Response:
+    """Turning the factor off costs a code, the same as replacing it.
+
+    A session by itself must not be enough, or the factor protects an account
+    only until somebody steals a cookie. A recovery code counts, which is what
+    lets whoever lost the authenticator but kept a code turn it off themselves
+    rather than lose the account (issue #419).
+
+    An account holding neither has nothing to present, and no route can safely
+    help it: one that removed a factor without asking for one is exactly the
+    route worth stealing a session for. That way back is the command at the
+    machine, `make auth-clear-factor`.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    if principal.user.state != "active":
+        # current_principal admits a suspended account, which reads and
+        # changes nothing. Only current_user carries that check.
+        raise HTTPException(status_code=403, detail="account suspended")
+    if not sessions.is_recent(principal.session):
+        raise HTTPException(status_code=403, detail="recent authentication required")
+    user_id = principal.user.id
+    async with db.session_factory() as session:
+        factor = await enrolled_factor(session, user_id)
+    if factor is None:
+        raise REFUSED
+    # The recovery code is looked for before anything is charged, because the
+    # budget below is not what guards it: a stolen session that spent all ten
+    # on rubbish would otherwise leave somebody holding a working code and no
+    # route that would look at it.
+    proof = await _recovery_proof(principal.user, body.code)
+    if proof is None:
+        # The same budget replacing one spends, and spent before the digits
+        # are looked at. Two doors onto the same six digits with a counter on
+        # only one of them is no counter at all.
+        if not await _spend_replacement_attempt(factor.id):
+            raise REFUSED
+        proof = _totp_proof(body.code, principal.user, factor)
+    if proof is None:
+        raise REFUSED
+
+    async with db.session_factory() as session:
+        async with session.begin():
+            await _hold_the_account(session, user_id)
+            # The factor row first, the way a replacement takes it, so the two
+            # routes cannot deadlock against each other by touching
+            # auth_factors and recovery_codes in opposite orders.
+            await session.execute(
+                select(AuthFactor.id).where(AuthFactor.id == factor.id).with_for_update())
+            if not await _spend(session, factor, proof):
+                raise REFUSED
+            gone = (await session.execute(
+                delete(AuthFactor)
+                .where(AuthFactor.user_id == user_id, AuthFactor.id == factor.id)
+                .returning(AuthFactor.id)
+            )).first()
+            if gone is None:
+                raise REFUSED
+            # The codes go with it. A code minted against a secret nobody
+            # holds any more is a way in nobody expects.
+            await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user_id))
+            # The account is less protected after this than before, which
+            # makes ending the other sessions matter more here, not less.
+            await sessions.revoke_others(session, principal, spend_capabilities=False)
+    await sessions.close_other_sockets(principal)
+    return Response(status_code=204)
+
+
 @router.post("/api/v1/account/totp/confirm", status_code=204)
 async def confirm_enrolment(
     body: ConfirmRequest,
@@ -441,17 +565,35 @@ async def confirm_enrolment(
     if replacing is not None:
         if body.current_code is None:
             raise REFUSED
-        if not await _spend_replacement_attempt(replacing.id):
-            # The budget is gone. Signing in with the factor clears it, which
-            # is the one thing an attacker holding only a session cannot do.
-            raise REFUSED
-        proof = await _verify(body.current_code, principal.user, replacing)
+        # Ahead of the charge, for the reason remove_factor gives: the budget
+        # bounds six digits, and a recovery code is not six digits.
+        proof = await _recovery_proof(principal.user, body.current_code)
+        if proof is None:
+            if not await _spend_replacement_attempt(replacing.id):
+                # The budget is gone. Signing in with the factor clears it,
+                # which is the one thing an attacker holding only a session
+                # cannot do.
+                raise REFUSED
+            proof = _totp_proof(body.current_code, principal.user, replacing)
         if proof is None:
             raise REFUSED
+
+    # After the factor read, and that ordering is the whole of the guard.
+    # Removing a factor deletes it and revokes the other sessions in one
+    # transaction, so this request reads no factor only once that transaction
+    # has committed, and a reading of the session taken afterwards sees the
+    # revocation with it. Asked before the read it would prove nothing: a
+    # stolen session holds a sealed enrolment for thirty minutes and cannot
+    # confirm it while the factor stands, and the owner taking that factor off
+    # is exactly what turns the request into a first enrolment, which asks for
+    # no proof at all.
+    if not await sessions.is_live(principal.session.id):
+        raise REFUSED
 
     ring = keyring.get_key_ring()
     async with db.session_factory() as session:
         async with session.begin():
+            await _hold_the_account(session, user_id)
             if replacing is not None:
                 # The factor row first, always, whichever kind of proof this
                 # is, and answer_challenge takes it first too: auth_factors

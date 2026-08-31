@@ -326,3 +326,129 @@ def test_a_session_revoked_during_the_handshake_never_opens(accounts):
     assert message["type"] == "error"
     assert message["code"] == realtime.CLOSE_UNAUTHORIZED
     assert realtime.sessions == {}
+
+
+async def _revoke_out_of_band(session_id: uuid.UUID) -> None:
+    """Revoke the row the way another process does, and nothing else.
+
+    sessions.revoke() closes the socket itself, in this process, so a test
+    built on it passes with the sweep deleted and proves nothing about a
+    revocation performed by the operator command, direct SQL or a replica.
+    """
+    async with db.session_factory() as session:
+        await session.execute(
+            text("UPDATE sessions SET revoked_at = now() WHERE id = :id"),
+            {"id": session_id})
+        await session.commit()
+
+
+@pytest.mark.db
+def test_a_session_revoked_in_another_process_is_swept_off_the_socket(accounts):
+    """Nothing outside this process can reach the socket map that close_revoked
+    walks, so a revocation performed anywhere else only lands if the process
+    holding the socket asks the database which of its sessions are still live.
+    """
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        _signed_in(client, "swept@example.com")
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-sweep", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                answer_ready(worker_ws, worker_ws.receive_json())
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                worker = _only_session().worker
+                client.portal.call(_revoke_out_of_band, _only_session().auth_session_id)
+                client.portal.call(realtime.close_dead_sessions)
+
+                closing = browser_ws.receive_json()
+                assert closing["type"] == "error"
+                assert closing["code"] == realtime.CLOSE_UNAUTHORIZED
+                # The slot goes back with it, the same as an in-process revocation.
+                assert realtime.sessions == {}
+                assert worker.slots_in_use == 0
+
+
+@pytest.mark.db
+def test_a_sweep_leaves_a_live_session_drawing(accounts):
+    """Without this, a sweep that closed every socket unconditionally would
+    still satisfy the test above."""
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, _ = _signed_in(client, "kept@example.com")
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-kept", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                answer_ready(worker_ws, worker_ws.receive_json())
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                worker = _only_session().worker
+                client.portal.call(realtime.close_dead_sessions)
+
+                assert _only_session().user_id == user.id
+                assert worker.slots_in_use == 1
+                # Still the socket it was: it answers, rather than having been
+                # closed with nobody reading the close.
+                browser_ws.send_json({"type": "update_params",
+                                      "params": {"prompt": "a blue house on a hill"}})
+                assert browser_ws.receive_json()["type"] == "params_updated"
+
+
+@pytest.mark.db
+def test_a_sweep_that_cannot_reach_the_database_keeps_live_sockets(accounts, monkeypatch):
+    """_still_live fails closed for the one socket it is about to grant a slot
+    to. The sweep judges every socket on the installation at once, so failing
+    closed would sign everybody out of a live canvas on one database blip."""
+    from app import sessions as account_sessions
+
+    async def broken(_session_ids):
+        raise RuntimeError("database unavailable")
+
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, _ = _signed_in(client, "blipped@example.com")
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-blip", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                answer_ready(worker_ws, worker_ws.receive_json())
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                worker = _only_session().worker
+                monkeypatch.setattr(account_sessions, "live_among", broken)
+                client.portal.call(realtime.close_dead_sessions)
+
+                assert _only_session().user_id == user.id
+                assert worker.slots_in_use == 1
+
+
+async def _settle() -> None:
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.db
+def test_the_running_app_runs_the_sweep(accounts, monkeypatch):
+    """The sweep is a fix only if something runs it, on its own.
+
+    Every test above calls close_dead_sessions by hand, so both the line in
+    the lifespan that schedules the loop and the line in the loop that calls
+    it could go with all of them still green and no socket ever swept. This
+    drives the scheduled loop itself and waits for it to come round.
+    """
+    swept: list[int] = []
+
+    async def counting() -> None:
+        swept.append(1)
+
+    # Before the client starts, because the loop reads both of these when the
+    # lifespan creates it.
+    monkeypatch.setattr(realtime, "SESSION_SWEEP_SECONDS", 0.05)
+    monkeypatch.setattr(realtime, "close_dead_sessions", counting)
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        for _ in range(100):
+            if swept:
+                break
+            client.portal.call(_settle)
+    assert swept, "the scheduled loop never called close_dead_sessions"

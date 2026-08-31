@@ -1190,6 +1190,49 @@ Asking costs something, or it is not an ask. Ten tries end it, counted before th
 Rejected alternatives: asking for the old code when the enrolment starts rather than when it is confirmed (starting one writes nothing, so refusing there only tells a caller to come back by another route, and it costs an honest person a code before they have set anything up); accepting the new code alone and notifying the account by mail (mail is optional on a self-hosted install, and a notice that arrives after the factor is gone is a record rather than a control); requiring recent authentication and nothing more, which is what shipped (it is the property a stolen session already has, and a session is what this needs to stop rather than a password: with a factor enrolled the password answers with a challenge).
 
 
+## Turning a second factor off costs what turning it on costs
+
+An account may remove its second factor, and doing so needs recent authentication and a code: a current one from the authenticator, or a recovery code. That is the same bar replacing one asks for, and for the same reason. A session by itself must not disarm a factor, or the factor protects an account only until somebody steals a cookie, which is the situation it exists for.
+
+A factor that could not be removed at all was the shipped behaviour, and "optional for every role" is not true of something you can turn on and never turn off. It left an account whose authenticator broke spending recovery codes until they ran out, and then unreachable. For the last administrator it was worse: the offline command prints a password link and the challenge still stood behind it, so an install could reach a state that only `auth-collapse` could recover, and that destroys every account on it.
+
+Guessing at removal spends the budget replacing a factor spends. Two doors onto the same six digits with a counter on only one of them is not a counter.
+
+The counter is on the digits alone. A recovery code is twenty symbols from an alphabet of thirty-two, which no online guessing reaches, so charging the same ten tries for one bought nothing and cost the account its way back: whoever held a stolen session could spend all ten on rubbish and leave the owner holding a working code that no route would look at. A presented value is matched against the account's unspent recovery codes before anything is charged, and only a value that is not one of them costs a try.
+
+Removing a factor ends the account's other sessions, as enrolling one does. The argument is stronger here rather than weaker: the account is less protected afterwards than it was before, so whoever else is holding a session should not be carried across the change.
+
+The account that has lost the authenticator and every recovery code has nothing to present, and no route can safely help it, so `make auth-clear-factor` is a command at the machine like every other way back in. It ends that account's sessions too, because somebody running it has lost control of the second factor and whether anybody else has hold of the account is exactly what nobody knows. It records an actorless high-severity audit row: nobody signed in did this, and a factor disappearing is the kind of thing somebody should be able to find afterwards.
+
+Rejected alternatives: a removal route that takes only a session and recent authentication (it is the disarm-from-a-stolen-session hole that enrolment is written to avoid, and it would be the weakest point in the whole design); letting a password reset clear the factor (the link proves control of a mailbox, and mail is what the second factor exists to survive); an administrator route to clear another account's factor (the same route worth stealing a session for, one privilege level up, and an administrator who needs it can run the command); leaving it unremovable and documenting the lockout (it makes an account's own security setting a trap, and hands the install a state recoverable only by destroying every account).
+
+## The factor routes exclude each other on the account, not on the factor row
+
+Every route that changes a second factor takes a per-account advisory lock as the first statement of its write transaction, and keeps the `SELECT ... FOR UPDATE` on the factor row underneath it. The row lock is what orders `auth_factors` before `recovery_codes`, which is a separate invariant and still required. The account lock is what exists when the row does not.
+
+A first enrolment has no factor row, so there is nothing for a row lock to hold, and two transactions that should have been exclusive were not. The damage is not hypothetical and was reproduced on two connections before it was fixed: `clear-factor` deleting a factor it could not yet see, an enrolment committing between that statement and the next, and `clear-factor` then deleting the recovery codes that enrolment had just written, leaving an account with a factor and no way back past it.
+
+The lock is always acquired before any row lock, by every route that takes it. That ordering is what makes it safe to add to routes already arranged against deadlock: a lock every holder takes first can serialise them, but can never be the second edge of a cycle.
+
+A route refuses with 503 rather than queueing on it, because a waiter holds a connection out of a pool fifteen deep and its transaction has written nothing at that point. The bound is on that wait alone and is lifted once the key is held: a row lock taken afterwards waits as it always did, because leaving the timeout on would turn it into a failure no handler expects. An attempt a previous transaction already counted stays counted, which is what a refused guess costs anyway. The offline command waits instead: it owns its process, has no pool to starve, and an operator at a terminal can afford a short transaction.
+
+Rejected alternatives: widening the row lock to the account's rows, which still locks nothing when the account has none; a unique constraint alone, which does refuse a second factor but says nothing about the recovery codes written beside it; serialisable isolation for these routes, which turns a rare interleave into a retry loop every caller has to implement; and one global lock, which would serialise unrelated accounts on the login path.
+
+
+## Explicit invalidation closes the sockets it can see, and a sweep closes the rest
+
+Deepens "Realtime authorization: bind once, invalidate explicitly". That entry stands: a realtime connection binds its principal once, and revocation reaches it by an explicit close rather than by re-authorizing every frame, which is still rejected for the same reason it always was.
+
+What it did not say is which process does the closing. The index of live sockets is a dictionary inside the process holding them, so explicit invalidation only reaches sockets the revoking code is standing next to. The offline operator commands are not: `make auth-clear-factor` runs `python -m app.operator` in a process of its own, where that map is empty, so it revoked the session rows, closed nothing, and printed that it had ended every session the account had open. The account kept a live socket and its GPU slot at the exact moment somebody had decided nobody could be trusted with the second factor any more.
+
+So the socket-owning process sweeps as well: on a fixed interval it asks PostgreSQL which of the account sessions behind its live sockets are still live, and closes the ones that are not. PostgreSQL is already the account-session source of truth in a deployment without Redis, so this adds a periodic read rather than a store. It covers every revocation this process did not perform itself, not only the operator commands: direct SQL, a maintenance script, anything a later replica does.
+
+The bound it accepts is stated rather than hidden. A socket revoked from outside the process closes within one sweep interval instead of at once, and a sweep that cannot reach the database closes nothing at all. That second choice is the opposite of the one the handshake makes, on purpose: the handshake judges the single socket it is about to hand a GPU slot to and fails closed, while the sweep judges every socket on the installation at once, so failing closed would sign an entire install out of a live canvas over one blip. Revocation the API performs itself is unaffected and still immediate, because the explicit close runs first and the sweep only finds what it missed.
+
+Rejected alternatives: re-authorizing per frame, which the parent entry rejects and which a thirty second timer does not become; PostgreSQL LISTEN and NOTIFY, which is faster but holds a dedicated connection open for the life of the process, only fires when the revoking code remembered to send it, and would leave direct SQL and every maintenance path exactly as broken as before; Redis pub/sub, which the cloud profile will have and a self-hosted install must not be made to run for this; giving the operator commands a way into the API process, which needs an authenticated control channel into the very thing these commands exist to recover when it cannot be reached.
+
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

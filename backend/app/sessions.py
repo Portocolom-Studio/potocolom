@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from app import db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -215,6 +215,29 @@ async def is_live(session_id: uuid.UUID) -> bool:
     if row is None or row.revoked_at is not None or row.absolute_expires_at <= now:
         return False
     return row.idle_expires_at is None or row.idle_expires_at > now
+
+
+async def live_among(session_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of those account sessions can still act, by the rules is_live uses.
+
+    One query rather than one per session: the socket sweep asks about every
+    socket the process holds, on every tick.
+    """
+    if db.session_factory is None:
+        raise RuntimeError("database unavailable")
+    if not session_ids:
+        return set()
+    now = _now()
+    async with db.session_factory() as session:
+        rows = (await session.execute(
+            select(Session.id).where(
+                Session.id.in_(session_ids),
+                Session.revoked_at.is_(None),
+                Session.absolute_expires_at > now,
+                or_(Session.idle_expires_at.is_(None), Session.idle_expires_at > now),
+            )
+        )).scalars().all()
+    return set(rows)
 
 
 async def rotate(session_id: uuid.UUID, user: User) -> Issued:

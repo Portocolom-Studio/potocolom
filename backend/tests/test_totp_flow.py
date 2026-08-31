@@ -1142,14 +1142,15 @@ def _lock_orders(transactions: list[list[str]]) -> list[list[str]]:
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("route", ["challenge", "replacement", "first enrolment"])
+@pytest.mark.parametrize(
+    "route", ["challenge", "replacement", "first enrolment", "removal"])
 def test_every_route_takes_the_factor_before_the_codes(accounts, route):
     """One lock order, or these deadlock against each other.
 
     Spending a recovery code writes recovery_codes and the budget reset writes
     auth_factors, so a challenge answered with a code touches both; so does a
-    replacement; and a first enrolment inserts a factor and clears the account
-    codes. Taken in opposite orders they are a cycle, and PostgreSQL breaks a
+    replacement; a first enrolment inserts a factor and clears the account
+    codes; and removal deletes both. Taken in opposite orders they are a cycle, and PostgreSQL breaks a
     cycle by killing one of them, which reaches a caller as a 500 on a sign-in
     (issue #438).
 
@@ -1193,6 +1194,8 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
             elif route == "replacement":
                 _, replaced = _replace(client, None, current=codes[0])
                 assert replaced.status_code == 204
+            elif route == "removal":
+                assert _remove(client, codes[0]).status_code == 204
             else:
                 _enrol(client)
         finally:
@@ -1203,3 +1206,298 @@ def test_every_route_takes_the_factor_before_the_codes(accounts, route):
     orders = _lock_orders(transactions + list(open_now.values()))
     assert orders, "no transaction locked both tables, so this proved nothing"
     assert all(order == ["auth_factors", "recovery_codes"] for order in orders), orders
+def _remove(client, code):
+    return client.request("DELETE", "/api/v1/account/totp", headers=_csrf(client),
+                          json={"code": code})
+
+
+@pytest.mark.db
+def test_removing_a_factor_costs_the_factor(accounts):
+    """The same bar as replacing one, which is now a real bar. A session by
+    itself must not disarm a second factor, or the factor protects an account
+    only until somebody steals a cookie (issue #419)."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "keepit@example.com")
+        assert _login(client, "keepit@example.com").status_code == 204
+        _enrol(client)
+        assert _remove(client, "000000").status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_code_removes_the_factor_and_its_codes(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "dropit@example.com")
+        assert _login(client, "dropit@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
+        assert client.portal.call(_codes) == []
+        _signed_out(client)
+        # The next sign-in is a session again, not a challenge.
+        assert _login(client, "dropit@example.com").status_code == 204
+
+
+@pytest.mark.db
+def test_a_recovery_code_removes_the_factor_too(accounts):
+    """Whoever lost the authenticator but kept a code can still turn it off,
+    which is the case that otherwise ends in an unreachable account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "lostit@example.com")
+        assert _login(client, "lostit@example.com").status_code == 204
+        _, codes = _enrol(client)
+        assert _remove(client, codes[0]).status_code == 204
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_removing_needs_recent_authentication(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "stale@example.com")
+        assert _login(client, "stale@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def age() -> None:
+            async with db.session_factory() as session:
+                await session.execute(update(Session).values(recent_auth_at=None))
+                await session.commit()
+
+        client.portal.call(age)
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_a_suspended_account_cannot_remove_its_factor(accounts):
+    """Suspended is read-only, and current_principal admits it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "paused2@example.com")
+        assert _login(client, "paused2@example.com").status_code == 204
+        secret, _ = _enrol(client)
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    update(User).where(User.id == user.id).values(state="suspended"))
+                await session.commit()
+
+        client.portal.call(suspend)
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+def test_guessing_at_removal_spends_the_same_budget_as_replacing(accounts):
+    """Otherwise removal is the cheap way round the replacement budget: same
+    factor, same six digits, a second door with no counter on it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "twodoors@example.com")
+        assert _login(client, "twodoors@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert _remove(client, "000000").status_code == 403
+        # Spent through the removal door, and the replacement door is shut too.
+        _, refused = _replace(client, None, current=_next_code(secret))
+        assert refused.status_code == 403
+
+
+@pytest.mark.db
+def test_a_spent_budget_does_not_take_the_recovery_code_with_it(accounts):
+    """The budget bounds six digits, and a recovery code is not six digits.
+
+    Twenty symbols from an alphabet of thirty-two is not a space anybody
+    guesses at, so counting a recovery code against the same ten tries bought
+    nothing and cost something real: whoever stole a session could spend all
+    ten on rubbish and leave the owner holding a working code that no route
+    would look at, which is the one way back this route exists to give them.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "burnt@example.com")
+        assert _login(client, "burnt@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            assert _remove(client, "000000").status_code == 403
+        # Still shut to the digits, which is the budget doing its job.
+        assert _remove(client, _next_code(secret)).status_code == 403
+        assert _remove(client, codes[0]).status_code == 204
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_a_spent_budget_does_not_shut_the_replace_door_on_a_code_either(accounts):
+    """The same door, one route along. Removal and replacement share the
+    counter, so they have to share the rule about what it counts, and a test
+    that only drives one of them lets the other be reverted in silence.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "burntreplace@example.com")
+        assert _login(client, "burntreplace@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        for _ in range(factors.MAX_ATTEMPTS):
+            _, refused = _replace(client, None, current="000000")
+            assert refused.status_code == 403
+        # Shut to the digits it was counting.
+        _, still_shut = _replace(client, None, current=_next_code(secret))
+        assert still_shut.status_code == 403
+        # Open to the hundred bits it never was.
+        fresh, replaced = _replace(client, None, current=codes[0])
+        assert replaced.status_code == 204, replaced.text
+        stored = client.portal.call(_factors)
+        assert len(stored) == 1
+        assert keyring.get_key_ring().decrypt(
+            "totp-factors", stored[0].secret_ciphertext,
+            stored[0].user_id.bytes).decode() == fresh
+
+
+@pytest.mark.db
+def test_removing_a_factor_signs_the_other_sessions_out(accounts):
+    """Removing one is a security change like enrolling one, and the account
+    is less protected afterwards rather than more, which makes ending the
+    other sessions matter more here rather than less."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "removeout@example.com")
+        assert _login(client, "removeout@example.com").status_code == 204
+        secret, codes = _enrol(client)
+        here = _session_cookie(client)
+        _signed_out(client)
+        assert _login(client, "removeout@example.com").status_code == 200
+        assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": codes[0]}).status_code == 204
+        _wearing(client, here)
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 2
+
+        assert _remove(client, _next_code(secret)).status_code == 204
+        live = client.portal.call(_live_sessions_for, user.id)
+        assert [row.token_hash for row in live] == [sessions.token_hash(here)]
+
+
+@pytest.mark.db
+def test_a_confirm_whose_session_died_in_flight_installs_nothing(accounts, monkeypatch):
+    """A stolen session holds a sealed enrolment it cannot confirm, because
+    the account has a factor and it has no code from it. The owner taking
+    their factor off is what makes that confirm a first enrolment, which asks
+    for no proof at all, so the stolen session must lose its authority in the
+    same moment it stops needing to prove anything.
+    """
+    import httpx
+
+    from app import factors
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "inflight@example.com")
+        assert _login(client, "inflight@example.com").status_code == 204
+        _, codes = _enrol(client)
+        stolen = _session_cookie(client)
+        _signed_out(client)
+        assert _login(client, "inflight@example.com").status_code == 200
+        assert client.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                           json={"code": codes[0]}).status_code == 204
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        _wearing(client, stolen)
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        # The window is between the confirm reading the factor it would have
+        # to prove and the write that installs the new one. Staged on the read
+        # itself, because that read is what decides which of the two the
+        # request is.
+        removed = {"done": False}
+        real_enrolled_factor = factors.enrolled_factor
+
+        async def the_owner_removes_it_first(session, user_id):
+            if not removed["done"]:
+                removed["done"] = True
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                             base_url=ORIGIN, cookies=owner) as caller:
+                    gone = await caller.request(
+                        "DELETE", "/api/v1/account/totp",
+                        headers={"Origin": ORIGIN, "X-CSRF-Token": owner[
+                            next(name for name in owner if name.endswith("potocolom_csrf"))]},
+                        json={"code": codes[1]})
+                assert gone.status_code == 204, gone.text
+            return await real_enrolled_factor(session, user_id)
+
+        monkeypatch.setattr(factors, "enrolled_factor", the_owner_removes_it_first)
+        refused = client.post("/api/v1/account/totp/confirm", headers=_csrf(client),
+                              json={"enrolment": started["enrolment"],
+                                    "code": totp.code_at(started["secret"], int(_now()))})
+        assert refused.status_code == 403, refused.text
+        assert client.portal.call(_factors) == []
+
+
+@pytest.mark.db
+def test_removing_a_factor_and_enrolling_a_fresh_one_here_still_works(accounts):
+    """Somebody who lost their authenticator turns the factor off with a
+    recovery code and sets a new one up in the same browser, which is the
+    ordinary way through this pair of routes. revoke_others spares the session
+    making the change, so the browser that just removed a factor is still the
+    one allowed to enrol the next.
+    """
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "again@example.com")
+        assert _login(client, "again@example.com").status_code == 204
+        secret, _ = _enrol(client)
+        assert _remove(client, _next_code(secret)).status_code == 204
+        assert client.portal.call(_factors) == []
+        _enrol(client)
+        assert len(client.portal.call(_factors)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("route", ["first enrolment", "removal", "challenge"])
+def test_a_route_gives_up_rather_than_queue_on_the_account(accounts, route):
+    """The account lock these routes take, seen from the outside.
+
+    A first enrolment locks no factor row, because there is not one yet, so
+    the row lock the other routes exclude each other with holds nothing and
+    the account lock is what serialises them. Held elsewhere it is answered
+    with a 503 rather than an unbounded wait: a waiter holds its pooled
+    connection, and the pool is fifteen deep (issue #421).
+
+    The challenge case is the one that was wrong. begin_challenge has taken
+    this lock since #421 and caught OperationalError, which never arrives: a
+    lock timeout reaches SQLAlchemy as a plain DBAPIError, so the refusal it
+    meant to give was a 500 until every caller was routed through one helper.
+    """
+    import asyncio
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "queued@example.com")
+        assert _login(client, "queued@example.com").status_code == 204
+        secret = _enrol(client)[0] if route in ("removal", "challenge") else None
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_the_lock() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                          {"key": factors._budget_lock(user.id)})
+                    holding.set()
+                    await release.wait()
+
+        async def let_go() -> None:
+            release.set()
+
+        held = client.portal.start_task_soon(hold_the_lock)
+        client.portal.call(holding.wait)
+        try:
+            if route == "removal":
+                answered = _remove(client, _next_code(secret))
+            elif route == "challenge":
+                answered = _login(client, "queued@example.com")
+            else:
+                answered = client.post(
+                    "/api/v1/account/totp/confirm", headers=_csrf(client),
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(started["secret"], int(_now()))})
+        finally:
+            # Always, even when the assertion below is going to fail: a
+            # transaction left holding this lock wedges every test after it.
+            client.portal.call(let_go)
+            held.cancel()
+
+        assert answered.status_code == 503, answered.text
+        expected = 0 if route == "first enrolment" else 1
+        assert len(client.portal.call(_factors)) == expected

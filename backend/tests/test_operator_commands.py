@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
-from app import db, keyring, operator
+from app import db, keyring, operator, sessions
 from app.main import app
 from app.tables import Job, User
 from app.passwords import hash_password
@@ -439,3 +439,147 @@ def test_claiming_the_installation_waits_for_the_setup_lock(library):
 
 async def _set(event) -> None:
     event.set()
+
+
+@pytest.mark.db
+def test_clear_factor_command_removes_it_and_ends_the_sessions(library, capsys):
+    """The way back for somebody who lost the authenticator and every code.
+    Driven through main() rather than the helper underneath it: the first
+    version of this command built a coroutine, never awaited it, and printed
+    success while the factor stayed exactly where it was."""
+    from app import factors
+    from app.tables import AuditEvent, AuthFactor, RecoveryCode, Session
+
+    async def enrolled(user_id: uuid.UUID) -> None:
+        ring = keyring.get_key_ring()
+        async with db.session_factory() as session:
+            session.add(AuthFactor(
+                user_id=user_id, kind="totp",
+                secret_ciphertext=ring.encrypt(factors.TOTP_PURPOSE, b"S" * 32, user_id.bytes),
+                key_version=ring.active_version, confirmed_at=func.now()))
+            session.add(RecoveryCode(user_id=user_id, code_hash=b"h" * 32))
+            await session.commit()
+
+    async def counts() -> tuple[int, int, int]:
+        async with db.session_factory() as session:
+            return (
+                len((await session.execute(select(AuthFactor))).scalars().all()),
+                len((await session.execute(select(RecoveryCode))).scalars().all()),
+                len((await session.execute(
+                    select(Session).where(Session.revoked_at.is_(None)))).scalars().all()),
+            )
+
+    async def enrolled_with_a_session() -> uuid.UUID:
+        user = await _make("nophone@example.com")
+        await enrolled(user.id)
+        await sessions.mint(user, remember_me=False, authenticated=True)
+        return user.id
+
+    async def recorded() -> list[str]:
+        async with db.session_factory() as session:
+            return [row.action for row in (await session.execute(
+                select(AuditEvent).order_by(AuditEvent.occurred_at))).scalars().all()]
+
+    async def a_code_and_a_session(user_id: uuid.UUID) -> None:
+        """What the account still has when there is no factor to clear."""
+        async with db.session_factory() as session:
+            session.add(RecoveryCode(user_id=user_id, code_hash=b"k" * 32))
+            await session.commit()
+        async with db.session_factory() as session:
+            user = (await session.execute(select(User).where(User.id == user_id))).scalar_one()
+        await sessions.mint(user, remember_me=False, authenticated=True)
+
+    # One loop throughout: mixing the portal runner's with a TestClient's is
+    # how a coroutine ends up awaiting a future attached to the other one.
+    user_id = library(enrolled_with_a_session())
+    factors_before, codes_before, sessions_before = library(counts())
+    assert (factors_before, codes_before) == (1, 1)
+    assert sessions_before >= 1
+
+    operator.main(["clear-factor", "nophone@example.com"])
+    assert "Removed" in capsys.readouterr().out
+    # The command opens its own connection and disposes it on the way out, so
+    # anything read afterwards needs one of its own.
+    library(db.connect(serving=False))
+    assert library(counts()) == (0, 0, 0)
+    # Also the proof that this suite can see an audit event at all, which is
+    # what makes the empty reading after the second run below mean something.
+    assert library(recorded()) == ["factor.cleared"]
+
+    # Saying so when there is nothing to do, rather than reporting work.
+    library(a_code_and_a_session(user_id))
+    operator.main(["clear-factor", "nophone@example.com"])
+    assert "no second factor" in capsys.readouterr().out
+    library(db.connect(serving=False))
+    # Nothing was cleared, so nothing was written: the codes and the sessions
+    # of an account that never had a factor are not this command's to take,
+    # and a history saying a second factor was removed from an account that
+    # had none is a history that disagrees with what was printed.
+    assert library(counts()) == (0, 1, 1)
+    assert library(recorded()) == ["factor.cleared"]
+
+    with pytest.raises(SystemExit):
+        operator.main(["clear-factor", "nobody@example.com"])
+
+
+@pytest.mark.db
+def test_clear_factor_waits_for_the_account_lock(library):
+    """This command and an enrolment exclude each other on one key.
+
+    A first enrolment has no factor row to lock, so the row lock every other
+    route waits behind holds nothing against it, and the two interleave: this
+    command deletes the recovery codes after an enrolment committed its own
+    and leaves a factor with no way back into the account. The lock is what
+    the exclusion rests on instead.
+
+    Proved as exclusion rather than by staging that interleave, because a
+    command written to write nothing when it removed nothing cannot be made
+    to perform the damaging half.
+    """
+    import asyncio
+
+    from app import factors
+    from app.tables import AuthFactor
+
+    async def with_a_factor() -> uuid.UUID:
+        user = await _make("waiting@example.com")
+        ring = keyring.get_key_ring()
+        async with db.session_factory() as session:
+            session.add(AuthFactor(
+                user_id=user.id, kind="totp",
+                secret_ciphertext=ring.encrypt(factors.TOTP_PURPOSE, b"S" * 32, user.id.bytes),
+                key_version=ring.active_version, confirmed_at=func.now()))
+            await session.commit()
+        return user.id
+
+    user_id = library(with_a_factor())
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_the_lock() -> None:
+        async with db.session_factory() as session:
+            async with session.begin():
+                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                      {"key": factors._budget_lock(user_id)})
+                holding.set()
+                await release.wait()
+
+    async def race() -> tuple[bool, bool]:
+        held = asyncio.create_task(hold_the_lock())
+        await holding.wait()
+        clearing = asyncio.create_task(operator.clear_factor("waiting@example.com"))
+        try:
+            await asyncio.sleep(0.4)
+            waited = not clearing.done()
+        finally:
+            # Always, even when the assertion below is going to fail: a
+            # transaction left holding this lock wedges every test after it.
+            release.set()
+        removed = await asyncio.wait_for(clearing, 10)
+        await held
+        return waited, removed
+
+    waited, removed = library(race())
+    assert waited, "the command did not wait for the account lock"
+    assert removed
+    assert library(_factors()) == []

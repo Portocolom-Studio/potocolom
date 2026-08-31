@@ -76,6 +76,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/reset/complete` | implemented | spend a reset or recovery link and set a password; returns to login |
 | POST `/api/v1/account/totp` | implemented | begin enrolling a second factor; needs recent authentication |
 | POST `/api/v1/account/totp/confirm` | implemented | prove the authenticator holds the secret, which is what enrols it |
+| DELETE `/api/v1/account/totp` | implemented | remove the second factor; needs recent authentication and a current code or a recovery code, spends the same attempt budget as replacing one when it is an authenticator code, and ends the account's other sessions |
 | POST `/api/v1/account/identities/{provider}` | implemented | start linking a provider to this account; needs recent authentication |
 | DELETE `/api/v1/account/identities/{provider}` | implemented | unlink a provider; refuses the last way in |
 | POST `/api/v1/account/password` | implemented | change or add a password; needs recent authentication |
