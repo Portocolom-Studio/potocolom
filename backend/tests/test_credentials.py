@@ -525,3 +525,71 @@ def test_a_credential_change_leaves_its_own_canvas_up(accounts):
         finally:
             realtime.sessions.pop(drawing.id, None)
             realtime.sessions.pop(watched.id, None)
+
+
+async def _address_of(user_id: uuid.UUID) -> str:
+    async with db.session_factory() as session:
+        return (await session.execute(
+            select(User.email).where(User.id == user_id))).scalar_one()
+
+
+def _issued_token(response) -> str:
+    from http.cookies import SimpleCookie
+
+    for header in response.headers.getlist("set-cookie"):
+        jar = SimpleCookie(header)
+        if "__Host-potocolom_session" in jar:
+            return jar["__Host-potocolom_session"].value
+    raise AssertionError("that response carried no session cookie")
+
+
+@pytest.mark.db
+def test_two_changes_presenting_one_token_leave_one_winner(accounts):
+    """Only the request that presents the stored token may replace it.
+
+    The principal is resolved in an earlier transaction, so a stolen cookie
+    and the browser it was copied from both reach the swap holding the same
+    token. Matching on the id alone let the second overwrite the first: the
+    owner's change committed and set a cookie, the copy's change replaced that
+    cookie a moment later, and the owner was signed out holding a dead token
+    while whoever held the copy kept the session and landed their change as
+    well. Before the rotation both cookies simply went on working, so losing
+    this race is what costs the owner exclusive access (#443).
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app import credentials
+    from tests.test_totp_flow import _live_sessions_for
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "onewinner@example.com")
+        assert _login(client, "onewinner@example.com").status_code == 204
+        presented = _session_cookie(client)
+        principal = client.portal.call(sessions.resolve, presented)
+        wanted = ("won@example.com", "lost@example.com")
+
+        async def both():
+            return await asyncio.gather(*(
+                credentials.change_email(credentials.AddressChange(email=address), principal)
+                for address in wanted), return_exceptions=True)
+
+        outcomes = client.portal.call(both)
+        live = client.portal.call(_live_sessions_for, user.id)
+        won = wanted[0] if not isinstance(outcomes[0], Exception) else wanted[1]
+        landed = client.portal.call(_address_of, user.id)
+
+    refused = [out for out in outcomes if isinstance(out, HTTPException)]
+    assert [out.status_code for out in refused] == [409], outcomes
+    # Refused by raising, which is what rolls the loser's transaction back:
+    # a browser handed a token for a change that did not happen is the hole
+    # this closes, not a smaller version of it.
+    served = [out for out in outcomes if not isinstance(out, Exception)]
+    assert len(served) == 1
+    assert len(live) == 1
+    assert sessions.token_hash(_issued_token(served[0])) == live[0].token_hash
+    assert sessions.token_hash(presented) != live[0].token_hash
+    # And the winner's change stands rather than being rolled back with the
+    # loser's.
+    assert landed == won

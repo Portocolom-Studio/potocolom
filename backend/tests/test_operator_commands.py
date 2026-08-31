@@ -583,3 +583,60 @@ def test_clear_factor_waits_for_the_account_lock(library):
     assert waited, "the command did not wait for the account lock"
     assert removed
     assert library(_factors()) == []
+
+
+COLLAPSE_ORDER = ("auth_tokens", "auth_factors", "recovery_codes", "sessions")
+
+
+@pytest.mark.db
+def test_collapse_deletes_in_the_order_the_routes_lock(library):
+    """One lock order with the routes a collapse can overlap, or it deadlocks.
+
+    The command is offline, but nothing stops the API serving while somebody
+    runs it, and the routes it meets there are arranged among themselves
+    already. A challenge claims its token before it locks the factor, and
+    enrolling or removing a factor holds auth_factors and recovery_codes while
+    it rotates the session making the change. Deleting sessions first, which
+    is how this read until #443, put the collapse on the far side of that
+    pair: measured on PostgreSQL, a confirm or a removal overlapping a
+    collapse was a DeadlockDetected, which reaches the operator as a failed
+    command and the caller as a 500.
+
+    Asserted on the order the deletes go out rather than by staging a real
+    deadlock, the way test_every_route_takes_the_factor_before_the_codes is:
+    making one happen means holding a transaction open while another starts,
+    which is how a suite hangs instead of failing.
+    """
+    from sqlalchemy import event
+
+    from tests.test_totp_flow import _lock_orders
+
+    transactions: list[list[str]] = []
+    open_now: dict[int, list[str]] = {}
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        open_now.setdefault(id(conn), []).append(statement)
+
+    def close(conn):
+        transactions.append(open_now.pop(id(conn), []))
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        # Inside the lifespan, never before it: startup builds a new engine,
+        # so a listener attached to the one that is here now records nothing
+        # and the assertion below passes on no evidence.
+        engine = db.engine.sync_engine
+        client.portal.call(_make, "ordered-collapse@example.com")
+        assert _login(client, "ordered-collapse@example.com").status_code == 204
+        listeners = (("before_cursor_execute", record), ("commit", close),
+                     ("rollback", close))
+        for name, handler in listeners:
+            event.listen(engine, name, handler)
+        try:
+            client.portal.call(operator.collapse, operator.COLLAPSE_PHRASE)
+        finally:
+            for name, handler in listeners:
+                event.remove(engine, name, handler)
+
+    orders = _lock_orders(transactions + list(open_now.values()), COLLAPSE_ORDER)
+    assert orders, "no transaction touched all four tables, so this proved nothing"
+    assert all(order == list(COLLAPSE_ORDER) for order in orders), orders

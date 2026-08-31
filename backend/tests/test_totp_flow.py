@@ -1103,8 +1103,11 @@ def test_enrolling_leaves_a_reset_link_alone(accounts):
         assert client.portal.call(live_resets) == 1
 
 
-def _order_within(statements: list[str]) -> list[str]:
-    """The order one transaction first took a lock on each of the two tables.
+LOCK_PAIR = ("auth_factors", "recovery_codes")
+
+
+def _order_within(statements: list[str], tables: tuple[str, ...] = LOCK_PAIR) -> list[str]:
+    """The order one transaction first took a lock on each of those tables.
 
     Only statements that take a lock another transaction can wait behind
     count. An UPDATE, a DELETE and a SELECT ... FOR UPDATE lock the rows they
@@ -1121,14 +1124,15 @@ def _order_within(statements: list[str]) -> list[str]:
                    or (lowered.startswith("select") and "for update" in lowered))
         if not locking:
             continue
-        for table in ("auth_factors", "recovery_codes"):
+        for table in tables:
             if table in lowered and table not in order:
                 order.append(table)
     return order
 
 
-def _lock_orders(transactions: list[list[str]]) -> list[list[str]]:
-    """Per transaction that locked BOTH tables, the order it took them.
+def _lock_orders(transactions: list[list[str]],
+                 tables: tuple[str, ...] = LOCK_PAIR) -> list[list[str]]:
+    """Per transaction that locked EVERY one of those tables, the order it took them.
 
     Grouped by transaction, because only locks held at the same time can be
     half of a cycle, and a transaction that commits releases everything it
@@ -1137,11 +1141,11 @@ def _lock_orders(transactions: list[list[str]]) -> list[list[str]]:
     the one that matters begins, stand in for the lock the route under test is
     supposed to take.
 
-    A transaction touching one table cannot deadlock against anything on this
-    pair, so only those touching both are judged.
+    A transaction that misses one of them cannot deadlock against anything on
+    the whole set, so only those touching all of them are judged.
     """
-    orders = [_order_within(statements) for statements in transactions]
-    return [order for order in orders if len(order) == 2]
+    orders = [_order_within(statements, tables) for statements in transactions]
+    return [order for order in orders if len(order) == len(tables)]
 
 
 @pytest.mark.db
