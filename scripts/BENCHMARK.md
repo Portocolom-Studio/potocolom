@@ -27,7 +27,7 @@ promoted to the product in issue #84; the remaining rows stay
 
 | Model | License | VRAM | Resolution | Notes |
 | --- | --- | --- | --- | --- |
-| **sdxl-hypersd** | Base Open RAIL++-M; LoRA has NO declared license | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; measure only, not promotable as-is |
+| **sdxl-hypersd** | Open RAIL++-M base; LoRA also CreativeML Open RAIL++-M | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; benchmark-only on measurement, not on licensing |
 
 ```bash
 # Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
@@ -60,14 +60,16 @@ held ~14 GB VRAM; stop competing GPU workloads before benchmarking.
 | sdxl-turbo | 296 | 512 / 1 | Benchmark anchor (Stability cap) |
 | **vega-rt** | **381** | 512 / 2 (t2i) | Promoted in #84 (license-clean realtime) |
 | sdxl-fast | 4005 | 1024 / 8 | Open baseline (Lightning) |
-| sdxl-hypersd | 3987 | 1024 / 8 | Benchmark only - LoRA has no declared license |
+| sdxl-hypersd | 3987 | 1024 / 8 | Benchmark only - on par with sdxl-fast, no speed win |
 | ssd-1b | 10034 | 1024 / 20 | Batch tier, not realtime |
 
 **Conclusion:** VegaRT (Apache 2.0) matches turbo-class t2i latency at 512 px
 (~381 ms median vs ~345 ms sd-turbo) and was promoted in #84. Hyper-SD stays
-benchmark-only (license gap on the LoRA weights; ~4 s @ 1024 is on par with
-Lightning, not a license-clean turbo win). Stability Community models remain the
-capped commercial anchors.
+benchmark-only because ~4 s @ 1024 is on par with Lightning, not a turbo-class
+win. The LoRA license is not the reason: it is CreativeML Open RAIL++-M, the
+same family as the Lightning LoRA already shipped
+([docs/third-party-models.md](../docs/third-party-models.md)). Stability
+Community models remain the capped commercial anchors.
 
 ### Full-suite rerun (RX 7600 XT, 2026-07-16, published)
 
