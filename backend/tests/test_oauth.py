@@ -3,10 +3,11 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
-from app import db, oauth, sessions, totp
+from app import db, oauth, recovery, sessions, totp
 from app.main import app
 from app.passwords import hash_password
 from app.settings import Settings, get_settings
@@ -16,6 +17,7 @@ from tests.test_totp_flow import (
     _csrf_for,
     _live_sessions_for,
     _login,
+    _session_cookie,
     _while_the_gate_moves,
 )
 
@@ -394,6 +396,132 @@ def test_a_matching_provider_address_does_raise_assurance(accounts, monkeypatch)
         state = parse_qs(urlsplit(started.json()["redirect"]).query)["state"][0]
         assert _callback(client, "google", state).status_code == 307
         assert client.get("/api/v1/account").json()["mail_verified"] is True
+
+
+def _linked_through(client, provider):
+    """The whole link flow from one browser: the redirect that plants the flow
+    cookie, and the callback that carries it back."""
+    started = client.post(f"/api/v1/account/identities/{provider}", headers=_csrf(client))
+    assert started.status_code == 200, started.text
+    state = parse_qs(urlsplit(started.json()["redirect"]).query)["state"][0]
+    return _callback(client, provider, state)
+
+
+@pytest.mark.db
+def test_linking_a_provider_rotates_the_token_that_linked_it(accounts, monkeypatch):
+    """A link adds a way into the account, which is the same kind of event as
+    changing a credential, and the browser making it may be holding a copy of
+    a cookie somebody else took.
+
+    Asserted by presenting the old token, not by seeing a new cookie come
+    back: a response that sets a cookie for a session nobody revoked would
+    satisfy that and change nothing (issue #445).
+    """
+    _fake_provider(monkeypatch, "github", subject="h-rotate", email="rotlink@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "rotlink@example.com")
+        _sign_in(client, "rotlink@example.com")
+        stolen, stolen_csrf = _session_cookie(client), _csrf(client)["X-CSRF-Token"]
+        elsewhere = client.portal.call(sessions.mint, user, False)
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 2
+
+        assert _linked_through(client, "github").status_code == 307
+
+        # The copy is dead, and so is every other session on the account.
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {stolen}"}).status_code == 401
+        assert client.get(
+            "/api/v1/account",
+            headers={"Authorization": f"Bearer {elsewhere.token}"}).status_code == 401
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
+        # And whoever linked is still signed in, reading and writing with the
+        # CSRF token that came back beside the new session.
+        assert _session_cookie(client) != stolen
+        assert _csrf(client)["X-CSRF-Token"] != stolen_csrf
+        assert client.get("/api/v1/account").status_code == 200
+        assert client.post("/api/v1/account/identities/google",
+                           headers=_csrf(client)).status_code == 200
+
+
+@pytest.mark.db
+def test_linking_leaves_its_own_canvas_up(accounts, monkeypatch):
+    """A revoked row stops the next request and never reaches a socket that
+    bound its principal at the handshake, so the eviction has to name the
+    sockets, and it has to spare the one in front of the person linking."""
+    _fake_provider(monkeypatch, "github", subject="h-canvas", email="canvaslink@example.com")
+    closed: list[tuple] = []
+
+    async def close(user_id, session_id=None, keep=None):
+        closed.append((user_id, session_id, keep))
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "canvaslink@example.com")
+        _sign_in(client, "canvaslink@example.com")
+        kept = client.portal.call(sessions.resolve, _session_cookie(client)).session.id
+        monkeypatch.setattr(oauth.sessions, "close_sockets", close)
+        assert _linked_through(client, "github").status_code == 307
+    assert [call[0] for call in closed] == [user.id], closed
+    # Named, not merely present: keeping the wrong session takes the canvas
+    # down in front of the person linking and leaves the evicted one drawing.
+    assert closed[0][2] == kept, closed
+
+
+@pytest.mark.db
+def test_linking_spends_an_outstanding_reset_link(accounts, monkeypatch):
+    """Unlike a second factor, a linked provider gates nothing. A factor stands
+    in front of the password a reset link sets, so the factor routes can leave
+    the link alone; nothing stands in front of it here, so a link left alive
+    still hands the account to whoever holds the mailbox, which is the door
+    somebody linking to secure their account means to close."""
+    _fake_provider(monkeypatch, "github", subject="h-reset", email="resetlink@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "resetlink@example.com")
+        _sign_in(client, "resetlink@example.com")
+        emailed = client.portal.call(recovery.mint_reset, "resetlink@example.com")
+        assert _linked_through(client, "github").status_code == 307
+        spent = client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                            json={"token": emailed, "password": "a-second-account-password"})
+    assert spent.status_code == 403
+
+
+@pytest.mark.db
+def test_a_link_completed_after_its_session_ended_does_not_land(accounts, monkeypatch):
+    """The rotation needs the session the flow started from. A link arriving
+    from a browser that is no longer signed in would add a way into the
+    account and end nothing, which is the reverse of what revoking that
+    session meant."""
+    _fake_provider(monkeypatch, "github", subject="h-late", email="latelink@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "latelink@example.com")
+        _sign_in(client, "latelink@example.com")
+        started = client.post("/api/v1/account/identities/github", headers=_csrf(client))
+        state = parse_qs(urlsplit(started.json()["redirect"]).query)["state"][0]
+        client.portal.call(sessions.revoke_all, user.id)
+        assert _callback(client, "github", state).status_code == 403
+        linked = client.portal.call(_identities, user.id)
+    assert {row.provider for row in linked} == {"password"}
+
+
+@pytest.mark.db
+def test_a_link_whose_rotation_is_refused_does_not_land(accounts, monkeypatch):
+    """The rotation is the last statement of the transaction that writes the
+    identity, so the 409 it raises when this token is no longer the stored one
+    takes the link out with it. A link that stands while its rotation fails
+    leaves a new way into the account and every old session alive, which is
+    worse than either outcome on its own."""
+    _fake_provider(monkeypatch, "github", subject="h-lost", email="lostlink@example.com")
+
+    async def refuse(db_session, resolved, spend_capabilities=True):
+        raise HTTPException(status_code=409,
+                            detail="this session changed while that was in flight")
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "lostlink@example.com")
+        _sign_in(client, "lostlink@example.com")
+        monkeypatch.setattr(oauth.sessions, "rotate_and_revoke_others", refuse)
+        assert _linked_through(client, "github").status_code == 409
+        linked = client.portal.call(_identities, user.id)
+    assert {row.provider for row in linked} == {"password"}
 
 
 @pytest.mark.db

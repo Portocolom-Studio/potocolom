@@ -63,7 +63,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies; rate limited per identifier, and delayed but never refused per address |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials |
-| GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account |
+| GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account; a link ends the account's other sessions and re-issues this one's cookies |
 | POST `/api/v1/invitations` | implemented | invite an address to a role; returns the link once, admin only |
 | GET `/api/v1/invitations` | implemented | the open invitations, without their links; admin only |
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
@@ -324,6 +324,8 @@ POST /api/v1/auth/logout     204, session revoked and both cookies cleared
 ```
 
 OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code and ends in the same session cookies as a password login. It **never finds or creates an account by email**. Registration is invitation-only, so a provider sign-in only succeeds for an identity somebody already linked deliberately, and a provider account that happens to know an address cannot become that person. Linking is a separate act: `POST /api/v1/account/identities/{provider}` needs a live session and authentication within the last 30 minutes.
+
+Completing a link is a credential change and answers like one. The callback ends the account's other sessions, spends its outstanding reset and recovery links, and carries fresh `Set-Cookie` headers for the session and CSRF cookies on the redirect, so the token the browser presented stops working. It needs the session the flow started from: a browser signed out or revoked while it was away at the provider is refused `403` and the link does not land. Two requests presenting the same session token both reach the swap, and the one whose token is no longer the stored one answers `409`, links nothing and sets no cookie.
 
 The flow is authorization code with PKCE S256. The state is minted here and only its hash is stored, the verifier and nonce never leave the server, the redirect URI is exact, and the flow row is one use and expires in ten minutes. Google's `id_token` must carry a valid issuer, audience, expiry and nonce, and a verified email. GitHub's address is the primary verified entry from `/user/emails`. The provider's access token is discarded as soon as the identity is read; nothing here acts as an agent for the provider.
 
