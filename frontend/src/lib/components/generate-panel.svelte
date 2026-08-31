@@ -820,7 +820,7 @@
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
 	<div class="flex min-h-0 min-w-0 flex-col gap-3">
-		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:overflow-hidden">
 			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
 				{#if shown !== null}
 					{#if lineage !== null}
@@ -882,7 +882,7 @@
 						</div>
 					{/if}
 					{#if shown.assets.length > 0}
-						<div class="relative min-h-0 flex-1">
+						<div class="relative min-h-64 flex-1 lg:min-h-0">
 							<a
 								href={shown.assets[0].url}
 								target="_blank"
@@ -908,7 +908,7 @@
 						</div>
 					{:else}
 						<div
-							class="border-border text-muted-foreground grid min-h-0 flex-1 place-items-center rounded-lg border border-dashed text-sm"
+							class="border-border text-muted-foreground grid min-h-64 flex-1 place-items-center rounded-lg border border-dashed text-sm lg:min-h-0"
 						>
 							{t('app.lineage.missing')}
 						</div>
