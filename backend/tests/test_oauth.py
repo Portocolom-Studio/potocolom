@@ -6,11 +6,18 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
-from app import db, oauth, sessions
+from app import db, oauth, sessions, totp
 from app.main import app
 from app.passwords import hash_password
 from app.settings import Settings, get_settings
 from app.tables import AuthFactor, AuthIdentity, OAuthFlow, User
+from tests.test_totp_flow import (
+    _caller,
+    _csrf_for,
+    _live_sessions_for,
+    _login,
+    _while_the_gate_moves,
+)
 
 PASSWORD = "a-long-enough-account-password"
 ORIGIN = "https://studio.example.com"
@@ -246,6 +253,57 @@ def test_a_linked_identity_with_a_factor_is_sent_to_the_challenge(accounts, monk
         assert gated.headers["location"] == f"{ORIGIN}/?totp=required"
         # A capability to answer a challenge, and no session behind it.
         assert client.get("/api/v1/account").status_code == 401
+
+
+@pytest.mark.db
+def test_a_callback_in_flight_when_a_factor_arrives_is_sent_to_the_challenge(
+        accounts, monkeypatch):
+    """The test above enrols before the callback starts, so the gate is already
+    up when the callback reads it, which the read-then-mint shape answered
+    correctly too. Here the enrolment commits while the callback is in flight:
+    a callback that read no factor must not come away with a session the
+    enrolment's revocation could not reach (issue #435)."""
+    _fake_provider(monkeypatch, "google", subject="g-race",
+                   email="inflight-oauth@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "inflight-oauth@example.com")
+        client.portal.call(_link, user.id, "google", "g-race")
+        assert _login(client, "inflight-oauth@example.com").status_code == 204
+        owner = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        started = client.post("/api/v1/account/totp", headers=_csrf(client)).json()
+
+        async def signing_in():
+            # One browser for both halves: the redirect plants the flow cookie
+            # the callback is refused without, and it is the callback that has
+            # to reach the gate, so the pair cannot be split across clients.
+            async with _caller() as caller:
+                begun = await caller.get("/api/v1/auth/redirect/google",
+                                         follow_redirects=False)
+                state = parse_qs(urlsplit(begun.headers["location"]).query)["state"][0]
+                return await caller.get("/api/v1/auth/callback/google",
+                                        params={"state": state, "code": "provider-code"},
+                                        follow_redirects=False)
+
+        async def enrolling():
+            async with _caller(owner) as caller:
+                return await caller.post(
+                    "/api/v1/account/totp/confirm", headers=_csrf_for(owner),
+                    json={"enrolment": started["enrolment"],
+                          "code": totp.code_at(
+                              started["secret"],
+                              int(datetime.now(timezone.utc).timestamp()))})
+
+        called_back, enrolled = client.portal.call(
+            _while_the_gate_moves(monkeypatch, signing_in, enrolling))
+
+        assert enrolled.status_code == 204, enrolled.text
+        # The challenge, never a session: the account has a factor now.
+        assert called_back.status_code == 307, called_back.text
+        assert called_back.headers["location"] == f"{ORIGIN}/?totp=required"
+        assert not [cookie for cookie in called_back.cookies.jar
+                    if cookie.name.endswith("potocolom_session")]
+        # The owner's own, rotated by the enrolment, and nothing else.
+        assert len(client.portal.call(_live_sessions_for, user.id)) == 1
 
 
 @pytest.mark.db
