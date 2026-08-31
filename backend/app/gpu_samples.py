@@ -381,13 +381,20 @@ async def _rebuild_usage_rollups(session: AsyncSession, before_ts: datetime) -> 
     bucket_date = cast(
         UsageEvent.created_at.op("AT TIME ZONE")("UTC"), Date
     ).label("bucket_date")
+    # The unique index arbitrates on COALESCE(tier, ''), so a NULL tier and a
+    # blank one are one rollup row there. Grouped apart they become two rows
+    # offered to that one row, which PostgreSQL refuses outright ("ON CONFLICT
+    # DO UPDATE command cannot affect row a second time"), aborting the whole
+    # statement: one account with a blank tier would stop every account's
+    # rollup and, inside maintain_once, the pruning that shares its transaction.
+    tier = func.nullif(UsageEvent.tier, "").label("tier")
     dimensions = (
         UsageEvent.user_id,
         bucket_date,
         UsageEvent.kind,
         UsageEvent.action,
         UsageEvent.model_id,
-        UsageEvent.tier,
+        tier,
         UsageEvent.category,
     )
     aggregate = (
