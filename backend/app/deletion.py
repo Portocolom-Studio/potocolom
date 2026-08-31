@@ -53,15 +53,18 @@ async def request(session: AsyncSession, user_id: uuid.UUID) -> bool:
     )).first()
     if changed is None:
         return False
-    await session.execute(
-        update(Session)
-        .where(Session.user_id == user_id, Session.revoked_at.is_(None))
-        .values(revoked_at=func.now())
-    )
+    # The mailed capabilities before the sessions, because that is the order
+    # operator.collapse deletes them in and the other way round deadlocks
+    # against a collapse running while the API serves.
     await session.execute(
         update(AuthToken)
         .where(AuthToken.user_id == user_id, AuthToken.consumed_at.is_(None))
         .values(consumed_at=func.now())
+    )
+    await session.execute(
+        update(Session)
+        .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+        .values(revoked_at=func.now())
     )
     return True
 
