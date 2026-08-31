@@ -308,7 +308,15 @@ verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less 
 		echo 'error: ensure-env.sh left FLEET_SECRET empty.' >&2; \
 		exit 1; \
 	fi; \
-	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled'
+	exported=$$(awk '/: export DATABASE_URL/{print} /^[a-z].*\\$$/{line=line" "$$0}' "$(CURDIR)/Makefile" | tr -d '\\\\'); \
+	for t in $$(grep -oE '^auth-[a-z-]+:' "$(CURDIR)/Makefile" | tr -d ':'); do \
+		if ! awk '/export DATABASE_URL/{found=1} found&&/^auth-|^api /{print}' "$(CURDIR)/Makefile" | grep -qw "$$t" && \
+		   ! sed -n '/^api dev-start/,/export DATABASE_URL/p' "$(CURDIR)/Makefile" | grep -qw "$$t"; then \
+			echo "error: $$t is not in the DATABASE_URL export list, so it acts on a different database than make api (issue #450)." >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; every auth target shares the API database'
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \
@@ -354,7 +362,14 @@ override DB_SUFFIX := $(patsubst DB_SUFFIX=%,%,$(filter DB_SUFFIX=%,$(CHECKOUT_P
 # would then run against it.
 DEV_DB_SUPPLIED := $(if $(strip $(value DATABASE_URL)),1,)
 ifeq (,$(DEV_DB_SUPPLIED))
-api dev-start dev-restart cleanup-failed: export DATABASE_URL := \
+# Every target that talks to the database, or the auth-* commands silently
+# act on a different one: they fell through to the application default while
+# the API used this checkout's, so `auth-enable` wrote the flag somewhere the
+# API never reads and `auth-clear-factor` reported no such account while the
+# row sat in the other database (issue #450).
+api dev-start dev-restart cleanup-failed \
+auth-recover auth-enable auth-reclaim auth-rotate-keys auth-clear-factor \
+auth-configure auth-collapse: export DATABASE_URL := \
 	postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)
 endif
 # Empty by default so scripts/dev-stack.sh detects the GPU this machine has.
