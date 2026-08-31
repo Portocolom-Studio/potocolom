@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("potocolom.worker")
 
+# A pin is a full commit sha or nothing. A tag or a branch name is not a pin,
+# because upstream can move either one and the worker would follow it.
+_REVISION = r"^(?:[0-9a-f]{40})?$"
+
 
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -29,11 +33,16 @@ class Manifest(BaseModel):
     prompt_token_limit: int = 0
     default: bool = False  # preselected by clients when nothing is pinned
     source: str = ""  # weights location, worker side only
+    source_revision: str = Field(default="", pattern=_REVISION)
     vae: str = ""  # optional fp16-safe VAE replacement, worker side only
+    vae_revision: str = Field(default="", pattern=_REVISION)
     preview_decoder: str = ""  # optional distilled frame decoder, worker side only
+    preview_decoder_revision: str = Field(default="", pattern=_REVISION)
     scheduler: str = ""  # optional scheduler override, worker side only
     lora: str = ""  # optional distillation LoRA to fuse, worker side only
+    lora_revision: str = Field(default="", pattern=_REVISION)
     t2i_adapter: str = ""  # optional sketch adapter for realtime conditioning, worker side only
+    t2i_adapter_revision: str = Field(default="", pattern=_REVISION)
     quantize: str = Field(
         default="",
         pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*:int8)?$",
@@ -61,7 +70,7 @@ class Manifest(BaseModel):
         return self.model_dump(exclude={
             "source", "vae", "preview_decoder", "scheduler", "lora", "quantize",
             "t2i_adapter", "dtype", "pipeline",
-        })
+        } | set(PINNED_REFERENCES.values()))
 
     def with_defaults(self, params: dict) -> dict:
         """Fill missing keys from the schema's declared defaults, so a bare
@@ -107,6 +116,39 @@ def validate_capability_exclusivity(manifest: Manifest) -> None:
         )
 
 
+# Each pin pairs with its reference by name: `vae_revision` pins `vae`.
+# Derived rather than listed, so a reference pinned later cannot reach the wire
+# or escape validation just because someone forgot to name it in two places.
+PINNED_REFERENCES = {
+    name.removesuffix("_revision"): name
+    for name in Manifest.model_fields
+    if name.endswith("_revision")
+}
+
+
+def validate_revision_pins(manifest: Manifest) -> None:
+    """Every remote reference must name the commit it loads (issue #319).
+
+    An unpinned repository id resolves to whatever sits on its default branch
+    the first time a worker loads it, so one release renders differently on two
+    installs and the promise that a prompt and a seed reproduce an image stops
+    at the process boundary.
+    """
+    for reference_field, revision_field in PINNED_REFERENCES.items():
+        reference = getattr(manifest, reference_field)
+        revision = getattr(manifest, revision_field)
+        # A download URL carries its own version and a local path has no
+        # history to pin to; only a repository id needs a commit named for it.
+        pinnable = "://" not in reference and not reference.startswith((".", "/", "~"))
+        if reference and pinnable and not revision:
+            raise ValueError(
+                f"manifest {manifest.id}: {reference_field} {reference!r} "
+                f"needs a {revision_field}"
+            )
+        if revision and not reference:
+            raise ValueError(f"manifest {manifest.id}: {revision_field} pins nothing")
+
+
 def load_manifests(models_dir: str) -> list[Manifest]:
     """Operator errors here should be loud, not degrade into an empty fleet."""
     files = sorted(Path(models_dir).glob("*.json"))
@@ -118,6 +160,7 @@ def load_manifests(models_dir: str) -> list[Manifest]:
         if manifest.id in seen:
             raise ValueError(f"duplicate manifest id: {manifest.id}")
         validate_capability_exclusivity(manifest)
+        validate_revision_pins(manifest)
         seen.add(manifest.id)
     logger.info("loaded %d manifests from %s: %s",
                 len(manifests), models_dir, [m.id for m in manifests])

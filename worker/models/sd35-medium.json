@@ -5,6 +5,7 @@
   "min_vram_gb": 14,
   "prompt_token_limit": 256,
   "source": "stabilityai/stable-diffusion-3.5-medium",
+  "source_revision": "b940f670f0eda2d07fbb75229e779da1ad11eb80",
   "quantize": "text_encoder_3:int8",
   "license_id": "stability-ai-community",
   "license_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium/blob/main/LICENSE.md",

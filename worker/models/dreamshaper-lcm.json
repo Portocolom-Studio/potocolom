@@ -4,7 +4,8 @@
   "capabilities": ["text_to_image"],
   "min_vram_gb": 6,
   "prompt_token_limit": 77,
-  "source": "lykon/dreamshaper-8-lcm",
+  "source": "Lykon/dreamshaper-8-lcm",
+  "source_revision": "4645d8bc6a8e6b106d21606d63e8460cdad4f1a6",
   "benchmark_only": true,
   "parameters": {
     "type": "object",

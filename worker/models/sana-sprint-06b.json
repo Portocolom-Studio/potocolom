@@ -8,6 +8,7 @@
   "min_vram_gb": 12,
   "prompt_token_limit": 300,
   "source": "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",
+  "source_revision": "aa76e7f4f4928f378716b6716a2130fba3caf5b1",
   "dtype": "bfloat16",
   "pipeline": "SanaSprint",
   "license_id": "apache-2.0",
