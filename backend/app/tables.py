@@ -159,6 +159,10 @@ class LoginAttempt(Base):
     subject: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     expires_at: Mapped[datetime]
+    # When this subject's next attempt may be answered. Only the address scope
+    # sets it: it is what makes the wait a queue rather than a latency every
+    # overlapping attempt serves at the same moment (app/rate_limit.py).
+    not_before: Mapped[datetime | None]
 
 
 class Invitation(Base):

@@ -3,16 +3,21 @@
 Both subjects are counted in a ten minute window, with a wait that starts after
 five attempts and doubles to eight seconds (docs/blueprint.md). Only the
 identifier carries a ceiling: ten, and past it the answer is 429. The address
-is counted and waited on and never refused, because one NAT, one proxy uvicorn
-has not been told to trust, or the loopback publish the compose file ships
-arrives here as a single address (docs/decisions.md).
+carries none, because one NAT, one proxy uvicorn has not been told to trust, or
+the loopback publish the compose file ships arrives here as a single address,
+and a ceiling there would sign a whole installation out of this route
+(docs/decisions.md). A queue bounds that peer instead.
 
 The wait is half the control. A ceiling on its own says where the line is and
 hands anybody who knows an address a way to keep its owner out; a wait that
 grows costs an attacker the whole window and costs somebody who mistyped their
-password twice nothing at all. Against one address the wait is the whole
-bound, and an eight second cap is what takes a flood from thousands of attempts
-a second down to a few hundred an hour.
+password twice nothing at all. Against one address the wait is the whole bound,
+and it is a bound only because the turns are taken one at a time: attempts that
+overlap queue behind one another rather than serving the same eight seconds
+together. Once the cap arrives that peer gets one attempt every eight seconds,
+a few hundred an hour. A turn more than thirty seconds out is not handed over
+at all and is answered 503, because a connection held for as long as a flood
+cares to make the queue is an amplification rather than a limit.
 
 Every attempt is counted, right or wrong. What this exists to bound is an
 attacker who already holds the password and is grinding the second factor by
@@ -29,7 +34,7 @@ from asyncio import sleep
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request
-from sqlalchemy import case, delete
+from sqlalchemy import case, delete, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,8 +45,11 @@ WINDOW = timedelta(minutes=10)
 IDENTIFIER_LIMIT = 10
 FREE_ATTEMPTS = 5
 MAX_DELAY_S = 8.0
+MAX_QUEUE_S = 30.0
 
 REFUSED = HTTPException(status_code=429, detail="too many sign-in attempts")
+BUSY = HTTPException(status_code=503, detail="sign-in is busy, try again shortly",
+                     headers={"Retry-After": str(int(MAX_QUEUE_S))})
 
 
 def _digest(value: str) -> bytes:
@@ -59,14 +67,16 @@ def delay_for(attempts: int) -> float:
     return min(MAX_DELAY_S, 0.5 * 2 ** (attempts - FREE_ATTEMPTS - 1))
 
 
-async def _charge(session: AsyncSession, scope: str, value: str) -> int:
-    """Count one attempt against a subject and answer with its running total.
+async def _charge(session: AsyncSession, scope: str, value: str) -> tuple[int, datetime | None]:
+    """Count one attempt against a subject, and answer with its row.
 
     One statement, because a read followed by a write loses increments exactly
     the way the challenge budget did before #421: two attempts that overlap
     both see the same total and both store one more than it, so a flood is
     charged for a fraction of what it spent. The conflicting writer waits on
-    the row here instead, so neither can miss the other.
+    the row here instead, so neither can miss the other, and the row stays
+    locked for the rest of the transaction, which is what lets `_reserve` read
+    and move the queue below without a second subject slipping between.
 
     An expired row is reset rather than deleted, so the window starts at the
     attempt that opens it. Pruning is only about the rows nobody comes back to.
@@ -75,15 +85,49 @@ async def _charge(session: AsyncSession, scope: str, value: str) -> int:
     fresh = LoginAttempt.expires_at <= now
     statement = insert(LoginAttempt).values(
         scope=scope, subject=_digest(value), attempts=1, expires_at=now + WINDOW)
-    return (await session.execute(
+    row = (await session.execute(
         statement.on_conflict_do_update(
             index_elements=["scope", "subject"],
             set_={
                 "attempts": case((fresh, 1), else_=LoginAttempt.attempts + 1),
                 "expires_at": case((fresh, now + WINDOW), else_=LoginAttempt.expires_at),
             },
-        ).returning(LoginAttempt.attempts)
-    )).scalar_one()
+        ).returning(LoginAttempt.attempts, LoginAttempt.not_before)
+    )).one()
+    return row.attempts, row.not_before
+
+
+async def _reserve(session: AsyncSession, address: str) -> float | None:
+    """Take this peer's next turn and answer with the wait, or None if it is full.
+
+    A sleep is latency for one task and not a rate. Twenty attempts from one
+    peer that each sleep the eight second cap at the same moment are all
+    answered inside one eight seconds, so a wait nobody has to queue for costs
+    a flood nothing: measured, twenty of them finished in 8.206s. The turn is
+    stored on the address row instead, which `_charge` has already locked for
+    this transaction, so attempts that overlap read different turns and serve
+    them one after another. That is what makes the documented pace true.
+
+    Past the cap the answer is 503 and the queue is not moved for it. Extending
+    it on a refusal would let a flood push a shared peer out for the rest of
+    its window, which is the very outage the missing address ceiling exists to
+    avoid; leaving it where it is means the queue always drains inside the cap
+    and a bystander who comes back gets a turn. 503 with Retry-After also says
+    the route is busy, where 429 on a sign-in reads as the account being shut.
+    Simply waiting however long the queue is was the other answer, and it hands
+    an attacker a connection held for as long as they care to make it.
+    """
+    attempts, taken = await _charge(session, "address", address)
+    now = _now()
+    turn = max(taken or now, now) + timedelta(seconds=delay_for(attempts))
+    waiting = (turn - now).total_seconds()
+    if waiting > MAX_QUEUE_S:
+        return None
+    await session.execute(
+        update(LoginAttempt)
+        .where(LoginAttempt.scope == "address", LoginAttempt.subject == _digest(address))
+        .values(not_before=turn))
+    return waiting
 
 
 async def charge_login(subject: str, http: Request) -> None:
@@ -104,20 +148,21 @@ async def charge_login(subject: str, http: Request) -> None:
     # bucket it is counted in (app/realtime.py says the same of the fleet peer).
     peer = http.client.host if http.client else None
     async with db.session_factory() as session:
-        identifier = await _charge(session, "identifier", subject)
-        address = 0 if peer is None else await _charge(session, "address", peer)
+        identifier, _ = await _charge(session, "identifier", subject)
+        queued = 0.0 if peer is None else await _reserve(session, peer)
         await session.commit()
-    # Only the identifier refuses. The address is shared by everybody behind one
-    # NAT or one proxy this deployment has not told uvicorn to trust, so a
-    # ceiling here would be an installation-wide outage anybody could trigger;
-    # its count feeds the wait below instead, which bounds that peer without
-    # ever locking a bystander out.
     if identifier > IDENTIFIER_LIMIT:
         raise REFUSED
-    # Outside the session on purpose: the pool is fifteen deep and this waits
-    # up to eight seconds, so a delay served with a connection in hand would
-    # spend the pool on callers who are doing nothing with it.
-    await sleep(max(delay_for(identifier), delay_for(address)))
+    if queued is None:
+        raise BUSY
+    # Only the address queues. The identifier stops at ten, so ten attempts is
+    # all that can ever overlap there and the ceiling is already the bound; a
+    # queue on it would hand anybody who knows an address a way to park its
+    # owner behind a wait they filled, which is what the ceiling is careful not
+    # to be. Outside the session on purpose either way: the pool is fifteen
+    # deep, and a delay served with a connection in hand would spend the pool
+    # on callers who are doing nothing with it.
+    await sleep(max(delay_for(identifier), queued))
 
 
 async def prune() -> None:

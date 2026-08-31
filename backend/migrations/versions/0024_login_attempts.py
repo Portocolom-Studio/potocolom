@@ -17,6 +17,11 @@ Both subjects are hashed. The identifier is whatever address the caller typed,
 so the plain column would collect addresses belonging to people with no account
 here, and the caller's address is raw IP, which the specification keeps to
 expiring keys only. Rows carry the window's end and are pruned once it passes.
+
+An address row also carries the moment its next attempt may be answered. The
+wait against an address is the whole bound there, and it is only a bound when
+the turns are taken one at a time: attempts that overlap otherwise serve the
+same eight seconds together and a flood pays for one of them.
 """
 
 import sqlalchemy as sa
@@ -35,6 +40,7 @@ def upgrade() -> None:
         sa.Column("subject", sa.LargeBinary(), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("not_before", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("scope", "subject"),
         sa.CheckConstraint("scope IN ('identifier', 'address')", name="login_attempts_scope"),
     )
