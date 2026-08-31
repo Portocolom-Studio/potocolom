@@ -122,6 +122,46 @@
       ]
     }
   ],
+  "candidates": [
+    {
+      "id": "flux2-klein-4b",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted commercial use",
+      "notes": "FLUX.2 klein 4B, 4-step distilled flow transformer, bf16-native; unified generation and editing family (editing path not wired yet). Reachable only via --models.",
+      "variants": [
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "768-4step", "params": { "width": 768, "height": 768, "steps": 4, "guidance": 0, "seed": 100 } },
+        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "1024-4step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 200 } }
+      ]
+    },
+    {
+      "id": "z-image-turbo",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted commercial use",
+      "notes": "Tongyi-MAI Z-Image Turbo, 6B S3-DiT at 8 NFEs, bf16-native, no CFG in the distilled variant. Reachable only via --models.",
+      "variants": [
+        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "512-8step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 0, "seed": 100 } },
+        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } },
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } }
+      ]
+    },
+    {
+      "id": "sana-sprint-06b",
+      "license": "Apache 2.0",
+      "commercial": "yes - unrestricted commercial use; Gemma-2-2B-IT text encoder adds Google Gemma Terms of Use and Prohibited Use Policy, no revenue cap",
+      "notes": "NVIDIA SANA-Sprint 0.6B, step-adaptive sCM at 1-4 steps, bf16-native, DC-AE 32x latent compression, Gemma-2-2B-IT encoder. guidance is the model's embedded guidance, not CFG, so it stays at the 4.5 default rather than 0. AutoPipeline cannot resolve it, so the manifest names the SanaSprint pipeline stem. MEASURED 2026-08-25 on the RX 7600 XT: 1469 ms median at 1024/2 t2i, peak 11.97 GB at the full rung. 1024 is the only resolution it has: ASPECT_RATIO_1024_BIN bins a 512 request back to 1024 and holds no entry below 704x1344. i2i at 1024 does not fit beside the resident weights on this card. Reachable only via --models.",
+      "variants": [
+        { "label": "1024-2step", "params": { "width": 1024, "height": 1024, "steps": 2, "guidance": 4.5, "seed": 100 } },
+        { "label": "1024-1step", "params": { "width": 1024, "height": 1024, "steps": 1, "guidance": 4.5, "seed": 100 } },
+        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 4.5, "seed": 100 } },
+        { "label": "1024-2step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 2, "guidance": 4.5, "seed": 200 } }
+      ]
+    }
+  ],
   "excluded": [
     {
       "id": "sd-turbo",

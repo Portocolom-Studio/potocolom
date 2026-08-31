@@ -1,0 +1,62 @@
+{
+  "id": "sana-sprint-06b",
+  "name": "SANA-Sprint 0.6B",
+  "capabilities": [
+    "text_to_image",
+    "image_to_image"
+  ],
+  "min_vram_gb": 12,
+  "prompt_token_limit": 300,
+  "source": "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",
+  "dtype": "bfloat16",
+  "pipeline": "SanaSprint",
+  "license_id": "apache-2.0",
+  "license_url": "https://huggingface.co/Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers/blob/main/README.md",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "strength": {
+        "type": "number",
+        "minimum": 0.05,
+        "maximum": 1,
+        "default": 0.6
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4,
+        "default": 2
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10,
+        "default": 4.5
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          1024
+        ],
+        "default": 1024
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  }
+}

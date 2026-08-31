@@ -1,0 +1,24 @@
+{
+  "id": "flux2-klein-4b",
+  "name": "FLUX.2 Klein 4B",
+  "capabilities": ["text_to_image"],
+  "min_vram_gb": 13,
+  "prompt_token_limit": 512,
+  "source": "black-forest-labs/FLUX.2-klein-4B",
+  "dtype": "bfloat16",
+  "license_id": "apache-2.0",
+  "license_url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/blob/main/README.md",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "steps": { "type": "integer", "minimum": 1, "maximum": 8, "default": 4 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 10, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512, 768, 1024], "default": 1024 },
+      "height": { "type": "integer", "enum": [512, 768, 1024], "default": 1024 }
+    },
+    "required": ["prompt"]
+  }
+}

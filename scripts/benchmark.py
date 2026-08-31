@@ -70,9 +70,10 @@ def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: boo
                 matrix_path: Path = MATRIX_PATH) -> dict:
     matrix = json.loads(matrix_path.read_text())
     capped = matrix.get("capped_commercial", [])
+    candidates = matrix.get("candidates", [])
     if model_filter:
         wanted = set(model_filter)
-        pool = matrix["models"] + capped
+        pool = matrix["models"] + capped + candidates
         models = [m for m in pool if m["id"] in wanted]
         missing = wanted - {m["id"] for m in models}
         if missing:

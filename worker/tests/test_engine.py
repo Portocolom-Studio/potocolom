@@ -413,6 +413,18 @@ def test_third_text_encoder_keeps_pipeline_prompt_path():
     assert pipeline.text_encoder_2.calls == 0
 
 
+def test_non_clip_text_encoder_keeps_pipeline_prompt_path():
+    engine = _fake_prompt_engine()
+    pipeline = _fake_pipeline()
+    pipeline.text_encoder.config = SimpleNamespace(model_type="qwen3")
+    prompt = " ".join(f"w{index}" for index in range(80))
+
+    kwargs = engine._prompt_kwargs(pipeline, _clip_manifest(), prompt, "w0")
+
+    assert kwargs == {"prompt": prompt, "negative_prompt": "w0"}
+    assert pipeline.text_encoder.calls == 0
+
+
 def test_fake_tokenizer_only_offers_what_a_real_one_does():
     """The chunking code is exercised above against a fake tokenizer, which can
     drift from the library and hide a crash. It already did once: the fake
@@ -579,6 +591,50 @@ def test_generate_i2i_job_passes_negative_prompt_to_pipeline():
     )
     assert result.width == 64
     assert result.height == 48
+
+
+def test_generate_i2i_omits_size_for_pipelines_that_infer_it():
+    """SD and SDXL img2img take no width/height and read the size off the source
+    image. Passing them would raise, so the resized source stays the only signal."""
+    pipeline = _JobPipeline(dual=True)
+    engine = _job_engine(pipeline)
+    loop = asyncio.new_event_loop()
+    try:
+        engine._generate_i2i(
+            _sdxl_job_manifest(),
+            {"prompt": "w0 w1", "width": 512, "height": 512},
+            lambda _: None, loop, _input_image_bytes(),
+        )
+    finally:
+        loop.close()
+
+    assert "width" not in pipeline.call_kwargs[0]
+    assert "height" not in pipeline.call_kwargs[0]
+
+
+def test_generate_i2i_passes_size_to_pipelines_that_default_it():
+    """SanaSprint img2img defaults width/height to its 1024 training resolution
+    and ignores the source size, so a 512 canvas frame would silently render at
+    1024 and allocate 4x the activations (the sana-sprint-06b OOM)."""
+
+    class _SizedPipeline(_JobPipeline):
+        def __call__(self, width=None, height=None, **kwargs):
+            return super().__call__(width=width, height=height, **kwargs)
+
+    pipeline = _SizedPipeline(dual=True)
+    engine = _job_engine(pipeline)
+    loop = asyncio.new_event_loop()
+    try:
+        engine._generate_i2i(
+            _sdxl_job_manifest(),
+            {"prompt": "w0 w1", "width": 512, "height": 512},
+            lambda _: None, loop, _input_image_bytes(),
+        )
+    finally:
+        loop.close()
+
+    assert pipeline.call_kwargs[0]["width"] == 512
+    assert pipeline.call_kwargs[0]["height"] == 512
 
 
 def test_sdxl_pooled_embedding_comes_from_first_chunk():
@@ -2728,3 +2784,91 @@ def test_a_simulated_upscale_stops_when_it_is_asked_to():
     finished = asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
                                            input_image=source, cancelled=lambda: False))
     assert (finished.width, finished.height) == (16, 16)
+def test_pipeline_dtype_defaults_to_engine_dtype():
+    import torch
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.float16
+    manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
+    assert engine._pipeline_dtype(manifest) is torch.float16
+
+
+def test_pipeline_dtype_prefers_the_manifest_declaration():
+    import torch
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.float16
+    manifest = Manifest(
+        id="declared", name="Declared", capabilities=["text_to_image"],
+        dtype="bfloat16",
+    )
+    assert engine._pipeline_dtype(manifest) is torch.bfloat16
+
+
+def test_pipeline_class_defaults_to_autopipeline():
+    from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
+    assert engine._pipeline_class(manifest, "t2i") is AutoPipelineForText2Image
+    assert engine._pipeline_class(manifest, "i2i") is AutoPipelineForImage2Image
+
+
+def test_pipeline_class_honours_the_manifest_stem():
+    from diffusers import SanaSprintImg2ImgPipeline, SanaSprintPipeline
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    manifest = Manifest(
+        id="sprint", name="Sprint", capabilities=["text_to_image", "image_to_image"],
+        pipeline="SanaSprint",
+    )
+    assert engine._pipeline_class(manifest, "t2i") is SanaSprintPipeline
+    assert engine._pipeline_class(manifest, "i2i") is SanaSprintImg2ImgPipeline
+
+
+def test_pipeline_class_is_loud_when_diffusers_lacks_the_class():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    manifest = Manifest(
+        id="ghost", name="Ghost", capabilities=["text_to_image"], pipeline="NoSuch",
+    )
+    pytest = __import__("pytest")
+    with pytest.raises(ValueError, match="NoSuchPipeline"):
+        engine._pipeline_class(manifest, "t2i")
+
+
+def test_autopipeline_cannot_resolve_sana_sprint():
+    from diffusers.pipelines.auto_pipeline import (
+        AUTO_TEXT2IMAGE_PIPELINES_MAPPING,
+        _get_task_class,
+    )
+
+    pytest = __import__("pytest")
+    with pytest.raises(ValueError):
+        _get_task_class(AUTO_TEXT2IMAGE_PIPELINES_MAPPING, "SanaSprintPipeline")
+
+
+def test_from_pretrained_loads_in_declared_dtype_without_fp16_variant():
+    import torch
+
+    calls: list[tuple[str, dict]] = []
+
+    class FakeRepo:
+        @classmethod
+        def from_pretrained(cls, source, **kwargs):
+            calls.append((source, kwargs))
+            return object()
+
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.torch = torch
+    engine.dtype = torch.float16
+    manifest = Manifest(
+        id="klein", name="Klein", capabilities=["text_to_image"],
+        source="black-forest-labs/FLUX.2-klein-4B", dtype="bfloat16",
+    )
+    engine._from_pretrained(FakeRepo, manifest)
+    ((source, kwargs),) = calls
+    assert source == "black-forest-labs/FLUX.2-klein-4B"
+    assert kwargs["torch_dtype"] is torch.bfloat16
+    assert "variant" not in kwargs

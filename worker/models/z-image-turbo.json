@@ -1,0 +1,25 @@
+{
+  "id": "z-image-turbo",
+  "name": "Z-Image Turbo",
+  "capabilities": ["text_to_image", "image_to_image"],
+  "min_vram_gb": 20,
+  "prompt_token_limit": 512,
+  "source": "Tongyi-MAI/Z-Image-Turbo",
+  "dtype": "bfloat16",
+  "license_id": "apache-2.0",
+  "license_url": "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/blob/main/LICENSE.txt",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": { "type": "string" },
+      "strength": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 0.7 },
+      "steps": { "type": "integer", "minimum": 4, "maximum": 8, "default": 8 },
+      "guidance": { "type": "number", "minimum": 0, "maximum": 8, "default": 0 },
+      "seed": { "type": "integer" },
+      "width": { "type": "integer", "enum": [512, 768, 1024], "default": 1024 },
+      "height": { "type": "integer", "enum": [512, 768, 1024], "default": 1024 }
+    },
+    "required": ["prompt"]
+  }
+}
