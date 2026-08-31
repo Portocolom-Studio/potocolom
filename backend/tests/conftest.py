@@ -334,9 +334,9 @@ def _no_inherited_jobs(request):
                 await session.execute(text("DELETE FROM assets"))
                 await session.execute(text("DELETE FROM jobs"))
                 # Every TestClient signs in from the same peer, so the suite is
-                # one caller to the login rate limit and spends its thirty long
-                # before it finishes. Left behind, the count would refuse
-                # whichever tests happened to follow the thirtieth sign-in.
+                # one caller to the login rate limit. Left behind, the count
+                # would hold every sign-in that followed for the eight second
+                # cap, in the files that do not stub the wait out.
                 await session.execute(text("DELETE FROM login_attempts"))
 
             if db.session_factory is not None:

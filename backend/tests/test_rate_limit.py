@@ -6,7 +6,8 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
-from app import db, rate_limit
+from app import accounts as accounts_module
+from app import db, gpu_samples, rate_limit
 from app.main import app
 from app.tables import LoginAttempt
 from tests.test_session_policy import _account, _login, accounts
@@ -74,15 +75,22 @@ async def _attempts(scope: str, value: str) -> int | None:
 def test_the_delay_is_free_for_five_then_doubles_to_an_eight_second_cap():
     assert [rate_limit.delay_for(n) for n in range(1, 6)] == [0.0] * 5
     assert [rate_limit.delay_for(n) for n in range(6, 11)] == [0.5, 1.0, 2.0, 4.0, 8.0]
-    # The identifier ceiling and the cap arrive together, and the address
-    # ceiling is three times further out, so everything past ten waits the same.
+    # The identifier ceiling and the cap arrive together, so an address, which
+    # has no ceiling to reach, waits the same from its tenth attempt onwards.
     assert rate_limit.delay_for(rate_limit.IDENTIFIER_LIMIT) == rate_limit.MAX_DELAY_S
-    assert rate_limit.delay_for(rate_limit.ADDRESS_LIMIT) == rate_limit.MAX_DELAY_S
 
 
 @pytest.mark.db
-def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits):
+def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits, monkeypatch):
     _account(accounts, "ceiling@example.com")
+    hashed: list[str] = []
+    real = accounts_module.verify_password
+
+    def counting(stored: str, password: str) -> bool:
+        hashed.append(stored)
+        return real(stored, password)
+
+    monkeypatch.setattr(accounts_module, "verify_password", counting)
     with TestClient(app) as client:
         for _ in range(rate_limit.IDENTIFIER_LIMIT):
             assert _login(client, "ceiling@example.com", password="wrong").status_code == 401
@@ -92,14 +100,26 @@ def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits):
         # guesses that were going to fail anyway.
         assert _login(client, "ceiling@example.com").status_code == 429
     assert waits == [0.0] * 5 + [0.5, 1.0, 2.0, 4.0, 8.0]
+    # Argon2id is the cost this limit exists to bound, so a refused attempt has
+    # to be refused before it: ten verifications for ten attempts, and not one
+    # more for the two that were turned away.
+    assert len(hashed) == rate_limit.IDENTIFIER_LIMIT
 
 
 @pytest.mark.db
-def test_one_address_is_refused_at_thirty_however_many_identifiers_it_uses(accounts, waits):
+def test_one_address_waits_longer_and_longer_however_many_identifiers_it_uses(accounts, waits):
+    spread = 31
     with TestClient(app) as client:
-        for n in range(rate_limit.ADDRESS_LIMIT):
+        for n in range(spread):
+            # A different identifier every time, so each of those buckets holds
+            # one attempt and owes no wait: every delay below is the address.
             assert _login(client, f"spread{n}@example.com", password="x").status_code == 401
-        assert _login(client, "spread-last@example.com", password="x").status_code == 429
+    assert waits[:10] == [0.0] * 5 + [0.5, 1.0, 2.0, 4.0, 8.0]
+    # And past the cap it keeps paying the cap, but is never refused. One NAT,
+    # one proxy uvicorn has not been told to trust, or the loopback publish the
+    # shipped compose file uses is a single address here, so a ceiling would
+    # sign a whole installation out of this route ten minutes at a time.
+    assert waits[10:] == [rate_limit.MAX_DELAY_S] * (spread - 10)
 
 
 @pytest.mark.db
@@ -164,6 +184,11 @@ def test_a_window_that_has_run_out_starts_the_count_again(accounts, waits):
         # anybody can reach against an address they merely know would
         # otherwise be a way to keep its owner out for good.
         assert _login(client, "again@example.com").status_code == 204
+        assert _login(client, "again@example.com").status_code == 204
+        # The reset opens a new window instead of reopening the spent one. A row
+        # reset to an expiry already in the past reads as expired to every
+        # attempt after it, so the count would sit at one and bound nothing.
+        assert client.portal.call(_attempts, "identifier", "again@example.com") == 2
 
 
 @pytest.mark.db
@@ -200,7 +225,7 @@ def test_the_wait_holds_no_pooled_connection(accounts, monkeypatch):
 
 
 @pytest.mark.db
-def test_pruning_forgets_a_window_that_has_run_out(accounts, waits):
+def test_the_maintenance_loop_forgets_a_window_that_has_run_out(accounts, waits):
     async def go() -> list[bytes]:
         await rate_limit.charge_login("stale@example.com", _request("198.51.100.8"))
         async with db.session_factory() as session:
@@ -210,7 +235,9 @@ def test_pruning_forgets_a_window_that_has_run_out(accounts, waits):
                 .values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
             await session.commit()
         await rate_limit.charge_login("fresh@example.com", _request("198.51.100.8"))
-        await rate_limit.prune()
+        # Through the loop that actually runs in a deployment. Calling prune()
+        # here would pass just as well with nothing calling it at all.
+        await gpu_samples.maintain_once()
         async with db.session_factory() as session:
             return list((await session.execute(select(LoginAttempt.subject))).scalars().all())
 
