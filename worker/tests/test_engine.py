@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from PIL import Image
 
 from worker.engine import (
@@ -432,7 +433,6 @@ def test_fake_tokenizer_only_offers_what_a_real_one_does():
     every long prompt raised AttributeError on a real model while these tests
     passed. Skips where transformers is absent, as the upscale tests do for torch.
     """
-    pytest = __import__("pytest")
     pytest.importorskip("transformers")
     from transformers import CLIPTokenizer
 
@@ -1580,7 +1580,6 @@ def test_preview_decoder_does_not_outlive_its_pipeline():
 
 
 def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
-    pytest = __import__("pytest")
     torch = pytest.importorskip("torch")
     diffusers = pytest.importorskip("diffusers")
     huggingface_hub = pytest.importorskip("huggingface_hub")
@@ -1719,7 +1718,6 @@ def test_frame_refuses_if_the_rung_drops_while_waiting_for_the_gpu():
     async def run_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    pytest = __import__("pytest")
     with patch("asyncio.to_thread", side_effect=run_inline):
         with pytest.raises(NotResidentError):
             asyncio.run(engine.frame(
@@ -1758,7 +1756,6 @@ def test_realtime_frame_load_oom_refuses_without_demoting():
     async def run_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    pytest = __import__("pytest")
     with patch("asyncio.to_thread", side_effect=run_inline):
         with pytest.raises(NotResidentError):
             asyncio.run(engine.frame(
@@ -2770,7 +2767,6 @@ def test_a_simulated_upscale_stops_when_it_is_asked_to():
     Both have to answer the same ask, or a cancelled upscale reports success."""
     from worker.engine import Cancelled
 
-    pytest = __import__("pytest")
     engine = SimulatedEngine(0.01)
     manifest = Manifest(id="sim-upscale", name="Sim Upscale", capabilities=["upscale"])
     buffer = io.BytesIO()
@@ -2785,7 +2781,7 @@ def test_a_simulated_upscale_stops_when_it_is_asked_to():
                                            input_image=source, cancelled=lambda: False))
     assert (finished.width, finished.height) == (16, 16)
 def test_pipeline_dtype_defaults_to_engine_dtype():
-    import torch
+    torch = pytest.importorskip("torch")
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch
@@ -2795,7 +2791,7 @@ def test_pipeline_dtype_defaults_to_engine_dtype():
 
 
 def test_pipeline_dtype_prefers_the_manifest_declaration():
-    import torch
+    torch = pytest.importorskip("torch")
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.torch = torch
@@ -2808,7 +2804,9 @@ def test_pipeline_dtype_prefers_the_manifest_declaration():
 
 
 def test_pipeline_class_defaults_to_autopipeline():
-    from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
+    diffusers = pytest.importorskip("diffusers")
+    AutoPipelineForImage2Image = diffusers.AutoPipelineForImage2Image
+    AutoPipelineForText2Image = diffusers.AutoPipelineForText2Image
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
@@ -2817,7 +2815,9 @@ def test_pipeline_class_defaults_to_autopipeline():
 
 
 def test_pipeline_class_honours_the_manifest_stem():
-    from diffusers import SanaSprintImg2ImgPipeline, SanaSprintPipeline
+    diffusers = pytest.importorskip("diffusers")
+    SanaSprintImg2ImgPipeline = diffusers.SanaSprintImg2ImgPipeline
+    SanaSprintPipeline = diffusers.SanaSprintPipeline
 
     engine = DiffusersEngine.__new__(DiffusersEngine)
     manifest = Manifest(
@@ -2829,28 +2829,26 @@ def test_pipeline_class_honours_the_manifest_stem():
 
 
 def test_pipeline_class_is_loud_when_diffusers_lacks_the_class():
+    pytest.importorskip("diffusers")
     engine = DiffusersEngine.__new__(DiffusersEngine)
     manifest = Manifest(
         id="ghost", name="Ghost", capabilities=["text_to_image"], pipeline="NoSuch",
     )
-    pytest = __import__("pytest")
     with pytest.raises(ValueError, match="NoSuchPipeline"):
         engine._pipeline_class(manifest, "t2i")
 
 
 def test_autopipeline_cannot_resolve_sana_sprint():
-    from diffusers.pipelines.auto_pipeline import (
-        AUTO_TEXT2IMAGE_PIPELINES_MAPPING,
-        _get_task_class,
-    )
+    auto = pytest.importorskip("diffusers.pipelines.auto_pipeline")
+    AUTO_TEXT2IMAGE_PIPELINES_MAPPING = auto.AUTO_TEXT2IMAGE_PIPELINES_MAPPING
+    _get_task_class = auto._get_task_class
 
-    pytest = __import__("pytest")
     with pytest.raises(ValueError):
         _get_task_class(AUTO_TEXT2IMAGE_PIPELINES_MAPPING, "SanaSprintPipeline")
 
 
 def test_from_pretrained_loads_in_declared_dtype_without_fp16_variant():
-    import torch
+    torch = pytest.importorskip("torch")
 
     calls: list[tuple[str, dict]] = []
 
@@ -2888,7 +2886,7 @@ def test_pipeline_load_pins_the_source_on_both_fp16_attempts():
     """The fp16 variant attempt and the plain retry are two separate calls, so
     the pin has to ride on both or the fallback silently loads the default
     branch."""
-    import torch
+    torch = pytest.importorskip("torch")
 
     calls: list[dict] = []
 
@@ -2916,7 +2914,7 @@ def test_pipeline_load_pins_the_source_on_both_fp16_attempts():
 
 
 def test_vae_load_pins_the_vae_and_leaves_the_source_pin_alone():
-    import torch
+    torch = pytest.importorskip("torch")
 
     autoencoder_kl = MagicMock()
     diffusers = ModuleType("diffusers")
@@ -3045,7 +3043,7 @@ def test_a_missing_source_is_never_substituted_by_the_model_id():
     unpinned id to the hub for every id that happens to name a real repository
     there, and validate_revision_pins cannot see that reference because the
     manifest names none (issue #319)."""
-    import torch
+    torch = pytest.importorskip("torch")
 
     asked: list[str] = []
 
