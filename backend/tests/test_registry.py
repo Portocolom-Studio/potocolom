@@ -625,3 +625,78 @@ def test_public_drops_offloaded_realtime_only_studio_capabilities(caplog):
         "['text_to_image', 'image_to_image'] narrow to nothing against "
         "studio_capabilities ['realtime']"
     )
+
+
+@pytest.fixture
+def fleet():
+    """An empty in-memory fleet, restored to whatever it held before."""
+    saved = dict(realtime.workers)
+    realtime.workers.clear()
+    yield realtime.workers
+    realtime.workers.clear()
+    realtime.workers.update(saved)
+
+
+def _rt_worker(worker_id: str, *, live: int | None = None,
+               hello: int | None = None) -> realtime.Worker:
+    return realtime.Worker(
+        id=worker_id, ws=MagicMock(), realtime_slots=1,
+        manifests=[Manifest(id="vega-rt", name="VegaRT", capabilities=["realtime"],
+                            realtime_p95_ms=hello)],
+        frame_p95_ms={} if live is None else {"vega-rt": live},
+    )
+
+
+def _join(fleet: dict, *workers: realtime.Worker) -> None:
+    for worker in workers:
+        fleet[worker.id] = worker
+
+
+def test_available_advertises_the_only_worker_that_measured(fleet):
+    # The first worker won manifest deduplication and has never measured, so
+    # the label used to be null while a second worker was serving frames.
+    _join(fleet, _rt_worker("w-first"), _rt_worker("w-second", live=415))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 415
+
+
+def test_available_is_not_dragged_by_a_stale_first_worker(fleet):
+    # Two measurements, one of them stale or throttled: the label must not be
+    # the one that happens to sit on the deduplication winner.
+    _join(fleet, _rt_worker("w-stale-rt", live=5000), _rt_worker("w-healthy", live=415))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 415
+
+
+def test_a_worker_without_a_measurement_is_not_counted_at_all(fleet):
+    # Not counted, rather than counted as nothing: with the silent worker
+    # excluded the median of 400, 600 and 800 is 600, while treating it as a
+    # sample of any value would move the middle off it.
+    _join(fleet, _rt_worker("w-silent"), _rt_worker("w-400", live=400),
+          _rt_worker("w-600", live=600), _rt_worker("w-800", live=800))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 600
+
+
+def test_no_measurement_anywhere_leaves_the_label_absent(fleet):
+    _join(fleet, _rt_worker("w-quiet-a"), _rt_worker("w-quiet-b"))
+    assert registry.available()["vega-rt"].realtime_p95_ms is None
+
+
+def test_an_even_count_takes_the_lower_middle_measurement(fleet):
+    # Pinned: 400, the lower of the two middle samples, not the mean of 400
+    # and 600 (a number no card produced) and not the upper middle.
+    _join(fleet, _rt_worker("w-200", live=200), _rt_worker("w-400", live=400),
+          _rt_worker("w-600", live=600), _rt_worker("w-800", live=800))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 400
+
+
+def test_an_odd_count_takes_the_middle_of_the_sorted_measurements(fleet):
+    # Joined slowest first, so a positional middle would report 100.
+    _join(fleet, _rt_worker("w-900", live=900), _rt_worker("w-100", live=100),
+          _rt_worker("w-500", live=500))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 500
+
+
+def test_a_hello_calibration_counts_as_that_worker_s_measurement(fleet):
+    # One worker measured live, the other only calibrated at hello; both are
+    # measurements of the model on a card, so both are samples.
+    _join(fleet, _rt_worker("w-hello", hello=408), _rt_worker("w-live", live=333))
+    assert registry.available()["vega-rt"].realtime_p95_ms == 333
