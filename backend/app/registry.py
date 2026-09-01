@@ -6,6 +6,7 @@ is currently offline.
 """
 
 import logging
+from statistics import median_low
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.dialects.postgresql import insert
@@ -30,23 +31,35 @@ router = APIRouter()
 
 def available() -> dict[str, Manifest]:
     manifests: dict[str, Manifest] = {}
+    measured: dict[str, list[int]] = {}
     for worker in realtime.workers.values():
         for manifest in worker.manifests:
+            # A live heartbeat measurement supersedes the calibration estimate
+            # from hello, but only for the worker that supplied this manifest.
+            # Either way it is one sample: what this model costs on this card.
+            sample = worker.frame_p95_ms.get(manifest.id, manifest.realtime_p95_ms)
+            if sample is not None:
+                measured.setdefault(manifest.id, []).append(sample)
             # Prefer a studio-visible copy when stale workers still advertise
             # benchmark_only=true for the same id (first-connect used to win).
             existing = manifests.get(manifest.id)
             if existing is None or (existing.benchmark_only and not manifest.benchmark_only):
-                # A live heartbeat measurement supersedes the calibration
-                # estimate from hello, but only for the worker that supplied
-                # this manifest. Copied rather than mutated so the worker's
-                # manifest stays pristine. public() copies again for
-                # capability narrowing, and the two must compose: a model
-                # that is both narrowed and measured keeps both, because each
-                # copy carries the other's change forward.
-                live = worker.frame_p95_ms.get(manifest.id)
-                if live is not None:
-                    manifest = manifest.model_copy(update={"realtime_p95_ms": live})
                 manifests[manifest.id] = manifest
+    for model_id, manifest in list(manifests.items()):
+        samples = measured.get(model_id, [])
+        # The label describes the model on this fleet, not the worker that won
+        # deduplication (decisions.md, "The advertised frame cost is the
+        # fleet's median"). median_low rather than median: an even count would
+        # otherwise average two dissimilar cards into a millisecond figure
+        # neither of them produced, and at the two-worker size where this was
+        # reported the upper middle is the slower card, which is the defect.
+        advertised = median_low(samples) if samples else None
+        if advertised != manifest.realtime_p95_ms:
+            # Copied rather than mutated so the worker's manifest stays
+            # pristine. public() copies again for capability narrowing, and
+            # the two must compose: a model that is both narrowed and measured
+            # keeps both, because each copy carries the other's change forward.
+            manifests[model_id] = manifest.model_copy(update={"realtime_p95_ms": advertised})
     return manifests
 
 
