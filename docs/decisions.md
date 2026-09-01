@@ -1366,6 +1366,56 @@ disagree with the manifest it locks, whereas a field on the manifest cannot be
 out of step with itself.
 
 
+## The advertised frame cost is the fleet's median
+
+The frame cost beside a realtime model used to be one worker's number: whichever
+worker won manifest deduplication supplied both the manifest and the
+measurement, and the two were read from the same place. On a single machine
+that is the same thing as the truth. On a fleet it is not. A worker that had
+never rendered a frame for a model held the label at null while another worker
+served that model all day, and a worker reporting a stale or throttled 5000
+buried a healthy 415 on the machine beside it, for no better reason than
+connection order.
+
+The advertised number is now the median across the workers that hold the model
+and have measured it. The label exists so somebody can choose a model, not a
+machine, so it should describe the model on this fleet. A median is
+representative of a heterogeneous fleet without flattering it the way a minimum
+does or alarming the way a maximum does. A worker that has not measured is not
+counted at all, rather than being allowed to mask a worker that has, and each
+worker contributes one sample: its live heartbeat measurement, or the
+calibration it declared at hello when no heartbeat has carried one yet. When no
+worker has measured, the label is absent, which is what its absence already
+meant.
+
+An even number of measuring workers takes the lower of the two middle samples
+rather than their mean. These are milliseconds observed on different cards, and
+the mean of two dissimilar machines is a figure neither of them produced, which
+is the one thing a measurement should never be. Between the two real numbers
+available, the lower is chosen because at two workers, the size at which this
+was reported, the upper middle is simply the slower card, and handing the label
+to the slower card is the defect this closes rather than a fix for it.
+
+The number shown and the worker that serves the session can still differ:
+`pick_worker` schedules on slots and cost, not on who contributed the median.
+That is left alone deliberately. Closing it means either pinning the model list
+to a scheduling decision the session has not made yet, or pinning the session to
+the worker whose number was read, and both couple the model list to the
+scheduler to remove a discrepancy that a fleet-level label already declares
+itself to be.
+
+Rejected alternatives: the fastest worker, which flatters, since most sessions
+will not land on that card and every one that does not reads as a regression
+against the label; the slowest worker, which lets one throttled or stale card
+drag every model's number down fleet-wide, which is the reported defect with the
+sign flipped; the mean across workers, which invents a number no card produced
+and lets one absurd outlier move a figure a median would ignore; and pinning the
+label to the worker that would actually be scheduled, which is the only reading
+that cannot contradict the session that follows, but couples the model list to
+scheduling, needs the session pinned to that worker to stay true, and is a
+materially larger change than the discrepancy justifies.
+
+
 
 Chosen as conventional defaults rather than debated decisions:
 
