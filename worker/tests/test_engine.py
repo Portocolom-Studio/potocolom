@@ -3061,3 +3061,37 @@ def test_a_missing_source_is_never_substituted_by_the_model_id():
     engine._from_pretrained(FakeRepo, manifest)
 
     assert asked == [""]
+
+
+def test_closing_the_engine_stops_the_batch_collector():
+    engine = SimulatedEngine(0.0)
+
+    async def scenario():
+        await engine.frame(SIMULATED_MANIFEST, {}, b"payload")
+        collector_loop = engine._batch_collector._loop_task
+        assert collector_loop is not None and not collector_loop.done()
+        await engine.close()
+        return collector_loop.cancelled(), engine._batch_collector._loop_task
+
+    cancelled, remaining = asyncio.run(scenario())
+    assert cancelled
+    assert remaining is None
+
+
+def test_closing_the_engine_twice_does_not_raise():
+    engine = SimulatedEngine(0.0)
+
+    async def scenario():
+        await engine.frame(SIMULATED_MANIFEST, {}, b"payload")
+        await engine.close()
+        await engine.close()
+
+    asyncio.run(scenario())
+
+
+def test_closing_an_engine_that_never_ran_a_frame_does_not_raise():
+    asyncio.run(SimulatedEngine(0.0).close())
+
+
+def test_closing_a_diffusers_engine_built_without_init_does_not_raise():
+    asyncio.run(DiffusersEngine.__new__(DiffusersEngine).close())

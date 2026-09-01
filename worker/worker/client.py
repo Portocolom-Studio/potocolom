@@ -837,20 +837,25 @@ async def run() -> None:
     settings = get_settings()
     manifests, engine = build_runtime(settings)
     delay = BACKOFF_INITIAL
-    while True:
-        try:
-            async with websockets.connect(
-                settings.api_url,
-                # Lowercase: header names are case-insensitive, but not every
-                # ASGI stack normalises them before the application looks.
-                additional_headers={"x-fleet-token": settings.fleet_token},
-            ) as ws:
-                delay = BACKOFF_INITIAL
-                await serve_connection(ws, settings, manifests, engine)
-        except RegistrationRejected as error:
-            logger.error("registration rejected (%s); update this worker, not retrying", error)
-            return
-        except (OSError, websockets.WebSocketException) as error:
-            logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
-        await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
-        delay = min(delay * 2, BACKOFF_CAP)
+    try:
+        while True:
+            try:
+                async with websockets.connect(
+                    settings.api_url,
+                    # Lowercase: header names are case-insensitive, but not every
+                    # ASGI stack normalises them before the application looks.
+                    additional_headers={"x-fleet-token": settings.fleet_token},
+                ) as ws:
+                    delay = BACKOFF_INITIAL
+                    await serve_connection(ws, settings, manifests, engine)
+            except RegistrationRejected as error:
+                logger.error("registration rejected (%s); update this worker, not retrying", error)
+                return
+            except (OSError, websockets.WebSocketException) as error:
+                logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
+            await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
+            delay = min(delay * 2, BACKOFF_CAP)
+    finally:
+        # build_runtime is called once, so the engine outlives every reconnect:
+        # it is stopped when the process is, never inside the retry loop.
+        await engine.close()
