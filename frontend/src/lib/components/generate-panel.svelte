@@ -70,7 +70,7 @@
 	let sizeContext = $state({ modelId: '', optionCount: 0 });
 	let count = $state('1');
 	let normsReady = $state(false);
-	let seed = $state('');
+	let seed = $state<number | null>(null);
 	let sourceAssetId = $state<string | null>(null);
 	let branchParams = $state<Record<string, unknown>>({});
 	// Which mode raised the branch that set the two above. One panel instance
@@ -248,7 +248,7 @@
 		studio.generationPrefill = null;
 		studio.prompt = prefill.prompt;
 		sourceAssetId = prefill.sourceAssetId;
-		seed = '';
+		seed = null;
 		branchParams = { ...prefill.params };
 		delete branchParams.seed;
 		branchMode = mode;
@@ -371,7 +371,7 @@
 				height: sizeValue
 			};
 			if (mode === 'image_to_image') params.strength = strengthValue;
-			if (seed.trim() !== '') params.seed = Number(seed) + index;
+			if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
