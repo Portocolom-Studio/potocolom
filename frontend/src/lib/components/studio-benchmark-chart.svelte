@@ -20,10 +20,13 @@
 			.sort((a, b) => a.gpuMs - b.gpuMs)
 	);
 
-	const chartConfig = {
+	// $derived, not a plain const: English is prerendered and initializeLocale()
+	// runs after hydration, so t() called at module init captures English once
+	// and never re-evaluates.
+	const chartConfig = $derived({
 		gpuMs: { label: t('app.metrics.col_gpu_avg'), color: 'var(--chart-1)' },
 		wallMs: { label: t('app.metrics.col_wall'), color: 'var(--chart-3)' }
-	} satisfies Chart.ChartConfig;
+	} satisfies Chart.ChartConfig);
 
 	const chartHeight = $derived(rows.length * 56 + 48);
 </script>

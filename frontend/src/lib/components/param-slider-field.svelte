@@ -32,15 +32,22 @@
 	function onValueChange(value: number): void {
 		norm = value / notches;
 	}
+
+	// A <label for> only activates labelable elements, and the thumb that carries
+	// role="slider" is a span, so the browser will not move focus for us.
+	function focusSlider(): void {
+		document.getElementById(id)?.focus();
+	}
 </script>
 
 <div class="flex flex-col gap-2">
 	<div class="flex items-center justify-between gap-2">
-		<Label for={id}>{label}</Label>
+		<Label id="{id}-label" for={id} onclick={focusSlider}>{label}</Label>
 		<span class="text-muted-foreground text-xs tabular-nums">{valueLabel}</span>
 	</div>
 	<Slider
-		{id}
+		thumbId={id}
+		labelledBy="{id}-label"
 		type="single"
 		min={0}
 		max={notches}

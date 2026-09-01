@@ -148,7 +148,7 @@
 		const row = rows[index];
 		showReadout(event, row.model_id, [
 			`GPU ${row.gpu_display}`,
-			`Wall ${row.wall_display}`,
+			`${t('bench.wall')} ${row.wall_display}`,
 			`${t('bench.overhead')} ${formatSeconds(Math.max(0, row.wall_s - row.gpu_ms / 1000))}`
 		]);
 	}
@@ -308,7 +308,7 @@
 			<p>{t('bench.chart_grouped_desc')}</p>
 			<div class="legend">
 				<span><i class="swatch gpu"></i> GPU</span>
-				<span><i class="swatch wall"></i> Wall</span>
+				<span><i class="swatch wall"></i> {t('bench.wall')}</span>
 				<span class="quiet">{t('bench.radar_scale')}</span>
 			</div>
 		</header>
