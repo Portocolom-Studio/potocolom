@@ -207,6 +207,8 @@ class Engine(Protocol):
 
     async def unload_all(self) -> None: ...
 
+    async def close(self) -> None: ...
+
 
 def decode_input_image(data: bytes) -> Image.Image:
     """Decode a job's source image; a clear ValueError beats a Pillow OSError."""
@@ -361,6 +363,9 @@ class SimulatedEngine:
 
     async def unload_all(self) -> None:
         self._loaded.clear()
+
+    async def close(self) -> None:
+        await self._batch_collector.close()
 
     async def generate(
         self, manifest: Manifest, params: dict, progress: ProgressFn,
@@ -1612,6 +1617,9 @@ class DiffusersEngine:
     async def unload_all(self) -> None:
         async with self._gpu:
             await self._run_to_completion(self._evict_all)
+
+    async def close(self) -> None:
+        await self._batch_collector_or_create().close()
 
     def _pipeline_class(self, manifest: Manifest, mode: str) -> Any:
         import diffusers
