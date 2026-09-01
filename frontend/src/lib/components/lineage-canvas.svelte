@@ -1095,6 +1095,13 @@
 
 	function paramValue(value: unknown): string {
 		if (typeof value === 'string') return value;
+		// A strength of 0.7 that has been through one arithmetic step arrives
+		// as 0.7000000000000001, and String() prints every digit of it. Twelve
+		// significant figures is far more than any parameter here carries and
+		// still collapses the binary-float tail.
+		if (typeof value === 'number' && Number.isFinite(value)) {
+			return String(Number(value.toPrecision(12)));
+		}
 		if (value === null || typeof value !== 'object') return String(value);
 		return JSON.stringify(value);
 	}
