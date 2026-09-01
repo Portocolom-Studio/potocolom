@@ -1401,3 +1401,53 @@ def test_session_runner_ignores_resident_wording_on_other_errors():
     controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
     assert any(m.get("type") == "session_ready" for m in controls)
     assert not any(m.get("type") == "session_refused" for m in controls)
+
+
+def test_run_closes_the_engine_when_the_worker_stops(monkeypatch):
+    """Cancellation is how a worker stops, and build_runtime hands run() an
+    engine nothing else owns. Without a close on the way out the collector's
+    loop task outlives the loop that created it (issue #456)."""
+    engine = SimulatedEngine(0.0)
+
+    async def scenario():
+        serving = asyncio.Event()
+
+        class Connection:
+            def __init__(self, url, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *exc):
+                return None
+
+        async def fake_serve_connection(ws, settings, manifests, served):
+            await served.frame(SIMULATED_MANIFEST, {}, b"payload")
+            serving.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "worker.client.get_settings",
+            lambda: Settings(worker_id="w-stop", fleet_token="fleet-secret"))
+        monkeypatch.setattr("worker.client.build_runtime",
+                            lambda _settings: ([SIMULATED_MANIFEST], engine))
+        monkeypatch.setattr("worker.client.websockets.connect", Connection)
+        monkeypatch.setattr("worker.client.serve_connection", fake_serve_connection)
+
+        worker = asyncio.create_task(run())
+        await serving.wait()
+        collector_loop = engine._batch_collector._loop_task
+        assert collector_loop is not None and not collector_loop.done()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        # Read inside the loop: asyncio.run cancels every straggler on the way
+        # out, so a task checked after it returns looks stopped either way.
+        return collector_loop.cancelled(), engine._batch_collector._loop_task
+
+    cancelled, remaining = asyncio.run(scenario())
+    assert cancelled
+    assert remaining is None
