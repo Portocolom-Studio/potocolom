@@ -26,6 +26,7 @@
 	<div class="flex h-(--header-height) w-full items-center gap-2 px-4">
 		<Button class="size-8" variant="ghost" size="icon" onclick={sidebar.toggle}>
 			<SidebarIcon />
+			<span class="sr-only">{t('app.shell.toggle_sidebar')}</span>
 		</Button>
 		<Separator orientation="vertical" class="me-2 h-4" />
 		<Breadcrumb.Root class="hidden sm:block">

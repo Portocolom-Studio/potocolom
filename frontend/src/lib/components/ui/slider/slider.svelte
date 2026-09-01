@@ -12,8 +12,19 @@
 		// a track measured in parameter steps would otherwise be read out as
 		// "4 of 6" for a value of 6 (issue #250).
 		valueText,
+		// role="slider", the tabindex and the value all live on the thumb, so an
+		// id or an aria-labelledby put on the root addresses a plain span and
+		// names nothing. bits-ui has no label part; it forwards span attributes
+		// to the thumb, which is where both have to land. Single-thumb only:
+		// several thumbs would share the one id.
+		thumbId,
+		labelledBy,
 		...restProps
-	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> & { valueText?: string } = $props();
+	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> & {
+		valueText?: string;
+		thumbId?: string;
+		labelledBy?: string;
+	} = $props();
 </script>
 
 <!--
@@ -48,6 +59,8 @@ get along, so we shut typescript up by casting `value` to `never`.
 			<SliderPrimitive.Thumb
 				data-slot="slider-thumb"
 				index={thumb.index}
+				id={thumbId}
+				aria-labelledby={labelledBy}
 				aria-valuetext={valueText}
 				class="border-primary ring-ring/50 size-4 rounded-4xl border bg-white shadow-sm transition-colors hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden block shrink-0 select-none disabled:pointer-events-none disabled:opacity-50"
 			/>

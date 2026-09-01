@@ -38,7 +38,10 @@
 	// The placeholder sections keep their original shape (dead links until
 	// their issues land).
 	const deadLink = '#';
-	const placeholders = [
+	// $derived, not a plain const: English is prerendered and initializeLocale()
+	// runs after hydration, so t() called at module init captures English once
+	// and never re-evaluates.
+	const placeholders = $derived([
 		{
 			title: t('app.shell.documentation'),
 			icon: BookOpenIcon,
@@ -59,7 +62,7 @@
 				t('app.shell.limits')
 			]
 		}
-	];
+	]);
 </script>
 
 <Sidebar.Group>
@@ -78,6 +81,7 @@
 								<ChevronRightIcon
 									class="transition-transform group-data-[state=open]/collapsible:rotate-90"
 								/>
+								<span class="sr-only">{t('app.shell.toggle')} {t('app.shell.workspace')}</span>
 							</Sidebar.MenuAction>
 						{/snippet}
 					</Collapsible.Trigger>
@@ -105,6 +109,9 @@
 														<ChevronRightIcon
 															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
 														/>
+														<span class="sr-only"
+															>{t('app.shell.toggle')} {t('app.shell.models')}</span
+														>
 													</button>
 												{/snippet}
 											</Collapsible.Trigger>
@@ -160,6 +167,9 @@
 														<ChevronRightIcon
 															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
 														/>
+														<span class="sr-only"
+															>{t('app.shell.toggle')} {t('app.shell.history')}</span
+														>
 													</button>
 												{/snippet}
 											</Collapsible.Trigger>
@@ -216,6 +226,9 @@
 														<ChevronRightIcon
 															class="size-4 transition-transform group-data-[state=open]/collapsible:rotate-90"
 														/>
+														<span class="sr-only"
+															>{t('app.shell.toggle')} {t('app.shell.starred')}</span
+														>
 													</button>
 												{/snippet}
 											</Collapsible.Trigger>
@@ -266,6 +279,7 @@
 									<ChevronRightIcon
 										class="transition-transform group-data-[state=open]/collapsible:rotate-90"
 									/>
+									<span class="sr-only">{t('app.shell.toggle')} {section.title}</span>
 								</Sidebar.MenuAction>
 							{/snippet}
 						</Collapsible.Trigger>

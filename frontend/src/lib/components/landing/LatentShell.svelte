@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
+	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import type { Snippet } from 'svelte';
 
@@ -32,7 +33,10 @@
 			</a>
 			<a href={repoUrl}>{t('nav.open')}</a>
 		</nav>
-		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
+		<div class="chrome-actions">
+			<LanguageToggle />
+			<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
+		</div>
 	</header>
 
 	{@render children()}
@@ -84,6 +88,12 @@
 		align-items: center;
 		gap: 1rem;
 		padding: 1.1rem clamp(1rem, 3vw, 2.5rem);
+	}
+
+	.chrome-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
 	}
 
 	.mark {

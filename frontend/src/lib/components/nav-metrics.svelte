@@ -26,6 +26,7 @@
 						<ChevronRightIcon
 							class="transition-transform group-data-[state=open]/collapsible:rotate-90"
 						/>
+						<span class="sr-only">{t('app.shell.toggle')} {t('app.shell.metrics')}</span>
 					</Sidebar.MenuAction>
 				{/snippet}
 			</Collapsible.Trigger>
