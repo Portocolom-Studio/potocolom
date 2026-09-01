@@ -210,16 +210,23 @@ def _decoder_modules():
     return diffusers
 
 
+async def _await_frame(engine, manifest, *, prompt_cache=None, profile=False):
+    """Every frame on one engine goes through that engine's batch collector,
+    whose work Event binds to the first loop that waits on it. A test needing
+    two frames must await both in one loop; a second asyncio.run leaves the
+    collector's new task raising on the first loop's Event (issue #456)."""
+    return await engine.frame(
+        manifest,
+        {"prompt": "w0 w1"},
+        _payload(),
+        prompt_cache=prompt_cache,
+        profile=profile,
+    )
+
+
 def _frame(engine, manifest, *, prompt_cache=None, profile=False):
     return asyncio.run(
-        engine.frame(
-            manifest,
-            {"prompt": "w0 w1"},
-            _payload(),
-            prompt_cache=prompt_cache,
-            profile=profile,
-        )
-    )
+        _await_frame(engine, manifest, prompt_cache=prompt_cache, profile=profile))
 
 
 def test_default_frame_has_no_stages():
@@ -251,19 +258,30 @@ def test_prompt_cache_miss_then_hit():
     pipeline = _ProfilePipeline()
     engine = _engine(pipeline)
     cache = PromptCache()
+
+    async def scenario():
+        first = await _await_frame(
+            engine, _manifest(), prompt_cache=cache, profile=True)
+        second = await _await_frame(
+            engine, _manifest(), prompt_cache=cache, profile=True)
+        return first, second
+
     with patch.dict("sys.modules", {"diffusers": _decoder_modules()}):
-        first = _frame(engine, _manifest(), prompt_cache=cache, profile=True)
-        second = _frame(engine, _manifest(), prompt_cache=cache, profile=True)
+        first, second = asyncio.run(scenario())
     assert first.stages["text_encode_cache_hit"] == 0
     assert second.stages["text_encode_cache_hit"] == 1
 
 
 def test_simulated_engine_honors_profile():
     engine = SimulatedEngine(0.0)
-    default = asyncio.run(engine.frame(SIMULATED_MANIFEST, {}, _payload()))
-    profiled = asyncio.run(
-        engine.frame(SIMULATED_MANIFEST, {}, _payload(), profile=True)
-    )
+
+    async def scenario():
+        default = await engine.frame(SIMULATED_MANIFEST, {}, _payload())
+        profiled = await engine.frame(
+            SIMULATED_MANIFEST, {}, _payload(), profile=True)
+        return default, profiled
+
+    default, profiled = asyncio.run(scenario())
     assert default.stages is None
     assert set(profiled.stages) == PROFILE_KEYS
     assert all(type(value) is int for value in profiled.stages.values())
