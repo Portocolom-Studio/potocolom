@@ -25,8 +25,16 @@ import websockets
 
 # Importable because this script runs in an environment where the app package
 # is installed (backend/.venv locally, one shared env in CI); the wire
-# constants stay single-sourced.
+# constants stay single-sourced. `ci_database` sits beside this file; Python
+# puts the script directory on sys.path, so the import resolves when the
+# Makefile or the workflow runs `python scripts/simulate.py`.
 from app.realtime import CANVAS_FRAME, FRAME_HEADER_BYTES
+from ci_database import (
+    DEFAULT_URL,
+    ci_from_environ,
+    prepare_ci_database,
+    refuse_developer_database,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -210,4 +218,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # CI is set by Actions. A missing DATABASE_URL would otherwise fall through
+    # to the developer database and the next local auth-enable would redden main.
+    database_url = os.environ.get("DATABASE_URL", DEFAULT_URL)
+    running_in_ci = ci_from_environ()
+    refuse_developer_database(url=database_url, ci=running_in_ci)
+    if running_in_ci:
+        prepare_ci_database(database_url)
     asyncio.run(main())
