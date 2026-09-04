@@ -1415,21 +1415,6 @@ that cannot contradict the session that follows, but couples the model list to
 scheduling, needs the session pinned to that worker to stay true, and is a
 materially larger change than the discrepancy justifies.
 
-## First account UI is sign-in, challenge, and join
-
-The first account slice is three studio routes: `/login` for password and OAuth
-sign-in, the same route's challenge form when TOTP is enrolled or OAuth returns
-with `?totp=required`, and `/join` for invitation acceptance. Invitation tokens
-live in the URL hash (`/join#{token}`) so they never hit access logs. OAuth
-callbacks that need a second factor redirect to `/login?totp=required` rather
-than the home page, because the browser arrived by navigation and needs a form,
-not JSON. The marketing build (`PUBLIC_SITE_MODE=landing`) prerenders these
-routes but does not present working sign-in or join forms.
-
-Rejected alternatives: bundling first-admin setup and account settings in the
-same slice (those stay later PRs); putting the invite token in the query string
-(it would appear in access logs); leaving the OAuth TOTP return on `/?totp=required`
-(the JSON challenge cannot render after a browser navigation).
 
 ## Simulation CI uses a dedicated database name
 
@@ -1536,6 +1521,23 @@ reloads; category chips wait for #95.
 Rejected alternative: sending `q` through the same `loadRoots` path as
 starred. That would relayout the forest around the matching subset and hide
 provenance of trees that only contain a match among descendants.
+
+
+## First account UI is sign-in, challenge, and join
+
+The first account slice is three studio routes: `/login` for password and OAuth
+sign-in, the same route's challenge form when TOTP is enrolled or OAuth returns
+with `?totp=required`, and `/join` for invitation acceptance. Invitation tokens
+live in the URL hash (`/join#{token}`) so they never hit access logs. OAuth
+callbacks that need a second factor redirect to `/login?totp=required` rather
+than the home page, because the browser arrived by navigation and needs a form,
+not JSON. The marketing build (`PUBLIC_SITE_MODE=landing`) prerenders these
+routes but does not present working sign-in or join forms.
+
+Rejected alternatives: bundling first-admin setup and account settings in the
+same slice (those stay later PRs); putting the invite token in the query string
+(it would appear in access logs); leaving the OAuth TOTP return on `/?totp=required`
+(the JSON challenge cannot render after a browser navigation).
 
 
 Chosen as conventional defaults rather than debated decisions:
