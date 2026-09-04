@@ -333,6 +333,8 @@ Transitions are compare-and-set inside one transaction and idempotent, so a retr
 
 Leaving `active` revokes every session in the same transaction as the state, then reaches what a transaction cannot: the realtime sockets that bound their principal at the handshake, and the workers holding that account's jobs.
 
+Collapse and the credential routes do not share one table lock order (issue #444). Each overlapping transaction acquires the per-account advisory lock (`hold_the_account`) before anything else. HTTP callers wait three seconds, then receive 503. Collapse waits without a timeout. Role and state changes still use global `184468` for the last-administrator count. The account gate is extra and comes first. Reset-ask skips the gate, so a 503 cannot be used to enumerate accounts.
+
 Cancellation is cooperative and PostgreSQL is the authority. The row is marked `cancelled` first, and the worker is told afterwards, best effort and bounded, because an `await` cannot interrupt the thread holding the GPU. A worker takes the cancellation between diffusion steps or between upscale tiles. One that never hears it finishes its image and uploads it, and the terminal-state check that already guards every late verdict discards what it wrote. The GPU milliseconds it measured are recorded and charged either way, because the hardware really did run for that long.
 
 ### Upscale (post-generation)
@@ -353,7 +355,11 @@ How the images are pulled, and why it holds at scale:
 - History is never fetched as one account-wide response. Roots come from cursor-paged `GET /api/v1/generations?roots_only=true`. A chain-free root is laid out from that response without another request. When a branched root first enters the viewport, one `GET /api/v1/generations/{job_id}/subtree` request returns its renderable nodes and generation data; at most four subtree requests run concurrently, and the browser does not request lineage and generation detail per node. Each root includes `has_derivatives`, so the client reserves a tree row or a chain-free grid cell before that subtree loads. Subtrees are cached per root id for the session. A derivative that completes during the session prompts one revalidation; cached retained nodes and newly observed derivatives still revalidate when they change; and a capped cache remembers known omitted history so it does not repeatedly request the same omitted frontier.
 - The subtree endpoint executes one recursive database query. Its queue is bounded to 600 nodes, descendants stop at depth 100, visited job ids make it cycle safe, and all asset edges are user-owned non-thumbnail masters. A truncated response includes a conservative lower bound for omitted branches. The separate detail-view lineage endpoint remains: it uses a recursive ancestor query, a direct-child query, and a depth-100 recursive descendant count with an explicit truncation flag. The `jobs_source_asset` index serves both downward walks.
 - Bandwidth follows the zoom band. The constellation and tree bands render the WebP thumbnail rendition; the full master loads only at the card band, and never below it. Tiles outside the viewport unmount on a world coordinate test, keeping the mounted count bounded rather than growing with history.
-- Layout is deterministic from root ids, `created_at`, and `has_derivatives`. Derived trees receive separate rows and the chain-free grid occupies an independent fixed-height region, so loading a subtree cannot move a root between regions or re-index the grid. Older grid pages extend to the right. A loaded tree can increase its row height and push only later tree rows down. The viewport, its nearest root anchor and that anchor's world position, and additive per-root drag offsets are kept in browser local storage. On restore, the saved transform is translated by any change in the anchor's world position. Coordinates are clamped to plus or minus 1,000,000 world pixels, and offsets that do not match any root are discarded after root paging is exhausted. Default positions remain reproducible and nothing about the canvas is persisted server side. Root tiles are the drag handles, focused root tiles move with the arrow keys, and both one-tree and all-tree reset controls remove offsets.
+- Layout is deterministic from root ids, `created_at`, and `has_derivatives`. Derived trees receive separate rows and the chain-free grid occupies an independent fixed-height region, so loading a subtree cannot move a root between regions or re-index the grid. Older grid pages extend to the right. A loaded tree can increase its row height and push only later tree rows down. The viewport, its nearest root anchor and that anchor's world position, and additive per-root drag offsets are kept in browser local storage. On restore, the saved transform is translated by any change in the anchor's world position. Coordinates are clamped to plus or minus 1,000,000 world pixels, and offsets that do not match any root are discarded after root paging is exhausted. Default positions remain reproducible and nothing about the canvas is persisted server side. Root tiles are the drag handles. Alt plus the arrow keys move a focused root tree. One-tree and all-tree reset controls remove offsets.
+- The viewport is the keyboard surface (issue #223). The `role="application"` canvas is a single tab stop. Enter moves focus to the newest root. Escape returns focus to the viewport. Arrow keys pan when the viewport has focus. Arrow keys on a tile walk a roving tabindex (roots by recency, then tree order). A focused node off screen is force-mounted and the camera pans to it.
+- Search overlays the current forest (issue #132). `GET /api/v1/generations?q=` matches prompts. `fields=ids` returns those ids. Matches get a ring. Everything else dims. Roots are not reloaded and trees do not move. A match in an unloaded descendant stays dim until that tree loads.
+- A double-click on a tile starts a branch (issue #131). Image-to-image if the tile has bytes, else generate from the prompt, else upscale. The seed is dropped. At card zoom, each visible edge labels the delta: prompt word hunks, a shallow param compare, "new seed" when only the seed changed, and the action name.
+- Issue #224 measured per-frame cost at a few thousand nodes on this machine. Nested edge drawing and the nearest-root scan do not dominate a frame. Production canvas paint did not change.
 
 The same code path serves every deployment profile:
 
@@ -425,7 +431,7 @@ flowchart TB
     M -->|"accounts"| A["Email and password forms<br>provider buttons where configured<br>DB-backed session cookie"]
 ```
 
-The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`.
+The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`. Studio account UI starts at `/login` (password, OAuth, TOTP challenge) and `/join` (invitation accept). The invite token sits in the URL hash. An OAuth flow that still needs a second factor lands on `/login?totp=required`. The marketing build prerenders those routes and does not show working forms. Account settings and first-admin setup remain later slices of issue #10.
 
 ### Registration and login
 
@@ -999,6 +1005,8 @@ App shell with the drawing tool active (issues #3, #4):
 +---------------------------------------------------------------------------+
 ```
 
+Generate and Upscale ignore a second click while the POST that creates the job is still in flight (issue #455). The server still queues jobs after that POST lands.
+
 Generate tool, with controls rendered from the model's parameter schema (issues #2, #11):
 
 ```
@@ -1012,7 +1020,7 @@ Generate tool, with controls rendered from the model's parameter schema (issues 
 +--------------------------------------+------------------------------------+
 ```
 
-Account view (issue #10):
+Account view (issue #10). The first slice is `/login` and `/join`. Settings, sessions, and plan come later:
 
 ```
 +---------------------------------------------+

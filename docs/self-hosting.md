@@ -188,8 +188,9 @@ The link lasts one hour, is good once, and is replaced if you run `make auth-ena
 again. Nothing durable holds it, only its hash, so a lost link means minting another.
 
 Sign-in is here: address and password, an optional second factor, and Google or
-GitHub when you configure them. A session is a cookie the browser never reads,
-and an administrator invites everybody else.
+GitHub when you configure them. After you claim the administrator account, open
+`/login` in the studio. Accepting an invitation is `/join#{token}`. A session is a
+cookie the browser never reads, and an administrator invites everybody else.
 
 ### When nobody can get in
 
