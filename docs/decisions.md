@@ -1415,6 +1415,28 @@ that cannot contradict the session that follows, but couples the model list to
 scheduling, needs the session pinned to that worker to stay true, and is a
 materially larger change than the discrepancy justifies.
 
+## Focus drives the Images canvas viewport
+
+The Images canvas mounts only tiles that intersect the viewport. That made the
+keyboard stop at the painted set: tab order walked hundreds of buttons, a root
+tile swallowed the arrow keys to move the tree, and a node outside the mount
+rect was absent from the accessibility tree (issue #223).
+
+There is one tab stop on the existing `role="application"` viewport. Tiles use
+a roving tabindex over logical order (roots by recency, then tree order). Arrow
+keys on a tile move to the parent, first child, or sibling. Off-screen focused
+nodes are force-mounted, and the camera pans to them. Alt+arrows still move a
+root tree. Viewport focus still pans with the arrows. Enter on the viewport
+focuses the newest root so a keyboard user can reach a tile without a
+pointer. Escape returns focus to the viewport so arrows pan again. The
+refocus effect restores a tile only after it unmounted, never from the
+viewport. A second always-visible
+tree list is rejected: it would duplicate the canvas as the source of truth.
+
+Rejected alternatives: a skip-to-node control or always-mounted tree list (the
+issue's other candidates; both keep the viewport as a paint-only surface);
+leaving arrows as pan-only and moving trees with a modifier without a rover
+(fixes the root-tile trap, and still cannot name a culled node).
 
 
 Chosen as conventional defaults rather than debated decisions:
