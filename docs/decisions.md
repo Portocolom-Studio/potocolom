@@ -1489,6 +1489,27 @@ issue exists); applying a 3s timeout to collapse (the command would fail with
 the install half destroyed).
 
 
+## Canvas edges name what changed, and a double-click branches
+
+The Images canvas was an archive: a tile click opened the inspector, and the
+edge caption repeated the child's action. Branching from a mid-tree node and
+reading what changed between parent and child is why the tree exists (issue
+#131).
+
+Double-clicking a tile opens the generate panel as a branch from that node:
+image-to-image when the tile has bytes, otherwise a prompt generate, otherwise
+upscale. Seed is cleared so the branch explores. Inspector actions stay. At
+the card zoom band, each visible edge is a description list: prompt word
+hunks marked "added" and "removed" as text, shallow param compare, "new seed"
+when only the seed changed, and the action label. The word diff is LCS over
+whitespace-split tokens in the frontend, not a backend field.
+
+Rejected alternatives: a context menu as the only branch entry (keyboard and
+discoverability both suffer without the double-click); color-only prompt
+diffs (fail for color blindness and for the description list); showing
+numeric seed deltas (noise on every explore branch).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
