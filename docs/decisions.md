@@ -1415,6 +1415,29 @@ that cannot contradict the session that follows, but couples the model list to
 scheduling, needs the session pinned to that worker to stay true, and is a
 materially larger change than the discrepancy justifies.
 
+## There is no single table lock order; the per-account gate is the rule
+
+Collapse deletes `auth_tokens`, then `auth_factors`, then `recovery_codes`,
+then `sessions`, then `auth_identities`, then `users`. Credential routes write
+the identity before they rotate sessions, and they spend reset links before
+they lock session rows. Those two orders cannot be the same (issue #444).
+Reordering collapse's deletes cannot close the cycle: the factor routes need
+sessions after the factor, and the credential routes need identities before
+the tokens the collapse deletes first.
+
+Every overlapping transaction therefore takes the per-account advisory lock
+first, the same key the factor routes already used. HTTP routes keep the
+three-second timeout and answer 503 if the account is busy, so they cannot
+starve the pool. Collapse waits, with no timeout, and takes every non-local
+`user_id` in id order before it writes: aborting collapse at three seconds is
+the half-finished destruction this issue exists to stop. Role and state
+changes still take global `184468` for the last-administrator count; the
+account gate is additional and first.
+
+Rejected alternatives: retrying on `40P01` (hides the cycle and still leaves a
+window); a single table lock order (the routes disagree, which is why this
+issue exists); applying a 3s timeout to collapse (the command would fail with
+the install half destroyed).
 
 
 Chosen as conventional defaults rather than debated decisions:

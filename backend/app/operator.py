@@ -14,7 +14,8 @@ import uuid
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import audit, db, factors, keyring, sessions
+from app import audit, db, keyring, sessions
+from app.account_lock import hold_the_account
 from app.enable import AlreadyClaimed, mint_setup_token
 from app.settings import get_settings
 from app.tables import (
@@ -50,6 +51,15 @@ async def collapse(confirmation: str) -> dict:
                     select(func.count()).select_from(Job).where(Job.user_id != local)
                 )).scalar_one(),
             }
+            # Per-account keys first, in id order, with no timeout. HTTP
+            # routes give up after three seconds so they cannot starve the
+            # pool; this command must not, because aborting here is the
+            # half-finished destruction issue #444 exists to stop.
+            held = list((await session.execute(
+                select(User.id).where(User.id != local).order_by(User.id)
+            )).scalars().all())
+            for user_id in held:
+                await hold_the_account(session, user_id, wait=True)
             # The work first: it is what a foreign key would otherwise hold on
             # to, and moving it is the whole reason the accounts can go.
             await session.execute(update(Job).where(Job.user_id != local).values(user_id=local))
@@ -151,8 +161,7 @@ async def clear_factor(email: str) -> bool:
             # No lock_timeout here, unlike the routes: this is one short
             # transaction in a process of its own with no connection pool to
             # starve, and an operator at a terminal can wait.
-            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                  {"key": factors._budget_lock(target.id)})
+            await hold_the_account(session, target.id, wait=True)
             await session.execute(
                 select(AuthFactor.id).where(AuthFactor.user_id == target.id)
                 .with_for_update())

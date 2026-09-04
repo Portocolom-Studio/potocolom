@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -50,6 +51,15 @@ def test_asking_answers_the_same_whoever_asked(accounts):
         unknown = _ask(client, "nobody@example.com")
     assert known.status_code == unknown.status_code == 202
     assert known.json() == unknown.json()
+
+
+def test_asking_does_not_take_the_account_gate():
+    """A 503 only for an address somebody holds would enumerate accounts."""
+    source = Path(__file__).resolve().parents[1] / "app" / "recovery.py"
+    body = source.read_text()
+    start = body.index("async def ask")
+    end = body.index("async def complete")
+    assert "hold_the_account(" not in body[start:end]
 
 
 @pytest.mark.db
