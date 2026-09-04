@@ -385,8 +385,12 @@ def test_an_address_needs_something_on_both_sides_of_the_at(accounts):
 
 @pytest.mark.db
 def test_two_requests_adding_a_password_at_once_leave_one_conflict(accounts):
-    """Both read no password identity, and the unique index decides. The one
-    that loses is a conflict, not a fault of this install."""
+    """The account gate serialises them, so the unique-index race is gone.
+
+    The one that loses finds a password already there and needs the current
+    one, which is a 403 rather than a 500. A 409 from the unique index remains
+    the answer if two writers ever skip the gate.
+    """
     import asyncio
 
     from fastapi import HTTPException
@@ -421,7 +425,7 @@ def test_two_requests_adding_a_password_at_once_leave_one_conflict(accounts):
         outcomes = client.portal.call(both)
         identities = client.portal.call(_identities, user.id)
     codes = sorted(o.status_code for o in outcomes if isinstance(o, HTTPException))
-    assert codes in ([], [409])
+    assert codes in ([], [403], [409])
     assert all(not isinstance(o, Exception) or isinstance(o, HTTPException) for o in outcomes)
     assert sum(1 for i in identities if i.provider == "password") == 1
 

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.responses import Response
 
 from app import db, sessions
+from app.account_lock import hold_the_account
 from app.accounts import issue_session
 from app.auth import current_principal, require_accounts_mode
 from app.enable import _checked_email
@@ -62,6 +63,7 @@ async def change_password(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, principal.user.id)
             existing = (await session.execute(
                 select(AuthIdentity.id, AuthIdentity.password_hash)
                 .where(AuthIdentity.user_id == principal.user.id,
@@ -128,6 +130,7 @@ async def change_email(
     try:
         async with db.session_factory() as session:
             async with session.begin():
+                await hold_the_account(session, principal.user.id)
                 held = (await session.execute(
                     select(User.id).where(func.lower(func.btrim(User.email)) == normalized,
                                           User.id != principal.user.id)
@@ -164,6 +167,7 @@ async def unlink_identity(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, principal.user.id)
             # Taken, not just read: two unlinks at once each saw two
             # credentials, each removed a different one, and the account was
             # left with none, which is what this guard exists to prevent.

@@ -50,17 +50,26 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		buildLineageRover,
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
 		decideViewportScheduleAfterRootPage,
+		lineageFocusActiveKind,
+		lineageMountedIds,
+		lineageRoverEntryId,
+		lineageTileTabIndex,
+		shouldRestoreLineageTileFocus,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
+		nextLineageRoverId,
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
 		settleLineageRootStarReconciliation,
+		shouldPanToFocusedNode,
 		shouldSpendAnchorSearchPage,
+		translationToCenterNode,
 		type InitialLineageViewportAnchor,
 		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
@@ -212,35 +221,55 @@
 		}))
 	);
 	const hasTreeOffsets = $derived(Object.keys(treeOffsets).length > 0);
-	const visibleNodes = $derived.by(() => {
+	const worldNodes = $derived.by(() => {
 		const shown: VisibleNode[] = [];
 		for (const packed of packedTrees) {
 			for (const node of packed.layout.nodes) {
-				const x = packed.x + node.x;
-				const y = packed.y + node.y;
-				if (
-					rectsIntersect(worldRect, {
-						left: x - LINEAGE_TILE_WIDTH / 2,
-						top: y - LINEAGE_TILE_HEIGHT / 2,
-						right: x + LINEAGE_TILE_WIDTH / 2,
-						bottom: y + LINEAGE_TILE_HEIGHT / 2
-					})
-				) {
-					shown.push({
-						rootId: packed.rootId,
-						x,
-						y,
-						isRoot: node.id === packed.layout.rootId,
-						treeStatus: treeCache.get(packed.rootId)?.status ?? null,
-						remainingCountLowerBound: treeCache.get(packed.rootId)?.remainingCountLowerBound ?? 0,
-						node
-					});
-					if (shown.length === MAX_MOUNTED_TILES) return shown;
-				}
+				shown.push({
+					rootId: packed.rootId,
+					x: packed.x + node.x,
+					y: packed.y + node.y,
+					isRoot: node.id === packed.layout.rootId,
+					treeStatus: treeCache.get(packed.rootId)?.status ?? null,
+					remainingCountLowerBound: treeCache.get(packed.rootId)?.remainingCountLowerBound ?? 0,
+					node
+				});
 			}
 		}
 		return shown;
 	});
+	const visibleNodes = $derived.by(() => {
+		const mounted = lineageMountedIds(
+			worldNodes.map((item) => ({
+				id: item.node.id,
+				inView: rectsIntersect(worldRect, {
+					left: item.x - LINEAGE_TILE_WIDTH / 2,
+					top: item.y - LINEAGE_TILE_HEIGHT / 2,
+					right: item.x + LINEAGE_TILE_WIDTH / 2,
+					bottom: item.y + LINEAGE_TILE_HEIGHT / 2
+				})
+			})),
+			focusedNodeId,
+			MAX_MOUNTED_TILES
+		);
+		return worldNodes.filter((item) => mounted.has(item.node.id));
+	});
+	const lineageRover = $derived(
+		buildLineageRover(
+			packedTrees.map((tree) => ({
+				rootId: tree.layout.rootId,
+				createdAt: tree.createdAt,
+				nodes: tree.layout.nodes.map((node) => ({
+					id: node.id,
+					createdAt: node.data.entry.created_at
+				})),
+				edges: tree.layout.edges.map((edge) => ({
+					parentId: edge.source.id,
+					childId: edge.target.id
+				}))
+			}))
+		)
+	);
 	const forestBottom = $derived(
 		Math.max(0, ...packedTrees.map((packed) => packed.y + packed.layout.height))
 	);
@@ -729,6 +758,27 @@
 	});
 
 	$effect(() => {
+		const id = focusedNodeId;
+		const present = visibleNodes.some((item) => item.node.id === id);
+		if (id === null || !present) return;
+		untrack(() => {
+			void tick().then(() => {
+				const active = document.activeElement;
+				const kind = lineageFocusActiveKind({
+					focusedId: id,
+					activeIsNull: active === null || active === document.body,
+					activeIsViewport: active === viewportEl,
+					activeIsInspector: active !== null && Boolean(inspectorEl?.contains(active)),
+					activeNodeId: active instanceof HTMLElement ? (active.dataset.lineageNode ?? null) : null
+				});
+				if (!shouldRestoreLineageTileFocus(id, true, kind)) return;
+				const tile = viewportEl?.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`);
+				if (tile instanceof HTMLElement) tile.focus();
+			});
+		});
+	});
+
+	$effect(() => {
 		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
@@ -1052,8 +1102,43 @@
 		viewportReady = true;
 	}
 
+	function focusNode(id: string): void {
+		focusedNodeId = id;
+		const world = worldNodes.find((item) => item.node.id === id);
+		if (
+			world &&
+			shouldPanToFocusedNode({
+				nodeX: world.x,
+				nodeY: world.y,
+				tileWidth: LINEAGE_TILE_WIDTH,
+				tileHeight: LINEAGE_TILE_HEIGHT,
+				viewportWidth,
+				viewportHeight,
+				translateX,
+				translateY,
+				scale
+			})
+		) {
+			stopInertia();
+			const next = translationToCenterNode(world.x, world.y, viewportWidth, viewportHeight, scale);
+			translateX = next.translateX;
+			translateY = next.translateY;
+		}
+		void tick().then(() => {
+			const tile = viewportEl?.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`);
+			if (tile instanceof HTMLElement) tile.focus();
+		});
+	}
+
 	function onKeyDown(event: KeyboardEvent): void {
-		if ((event.target as Element).closest('.lineage-tile.is-root')) return;
+		if ((event.target as Element).closest('.lineage-tile')) return;
+		if (event.key === 'Enter' && event.target === viewportEl) {
+			const id = lineageRoverEntryId(lineageRover);
+			if (id === null) return;
+			event.preventDefault();
+			focusNode(id);
+			return;
+		}
 		if (event.key === 'ArrowLeft') {
 			translateX = clampLineageCoordinate(translateX + PAN_STEP);
 		} else if (event.key === 'ArrowRight') {
@@ -1658,13 +1743,40 @@
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
 						title={promptLabel(data)}
+						tabindex={lineageTileTabIndex(item.node.id, focusedNodeId)}
+						data-lineage-node={item.node.id}
 						onfocus={() => (focusedNodeId = item.node.id)}
-						onblur={() => (focusedNodeId = null)}
 						onpointerdown={(event) => {
 							if (item.isRoot) startTreeDrag(event, item.rootId);
 						}}
 						onkeydown={(event) => {
-							if (item.isRoot) moveTreeFromKeyboard(event, item.rootId);
+							if (event.key === 'Escape') {
+								event.preventDefault();
+								event.stopPropagation();
+								viewportEl?.focus();
+								return;
+							}
+							if (event.altKey && item.isRoot) {
+								moveTreeFromKeyboard(event, item.rootId);
+								return;
+							}
+							if (event.altKey) return;
+							const next = nextLineageRoverId(lineageRover, item.node.id, event.key);
+							if (next === null) {
+								if (
+									event.key === 'ArrowLeft' ||
+									event.key === 'ArrowRight' ||
+									event.key === 'ArrowUp' ||
+									event.key === 'ArrowDown'
+								) {
+									event.preventDefault();
+									event.stopPropagation();
+								}
+								return;
+							}
+							event.preventDefault();
+							event.stopPropagation();
+							focusNode(next);
 						}}
 						onclick={(event) => onTileClick(event, data, item.rootId, item.isRoot)}
 						ondblclick={(event) => {
