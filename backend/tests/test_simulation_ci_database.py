@@ -1,8 +1,10 @@
 """Simulation must not share the developer database with local auth-enable."""
 
+import asyncio
 import importlib.util
 from pathlib import Path
 
+import asyncpg
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,3 +56,71 @@ def test_simulation_workflow_sets_the_ci_database():
     source = (ROOT / ".github" / "workflows" / "simulation.yml").read_text()
     assert "DATABASE_URL" in source
     assert CI_URL in source
+
+
+class _Catalog:
+    def __init__(self, *, exists=None, create_error=None):
+        self._exists = exists
+        self._create_error = create_error
+        self.executed = []
+
+    async def fetchval(self, query, *args):
+        assert "pg_database" in query
+        return self._exists
+
+    async def execute(self, query):
+        self.executed.append(query)
+        if self._create_error is not None:
+            raise self._create_error
+
+    async def close(self):
+        return None
+
+
+class _Target:
+    def __init__(self):
+        self.executed = []
+
+    async def fetchval(self, query, *args):
+        assert "to_regclass" in query
+        return "installation_auth_state"
+
+    async def execute(self, query):
+        self.executed.append(query)
+
+    async def close(self):
+        return None
+
+
+def _stub_connect(monkeypatch, catalog, target):
+    async def connect(**kwargs):
+        if kwargs.get("database") == "postgres":
+            return catalog
+        return target
+
+    monkeypatch.setattr(asyncpg, "connect", connect)
+
+
+def test_prepare_treats_a_duplicate_create_as_already_there(monkeypatch):
+    catalog = _Catalog(
+        exists=None,
+        create_error=asyncpg.DuplicateDatabaseError(
+            'database "potocolom_ci" already exists'
+        ),
+    )
+    target = _Target()
+    _stub_connect(monkeypatch, catalog, target)
+    asyncio.run(ci_database._prepare(CI_URL))
+    assert target.executed == [
+        "UPDATE installation_auth_state SET auth_mode = 'none', "
+        "root_key_version = NULL WHERE id = 1"
+    ]
+
+
+def test_prepare_still_fails_on_an_unrelated_create_error(monkeypatch):
+    catalog = _Catalog(exists=None, create_error=asyncpg.CannotConnectNowError("starting"))
+    target = _Target()
+    _stub_connect(monkeypatch, catalog, target)
+    with pytest.raises(asyncpg.CannotConnectNowError):
+        asyncio.run(ci_database._prepare(CI_URL))
+    assert target.executed == []

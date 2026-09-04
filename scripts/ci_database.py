@@ -65,7 +65,11 @@ async def _prepare(url: str) -> None:
             "SELECT 1 FROM pg_database WHERE datname = $1", name
         )
         if not exists:
-            await conn.execute(f'CREATE DATABASE "{name}"')
+            try:
+                await conn.execute(f'CREATE DATABASE "{name}"')
+            except asyncpg.DuplicateDatabaseError:
+                # Another job created it between the catalog check and here.
+                pass
     finally:
         await conn.close()
     target = await asyncpg.connect(
