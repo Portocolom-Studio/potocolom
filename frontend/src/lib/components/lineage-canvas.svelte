@@ -52,17 +52,26 @@
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
+		buildLineageRover,
 		decideInitialLineageViewportFollow,
 		decideLineageLiveArrival,
 		decideLineageTreeLoad,
 		decideViewportScheduleAfterRootPage,
+		lineageFocusActiveKind,
+		lineageMountedIds,
+		lineageRoverEntryId,
+		lineageTileTabIndex,
+		shouldRestoreLineageTileFocus,
 		lineageTreeOmittedHistoryJobIds,
 		lineageTreeNeedsHistoryRefresh,
+		nextLineageRoverId,
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
 		retainedRetryBudget,
 		settleLineageRootStarReconciliation,
+		shouldPanToFocusedNode,
 		shouldSpendAnchorSearchPage,
+		translationToCenterNode,
 		type InitialLineageViewportAnchor,
 		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
@@ -80,6 +89,7 @@
 		type PackedLineageTree,
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
+	import { collapsePromptDiff, paramDeltas, promptWordDiff } from '$lib/prompt-diff';
 	import {
 		lineageSearchMatchPositions,
 		lineageSearchMatchRootIds,
@@ -168,6 +178,7 @@
 	let refreshedImageIds = new Set<string>();
 	let pointerWorld = $state<{ x: number; y: number } | null>(null);
 	let focusedNodeId = $state<string | null>(null);
+	let expandedEdgeIds = $state(new Set<string>());
 	let selectionOrigin: HTMLButtonElement | null = null;
 	let reducedMotion = false;
 	let recentering = $state(false);
@@ -225,35 +236,55 @@
 	);
 	const searchMatchRootIds = $derived(lineageSearchMatchRootIds(packedTrees, searchMatchIds));
 	const hasTreeOffsets = $derived(Object.keys(treeOffsets).length > 0);
-	const visibleNodes = $derived.by(() => {
+	const worldNodes = $derived.by(() => {
 		const shown: VisibleNode[] = [];
 		for (const packed of packedTrees) {
 			for (const node of packed.layout.nodes) {
-				const x = packed.x + node.x;
-				const y = packed.y + node.y;
-				if (
-					rectsIntersect(worldRect, {
-						left: x - LINEAGE_TILE_WIDTH / 2,
-						top: y - LINEAGE_TILE_HEIGHT / 2,
-						right: x + LINEAGE_TILE_WIDTH / 2,
-						bottom: y + LINEAGE_TILE_HEIGHT / 2
-					})
-				) {
-					shown.push({
-						rootId: packed.rootId,
-						x,
-						y,
-						isRoot: node.id === packed.layout.rootId,
-						treeStatus: treeCache.get(packed.rootId)?.status ?? null,
-						remainingCountLowerBound: treeCache.get(packed.rootId)?.remainingCountLowerBound ?? 0,
-						node
-					});
-					if (shown.length === MAX_MOUNTED_TILES) return shown;
-				}
+				shown.push({
+					rootId: packed.rootId,
+					x: packed.x + node.x,
+					y: packed.y + node.y,
+					isRoot: node.id === packed.layout.rootId,
+					treeStatus: treeCache.get(packed.rootId)?.status ?? null,
+					remainingCountLowerBound: treeCache.get(packed.rootId)?.remainingCountLowerBound ?? 0,
+					node
+				});
 			}
 		}
 		return shown;
 	});
+	const visibleNodes = $derived.by(() => {
+		const mounted = lineageMountedIds(
+			worldNodes.map((item) => ({
+				id: item.node.id,
+				inView: rectsIntersect(worldRect, {
+					left: item.x - LINEAGE_TILE_WIDTH / 2,
+					top: item.y - LINEAGE_TILE_HEIGHT / 2,
+					right: item.x + LINEAGE_TILE_WIDTH / 2,
+					bottom: item.y + LINEAGE_TILE_HEIGHT / 2
+				})
+			})),
+			focusedNodeId,
+			MAX_MOUNTED_TILES
+		);
+		return worldNodes.filter((item) => mounted.has(item.node.id));
+	});
+	const lineageRover = $derived(
+		buildLineageRover(
+			packedTrees.map((tree) => ({
+				rootId: tree.layout.rootId,
+				createdAt: tree.createdAt,
+				nodes: tree.layout.nodes.map((node) => ({
+					id: node.id,
+					createdAt: node.data.entry.created_at
+				})),
+				edges: tree.layout.edges.map((edge) => ({
+					parentId: edge.source.id,
+					childId: edge.target.id
+				}))
+			}))
+		)
+	);
 	const forestBottom = $derived(
 		Math.max(0, ...packedTrees.map((packed) => packed.y + packed.layout.height))
 	);
@@ -794,6 +825,27 @@
 	});
 
 	$effect(() => {
+		const id = focusedNodeId;
+		const present = visibleNodes.some((item) => item.node.id === id);
+		if (id === null || !present) return;
+		untrack(() => {
+			void tick().then(() => {
+				const active = document.activeElement;
+				const kind = lineageFocusActiveKind({
+					focusedId: id,
+					activeIsNull: active === null || active === document.body,
+					activeIsViewport: active === viewportEl,
+					activeIsInspector: active !== null && Boolean(inspectorEl?.contains(active)),
+					activeNodeId: active instanceof HTMLElement ? (active.dataset.lineageNode ?? null) : null
+				});
+				if (!shouldRestoreLineageTileFocus(id, true, kind)) return;
+				const tile = viewportEl?.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`);
+				if (tile instanceof HTMLElement) tile.focus();
+			});
+		});
+	});
+
+	$effect(() => {
 		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
@@ -1118,8 +1170,43 @@
 		viewportReady = true;
 	}
 
+	function focusNode(id: string): void {
+		focusedNodeId = id;
+		const world = worldNodes.find((item) => item.node.id === id);
+		if (
+			world &&
+			shouldPanToFocusedNode({
+				nodeX: world.x,
+				nodeY: world.y,
+				tileWidth: LINEAGE_TILE_WIDTH,
+				tileHeight: LINEAGE_TILE_HEIGHT,
+				viewportWidth,
+				viewportHeight,
+				translateX,
+				translateY,
+				scale
+			})
+		) {
+			stopInertia();
+			const next = translationToCenterNode(world.x, world.y, viewportWidth, viewportHeight, scale);
+			translateX = next.translateX;
+			translateY = next.translateY;
+		}
+		void tick().then(() => {
+			const tile = viewportEl?.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`);
+			if (tile instanceof HTMLElement) tile.focus();
+		});
+	}
+
 	function onKeyDown(event: KeyboardEvent): void {
-		if ((event.target as Element).closest('.lineage-tile.is-root, [data-lineage-search]')) return;
+		if ((event.target as Element).closest('.lineage-tile, [data-lineage-search]')) return;
+		if (event.key === 'Enter' && event.target === viewportEl) {
+			const id = lineageRoverEntryId(lineageRover);
+			if (id === null) return;
+			event.preventDefault();
+			focusNode(id);
+			return;
+		}
 		if (event.key === 'ArrowLeft') {
 			translateX = clampLineageCoordinate(translateX + PAN_STEP);
 		} else if (event.key === 'ArrowRight') {
@@ -1139,6 +1226,33 @@
 
 	function actionLabel(action: LineageEntry['action']): string {
 		return t(`app.lineage.${action}`);
+	}
+
+	function generationParams(data: CanvasNodeData): Record<string, unknown> {
+		return { ...(data.generation?.params ?? {}) };
+	}
+
+	function edgeDelta(edge: {
+		id: string;
+		source: { data: CanvasNodeData };
+		target: { data: CanvasNodeData };
+	}): {
+		prompt: ReturnType<typeof collapsePromptDiff>;
+		params: ReturnType<typeof paramDeltas>;
+		parentModel: string | null;
+		childModel: string | null;
+	} {
+		const parent = generationParams(edge.source.data);
+		const child = generationParams(edge.target.data);
+		const full = promptWordDiff(String(parent.prompt ?? ''), String(child.prompt ?? ''));
+		return {
+			prompt: expandedEdgeIds.has(edge.id)
+				? { tokens: full, truncated: false }
+				: collapsePromptDiff(full),
+			params: paramDeltas(parent, child),
+			parentModel: edge.source.data.generation?.model_id ?? edge.source.data.entry.model_id,
+			childModel: edge.target.data.generation?.model_id ?? edge.target.data.entry.model_id
+		};
 	}
 
 	function modelLabel(data: CanvasNodeData): string {
@@ -1262,47 +1376,81 @@
 		saveLineageViewport(lineageViewport());
 	}
 
-	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {
-		if (selectedData === null) return;
-		const modelId = selectedGeneration?.model_id ?? selectedData.entry.model_id;
-		const params = { ...(selectedGeneration?.params ?? {}) };
+	function openFromNode(
+		data: CanvasNodeData,
+		mode: 'generate' | 'image_to_image' | 'upscale'
+	): void {
+		const generation =
+			data.generation ?? (data.entry.job_id ? (generationById(data.entry.job_id) ?? null) : null);
+		const asset =
+			generation?.assets.find((item) => item.id === data.entry.asset_id) ??
+			generation?.assets[0] ??
+			null;
+		const prompt = (generation?.params.prompt ?? '').trim();
+		const modelId = generation?.model_id ?? data.entry.model_id;
+		const params = { ...(generation?.params ?? {}) };
 		delete params.seed;
 		if (mode === 'generate') {
-			if (!canGenerateFromPrompt) return;
+			if (prompt === '' || textToImageModels.length === 0) return;
 			studio.modelId = preferredModelId(textToImageModels, modelId);
 			studio.generationPrefill = {
 				mode,
 				sourceAssetId: null,
-				prompt: selectedPrompt,
+				prompt,
 				modelId: studio.modelId,
 				params: {}
 			};
 		} else if (mode === 'image_to_image') {
-			if (!canEditSelected || selectedAsset === null) return;
+			if (asset === null || data.entry.missing || imageToImageModels.length === 0) return;
 			studio.imageToImageModelId = preferredModelId(imageToImageModels, modelId);
 			studio.generationPrefill = {
 				mode,
-				sourceAssetId: selectedAsset.id,
-				prompt: selectedPrompt,
+				sourceAssetId: asset.id,
+				prompt,
 				modelId: studio.imageToImageModelId,
 				params
 			};
 		} else {
-			if (!canUpscaleSelected || selectedAsset === null) return;
+			if (asset === null || data.entry.missing || upscaleModels.length === 0) return;
 			studio.upscaleModelId =
 				upscaleModels.find((model) => model.id === modelId)?.id ??
 				defaultUpscaleModelId(studio.models);
 			studio.generationPrefill = {
 				mode,
-				sourceAssetId: selectedAsset.id,
-				prompt: selectedPrompt,
+				sourceAssetId: asset.id,
+				prompt,
 				modelId: studio.upscaleModelId,
 				params
 			};
 		}
-		studio.prompt = selectedPrompt;
+		studio.prompt = prompt;
 		saveViewport();
 		openService(mode);
+	}
+
+	function openFromSelection(mode: 'generate' | 'image_to_image' | 'upscale'): void {
+		if (selectedData === null) return;
+		openFromNode(selectedData, mode);
+	}
+
+	function branchFromNode(data: CanvasNodeData): void {
+		const generation =
+			data.generation ?? (data.entry.job_id ? (generationById(data.entry.job_id) ?? null) : null);
+		const asset =
+			generation?.assets.find((item) => item.id === data.entry.asset_id) ??
+			generation?.assets[0] ??
+			null;
+		const prompt = (generation?.params.prompt ?? '').trim();
+		const hasBytes = !data.entry.missing && asset !== null;
+		if (hasBytes && imageToImageModels.length > 0) {
+			openFromNode(data, 'image_to_image');
+			return;
+		}
+		if (prompt !== '' && textToImageModels.length > 0) {
+			openFromNode(data, 'generate');
+			return;
+		}
+		if (hasBytes && upscaleModels.length > 0) openFromNode(data, 'upscale');
 	}
 
 	function imageUrl(data: CanvasNodeData, band: typeof lod): string | null {
@@ -1573,12 +1721,14 @@
 									d={lineageEdgePath(edge.source, edge.target, tree.x, tree.y)}
 									marker-end="url(#lineage-arrow)"
 								/>
-								<text
-									x={tree.x + (edge.source.x + edge.target.x) / 2}
-									y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
-								>
-									{actionLabel(edge.target.data.entry.action)}
-								</text>
+								{#if lod !== 'cards'}
+									<text
+										x={tree.x + (edge.source.x + edge.target.x) / 2}
+										y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
+									>
+										{actionLabel(edge.target.data.entry.action)}
+									</text>
+								{/if}
 							</g>
 						{/if}
 					{/each}
@@ -1590,6 +1740,78 @@
 					{timeLabel(tree.createdAt)}
 				</span>
 			{/each}
+
+			{#if lod === 'cards'}
+				{#each packedTrees as tree (tree.rootId)}
+					{#each tree.layout.edges as edge (edge.id)}
+						{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
+						{@const edgeTop = tree.y + Math.min(edge.source.y, edge.target.y)}
+						{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
+						{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
+						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
+							{@const delta = edgeDelta(edge)}
+							<dl
+								class="edge-delta"
+								class:is-active={selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={selectedNode !== null && !selectedPathEdgeIds.has(edge.id)}
+								style={`left: ${tree.x + (edge.source.x + edge.target.x) / 2}px; top: ${tree.y + (edge.source.y + edge.target.y) / 2}px`}
+							>
+								<div>
+									<dt>{t('app.images.delta_action')}</dt>
+									<dd>{actionLabel(edge.target.data.entry.action)}</dd>
+								</div>
+								{#each delta.prompt.tokens as token, tokenIndex (`${token.kind}:${tokenIndex}`)}
+									{#if token.kind === 'added' || token.kind === 'removed'}
+										<div>
+											<dt>
+												{token.kind === 'added'
+													? t('app.images.delta_added')
+													: t('app.images.delta_removed')}
+											</dt>
+											<dd>{token.text}</dd>
+										</div>
+									{/if}
+								{/each}
+								{#if delta.prompt.truncated}
+									<button
+										type="button"
+										class="edge-delta-expand"
+										onclick={(event) => {
+											event.stopPropagation();
+											expandedEdgeIds = new Set([...expandedEdgeIds, edge.id]);
+										}}
+									>
+										{t('app.images.delta_expand')}
+									</button>
+								{/if}
+								{#if delta.parentModel && delta.childModel && delta.parentModel !== delta.childModel}
+									<div>
+										<dt>{t('app.images.delta_model')}</dt>
+										<dd>{delta.parentModel} -> {delta.childModel}</dd>
+									</div>
+								{/if}
+								{#each delta.params as change (change.kind === 'new-seed' ? 'new-seed' : `${change.kind}:${change.key}`)}
+									<div>
+										{#if change.kind === 'new-seed'}
+											<dt>{t('app.images.delta_new_seed')}</dt>
+											<dd></dd>
+										{:else if change.kind === 'changed'}
+											<dt>{change.key}</dt>
+											<dd>{change.from} -> {change.to}</dd>
+										{:else if change.kind === 'added'}
+											<dt>{t('app.images.delta_added')}</dt>
+											<dd>{change.key}: {change.value}</dd>
+										{:else}
+											<dt>{t('app.images.delta_removed')}</dt>
+											<dd>{change.key}: {change.value}</dd>
+										{/if}
+									</div>
+								{/each}
+							</dl>
+						{/if}
+					{/each}
+				{/each}
+			{/if}
 
 			{#each visibleNodes as item (`${item.rootId}:${item.node.id}`)}
 				{@const data = item.node.data}
@@ -1614,15 +1836,47 @@
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
 						title={promptLabel(data)}
+						tabindex={lineageTileTabIndex(item.node.id, focusedNodeId)}
+						data-lineage-node={item.node.id}
 						onfocus={() => (focusedNodeId = item.node.id)}
-						onblur={() => (focusedNodeId = null)}
 						onpointerdown={(event) => {
 							if (item.isRoot) startTreeDrag(event, item.rootId);
 						}}
 						onkeydown={(event) => {
-							if (item.isRoot) moveTreeFromKeyboard(event, item.rootId);
+							if (event.key === 'Escape') {
+								event.preventDefault();
+								event.stopPropagation();
+								viewportEl?.focus();
+								return;
+							}
+							if (event.altKey && item.isRoot) {
+								moveTreeFromKeyboard(event, item.rootId);
+								return;
+							}
+							if (event.altKey) return;
+							const next = nextLineageRoverId(lineageRover, item.node.id, event.key);
+							if (next === null) {
+								if (
+									event.key === 'ArrowLeft' ||
+									event.key === 'ArrowRight' ||
+									event.key === 'ArrowUp' ||
+									event.key === 'ArrowDown'
+								) {
+									event.preventDefault();
+									event.stopPropagation();
+								}
+								return;
+							}
+							event.preventDefault();
+							event.stopPropagation();
+							focusNode(next);
 						}}
 						onclick={(event) => onTileClick(event, data, item.rootId, item.isRoot)}
+						ondblclick={(event) => {
+							event.preventDefault();
+							event.stopPropagation();
+							branchFromNode(data);
+						}}
 					>
 						{#if item.isRoot}
 							<span
@@ -1975,6 +2229,56 @@
 
 	.lod-constellation .lineage-edges text {
 		display: none;
+	}
+
+	.edge-delta {
+		position: absolute;
+		z-index: 2;
+		width: max-content;
+		max-width: 14rem;
+		margin: 0;
+		padding: 0.35rem 0.5rem;
+		transform: translate(-50%, -50%);
+		background: color-mix(in oklab, var(--background) 88%, transparent);
+		border: 1px solid var(--border);
+		border-radius: 0.4rem;
+		color: var(--foreground);
+		font-size: 11px;
+		line-height: 1.35;
+		pointer-events: auto;
+	}
+
+	.edge-delta.is-dimmed {
+		opacity: 0.16;
+	}
+
+	.edge-delta div {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 0.25rem 0.5rem;
+	}
+
+	.edge-delta dt {
+		margin: 0;
+		color: var(--muted-foreground);
+		font-weight: 600;
+	}
+
+	.edge-delta dd {
+		margin: 0;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.edge-delta-expand {
+		margin-top: 0.25rem;
+		padding: 0;
+		border: 0;
+		background: none;
+		color: var(--primary);
+		font: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	.cluster-time {

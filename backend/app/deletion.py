@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response, StreamingResponse
 
 from app import audit, db, jobs, sessions
+from app.account_lock import hold_the_account
 from app.auth import current_principal, require_accounts_mode, require_role
 from app.tables import Asset, AuthIdentity, AuthToken, Job, Session, User
 
@@ -44,6 +45,7 @@ async def request(session: AsyncSession, user_id: uuid.UUID) -> bool:
     revocation and the note of what to restore become durable together or not
     at all.
     """
+    await hold_the_account(session, user_id)
     changed = (await session.execute(
         update(User)
         .where(User.id == user_id, User.state != "deletion_pending", User.state != "purging")
@@ -202,6 +204,7 @@ async def restore(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, user_id)
             target = await session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Not Found")
@@ -263,6 +266,7 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
             # the account back in service: destroying it then would delete a
             # live account somebody just saved. Nothing below runs unless this
             # statement is the one that moved the row.
+            await hold_the_account(session, user_id)
             claimed = (await session.execute(
                 update(User)
                 .where(User.id == user_id,
@@ -282,6 +286,7 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
         await _forget_object(key)
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, user_id)
             # Assets first, then jobs. An asset points at the job that made it
             # and a job at the asset it started from, so the second delete
             # depends on the first having happened.

@@ -11,7 +11,7 @@ The four path-filtered workflows in `.github/workflows/`:
 | backend | Docker (postgres service container), Python 3.11 |
 | worker | Python 3.11 |
 | frontend | Node 24 |
-| simulation | Python 3.11 |
+| simulation | Python 3.11, host postgres database `potocolom_ci` |
 
 GPU inference is not in CI. `make verify` locally matches what these jobs run.
 
@@ -31,7 +31,7 @@ python3.11 --version
 node --version   # 24.x
 ```
 
-Keep Docker running (`systemctl enable --now docker`). The backend workflow uses postgres on host port **15432** so it does not clash with `make deps` on :5432.
+Keep Docker running (`systemctl enable --now docker`). The backend workflow maps postgres to a free host port so two backend jobs do not collide, and so it does not clash with `make deps` on :5432.
 
 ### 2. Register and start the runners
 
@@ -50,7 +50,9 @@ Every target installs and controls `CI_RUNNERS` runner instances (default **4**)
 
 Change the count with `make ci-runner-install CI_RUNNERS=6`, and pass the same value to the start, stop, and status targets. The reference desktop has 32 CPUs and 61 GB of RAM, so 4 concurrent jobs are comfortable.
 
-Two workflows bind fixed host ports (backend on 15432, simulation on 8901), so both declare a `concurrency` group. Runs of the same workflow still queue one at a time; different workflows run in parallel. Add a `concurrency` group to any new workflow that binds a host port.
+Two workflows bind host resources (backend postgres via Docker on a free port, simulation on a free API port and the shared `potocolom_ci` database), so both declare a `concurrency` group. Runs of the same workflow still queue one at a time. Different workflows run in parallel. Add a `concurrency` group to any new workflow that binds a host port or the CI database.
+
+Simulation talks to the host PostgreSQL, not the backend job's Docker postgres. It uses the database `potocolom_ci`, created on first run, and never the developer database `potocolom`. A local `make auth-enable` therefore cannot redden `main`. The script refuses to start in CI if `DATABASE_URL` still names `potocolom`.
 
 To add instances later, run `make ci-runner-install` again: it skips the directories that are already configured.
 
