@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text, update
 from starlette.responses import Response
 
 from app import audit, db, sessions
+from app.account_lock import hold_the_account
 from app.auth import current_principal, require_accounts_mode, require_role
 from app.tables import AuthToken, Session, User
 
@@ -50,6 +51,7 @@ async def change_role(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, user_id)
             target = await session.get(User, user_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Not Found")

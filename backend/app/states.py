@@ -14,6 +14,7 @@ from sqlalchemy import func, select, text, update
 from starlette.responses import Response
 
 from app import audit, db, jobs, sessions
+from app.account_lock import hold_the_account
 from app.auth import require_accounts_mode, require_role
 from app.tables import AuthToken, Job, Session, User
 
@@ -58,6 +59,7 @@ async def change_state(
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, user_id)
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
                                   {"key": STATE_CHANGE_LOCK})
             target = await session.get(User, user_id)

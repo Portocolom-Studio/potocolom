@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text, update
 
 from app import db, factors, keyring, sessions, totp
+from app.account_lock import budget_lock
 from app.main import app
 from app.passwords import hash_password
 from app.settings import get_settings
@@ -1483,7 +1484,7 @@ def test_a_route_gives_up_rather_than_queue_on_the_account(accounts, route):
             async with db.session_factory() as session:
                 async with session.begin():
                     await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                          {"key": factors._budget_lock(user.id)})
+                                          {"key": budget_lock(user.id)})
                     holding.set()
                     await release.wait()
 
