@@ -42,7 +42,10 @@ function bush(prefix: string, remaining: number, createdAt: string): LineageLayo
 	return { id, createdAt, data: { action: 'image_to_image' }, children };
 }
 
-export function buildSyntheticForest(nodeCount: number, treeCount: number): PackedLineageTree<BenchData>[] {
+export function buildSyntheticForest(
+	nodeCount: number,
+	treeCount: number
+): PackedLineageTree<BenchData>[] {
 	const perTree = Math.max(1, Math.floor(nodeCount / treeCount));
 	const layouts = Array.from({ length: treeCount }, (_, index) => {
 		const createdAt = new Date(1_700_000_000_000 - index * 1000).toISOString();
@@ -57,7 +60,10 @@ export function buildSyntheticForest(nodeCount: number, treeCount: number): Pack
 	return packLineageForest(layouts);
 }
 
-function edgeBounds(tree: PackedLineageTree<BenchData>, edge: PackedLineageTree<BenchData>['layout']['edges'][number]) {
+function edgeBounds(
+	tree: PackedLineageTree<BenchData>,
+	edge: PackedLineageTree<BenchData>['layout']['edges'][number]
+) {
 	return {
 		left: tree.x + Math.min(edge.source.x, edge.target.x),
 		top: tree.y + Math.min(edge.source.y, edge.target.y),
