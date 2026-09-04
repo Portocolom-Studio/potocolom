@@ -54,7 +54,11 @@ export async function parseAuthError(response: Response): Promise<AuthError> {
 	}
 
 	if (response.status === 429 || detail === 'too many sign-in attempts') {
-		return { kind: 'rate_limited', message: detail || 'too many sign-in attempts', retryAfterSeconds };
+		return {
+			kind: 'rate_limited',
+			message: detail || 'too many sign-in attempts',
+			retryAfterSeconds
+		};
 	}
 	if (response.status === 503 || detail === 'sign-in is busy, try again shortly') {
 		return {

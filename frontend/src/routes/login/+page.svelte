@@ -36,7 +36,9 @@
 	let submitting = $state(false);
 	let challengeAttempts = $state(0);
 
-	const showPasswordForm = $derived(!landing && authMethods.includes('password') && !shouldShowChallenge(view));
+	const showPasswordForm = $derived(
+		!landing && authMethods.includes('password') && !shouldShowChallenge(view)
+	);
 	const showChallengeForm = $derived(!landing && shouldShowChallenge(view));
 	const showGoogle = $derived(!landing && authMethods.includes('google'));
 	const showGithub = $derived(!landing && authMethods.includes('github'));
@@ -133,7 +135,9 @@
 		}
 		if (parsed.kind === 'busy') {
 			const seconds = parsed.retryAfterSeconds;
-			return seconds ? t('auth.error.busy_seconds').replace('{seconds}', String(seconds)) : t('auth.error.busy');
+			return seconds
+				? t('auth.error.busy_seconds').replace('{seconds}', String(seconds))
+				: t('auth.error.busy');
 		}
 		if (parsed.kind === 'invalid') return t('auth.error.invalid');
 		return t('auth.error.generic');

@@ -13,7 +13,10 @@ export function csrfHeaders(cookie: string): Record<string, string> {
 	return token ? { 'x-csrf-token': token } : {};
 }
 
-export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(
+	input: RequestInfo | URL,
+	init: RequestInit = {}
+): Promise<Response> {
 	const headers = new Headers(init.headers);
 	if (typeof document !== 'undefined') {
 		const csrf = csrfHeaders(document.cookie);

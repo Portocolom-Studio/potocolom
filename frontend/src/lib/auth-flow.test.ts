@@ -60,8 +60,5 @@ test('wiring: login submit uses the shared guard', () => {
 	assert.match(loginSource, /!landing &&/);
 	assert.match(loginSource, /let view = \$state<AuthView>\('password'\)/);
 	assert.match(loginSource, /view = initialAuthView\(page\.url\.search\)/);
-	assert.doesNotMatch(
-		loginSource,
-		/\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/
-	);
+	assert.doesNotMatch(loginSource, /\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/);
 });
