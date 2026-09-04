@@ -381,7 +381,9 @@
 					body: JSON.stringify({
 						model_id: activeModelId,
 						params,
-						...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
+						...(mode === 'image_to_image' && sourceAssetId
+							? { source_asset_id: sourceAssetId }
+							: {})
 					})
 				});
 				if (!response.ok) {
