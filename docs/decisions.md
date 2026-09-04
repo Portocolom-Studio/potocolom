@@ -1510,6 +1510,19 @@ diffs (fail for color blindness and for the description list); showing
 numeric seed deltas (noise on every explore branch).
 
 
+## Canvas search is an overlay, not a relayout
+
+`GET /api/v1/generations?q=` filters by prompt (pg_trgm GIN on
+`params->>'prompt'`). `fields=ids` returns only matching ids so the Images
+canvas can ring matches and dim the rest (issue #132). Applying that filter
+does not reload roots or change tree positions. The starred-roots chip still
+reloads; category chips wait for #95.
+
+Rejected alternative: sending `q` through the same `loadRoots` path as
+starred. That would relayout the forest around the matching subset and hide
+provenance of trees that only contain a match among descendants.
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
