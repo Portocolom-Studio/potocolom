@@ -35,5 +35,6 @@ jobs:
       - run: .ci-venv/bin/python scripts/simulate.py
         timeout-minutes: 3
         env:
+          DATABASE_URL: postgresql://potocolom:potocolom@localhost:5432/potocolom_ci
           FLEET_TOKEN_KEY: test-fleet-token
           FLEET_TOKEN: test-fleet-token

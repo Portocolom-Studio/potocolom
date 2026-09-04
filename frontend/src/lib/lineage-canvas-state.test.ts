@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
 	LINEAGE_WORLD_LIMIT,
 	beginOptimisticStarMutation,
+	buildLineageRover,
 	clampLineageCoordinate,
 	decideInitialLineageViewportFollow,
 	decideLineageLiveArrival,
 	decideLineageTreeLoad,
 	decideViewportScheduleAfterRootPage,
+	lineageMountedIds,
+	lineageRoverEntryId,
+	lineageTileTabIndex,
 	lineageTreeOmittedHistoryJobIds,
 	lineageTreeNeedsHistoryRefresh,
+	nextLineageRoverId,
+	shouldPanToFocusedNode,
+	shouldRestoreLineageTileFocus,
 	shouldSpendAnchorSearchPage,
 	retainedLineageTreeOffsets,
 	retainedRetryBudget,
@@ -17,7 +27,8 @@ import {
 	rollbackOptimisticStarMutation,
 	settleStarredListMutation,
 	settleLineageRootStarReconciliation,
-	starredListSnapshotIsCurrent
+	starredListSnapshotIsCurrent,
+	translationToCenterNode
 } from './lineage-canvas-state.ts';
 import { layoutLineageTree, packLineageForest } from './lineage-layout.ts';
 import type { Generation } from './studio.svelte.ts';
@@ -484,4 +495,108 @@ test('anchor search spends a page only when loadRoots would start work', () => {
 	assert.equal(shouldSpendAnchorSearchPage({ ...ready, rootsHaveMore: false }), false);
 	assert.equal(shouldSpendAnchorSearchPage({ ...ready, rootsFailed: true }), false);
 	assert.equal(shouldSpendAnchorSearchPage({ ...ready, pagesUsed: 4 }), false);
+});
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+test('rover order is newest root first, then tree order', () => {
+	const rover = buildLineageRover([
+		{
+			rootId: 'old-root',
+			createdAt: '2026-01-01T00:00:00Z',
+			nodes: [
+				{ id: 'old-root', createdAt: '2026-01-01T00:00:00Z' },
+				{ id: 'child-b', createdAt: '2026-01-03T00:00:00Z' },
+				{ id: 'child-a', createdAt: '2026-01-02T00:00:00Z' }
+			],
+			edges: [
+				{ parentId: 'old-root', childId: 'child-b' },
+				{ parentId: 'old-root', childId: 'child-a' }
+			]
+		},
+		{
+			rootId: 'new-root',
+			createdAt: '2026-02-01T00:00:00Z',
+			nodes: [{ id: 'new-root', createdAt: '2026-02-01T00:00:00Z' }],
+			edges: []
+		}
+	]);
+	assert.deepEqual(rover.order, ['new-root', 'old-root', 'child-a', 'child-b']);
+	assert.equal(lineageRoverEntryId(rover), 'new-root');
+	assert.equal(lineageRoverEntryId(buildLineageRover([])), null);
+	assert.equal(nextLineageRoverId(rover, 'old-root', 'ArrowDown'), 'child-a');
+	assert.equal(nextLineageRoverId(rover, 'child-a', 'ArrowUp'), 'old-root');
+	assert.equal(nextLineageRoverId(rover, 'child-a', 'ArrowRight'), 'child-b');
+	assert.equal(nextLineageRoverId(rover, 'child-b', 'ArrowLeft'), 'child-a');
+	assert.equal(nextLineageRoverId(rover, 'new-root', 'ArrowRight'), 'old-root');
+});
+
+test('the focused id stays in the mounted set when it is culled', () => {
+	const mounted = lineageMountedIds(
+		[
+			{ id: 'in-view', inView: true },
+			{ id: 'off-screen', inView: false }
+		],
+		'off-screen',
+		600
+	);
+	assert.equal(mounted.has('off-screen'), true);
+	assert.equal(mounted.has('in-view'), true);
+	assert.equal(lineageTileTabIndex('off-screen', 'off-screen'), 0);
+	assert.equal(lineageTileTabIndex('in-view', 'off-screen'), -1);
+});
+
+test('an off-screen focused node asks the camera to pan', () => {
+	assert.equal(
+		shouldPanToFocusedNode({
+			nodeX: 2000,
+			nodeY: 2000,
+			tileWidth: 216,
+			tileHeight: 176,
+			viewportWidth: 800,
+			viewportHeight: 600,
+			translateX: 0,
+			translateY: 0,
+			scale: 1
+		}),
+		true
+	);
+	const centered = translationToCenterNode(2000, 2000, 800, 600, 1);
+	assert.equal(
+		shouldPanToFocusedNode({
+			nodeX: 2000,
+			nodeY: 2000,
+			tileWidth: 216,
+			tileHeight: 176,
+			viewportWidth: 800,
+			viewportHeight: 600,
+			...centered,
+			scale: 1
+		}),
+		false
+	);
+});
+
+test('the viewport keeps focus so arrows can still pan', () => {
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'viewport'), false);
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'inspector'), false);
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'other'), false);
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'focused-tile'), false);
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'none'), true);
+	assert.equal(shouldRestoreLineageTileFocus('n1', true, 'other-tile'), true);
+	assert.equal(shouldRestoreLineageTileFocus(null, true, 'none'), false);
+	assert.equal(shouldRestoreLineageTileFocus('n1', false, 'none'), false);
+});
+
+test('the canvas wires rover math into the mounted tiles', () => {
+	const source = readFileSync(join(here, 'components/lineage-canvas.svelte'), 'utf8');
+	assert.match(source, /lineageMountedIds/);
+	assert.match(source, /nextLineageRoverId/);
+	assert.match(source, /lineageTileTabIndex/);
+	assert.match(source, /lineageRoverEntryId/);
+	assert.match(source, /shouldRestoreLineageTileFocus/);
+	assert.match(source, /event\.altKey/);
+	assert.match(source, /focusNode\(/);
+	assert.match(source, /event\.key === 'Enter'/);
+	assert.match(source, /event\.key === 'Escape'/);
 });

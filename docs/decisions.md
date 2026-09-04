@@ -1431,6 +1431,112 @@ same slice (those stay later PRs); putting the invite token in the query string
 (it would appear in access logs); leaving the OAuth TOTP return on `/?totp=required`
 (the JSON challenge cannot render after a browser navigation).
 
+## Simulation CI uses a dedicated database name
+
+The self-hosted runner and local development share one PostgreSQL server. Backend CI already starts its own postgres container. The simulation job did not. It used the Settings default, which is the developer database `potocolom`. A local `make auth-enable` then made `main` red, because `validate_startup_auth_mode` correctly refuses `AUTH_MODE=none` against an accounts installation (issue #459).
+
+Simulation in CI now uses `potocolom_ci` on the same server. The job creates that database if it is missing and sets `installation_auth_state` to `none` before the API starts, so leftover accounts mode cannot fail the run.
+
+`scripts/simulate.py` refuses to start when `CI` is set and the database name is `potocolom`. Removing `DATABASE_URL` from the workflow therefore fails the job instead of hitting the developer database.
+
+Local `make auth-enable` and `make simulate` still use `potocolom` or `potocolom$(DB_SUFFIX)`. That is unchanged.
+
+Rejected alternatives: a second PostgreSQL container for the runner (a clean boundary and one more service to keep running); exporting `DATABASE_URL` only in the runner environment (every workflow must honour it, and a missed one is silent).
+
+
+## A second Generate click while a request is in flight does nothing
+
+Clicking Generate twice quickly queued two identical jobs. Nothing broke, and two unseeded clicks get different seeds, so they are not the same picture. In the cloud profile each click is still a quota reservation and a metering event, so a slip of the mouse is billable (issue #455).
+
+The Generate control, and Upscale on the same panel, refuse a second submit until the POST that creates the job returns. Jobs still queue server side after that. Two tabs and a retried request are out of scope. A server-side duplicate window is rejected: it needs a rule for the same prompt with a fresh seed, which is a legitimate ask.
+
+The header search box that ignored input is removed. Canvas search belongs on the Images view (issue #132), not in the shell.
+
+Rejected alternatives: treating two clicks as two pictures and writing that down (defensible, and it would make every later reporter file this again); refusing duplicates server side by account, model and parameters (covers a second tab, and invents a window in which a repeated prompt is illegal).
+
+
+## Focus drives the Images canvas viewport
+
+The Images canvas mounts only tiles that intersect the viewport. That made the
+keyboard stop at the painted set: tab order walked hundreds of buttons, a root
+tile swallowed the arrow keys to move the tree, and a node outside the mount
+rect was absent from the accessibility tree (issue #223).
+
+There is one tab stop on the existing `role="application"` viewport. Tiles use
+a roving tabindex over logical order (roots by recency, then tree order). Arrow
+keys on a tile move to the parent, first child, or sibling. Off-screen focused
+nodes are force-mounted, and the camera pans to them. Alt+arrows still move a
+root tree. Viewport focus still pans with the arrows. Enter on the viewport
+focuses the newest root so a keyboard user can reach a tile without a
+pointer. Escape returns focus to the viewport so arrows pan again. The
+refocus effect restores a tile only after it unmounted, never from the
+viewport. A second always-visible
+tree list is rejected: it would duplicate the canvas as the source of truth.
+
+Rejected alternatives: a skip-to-node control or always-mounted tree list (the
+issue's other candidates; both keep the viewport as a paint-only surface);
+leaving arrows as pan-only and moving trees with a modifier without a rover
+(fixes the root-tile trap, and still cannot name a culled node).
+
+
+## There is no single table lock order; the per-account gate is the rule
+
+Collapse deletes `auth_tokens`, then `auth_factors`, then `recovery_codes`,
+then `sessions`, then `auth_identities`, then `users`. Credential routes write
+the identity before they rotate sessions, and they spend reset links before
+they lock session rows. Those two orders cannot be the same (issue #444).
+Reordering collapse's deletes cannot close the cycle: the factor routes need
+sessions after the factor, and the credential routes need identities before
+the tokens the collapse deletes first.
+
+Every overlapping transaction therefore takes the per-account advisory lock
+first, the same key the factor routes already used. HTTP routes keep the
+three-second timeout and answer 503 if the account is busy, so they cannot
+starve the pool. Collapse waits, with no timeout, and takes every non-local
+`user_id` in id order before it writes: aborting collapse at three seconds is
+the half-finished destruction this issue exists to stop. Role and state
+changes still take global `184468` for the last-administrator count; the
+account gate is additional and first.
+
+Rejected alternatives: retrying on `40P01` (hides the cycle and still leaves a
+window); a single table lock order (the routes disagree, which is why this
+issue exists); applying a 3s timeout to collapse (the command would fail with
+the install half destroyed).
+
+
+## Canvas edges name what changed, and a double-click branches
+
+The Images canvas was an archive: a tile click opened the inspector, and the
+edge caption repeated the child's action. Branching from a mid-tree node and
+reading what changed between parent and child is why the tree exists (issue
+#131).
+
+Double-clicking a tile opens the generate panel as a branch from that node:
+image-to-image when the tile has bytes, otherwise a prompt generate, otherwise
+upscale. Seed is cleared so the branch explores. Inspector actions stay. At
+the card zoom band, each visible edge is a description list: prompt word
+hunks marked "added" and "removed" as text, shallow param compare, "new seed"
+when only the seed changed, and the action label. The word diff is LCS over
+whitespace-split tokens in the frontend, not a backend field.
+
+Rejected alternatives: a context menu as the only branch entry (keyboard and
+discoverability both suffer without the double-click); color-only prompt
+diffs (fail for color blindness and for the description list); showing
+numeric seed deltas (noise on every explore branch).
+
+
+## Canvas search is an overlay, not a relayout
+
+`GET /api/v1/generations?q=` filters by prompt (pg_trgm GIN on
+`params->>'prompt'`). `fields=ids` returns only matching ids so the Images
+canvas can ring matches and dim the rest (issue #132). Applying that filter
+does not reload roots or change tree positions. The starred-roots chip still
+reloads; category chips wait for #95.
+
+Rejected alternative: sending `q` through the same `loadRoots` path as
+starred. That would relayout the forest around the matching subset and hide
+provenance of trees that only contain a match among descendants.
+
 
 Chosen as conventional defaults rather than debated decisions:
 

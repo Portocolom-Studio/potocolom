@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 
 from app import db, keyring, operator, sessions
+from app.account_lock import hold_the_account
 from app.main import app
-from app.tables import Job, User
+from app.tables import AuthIdentity, AuthToken, Job, Session as AuthSession, User
 from app.passwords import hash_password
 from tests.test_totp_flow import (
     ORIGIN, PASSWORD, ROOT_KEYS, _csrf, _factors, _login, _make, accounts,
@@ -539,6 +540,7 @@ def test_clear_factor_waits_for_the_account_lock(library):
     import asyncio
 
     from app import factors
+    from app.account_lock import budget_lock
     from app.tables import AuthFactor
 
     async def with_a_factor() -> uuid.UUID:
@@ -560,7 +562,7 @@ def test_clear_factor_waits_for_the_account_lock(library):
         async with db.session_factory() as session:
             async with session.begin():
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                      {"key": factors._budget_lock(user_id)})
+                                      {"key": budget_lock(user_id)})
                 holding.set()
                 await release.wait()
 
@@ -719,3 +721,106 @@ def test_every_change_spends_the_capabilities_before_it_takes_the_sessions(accou
     orders = _lock_orders(transactions + list(open_now.values()), ROTATION_ORDER)
     assert orders, "no transaction touched both tables, so this proved nothing"
     assert all(order == list(ROTATION_ORDER) for order in orders), orders
+
+
+def _is_deadlock(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "sqlstate", None) == "40P01":
+            return True
+        text = f"{type(current).__name__} {current}".lower()
+        if "40p01" in text or "deadlockdetected" in text:
+            return True
+        current = current.__cause__ or getattr(current, "orig", None) or current.__context__
+    return False
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("pairing", ["password", "role"])
+def test_collapse_waits_behind_an_overlapping_change_instead_of_deadlocking(library, pairing):
+    """Measured on two connections: this pairing was 40P01 before the gate.
+
+    A password change took auth_identities before collapse deleted it; a role
+    change locked the user row while collapse deleted users last. After the
+    per-account gate, the second waits. Staging the pause between those locks
+    is how the cycle used to happen; a hang here is a missed timeout, a
+    DeadlockDetected is the bug this issue closes.
+    """
+    import asyncio
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        if pairing == "role":
+            client.portal.call(_make, "gate-actor@example.com", "admin")
+            target = client.portal.call(_make, "gate-target@example.com")
+        else:
+            target = client.portal.call(_make, "gate-password@example.com")
+        assert _login(
+            client,
+            "gate-actor@example.com" if pairing == "role" else "gate-password@example.com",
+        ).status_code == 204
+
+        async def race() -> None:
+            holding = asyncio.Event()
+            mid = asyncio.Event()
+            release = asyncio.Event()
+
+            async def change_shape() -> None:
+                async with db.session_factory() as session:
+                    async with session.begin():
+                        await hold_the_account(session, target.id)
+                        if pairing == "role":
+                            await session.execute(
+                                text("SELECT pg_advisory_xact_lock(:key)"),
+                                {"key": 184468},
+                            )
+                            row = await session.get(User, target.id)
+                            assert row is not None
+                            row.role = "viewer"
+                            await session.flush()
+                        else:
+                            await session.execute(
+                                select(AuthIdentity.id)
+                                .where(AuthIdentity.user_id == target.id)
+                                .with_for_update()
+                            )
+                        holding.set()
+                        await mid.wait()
+                        await session.execute(
+                            update(AuthToken)
+                            .where(AuthToken.user_id == target.id,
+                                   AuthToken.consumed_at.is_(None))
+                            .values(consumed_at=func.now())
+                        )
+                        await session.execute(
+                            update(AuthSession)
+                            .where(AuthSession.user_id == target.id,
+                                   AuthSession.revoked_at.is_(None))
+                            .values(revoked_at=func.now())
+                        )
+                        await release.wait()
+
+            async def collapse_shape() -> None:
+                await holding.wait()
+                await operator.collapse(operator.COLLAPSE_PHRASE)
+
+            change_task = asyncio.create_task(change_shape())
+            await holding.wait()
+            collapse_task = asyncio.create_task(collapse_shape())
+            await asyncio.sleep(0.4)
+            assert not change_task.done(), change_task.exception()
+            assert not collapse_task.done(), collapse_task.exception()
+            mid.set()
+            release.set()
+            done, pending = await asyncio.wait(
+                {change_task, collapse_task}, timeout=15,
+            )
+            assert not pending, "collapse or the overlapping change did not finish"
+            for task in done:
+                error = task.exception()
+                if error is not None:
+                    assert not _is_deadlock(error), error
+                    raise error
+
+        client.portal.call(race)
