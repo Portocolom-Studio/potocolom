@@ -128,9 +128,7 @@ The SPA's first call. One build artifact serves every deployment; this response 
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests.
-
-<!-- Note: the shipped SPA does not yet consume /api/v1/config (built but unused). -->
+`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests. The studio login and join routes read this field to decide which sign-in controls to render.
 
 ### WS /api/v1/realtime
 
