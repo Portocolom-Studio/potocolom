@@ -40,9 +40,7 @@ test('match positions walk packed trees without changing layout', () => {
 		}
 	];
 	const matches = new Set(['hit']);
-	assert.deepEqual(lineageSearchMatchPositions(trees, matches), [
-		{ jobId: 'hit', x: 10, y: 20 }
-	]);
+	assert.deepEqual(lineageSearchMatchPositions(trees, matches), [{ jobId: 'hit', x: 10, y: 20 }]);
 	assert.deepEqual([...lineageSearchMatchRootIds(trees, matches)], ['root-a']);
 	assert.equal(lineageSearchMatchRootIds(trees, null).size, 0);
 });
