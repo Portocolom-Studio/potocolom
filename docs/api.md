@@ -203,6 +203,10 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
                              come from the same filtered result and retain created_at/id ordering.
+                             ?q= filters by prompt (pg_trgm, case-insensitive substring). Empty or
+                             whitespace q is unfiltered. ?fields=ids returns {"ids": [...]} with the
+                             same WHERE, cap 5000, so the canvas can overlay matches without
+                             relayout. Cursors must also match q.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 

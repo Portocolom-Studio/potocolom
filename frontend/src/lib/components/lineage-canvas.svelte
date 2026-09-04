@@ -43,10 +43,12 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import SearchIcon from '@lucide/svelte/icons/search';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
 		clampLineageCoordinate,
@@ -78,6 +80,12 @@
 		type PackedLineageTree,
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
+	import {
+		lineageSearchMatchPositions,
+		lineageSearchMatchRootIds,
+		lineageSearchTone,
+		nextLineageMatchIndex
+	} from '$lib/lineage-search';
 	import {
 		defaultUpscaleModelId,
 		filterImageToImageModels,
@@ -141,6 +149,12 @@
 	let rootsFailed = $state(false);
 	let rootsHaveMore = $state(false);
 	let starredOnly = $state(false);
+	let searchDraft = $state('');
+	let searchQuery = $state('');
+	let searchMatchIds = $state<Set<string> | null>(null);
+	let searchMatchIndex = $state(-1);
+	let searchRequestEpoch = 0;
+	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
 	let rootsFilterModeEpoch = 0;
 	let rootsRequestEpoch = 0;
 	let rootStarReconciliation: LineageRootStarReconciliation = { pending: 0, dirty: false };
@@ -209,6 +223,7 @@
 			y: tree.y + (treeOffsets[tree.rootId]?.y ?? 0)
 		}))
 	);
+	const searchMatchRootIds = $derived(lineageSearchMatchRootIds(packedTrees, searchMatchIds));
 	const hasTreeOffsets = $derived(Object.keys(treeOffsets).length > 0);
 	const visibleNodes = $derived.by(() => {
 		const shown: VisibleNode[] = [];
@@ -432,6 +447,58 @@
 		rootsFilterModeEpoch += 1;
 		starredOnly = value;
 		reloadRoots();
+	}
+
+	function scheduleSearchQuery(value: string): void {
+		if (searchDebounce !== undefined) clearTimeout(searchDebounce);
+		searchDebounce = setTimeout(() => {
+			searchQuery = value.trim();
+		}, 200);
+	}
+
+	$effect(() => {
+		const q = searchQuery;
+		const filterStarred = starredOnly;
+		const epoch = (searchRequestEpoch += 1);
+		if (q === '') {
+			searchMatchIds = null;
+			searchMatchIndex = -1;
+			return;
+		}
+		void (async () => {
+			const search = new URLSearchParams({
+				fields: 'ids',
+				limit: '5000'
+			});
+			search.set('q', q);
+			if (filterStarred) search.set('starred', 'true');
+			try {
+				const body = await fetchCanvasJson<{ ids: string[] }>(
+					`/api/v1/generations?${search.toString()}`,
+					'search request failed'
+				);
+				if (epoch !== searchRequestEpoch) return;
+				searchMatchIds = new Set(body.ids);
+				searchMatchIndex = -1;
+			} catch (error) {
+				if (error instanceof DOMException && error.name === 'AbortError') return;
+				if (epoch !== searchRequestEpoch) return;
+				searchMatchIds = new Set();
+				searchMatchIndex = -1;
+			}
+		})();
+	});
+
+	function goToNextSearchMatch(): void {
+		if (searchMatchIds === null || searchMatchIds.size === 0) return;
+		const hits = lineageSearchMatchPositions(packedTrees, searchMatchIds);
+		if (hits.length === 0) return;
+		searchMatchIndex = nextLineageMatchIndex(searchMatchIndex, hits.length);
+		const hit = hits[searchMatchIndex];
+		if (hit === undefined) return;
+		stopInertia();
+		translateX = clampLineageCoordinate(viewportWidth / 2 - hit.x * scale);
+		translateY = clampLineageCoordinate(viewportHeight / 2 - hit.y * scale);
 	}
 
 	async function toggleSelectedStar(): Promise<void> {
@@ -788,7 +855,8 @@
 
 	function onPointerDown(event: PointerEvent): void {
 		if (event.button !== 0 || !viewportEl) return;
-		if (event.target instanceof Element && event.target.closest('button')) return;
+		if (event.target instanceof Element && event.target.closest('button, [data-lineage-search]'))
+			return;
 		stopInertia();
 		pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		if (pointers.size === 2) {
@@ -1051,7 +1119,7 @@
 	}
 
 	function onKeyDown(event: KeyboardEvent): void {
-		if ((event.target as Element).closest('.lineage-tile.is-root')) return;
+		if ((event.target as Element).closest('.lineage-tile.is-root, [data-lineage-search]')) return;
 		if (event.key === 'ArrowLeft') {
 			translateX = clampLineageCoordinate(translateX + PAN_STEP);
 		} else if (event.key === 'ArrowRight') {
@@ -1353,6 +1421,7 @@
 		if (initializeFrame) cancelAnimationFrame(initializeFrame);
 		if (recenterTimer) clearTimeout(recenterTimer);
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
+		if (searchDebounce !== undefined) clearTimeout(searchDebounce);
 	});
 </script>
 
@@ -1376,7 +1445,27 @@
 		aria-label={t('app.images.canvas')}
 		tabindex="0"
 	>
-		<div class="absolute end-3 top-3 z-30 flex gap-1">
+		<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
+			<div class="flex items-center gap-1" data-lineage-search>
+				<SearchIcon class="text-muted-foreground size-4 shrink-0" aria-hidden="true" />
+				<Input
+					type="search"
+					class="h-8 w-40 rounded-md text-sm"
+					bind:value={searchDraft}
+					placeholder={t('app.images.search')}
+					aria-label={t('app.images.search')}
+					oninput={() => scheduleSearchQuery(searchDraft)}
+				/>
+				<Button
+					variant="secondary"
+					size="sm"
+					disabled={searchMatchIds === null || searchMatchIds.size === 0}
+					onclick={goToNextSearchMatch}
+					aria-label={t('app.images.next_match')}
+				>
+					{t('app.images.next_match')}
+				</Button>
+			</div>
 			<Button
 				variant={starredOnly ? 'default' : 'secondary'}
 				size="sm"
@@ -1476,7 +1565,8 @@
 						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
 							<g
 								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={selectedNode !== null && !selectedPathEdgeIds.has(edge.id)}
+								class:is-dimmed={(selectedNode !== null && !selectedPathEdgeIds.has(edge.id)) ||
+									(searchMatchIds !== null && !searchMatchRootIds.has(tree.rootId))}
 							>
 								<path
 									class="lineage-edge"
@@ -1505,6 +1595,7 @@
 				{@const data = item.node.data}
 				{@const shownImage = imageUrl(data, lod)}
 				{@const starred = data.entry.job_id !== null && isStarred(data.entry.job_id)}
+				{@const searchTone = lineageSearchTone(data.entry.job_id, searchMatchIds)}
 				<div
 					class="tile-shell"
 					class:is-new={newNodeIds.has(item.node.id)}
@@ -1518,6 +1609,8 @@
 						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
 						class:is-missing={data.entry.missing || shownImage === null}
 						class:is-starred={starred}
+						class:is-search-match={searchTone === 'match'}
+						class:is-search-dim={searchTone === 'dim'}
 						style={`--tile-pull: ${proximityScale(item)}`}
 						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
 						title={promptLabel(data)}
@@ -2041,6 +2134,15 @@
 
 	.lineage-tile.is-selected {
 		border-color: var(--primary);
+	}
+
+	.lineage-tile.is-search-dim {
+		opacity: 0.28;
+	}
+
+	.lineage-tile.is-search-match {
+		outline: 2px solid var(--primary);
+		outline-offset: 2px;
 	}
 
 	.selection-inspector:focus {

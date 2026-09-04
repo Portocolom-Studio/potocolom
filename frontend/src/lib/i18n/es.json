@@ -365,6 +365,8 @@
 	"app.images.zoom_out": "Alejar",
 	"app.images.recenter": "Centrar el árbol más reciente",
 	"app.images.starred_only": "Raíces destacadas",
+	"app.images.search": "Buscar en prompts",
+	"app.images.next_match": "Siguiente coincidencia",
 	"app.images.starred": "Destacada",
 	"app.images.loading": "Cargando historial de imágenes...",
 	"app.images.no_starred_roots": "Aún no hay generaciones raíz destacadas.",

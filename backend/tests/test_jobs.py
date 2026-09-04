@@ -3,6 +3,7 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
 import base64
+import inspect
 import logging
 import struct
 import threading
@@ -3214,6 +3215,86 @@ def test_generation_cursor_anchor_must_match_every_filter():
                             params={**params, "cursor": str(cursor)},
                         )
                         assert response.status_code == 404
+
+
+@pytest.mark.db
+def test_generation_prompt_search_ids_share_the_q_filter():
+    source = inspect.getsource(jobs.list_generations)
+    assert "_filter_generations(" in source
+    assert ", q)" in source or ", q," in source
+    assert 'fields == "ids"' in source
+    assert "prompt" in inspect.getsource(jobs._filter_generations)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[str, str, str]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            model_id = f"prompt-search-{uuid.uuid4()}"
+            foreign_user_id = uuid.uuid4()
+            castle_id = uuid.uuid4()
+            lighthouse_id = uuid.uuid4()
+            foreign_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(User(
+                    id=foreign_user_id,
+                    email=f"{foreign_user_id}@example.com",
+                    role="user",
+                ))
+                session.add(Model(
+                    id=model_id,
+                    name=model_id,
+                    capabilities=["text_to_image"],
+                    parameters_schema={},
+                    min_vram_gb=0,
+                ))
+                await session.flush()
+                session.add(Job(
+                    id=castle_id,
+                    user_id=db.local_user_id,
+                    model_id=model_id,
+                    params={"prompt": "a castle at sunset"},
+                    state="succeeded",
+                    attempt=1,
+                    created_at=now + timedelta(seconds=2),
+                ))
+                session.add(Job(
+                    id=lighthouse_id,
+                    user_id=db.local_user_id,
+                    model_id=model_id,
+                    params={"prompt": "a lighthouse at noon"},
+                    state="succeeded",
+                    attempt=1,
+                    created_at=now + timedelta(seconds=1),
+                ))
+                session.add(Job(
+                    id=foreign_id,
+                    user_id=foreign_user_id,
+                    model_id=model_id,
+                    params={"prompt": "a castle at sunset"},
+                    state="succeeded",
+                    attempt=1,
+                    created_at=now,
+                ))
+                await session.commit()
+            return str(castle_id), str(lighthouse_id), str(foreign_id)
+
+        castle_id, lighthouse_id, foreign_id = client.portal.call(seed)
+        ids = client.get(
+            "/api/v1/generations",
+            params={"q": "castle", "fields": "ids"},
+        ).json()
+        listed = client.get("/api/v1/generations", params={"q": "castle"}).json()
+        assert ids["ids"] == [castle_id]
+        assert [row["id"] for row in listed] == [castle_id]
+        assert lighthouse_id not in ids["ids"]
+        assert foreign_id not in ids["ids"]
+        empty = client.get(
+            "/api/v1/generations",
+            params={"q": "   ", "fields": "ids", "limit": 5000},
+        ).json()["ids"]
+        assert castle_id in empty
+        assert lighthouse_id in empty
+        assert foreign_id not in empty
 
 
 @pytest.mark.db

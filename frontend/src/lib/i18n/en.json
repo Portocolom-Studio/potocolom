@@ -365,6 +365,8 @@
 	"app.images.zoom_out": "Zoom out",
 	"app.images.recenter": "Center newest tree",
 	"app.images.starred_only": "Starred roots",
+	"app.images.search": "Search prompts",
+	"app.images.next_match": "Next match",
 	"app.images.starred": "Starred",
 	"app.images.loading": "Loading image history...",
 	"app.images.no_starred_roots": "No starred root generations yet.",
