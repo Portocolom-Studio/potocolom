@@ -161,10 +161,10 @@ offline destructive reset, which is `make auth-collapse` and destroys every
 account on the installation.
 
 Sign-in is here: address and password, an optional second factor, and Google or
-GitHub when they are configured. After claiming the administrator account, sign
-in at `POST /api/v1/auth/login` and invite everybody else. The password policy
-is fifteen to one hundred and twenty-eight characters against a bundled
-blocklist.
+GitHub when they are configured. After the administrator account is claimed, open
+`/login` in the studio (or call `POST /api/v1/auth/login`) and invite everybody else.
+Accepting an invitation is `/join#{token}`. The password policy is fifteen to one
+hundred and twenty-eight characters against a bundled blocklist.
 
 ## Mail, and doing without it
 
@@ -255,7 +255,7 @@ Kept honest and short, this is the list staging exists for: Terraform itself, IA
 
 ## Continuous integration
 
-GitHub Actions runs lint and tests on every pull request (issue #13). By default workflows target a **self-hosted runner** on the reference desktop so CI keeps working when hosted minutes are exhausted; see [self-hosted-runner.md](self-hosted-runner.md). Switch workflows back to `ubuntu-latest` when hosted quota is available.
+GitHub Actions runs lint and tests on every pull request (issue #13). By default workflows target a **self-hosted runner** on the reference desktop so CI keeps working when hosted minutes are exhausted; see [self-hosted-runner.md](self-hosted-runner.md). Switch workflows back to `ubuntu-latest` when hosted quota is available. The simulation job talks to host database `potocolom_ci`. When `CI` is set it refuses the developer name `potocolom` (issue #459).
 
 Per component, no GPU:
 

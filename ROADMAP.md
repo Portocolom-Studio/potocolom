@@ -146,8 +146,8 @@ Still open:
 
 ### M4 Accounts
 
-- Still-open epics: #5 sessions and principal policy, #9 first-admin and adoption leftovers, and #10 account UI.
-- Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365 / #383; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367 / #385), Google and GitHub OAuth sign-in and linking (PR #369 / #386; linking only, never enrolment by email), TOTP and recovery (PR #371 / #387), and credential changes (PR #374 / #388).
+- Still-open epics: leftover #5 session and principal policy work, leftover #9 first-admin and adoption work, and the rest of #10 account UI (settings, first-admin setup, export, deletion, restore, purge).
+- Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365 / #383; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367 / #385), Google and GitHub OAuth sign-in and linking (PR #369 / #386; linking only, never enrolment by email), TOTP and recovery (PR #371 / #387), credential changes (PR #374 / #388), studio `/login` and `/join` (PR #470, first slice of #10), and the per-account advisory lock (PR #467 / #444).
 
 ### M5 Cloud readiness (largest)
 
@@ -155,8 +155,8 @@ Still open:
   safety screening, #28 in-app admin area, #29 usage metrics and opt-out telemetry,
   #48 relay load harness, #60 inference-speed baseline and optimization backlog,
   #95 CLIP output categorizer, #107 one-click benchmark pipeline, and the
-  lineage-canvas foundations #124 (persist favorites), #125 (PNG masters), #129
-  (lineage on the detail view).
+  lineage-canvas items still open: #124 (persist favorites) and #125 (PNG masters).
+  PR #210 shipped #129 (lineage on the detail view).
 - Inference backlog note (#60): torch.compile warmup and measured realtime slots
   are in-flight in PR #141. That PR recommends against enabling torch.compile by
   default (measured ROCm speedup only 0.8-7.4% against a large cold-load cost).
@@ -170,9 +170,11 @@ Still open:
 
 ### M6 Launch and beta
 
-- #40 landing pricing and previews, #49 invite-gated signup, #50 launch, and the
-  lineage canvas itself: #130 pannable derivation forest, #131 branch-from-node
-  with edge deltas, #132 search and filter overlays.
+- #40 landing pricing and previews, #49 invite-gated signup, #50 launch.
+- Lineage canvas is on main: #130 pannable derivation forest (PR #210), #131
+  branch-from-node with edge deltas (PR #468), #132 search overlay (PR #469),
+  #223 keyboard rover (PR #466), #224 cost measure (PR #471). Category chips
+  still wait on #95.
 
 ### M7 Developer API
 
