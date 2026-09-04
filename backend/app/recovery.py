@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import db, mail, sessions
+from app.account_lock import hold_the_account
 from app.auth import require_accounts_mode
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -76,6 +77,7 @@ async def mint_reset(email: str) -> str:
             user = await _active_account(session, email)
             if user is None:
                 raise LookupError(f"no active account holds {email}")
+            await hold_the_account(session, user.id)
             return _mint(session, user.id, "reset", RESET_TTL)
 
 
@@ -88,6 +90,7 @@ async def mint_admin_recovery(email: str) -> str:
             user = await _active_account(session, email)
             if user is None or user.role != "admin":
                 raise NoSuchAdministrator(email)
+            await hold_the_account(session, user.id)
             token = _mint(session, user.id, "recovery", ADMIN_RECOVERY_TTL)
     return _link("recover", token)
 
@@ -137,6 +140,17 @@ async def complete(request: CompleteRequest) -> Response:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            found = (await session.execute(
+                select(AuthToken.user_id).where(
+                    AuthToken.token_hash == _token_hash(request.token),
+                    AuthToken.purpose.in_(RESET_PURPOSES),
+                    AuthToken.consumed_at.is_(None),
+                    AuthToken.expires_at > func.now(),
+                )
+            )).first()
+            if found is None or found.user_id is None:
+                raise HTTPException(status_code=403, detail=INVALID_LINK)
+            await hold_the_account(session, found.user_id)
             spent = (await session.execute(
                 update(AuthToken)
                 .where(

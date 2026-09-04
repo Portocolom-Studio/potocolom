@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.responses import RedirectResponse, Response
 
 from app import db, factors, sessions
+from app.account_lock import hold_the_account
 from app.accounts import issue_session
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
 from app.settings import Settings, get_settings
@@ -348,7 +349,7 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         # type it.
         return await factors.begin_challenge(
             user, remember_me=False,
-            redirect_to=f"{settings.public_url.rstrip('/')}/?totp=required")
+            redirect_to=f"{settings.public_url.rstrip('/')}/login?totp=required")
     response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, issued)
     return response
@@ -380,6 +381,7 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
         raise REFUSED
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, user_id)
             user = await session.get(User, user_id)
             if user is None:
                 raise REFUSED

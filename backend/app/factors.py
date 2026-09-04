@@ -15,12 +15,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
+from app.account_lock import hold_the_account as _hold_the_account
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
 from app.settings import Settings, get_settings
 from app.tables import AuthFactor, AuthToken, RecoveryCode, User
@@ -94,53 +95,6 @@ async def enrolled_factor(session, user_id: uuid.UUID) -> AuthFactor | None:
         select(AuthFactor).where(AuthFactor.user_id == user_id,
                                  AuthFactor.confirmed_at.is_not(None))
     )).scalar_one_or_none()
-
-
-def _budget_lock(user_id: uuid.UUID) -> int:
-    """A per-account advisory key, the way enable.py takes SETUP_LOCK."""
-    return int.from_bytes(user_id.bytes[:8], "big", signed=True)
-
-
-async def _hold_the_account(session: AsyncSession, user_id: uuid.UUID,
-                            busy_detail: str = "too many changes to this account at once",
-                            ) -> None:
-    """The account to itself for the rest of the caller's transaction.
-
-    A first enrolment has no factor row, so the SELECT ... FOR UPDATE the
-    other routes exclude each other with locks nothing against it, and
-    operator.clear_factor is free to interleave: its delete of the factor
-    finding none, and its delete of the recovery codes taking the ones an
-    enrolment committed in between, leaving a factor nobody has a way back
-    past. This key holds whether or not a row exists.
-
-    Taken first, before any row lock, the way begin_challenge takes it. A lock
-    every holder acquires before anything else can serialise them but can
-    never be the second edge of a cycle, which is what makes adding it to
-    routes already arranged against deadlock safe.
-
-    Giving up rather than queueing: a waiter holds its pooled connection, and
-    the pool is fifteen deep, so an unbounded wait would let a flood aimed at
-    one account starve every other request. Nothing has been written when this
-    runs, so the caller can safely be told to come back.
-    """
-    await session.execute(text("SET LOCAL lock_timeout = '3s'"))
-    try:
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                              {"key": _budget_lock(user_id)})
-    except DBAPIError as busy:
-        # The wide class, deliberately: asyncpg raises LockNotAvailableError,
-        # which has no DBAPI class of its own, so SQLAlchemy wraps it as a
-        # plain DBAPIError and the narrower OperationalError never arrives.
-        # This transaction has written nothing, so telling the caller to come
-        # back is safe. An attempt a previous transaction already counted
-        # stays counted, which is what a refused guess costs anyway.
-        raise HTTPException(status_code=503, detail=busy_detail) from busy
-    # Only this wait was meant to be bounded, and SET LOCAL lasts for the whole
-    # transaction. Left on, a row lock taken further down times out into a
-    # DBAPIError no handler here expects, and the caller gets a 500 in place of
-    # the wait it used to do. Nothing after this line queues behind an
-    # unrelated account, because the key above is already held.
-    await session.execute(text("SET LOCAL lock_timeout = '0'"))
 
 
 async def mint_behind_the_gate(user: User, remember_me: bool,

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import SidebarIcon from '@lucide/svelte/icons/sidebar';
-	import SearchForm from './search-form.svelte';
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
@@ -43,7 +42,6 @@
 			</Breadcrumb.List>
 		</Breadcrumb.Root>
 		<div class="flex w-full items-center gap-3 sm:ms-auto sm:w-auto">
-			<SearchForm class="hidden w-full sm:block sm:w-auto" />
 			<LanguageToggle />
 		</div>
 	</div>

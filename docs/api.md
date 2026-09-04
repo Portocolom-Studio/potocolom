@@ -128,9 +128,7 @@ The SPA's first call. One build artifact serves every deployment; this response 
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests.
-
-<!-- Note: the shipped SPA does not yet consume /api/v1/config (built but unused). -->
+`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests. The studio login and join routes read this field to decide which sign-in controls to render.
 
 ### WS /api/v1/realtime
 
@@ -203,6 +201,10 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
                              come from the same filtered result and retain created_at/id ordering.
+                             ?q= filters by prompt (pg_trgm, case-insensitive substring). Empty or
+                             whitespace q is unfiltered. ?fields=ids returns {"ids": [...]} with the
+                             same WHERE, cap 5000, so the canvas can overlay matches without
+                             relayout. Cursors must also match q.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 

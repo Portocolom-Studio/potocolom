@@ -493,17 +493,23 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
     ]
 
 
-@router.get("/api/v1/generations")
-async def list_generations(
-    limit: int = 50,
-    cursor: uuid.UUID | None = None,
-    state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
-    starred: bool | None = Query(default=None),
-    roots_only: bool | None = Query(default=None),
-    user: User = Depends(current_user),
-    session: AsyncSession = Depends(db.get_session),
-) -> list[dict]:
-    query = select(Job).where(Job.user_id == user.id)
+def _prompt_text():
+    return Job.params["prompt"].as_string()
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _filter_generations(
+    query,
+    user: User,
+    state: str | None,
+    starred: bool | None,
+    roots_only: bool | None,
+    q: str | None,
+):
+    query = query.where(Job.user_id == user.id)
     if state is not None:
         query = query.where(Job.state == state)
     if starred is not None:
@@ -513,15 +519,42 @@ async def list_generations(
             Job.source_asset_id.is_(None)
             if roots_only else Job.source_asset_id.is_not(None)
         )
+    trimmed = (q or "").strip()
+    if trimmed:
+        prompt = _prompt_text()
+        query = query.where(
+            or_(
+                prompt.ilike(f"%{_escape_like(trimmed)}%", escape="\\"),
+                prompt.op("%")(trimmed),
+            )
+        )
+    return query
+
+
+@router.get("/api/v1/generations")
+async def list_generations(
+    limit: int = 50,
+    cursor: uuid.UUID | None = None,
+    state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
+    starred: bool | None = Query(default=None),
+    roots_only: bool | None = Query(default=None),
+    q: str | None = Query(default=None),
+    fields: Literal["ids"] | None = Query(default=None),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(db.get_session),
+) -> list[dict] | dict:
+    listing = select(Job.id) if fields == "ids" else select(Job)
+    query = _filter_generations(listing, user, state, starred, roots_only, q)
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown cursor")
-        if state is not None and anchor.state != state:
-            raise HTTPException(status_code=404, detail="unknown cursor")
-        if roots_only is not None and (anchor.source_asset_id is None) != roots_only:
-            raise HTTPException(status_code=404, detail="unknown cursor")
-        if starred is not None and (anchor.starred_at is not None) != starred:
+        matched = await session.scalar(
+            _filter_generations(
+                select(Job.id), user, state, starred, roots_only, q,
+            ).where(Job.id == cursor)
+        )
+        if matched is None:
             raise HTTPException(status_code=404, detail="unknown cursor")
         if starred is True:
             query = query.where(
@@ -542,9 +575,10 @@ async def list_generations(
         if starred is True else
         (Job.created_at.desc(), Job.id.desc())
     )
-    rows = await session.execute(
-        query.order_by(*order).limit(min(max(limit, 1), 200))
-    )
+    cap = min(max(limit, 1), 5000 if fields == "ids" else 200)
+    rows = await session.execute(query.order_by(*order).limit(cap))
+    if fields == "ids":
+        return {"ids": [str(job_id) for job_id in rows.scalars()]}
     return await serialize_jobs(session, list(rows.scalars()))
 
 
