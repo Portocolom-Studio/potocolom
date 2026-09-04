@@ -1,5 +1,11 @@
 # Illusion reliability - status for next agent
 
+> **SUPERSEDED, last accurate 2026-07-29.** This file predates windows 2, 3, 4 and
+> 5 and its status is five windows out of date. The current state lives in
+> `.local/illusion-reliability/HANDOFF.md` (gitignored, primary checkout), and the
+> results write-up is [illusion-window.md](illusion-window.md). Read those first.
+> What stays useful here is the branch and PR discipline below.
+
 Full protocol: [illusion-reliability.md](illusion-reliability.md).
 
 ## Branch

@@ -589,6 +589,10 @@ WINDOW4_SEEDS = (11, 23, 37)
 WINDOW5_PAIRS = WINDOW2_PROVEN
 WINDOW5_STYLE = "oil"
 WINDOW5_SEEDS = (11, 23, 37)
+WINDOW6_PAIRS = WINDOW2_PROVEN
+WINDOW6_STYLE = "oil"
+# Window 3's pool minus the three seeds window 5 already spent on these pairs.
+WINDOW6_SEEDS = tuple(seed for seed in WINDOW3_SEED_POOL if seed not in WINDOW5_SEEDS)[:8]
 
 
 def _window2_flags(
@@ -879,6 +883,34 @@ def build_window5() -> list[CampaignEntry]:
                     flags=_window3_flags(),
                     priority=priority,
                     style=WINDOW5_STYLE,
+                    estimate_s=WINDOW3_BASE_ESTIMATE_S,
+                )
+            )
+            priority += 1
+    return entries
+
+
+def build_window6() -> list[CampaignEntry]:
+    """Depth on the six proven pairs: eight fresh seeds, oil, current recipe.
+
+    Window 5 returned 6 clean keepers in 18 on seeds 11, 23 and 37, which
+    authorised this window. Seed-major, so a short run drops a whole seed and
+    leaves a balanced block. Window 4's three keeper pairs stay out: their oil
+    keeper repeat across two seeds was 0 of 3.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in WINDOW6_SEEDS:
+        for pair_id in WINDOW6_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window6",
+                    profile=WINDOW6_STYLE,
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window3_flags(),
+                    priority=priority,
+                    style=WINDOW6_STYLE,
                     estimate_s=WINDOW3_BASE_ESTIMATE_S,
                 )
             )
@@ -1492,6 +1524,8 @@ def build_phase_plan(
         entries = build_window4()
     elif phase == "window5":
         entries = build_window5()
+    elif phase == "window6":
+        entries = build_window6()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1508,7 +1542,16 @@ def build_phase_plan(
         optimizer_fingerprint=_optimizer_fingerprint(),
         entries=(
             entries
-            if phase in ("reference60h", "window", "window2", "window3", "window5", "early-dream-backup")
+            if phase
+            in (
+                "reference60h",
+                "window",
+                "window2",
+                "window3",
+                "window5",
+                "window6",
+                "early-dream-backup",
+            )
             else _blocked_rotated(entries)
         ),
     )
@@ -1589,6 +1632,7 @@ def main(argv: list[str] | None = None) -> int:
             "window3",
             "window4",
             "window5",
+            "window6",
             "early-dream-backup",
         ),
         required=True,
@@ -1737,6 +1781,13 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window5", 0) not in (0, window5_expected):
             print(
                 f"FAIL: window5 expected {window5_expected} got {counts.get('window5')}",
+                file=sys.stderr,
+            )
+            return 1
+        window6_expected = len(WINDOW6_PAIRS) * len(WINDOW6_SEEDS)
+        if counts.get("window6", 0) not in (0, window6_expected):
+            print(
+                f"FAIL: window6 expected {window6_expected} got {counts.get('window6')}",
                 file=sys.stderr,
             )
             return 1

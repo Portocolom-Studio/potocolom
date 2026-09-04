@@ -1025,8 +1025,8 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 |---|---|---|
 | P0 mixed re-rate | 0 | rater drift between sessions |
 | P1 wording smoke | ~1.3 | whether `reference_sketch` is repairable |
-| P2 oil replay, six proven pairs, 18 bases | **8.0** | the code question, at the keeper bar |
-| P3 depth, six proven pairs, 48 bases | 21.4 | only if P2 holds |
+| P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
+| P3 depth, six proven pairs, 48 bases | 21.4 | live: `build_window6` |
 | P4 Codex regression, 144 bases | 64.3 | only if P2 fails |
 
 1. **P0, zero GPU, and nothing else should run first.** Every window was rated in a
@@ -1065,6 +1065,13 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    it, and that is a regression finding rather than a corpus one. Rate it mixed with
    a sample of the original window-2 keepers so P0 and P2 share one session.
 
+   **Result, 2026-09-04.** 18 of 18 bases rated, unit = (pair, seed), better of two
+   final arms. Clean readable 15/18 against window 2's 7. Clean keepers **6/18**
+   against window 2's 5. One score 5 against window 2's 2. Paired keepers: window 2
+   only 1, window 5 only 2, McNemar p = 1.00. The falsifier (fewer than 2 keepers)
+   did not fire. P3 is authorised. Five matched window-2 oil keepers were mixed
+   into the same sitting: mean score gap -0.4 (n=5). That is not P0.
+
 4. **P3, depth on the six proven pairs, 48 bases, 21.4 GPU-hours, only if P2 returns
    4 or more keepers in 18.** Four windows have bought breadth and none has bought
    depth. `campaigns/window4/depth-vs-breadth.py` measures the lift out of sample and
@@ -1075,7 +1082,9 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    the six proven pairs, `oil`, 8 fresh seeds, both arms. Do NOT add window 4's three
    keeper pairs; their oil keeper repeat is 0 of 3, so they would import the same
    winner's curse this section spent its length objecting to. Falsifier: fewer than 6
-   keepers in 48.
+   keepers in 48. Seeds are `WINDOW6_SEEDS`: the eight values in `WINDOW3_SEED_POOL`
+   after dropping 11, 23 and 37, so 53, 71, 89, 101, 113, 131, 149, 167. Phase
+   `window6`.
 
 5. **P4, Codex's powered regression test, 144 bases, 64.3 GPU-hours. Still last.**
    Its motivating observation, the keeper-bar collapse in the mixed table, is
