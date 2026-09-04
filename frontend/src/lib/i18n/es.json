@@ -469,8 +469,6 @@
 	"app.shell.view_project": "Ver proyecto",
 	"app.shell.share_project": "Compartir proyecto",
 	"app.shell.delete_project": "Eliminar proyecto",
-	"app.shell.search_label": "Buscar",
-	"app.shell.search_placeholder": "Escribe para buscar...",
 	"app.shell.upgrade_pro": "Mejorar a Pro",
 	"app.shell.account": "Cuenta",
 	"app.shell.billing": "Facturación",
