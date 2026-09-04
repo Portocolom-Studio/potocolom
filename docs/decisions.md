@@ -1540,6 +1540,24 @@ same slice (those stay later PRs); putting the invite token in the query string
 (the JSON challenge cannot render after a browser navigation).
 
 
+## Canvas cost at a few thousand nodes is measured, not patched
+
+A synthetic Images forest of 3000 nodes (50 trees, 2950 edges) was laid out
+with the production packer and timed for 80-300 frames on this machine
+(issue #224). Nested `{#if rectsIntersect}` edge drawing was 0.05 ms per
+frame when 14 edges were in view and 0.20 ms when every edge was in view.
+Prefiltering into an each-block was the same or slightly slower (0.06 ms
+culled, 0.20 ms all-visible) because the intersect test is still paid and
+the extra array is not free. `lineageViewport()` nearest-root scan was
+0.007 ms per frame. Neither cost dominates a frame. Production canvas code
+is left as it is. `generation_subtree` still builds asset URLs per row;
+that wait is for the cloud S3 profile, not this measurement.
+
+Rejected alternative: rewriting the edge `{#each}` or extracting
+`lineageViewport` before a cost showed up. The numbers do not justify the
+churn.
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
