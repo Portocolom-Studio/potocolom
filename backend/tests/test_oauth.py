@@ -252,7 +252,7 @@ def test_a_linked_identity_with_a_factor_is_sent_to_the_challenge(accounts, monk
         client.portal.call(_enrolled, user.id)
         gated = _callback(client, "google", _start(client, "google"))
         assert gated.status_code == 307
-        assert gated.headers["location"] == f"{ORIGIN}/?totp=required"
+        assert gated.headers["location"] == f"{ORIGIN}/login?totp=required"
         # A capability to answer a challenge, and no session behind it.
         assert client.get("/api/v1/account").status_code == 401
 
@@ -301,7 +301,7 @@ def test_a_callback_in_flight_when_a_factor_arrives_is_sent_to_the_challenge(
         assert enrolled.status_code == 204, enrolled.text
         # The challenge, never a session: the account has a factor now.
         assert called_back.status_code == 307, called_back.text
-        assert called_back.headers["location"] == f"{ORIGIN}/?totp=required"
+        assert called_back.headers["location"] == f"{ORIGIN}/login?totp=required"
         assert not [cookie for cookie in called_back.cookies.jar
                     if cookie.name.endswith("potocolom_session")]
         # The owner's own, rotated by the enrolment, and nothing else.
@@ -691,3 +691,10 @@ def test_a_flow_that_is_still_usable_survives_the_sweep(accounts):
         _start(client, "google")
         client.portal.call(oauth.prune)
         assert len(client.portal.call(_flows)) == 1
+
+
+def test_oauth_totp_redirect_targets_login_page():
+    """Wiring: OAuth must send the browser to /login?totp=required, not /."""
+    source = open(oauth.__file__, encoding="utf-8").read()
+    assert "/login?totp=required" in source
+    assert "/?totp=required" not in source.replace("/login?totp=required", "")

@@ -311,4 +311,8 @@ Until rung 6 is reached, the monthly infrastructure cost of this entire plan is 
 
 Rung 1 is where the authentication guarantees live, including the ones that only appear when something goes wrong. `backend/tests/test_failure_matrix.py` holds the cases that cross a boundary rather than exercising one route: two callers arriving at the same instant, a store that is down, a storage backend that will not answer, and the cookie names a browser will actually accept over each scheme. The per-round files hold the rest, and each one is named for the promise it keeps rather than the function it calls.
 
-There are no browser journeys yet, and that is a deliberate gap rather than an oversight. The studio has no sign-in, invitation, or account surface to drive: `frontend/src/routes/app` is the canvas, and every authentication route in this program is reached over HTTP. A Playwright suite today would test a login page that does not exist. It arrives with that UI, and the matrix above is what stands in for it: every locked guarantee has a test at the layer where the guarantee is actually made.
+The first browser journeys live in `frontend/src/lib/auth-journeys.test.ts`.
+They drive HTML fixtures that share the accessible names of `/login` and
+`/join`, not the built SvelteKit routes, using puppeteer-core and mocked
+fetch. Every locked guarantee still has a test at the layer where the
+guarantee is actually made; the matrix above covers the rest.

@@ -349,7 +349,7 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         # type it.
         return await factors.begin_challenge(
             user, remember_me=False,
-            redirect_to=f"{settings.public_url.rstrip('/')}/?totp=required")
+            redirect_to=f"{settings.public_url.rstrip('/')}/login?totp=required")
     response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, issued)
     return response
