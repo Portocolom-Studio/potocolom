@@ -1417,6 +1417,17 @@ materially larger change than the discrepancy justifies.
 
 
 
+## A second Generate click while a request is in flight does nothing
+
+Clicking Generate twice quickly queued two identical jobs. Nothing broke, and two unseeded clicks get different seeds, so they are not the same picture. In the cloud profile each click is still a quota reservation and a metering event, so a slip of the mouse is billable (issue #455).
+
+The Generate control, and Upscale on the same panel, refuse a second submit until the POST that creates the job returns. Jobs still queue server side after that. Two tabs and a retried request are out of scope. A server-side duplicate window is rejected: it needs a rule for the same prompt with a fresh seed, which is a legitimate ask.
+
+The header search box that ignored input is removed. Canvas search belongs on the Images view (issue #132), not in the shell.
+
+Rejected alternatives: treating two clicks as two pictures and writing that down (defensible, and it would make every later reporter file this again); refusing duplicates server side by account, model and parameters (covers a second tab, and invents a window in which a repeated prompt is illegal).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

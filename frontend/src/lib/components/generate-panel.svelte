@@ -48,6 +48,7 @@
 		type Model
 	} from '$lib/studio.svelte';
 	import HistoryStrip from '$lib/components/history-strip.svelte';
+	import { runExclusive, type SubmitLock } from '$lib/submit-once';
 
 	let { mode }: { mode: 'generate' | 'image_to_image' | 'upscale' } = $props();
 
@@ -97,8 +98,9 @@
 			);
 		})()
 	);
-	// Jobs queue server side; submitting never blocks the form (docs/blueprint.md,
-	// the generation request path returns a job id immediately).
+	// Jobs still queue server side once the POST returns. The form itself
+	// refuses a second click until that POST finishes (issue #455).
+	const submitLock: SubmitLock = $state({ busy: false });
 	const working = $derived(
 		studio.history.filter((g) => g.state === 'queued' || g.state === 'running').length
 	);
@@ -358,64 +360,68 @@
 
 	async function generate(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		errorText = '';
-		studio.selectedId = null; // let fresh results take the viewer back
-		const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
-		for (let index = 0; index < jobs; index += 1) {
-			const params: Record<string, unknown> = {
-				...branchParams,
-				prompt: studio.prompt,
-				steps: stepsValue,
-				guidance: guidanceValue,
-				width: sizeValue,
-				height: sizeValue
-			};
-			if (mode === 'image_to_image') params.strength = strengthValue;
-			if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
+		await runExclusive(submitLock, async () => {
+			errorText = '';
+			studio.selectedId = null; // let fresh results take the viewer back
+			const jobs = Math.min(Math.max(Number(count) || 1, 1), 8);
+			for (let index = 0; index < jobs; index += 1) {
+				const params: Record<string, unknown> = {
+					...branchParams,
+					prompt: studio.prompt,
+					steps: stepsValue,
+					guidance: guidanceValue,
+					width: sizeValue,
+					height: sizeValue
+				};
+				if (mode === 'image_to_image') params.strength = strengthValue;
+				if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
+				const response = await fetch('/api/v1/generations', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({
+						model_id: activeModelId,
+						params,
+						...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
+					})
+				});
+				if (!response.ok) {
+					const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+					errorText = body?.detail ?? response.statusText;
+					break;
+				}
+			}
+			await loadHistory();
+			void pollWhileWorking();
+		});
+	}
+
+	async function upscaleShown(): Promise<void> {
+		if (!canUpscale || upscaleSourceAsset === null || upscaleModel == null) return;
+		// Capture before the request: `shown` is derived from selectedId, so
+		// reading it after clearing the selection would target the newest
+		// generation instead of the one on screen.
+		const sourceId = upscaleSourceAsset.id;
+		const modelId = upscaleModel.id;
+		await runExclusive(submitLock, async () => {
+			errorText = '';
+			studio.selectedId = null;
 			const response = await fetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
-					model_id: activeModelId,
-					params,
-					...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
+					model_id: modelId,
+					params: { ...branchParams, factor: upscaleFactor },
+					source_asset_id: sourceId
 				})
 			});
 			if (!response.ok) {
 				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
 				errorText = body?.detail ?? response.statusText;
-				break;
+				return;
 			}
-		}
-		await loadHistory();
-		void pollWhileWorking();
-	}
-
-	async function upscaleShown(): Promise<void> {
-		if (!canUpscale || upscaleSourceAsset === null || upscaleModel == null) return;
-		// Capture before clearing the selection: `shown` is derived from
-		// selectedId, so reading it afterwards would target the newest
-		// generation instead of the one on screen.
-		const sourceId = upscaleSourceAsset.id;
-		const modelId = upscaleModel.id;
-		errorText = '';
-		studio.selectedId = null;
-		const response = await fetch('/api/v1/generations', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({
-				model_id: modelId,
-				params: { ...branchParams, factor: upscaleFactor },
-				source_asset_id: sourceId
-			})
+			await loadHistory();
+			void pollWhileWorking();
 		});
-		if (!response.ok) {
-			const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-			errorText = body?.detail ?? response.statusText;
-			return;
-		}
-		await loadHistory();
-		void pollWhileWorking();
 	}
 
 	function insertPrompt(): void {
@@ -649,7 +655,8 @@
 						{/if}
 						<Button
 							type="submit"
-							disabled={studio.prompt.trim() === '' ||
+							disabled={submitLock.busy ||
+								studio.prompt.trim() === '' ||
 								(mode === 'image_to_image' && sourceAssetId === null)}
 						>
 							{mode === 'image_to_image'
@@ -785,7 +792,7 @@
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
 					</div>
-					<Button type="button" disabled={!canUpscale} onclick={upscaleShown}>
+					<Button type="button" disabled={submitLock.busy || !canUpscale} onclick={upscaleShown}>
 						<ScanLineIcon />
 						{t('app.gen.upscale')}{upscaleEstimateLabel != null ? ` ${upscaleEstimateLabel}` : ''}
 					</Button>
