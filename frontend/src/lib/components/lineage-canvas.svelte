@@ -767,8 +767,7 @@
 					activeIsNull: active === null || active === document.body,
 					activeIsViewport: active === viewportEl,
 					activeIsInspector: active !== null && Boolean(inspectorEl?.contains(active)),
-					activeNodeId:
-						active instanceof HTMLElement ? (active.dataset.lineageNode ?? null) : null
+					activeNodeId: active instanceof HTMLElement ? (active.dataset.lineageNode ?? null) : null
 				});
 				if (!shouldRestoreLineageTileFocus(id, true, kind)) return;
 				const tile = viewportEl?.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`);

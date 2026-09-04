@@ -393,12 +393,7 @@ export function lineageRoverEntryId(rover: LineageRover): string | null {
 }
 
 export type LineageFocusActive =
-	| 'focused-tile'
-	| 'viewport'
-	| 'inspector'
-	| 'other-tile'
-	| 'other'
-	| 'none';
+	'focused-tile' | 'viewport' | 'inspector' | 'other-tile' | 'other' | 'none';
 
 export function lineageFocusActiveKind(args: {
 	focusedId: string;
