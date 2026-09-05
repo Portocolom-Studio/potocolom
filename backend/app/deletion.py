@@ -282,8 +282,7 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
             select(Asset.storage_key).where(Asset.user_id == user_id))).scalars().all())
     # Before the rows: a key nothing names any more is an object nobody will
     # ever find, and the row is the only thing that names it.
-    for key in keys:
-        await _forget_object(key)
+    await jobs.purge_keys(keys, what=f"purged account {user_id}")
     async with db.session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id)
@@ -298,17 +297,6 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
             # key, so what an administrator did survives the account.
             await session.execute(delete(User).where(User.id == user_id))
     logger.info("purged account %s and the %d objects it owned", user_id, len(keys))
-
-
-async def _forget_object(storage_key: str) -> None:
-    """Bounded, and never fatal. A wedged mount answers never, and an object
-    that will not go is recorded for the sweep that owns retries rather than
-    stopping the account from being finished."""
-    try:
-        await jobs._bounded_delete(storage_key)
-    except Exception as error:
-        logger.warning("could not remove %s for a purged account", storage_key, exc_info=True)
-        await jobs.record_pending_delete(storage_key, jobs._trim_error(error))
 
 
 async def purge_loop() -> None:
