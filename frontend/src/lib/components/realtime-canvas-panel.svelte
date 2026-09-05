@@ -1,13 +1,8 @@
 <script lang="ts">
 	// The live realtime drawing surface (issue #3). One 512 by 512 bitmap, CSS
 	// scaled for display, sent as complete WebP frames over the realtime
-	// protocol. The framing, the send predicate, the cadence and the opening
-	// message live in $lib/realtime-canvas so they carry tests. What stays here
-	// is not only the DOM: the timer, the changed and encoding flags, the
-	// latest-wins drop policy, the decode loop and the session lifecycle live in
-	// this file. The happy path is covered by a browser run; the failure and
-	// teardown paths (refused sessions, invalid session ids, overlapping
-	// sockets, stale asynchronous work) are not covered by any automated test.
+	// protocol. The session lifecycle lives in $lib/realtime-canvas; this panel
+	// keeps the bitmap DOM and drawing controls.
 	//
 	// Out of scope here, by their own issues: the replayable stroke journal and
 	// undo (#54), frame-diff skip and finer cadence adaptation (#42), and
@@ -31,17 +26,9 @@
 	} from '$lib/model-params';
 	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
-		FAST_INTERVAL_MS,
-		IDLE_TICKS_BEFORE_STOP,
-		afterParamsUpdated,
-		canvasFrame,
-		nextDelayMs,
-		openMessage,
-		parseGeneratedFrame,
-		shouldSendFrame,
-		stateForCloseCode,
-		updateParamsMessage,
-		type ConnectionState
+		createRealtimeCanvasSession,
+		type ConnectionState,
+		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
 
 	/** The wire dimensions. CSS scales the display without changing these. */
@@ -49,9 +36,6 @@
 	const STROKE_WIDTH = 6;
 	const INK = '#111827';
 	const PAPER = '#ffffff';
-	// The shape uuidBytes requires: 32 hex digits with optional hyphens in the
-	// 8-4-4-4-12 positions.
-	const UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
@@ -59,6 +43,15 @@
 	/** A message is held as its key, not its text, so switching language
 	 * retranslates it instead of leaving the previous locale on screen. */
 	type NoticeKey = Parameters<typeof t>[0];
+	const NOTICE_KEYS: Record<Exclude<RealtimeCanvasNotice, ''>, NoticeKey> = {
+		encode_failed: 'app.realtime_canvas.encode_failed',
+		decode_failed: 'app.realtime_canvas.decode_failed',
+		socket_error: 'app.realtime_canvas.socket_error',
+		refused_protocol: 'app.realtime_canvas.refused_protocol',
+		refused_version: 'app.realtime_canvas.refused_version',
+		refused_capacity: 'app.realtime_canvas.refused_capacity',
+		refused_model: 'app.realtime_canvas.refused_model'
+	};
 
 	let prompt = $state('');
 	let connection = $state<ConnectionState>('idle');
@@ -74,24 +67,12 @@
 	let appliedStructure = $state(0);
 	let appliedSteps = $state(0);
 
-	let socket: WebSocket | null = null;
-	let sessionId: string | null = null;
 	let paint: CanvasRenderingContext2D | null = null;
 
-	let changed = false; // paint not yet on the wire
-	let encoding = false; // one encode in flight
-	let decoding = false; // one decode in flight
-	// Latest generated frame, older ones dropped. The buffer is named in the
-	// type so the Blob constructor accepts these bytes without a cast.
-	let pendingFrame: Uint8Array<ArrayBuffer> | null = null;
-	let timer: ReturnType<typeof setTimeout> | null = null;
-	let idleTicks = 0;
-	let lastFrameCostMs = 0;
 	let blank = true; // nothing drawn since the last clear
 	let drawing = false;
 	let strokePointer: number | null = null;
 	let lastPoint: { x: number; y: number } | null = null;
-	let userClosing = false;
 	// Slider updates are debounced so a drag does not send one message per
 	// pixel: the timer is re-armed on every movement and fires once the slider
 	// has settled, mirroring how armCapture/stopTimer time the capture loop.
@@ -135,15 +116,32 @@
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
 	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
-	// Frames only go out while a worker is actually attached. During a reassign
-	// the socket is open and the session is alive, but the API has no worker to
-	// relay to and silently drops whatever arrives.
-	const sending = $derived(connection === 'active');
 	const busy = $derived(connection === 'connecting' || connected);
 	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
+
+	const realtimeSession = createRealtimeCanvasSession({
+		getDrawCanvas: () => drawCanvas,
+		getOutputCanvas: () => outputCanvas,
+		isCanvasBlank: () => blank,
+		onState: (state) => {
+			connection = state;
+		},
+		onNotice: (key: RealtimeCanvasNotice) => {
+			notice = key === '' ? '' : NOTICE_KEYS[key];
+		},
+		onCounters: (sent, rendered) => {
+			sentFrames = sent;
+			renderedFrames = rendered;
+		},
+		onAppliedParams: (params) => {
+			if (params.prompt !== undefined) appliedPrompt = params.prompt;
+			if (params.structure_strength !== undefined) appliedStructure = params.structure_strength;
+			if (params.steps !== undefined) appliedSteps = params.steps;
+		}
+	});
 
 	const STATUS_KEYS = {
 		idle: 'app.realtime_canvas.status_idle',
@@ -192,7 +190,7 @@
 		if (!connected || structureValue === appliedStructure) return;
 		structureTimer = setTimeout(() => {
 			structureTimer = null;
-			sendUpdate({ structure_strength: structureValue });
+			realtimeSession.updateParams({ structure_strength: structureValue });
 		}, SLIDER_UPDATE_MS);
 	});
 
@@ -204,7 +202,7 @@
 		if (!connected || stepsValue === appliedSteps) return;
 		stepsTimer = setTimeout(() => {
 			stepsTimer = null;
-			sendUpdate({ steps: stepsValue });
+			realtimeSession.updateParams({ steps: stepsValue });
 		}, SLIDER_UPDATE_MS);
 	});
 
@@ -225,12 +223,9 @@
 	// Tear the socket and the timer down with the panel, so leaving the view
 	// does not leave a session open on a worker.
 	$effect(() => () => {
-		userClosing = true;
-		stopTimer();
+		realtimeSession.destroy();
 		if (structureTimer !== null) clearTimeout(structureTimer);
 		if (stepsTimer !== null) clearTimeout(stepsTimer);
-		socket?.close(1000);
-		socket = null;
 	});
 
 	function canvasPoint(event: PointerEvent): { x: number; y: number } {
@@ -243,12 +238,8 @@
 	}
 
 	function markChanged(): void {
-		changed = true;
 		blank = false;
-		idleTicks = 0;
-		// The loop stops arming itself once the canvas goes quiet, so new paint
-		// has to restart it.
-		if (sending && timer === null) armCapture(FAST_INTERVAL_MS);
+		realtimeSession.markChanged();
 	}
 
 	/** One segment per move, so a long stroke does not restroke its whole path. */
@@ -320,233 +311,7 @@
 		blank = true;
 		// Still a revision worth sending: the model should stop drawing what is
 		// no longer on the canvas.
-		changed = true;
-		idleTicks = 0;
-		if (sending && timer === null) armCapture(FAST_INTERVAL_MS);
-	}
-
-	function stopTimer(): void {
-		if (timer !== null) clearTimeout(timer);
-		timer = null;
-	}
-
-	/**
-	 * Send an update_params message for a subset of the session's params.
-	 * Only while the session is live and the socket is open: everything else
-	 * silently drops, and the params_updated confirmation records what the
-	 * API actually merged rather than what was sent.
-	 */
-	function sendUpdate(params: Record<string, string | number>): void {
-		if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
-		socket.send(updateParamsMessage(params));
-	}
-
-	function applyPrompt(): void {
-		if (!promptDirty) return;
-		// updateParamsMessage trims, so the untrimmed text is sent.
-		sendUpdate({ prompt });
-	}
-
-	function armCapture(delay: number): void {
-		stopTimer();
-		timer = setTimeout(() => void captureTick(), delay);
-	}
-
-	function encodeCanvas(canvas: HTMLCanvasElement): Promise<Uint8Array> {
-		return new Promise((resolve, reject) => {
-			// WebP is what docs/connection-handling.md specifies. A browser that
-			// cannot encode WebP silently returns PNG instead, which the worker's
-			// decoder happens to open too, so this leans on that rather than
-			// failing: an extension to the documented wire, not conformance.
-			canvas.toBlob((blob) => {
-				if (!blob) {
-					reject(new Error('the canvas produced no image'));
-					return;
-				}
-				blob.arrayBuffer().then((buffer) => resolve(new Uint8Array(buffer)), reject);
-			}, 'image/webp');
-		});
-	}
-
-	async function captureTick(): Promise<void> {
-		timer = null;
-		if (!socket || socket.readyState !== WebSocket.OPEN || !sessionId || !drawCanvas) return;
-		if (!sending) return; // a reassign is in flight; resumed re-arms
-
-		if (!shouldSendFrame({ changed, encoding, buffered: socket.bufferedAmount })) {
-			idleTicks += 1;
-			// Nothing to send for a while: stop arming rather than hold a timer
-			// open on an untouched canvas. Paint, a clear, or a resume restarts it.
-			if (idleTicks >= IDLE_TICKS_BEFORE_STOP && !changed) return;
-			armCapture(nextDelayMs(lastFrameCostMs));
-			return;
-		}
-
-		// The session this frame belongs to. Encoding is asynchronous, so by the
-		// time it finishes the user may have disconnected, cleared and
-		// reconnected; sending then would frame a stale bitmap as the new
-		// session and hand the replacement worker input the canvas no longer has.
-		const forSocket = socket;
-		const forSession = sessionId;
-		const started = performance.now();
-		// Cleared before the encode, so paint arriving during it marks the canvas
-		// changed again rather than being swallowed by this frame.
-		changed = false;
-		encoding = true;
-		try {
-			const image = await encodeCanvas(drawCanvas);
-			if (
-				socket === forSocket &&
-				sessionId === forSession &&
-				forSocket.readyState === WebSocket.OPEN
-			) {
-				if (sending) {
-					forSocket.send(canvasFrame(forSession, image));
-					sentFrames += 1;
-				} else {
-					// An interrupted arrived while this encode was in flight: the
-					// API has no worker to relay to and would drop the frame. Keep
-					// the revision pending so the resumed handler re-sends it.
-					changed = true;
-				}
-			}
-		} catch {
-			// A failed encode must not end the session silently: keep the
-			// revision pending and let the next tick try again. A rejection
-			// that outlived its session belongs to a session that is gone and
-			// must not write into the one that replaced it.
-			if (socket === forSocket && sessionId === forSession) {
-				changed = true;
-				notice = 'app.realtime_canvas.encode_failed';
-			}
-		} finally {
-			encoding = false;
-			lastFrameCostMs = performance.now() - started;
-		}
-		// Not after the session went away: re-arming there would resurrect a
-		// timer the teardown had already stopped.
-		if (socket === forSocket && sessionId === forSession) armCapture(nextDelayMs(lastFrameCostMs));
-	}
-
-	async function drainGenerated(): Promise<void> {
-		if (decoding) return;
-		decoding = true;
-		try {
-			while (pendingFrame !== null) {
-				const image = pendingFrame;
-				pendingFrame = null;
-				const forSession = sessionId;
-				// Per frame, so one that fails to decode does not strand the frame
-				// waiting behind it: without this the loop exits and nothing runs
-				// again until a further frame happens to arrive.
-				try {
-					// The Blob copies the bytes, so the socket's buffer is free to go.
-					const bitmap = await createImageBitmap(new Blob([image], { type: 'image/webp' }));
-					try {
-						// A decode that outlived its session must not paint over the
-						// output of the one that replaced it.
-						const target = sessionId === forSession ? outputCanvas?.getContext('2d') : null;
-						if (target) {
-							target.drawImage(bitmap, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
-							renderedFrames += 1;
-						}
-					} finally {
-						bitmap.close();
-					}
-				} catch {
-					// A decode that failed for a session that is gone must not
-					// write its notice into the session that replaced it.
-					if (sessionId === forSession) {
-						notice = 'app.realtime_canvas.decode_failed';
-					}
-				}
-			}
-		} catch {
-			notice = 'app.realtime_canvas.decode_failed';
-		} finally {
-			decoding = false;
-		}
-	}
-
-	function handleControl(text: string): void {
-		let control: {
-			type?: string;
-			session_id?: string;
-			code?: number;
-			params?: unknown;
-		};
-		try {
-			control = JSON.parse(text) as typeof control;
-		} catch {
-			return;
-		}
-		if (control.type === 'ready' && control.session_id) {
-			// A server that sends a session id this client cannot frame is a
-			// server this client cannot talk to. Failing visibly beats throwing
-			// once per frame behind an Active badge.
-			if (!UUID_RE.test(control.session_id)) {
-				notice = 'app.realtime_canvas.socket_error';
-				connection = 'failed';
-				// Close the refused socket the way disconnect does, so no handler
-				// of the refused session survives. onclose ignores a socket that is
-				// no longer the module's, so clearing socket here keeps the
-				// failure state just set above instead of letting onclose
-				// overwrite it.
-				stopTimer();
-				socket?.close(1000);
-				socket = null;
-				sessionId = null;
-				pendingFrame = null;
-				return;
-			}
-			sessionId = control.session_id;
-			connection = 'active';
-			notice = '';
-			// Anything already drawn belongs on the first frame.
-			changed = !blank;
-			armCapture(FAST_INTERVAL_MS);
-		} else if (control.type === 'interrupted') {
-			// The worker vanished and the API is already picking a replacement;
-			// the socket and the session id both survive it.
-			connection = 'resuming';
-		} else if (control.type === 'resumed') {
-			connection = 'active';
-			// The browser is the recovery source of truth: the replacement worker
-			// has never seen this canvas, so resend all of it.
-			changed = true;
-			idleTicks = 0;
-			armCapture(FAST_INTERVAL_MS);
-		} else if (control.type === 'params_updated' && control.params) {
-			// Record what the API confirmed. A rejected update leaves these
-			// untouched, so the Update button and the slider debounce keep
-			// comparing against the last confirmed params rather than optimism.
-			const params = control.params as {
-				prompt?: unknown;
-				structure_strength?: unknown;
-				steps?: unknown;
-			};
-			if (typeof params.prompt === 'string') appliedPrompt = params.prompt;
-			if (typeof params.structure_strength === 'number') {
-				appliedStructure = params.structure_strength;
-			}
-			if (typeof params.steps === 'number') appliedSteps = params.steps;
-			const wake = afterParamsUpdated();
-			changed = wake.changed;
-			idleTicks = wake.idleTicks;
-			if (sending) armCapture(FAST_INTERVAL_MS);
-		} else if (control.type === 'error') {
-			// A rejected update reports through the notice and leaves the
-			// session alone; the socket stays open either way.
-			notice = refusalNotice(control.code ?? 0);
-		}
-	}
-
-	function refusalNotice(code: number): NoticeKey {
-		if (code === 4004) return 'app.realtime_canvas.refused_model';
-		if (code === 4003) return 'app.realtime_canvas.refused_capacity';
-		if (code === 4002) return 'app.realtime_canvas.refused_version';
-		if (code === 4000) return 'app.realtime_canvas.refused_protocol';
-		return 'app.realtime_canvas.socket_error';
+		realtimeSession.markChanged();
 	}
 
 	/** The picker's option label: the model's measured frame cost when its
@@ -558,88 +323,26 @@
 			: model.name;
 	}
 
-	function onMessage(event: MessageEvent): void {
-		if (typeof event.data === 'string') {
-			handleControl(event.data);
-			return;
-		}
-		if (!sessionId || !(event.data instanceof ArrayBuffer)) return;
-		const image = parseGeneratedFrame(new Uint8Array(event.data), sessionId);
-		if (image === null || image.length === 0) return;
-		// Latest wins: a frame still waiting to be decoded is dropped rather
-		// than queued, so the output cannot fall behind the canvas.
-		pendingFrame = image;
-		void drainGenerated();
-	}
-
 	function connect(): void {
 		if (!canConnect) return;
-		notice = '';
-		userClosing = false;
-		connection = 'connecting';
-		// A new session must not show the previous one's output.
-		sentFrames = 0;
-		renderedFrames = 0;
-		pendingFrame = null;
 		const output = outputCanvas?.getContext('2d');
 		if (output) {
 			output.fillStyle = PAPER;
 			output.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 		}
-		// The open message must carry what the user chose when they pressed
-		// Connect, not whatever the reactive state holds by the time the socket
-		// completes: an effect can rewrite modelId if the model list changes in
-		// between.
-		const sessionModelId = modelId;
-		const sessionPrompt = prompt;
-		const sessionStructure = structureValue;
-		const sessionSteps = stepsValue;
-		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		const opening = new WebSocket(`${scheme}//${location.host}/api/v1/realtime`);
-		opening.binaryType = 'arraybuffer';
-		socket = opening;
-		opening.onopen = () => {
-			// openMessage carries the params every shipped realtime model
-			// declares: the prompt is required (an open without it is refused
-			// 4000 before a worker is assigned), and structure_strength and
-			// steps are declared by every shipped realtime model too. The
-			// simulated manifest declares only the prompt and accepts the other
-			// two as extra properties, which JSON Schema allows. It is built in
-			// $lib/realtime-canvas so a test holds it. What opens is what is
-			// applied, so the same values seed the applied state that the
-			// Update button and the slider debounce compare against.
-			appliedPrompt = sessionPrompt.trim();
-			appliedStructure = sessionStructure;
-			appliedSteps = sessionSteps;
-			opening.send(
-				openMessage(sessionModelId, sessionPrompt, {
-					structure_strength: sessionStructure,
-					steps: sessionSteps
-				})
-			);
-		};
-		opening.onmessage = onMessage;
-		opening.onerror = () => {
-			if (!notice) notice = 'app.realtime_canvas.socket_error';
-		};
-		opening.onclose = (event) => {
-			// A late close from a socket that was replaced must not touch live
-			// state: its session is gone and the current one is owned by the
-			// socket that replaced it.
-			if (opening !== socket) return;
-			stopTimer();
-			socket = null;
-			sessionId = null;
-			pendingFrame = null;
-			connection = userClosing ? 'idle' : stateForCloseCode(event.code);
-			if (connection === 'failed' && !notice) notice = refusalNotice(event.code);
-		};
+		realtimeSession.connect({
+			modelId,
+			prompt,
+			params: { structure_strength: structureValue, steps: stepsValue }
+		});
+	}
+
+	function applyPrompt(): void {
+		if (promptDirty) realtimeSession.updateParams({ prompt });
 	}
 
 	function disconnect(): void {
-		userClosing = true;
-		stopTimer();
-		socket?.close(1000);
+		realtimeSession.disconnect();
 	}
 </script>
 
