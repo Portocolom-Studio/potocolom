@@ -623,6 +623,63 @@ def test_window6_plan_passes_dry_run(tmp_path: Path) -> None:
     assert main(["dry-run", "--plan", str(path)]) == 0
 
 
+def test_window7_is_depth_on_the_six_proven_pairs_at_eight_unused_seeds() -> None:
+    """Second depth block: leftover pool seeds plus the next two primes.
+
+    Window 6 is unrated, so this spend cannot wait on its keeper count. It
+    reuses the authorised P3 design on seeds nobody has rendered on these
+    pairs. Window 4's three keeper pairs stay out.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW3_SEED_POOL,
+        WINDOW4_PAIRS,
+        WINDOW5_SEEDS,
+        WINDOW6_SEEDS,
+        WINDOW7_SEEDS,
+        _window3_flags,
+        build_window7,
+    )
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    entries = build_window7()
+    assert len(entries) == 48
+    assert {e.tier for e in entries} == {"window7"}
+    assert {e.pair_id for e in entries} == set(WINDOW2_PROVEN)
+    assert not set(WINDOW4_PAIRS) & {e.pair_id for e in entries}
+    assert {e.seed for e in entries} == set(WINDOW7_SEEDS)
+    assert WINDOW7_SEEDS == (181, 199, 211, 233, 251, 269, 271, 277)
+    leftover = tuple(
+        seed
+        for seed in WINDOW3_SEED_POOL
+        if seed not in WINDOW5_SEEDS and seed not in WINDOW6_SEEDS
+    )
+    assert leftover == (181, 199, 211, 233, 251, 269)
+    assert set(WINDOW7_SEEDS).isdisjoint(WINDOW5_SEEDS)
+    assert set(WINDOW7_SEEDS).isdisjoint(WINDOW6_SEEDS)
+    assert {e.style for e in entries} == {"oil"}
+    assert all(list(e.flags) == _window3_flags() for e in entries)
+    assert len({e.entry_id for e in entries}) == 48
+    assert [e.seed for e in entries] == [s for s in WINDOW7_SEEDS for _ in WINDOW2_PROVEN]
+    for pair_id in WINDOW2_PROVEN:
+        _subjects, effective = resolve_pair_prompts(PAIR_BY_ID[pair_id], "oil")
+        assert all(text.startswith("an oil painting of ") for text in effective), pair_id
+
+
+def test_window7_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window7",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
 def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
     from worker.illusion_campaign import build_phase_plan, main
 

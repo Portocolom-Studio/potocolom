@@ -1026,7 +1026,8 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 | P0 mixed re-rate | 0 | rater drift between sessions |
 | P1 wording smoke | ~1.3 | whether `reference_sketch` is repairable |
 | P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
-| P3 depth, six proven pairs, 48 bases | 21.4 | live: `build_window6` |
+| P3 depth, six proven pairs, 48 bases | 21.4 | ran: `build_window6`, unrated |
+| P3b second depth block, 48 bases | 21.4 | live: `build_window7` |
 | P4 Codex regression, 144 bases | 64.3 | only if P2 fails |
 
 1. **P0, zero GPU, and nothing else should run first.** Every window was rated in a
@@ -1084,7 +1085,15 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    winner's curse this section spent its length objecting to. Falsifier: fewer than 6
    keepers in 48. Seeds are `WINDOW6_SEEDS`: the eight values in `WINDOW3_SEED_POOL`
    after dropping 11, 23 and 37, so 53, 71, 89, 101, 113, 131, 149, 167. Phase
-   `window6`.
+   `window6`. Finished 2026-09-05, 48 of 48 completed, 0 failed. Unrated.
+
+   A second 48-base block, `window7`, was launched 2026-09-05 before window 6 was
+   rated, to fill a 30-hour away window. It cannot wait on window 6's keeper
+   count. Same six pairs, oil, `_window3_flags()`, independent falsifier fewer
+   than 6 keepers in 48. Seeds are `WINDOW7_SEEDS`: the six leftover pool values
+   181, 199, 211, 233, 251, 269, plus the next two primes 271 and 277. Do not
+   mix the two windows in one shuffle; rate each, then look at the combined 16
+   seeds.
 
 5. **P4, Codex's powered regression test, 144 bases, 64.3 GPU-hours. Still last.**
    Its motivating observation, the keeper-bar collapse in the mixed table, is

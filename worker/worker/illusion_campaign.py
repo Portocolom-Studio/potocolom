@@ -593,6 +593,15 @@ WINDOW6_PAIRS = WINDOW2_PROVEN
 WINDOW6_STYLE = "oil"
 # Window 3's pool minus the three seeds window 5 already spent on these pairs.
 WINDOW6_SEEDS = tuple(seed for seed in WINDOW3_SEED_POOL if seed not in WINDOW5_SEEDS)[:8]
+WINDOW7_PAIRS = WINDOW2_PROVEN
+WINDOW7_STYLE = "oil"
+# Leftover pool after windows 5 and 6, plus the next two primes. Window 6 is
+# unrated, so this cannot wait on its keeper count; it is the same authorised
+# P3 design on seeds those windows did not spend.
+WINDOW7_EXTRA_SEEDS = (271, 277)
+WINDOW7_SEEDS = tuple(
+    seed for seed in WINDOW3_SEED_POOL if seed not in WINDOW5_SEEDS and seed not in WINDOW6_SEEDS
+) + WINDOW7_EXTRA_SEEDS
 
 
 def _window2_flags(
@@ -911,6 +920,33 @@ def build_window6() -> list[CampaignEntry]:
                     flags=_window3_flags(),
                     priority=priority,
                     style=WINDOW6_STYLE,
+                    estimate_s=WINDOW3_BASE_ESTIMATE_S,
+                )
+            )
+            priority += 1
+    return entries
+
+
+def build_window7() -> list[CampaignEntry]:
+    """Second depth block: leftover pool seeds plus two unused primes. 48 bases.
+
+    Same six pairs, oil, current recipe as window 6. Seed-major, so a short run
+    drops a whole seed and leaves a balanced block. Window 4's three keeper
+    pairs stay out: their oil keeper repeat across two seeds was 0 of 3.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for seed in WINDOW7_SEEDS:
+        for pair_id in WINDOW7_PAIRS:
+            entries.append(
+                _entry(
+                    tier="window7",
+                    profile=WINDOW7_STYLE,
+                    pair_id=pair_id,
+                    seed=seed,
+                    flags=_window3_flags(),
+                    priority=priority,
+                    style=WINDOW7_STYLE,
                     estimate_s=WINDOW3_BASE_ESTIMATE_S,
                 )
             )
@@ -1526,6 +1562,8 @@ def build_phase_plan(
         entries = build_window5()
     elif phase == "window6":
         entries = build_window6()
+    elif phase == "window7":
+        entries = build_window7()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1550,6 +1588,7 @@ def build_phase_plan(
                 "window3",
                 "window5",
                 "window6",
+                "window7",
                 "early-dream-backup",
             )
             else _blocked_rotated(entries)
@@ -1633,6 +1672,7 @@ def main(argv: list[str] | None = None) -> int:
             "window4",
             "window5",
             "window6",
+            "window7",
             "early-dream-backup",
         ),
         required=True,
@@ -1788,6 +1828,13 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window6", 0) not in (0, window6_expected):
             print(
                 f"FAIL: window6 expected {window6_expected} got {counts.get('window6')}",
+                file=sys.stderr,
+            )
+            return 1
+        window7_expected = len(WINDOW7_PAIRS) * len(WINDOW7_SEEDS)
+        if counts.get("window7", 0) not in (0, window7_expected):
+            print(
+                f"FAIL: window7 expected {window7_expected} got {counts.get('window7')}",
                 file=sys.stderr,
             )
             return 1
