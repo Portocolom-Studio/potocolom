@@ -268,57 +268,76 @@ class SessionRunner:
 
     def __init__(self, session_id: uuid.UUID, ws, engine: Engine, manifest: Manifest,
                  params: dict, generation: int = 1):
-        self.session_id = session_id
-        self.manifest = manifest
-        self.params = params
-        self.generation = generation
-        self.pending: bytes | None = None
-        self.arrived = asyncio.Event()
+        self._session_id = session_id
+        self._ws = ws
+        self._engine = engine
+        self._manifest = manifest
+        self._params = params
+        self._generation = generation
+        self._pending: bytes | None = None
+        self._arrived = asyncio.Event()
         self.dropped = 0
-        self.frames = 0
-        self.gpu_ms = 0
-        self.started_at = time.monotonic()
+        self._frames = 0
+        self._gpu_ms = 0
+        self._started_at = time.monotonic()
         self._ready_sent = False
         self._ended = False
+        self._cancel_requested = False
         # One holder for the session's prompt embeddings, passed to every
         # frame: the cache lives and dies with the runner, so an engine-held
         # cache would never have a release path to forget.
-        self.prompt_cache = PromptCache()
-        self._task = asyncio.create_task(self._run(ws, engine, manifest))
+        self._prompt_cache = PromptCache()
+        self._task = asyncio.create_task(self._run())
 
     def submit(self, payload: bytes) -> None:
-        if self.pending is not None:
+        if self._pending is not None:
             self.dropped += 1
-        self.pending = payload
-        self.arrived.set()
+        self._pending = payload
+        self._arrived.set()
+
+    def matches_generation(self, generation: int | None) -> bool:
+        return generation == self._generation
+
+    def update(self, params: dict) -> None:
+        updated = self._manifest.with_defaults(params)
+        seed = normalise_seed(updated.get("seed"))
+        if seed is None:
+            seed = self._params["seed"]
+        updated["seed"] = seed
+        self._params = updated
 
     def lifecycle(self, kind: str, **extra) -> dict:
         payload = {
             "type": kind,
-            "session_id": str(self.session_id),
-            "control_generation": self.generation,
+            "session_id": str(self._session_id),
+            "control_generation": self._generation,
             **extra,
         }
         return payload
 
-    async def resend_ready(self, ws) -> None:
+    async def resend_ready(self) -> None:
         """Idempotent open: repeat the ready we already sent, if any."""
         if self._ready_sent and not self._ended:
             with suppress(websockets.WebSocketException):
-                await ws.send(json.dumps(self.lifecycle("session_ready")))
+                await self._ws.send(json.dumps(self.lifecycle("session_ready")))
 
-    async def _ready(self, ws) -> None:
+    async def _ready(self) -> None:
+        if self._ended:
+            return
         self._ready_sent = True
-        await ws.send(json.dumps(self.lifecycle("session_ready")))
+        await self._ws.send(json.dumps(self.lifecycle("session_ready")))
 
-    async def _refuse(self, ws, reason: str) -> None:
+    async def _refuse(self, reason: str) -> None:
         if self._ended:
             return
         self._ended = True
         with suppress(websockets.WebSocketException):
-            await ws.send(json.dumps(self.lifecycle("session_refused", reason=reason)))
+            await self._ws.send(json.dumps(self.lifecycle("session_refused", reason=reason)))
 
-    async def _run(self, ws, engine: Engine, manifest: Manifest) -> None:
+    async def _run(self) -> None:
+        ws = self._ws
+        engine = self._engine
+        manifest = self._manifest
         # Residency is decided once, before any frame waits on a stale rung
         # answer. This cannot live in the open_session handler in the control
         # loop: that loop also reads every heartbeat and every frame from
@@ -337,35 +356,35 @@ class SessionRunner:
             # loop is the silent blank canvas issue #270 exists to close.
             logger.exception(
                 "session %s could not make model %s resident",
-                self.session_id, manifest.id,
+                self._session_id, manifest.id,
             )
             resident = False
         if not resident:
             logger.warning(
                 "session %s cannot render: model %s is not fully resident",
-                self.session_id, manifest.id,
+                self._session_id, manifest.id,
             )
-            await self._refuse(ws, "not_resident")
+            await self._refuse("not_resident")
             return
         try:
-            await self._ready(ws)
+            await self._ready()
         except websockets.WebSocketException:
             logger.warning("session %s lost the connection before session_ready",
-                           self.session_id)
+                           self._session_id)
             return
         steps_default = default_steps(manifest)
         residency_failures = 0
         while True:
-            await self.arrived.wait()
-            self.arrived.clear()
-            payload, self.pending = self.pending, None
+            await self._arrived.wait()
+            self._arrived.clear()
+            payload, self._pending = self._pending, None
             if payload is None:  # unreachable today; narrows the Optional for mypy
                 continue
             try:
-                # self.params is read per frame, so an update_session lands on
+                # The params are read per frame, so an update_session lands on
                 # the next frame while one in flight finishes on the old dict.
                 generated = await engine.frame(
-                    manifest, self.params, payload, prompt_cache=self.prompt_cache,
+                    manifest, self._params, payload, prompt_cache=self._prompt_cache,
                 )
             except asyncio.CancelledError:
                 raise
@@ -376,18 +395,18 @@ class SessionRunner:
                 # renders (issue #270). Match the engine's type, not its
                 # message: rewording the raise must not disable refusal.
                 logger.exception("session %s dropped a frame on an inference error",
-                                 self.session_id)
+                                 self._session_id)
                 if isinstance(error, NotResidentError):
                     residency_failures += 1
                     if residency_failures >= 2:
-                        await self._refuse(ws, "not_resident")
+                        await self._refuse("not_resident")
                         return
                 else:
                     residency_failures = 0
                 continue
             residency_failures = 0
-            self.frames += 1
-            self.gpu_ms += generated.gpu_ms
+            self._frames += 1
+            self._gpu_ms += generated.gpu_ms
             # The same quantity calibration measures: worker-side inference
             # time per frame, and the number the 500 ms bar is defined
             # against. Real frames supersede the calibration estimate, but
@@ -396,21 +415,137 @@ class SessionRunner:
             # defaults, so a session at other settings (steps is the
             # cost-determining parameter; width and height are fixed enums)
             # measures something else and must not overwrite it. The default
-            # is fixed for the session; self.params is not, so an update to
+            # is fixed for the session; the params are not, so an update to
             # steps stops the observing from the next frame on.
-            if steps_default is not None and self.params.get("steps") == steps_default:
+            if steps_default is not None and self._params.get("steps") == steps_default:
                 engine.observe_frame_ms(manifest.id, generated.gpu_ms)
+            if self._ended:
+                return
             try:
                 await ws.send(
-                    bytes([GENERATED_FRAME]) + self.session_id.bytes + generated.data)
+                    bytes([GENERATED_FRAME]) + self._session_id.bytes + generated.data)
             except websockets.WebSocketException:
                 logger.warning("session %s lost the connection while sending a frame",
-                               self.session_id)
+                               self._session_id)
                 return
 
     def close(self) -> None:
         self._ended = True
-        self._task.cancel()
+        # Shutdown also visits runners retired during a replacement, so a
+        # repeated close must not deliver a second cancellation.
+        if not self._cancel_requested:
+            self._cancel_requested = True
+            self._task.cancel()
+
+    async def wait(self) -> None:
+        with suppress(asyncio.CancelledError):
+            await self._task
+
+    def add_done_callback(self, callback) -> None:
+        self._task.add_done_callback(lambda _: callback(self))
+
+    def close_report(self) -> dict:
+        category, score = categorize_output(None)
+        report = {
+            "type": "session_closed",
+            "session_id": str(self._session_id),
+            "frames": self._frames,
+            "gpu_ms": self._gpu_ms,
+            "duration_ms": int((time.monotonic() - self._started_at) * 1000),
+            "category": category,
+            "control_generation": self._generation,
+        }
+        if score is not None:
+            report["category_score"] = score
+        return report
+
+
+class SessionManager:
+    """Own realtime runner lifecycle and generation fencing for one connection."""
+
+    def __init__(self, ws, engine: Engine, manifests: list[Manifest]):
+        self._ws = ws
+        self._engine = engine
+        self._by_id = {manifest.id: manifest for manifest in manifests}
+        self._runners: dict[uuid.UUID, SessionRunner] = {}
+        self._highest_generation: dict[uuid.UUID, int] = {}
+        self._retired: set[SessionRunner] = set()
+
+    @property
+    def active_count(self) -> int:
+        return len(self._runners)
+
+    def _track_retired(self, runner: SessionRunner) -> None:
+        self._retired.discard(runner)
+
+    def _retire(self, runner: SessionRunner) -> None:
+        self._retired.add(runner)
+        runner.add_done_callback(self._track_retired)
+        runner.close()
+
+    async def open(self, control: dict) -> None:
+        session_id = uuid.UUID(control["session_id"])
+        generation = control_generation(control)
+        if generation is None:
+            logger.warning(
+                "open_session for %s omitted control_generation; ignored",
+                control.get("session_id"),
+            )
+            return
+        highest = self._highest_generation.get(session_id, 0)
+        if generation < highest:
+            return
+        if generation == highest:
+            runner = self._runners.get(session_id)
+            if runner is not None:
+                await runner.resend_ready()
+            return
+        old = self._runners.pop(session_id, None)
+        if old is not None:
+            self._retire(old)
+        self._highest_generation[session_id] = generation
+        manifest = self._by_id[control["model_id"]]
+        self._runners[session_id] = SessionRunner(
+            session_id, self._ws, self._engine, manifest,
+            ensure_seed(manifest.with_defaults(control.get("params") or {})),
+            generation)
+
+    async def update(self, control: dict) -> None:
+        generation = control_generation(control)
+        runner = self._runners.get(uuid.UUID(control["session_id"]))
+        if runner is None or not runner.matches_generation(generation):
+            return
+        runner.update(control["params"])
+
+    async def close(self, control: dict) -> None:
+        session_id = uuid.UUID(control["session_id"])
+        generation = control_generation(control)
+        runner = self._runners.get(session_id)
+        if runner is None:
+            if generation is not None:
+                self._highest_generation[session_id] = max(
+                    self._highest_generation.get(session_id, 0), generation)
+            return
+        if not runner.matches_generation(generation):
+            return
+        self._runners.pop(session_id, None)
+        self._retire(runner)
+        await self._ws.send(json.dumps(runner.close_report()))
+
+    def submit(self, session_id: uuid.UUID, payload: bytes) -> None:
+        runner = self._runners.get(session_id)
+        if runner is not None:
+            runner.submit(payload)
+
+    async def shutdown(self) -> None:
+        runners = list(self._runners.values()) + list(self._retired)
+        self._runners.clear()
+        self._highest_generation.clear()
+        for runner in runners:
+            runner.close()
+        await asyncio.gather(*(runner.wait() for runner in runners),
+                             return_exceptions=True)
+        self._retired.clear()
 
 
 async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
@@ -650,11 +785,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
 
     ws = LockedWebSocket(ws)
     by_id = {manifest.id: manifest for manifest in manifests}
-    runners: dict[uuid.UUID, SessionRunner] = {}
-    # Highest generation seen per session, including tombstones after close
-    # so a delayed open cannot resurrect a finished session. Dropped when
-    # this connection ends.
-    highest_generation: dict[uuid.UUID, int] = {}
+    sessions = SessionManager(ws, engine, manifests)
     # Keyed by task rather than by job id: a requeued attempt of a job already
     # running here would overwrite an id key and lose the first task, which
     # the teardown below still has to cancel.
@@ -669,7 +800,7 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
             gpu = await asyncio.to_thread(sample_gpu, settings.device)
             await ws.send(json.dumps({
                 "type": "heartbeat",
-                "slots_in_use": len(runners),
+                "slots_in_use": sessions.active_count,
                 "loaded_models": engine.loaded_models(),
                 "gpu": gpu,
                 # The API overwrites the calibration estimate with these,
@@ -687,113 +818,20 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                     if len(message) < FRAME_HEADER_BYTES:
                         raise ValueError("binary frame shorter than the header")
                     session_id = uuid.UUID(bytes=message[1:FRAME_HEADER_BYTES])
-                    if session_id in runners:
-                        runners[session_id].submit(message[FRAME_HEADER_BYTES:])
+                    sessions.submit(session_id, message[FRAME_HEADER_BYTES:])
                 else:
                     control = json.loads(message)
                     if control["type"] == "open_session":
-                        session_id = uuid.UUID(control["session_id"])
-                        generation = control_generation(control)
-                        if generation is None:
-                            # Unfenced protocol 4 message: do not believe it.
-                            logger.warning(
-                                "open_session for %s omitted control_generation; ignored",
-                                control.get("session_id"),
-                            )
-                            continue
-                        highest = highest_generation.get(session_id, 0)
-                        if generation < highest:
-                            continue
-                        if generation == highest:
-                            runner = runners.get(session_id)
-                            if runner is not None:
-                                await runner.resend_ready(ws)
-                            continue
-                        old = runners.pop(session_id, None)
-                        if old is not None:
-                            old.close()
-                        highest_generation[session_id] = generation
-                        manifest = by_id[control["model_id"]]
-                        runners[session_id] = SessionRunner(
-                            session_id, ws, engine, manifest,
-                            ensure_seed(manifest.with_defaults(
-                                control.get("params") or {})),
-                            generation)
+                        await sessions.open(control)
                     elif control["type"] == "update_session":
-                        # Ignored for an unknown session rather than raised:
-                        # the API may send an update for a session this
-                        # worker has just torn down, and the teardown and the
-                        # update cross on the wire without either side being
-                        # wrong. Equality with the active runner is required;
-                        # an unfenced or stale generation is ignored.
-                        generation = control_generation(control)
-                        runner = runners.get(uuid.UUID(control["session_id"]))
-                        if runner is None or generation != runner.generation:
-                            continue
-                        # The API owns the seed when an update carries
-                        # one: its stored params are the browser's keys
-                        # merged over the session's, and applying the
-                        # update as-is is what keeps the params_updated
-                        # acknowledgement honest. When the update has no
-                        # seed, the runner's own value from open is the
-                        # fallback: an older API never fills a seed, so
-                        # replacing the params would delete the only
-                        # seed there is and the conditioned path would
-                        # build no generator, re-rolling every frame.
-                        # with_defaults restores what open_session did,
-                        # filling only absent keys, so a subset update
-                        # cannot leave the engine's hardcoded fallbacks
-                        # in charge of settings the manifest declares.
-                        updated = runner.manifest.with_defaults(control["params"])
-                        seed = normalise_seed(updated.get("seed"))
-                        if seed is None:
-                            # An update without a seed, or with one that
-                            # is not a seed (a bool, a fractional float):
-                            # the runner's own value from open is the
-                            # fallback - the session's seed is fixed for
-                            # its life, and an older API never fills one,
-                            # so replacing the params would delete the
-                            # only seed there is and the conditioned path
-                            # would build no generator, re-rolling every
-                            # frame.
-                            seed = runner.params["seed"]
-                        updated["seed"] = seed
-                        runner.params = updated
+                        await sessions.update(control)
                     elif control["type"] == "close_session":
-                        session_id = uuid.UUID(control["session_id"])
-                        generation = control_generation(control)
-                        # A missing runner is a no-op, never an error: the
-                        # API may close a session this worker has already
-                        # torn down, or one that never opened here.
-                        runner = runners.get(session_id)
-                        if runner is None:
-                            if generation is not None:
-                                highest_generation[session_id] = max(
-                                    highest_generation.get(session_id, 0), generation)
-                            continue
-                        if generation != runner.generation:
-                            continue
-                        runners.pop(session_id, None)
-                        runner.close()
-                        highest_generation[session_id] = max(
-                            highest_generation.get(session_id, 0), runner.generation)
-                        category, score = categorize_output(None)
-                        closed = {
-                            "type": "session_closed",
-                            "session_id": control["session_id"],
-                            "frames": runner.frames,
-                            "gpu_ms": runner.gpu_ms,
-                            "duration_ms": int((time.monotonic() - runner.started_at) * 1000),
-                            "category": category,
-                            "control_generation": runner.generation,
-                        }
-                        if score is not None:
-                            closed["category_score"] = score
-                        await ws.send(json.dumps(closed))
+                        await sessions.close(control)
                     elif control["type"] == "dispatch_job":
                         job = JobRun(control["job_id"], control.get("dispatch_token"))
                         task = asyncio.create_task(run_job(
-                            ws, engine, by_id[control["model_id"]], control, job.stop))
+                            ws, engine, by_id[control["model_id"]], control,
+                            job.stop))
                         jobs[task] = job
                         task.add_done_callback(forget)
                     elif control["type"] == "cancel_job":
@@ -824,13 +862,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 return
     finally:
         heartbeat_task.cancel()
-        runner_tasks: list[asyncio.Task] = []
-        for runner in runners.values():
-            runner.close()
-            runner_tasks.append(runner._task)
         for task in jobs:
             task.cancel()
-        await asyncio.gather(heartbeat_task, *jobs, *runner_tasks, return_exceptions=True)
+        await asyncio.gather(heartbeat_task, *jobs, sessions.shutdown(),
+                             return_exceptions=True)
 
 
 async def run() -> None:
