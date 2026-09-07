@@ -164,8 +164,8 @@ class InputRecordingEngine(SimulatedEngine):
         return GeneratedFrame(payload, 0)
 
 
-def drive_update_session(messages, manifests=None):
-    """Run open, update, and a frame through the fleet connection."""
+def drive_session_messages(messages, manifests=None):
+    """Run the supplied controls, then one frame for the first session."""
     session_id = json.loads(messages[0])["session_id"]
     socket = RecordingSocket([*messages, bytes([0]) + uuid.UUID(session_id).bytes + b"canvas"])
     engine = InputRecordingEngine()
@@ -176,7 +176,7 @@ def drive_update_session(messages, manifests=None):
 
 def test_update_session_carries_the_authoritative_seed():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": 22}),
     ])
@@ -194,7 +194,7 @@ def test_update_session_carrying_a_whole_float_seed_normalises_it():
     # params hold a float and the conditioned frame path builds no
     # generator, re-rolling every frame.
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": 42.0}),
     ])
@@ -208,7 +208,7 @@ def test_update_session_with_a_boolean_seed_keeps_the_runners_seed():
     # seed: the session's own value from open survives, because the
     # session's seed is fixed for its life.
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": True}),
     ])
@@ -230,7 +230,7 @@ def test_update_session_without_a_seed_carries_the_runners_seed(monkeypatch):
     # frame rerolls.
     session_id = str(uuid.uuid4())
     monkeypatch.setattr("worker.client.random", _FixedSeedRandom())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         update_msg(session_id, {"prompt": "a blue house"}),
     ])
@@ -248,7 +248,7 @@ def test_update_session_restores_manifest_defaults_for_omitted_keys():
     # default is the value asserted.
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "seed": 7}, model_id="vega-rt"),
         update_msg(session_id, {"prompt": "y", "seed": 7}),
     ], manifests=[manifest])
@@ -268,7 +268,7 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default():
     # reset it to the manifest's default.
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "steps": 8, "seed": 5},
                  model_id="vega-rt"),
         update_msg(session_id, {"prompt": "y", "steps": 8, "seed": 5}),
@@ -279,13 +279,13 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default():
 
 def test_update_session_for_an_unknown_session_is_ignored():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
-        open_msg(session_id, {"prompt": "a red house"}),
+    socket, engine = drive_session_messages([
+        open_msg(session_id, {"prompt": "a red house", "seed": 17}),
         update_msg(str(uuid.uuid4()), {"prompt": "a blue house"}),
     ])
     # The unknown session was ignored, so the live runner kept its params and
     # the connection stayed open instead of closing 4000.
-    assert engine.inputs == [{"prompt": "a red house", "seed": engine.inputs[0]["seed"]}]
+    assert engine.inputs == [{"prompt": "a red house", "seed": 17}]
     assert socket.close_code is None
 
 
@@ -307,7 +307,7 @@ def test_open_session_sends_session_ready():
 
 def test_open_session_without_generation_is_ignored():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         json.dumps({"type": "open_session", "session_id": session_id,
                     "model_id": "sd-sim",
                     "params": {"prompt": "a red house"}}),
@@ -320,7 +320,7 @@ def test_open_session_without_generation_is_ignored():
 
 def test_stale_open_does_not_replace_a_newer_runner():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "new", "seed": 2}, generation=2),
         open_msg(session_id, {"prompt": "old", "seed": 1}, generation=1),
     ])
@@ -332,7 +332,7 @@ def test_stale_open_does_not_replace_a_newer_runner():
 
 def test_equal_generation_open_is_idempotent():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "first", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "again", "seed": 9}, generation=1),
     ])
@@ -342,9 +342,9 @@ def test_equal_generation_open_is_idempotent():
     assert engine.inputs[-1]["seed"] == 1
 
 
-def test_newer_open_cancels_the_runner_it_replaces():
+def test_newer_open_takes_over_the_session():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
     ])
@@ -356,7 +356,7 @@ def test_newer_open_cancels_the_runner_it_replaces():
 
 def test_stale_close_does_not_pop_a_newer_runner():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
         close_msg(session_id, generation=1),
@@ -368,7 +368,7 @@ def test_stale_close_does_not_pop_a_newer_runner():
 
 def test_tombstone_rejects_a_delayed_open_after_close():
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "seed": 1}, generation=1),
         close_msg(session_id, generation=1),
         open_msg(session_id, {"prompt": "resurrect", "seed": 2}, generation=1),
@@ -388,7 +388,7 @@ def test_close_session_right_after_open_leaves_no_runner_behind():
     open ever stops blocking the loop.
     """
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         close_msg(session_id),
     ])
@@ -406,7 +406,7 @@ def test_close_session_after_the_runner_exists_closes_it():
     """A close for a live session behaves exactly as it always has: the
     runner is popped and closed and the accounting reply goes out."""
     session_id = str(uuid.uuid4())
-    socket, engine = drive_update_session([
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         close_msg(session_id),
     ])
@@ -438,9 +438,10 @@ class NonInterruptibleFrameEngine(SimulatedEngine):
 
 
 class CloseAfterFrameSocket(RecordingSocket):
-    def __init__(self, messages, engine):
+    def __init__(self, messages, engine, session_id):
         super().__init__(messages)
         self.engine = engine
+        self.session_id = session_id
         self.close_seen = asyncio.Event()
         self.close_sent = False
 
@@ -461,8 +462,7 @@ def test_close_reports_snapshot_before_inflight_frame_drains():
     socket = CloseAfterFrameSocket([
         open_msg(session_id, {"prompt": "x"}),
         bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
-    ], engine)
-    socket.session_id = session_id
+    ], engine, session_id)
 
     async def scenario():
         serving = asyncio.create_task(serve_connection(
@@ -482,9 +482,10 @@ def test_close_reports_snapshot_before_inflight_frame_drains():
 
 
 class ReplacementDisconnectSocket(RecordingSocket):
-    def __init__(self, messages, engine):
+    def __init__(self, messages, engine, session_id):
         super().__init__(messages)
         self.engine = engine
+        self.session_id = session_id
         self.replacement_seen = asyncio.Event()
         self.disconnect_seen = asyncio.Event()
 
@@ -505,8 +506,7 @@ def test_disconnect_waits_for_a_replaced_runner_to_drain():
     socket = ReplacementDisconnectSocket([
         open_msg(session_id, {"prompt": "original"}),
         bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
-    ], engine)
-    socket.session_id = session_id
+    ], engine, session_id)
 
     async def scenario():
         serving = asyncio.create_task(serve_connection(

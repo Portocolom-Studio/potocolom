@@ -475,12 +475,12 @@ class SessionManager:
     def active_count(self) -> int:
         return len(self._runners)
 
-    def _track_retired(self, runner: SessionRunner) -> None:
+    def _forget_retired(self, runner: SessionRunner) -> None:
         self._retired.discard(runner)
 
     def _retire(self, runner: SessionRunner) -> None:
         self._retired.add(runner)
-        runner.add_done_callback(self._track_retired)
+        runner.add_done_callback(self._forget_retired)
         runner.close()
 
     async def open(self, control: dict) -> None:
