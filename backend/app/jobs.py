@@ -1594,7 +1594,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             # A requeue replaced this attempt after the copy. No asset row
             # names these dests, and the winner's keys are a later attempt.
             schedule_blob_cleanup(
-                _purge_keys(promoted, job_id),
+                purge_keys(promoted, what=f"superseded library copies for job {job_id}"),
                 what=f"superseded library copies for job {job_id}",
             )
             return
@@ -1611,7 +1611,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                     if promoted and (job is None or job.attempt > current.attempt
                                      or job.state != "succeeded"):
                         schedule_blob_cleanup(
-                            _purge_keys(promoted, job_id),
+                            purge_keys(
+                                promoted, what=f"uncommitted library copies for job {job_id}"
+                            ),
                             what=f"uncommitted library copies for job {job_id}",
                         )
                     cancelled_here = (job is not None and job.state == "cancelled"
@@ -1673,7 +1675,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             if attempt < current.attempt:
                 orphans.extend(storage_keys_for_attempt(current.user_id, job_id, attempt))
         schedule_blob_cleanup(
-            _purge_keys(orphans, job_id),
+            purge_keys(orphans, what=f"dispatch orphans for job {job_id}"),
             what=f"dispatch orphans for job {job_id}",
         )
         publish(job_id, {"state": "succeeded", "url": asset_url(full.id)})
@@ -1733,7 +1735,8 @@ async def drain_blob_cleanup() -> None:
             await task
 
 
-async def _purge_keys(keys: list[str], job_id: uuid.UUID) -> None:
+async def purge_keys(keys: list[str], *, what: str) -> None:
+    """Delete keys and record failures before their database rows disappear."""
     pending = list(keys)
     try:
         while pending:
@@ -1741,11 +1744,7 @@ async def _purge_keys(keys: list[str], job_id: uuid.UUID) -> None:
             try:
                 await _bounded_delete(key)
             except Exception as error:
-                # The same leak purge_attempt_blobs had, one function away: the
-                # success path collects the earlier attempts and an unreported
-                # thumbnail, and nothing else ever names those keys.
-                logger.warning("could not remove blob %s for job %s", key,
-                               job_id, exc_info=True)
+                logger.warning("could not remove blob %s (%s)", key, what, exc_info=True)
                 await record_pending_delete(key, _trim_error(error))
             pending.pop(0)
     except asyncio.CancelledError:
@@ -1769,7 +1768,7 @@ async def purge_attempt_blobs(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     for earlier in range(1, attempt + 1):
         keys.extend(dispatch_keys_for_attempt(user_id, job_id, earlier))
         keys.extend(storage_keys_for_attempt(user_id, job_id, earlier))
-    await _purge_keys(keys, job_id)
+    await purge_keys(keys, what=f"attempt cleanup for job {job_id}")
 
 
 async def _bounded_delete(storage_key: str) -> None:

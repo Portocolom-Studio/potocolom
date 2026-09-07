@@ -5,6 +5,7 @@ request with a waiting period behind it, reversible until the purge runs, and
 a purge leaves no user row at all.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +16,7 @@ from sqlalchemy import text
 
 from app import db
 from app.main import app
-from app.tables import Asset, Job, User
+from app.tables import Asset, Job, PendingDelete, User
 from tests.test_account_states import _admin, _session_cookie, _set_state, _state_of, _wearing
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 
@@ -50,6 +51,19 @@ async def _rows(table: str, user_id: uuid.UUID) -> int:
             text(f"SELECT count(*) FROM {table} WHERE user_id = :id"), {"id": user_id}) or 0)
 
 
+async def _pending(storage_key: str) -> PendingDelete | None:
+    async with db.session_factory() as session:
+        return await session.get(PendingDelete, storage_key)
+
+
+async def _make_pending_due(storage_key: str) -> None:
+    async with db.session_factory() as session:
+        await session.execute(
+            text("UPDATE pending_deletes SET next_attempt_at = now() "
+                 "WHERE storage_key = :key"), {"key": storage_key})
+        await session.commit()
+
+
 async def _owned_work(user_id: uuid.UUID) -> Asset:
     """A job and an asset, which are the two tables a purge has to order."""
     from tests.test_shares import MODEL
@@ -64,8 +78,9 @@ async def _owned_work(user_id: uuid.UUID) -> Asset:
                   params={"prompt": "a boat"}, state="succeeded")
         session.add(job)
         await session.flush()
-        asset = Asset(id=uuid.uuid4(), user_id=user_id, job_id=job.id,
-                      storage_key=f"{user_id}/boat.png", mime="image/png",
+        asset_id = uuid.uuid4()
+        asset = Asset(id=asset_id, user_id=user_id, job_id=job.id,
+                      storage_key=f"{user_id}/{asset_id}.png", mime="image/png",
                       width=32, height=32)
         session.add(asset)
         await session.commit()
@@ -264,18 +279,115 @@ def test_the_objects_of_a_purged_account_are_taken_with_it(library):
         client.portal.call(request_deletion)
         client.portal.call(_age_request, user.id, deletion.RESTORE_WINDOW_DAYS + 1)
 
-        original = deletion._forget_object
+        from app import jobs
 
-        async def watch(key: str) -> None:
-            removed.append(key)
-            await original(key)
+        original = jobs.purge_keys
 
-        deletion._forget_object = watch
+        async def watch(keys: list[str], *, what: str) -> None:
+            removed.extend(keys)
+            await original(keys, what=what)
+
+        jobs.purge_keys = watch
         try:
             client.portal.call(deletion.purge_due)
         finally:
-            deletion._forget_object = original
+            jobs.purge_keys = original
     assert asset.storage_key in removed
+
+
+@pytest.mark.db
+def test_account_purge_records_a_failed_delete_and_the_sweep_recovers_it(
+    library, monkeypatch,
+):
+    from app import deletion, jobs
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "failed-object@example.com")
+        asset = client.portal.call(_owned_work, user.id)
+        storage = jobs.get_storage()
+        storage.path(asset.storage_key).parent.mkdir(parents=True, exist_ok=True)
+        storage.path(asset.storage_key).write_bytes(b"object")
+
+        async def request_deletion() -> None:
+            async with db.session_factory() as session:
+                await deletion.request(session, user.id)
+                await session.commit()
+
+        client.portal.call(request_deletion)
+        client.portal.call(_age_request, user.id, deletion.RESTORE_WINDOW_DAYS + 1)
+
+        class RefusingDelete:
+            def __getattr__(self, name):
+                return getattr(storage, name)
+
+            async def delete(self, key):
+                raise PermissionError(f"denied {key}")
+
+        monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
+        client.portal.call(deletion.purge_due)
+        row = client.portal.call(_pending, asset.storage_key)
+        assert row is not None
+        assert row.attempts == 0
+        assert client.portal.call(_user, user.id) is None
+
+        monkeypatch.undo()
+        client.portal.call(_make_pending_due, asset.storage_key)
+        client.portal.call(jobs.retry_pending_deletes)
+        assert client.portal.call(_pending, asset.storage_key) is None
+        assert not storage.path(asset.storage_key).exists()
+
+
+@pytest.mark.db
+def test_cancelled_account_purge_records_all_remaining_keys(library, monkeypatch):
+    from app import deletion, jobs
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "cancelled-purge@example.com")
+        first = client.portal.call(_owned_work, user.id)
+        second = client.portal.call(_owned_work, user.id)
+        assert first.storage_key != second.storage_key
+        storage = jobs.get_storage()
+        for asset in (first, second):
+            storage.path(asset.storage_key).parent.mkdir(parents=True, exist_ok=True)
+            storage.path(asset.storage_key).write_bytes(b"object")
+
+        async def request_deletion() -> None:
+            async with db.session_factory() as session:
+                await deletion.request(session, user.id)
+                await session.commit()
+
+        client.portal.call(request_deletion)
+        client.portal.call(_age_request, user.id, deletion.RESTORE_WINDOW_DAYS + 1)
+        started = asyncio.Event()
+
+        class HangingDelete:
+            def __getattr__(self, name):
+                return getattr(storage, name)
+
+            async def delete(self, key):
+                started.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(jobs, "get_storage", lambda: HangingDelete())
+
+        async def cancel_purge() -> None:
+            task = asyncio.create_task(
+                deletion._purge(
+                    user.id,
+                    datetime.now(timezone.utc) - timedelta(
+                        days=deletion.RESTORE_WINDOW_DAYS
+                    ),
+                )
+            )
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        client.portal.call(cancel_purge)
+        assert client.portal.call(_pending, first.storage_key) is not None
+        assert client.portal.call(_pending, second.storage_key) is not None
+        assert client.portal.call(_user, user.id) is not None
 
 
 @pytest.mark.db
