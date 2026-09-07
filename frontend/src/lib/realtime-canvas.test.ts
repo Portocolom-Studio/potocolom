@@ -11,8 +11,8 @@ import {
 	FAST_INTERVAL_MS,
 	FRAME_HEADER_BYTES,
 	GENERATED_FRAME,
+	IDLE_TICKS_BEFORE_STOP,
 	SLOW_INTERVAL_MS,
-	afterParamsUpdated,
 	canvasFrame,
 	nextDelayMs,
 	nextIntervalMs,
@@ -21,7 +21,10 @@ import {
 	shouldSendFrame,
 	stateForCloseCode,
 	updateParamsMessage,
-	uuidBytes
+	uuidBytes,
+	createRealtimeCanvasSession,
+	type ConnectionState,
+	type RealtimeCanvasSession
 } from './realtime-canvas.ts';
 
 const SESSION = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
@@ -117,14 +120,6 @@ test('a frame is sent only when there is a change, no encode, and an empty socke
 	assert.ok(!shouldSendFrame({ changed: true, encoding: false, buffered: 1 }));
 });
 
-test('a confirmed param update must resend the same canvas', () => {
-	const idle = { changed: false, encoding: false, buffered: 0 };
-	assert.ok(!shouldSendFrame(idle));
-	const wake = afterParamsUpdated();
-	assert.equal(wake.idleTicks, 0);
-	assert.ok(shouldSendFrame({ ...idle, changed: wake.changed }));
-});
-
 test('the cadence stays inside the two to four fps band', () => {
 	assert.equal(nextIntervalMs(10), FAST_INTERVAL_MS);
 	assert.equal(nextIntervalMs(FAST_INTERVAL_MS), FAST_INTERVAL_MS);
@@ -190,4 +185,358 @@ test('a refusal fails the session and anything else invites a reconnect', () => 
 	// A normal close, or a dropped connection, keeps the canvas recoverable.
 	assert.equal(stateForCloseCode(1000), 'interrupted');
 	assert.equal(stateForCloseCode(1006), 'interrupted');
+});
+
+class TestSocket {
+	readyState = 0;
+	emitClose = true;
+	bufferedAmount = 0;
+	binaryType: BinaryType = 'arraybuffer';
+	sent: Array<string | ArrayBuffer | ArrayBufferView> = [];
+	onopen: ((event: Event) => void) | null = null;
+	onmessage: ((event: MessageEvent<string | ArrayBuffer>) => void) | null = null;
+	onerror: ((event: Event) => void) | null = null;
+	onclose: ((event: CloseEvent) => void) | null = null;
+
+	send(data: string | ArrayBuffer | ArrayBufferView): void {
+		this.sent.push(data);
+	}
+
+	open(): void {
+		this.readyState = 1;
+		this.onopen?.(new Event('open'));
+	}
+
+	message(data: string | ArrayBuffer): void {
+		this.onmessage?.({ data } as MessageEvent<string | ArrayBuffer>);
+	}
+
+	close(code = 1000): void {
+		this.readyState = 3;
+		if (this.emitClose) this.onclose?.({ code } as CloseEvent);
+	}
+}
+
+function sessionHarness(
+	options: {
+		encode?: (canvas: HTMLCanvasElement) => Promise<Uint8Array<ArrayBuffer>>;
+		decode?: (image: Uint8Array<ArrayBuffer>) => Promise<{ close(): void }>;
+		isCanvasBlank?: () => boolean;
+	} = {}
+): {
+	session: RealtimeCanvasSession;
+	sockets: TestSocket[];
+	states: ConnectionState[];
+	notices: string[];
+	applied: Array<Record<string, unknown>>;
+	counters: Array<[number, number]>;
+	draws: number[];
+	tick(): void;
+	timerCount(): number;
+} {
+	const sockets: TestSocket[] = [];
+	const timers = new Map<number, () => void>();
+	let nextTimer = 0;
+	const schedule = ((callback: () => void) => {
+		const id = ++nextTimer;
+		timers.set(id, callback);
+		return id;
+	}) as typeof globalThis.setTimeout;
+	const cancel = ((id: ReturnType<typeof setTimeout>) => {
+		timers.delete(id as unknown as number);
+	}) as typeof globalThis.clearTimeout;
+	const states: ConnectionState[] = [];
+	const notices: string[] = [];
+	const applied: Array<Record<string, unknown>> = [];
+	const counters: Array<[number, number]> = [];
+	const draws: number[] = [];
+	const session = createRealtimeCanvasSession({
+		getDrawCanvas: () => ({}) as HTMLCanvasElement,
+		getOutputCanvas: () => ({}) as HTMLCanvasElement,
+		isCanvasBlank: options.isCanvasBlank ?? (() => false),
+		onState: (state) => states.push(state),
+		onNotice: (notice) => notices.push(notice),
+		onCounters: (sent, rendered) => counters.push([sent, rendered]),
+		onAppliedParams: (params) => applied.push(params),
+		webSocketFactory: () => {
+			const socket = new TestSocket();
+			sockets.push(socket);
+			return socket;
+		},
+		encode: options.encode ?? (async () => new Uint8Array([1, 2, 3])),
+		decode: options.decode ?? (async () => ({ close() {} })),
+		drawDecoded: () => draws.push(1),
+		setTimeout: schedule,
+		clearTimeout: cancel
+	});
+	return {
+		session,
+		sockets,
+		states,
+		notices,
+		applied,
+		counters,
+		draws,
+		tick() {
+			const entry = timers.entries().next().value as [number, () => void] | undefined;
+			if (!entry) throw new Error('no timer');
+			timers.delete(entry[0]);
+			entry[1]();
+		},
+		timerCount: () => timers.size
+	};
+}
+
+function ready(socket: TestSocket, id = SESSION): void {
+	socket.open();
+	socket.message(JSON.stringify({ type: 'ready', session_id: id }));
+}
+
+function generated(id = SESSION): ArrayBuffer {
+	const frame = new Uint8Array(FRAME_HEADER_BYTES + 2);
+	frame[0] = GENERATED_FRAME;
+	frame.set(uuidBytes(id), 1);
+	frame.set([9, 8], FRAME_HEADER_BYTES);
+	return frame.buffer;
+}
+
+function emptyGenerated(id = SESSION): ArrayBuffer {
+	const frame = new Uint8Array(FRAME_HEADER_BYTES);
+	frame[0] = GENERATED_FRAME;
+	frame.set(uuidBytes(id), 1);
+	return frame.buffer;
+}
+
+test('an interruption during encode keeps the canvas pending for resume', async () => {
+	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
+	const harness = sessionHarness({
+		encode: () =>
+			new Promise((resolve) => {
+				resolveEncode = resolve;
+			})
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	harness.tick();
+	harness.session.markChanged();
+	assert.equal(harness.timerCount(), 0);
+	harness.sockets[0].message(JSON.stringify({ type: 'interrupted' }));
+	resolveEncode(new Uint8Array([4]));
+	await Promise.resolve();
+	assert.equal(harness.sockets[0].sent.filter((data) => typeof data !== 'string').length, 0);
+	assert.equal(harness.timerCount(), 1);
+	harness.sockets[0].message(JSON.stringify({ type: 'resumed' }));
+	assert.equal(harness.timerCount(), 1);
+});
+
+test('resume resend encodes and sends the complete current frame', async () => {
+	let encodes = 0;
+	const harness = sessionHarness({
+		encode: async () => {
+			encodes += 1;
+			return new Uint8Array([encodes]);
+		}
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	harness.sockets[0].message(JSON.stringify({ type: 'interrupted' }));
+	harness.sockets[0].message(JSON.stringify({ type: 'resumed' }));
+	harness.tick();
+	await Promise.resolve();
+	const frames = harness.sockets[0].sent.filter((data) => typeof data !== 'string');
+	assert.equal(frames.length, 1);
+	assert.deepEqual(
+		new Uint8Array(frames[0] as ArrayBuffer).subarray(FRAME_HEADER_BYTES),
+		new Uint8Array([1])
+	);
+});
+
+test('late socket, encode, and decode work cannot affect a replacement session', async () => {
+	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
+	let resolveDecode!: (bitmap: { close(): void }) => void;
+	const harness = sessionHarness({
+		encode: () =>
+			new Promise((resolve) => {
+				resolveEncode = resolve;
+			}),
+		decode: () =>
+			new Promise((resolve) => {
+				resolveDecode = resolve;
+			})
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'old',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const oldSocket = harness.sockets[0];
+	ready(oldSocket);
+	harness.tick();
+	oldSocket.message(generated());
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'new',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const newSocket = harness.sockets[1];
+	oldSocket.close(1006);
+	oldSocket.message(JSON.stringify({ type: 'ready', session_id: SESSION }));
+	resolveEncode(new Uint8Array([7]));
+	resolveDecode({ close() {} });
+	await Promise.resolve();
+	assert.deepEqual(harness.states.slice(-1), ['connecting']);
+	assert.equal(harness.draws.length, 0);
+	ready(newSocket, NEARLY);
+	assert.equal(harness.states.at(-1), 'active');
+});
+
+test('an invalid ready id fails and closes without leaving a capture timer', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	harness.sockets[0].open();
+	harness.sockets[0].message(JSON.stringify({ type: 'ready', session_id: 'not-a-uuid' }));
+	assert.equal(harness.states.at(-1), 'failed');
+	assert.equal(harness.sockets[0].readyState, 3);
+	assert.equal(harness.timerCount(), 0);
+});
+
+test('encode and decode failures notify while preserving the session', async () => {
+	const harness = sessionHarness({
+		encode: async () => {
+			throw new Error('encode');
+		},
+		decode: async () => {
+			throw new Error('decode');
+		}
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	harness.tick();
+	await Promise.resolve();
+	assert.equal(harness.notices.at(-1), 'encode_failed');
+	harness.sockets[0].message(generated());
+	await Promise.resolve();
+	assert.equal(harness.notices.at(-1), 'decode_failed');
+	assert.equal(harness.states.at(-1), 'active');
+});
+
+test('params acknowledgement updates controls and wakes capture', () => {
+	const harness = sessionHarness({ isCanvasBlank: () => true });
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	for (let tick = 0; tick < IDLE_TICKS_BEFORE_STOP; tick += 1) harness.tick();
+	assert.equal(harness.timerCount(), 0);
+	harness.sockets[0].message(
+		JSON.stringify({
+			type: 'params_updated',
+			params: { prompt: 'a dog', structure_strength: 0.7, steps: 12 }
+		})
+	);
+	assert.deepEqual(harness.applied.at(-1), { prompt: 'a dog', structure_strength: 0.7, steps: 12 });
+	assert.equal(harness.timerCount(), 1);
+	harness.tick();
+	return Promise.resolve().then(() => {
+		const frames = harness.sockets[0].sent.filter((data) => typeof data !== 'string');
+		assert.equal(frames.length, 1);
+	});
+});
+
+test('destroy cancels capture timers and stale async completion cannot re-arm one', async () => {
+	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
+	const harness = sessionHarness({
+		encode: () =>
+			new Promise((resolve) => {
+				resolveEncode = resolve;
+			})
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	harness.tick();
+	harness.session.destroy();
+	assert.equal(harness.timerCount(), 0);
+	resolveEncode(new Uint8Array([2]));
+	await Promise.resolve();
+	assert.equal(harness.timerCount(), 0);
+});
+
+test('disconnect fences pending encode and decode work before close arrives', async () => {
+	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
+	let resolveDecode!: (bitmap: { close(): void }) => void;
+	const harness = sessionHarness({
+		encode: () =>
+			new Promise((resolve) => {
+				resolveEncode = resolve;
+			}),
+		decode: () =>
+			new Promise((resolve) => {
+				resolveDecode = resolve;
+			})
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	ready(socket);
+	harness.tick();
+	socket.emitClose = false;
+	harness.session.disconnect();
+	resolveEncode(new Uint8Array([5]));
+	await Promise.resolve();
+	assert.equal(harness.timerCount(), 0);
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const replacement = harness.sockets[1];
+	ready(replacement);
+	replacement.message(generated());
+	replacement.emitClose = false;
+	harness.session.disconnect();
+	resolveDecode({ close() {} });
+	await Promise.resolve();
+	assert.equal(harness.draws.length, 0);
+});
+
+test('binary frames before ready and empty generated frames are ignored', async () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	socket.open();
+	socket.message(generated());
+	socket.message(JSON.stringify({ type: 'ready', session_id: SESSION }));
+	socket.message(emptyGenerated());
+	await Promise.resolve();
+	assert.equal(harness.draws.length, 0);
+	assert.equal(harness.counters.at(-1)?.[1], 0);
 });
