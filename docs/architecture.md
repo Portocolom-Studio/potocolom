@@ -21,6 +21,8 @@ SvelteKit single page application built with the static adapter. There is exactl
 
 Every user facing string passes through an i18n layer from the first component onward; English and Spanish ship at launch. Retrofitting string extraction into a finished SPA is the expensive path, so the discipline starts on day one.
 
+The realtime drawing panel keeps the canvas DOM, pointer controls and parameter controls. The plain TypeScript session module owns the WebSocket, capture cadence, latest-frame buffer, image encode/decode, parameter updates, resume handling and teardown. Keeping those rules outside the component makes the wire and lifecycle behavior testable without a browser DOM.
+
 ### backend/
 
 FastAPI API server. It provides:
@@ -37,6 +39,8 @@ Python inference worker built on Hugging Face diffusers and PyTorch. It loads mo
 
 - Queued jobs: full quality generation with progress reporting.
 - Real time sessions: few step image to image pipelines (SD-Turbo / LCM class) processing a stream of canvas frames, always the latest input.
+
+One `SessionManager` owns the realtime runners for each worker connection. It fences generations, retires replaced runners until their tasks drain, and shuts down active and retired runners together. A close report is a snapshot of work completed when the report is made; it does not claim that later-draining GPU work was counted.
 
 The worker supports three device targets behind one `DEVICE` setting: `cuda` (NVIDIA, what the cloud fleet runs), `rocm` (AMD, a supported target with its own image variant) and `cpu` (no GPU; used by CI with a tiny model and by contributors without one). Everything above the device layer is identical code.
 
@@ -661,7 +665,9 @@ output category from a CLIP zero-shot pass on the worker, gpu_ms, duration) to t
 deployment's own `usage_events` table. Raw rows are kept for 90 days, then become
 daily per-user and per-dimension `usage_event_rollups` before pruning. Both
 tables run in both modes, never cross the network, die with the account purge,
-and store no prompts or images. Telemetry: self-hosted installs additionally
+and store no prompts or images. A realtime event uses the worker's close-time
+snapshot, so the current path does not claim to include GPU work that drains
+after the snapshot. Telemetry: self-hosted installs additionally
 send anonymous daily aggregates to project infrastructure, on by default with
 `TELEMETRY=false` to disable; the payload is documented, previewable and contains
 nothing joinable to a person. There are no cookies beyond the session cookie and
@@ -673,7 +679,7 @@ The tables owned by the open source backend. Credit balances and invoices belong
 
 Twenty-six of these tables exist at migration head 0024. Four are designed and not yet created: `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
-One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. The terminal paths swallow per-key failures so one bad key does not stop the rest, and without this the failure was visible only in a log line, so a denied permission left the object forever. A sweep retries them, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
+One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. Job cleanup and account purge both pass their keys to the same `jobs.purge_keys` routine. It swallows per-key failures so one bad key does not stop the rest, and attempts to record each key still pending when cleanup is cancelled. Recording is best effort: a database failure leaves the key visible only in the log. Recorded rows are retried by a sweep, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
 
 One shipped table has no foreign key to anything on purpose. `login_attempts` counts how often the sign-in path has been asked for one identifier or from one address, and it stores a SHA-256 digest rather than either value: the identifier is whatever a caller typed, so the column would otherwise be a list of addresses anybody can write to, including people who hold no account here, and the peer is raw IP. A digest counts the same and reads back as nothing, which is also why the table cannot reference `users`. Rows outlive their window only until the maintenance loop prunes them.
 

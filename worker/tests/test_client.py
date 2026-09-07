@@ -19,7 +19,7 @@ from worker.client import (
     serve_connection,
     warmup_realtime,
 )
-from worker.engine import GeneratedFrame, NotResidentError, PromptCache, SimulatedEngine
+from worker.engine import Cancelled, GeneratedFrame, NotResidentError, PromptCache, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 
@@ -154,73 +154,66 @@ def close_msg(session_id, generation=1):
     })
 
 
-def drive_update_session(monkeypatch, messages, manifests=None):
-    """Run serve_connection through the given API messages, recording runners.
+class InputRecordingEngine(SimulatedEngine):
+    def __init__(self):
+        super().__init__(0.01)
+        self.inputs = []
 
-    SessionRunner is replaced by a subclass that records its instances, so the
-    test can inspect the params the update_session handler replaced.
-    """
-    created = []
+    async def frame(self, manifest, params, payload, *, prompt_cache=None):
+        self.inputs.append(dict(params))
+        return GeneratedFrame(payload, 0)
 
-    class RecordingRunner(SessionRunner):
-        def __init__(self, *args):
-            created.append(self)
-            super().__init__(*args)
 
-    monkeypatch.setattr("worker.client.SessionRunner", RecordingRunner)
-    socket = RecordingSocket(messages)
+def drive_session_messages(messages, manifests=None):
+    """Run the supplied controls, then one frame for the first session."""
+    session_id = json.loads(messages[0])["session_id"]
+    socket = RecordingSocket([*messages, bytes([0]) + uuid.UUID(session_id).bytes + b"canvas"])
+    engine = InputRecordingEngine()
     asyncio.run(serve_connection(socket, Settings(worker_id="w-update"),
-                                 manifests or [SIMULATED_MANIFEST],
-                                 SimulatedEngine(0.01)))
-    return socket, created
+                                 manifests or [SIMULATED_MANIFEST], engine))
+    return socket, engine
 
 
-def test_update_session_carries_the_authoritative_seed(monkeypatch):
+def test_update_session_carries_the_authoritative_seed():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": 22}),
     ])
-    assert len(created) == 1
-    runner = created[0]
     # The API owns the seed: a browser seed update arrives in the merged
     # params and must take effect rather than be reverted to the seed this
     # worker drew at open, or the params_updated acknowledgement would claim
     # a value the runner never used.
-    assert runner.params == {"prompt": "a blue house", "seed": 22}
+    assert engine.inputs == [{"prompt": "a blue house", "seed": 22}]
     assert socket.close_code is None
 
 
-def test_update_session_carrying_a_whole_float_seed_normalises_it(monkeypatch):
+def test_update_session_carrying_a_whole_float_seed_normalises_it():
     # JSON Schema calls 42.0 an integer, so an older API forwards it; the
     # update path must normalise it like the open path, or the runner's
     # params hold a float and the conditioned frame path builds no
     # generator, re-rolling every frame.
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": 42.0}),
     ])
-    assert len(created) == 1
-    runner = created[0]
-    assert runner.params == {"prompt": "a blue house", "seed": 42}
-    assert isinstance(runner.params["seed"], int)
+    assert engine.inputs == [{"prompt": "a blue house", "seed": 42}]
+    assert isinstance(engine.inputs[0]["seed"], int)
     assert socket.close_code is None
 
 
-def test_update_session_with_a_boolean_seed_keeps_the_runners_seed(monkeypatch):
+def test_update_session_with_a_boolean_seed_keeps_the_runners_seed():
     # A seed that is not a seed (a bool, subtyping int) is treated like no
     # seed: the session's own value from open survives, because the
     # session's seed is fixed for its life.
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house", "seed": 11}),
         update_msg(session_id, {"prompt": "a blue house", "seed": True}),
     ])
-    assert len(created) == 1
-    runner = created[0]
-    assert runner.params == {"prompt": "a blue house", "seed": 11}
-    assert isinstance(runner.params["seed"], int)
+    assert engine.inputs == [{"prompt": "a blue house", "seed": 11}]
+    assert isinstance(engine.inputs[0]["seed"], int)
     assert socket.close_code is None
 
 
@@ -237,19 +230,17 @@ def test_update_session_without_a_seed_carries_the_runners_seed(monkeypatch):
     # frame rerolls.
     session_id = str(uuid.uuid4())
     monkeypatch.setattr("worker.client.random", _FixedSeedRandom())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         update_msg(session_id, {"prompt": "a blue house"}),
     ])
-    assert len(created) == 1
-    runner = created[0]
     # The update carried no seed, so the runner's own value from open
     # survived the replacement instead of being deleted.
-    assert runner.params == {"prompt": "a blue house", "seed": 12345}
+    assert engine.inputs == [{"prompt": "a blue house", "seed": 12345}]
     assert socket.close_code is None
 
 
-def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch):
+def test_update_session_restores_manifest_defaults_for_omitted_keys():
     # The API's stored params are the browser's keys plus the seed it filled
     # at open, so an update carries that subset and nothing else. Without
     # with_defaults the runner would render with whatever the engine's
@@ -257,21 +248,18 @@ def test_update_session_restores_manifest_defaults_for_omitted_keys(monkeypatch)
     # default is the value asserted.
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "seed": 7}, model_id="vega-rt"),
         update_msg(session_id, {"prompt": "y", "seed": 7}),
     ], manifests=[manifest])
-    assert len(created) == 1
-    runner = created[0]
     # The update carried only the prompt and the seed, so the manifest's
     # declared default step count came back in place of the engine's
     # fallback, and the seed the API sent survived the replacement.
-    assert runner.params == {"prompt": "y", "steps": 4, "seed": 7}
+    assert engine.inputs == [{"prompt": "y", "steps": 4, "seed": 7}]
     assert socket.close_code is None
 
 
-def test_update_session_keeps_an_explicit_value_differing_from_the_default(
-        monkeypatch):
+def test_update_session_keeps_an_explicit_value_differing_from_the_default():
     # with_defaults fills only absent keys, so an explicitly chosen steps
     # value that differs from the manifest's default must survive an update
     # that does not mention it.
@@ -280,29 +268,24 @@ def test_update_session_keeps_an_explicit_value_differing_from_the_default(
     # reset it to the manifest's default.
     session_id = str(uuid.uuid4())
     manifest = _realtime_manifest("vega-rt", steps_default=4)
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "steps": 8, "seed": 5},
                  model_id="vega-rt"),
         update_msg(session_id, {"prompt": "y", "steps": 8, "seed": 5}),
     ], manifests=[manifest])
-    assert len(created) == 1
-    runner = created[0]
-    assert runner.params == {"prompt": "y", "steps": 8, "seed": 5}
+    assert engine.inputs == [{"prompt": "y", "steps": 8, "seed": 5}]
     assert socket.close_code is None
 
 
-def test_update_session_for_an_unknown_session_is_ignored(monkeypatch):
+def test_update_session_for_an_unknown_session_is_ignored():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
-        open_msg(session_id, {"prompt": "a red house"}),
+    socket, engine = drive_session_messages([
+        open_msg(session_id, {"prompt": "a red house", "seed": 17}),
         update_msg(str(uuid.uuid4()), {"prompt": "a blue house"}),
     ])
-    assert len(created) == 1
-    runner = created[0]
-    seed = runner.params["seed"]
     # The unknown session was ignored, so the live runner kept its params and
     # the connection stayed open instead of closing 4000.
-    assert runner.params == {"prompt": "a red house", "seed": seed}
+    assert engine.inputs == [{"prompt": "a red house", "seed": 17}]
     assert socket.close_code is None
 
 
@@ -322,78 +305,80 @@ def test_open_session_sends_session_ready():
     assert ready["control_generation"] == 1
 
 
-def test_open_session_without_generation_is_ignored(monkeypatch):
+def test_open_session_without_generation_is_ignored():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         json.dumps({"type": "open_session", "session_id": session_id,
                     "model_id": "sd-sim",
                     "params": {"prompt": "a red house"}}),
     ])
-    assert created == []
+    assert engine.inputs == []
     sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
     assert not any(m.get("type") in ("session_ready", "session_refused")
                    for m in sent)
 
 
-def test_stale_open_does_not_replace_a_newer_runner(monkeypatch):
+def test_stale_open_does_not_replace_a_newer_runner():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "new", "seed": 2}, generation=2),
         open_msg(session_id, {"prompt": "old", "seed": 1}, generation=1),
     ])
-    assert len(created) == 1
-    assert created[0].generation == 2
-    assert created[0].params["seed"] == 2
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    ready = [m for m in controls if m.get("type") == "session_ready"]
+    assert [m["control_generation"] for m in ready] == [2]
+    assert engine.inputs[-1]["seed"] == 2
 
 
-def test_equal_generation_open_is_idempotent(monkeypatch):
+def test_equal_generation_open_is_idempotent():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "first", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "again", "seed": 9}, generation=1),
     ])
-    assert len(created) == 1
-    assert created[0].params["seed"] == 1
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    ready = [m for m in controls if m.get("type") == "session_ready"]
+    assert len(ready) == 1
+    assert engine.inputs[-1]["seed"] == 1
 
 
-def test_newer_open_cancels_the_runner_it_replaces(monkeypatch):
+def test_newer_open_takes_over_the_session():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
     ])
-    assert len(created) == 2
-    assert created[0]._task.cancelled() or created[0]._ended
-    assert created[1].generation == 2
-    assert created[1].params["seed"] == 2
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    ready = [m for m in controls if m.get("type") == "session_ready"]
+    assert [m["control_generation"] for m in ready] == [2]
+    assert engine.inputs[-1]["seed"] == 2
 
 
-def test_stale_close_does_not_pop_a_newer_runner(monkeypatch):
+def test_stale_close_does_not_pop_a_newer_runner():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "one", "seed": 1}, generation=1),
         open_msg(session_id, {"prompt": "two", "seed": 2}, generation=2),
         close_msg(session_id, generation=1),
     ])
-    assert len(created) == 2
     sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
     assert not any(m.get("type") == "session_closed" for m in sent)
-    assert created[1].generation == 2
+    assert engine.inputs[-1]["seed"] == 2
 
 
-def test_tombstone_rejects_a_delayed_open_after_close(monkeypatch):
+def test_tombstone_rejects_a_delayed_open_after_close():
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "x", "seed": 1}, generation=1),
         close_msg(session_id, generation=1),
         open_msg(session_id, {"prompt": "resurrect", "seed": 2}, generation=1),
     ])
-    assert len(created) == 1
+    assert engine.inputs == []
     sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
     assert any(m.get("type") == "session_closed" for m in sent)
 
 
-def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
+def test_close_session_right_after_open_leaves_no_runner_behind():
     """A close that arrives right after its open must not leave a runner
     behind.
 
@@ -403,11 +388,10 @@ def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
     open ever stops blocking the loop.
     """
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         close_msg(session_id),
     ])
-    assert len(created) == 1  # the open created one runner
     sent = [json.loads(message) for message in socket.sent]
     # The accounting close is the wire evidence that the runner was popped and
     # torn down rather than left waiting for frames nobody will send.
@@ -418,24 +402,205 @@ def test_close_session_right_after_open_leaves_no_runner_behind(monkeypatch):
     assert socket.close_code is None  # the connection survives
 
 
-def test_close_session_after_the_runner_exists_closes_it(monkeypatch):
+def test_close_session_after_the_runner_exists_closes_it():
     """A close for a live session behaves exactly as it always has: the
     runner is popped and closed and the accounting reply goes out."""
     session_id = str(uuid.uuid4())
-    socket, created = drive_update_session(monkeypatch, [
+    socket, engine = drive_session_messages([
         open_msg(session_id, {"prompt": "a red house"}),
         close_msg(session_id),
     ])
-    assert len(created) == 1
-    runner = created[0]
     sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
     closed = next(m for m in sent if m["type"] == "session_closed")
     assert closed["session_id"] == session_id
-    assert closed["frames"] == runner.frames == 0
+    assert closed["frames"] == 0
     assert closed["gpu_ms"] == 0
     assert closed["control_generation"] == 1
     assert "duration_ms" in closed
     assert socket.close_code is None
+
+
+class NonInterruptibleFrameEngine(SimulatedEngine):
+    def __init__(self):
+        super().__init__(0.01)
+        self.started = asyncio.Event()
+        self.cancel_seen = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def frame(self, manifest, params, payload, *, prompt_cache=None):
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            await self.release.wait()
+        return GeneratedFrame(payload, 37)
+
+
+class CloseAfterFrameSocket(RecordingSocket):
+    def __init__(self, messages, engine, session_id):
+        super().__init__(messages)
+        self.engine = engine
+        self.session_id = session_id
+        self.close_seen = asyncio.Event()
+        self.close_sent = False
+
+    async def __anext__(self):
+        if self.messages:
+            return self.messages.pop(0)
+        if not self.close_sent:
+            await self.engine.started.wait()
+            self.close_sent = True
+            self.close_seen.set()
+            return close_msg(self.session_id)
+        raise StopAsyncIteration
+
+
+def test_close_reports_snapshot_before_inflight_frame_drains():
+    session_id = str(uuid.uuid4())
+    engine = NonInterruptibleFrameEngine()
+    socket = CloseAfterFrameSocket([
+        open_msg(session_id, {"prompt": "x"}),
+        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+    ], engine, session_id)
+
+    async def scenario():
+        serving = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-close"), [SIMULATED_MANIFEST], engine))
+        await socket.close_seen.wait()
+        await engine.cancel_seen.wait()
+        assert not serving.done()
+        engine.release.set()
+        await serving
+
+    asyncio.run(scenario())
+    controls = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    closed = next(m for m in controls if m["type"] == "session_closed")
+    assert closed["frames"] == 0
+    assert closed["gpu_ms"] == 0
+    assert not any(isinstance(m, bytes) for m in socket.sent)
+
+
+class ReplacementDisconnectSocket(RecordingSocket):
+    def __init__(self, messages, engine, session_id):
+        super().__init__(messages)
+        self.engine = engine
+        self.session_id = session_id
+        self.replacement_seen = asyncio.Event()
+        self.disconnect_seen = asyncio.Event()
+
+    async def __anext__(self):
+        if self.messages:
+            return self.messages.pop(0)
+        if not self.replacement_seen.is_set():
+            await self.engine.started.wait()
+            self.replacement_seen.set()
+            return open_msg(self.session_id, {"prompt": "replacement"}, generation=2)
+        self.disconnect_seen.set()
+        raise StopAsyncIteration
+
+
+def test_disconnect_waits_for_a_replaced_runner_to_drain():
+    session_id = str(uuid.uuid4())
+    engine = NonInterruptibleFrameEngine()
+    socket = ReplacementDisconnectSocket([
+        open_msg(session_id, {"prompt": "original"}),
+        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+    ], engine, session_id)
+
+    async def scenario():
+        serving = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-replace"), [SIMULATED_MANIFEST], engine))
+        await socket.disconnect_seen.wait()
+        await engine.cancel_seen.wait()
+        done, _ = await asyncio.wait({serving}, timeout=0.2)
+        assert not done
+        engine.release.set()
+        await serving
+
+    asyncio.run(scenario())
+    assert socket.close_code is None
+    assert not any(isinstance(m, bytes) for m in socket.sent)
+
+
+class ConcurrentShutdownEngine(SimulatedEngine):
+    def __init__(self):
+        super().__init__(0.01)
+        self.session_started = asyncio.Event()
+        self.session_cancel_seen = asyncio.Event()
+        self.session_release = asyncio.Event()
+        self.session_drained = asyncio.Event()
+        self.job_started = asyncio.Event()
+        self.job_cancel_seen = asyncio.Event()
+        self.job_release = asyncio.Event()
+        self.job_drained = asyncio.Event()
+
+    async def frame(self, manifest, params, payload, *, prompt_cache=None):
+        self.session_started.set()
+        try:
+            await self.session_release.wait()
+        except asyncio.CancelledError:
+            self.session_cancel_seen.set()
+            await self.session_release.wait()
+        self.session_drained.set()
+        return GeneratedFrame(payload, 0)
+
+    async def generate(self, manifest, params, progress, *, input_image=None,
+                       cancelled=None):
+        self.job_started.set()
+        try:
+            await self.job_release.wait()
+        except asyncio.CancelledError:
+            self.job_cancel_seen.set()
+            await self.job_release.wait()
+            self.job_drained.set()
+            raise Cancelled()
+        return await super().generate(manifest, params, progress,
+                                      input_image=input_image, cancelled=cancelled)
+
+
+class DisconnectWithRunningWorkSocket(RecordingSocket):
+    def __init__(self, messages, engine):
+        super().__init__(messages)
+        self.engine = engine
+        self.disconnect_seen = asyncio.Event()
+
+    async def __anext__(self):
+        if self.messages:
+            return self.messages.pop(0)
+        await self.engine.session_started.wait()
+        await self.engine.job_started.wait()
+        self.disconnect_seen.set()
+        raise StopAsyncIteration
+
+
+def test_disconnect_cancels_sessions_while_slow_jobs_drain():
+    session_id = str(uuid.uuid4())
+    engine = ConcurrentShutdownEngine()
+    socket = DisconnectWithRunningWorkSocket([
+        open_msg(session_id, {"prompt": "x"}),
+        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+        json.dumps(dispatch_control()),
+    ], engine)
+
+    async def scenario():
+        serving = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-concurrent-shutdown"),
+            [SIMULATED_MANIFEST], engine))
+        await socket.disconnect_seen.wait()
+        try:
+            await asyncio.wait_for(engine.session_cancel_seen.wait(), 1)
+            assert not serving.done()
+            engine.session_release.set()
+            await asyncio.wait_for(engine.session_drained.wait(), 1)
+            assert not serving.done()
+            assert not engine.job_drained.is_set()
+        finally:
+            engine.session_release.set()
+            engine.job_release.set()
+        await serving
+
+    asyncio.run(scenario())
 
 
 def test_malformed_control_closes_and_returns_for_reconnect():
