@@ -21,7 +21,9 @@ SvelteKit single page application built with the static adapter. There is exactl
 
 Every user facing string passes through an i18n layer from the first component onward; English and Spanish ship at launch. Retrofitting string extraction into a finished SPA is the expensive path, so the discipline starts on day one.
 
-The realtime drawing panel keeps the canvas DOM, pointer controls and parameter controls. The plain TypeScript session module owns the WebSocket, capture cadence, latest-frame buffer, image encode/decode, parameter updates, resume handling and teardown. Keeping those rules outside the component makes the wire and lifecycle behavior testable without a browser DOM.
+The realtime drawing panel keeps the canvas DOM, pointer controls and parameter controls. The drawing document owns the ordered stroke journal, bitmap painting, undo/redo, undoable clear and bounded replay checkpoints. Stroke color, width and erase mode are captured when a stroke starts. The plain TypeScript session module owns the WebSocket, capture cadence, latest-frame buffer, image encode/decode, parameter updates, resume handling and teardown. Keeping the session rules outside the component makes the wire and lifecycle behavior testable without a browser DOM.
+
+The live input remains an opaque 512 by 512 bitmap, sent as complete WebP frames. Color and brush-size changes affect the next stroke and do not send a frame by themselves. Drawing history stays in memory across disconnect/reconnect, but is lost when the panel is left. Saving the journal and rerasterizing it for a higher-resolution refine pass remain open work in issue #54. Canvas colors do not set generated hues: the current sketch conditioner reduces the input to a monochrome sketch.
 
 ### backend/
 

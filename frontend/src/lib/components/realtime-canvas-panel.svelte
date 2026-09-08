@@ -3,18 +3,15 @@
 	// scaled for display, sent as complete WebP frames over the realtime
 	// protocol. The session lifecycle lives in $lib/realtime-canvas; this panel
 	// keeps the bitmap DOM and drawing controls.
-	//
-	// Out of scope here, by their own issues: the replayable stroke journal and
-	// undo (#54), frame-diff skip and finer cadence adaptation (#42), and
-	// monotonic input revisions with generated-output correlation (#19). The
-	// shipped 17 byte header carries no sequence number, so generated frames
-	// are presented in transport order.
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import { Slider } from '$lib/components/ui/slider';
+	import { DrawingDocument } from '$lib/drawing-document';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		formatParamValue,
@@ -33,12 +30,22 @@
 
 	/** The wire dimensions. CSS scales the display without changing these. */
 	const CANVAS_SIZE = 512;
-	const STROKE_WIDTH = 6;
 	const INK = '#111827';
 	const PAPER = '#ffffff';
+	const BRUSH_COLORS = [
+		{ value: '#111827', label: 'app.realtime_canvas.color_black' },
+		{ value: '#dc2626', label: 'app.realtime_canvas.color_red' },
+		{ value: '#ea580c', label: 'app.realtime_canvas.color_orange' },
+		{ value: '#ca8a04', label: 'app.realtime_canvas.color_yellow' },
+		{ value: '#16a34a', label: 'app.realtime_canvas.color_green' },
+		{ value: '#2563eb', label: 'app.realtime_canvas.color_blue' },
+		{ value: '#9333ea', label: 'app.realtime_canvas.color_purple' },
+		{ value: '#db2777', label: 'app.realtime_canvas.color_pink' }
+	] as const;
 
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
+	let drawingDocument = $state<DrawingDocument | null>(null);
 
 	/** A message is held as its key, not its text, so switching language
 	 * retranslates it instead of leaving the previous locale on screen. */
@@ -67,12 +74,12 @@
 	let appliedStructure = $state(0);
 	let appliedSteps = $state(0);
 
-	let paint: CanvasRenderingContext2D | null = null;
-
-	let blank = true; // nothing drawn since the last clear
-	let drawing = false;
+	let blank = $state(true);
 	let strokePointer: number | null = null;
-	let lastPoint: { x: number; y: number } | null = null;
+	let canUndo = $state(false);
+	let canRedo = $state(false);
+	let brushSize = $state(6);
+	let selectedColor = $state(INK);
 	// Slider updates are debounced so a drag does not send one message per
 	// pixel: the timer is re-armed on every movement and fires once the slider
 	// has settled, mirroring how armCapture/stopTimer time the capture loop.
@@ -80,15 +87,7 @@
 	let structureTimer: ReturnType<typeof setTimeout> | null = null;
 	let stepsTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// The tool in use on the canvas. A forward contract for issue #54's
-	// replayable stroke journal: for its replay to stay faithful, erase must be
-	// recorded as a stroke operation carrying a mode flag, not as a separate
-	// kind of event.
 	let tool = $state<'draw' | 'erase'>('draw');
-	// Erase paints the paper back on: the canvas stays opaque, because a
-	// transparent pixel would reach the model as transparency rather than as
-	// blank paper, and the conditioning path assumes dark strokes on white.
-	const strokeColour = $derived(tool === 'erase' ? PAPER : INK);
 
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
@@ -125,7 +124,7 @@
 	const realtimeSession = createRealtimeCanvasSession({
 		getDrawCanvas: () => drawCanvas,
 		getOutputCanvas: () => outputCanvas,
-		isCanvasBlank: () => blank,
+		isCanvasBlank: () => drawingDocument?.isBlank ?? true,
 		onState: (state) => {
 			connection = state;
 		},
@@ -208,16 +207,13 @@
 
 	$effect(() => {
 		if (!drawCanvas) return;
-		paint = drawCanvas.getContext('2d');
-		if (!paint) return;
-		// Opaque white: a transparent canvas would reach the model as
-		// transparency rather than as the blank paper the user sees.
-		paint.fillStyle = PAPER;
-		paint.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-		paint.lineWidth = STROKE_WIDTH;
-		paint.lineCap = 'round';
-		paint.lineJoin = 'round';
-		paint.strokeStyle = INK;
+		const owner = new DrawingDocument(drawCanvas);
+		drawingDocument = owner;
+		blank = owner.isBlank;
+		return () => {
+			owner.destroy();
+			if (drawingDocument === owner) drawingDocument = null;
+		};
 	});
 
 	// Tear the socket and the timer down with the panel, so leaving the view
@@ -237,80 +233,73 @@
 		};
 	}
 
-	function markChanged(): void {
-		blank = false;
-		realtimeSession.markChanged();
+	function syncHistory(): void {
+		blank = drawingDocument?.isBlank ?? true;
+		canUndo = drawingDocument?.canUndo ?? false;
+		canRedo = drawingDocument?.canRedo ?? false;
 	}
 
-	/** One segment per move, so a long stroke does not restroke its whole path. */
-	function drawSegment(from: { x: number; y: number }, to: { x: number; y: number }): void {
-		if (!paint) return;
-		paint.strokeStyle = strokeColour;
-		paint.beginPath();
-		paint.moveTo(from.x, from.y);
-		paint.lineTo(to.x, to.y);
-		paint.stroke();
-	}
-
-	/**
-	 * A tap is filled rather than stroked, so the mark does not depend on how an
-	 * engine treats a zero-length segment. Measured in Chrome 149: stroking from
-	 * a point to itself with a round cap does paint a dot, 32 dark pixels, the
-	 * same as this arc; with a butt cap it paints nothing, and a lone moveTo with
-	 * no segment paints nothing either. The spec prunes zero-length segments and
-	 * calls a one-point path empty, so the round-cap dot is engine behaviour to
-	 * lean on rather than a guarantee. Filling says what is meant.
-	 */
-	function drawDot(at: { x: number; y: number }): void {
-		if (!paint) return;
-		paint.beginPath();
-		paint.arc(at.x, at.y, STROKE_WIDTH / 2, 0, Math.PI * 2);
-		paint.fillStyle = strokeColour;
-		paint.fill();
+	function finishStroke(): void {
+		if (strokePointer === null) return;
+		drawingDocument?.finishStroke(strokePointer);
+		strokePointer = null;
+		syncHistory();
 	}
 
 	function onPointerDown(event: PointerEvent): void {
-		if (!event.isPrimary || !paint) return;
-		drawing = true;
+		if (!event.isPrimary || event.button !== 0 || strokePointer !== null || !drawingDocument)
+			return;
+		const point = canvasPoint(event);
+		if (
+			!drawingDocument.beginStroke(
+				event.pointerId,
+				{ mode: tool, color: selectedColor, size: brushSize },
+				point
+			)
+		)
+			return;
 		strokePointer = event.pointerId;
 		(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
-		const point = canvasPoint(event);
-		// A tap that never moves should still leave a mark.
-		drawDot(point);
-		lastPoint = point;
-		markChanged();
+		realtimeSession.markChanged();
+		syncHistory();
 	}
 
 	function onPointerMove(event: PointerEvent): void {
 		// isPrimary and the stroke's own pointer id: without both, a plain hover
 		// after a keyboard-driven pen down would draw, and a second finger would
 		// append its moves to the first finger's stroke.
-		if (!drawing || !event.isPrimary || event.pointerId !== strokePointer) return;
-		if (!lastPoint) return;
+		if (!event.isPrimary || event.pointerId !== strokePointer) return;
 		const point = canvasPoint(event);
-		drawSegment(lastPoint, point);
-		lastPoint = point;
-		markChanged();
+		if (drawingDocument?.extendStroke(event.pointerId, point)) {
+			realtimeSession.markChanged();
+		}
 	}
 
 	function onPointerUp(event: PointerEvent): void {
 		// The stroke's own pointer id only: another pointer's release must not
 		// end this stroke.
 		if (event.pointerId !== strokePointer) return;
-		drawing = false;
-		strokePointer = null;
-		lastPoint = null;
+		finishStroke();
 	}
 
 	function clearCanvas(): void {
-		// A blank canvas has nothing to clear, and sending it again would spend
-		// an inference reproducing what the model already returned.
-		if (!paint || blank) return;
-		paint.fillStyle = PAPER;
-		paint.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-		blank = true;
-		// Still a revision worth sending: the model should stop drawing what is
-		// no longer on the canvas.
+		finishStroke();
+		if (!drawingDocument?.clear()) return;
+		syncHistory();
+		realtimeSession.markChanged();
+	}
+
+	function undoCanvas(): void {
+		finishStroke();
+		if (!drawingDocument?.undo()) return;
+		syncHistory();
+		realtimeSession.markChanged();
+	}
+
+	function redoCanvas(): void {
+		finishStroke();
+		if (!drawingDocument?.redo()) return;
+		syncHistory();
 		realtimeSession.markChanged();
 	}
 
@@ -358,7 +347,7 @@
 			<Badge variant={connection === 'active' ? 'default' : 'outline'}>{statusLabel}</Badge>
 		</div>
 
-		<div class="grid min-h-[32rem] flex-1 gap-4 lg:grid-cols-2">
+		<div class="grid flex-none gap-4 lg:min-h-[32rem] lg:flex-1 lg:grid-cols-2">
 			<Card.Root class="flex min-h-0 flex-col">
 				<Card.Header>
 					<Card.Title class="text-base">{t('app.realtime_canvas.input_title')}</Card.Title>
@@ -376,6 +365,51 @@
 							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
 						</select>
 					</div>
+					<Field.Group class="gap-3">
+						<Field.Field>
+							<div class="flex items-center justify-between gap-2">
+								<Field.Label
+									id="realtime-brush-size-label"
+									for="realtime-brush-size"
+									onclick={() => document.getElementById('realtime-brush-size')?.focus()}
+								>
+									{t('app.realtime_canvas.brush_size')}
+								</Field.Label>
+								<span class="text-muted-foreground text-xs tabular-nums">{brushSize}</span>
+							</div>
+							<Slider
+								thumbId="realtime-brush-size"
+								labelledBy="realtime-brush-size-label"
+								type="single"
+								min={1}
+								max={32}
+								step={1}
+								value={brushSize}
+								valueText={`${brushSize}`}
+								onValueChange={(value) => (brushSize = value)}
+							/>
+						</Field.Field>
+						<Field.Field>
+							<Field.Title>{t('app.realtime_canvas.color')}</Field.Title>
+							<div
+								class="flex flex-wrap gap-2"
+								role="group"
+								aria-label={t('app.realtime_canvas.color')}
+							>
+								{#each BRUSH_COLORS as color}
+									<Button
+										variant={selectedColor === color.value ? 'default' : 'outline'}
+										size="icon-sm"
+										aria-label={t(color.label)}
+										aria-pressed={selectedColor === color.value}
+										onclick={() => (selectedColor = color.value)}
+										><span class="size-4 rounded-full" style:background-color={color.value}
+										></span></Button
+									>
+								{/each}
+							</div>
+						</Field.Field>
+					</Field.Group>
 					<canvas
 						bind:this={drawCanvas}
 						width={CANVAS_SIZE}
@@ -386,11 +420,20 @@
 						onpointermove={onPointerMove}
 						onpointerup={onPointerUp}
 						onpointercancel={onPointerUp}
+						onlostpointercapture={onPointerUp}
 					></canvas>
 					<div class="flex items-center justify-between gap-2">
-						<Button variant="outline" size="sm" onclick={clearCanvas}>
-							{t('app.realtime_canvas.clear')}
-						</Button>
+						<div class="flex flex-wrap gap-2">
+							<Button variant="outline" size="sm" disabled={!canUndo} onclick={undoCanvas}>
+								{t('app.realtime_canvas.undo')}
+							</Button>
+							<Button variant="outline" size="sm" disabled={!canRedo} onclick={redoCanvas}>
+								{t('app.realtime_canvas.redo')}
+							</Button>
+							<Button variant="outline" size="sm" disabled={blank} onclick={clearCanvas}>
+								{t('app.realtime_canvas.clear')}
+							</Button>
+						</div>
 						<span class="text-muted-foreground text-xs tabular-nums">
 							{sentFrames} / {renderedFrames}
 						</span>

@@ -10,10 +10,16 @@ The four path-filtered workflows in `.github/workflows/`:
 |---|---|
 | backend | Docker (postgres service container), Python 3.11 |
 | worker | Python 3.11 |
-| frontend | Node 24 |
+| frontend | Node 24, Chrome or Chromium |
 | simulation | Python 3.11, host postgres database `potocolom_ci` |
 
 GPU inference is not in CI. `make verify` locally matches what these jobs run.
+
+The frontend gate tests the built drawing canvas in headless Chrome, with
+GPU use disabled and test API and WebSocket adapters. Set
+`PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if the browser is not installed
+at a standard Linux path. A missing browser fails the gate; it does not skip
+the canvas checks.
 
 ## One-time setup
 

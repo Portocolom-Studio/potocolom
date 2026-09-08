@@ -316,3 +316,19 @@ They drive HTML fixtures that share the accessible names of `/login` and
 `/join`, not the built SvelteKit routes, using puppeteer-core and mocked
 fetch. Every locked guarantee still has a test at the layer where the
 guarantee is actually made; the matrix above covers the rest.
+
+The drawing checks in `frontend/scripts/test-canvas-history.mjs` use the
+built `/app` route, real pointer input and canvas pixels. The API and
+WebSocket are test adapters; encoding, decoding and drawing run in headless
+Chrome with GPU use disabled. They check drawing history and its live frame
+updates, not model output quality. `make verify-frontend` builds the app and
+runs them after the unit tests. For a focused run after a build:
+
+```bash
+cd frontend
+npm run test:canvas
+```
+
+Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH` or
+`CHROME_PATH` for a browser outside the standard Linux paths. The gate fails
+if no browser is found.

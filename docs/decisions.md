@@ -357,7 +357,19 @@ Use one 512 by 512 bitmap canvas for live interaction and encode complete WebP f
 
 Rejected alternatives: a raw snapshot stack (1 MiB per 512 by 512 RGBA level before overhead, without target-resolution rerasterization); an SVG live surface (still requires rasterization before every model frame and does not give generated pixels semantic object identity); a pure vector document (cannot faithfully represent paint, eraser, smudge, imported rasters, and diffusion output).
 
-> Shipped status (2026-07-30): **not yet implemented.** Issue #3, "Drawing interface", owns the live bitmap tool and issue #54, "stroke-op replay log", owns the operation journal, checkpoints, replay, and undo.
+Status (2026-09-08): the live bitmap tool and the first part of issue #54
+are implemented. Each stroke records its color, width, draw/erase mode and
+ordered points. Undo/redo replay the same dot and segment operations used
+for live paint; clear is also undoable. Checkpoints are captured as lossless
+PNG and decoded for replay. The runtime cache retains at most four decoded
+bitmaps, not unused copies of the encoded PNG bytes. It does not
+limit how far back the current journal can be undone. A new edit after undo
+replaces the redo branch. Paint controls alone do not send a live frame.
+
+The journal lasts only while the drawing panel is open. Persisting it with
+compressed checkpoints and
+rerasterizing it for a higher-resolution refine pass remain open in #54.
+The complete WebP wire frames and session protocol are unchanged.
 
 ## First public release: after the walking skeleton, API level
 
