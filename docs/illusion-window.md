@@ -1023,7 +1023,7 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 
 | step | GPU-hours | what it settles |
 |---|---|---|
-| P0 mixed re-rate | 0 | pack ready, not yet rated |
+| P0 mixed re-rate | 0 | DONE: gap 1.727, bar 1.0 |
 | P1 wording smoke | ~1.3 | whether `reference_sketch` is repairable |
 | P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
 | P3 depth, six proven pairs, 48 bases | 21.4 | DONE: 9 keepers in 48 |
@@ -1039,6 +1039,11 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    above the new threes, part of the collapse is the rater and every cross-window
    score table here is unsafe. This step had not been run as of 2026-09-09. The
    pack is 22 plus 22 and is served from `campaigns/window5/review-p0`.
+
+   **Result, 2026-09-09.** 44 of 44 items rated. Old fives mean **4.864**
+   (20 of 22 still score 5). Window-4 threes mean **3.136**. Gap **1.727**,
+   bar 1.0. The falsifier did not fire. This is not a licence to treat every
+   old score as frozen; it is enough to keep using cross-window score tables.
 
    Also free, and settled: select any future carry-forward on the KEEPER bar, never
    on >= 3. Window 3's four structural families rank in opposite directions at the
