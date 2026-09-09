@@ -1,0 +1,277 @@
+type DrawingPoint = { x: number; y: number };
+
+type StrokeStyle = {
+	mode: 'draw' | 'erase';
+	color: string;
+	size: number;
+};
+
+type StrokeOperation = StrokeStyle & {
+	kind: 'stroke';
+	id: string;
+	points: DrawingPoint[];
+};
+
+type ClearOperation = {
+	kind: 'clear';
+	id: string;
+};
+
+type Operation = StrokeOperation | ClearOperation;
+
+type Checkpoint = {
+	prefix: number;
+	lastId: string;
+	image: ImageBitmap;
+};
+
+const PAPER = '#ffffff';
+const CHECKPOINT_INTERVAL = 16;
+const MAX_CHECKPOINTS = 4;
+
+export class DrawingDocument {
+	private readonly canvas: HTMLCanvasElement;
+	private readonly context: CanvasRenderingContext2D;
+	private readonly operations: Operation[] = [];
+	private readonly checkpoints: Checkpoint[] = [];
+	private checkpointPending = false;
+	private cursor = 0;
+	private nextOperationId = 1;
+	private active: { pointerId: number; operation: StrokeOperation } | null = null;
+	private blank = true;
+	private destroyed = false;
+
+	public constructor(canvas: HTMLCanvasElement) {
+		const context = canvas.getContext('2d');
+		if (!context) throw new Error('the drawing canvas has no 2D context');
+		this.canvas = canvas;
+		this.context = context;
+		this.paintPaper();
+	}
+
+	public get isBlank(): boolean {
+		if (this.active) this.updateBlank();
+		return this.blank;
+	}
+
+	public get canUndo(): boolean {
+		return this.cursor > 0 || this.active !== null;
+	}
+
+	public get canRedo(): boolean {
+		return this.active === null && this.cursor < this.operations.length;
+	}
+
+	public beginStroke(pointerId: number, style: StrokeStyle, point: DrawingPoint): boolean {
+		if (this.destroyed || this.active !== null) return false;
+		const operation: StrokeOperation = {
+			kind: 'stroke',
+			id: this.newOperationId(),
+			mode: style.mode,
+			color: style.mode === 'erase' ? PAPER : style.color,
+			size: style.size,
+			points: [{ ...point }]
+		};
+		this.active = { pointerId, operation };
+		this.paintDot(operation, point);
+		return true;
+	}
+
+	public extendStroke(pointerId: number, point: DrawingPoint): boolean {
+		if (this.destroyed || !this.active || this.active.pointerId !== pointerId) return false;
+		const { operation } = this.active;
+		this.paintSegment(operation, operation.points[operation.points.length - 1], point);
+		operation.points.push({ ...point });
+		return true;
+	}
+
+	public finishStroke(pointerId?: number): boolean {
+		if (
+			this.destroyed ||
+			!this.active ||
+			(pointerId !== undefined && this.active.pointerId !== pointerId)
+		) {
+			return false;
+		}
+		const operation = this.active.operation;
+		this.active = null;
+		this.append(operation);
+		// Read back at gesture boundaries; a full readback on every move stalls painting.
+		this.updateBlank();
+		this.scheduleCheckpoint();
+		return true;
+	}
+
+	public undo(): boolean {
+		if (this.destroyed) return false;
+		this.finishStroke();
+		if (this.cursor === 0) return false;
+		this.cursor -= 1;
+		this.render();
+		return true;
+	}
+
+	public redo(): boolean {
+		if (this.destroyed) return false;
+		this.finishStroke();
+		if (this.cursor >= this.operations.length) return false;
+		this.cursor += 1;
+		this.render();
+		return true;
+	}
+
+	public clear(): boolean {
+		if (this.destroyed) return false;
+		this.finishStroke();
+		if (this.blank) return false;
+		this.append({ kind: 'clear', id: this.newOperationId() });
+		this.paintPaper();
+		this.blank = true;
+		this.scheduleCheckpoint();
+		return true;
+	}
+
+	private render(): void {
+		if (this.destroyed) return;
+		this.paintPaper();
+		const checkpoint = this.bestCheckpoint();
+		const start = checkpoint?.prefix ?? 0;
+		if (checkpoint)
+			this.context.drawImage(checkpoint.image, 0, 0, this.canvas.width, this.canvas.height);
+		for (let index = start; index < this.cursor; index += 1) {
+			this.paintOperation(this.operations[index]);
+		}
+		this.updateBlank();
+	}
+
+	public destroy(): void {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		this.active = null;
+		for (const checkpoint of this.checkpoints) checkpoint.image.close();
+		this.checkpoints.length = 0;
+		this.operations.length = 0;
+		this.cursor = 0;
+	}
+
+	private newOperationId(): string {
+		return `operation-${this.nextOperationId++}`;
+	}
+
+	private append(operation: Operation): void {
+		this.operations.length = this.cursor;
+		this.operations.push(operation);
+		this.cursor = this.operations.length;
+		this.pruneCheckpoints();
+	}
+
+	private paintPaper(): void {
+		this.context.save();
+		this.context.fillStyle = PAPER;
+		this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
+		this.context.restore();
+	}
+
+	private paintOperation(operation: Operation): void {
+		if (operation.kind === 'clear') {
+			this.paintPaper();
+			return;
+		}
+		this.paintDot(operation, operation.points[0]);
+		for (let index = 1; index < operation.points.length; index += 1) {
+			this.paintSegment(operation, operation.points[index - 1], operation.points[index]);
+		}
+	}
+
+	private paintDot(operation: StrokeOperation, point: DrawingPoint): void {
+		this.context.save();
+		this.context.fillStyle = operation.color;
+		this.context.beginPath();
+		this.context.arc(point.x, point.y, operation.size / 2, 0, Math.PI * 2);
+		this.context.fill();
+		this.context.restore();
+	}
+
+	private paintSegment(operation: StrokeOperation, from: DrawingPoint, to: DrawingPoint): void {
+		this.context.save();
+		this.context.strokeStyle = operation.color;
+		this.context.lineWidth = operation.size;
+		this.context.lineCap = 'round';
+		this.context.lineJoin = 'round';
+		this.context.beginPath();
+		this.context.moveTo(from.x, from.y);
+		this.context.lineTo(to.x, to.y);
+		this.context.stroke();
+		this.context.restore();
+	}
+
+	private updateBlank(): void {
+		const pixels = this.context.getImageData(0, 0, this.canvas.width, this.canvas.height).data;
+		for (let index = 0; index < pixels.length; index += 4) {
+			if (pixels[index] !== 255 || pixels[index + 1] !== 255 || pixels[index + 2] !== 255) {
+				this.blank = false;
+				return;
+			}
+		}
+		this.blank = true;
+	}
+
+	private bestCheckpoint(): Checkpoint | undefined {
+		let best: Checkpoint | undefined;
+		for (const checkpoint of this.checkpoints) {
+			if (
+				checkpoint.prefix > this.cursor ||
+				!this.prefixIsCurrent(checkpoint.prefix, checkpoint.lastId)
+			)
+				continue;
+			if (!best || checkpoint.prefix > best.prefix) best = checkpoint;
+		}
+		return best;
+	}
+
+	private prefixIsCurrent(prefix: number, lastId: string): boolean {
+		return this.operations[prefix - 1]?.id === lastId;
+	}
+
+	private pruneCheckpoints(): void {
+		for (let index = this.checkpoints.length - 1; index >= 0; index -= 1) {
+			const checkpoint = this.checkpoints[index];
+			if (this.prefixIsCurrent(checkpoint.prefix, checkpoint.lastId)) continue;
+			checkpoint.image.close();
+			this.checkpoints.splice(index, 1);
+		}
+	}
+
+	private scheduleCheckpoint(): void {
+		if (this.destroyed || this.checkpointPending || this.cursor % CHECKPOINT_INTERVAL !== 0) return;
+		this.checkpointPending = true;
+		const prefix = this.cursor;
+		const lastId = this.operations[prefix - 1].id;
+		// toBlob snapshots now, before another stroke or clear can change this prefix.
+		this.canvas.toBlob(async (blob) => {
+			try {
+				if (!blob || this.destroyed || !this.prefixIsCurrent(prefix, lastId)) return;
+				const image = await createImageBitmap(blob);
+				if (this.destroyed || !this.prefixIsCurrent(prefix, lastId)) {
+					image.close();
+					return;
+				}
+				const existing = this.checkpoints.findIndex((checkpoint) => checkpoint.prefix === prefix);
+				if (existing >= 0) {
+					this.checkpoints[existing].image.close();
+					this.checkpoints.splice(existing, 1);
+				}
+				this.checkpoints.push({ prefix, lastId, image });
+				this.checkpoints.sort((left, right) => left.prefix - right.prefix);
+				while (this.checkpoints.length > MAX_CHECKPOINTS) {
+					const evicted = this.checkpoints.shift();
+					if (evicted) evicted.image.close();
+				}
+			} catch {
+				// A failed cache fill falls back to journal replay, without changing artwork.
+			} finally {
+				this.checkpointPending = false;
+			}
+		}, 'image/png');
+	}
+}
