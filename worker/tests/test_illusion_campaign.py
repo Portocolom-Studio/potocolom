@@ -680,6 +680,62 @@ def test_window7_plan_passes_dry_run(tmp_path: Path) -> None:
     assert main(["dry-run", "--plan", str(path)]) == 0
 
 
+def test_wording_smoke_is_ten_candidates_plus_oil_at_1500_steps() -> None:
+    """P1: screen replacement strings. Do not reason. Render them.
+
+    Same pair, seed and step count as the window-3 smoke that cut monochrome_oil.
+    Oil control first so a short run still has the control. charcoal and
+    monochrome_oil stay out: one was a full-window miss, one already summons a
+    frame.
+    """
+    from worker.illusion_campaign import (
+        P1_CANDIDATES,
+        P1_CONTROL,
+        P1_PAIR,
+        P1_SEED,
+        P1_SMOKE_STEPS,
+        P1_STYLES,
+        _p1_flags,
+        build_wording_smoke,
+    )
+    from worker.illusions import STYLE_TEMPLATES
+
+    entries = build_wording_smoke()
+    assert len(entries) == 11
+    assert P1_STYLES[0] == P1_CONTROL == "oil"
+    assert len(P1_CANDIDATES) == 10
+    assert entries[0].style == "oil"
+    assert [e.style for e in entries] == list(P1_STYLES)
+    assert {e.pair_id for e in entries} == {P1_PAIR}
+    assert P1_PAIR == "moose_butterfly"
+    assert {e.seed for e in entries} == {P1_SEED}
+    assert P1_SEED == 11
+    assert P1_SMOKE_STEPS == 1500
+    assert all(list(e.flags) == _p1_flags() for e in entries)
+    assert _p1_flags().count("1500") == 1
+    assert "charcoal" not in P1_CANDIDATES
+    assert "monochrome_oil" not in P1_CANDIDATES
+    assert "reference_sketch" not in P1_CANDIDATES
+    for style in P1_STYLES:
+        assert style in STYLE_TEMPLATES
+        assert "{}" in STYLE_TEMPLATES[style]
+    assert len({e.entry_id for e in entries}) == 11
+
+
+def test_wording_smoke_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="wording-smoke",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
 def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
     from worker.illusion_campaign import build_phase_plan, main
 

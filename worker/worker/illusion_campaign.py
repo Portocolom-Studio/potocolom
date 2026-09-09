@@ -603,6 +603,27 @@ WINDOW7_SEEDS = tuple(
     seed for seed in WINDOW3_SEED_POOL if seed not in WINDOW5_SEEDS and seed not in WINDOW6_SEEDS
 ) + WINDOW7_EXTRA_SEEDS
 
+# P1 wording smoke. Same pair, seed and step count as the window-3 smoke.
+# Oil control first. Ten candidates, none of them charcoal or monochrome_oil.
+P1_PAIR = "moose_butterfly"
+P1_SEED = 11
+P1_SMOKE_STEPS = 1_500
+P1_SMOKE_ESTIMATE_S = 520.0
+P1_CONTROL = "oil"
+P1_CANDIDATES = (
+    "ink_wash",
+    "graphite_drawing",
+    "linocut",
+    "woodcut",
+    "etching",
+    "gouache",
+    "fresco",
+    "watercolor",
+    "lithograph",
+    "ink_drawing",
+)
+P1_STYLES = (P1_CONTROL,) + P1_CANDIDATES
+
 
 def _window2_flags(
     *,
@@ -951,6 +972,48 @@ def build_window7() -> list[CampaignEntry]:
                 )
             )
             priority += 1
+    return entries
+
+
+def _p1_flags() -> list[str]:
+    flags = [
+        "--experimental-recipe",
+        "author_reference",
+        "--collect-diagnostics",
+        "--skip-clip",
+        "--sds-steps",
+        str(P1_SMOKE_STEPS),
+        "--dream-rounds",
+        str(WINDOW3_DREAM_ROUNDS),
+    ]
+    for name, mode, negative in WINDOW3_ARMS:
+        flags += ["--dream-arm", f"{name}:{mode}:{negative}"]
+    return flags
+
+
+def build_wording_smoke() -> list[CampaignEntry]:
+    """P1: ten wording candidates plus an oil control. 11 bases at 1500 steps.
+
+    moose_butterfly seed 11, both Dream arms, current recipe. Oil runs first so
+    a short window still has the control that makes frames attributable to the
+    phrase. Do not buy a 21-hour follow-up on a survivor.
+    """
+    entries: list[CampaignEntry] = []
+    priority = 0
+    for style in P1_STYLES:
+        entries.append(
+            _entry(
+                tier="wording-smoke",
+                profile=style,
+                pair_id=P1_PAIR,
+                seed=P1_SEED,
+                flags=_p1_flags(),
+                priority=priority,
+                style=style,
+                estimate_s=P1_SMOKE_ESTIMATE_S,
+            )
+        )
+        priority += 1
     return entries
 
 
@@ -1564,6 +1627,8 @@ def build_phase_plan(
         entries = build_window6()
     elif phase == "window7":
         entries = build_window7()
+    elif phase == "wording-smoke":
+        entries = build_wording_smoke()
     elif phase == "early-dream-backup":
         entries = build_early_dream_backup()
     else:
@@ -1589,6 +1654,7 @@ def build_phase_plan(
                 "window5",
                 "window6",
                 "window7",
+                "wording-smoke",
                 "early-dream-backup",
             )
             else _blocked_rotated(entries)
@@ -1673,6 +1739,7 @@ def main(argv: list[str] | None = None) -> int:
             "window5",
             "window6",
             "window7",
+            "wording-smoke",
             "early-dream-backup",
         ),
         required=True,
@@ -1835,6 +1902,13 @@ def main(argv: list[str] | None = None) -> int:
         if counts.get("window7", 0) not in (0, window7_expected):
             print(
                 f"FAIL: window7 expected {window7_expected} got {counts.get('window7')}",
+                file=sys.stderr,
+            )
+            return 1
+        wording_expected = len(P1_STYLES)
+        if counts.get("wording-smoke", 0) not in (0, wording_expected):
+            print(
+                f"FAIL: wording-smoke expected {wording_expected} got {counts.get('wording-smoke')}",
                 file=sys.stderr,
             )
             return 1

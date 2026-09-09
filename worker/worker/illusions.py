@@ -135,6 +135,19 @@ STYLE_TEMPLATES: dict[str, str] = {
     # monochrome (9.9/7.1 against reference_sketch's 9.2 median) with none of
     # pencil's frames, which is what the hypothesis wanted from the other one.
     "charcoal": "a detailed charcoal drawing of {}",
+    # P1 smoke, 2026-09-09. Ten replacement strings for reference_sketch, plus
+    # the plain-oil control in the campaign (not listed here). Do not predict
+    # which survive. Frame behaviour is a property of the specific phrase.
+    "ink_wash": "an ink wash of {}",
+    "graphite_drawing": "a graphite drawing of {}",
+    "linocut": "a linocut of {}",
+    "woodcut": "a woodcut of {}",
+    "etching": "an etching of {}",
+    "gouache": "a gouache painting of {}",
+    "fresco": "a fresco of {}",
+    "watercolor": "a watercolor of {}",
+    "lithograph": "a lithograph of {}",
+    "ink_drawing": "an ink drawing of {}",
 }
 
 # Square-root SDS timestep anneal (NOT full HiFA): endpoints and exponent.
