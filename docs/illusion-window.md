@@ -1023,11 +1023,11 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 
 | step | GPU-hours | what it settles |
 |---|---|---|
-| P0 mixed re-rate | 0 | rater drift between sessions |
+| P0 mixed re-rate | 0 | pack ready, not yet rated |
 | P1 wording smoke | ~1.3 | whether `reference_sketch` is repairable |
 | P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
-| P3 depth, six proven pairs, 48 bases | 21.4 | ran: `build_window6`, unrated |
-| P3b second depth block, 48 bases | 21.4 | live: `build_window7` |
+| P3 depth, six proven pairs, 48 bases | 21.4 | DONE: 9 keepers in 48 |
+| P3b second depth block, 48 bases | 21.4 | DONE: 9 keepers in 48 |
 | P4 Codex regression, 144 bases | 64.3 | only if P2 fails |
 
 1. **P0, zero GPU, and nothing else should run first.** Every window was rated in a
@@ -1037,7 +1037,8 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    stage, mode and seed, re-rate in one session. Unit: item. Endpoint: score on the
    same instrument. Falsifier: if the old fives do not average at least 1.0 point
    above the new threes, part of the collapse is the rater and every cross-window
-   score table here is unsafe.
+   score table here is unsafe. This step had not been run as of 2026-09-09. The
+   pack is 22 plus 22 and is served from `campaigns/window5/review-p0`.
 
    Also free, and settled: select any future carry-forward on the KEEPER bar, never
    on >= 3. Window 3's four structural families rank in opposite directions at the
@@ -1085,7 +1086,11 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    winner's curse this section spent its length objecting to. Falsifier: fewer than 6
    keepers in 48. Seeds are `WINDOW6_SEEDS`: the eight values in `WINDOW3_SEED_POOL`
    after dropping 11, 23 and 37, so 53, 71, 89, 101, 113, 131, 149, 167. Phase
-   `window6`. Finished 2026-09-05, 48 of 48 completed, 0 failed. Unrated.
+   `window6`. Finished 2026-09-05, 48 of 48 completed, 0 failed.
+
+   **Result, 2026-09-09.** 48 of 48 bases rated, unit = (pair, seed), better of
+   two final arms. Clean readable 20/48. Clean keepers **9/48**. Any score 5:
+   5/48. The falsifier (fewer than 6 keepers in 48) did not fire.
 
    A second 48-base block, `window7`, was launched 2026-09-05 before window 6 was
    rated, to fill a 30-hour away window. It cannot wait on window 6's keeper
@@ -1094,6 +1099,11 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    181, 199, 211, 233, 251, 269, plus the next two primes 271 and 277. Do not
    mix the two windows in one shuffle; rate each, then look at the combined 16
    seeds.
+
+   **Result, 2026-09-09.** 48 of 48 bases rated. Clean readable 16/48. Clean
+   keepers **9/48**. Any score 5: 2/48. The falsifier did not fire. Combined
+   with window 6: **18 keepers in 96** on 16 seeds. Window 5 on the old three
+   seeds was 6/18. Moose is 0 keepers in 16 across the two depth windows.
 
 5. **P4, Codex's powered regression test, 144 bases, 64.3 GPU-hours. Still last.**
    Its motivating observation, the keeper-bar collapse in the mixed table, is
