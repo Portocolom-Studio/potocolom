@@ -274,6 +274,15 @@ async function bitmap(page) {
 	});
 }
 
+async function waitForBitmap(page, expectedHash) {
+	const deadline = Date.now() + WAIT_MS;
+	while (Date.now() < deadline) {
+		if ((await bitmap(page)).hash === expectedHash) return;
+		await pause(25);
+	}
+	assert.fail(`Bitmap did not reach hash ${expectedHash}`);
+}
+
 async function canvasRect(page) {
 	const canvas = await page.$('canvas[aria-label="Drawing surface"]');
 	const rect = await canvas?.boundingBox();
@@ -518,35 +527,9 @@ test('redo restores exact pixels and a new stroke replaces the redo branch', asy
 		await tap(page, 0.75, 0.75);
 		const second = await bitmap(page);
 		await clickButton(page, 'Undo');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{},
-			first.hash
-		);
+		await waitForBitmap(page, first.hash);
 		await clickButton(page, 'Redo');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{},
-			second.hash
-		);
+		await waitForBitmap(page, second.hash);
 		await clickButton(page, 'Undo');
 		await tap(page, 0.5, 0.5);
 		await page.waitForFunction(() =>
@@ -572,50 +555,11 @@ test('clear, undo and redo follow the visible bitmap and blank clear is a no-op'
 		await tap(page, 0.5, 0.5);
 		const drawn = await bitmap(page);
 		await clickButton(page, 'Clear canvas');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{},
-			blank.hash
-		);
+		await waitForBitmap(page, blank.hash);
 		await clickButton(page, 'Undo');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{},
-			drawn.hash
-		);
+		await waitForBitmap(page, drawn.hash);
 		await clickButton(page, 'Redo');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{},
-			blank.hash
-		);
+		await waitForBitmap(page, blank.hash);
 		const redoBefore = await page.evaluate(() => {
 			const button = [...document.querySelectorAll('button')].find(
 				(candidate) =>
@@ -651,6 +595,25 @@ test('colors, brush bounds and erase replay keep each stroke settings', async ()
 		const brushAttributes = await brushInfo(page);
 		assert.ok(brushAttributes, 'Brush size must be keyboard accessible');
 		assert.deepEqual(brushAttributes, { value: '6', min: '1', max: '32' });
+		await page.click('#realtime-brush-size-label');
+		const labelFocus = await page.evaluate(() => {
+			const thumb = document.getElementById('realtime-brush-size');
+			const labelledBy = thumb?.getAttribute('aria-labelledby');
+			return {
+				activeId: document.activeElement?.id,
+				role: thumb?.getAttribute('role'),
+				accessibleName: labelledBy
+					? document.getElementById(labelledBy)?.textContent?.trim()
+					: undefined
+			};
+		});
+		assert.deepEqual(labelFocus, {
+			activeId: 'realtime-brush-size',
+			role: 'slider',
+			accessibleName: 'Brush size'
+		});
+		await page.keyboard.press('ArrowRight');
+		assert.equal((await brushInfo(page))?.value, '7');
 		for (const name of ['Black', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink']) {
 			await selectColor(page, name);
 			const selected = await page.$eval(
@@ -752,20 +715,7 @@ test('display scaling, secondary pointers, hover and pointer cancellation stay b
 		assert.deepEqual(await bitmap(page), canceled);
 		assert.notEqual(canceled.hash, blank.hash);
 		await clickButton(page, 'Undo');
-		await page.waitForFunction(
-			(expected) => {
-				const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
-				const data = canvas?.getContext('2d').getImageData(0, 0, 512, 512).data;
-				let hash = 2166136261;
-				for (const value of data ?? []) {
-					hash ^= value;
-					hash = Math.imul(hash, 16777619) >>> 0;
-				}
-				return hash === expected;
-			},
-			{ timeout: WAIT_MS },
-			blank.hash
-		);
+		await waitForBitmap(page, blank.hash);
 		const scaled = await canvasRect(page);
 		await page.mouse.move(scaled.x + scaled.width * 0.5, scaled.y + scaled.height * 0.2);
 		await page.mouse.down();
