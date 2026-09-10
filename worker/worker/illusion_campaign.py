@@ -390,7 +390,7 @@ WINDOW2_SDS_STEPS = 5_000
 # carries old round 8's strength: the very thing that was condemned.
 WINDOW2_DREAM_ROUNDS = 1
 # reference_sketch, spelled out: the code has three pencil templates and only
-# this one is window 1's validated wording (illusions.py STYLE_TEMPLATES).
+# this one is window 1's validated wording (illusion_styles.py STYLE_TEMPLATES).
 WINDOW2_STYLES = ("reference_sketch", "oil")
 WINDOW2_SEEDS = (11, 23, 37)
 WINDOW2_DEPTH_SEED = 53

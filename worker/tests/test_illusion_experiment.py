@@ -96,18 +96,18 @@ def test_build_config_bakes_effective_prompts_with_style_none() -> None:
 
 
 def test_sds_guidance_defaults_and_sqrt_alias() -> None:
-    pytest.importorskip("torch")
     parser = build_arg_parser()
     legacy = parser.parse_args(["run", "--pair-id", "dog_sloth", "--out", "x"])
-    config, *_ = _build_illusion_config(legacy)
     assert legacy.sds_guidance is None
-    assert config.sds_guidance == 100.0
     sqrt = parser.parse_args(
         ["run", "--pair-id", "dog_sloth", "--sqrt-timestep-anneal", "--out", "x"]
     )
     assert sqrt.sqrt_timestep_anneal is True
     alias = parser.parse_args(["run", "--pair-id", "dog_sloth", "--hifa-schedule", "--out", "x"])
     assert alias.sqrt_timestep_anneal is True
+    pytest.importorskip("torch")
+    config, *_ = _build_illusion_config(legacy)
+    assert config.sds_guidance == 100.0
 
 
 def test_manual_roc_auc_perfect_anti_perfect_and_ties() -> None:

@@ -969,8 +969,9 @@ now the first GPU spend. The `optimizer_fingerprint` did move over
 the interval, from `6b6e0b0a07476b47` to `d1138c88247228b0`, and that is benign: it
 was `sha256(illusions.py)` and the diff is a comment block plus one template. Model
 ids are byte-identical across all three windows. The fingerprint has since been
-widened to cover `illusion_experiment.py` as well, because the run harness gained
-213 lines over that same interval without moving it.
+widened to cover `illusion_experiment.py` and `illusion_styles.py` as well,
+because the run harness gained 213 lines over that same interval without
+moving it, and the style templates later left `illusions.py`.
 
 Joint against independent, paired inside the same base: joint-only clean 12,
 indep-only clean 9, p=0.66. Window 2's joint win is not visible here. State the
@@ -1024,7 +1025,7 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 | step | GPU-hours | what it settles |
 |---|---|---|
 | P0 mixed re-rate | 0 | DONE: gap 1.727, bar 1.0 |
-| P1 wording smoke | ~1.3 | DONE: 0 of 10 survive |
+| P1 wording smoke | ~1.6 | DONE: 0 of 10 survive |
 | P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
 | P3 depth, six proven pairs, 48 bases | 21.4 | DONE: 9 keepers in 48 |
 | P3b second depth block, 48 bases | 21.4 | DONE: 9 keepers in 48 |
@@ -1055,7 +1056,7 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    p = 0.156, suggestive not significant, but the inversion appears in both windows
    and acting on it costs nothing.
 
-2. **P1, the wording smoke, about 1.3 GPU-hours.** Screen replacement strings for
+2. **P1, the wording smoke, about 1.6 GPU-hours.** Screen replacement strings for
    `reference_sketch`: candidate phrases are rendered, not reasoned about. **Do not
    buy the 21.4-hour follow-up block on a survivor**: the ceiling computed above is
    about 20/48 clean and 3 keepers against oil's 31/48 and 3, because half of
