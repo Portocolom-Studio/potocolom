@@ -231,15 +231,18 @@ function sessionHarness(
 	applied: Array<Record<string, unknown>>;
 	counters: Array<[number, number]>;
 	draws: number[];
+	timerDelays: number[];
 	tick(): void;
 	timerCount(): number;
 } {
 	const sockets: TestSocket[] = [];
 	const timers = new Map<number, () => void>();
 	let nextTimer = 0;
-	const schedule = ((callback: () => void) => {
+	const timerDelays: number[] = [];
+	const schedule = ((callback: () => void, delay = 0) => {
 		const id = ++nextTimer;
 		timers.set(id, callback);
+		timerDelays.push(delay);
 		return id;
 	}) as typeof globalThis.setTimeout;
 	const cancel = ((id: ReturnType<typeof setTimeout>) => {
@@ -277,6 +280,7 @@ function sessionHarness(
 		applied,
 		counters,
 		draws,
+		timerDelays,
 		tick() {
 			const entry = timers.entries().next().value as [number, () => void] | undefined;
 			if (!entry) throw new Error('no timer');
@@ -306,6 +310,139 @@ function emptyGenerated(id = SESSION): ArrayBuffer {
 	frame.set(uuidBytes(id), 1);
 	return frame.buffer;
 }
+
+test('a busy socket retries at a bounded rate after a slow encode and keeps the latest drawing', async (context) => {
+	let now = 0;
+	context.mock.method(performance, 'now', () => now);
+	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
+	let encodes = 0;
+	let latest = 1;
+	const harness = sessionHarness({
+		encode: () => {
+			encodes += 1;
+			return encodes === 1
+				? new Promise((resolve) => {
+						resolveEncode = resolve;
+					})
+				: Promise.resolve(new Uint8Array([latest]));
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		latest = 2;
+		harness.session.markChanged();
+		socket.bufferedAmount = 1;
+		now = 600;
+		resolveEncode(new Uint8Array([1]));
+		await Promise.resolve();
+		assert.equal(harness.timerDelays.at(-1), 0, 'the first retry can start after an overrun');
+		for (let index = 0; index < 20; index += 1) {
+			harness.tick();
+			const delay = harness.timerDelays.at(-1)!;
+			assert.ok(delay >= 250 && delay <= 500, `blocked retry waited ${delay} ms`);
+			assert.equal(harness.timerCount(), 1);
+		}
+		assert.equal(encodes, 1, 'a busy socket must not trigger another encode');
+		assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 1);
+		latest = 3;
+		harness.session.markChanged();
+		socket.bufferedAmount = 0;
+		harness.tick();
+		await Promise.resolve();
+		const frames = socket.sent.filter((data) => typeof data !== 'string');
+		assert.equal(frames.length, 2);
+		assert.deepEqual(frames.at(-1), canvasFrame(SESSION, new Uint8Array([3])));
+		assert.equal(harness.timerCount(), 1);
+	} finally {
+		harness.session.destroy();
+	}
+	assert.equal(harness.timerCount(), 0);
+});
+
+test('a slow encode backs off idle ticks, stops, and wakes for a new edit', async (context) => {
+	let now = 0;
+	context.mock.method(performance, 'now', () => now);
+	let encodes = 0;
+	const harness = sessionHarness({
+		encode: async () => {
+			encodes += 1;
+			now = 600;
+			return new Uint8Array([encodes]);
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(harness.timerDelays.at(-1), 0);
+
+		for (let index = 0; index < IDLE_TICKS_BEFORE_STOP - 1; index += 1) {
+			harness.tick();
+			const delay = harness.timerDelays.at(-1)!;
+			assert.ok(delay >= 250 && delay <= 500, `idle retry waited ${delay} ms`);
+			assert.equal(harness.timerCount(), 1);
+		}
+		harness.tick();
+		assert.equal(harness.timerCount(), 0);
+
+		harness.session.markChanged();
+		assert.equal(harness.timerCount(), 1);
+		assert.equal(harness.timerDelays.at(-1), FAST_INTERVAL_MS);
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(encodes, 2);
+		assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 2);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('an encode failure keeps the drawing pending for a successful retry', async () => {
+	let encodes = 0;
+	const harness = sessionHarness({
+		encode: async () => {
+			encodes += 1;
+			if (encodes === 1) throw new Error('encode');
+			return new Uint8Array([2]);
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(harness.notices.at(-1), 'encode_failed');
+		assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 0);
+		assert.equal(harness.timerCount(), 1);
+
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(encodes, 2);
+		const frames = socket.sent.filter((data) => typeof data !== 'string');
+		assert.equal(frames.length, 1);
+		assert.deepEqual(frames[0], canvasFrame(SESSION, new Uint8Array([2])));
+	} finally {
+		harness.session.destroy();
+	}
+});
 
 test('an interruption during encode keeps the canvas pending for resume', async () => {
 	let resolveEncode!: (image: Uint8Array<ArrayBuffer>) => void;
