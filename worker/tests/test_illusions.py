@@ -1,0 +1,291 @@
+"""Arrangement math and prime parameterization for Diffusion Illusions
+(issue #115). CPU-only; skipped entirely when torch is not installed
+(CI runs the worker without the inference extra)."""
+
+from types import SimpleNamespace
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+from worker.illusions import (  # noqa: E402  (import needs torch)
+    ILLUSIONS,
+    DiffusionAdapter,
+    FourierFeatureNetwork,
+    IllusionConfig,
+    image_similarity_loss,
+    overlay,
+    reconcile_flip,
+    rot90,
+    sdedit_steps,
+    ssim,
+    targets_for,
+)
+
+
+def prime(seed: int) -> "torch.Tensor":
+    generator = torch.Generator().manual_seed(seed)
+    return torch.rand((1, 3, 16, 16), generator=generator)
+
+
+def test_specs_match_paper_table() -> None:
+    assert ILLUSIONS["flip"].n_primes == 1
+    assert len(ILLUSIONS["flip"].weights) == 2
+    assert ILLUSIONS["rotate"].n_primes == 2
+    assert len(ILLUSIONS["rotate"].weights) == 4
+    assert ILLUSIONS["hidden"].n_primes == 4
+    assert ILLUSIONS["hidden"].weights == [1.0, 1.0, 1.0, 1.0, 3.0]
+
+
+def test_flip_is_identity_and_180() -> None:
+    image = prime(1)
+    first, second = ILLUSIONS["flip"].arrange([image])
+    assert torch.equal(first, image)
+    assert torch.equal(second, rot90(image, 2))
+    assert torch.equal(rot90(second, 2), image)
+
+
+def test_rotation_overlay_shapes_and_range() -> None:
+    derived = ILLUSIONS["rotate"].arrange([prime(1), prime(2)])
+    assert len(derived) == 4
+    for image in derived:
+        assert image.shape == (1, 3, 16, 16)
+        assert image.min() >= 0 and image.max() < 1
+
+
+def test_hidden_overlay_passes_primes_through() -> None:
+    primes = [prime(seed) for seed in range(4)]
+    derived = ILLUSIONS["hidden"].arrange(primes)
+    assert len(derived) == 5
+    for original, passed in zip(primes, derived[:4], strict=False):
+        assert torch.equal(original, passed)
+    assert derived[4].min() >= 0 and derived[4].max() < 1
+
+
+def test_overlay_is_commutative() -> None:
+    a, b = prime(1), prime(2)
+    assert torch.allclose(overlay([a, b], 2.0), overlay([b, a], 2.0))
+
+
+def test_arrangements_are_differentiable() -> None:
+    for name, spec in ILLUSIONS.items():
+        primes = [prime(seed).requires_grad_(True) for seed in range(spec.n_primes)]
+        loss = sum(image.sum() for image in spec.arrange(primes))
+        loss.backward()
+        for image in primes:
+            assert image.grad is not None, name
+            assert torch.isfinite(image.grad).all(), name
+
+
+def test_ffn_renders_expected_shape_and_range() -> None:
+    torch.manual_seed(0)
+    network = FourierFeatureNetwork(features=16, hidden=16)
+    image = network.image(resolution=8)
+    assert image.shape == (1, 3, 8, 8)
+    assert image.min() >= 0 and image.max() <= 1
+
+
+def test_ffn_is_deterministic_per_seed() -> None:
+    torch.manual_seed(7)
+    first = FourierFeatureNetwork(features=16, hidden=16).image(resolution=8)
+    torch.manual_seed(7)
+    second = FourierFeatureNetwork(features=16, hidden=16).image(resolution=8)
+    assert torch.equal(first, second)
+
+
+def test_ssim_identity_and_similarity_loss() -> None:
+    image = prime(3)
+    assert ssim(image, image).item() == pytest.approx(1.0, abs=1e-4)
+    assert image_similarity_loss(image, image).item() == pytest.approx(0.0, abs=1e-3)
+    other = prime(4)
+    assert image_similarity_loss(image, other).item() > 0.1
+
+
+def test_targets_require_one_per_derived_image() -> None:
+    config = IllusionConfig(illusion="flip", prompts=["dog"])
+    with pytest.raises(ValueError):
+        targets_for(config, ILLUSIONS["flip"])
+    config = IllusionConfig(illusion="flip", prompts=["dog", "sloth"])
+    assert targets_for(config, ILLUSIONS["flip"]) == ["dog", "sloth"]
+
+
+def test_image_target_fills_final_slot() -> None:
+    target = prime(9)
+    config = IllusionConfig(
+        illusion="hidden",
+        prompts=["a", "b", "c", "d"],
+        target_image=target,
+    )
+    targets = targets_for(config, ILLUSIONS["hidden"])
+    assert len(targets) == 5
+    assert targets[4] is target
+
+
+def test_sds_loss_batch_single_unet_call_with_cfg_doubled_batch() -> None:
+    """Stubbed UNet must see batch 2B and embeddings 2B for B prompt images."""
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    seq, dim = 4, 8
+    adapter.embeddings = {
+        "dog": torch.zeros(2, seq, dim),
+        "sloth": torch.zeros(2, seq, dim),
+    }
+
+    unet_calls: list[tuple[torch.Size, torch.Size]] = []
+
+    class FakeUNet:
+        def __call__(self, model_in, timesteps, encoder_hidden_states):
+            unet_calls.append((model_in.shape, encoder_hidden_states.shape))
+            return SimpleNamespace(sample=torch.zeros_like(model_in))
+
+    class FakeScheduler:
+        config = SimpleNamespace(num_train_timesteps=1000)
+
+        def add_noise(self, latents, noise, timesteps):
+            assert latents.shape[0] == timesteps.shape[0]
+            return latents
+
+    adapter.pipe = SimpleNamespace(unet=FakeUNet())
+    adapter.scheduler = FakeScheduler()
+    adapter.encode_latent = lambda image: torch.zeros(
+        image.shape[0], 4, image.shape[2] // 8, image.shape[3] // 8
+    )
+    adapter.embed = lambda prompt: adapter.embeddings[prompt]
+
+    batch = 2
+    derived = torch.rand(batch, 3, 16, 16)
+    generator = torch.Generator().manual_seed(0)
+    loss = adapter.sds_loss_batch(
+        derived, ["dog", "sloth"], [1.0, 2.0], guidance_scale=100.0, generator=generator
+    )
+
+    assert loss.ndim == 0
+    assert len(unet_calls) == 1
+    model_shape, embed_shape = unet_calls[0]
+    assert model_shape[0] == 2 * batch
+    assert embed_shape[0] == 2 * batch
+
+
+def test_arrangements_work_at_ladder_resolution() -> None:
+    """FFN primes at 256px still produce valid derived shapes for each type."""
+    resolution = 256
+    for name, spec in ILLUSIONS.items():
+        primes = [
+            torch.rand((1, 3, resolution, resolution), generator=torch.Generator().manual_seed(i))
+            for i in range(spec.n_primes)
+        ]
+        derived = spec.arrange(primes)
+        assert len(derived) == len(spec.weights), name
+        for image in derived:
+            assert image.shape == (1, 3, resolution, resolution), name
+            assert image.min() >= 0 and image.max() <= 1, name
+
+
+def test_begin_dream_phase_keeps_sds_schedule_when_disabled() -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    adapter.dream_model_id = None
+    adapter.img2img = object()
+    adapter.pipe = object()
+    adapter.embeddings = {"stale": torch.zeros(1)}
+    adapter.dream_inference_steps = 25
+    adapter.dream_guidance = 7.5
+    adapter.begin_dream_phase()
+    assert adapter.dream_inference_steps == 25
+    assert adapter.dream_guidance == 7.5
+    assert adapter.pipe is not None
+    # the SDS embedding cache is dead weight after phase 1 either way
+    assert adapter.embeddings == {}
+
+
+def test_begin_dream_phase_switches_to_lcm_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    adapter.dream_model_id = DiffusionAdapter.DEFAULT_DREAM_MODEL
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    adapter.embeddings = {"keep": torch.zeros(1)}
+    adapter.pipe = object()
+    adapter.img2img = object()
+    adapter.scheduler = object()
+
+    class FakeImg2Img:
+        unet = SimpleNamespace(requires_grad_=lambda _flag: None)
+        vae = SimpleNamespace(requires_grad_=lambda _flag: None)
+        text_encoder = SimpleNamespace(requires_grad_=lambda _flag: None)
+
+        def __init__(self) -> None:
+            self.scheduler = SimpleNamespace(config={"beta_end": 0.012})
+
+        def to(self, _device: str) -> "FakeImg2Img":
+            return self
+
+    loaded: list[str] = []
+
+    class FakeAutoPipeline:
+        @staticmethod
+        def from_pretrained(model_id: str, **_kwargs: object) -> FakeImg2Img:
+            loaded.append(model_id)
+            return FakeImg2Img()
+
+    class FakeLCMScheduler:
+        def __init__(self, config: object) -> None:
+            self.config = config
+
+        @classmethod
+        def from_config(cls, config: object) -> "FakeLCMScheduler":
+            return cls(config)
+
+    # Inject before begin_dream_phase's `from diffusers import ...` so the
+    # test runs without the inference extra.
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "diffusers",
+        SimpleNamespace(
+            AutoPipelineForImage2Image=FakeAutoPipeline,
+            LCMScheduler=FakeLCMScheduler,
+        ),
+    )
+
+    adapter.begin_dream_phase()
+    assert loaded == [DiffusionAdapter.DEFAULT_DREAM_MODEL]
+    assert adapter.pipe is None
+    # the repo scheduler config is PNDM; the LCM swap must happen and keep
+    # the underlying beta schedule
+    assert isinstance(adapter.img2img.scheduler, FakeLCMScheduler)
+    assert adapter.img2img.scheduler.config == {"beta_end": 0.012}
+    assert adapter.dream_inference_steps == 4
+    assert adapter.dream_guidance == 2.0
+    assert adapter.embeddings == {}
+
+
+def test_sdedit_steps_never_round_to_zero_denoise_steps() -> None:
+    """int(steps * strength) is the denoise step count img2img actually
+    runs; the schedule must keep it at two or more at every strength the
+    default Dream Target schedule produces."""
+    schedule = IllusionConfig(illusion="flip", prompts=["a", "b"]).strength_schedule()
+    for strength in schedule:
+        strength = max(strength, 0.05)
+        steps = sdedit_steps(4, strength)
+        assert int(steps * strength) >= 2, strength
+    assert sdedit_steps(4, 0.95) == 4
+    assert sdedit_steps(4, 0.05) == 40
+    assert sdedit_steps(25, 0.5) == 25
+
+
+def test_reconcile_flip_returns_exact_rotation_pair() -> None:
+    """The consensus views must be exact 180-degree rotations of one
+    image, and averaging must happen in the canonical frame."""
+    a, b = prime(0), prime(1)
+    consensus = reconcile_flip([a, b])
+    assert torch.equal(consensus[1], rot90(consensus[0], 2))
+    assert torch.allclose(consensus[0], (a + rot90(b, 2)) / 2)
+
+
+def test_reconcile_flip_preserves_consistent_views() -> None:
+    """Views that already agree (v2 = rot180(v1)) pass through unchanged."""
+    a = prime(2)
+    consensus = reconcile_flip([a, rot90(a, 2)])
+    assert torch.allclose(consensus[0], a)
+    assert torch.allclose(consensus[1], rot90(a, 2))
