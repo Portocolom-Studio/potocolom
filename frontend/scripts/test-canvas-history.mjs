@@ -972,6 +972,10 @@ test('shape selection is silent and a connected shape publishes an opaque 512px 
 		assert.deepEqual(decoded.kind, 1);
 		assert.deepEqual([decoded.width, decoded.height], [512, 512]);
 		assert.equal(decoded.alphaOpaque, true);
+		assert.ok(
+			[17, 24, 39].every((channel, index) => Math.abs(decoded.edge[index] - channel) <= 12),
+			'the published frame must contain the rectangle edge in its default color'
+		);
 		assert.equal(decoded.edge[3], 255);
 	} finally {
 		await harness.close();
