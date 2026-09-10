@@ -11,7 +11,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Slider } from '$lib/components/ui/slider';
-	import { DrawingDocument } from '$lib/drawing-document';
+	import { DrawingDocument, DRAWING_FILE_MAX_BYTES } from '$lib/drawing-document';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		formatParamValue,
@@ -46,6 +46,7 @@
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
 	let drawingDocument = $state<DrawingDocument | null>(null);
+	let drawingFileInput = $state<HTMLInputElement | undefined>();
 
 	/** A message is held as its key, not its text, so switching language
 	 * retranslates it instead of leaving the previous locale on screen. */
@@ -63,6 +64,7 @@
 	let prompt = $state('');
 	let connection = $state<ConnectionState>('idle');
 	let notice = $state<NoticeKey | ''>('');
+	let drawingNotice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
 	// The params the API last confirmed for this session, from the open message
@@ -88,6 +90,8 @@
 	let stepsTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let tool = $state<'draw' | 'erase'>('draw');
+	let openingDrawing = $state(false);
+	let fileRequest = 0;
 
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
@@ -211,6 +215,7 @@
 		drawingDocument = owner;
 		blank = owner.isBlank;
 		return () => {
+			fileRequest += 1;
 			owner.destroy();
 			if (drawingDocument === owner) drawingDocument = null;
 		};
@@ -247,7 +252,13 @@
 	}
 
 	function onPointerDown(event: PointerEvent): void {
-		if (!event.isPrimary || event.button !== 0 || strokePointer !== null || !drawingDocument)
+		if (
+			openingDrawing ||
+			!event.isPrimary ||
+			event.button !== 0 ||
+			strokePointer !== null ||
+			!drawingDocument
+		)
 			return;
 		const point = canvasPoint(event);
 		if (
@@ -268,7 +279,7 @@
 		// isPrimary and the stroke's own pointer id: without both, a plain hover
 		// after a keyboard-driven pen down would draw, and a second finger would
 		// append its moves to the first finger's stroke.
-		if (!event.isPrimary || event.pointerId !== strokePointer) return;
+		if (openingDrawing || !event.isPrimary || event.pointerId !== strokePointer) return;
 		const point = canvasPoint(event);
 		if (drawingDocument?.extendStroke(event.pointerId, point)) {
 			realtimeSession.markChanged();
@@ -283,6 +294,7 @@
 	}
 
 	function clearCanvas(): void {
+		if (openingDrawing) return;
 		finishStroke();
 		if (!drawingDocument?.clear()) return;
 		syncHistory();
@@ -290,6 +302,7 @@
 	}
 
 	function undoCanvas(): void {
+		if (openingDrawing) return;
 		finishStroke();
 		if (!drawingDocument?.undo()) return;
 		syncHistory();
@@ -297,6 +310,7 @@
 	}
 
 	function redoCanvas(): void {
+		if (openingDrawing) return;
 		finishStroke();
 		if (!drawingDocument?.redo()) return;
 		syncHistory();
@@ -332,6 +346,60 @@
 
 	function disconnect(): void {
 		realtimeSession.disconnect();
+	}
+
+	function saveDrawing(): void {
+		if (!drawingDocument || openingDrawing) return;
+		finishStroke();
+		try {
+			const file = new Blob([JSON.stringify(drawingDocument.serialize())], {
+				type: 'application/json'
+			});
+			const url = URL.createObjectURL(file);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = 'drawing.potocolom.json';
+			document.body.append(link);
+			try {
+				link.click();
+			} finally {
+				link.remove();
+				setTimeout(() => URL.revokeObjectURL(url), 0);
+			}
+			drawingNotice = '';
+		} catch {
+			drawingNotice = 'app.realtime_canvas.save_failed';
+		}
+	}
+
+	function chooseDrawingFile(): void {
+		if (openingDrawing) return;
+		drawingFileInput?.click();
+	}
+
+	async function openDrawing(event: Event): Promise<void> {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file || !drawingDocument) return;
+		const owner = drawingDocument;
+		const request = ++fileRequest;
+		openingDrawing = true;
+		drawingNotice = '';
+		try {
+			if (file.size > DRAWING_FILE_MAX_BYTES) throw new Error('drawing file is too large');
+			const text = await file.text();
+			if (request !== fileRequest || drawingDocument !== owner) return;
+			owner.restore(JSON.parse(text));
+			strokePointer = null;
+			syncHistory();
+			realtimeSession.markChanged();
+		} catch {
+			if (request === fileRequest && drawingDocument === owner)
+				drawingNotice = 'app.realtime_canvas.file_invalid';
+		} finally {
+			if (request === fileRequest) openingDrawing = false;
+		}
 	}
 </script>
 
@@ -424,20 +492,59 @@
 					></canvas>
 					<div class="flex items-center justify-between gap-2">
 						<div class="flex flex-wrap gap-2">
-							<Button variant="outline" size="sm" disabled={!canUndo} onclick={undoCanvas}>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={openingDrawing || !canUndo}
+								onclick={undoCanvas}
+							>
 								{t('app.realtime_canvas.undo')}
 							</Button>
-							<Button variant="outline" size="sm" disabled={!canRedo} onclick={redoCanvas}>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={openingDrawing || !canRedo}
+								onclick={redoCanvas}
+							>
 								{t('app.realtime_canvas.redo')}
 							</Button>
-							<Button variant="outline" size="sm" disabled={blank} onclick={clearCanvas}>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={openingDrawing || blank}
+								onclick={clearCanvas}
+							>
 								{t('app.realtime_canvas.clear')}
 							</Button>
+							<Button variant="outline" size="sm" disabled={openingDrawing} onclick={saveDrawing}>
+								{t('app.realtime_canvas.save')}
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={openingDrawing}
+								onclick={chooseDrawingFile}
+							>
+								{t('app.realtime_canvas.open')}
+							</Button>
+							<input
+								bind:this={drawingFileInput}
+								type="file"
+								accept=".potocolom.json,application/json"
+								hidden
+								onchange={openDrawing}
+							/>
 						</div>
 						<span class="text-muted-foreground text-xs tabular-nums">
 							{sentFrames} / {renderedFrames}
 						</span>
 					</div>
+					<p class="text-muted-foreground text-xs">{t('app.realtime_canvas.open_hint')}</p>
+					{#if drawingNotice}
+						<p class="text-destructive text-sm" role="status" aria-live="polite">
+							{t(drawingNotice)}
+						</p>
+					{/if}
 				</Card.Content>
 			</Card.Root>
 

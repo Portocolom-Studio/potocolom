@@ -366,10 +366,21 @@ bitmaps, not unused copies of the encoded PNG bytes. It does not
 limit how far back the current journal can be undone. A new edit after undo
 replaces the redo branch. Paint controls alone do not send a live frame.
 
-The journal lasts only while the drawing panel is open. Persisting it with
-compressed checkpoints and
-rerasterizing it for a higher-resolution refine pass remain open in #54.
-The complete WebP wire frames and session protocol are unchanged.
+Status (2026-09-09): Save drawing writes the journal and its undo position
+to a local JSON file. Open drawing validates the whole file before replacing
+the current document. The file includes the redo branch, but no prompt,
+model choice or connection state. It uses the same format in both deployment
+modes. There is no auto-save or server storage in this slice. This provides
+portable save/reopen without adding a canvas REST endpoint or an account-owned
+storage model ahead of their issues. The file contract is in
+[drawing-files.md](drawing-files.md).
+
+Decoded checkpoints remain a bounded runtime cache. They are rebuilt from
+the journal rather than written into the file, so imported raster data cannot
+disagree with the drawing operations. An old cache task cannot publish into
+a replacement document even when the two documents use the same operation
+IDs. Persisted compressed checkpoints and higher-resolution refine remain
+open in #54. The complete WebP wire frames and session protocol are unchanged.
 
 ## First public release: after the walking skeleton, API level
 

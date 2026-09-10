@@ -320,8 +320,10 @@ guarantee is actually made; the matrix above covers the rest.
 The drawing checks in `frontend/scripts/test-canvas-history.mjs` use the
 built `/app` route, real pointer input and canvas pixels. The API and
 WebSocket are test adapters; encoding, decoding and drawing run in headless
-Chrome with GPU use disabled. They check drawing history and its live frame
-updates, not model output quality. `make verify-frontend` builds the app and
+Chrome with GPU use disabled. They check drawing history, local file save/open
+and live frame updates, not model output quality. The save/open checks use
+real browser downloads and file selection, then compare canvas pixels and
+undo/redo after a reload. `make verify-frontend` builds the app and
 runs them after the unit tests. For a focused run after a build:
 
 ```bash
