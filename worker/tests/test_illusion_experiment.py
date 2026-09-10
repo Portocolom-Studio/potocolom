@@ -44,6 +44,7 @@ def test_prompt_corpus_has_oil_painting_scenes() -> None:
 
 
 def test_author_reference_recipe_is_explicit_and_frozen() -> None:
+    pytest.importorskip("torch")
     parser = build_arg_parser()
     args = parser.parse_args(
         [
@@ -79,6 +80,7 @@ def test_style_oil_on_oil_corpus_does_not_double_wrap() -> None:
 
 
 def test_build_config_bakes_effective_prompts_with_style_none() -> None:
+    pytest.importorskip("torch")
     parser = build_arg_parser()
     args = parser.parse_args(
         ["run", "--pair-id", "dog_sloth", "--style", "oil", "--device", "cpu", "--out", "x"]
@@ -94,6 +96,7 @@ def test_build_config_bakes_effective_prompts_with_style_none() -> None:
 
 
 def test_sds_guidance_defaults_and_sqrt_alias() -> None:
+    pytest.importorskip("torch")
     parser = build_arg_parser()
     legacy = parser.parse_args(["run", "--pair-id", "dog_sloth", "--out", "x"])
     config, *_ = _build_illusion_config(legacy)
@@ -240,6 +243,7 @@ def test_allocate_run_dir_preserves_incomplete(tmp_path: Path) -> None:
 
 
 def test_dream_arm_flag_parses_and_refuses_nonsense() -> None:
+    pytest.importorskip("torch")
     from worker.illusion_experiment import parse_dream_arm
 
     off = parse_dream_arm("neg_off_indep:indep:off", "watermark")
