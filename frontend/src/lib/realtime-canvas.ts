@@ -368,7 +368,7 @@ export function createRealtimeCanvasSession(
 		) {
 			generation.idleTicks += 1;
 			if (generation.idleTicks >= IDLE_TICKS_BEFORE_STOP && !generation.changed) return;
-			armCapture(generation, nextDelayMs(generation.lastFrameCostMs));
+			armCapture(generation, nextIntervalMs(generation.lastFrameCostMs));
 			return;
 		}
 

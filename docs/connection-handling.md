@@ -145,6 +145,13 @@ slot calibration in [decisions.md](decisions.md) is measured against.
 
 TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. Browser keepalive is an application-level control message because browser WebSocket APIs cannot send protocol pings.
 
+Browser capture targets 250 or 500 ms between frame starts, based on the
+last encode and send cost. After an encode, only the unused part of that
+period is delayed. A tick that does no work waits a full period: it must not
+subtract the old encode cost again. This bounds retries while the socket is
+busy and keeps the latest drawing pending until the socket can send it.
+It does not change the wire format or prove a GPU cost saving.
+
 ## Session states
 
 > Shipped status (2026-08-19): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). `queued` and `idle` still wait on the admission queue and idle release. Checkpoints, durable outbox, and per-session mailboxes do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
