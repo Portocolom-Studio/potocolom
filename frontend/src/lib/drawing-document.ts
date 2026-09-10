@@ -19,6 +19,14 @@ type ClearOperation = {
 
 type Operation = StrokeOperation | ClearOperation;
 
+export type DrawingFile = {
+	version: 1;
+	width: 512;
+	height: 512;
+	operations: Operation[];
+	cursor: number;
+};
+
 type Checkpoint = {
 	prefix: number;
 	lastId: string;
@@ -28,6 +36,18 @@ type Checkpoint = {
 const PAPER = '#ffffff';
 const CHECKPOINT_INTERVAL = 16;
 const MAX_CHECKPOINTS = 4;
+export const DRAWING_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const MAX_OPERATIONS = 10_000;
+const MAX_POINTS = 200_000;
+const COORDINATE_MIN = -1_000_000;
+const COORDINATE_MAX = 1_000_000;
+const OPERATION_ID = /^operation-[0-9]+(?:-[0-9]+)*$/;
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+type ValidatedDrawing = {
+	operations: Operation[];
+	cursor: number;
+};
 
 export class DrawingDocument {
 	private readonly canvas: HTMLCanvasElement;
@@ -35,8 +55,8 @@ export class DrawingDocument {
 	private readonly operations: Operation[] = [];
 	private readonly checkpoints: Checkpoint[] = [];
 	private checkpointPending = false;
+	private generation = 0;
 	private cursor = 0;
-	private nextOperationId = 1;
 	private active: { pointerId: number; operation: StrokeOperation } | null = null;
 	private blank = true;
 	private destroyed = false;
@@ -60,6 +80,41 @@ export class DrawingDocument {
 
 	public get canRedo(): boolean {
 		return this.active === null && this.cursor < this.operations.length;
+	}
+
+	public serialize(): DrawingFile {
+		const snapshot: DrawingFile = {
+			version: 1,
+			width: 512,
+			height: 512,
+			operations: this.operations.map((operation) =>
+				operation.kind === 'clear'
+					? { kind: 'clear', id: operation.id }
+					: {
+							kind: 'stroke',
+							id: operation.id,
+							mode: operation.mode,
+							color: operation.color,
+							size: operation.size,
+							points: operation.points.map((point) => ({ ...point }))
+						}
+			),
+			cursor: this.cursor
+		};
+		validateDrawingFile(snapshot);
+		return snapshot;
+	}
+
+	public restore(input: unknown): void {
+		const validated = validateDrawingFile(input);
+		if (this.destroyed) return;
+		this.generation += 1;
+		this.invalidateCheckpoints();
+		this.active = null;
+		this.operations.length = 0;
+		this.operations.push(...validated.operations);
+		this.cursor = validated.cursor;
+		this.render();
 	}
 
 	public beginStroke(pointerId: number, style: StrokeStyle, point: DrawingPoint): boolean {
@@ -147,15 +202,16 @@ export class DrawingDocument {
 	public destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		this.generation += 1;
 		this.active = null;
-		for (const checkpoint of this.checkpoints) checkpoint.image.close();
-		this.checkpoints.length = 0;
+		this.invalidateCheckpoints();
 		this.operations.length = 0;
 		this.cursor = 0;
 	}
 
 	private newOperationId(): string {
-		return `operation-${this.nextOperationId++}`;
+		// Unlike randomUUID, this also works on plain-HTTP self-hosted installs.
+		return `operation-${crypto.getRandomValues(new Uint32Array(4)).join('-')}`;
 	}
 
 	private append(operation: Operation): void {
@@ -242,17 +298,33 @@ export class DrawingDocument {
 		}
 	}
 
+	private invalidateCheckpoints(): void {
+		for (const checkpoint of this.checkpoints) checkpoint.image.close();
+		this.checkpoints.length = 0;
+	}
+
 	private scheduleCheckpoint(): void {
 		if (this.destroyed || this.checkpointPending || this.cursor % CHECKPOINT_INTERVAL !== 0) return;
 		this.checkpointPending = true;
+		const generation = this.generation;
 		const prefix = this.cursor;
 		const lastId = this.operations[prefix - 1].id;
 		// toBlob snapshots now, before another stroke or clear can change this prefix.
 		this.canvas.toBlob(async (blob) => {
 			try {
-				if (!blob || this.destroyed || !this.prefixIsCurrent(prefix, lastId)) return;
+				if (
+					!blob ||
+					this.destroyed ||
+					generation !== this.generation ||
+					!this.prefixIsCurrent(prefix, lastId)
+				)
+					return;
 				const image = await createImageBitmap(blob);
-				if (this.destroyed || !this.prefixIsCurrent(prefix, lastId)) {
+				if (
+					this.destroyed ||
+					generation !== this.generation ||
+					!this.prefixIsCurrent(prefix, lastId)
+				) {
 					image.close();
 					return;
 				}
@@ -274,4 +346,95 @@ export class DrawingDocument {
 			}
 		}, 'image/png');
 	}
+}
+
+function validateDrawingFile(input: unknown): ValidatedDrawing {
+	let encodedBytes: number;
+	try {
+		const serialized = JSON.stringify(input);
+		if (serialized === undefined) throw new Error('drawing file must be JSON');
+		encodedBytes = new TextEncoder().encode(serialized).length;
+	} catch {
+		throw new Error('invalid drawing file');
+	}
+	if (encodedBytes > DRAWING_FILE_MAX_BYTES) throw new Error('drawing file is too large');
+	if (!isRecord(input)) throw new Error('invalid drawing file');
+	if (input.version !== 1 || input.width !== 512 || input.height !== 512)
+		throw new Error('unsupported drawing file');
+	if (!Array.isArray(input.operations) || input.operations.length > MAX_OPERATIONS)
+		throw new Error('drawing file has too many operations');
+	const cursor = input.cursor;
+	if (
+		typeof cursor !== 'number' ||
+		!Number.isSafeInteger(cursor) ||
+		cursor < 0 ||
+		cursor > input.operations.length
+	)
+		throw new Error('invalid drawing cursor');
+
+	const operations: Operation[] = [];
+	const ids = new Set<string>();
+	let totalPoints = 0;
+	for (const rawOperation of input.operations) {
+		if (!isRecord(rawOperation) || typeof rawOperation.kind !== 'string')
+			throw new Error('invalid drawing operation');
+		const id = validateOperationId(rawOperation.id, ids);
+		if (rawOperation.kind === 'clear') {
+			if (Object.keys(rawOperation).length !== 2) throw new Error('invalid clear operation');
+			operations.push({ kind: 'clear', id });
+			continue;
+		}
+		if (rawOperation.kind !== 'stroke' || Object.keys(rawOperation).length !== 6)
+			throw new Error('invalid stroke operation');
+		if (rawOperation.mode !== 'draw' && rawOperation.mode !== 'erase')
+			throw new Error('invalid stroke mode');
+		if (typeof rawOperation.color !== 'string' || !HEX_COLOR.test(rawOperation.color))
+			throw new Error('invalid stroke color');
+		const color = rawOperation.color.toLowerCase();
+		if (rawOperation.mode === 'erase' && color !== PAPER) throw new Error('invalid erase color');
+		const size = rawOperation.size;
+		if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 32)
+			throw new Error('invalid stroke size');
+		if (!Array.isArray(rawOperation.points) || rawOperation.points.length === 0)
+			throw new Error('stroke must have points');
+		totalPoints += rawOperation.points.length;
+		if (totalPoints > MAX_POINTS) throw new Error('drawing file has too many points');
+		const points = rawOperation.points.map(validatePoint);
+		operations.push({
+			kind: 'stroke',
+			id,
+			mode: rawOperation.mode,
+			color,
+			size,
+			points
+		});
+	}
+	return { operations, cursor };
+}
+
+function validateOperationId(input: unknown, ids: Set<string>): string {
+	if (typeof input !== 'string' || input.length > 64 || !OPERATION_ID.test(input) || ids.has(input))
+		throw new Error('invalid operation id');
+	ids.add(input);
+	return input;
+}
+
+function validatePoint(input: unknown): DrawingPoint {
+	if (!isRecord(input) || Object.keys(input).length !== 2) throw new Error('invalid drawing point');
+	if (
+		typeof input.x !== 'number' ||
+		typeof input.y !== 'number' ||
+		!Number.isFinite(input.x) ||
+		!Number.isFinite(input.y) ||
+		input.x < COORDINATE_MIN ||
+		input.x > COORDINATE_MAX ||
+		input.y < COORDINATE_MIN ||
+		input.y > COORDINATE_MAX
+	)
+		throw new Error('invalid drawing point');
+	return { x: input.x, y: input.y };
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+	return typeof input === 'object' && input !== null && !Array.isArray(input);
 }

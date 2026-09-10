@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
 
@@ -472,6 +473,674 @@ async function button(page, name) {
 	}, name);
 }
 
+async function waitForDrawingDownload(directory) {
+	const deadline = Date.now() + WAIT_MS;
+	while (Date.now() < deadline) {
+		const file = (await readdir(directory)).find((name) => name.endsWith('.json'));
+		if (file) return join(directory, file);
+		await pause(25);
+	}
+	assert.fail('Save drawing did not download a JSON file');
+}
+
+async function openDrawingFile(page, filePath) {
+	const chooserPromise = page.waitForFileChooser();
+	await clickButton(page, 'Open drawing');
+	const chooser = await chooserPromise;
+	await chooser.accept([filePath]);
+}
+
+async function expectInvalidDrawingFile(page, filePath) {
+	await page.waitForFunction(
+		() => !document.body.innerText.includes('This drawing file is invalid or too large.'),
+		{ timeout: WAIT_MS }
+	);
+	await openDrawingFile(page, filePath);
+	await page.waitForFunction(
+		() => document.body.innerText.includes('This drawing file is invalid or too large.'),
+		{ timeout: WAIT_MS }
+	);
+}
+
+test('saved drawing reopens with exact pixels and undo redo history', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+
+		await selectColor(page, 'Red');
+		await tap(page, 0.25, 0.25);
+		const first = await bitmap(page);
+		await selectColor(page, 'Blue');
+		await tap(page, 0.75, 0.75);
+		const second = await bitmap(page);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, first.hash);
+
+		await clickButton(page, 'Save drawing');
+		const savedPath = await waitForDrawingDownload(directory);
+		assert.equal(basename(savedPath), 'drawing.potocolom.json');
+		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*1/);
+
+		await page.reload({ waitUntil: 'networkidle0' });
+		await page.waitForFunction(
+			(name) =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === name
+				),
+			{ timeout: WAIT_MS },
+			'Realtime canvas'
+		);
+		await page.evaluate(
+			(name) =>
+				[...document.querySelectorAll('button')]
+					.find((button) => button.textContent?.trim() === name)
+					?.click(),
+			'Realtime canvas'
+		);
+		await page.waitForSelector('canvas[aria-label="Drawing surface"]', { timeout: WAIT_MS });
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, savedPath);
+		await waitForBitmap(page, first.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, second.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('saved captured strokes, erase and a clear redo retain exact pixels', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-geometry-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		await setBrushSize(page, 20);
+		await selectColor(page, 'Red');
+		await stroke(page, [0.2, 0.5], [1.1, 0.5]);
+		const drawn = await bitmap(page);
+		await page.select('#realtime-tool', 'erase');
+		await stroke(page, [0.5, 0.3], [0.5, 0.7]);
+		const erased = await bitmap(page);
+		assert.notEqual(erased.hash, drawn.hash);
+		await clickButton(page, 'Clear canvas');
+		await waitForBitmap(page, blank.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, erased.hash);
+		await clickButton(page, 'Save drawing');
+		const saved = await waitForDrawingDownload(directory);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, saved);
+		await waitForBitmap(page, erased.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, erased.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('save commits an active stroke and cancelling open leaves it active', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-gesture-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		const rect = await canvasRect(page);
+		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+		await page.mouse.down();
+		await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 3 });
+		const beforeCancel = await bitmap(page);
+		const chooserPromise = page.waitForFileChooser();
+		await clickButton(page, 'Open drawing');
+		await (await chooserPromise).cancel();
+		assert.deepEqual(await bitmap(page), beforeCancel);
+		await page.mouse.move(rect.x + rect.width * 0.7, rect.y + rect.height * 0.7, { steps: 3 });
+		const drawn = await bitmap(page);
+		assert.notEqual(drawn.hash, beforeCancel.hash);
+		await clickButton(page, 'Save drawing');
+		const saved = await waitForDrawingDownload(directory);
+		await page.mouse.move(rect.x + rect.width * 0.8, rect.y + rect.height * 0.2, { steps: 3 });
+		await page.mouse.up();
+		assert.deepEqual(await bitmap(page), drawn, 'save finishes the gesture');
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, saved);
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('a viewport shrink during a captured stroke still produces a file that opens', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-resize-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		const rect = await canvasRect(page);
+		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+		await page.mouse.down();
+		await page.setViewport({ width: 1440, height: 500 });
+		const smallRect = await canvasRect(page);
+		assert.ok(
+			smallRect.width > 0 && smallRect.height > 0,
+			'canvas borders retain a nonzero pointer coordinate divisor'
+		);
+		await page.mouse.move(500, 250, { steps: 3 });
+		await page.mouse.up();
+		const drawn = await bitmap(page);
+		await page.setViewport({ width: 1440, height: 1100 });
+		await clickButton(page, 'Save drawing');
+		const saved = await waitForDrawingDownload(directory);
+		await clickButton(page, 'Clear canvas');
+		await openDrawingFile(page, saved);
+		await waitForBitmap(page, drawn.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('a failed save reports a save error and preserves the drawing', async () => {
+	const harness = await openCanvas('en', () => {
+		URL.createObjectURL = () => {
+			throw new Error('download unavailable');
+		};
+	});
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await tap(page);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Save drawing');
+		await page.waitForFunction(() =>
+			document.body.innerText.includes(
+				'The drawing could not be saved. Your drawing is still open.'
+			)
+		);
+		assert.deepEqual(await bitmap(page), drawn);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a malformed drawing file preserves an active stroke and its history', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-invalid-'));
+	const invalidPath = join(directory, 'invalid.potocolom.json');
+	await writeFile(invalidPath, '{not valid json', 'utf8');
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const rect = await canvasRect(page);
+		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+		await page.mouse.down();
+		await page.mouse.move(rect.x + rect.width * 0.3, rect.y + rect.height * 0.3, { steps: 3 });
+		const beforeInvalid = await bitmap(page);
+
+		await openDrawingFile(page, invalidPath);
+		await page.waitForFunction(
+			() => document.body.innerText.includes('This drawing file is invalid or too large.'),
+			{ timeout: WAIT_MS }
+		);
+		assert.deepEqual(await bitmap(page), beforeInvalid);
+
+		await page.mouse.move(rect.x + rect.width * 0.7, rect.y + rect.height * 0.7, { steps: 3 });
+		await page.mouse.up();
+		assert.notEqual((await bitmap(page)).hash, beforeInvalid.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('invalid drawing schemas preserve the current bitmap and redo state', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-schema-'));
+	const validStroke = {
+		kind: 'stroke',
+		id: 'operation-1',
+		mode: 'draw',
+		color: '#111827',
+		size: 6,
+		points: [{ x: 128, y: 128 }]
+	};
+	const invalidFiles = [
+		['wrong-version', { version: 2 }],
+		['wrong-dimensions', { width: 511 }],
+		['cursor-outside-journal', { cursor: 2 }],
+		[
+			'duplicate-ids',
+			{ operations: [validStroke, { ...validStroke, points: [{ x: 256, y: 256 }] }], cursor: 2 }
+		],
+		['nonfinite-point', { operations: [{ ...validStroke, points: [{ x: 1e400, y: 1 }] }] }],
+		['invalid-hex-color', { operations: [{ ...validStroke, color: '#12345g' }] }],
+		['invalid-size', { operations: [{ ...validStroke, size: 33 }] }],
+		[
+			'too-many-operations',
+			{
+				operations: Array.from({ length: 10001 }, (_, index) => ({
+					kind: 'clear',
+					id: `operation-${index + 1}`
+				}))
+			}
+		],
+		[
+			'too-many-points',
+			{
+				operations: [
+					{ ...validStroke, points: Array.from({ length: 200001 }, () => ({ x: 1, y: 1 })) }
+				]
+			}
+		],
+		['too-many-bytes', { padding: 'x'.repeat(8 * 1024 * 1024) }]
+	];
+	const paths = [];
+	for (const [name, overrides] of invalidFiles) {
+		const path = join(directory, `${name}.potocolom.json`);
+		if (name === 'nonfinite-point') {
+			const file = {
+				version: 1,
+				width: 512,
+				height: 512,
+				operations: [{ ...validStroke, points: [{ x: 1, y: 1 }] }],
+				cursor: 1
+			};
+			await writeFile(path, JSON.stringify(file).replace('"x":1', '"x":1e400'), 'utf8');
+		} else {
+			await writeFile(
+				path,
+				JSON.stringify({
+					version: 1,
+					width: 512,
+					height: 512,
+					operations: [validStroke],
+					cursor: 1,
+					...overrides
+				}),
+				'utf8'
+			);
+		}
+		paths.push([name, path]);
+	}
+	try {
+		for (const [name, path] of paths) {
+			const harness = await openCanvas();
+			try {
+				const { page } = harness;
+				await tap(page, 0.25, 0.25);
+				const first = await bitmap(page);
+				await tap(page, 0.75, 0.75);
+				const second = await bitmap(page);
+				await clickButton(page, 'Undo');
+				await waitForBitmap(page, first.hash);
+				await expectInvalidDrawingFile(page, path);
+				assert.deepEqual(await bitmap(page), first, `${name} replaced the current bitmap`);
+				assert.equal((await button(page, 'Undo')).disabled, false, `${name} changed undo state`);
+				assert.equal((await button(page, 'Redo')).disabled, false, `${name} changed redo state`);
+				await clickButton(page, 'Redo');
+				await waitForBitmap(page, second.hash);
+			} finally {
+				await harness.close();
+			}
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('the file chooser adds no invisible keyboard stop', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await page.evaluate(() =>
+			[...document.querySelectorAll('button')]
+				.find((candidate) => candidate.textContent?.trim() === 'Save drawing')
+				.focus()
+		);
+		await page.keyboard.press('Tab');
+		assert.equal(
+			await page.evaluate(() => document.activeElement.textContent.trim()),
+			'Open drawing'
+		);
+		await page.keyboard.press('Tab');
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.matches('input[type="file"]')),
+			false
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('an imported large operation id does not prevent new strokes being saved', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-id-'));
+	const sourcePath = join(directory, 'source.json');
+	const source = {
+		version: 1,
+		width: 512,
+		height: 512,
+		cursor: 1,
+		operations: [{ kind: 'clear', id: 'operation-9007199254740990' }]
+	};
+	await writeFile(sourcePath, JSON.stringify(source));
+	const downloadDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-id-saved-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: downloadDirectory
+		});
+		await openDrawingFile(page, sourcePath);
+		await page.waitForFunction(() =>
+			[...document.querySelectorAll('button')].some(
+				(candidate) => candidate.textContent?.trim() === 'Undo' && !candidate.disabled
+			)
+		);
+		for (let index = 0; index < 4; index += 1) await tap(page, 0.2 + index * 0.15, 0.5);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Save drawing');
+		const savedPath = await waitForDrawingDownload(downloadDirectory);
+		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
+		assert.equal(saved.operations[0].id, source.operations[0].id);
+		assert.equal(new Set(saved.operations.map((operation) => operation.id)).size, 5);
+		await clickButton(page, 'Clear canvas');
+		await openDrawingFile(page, savedPath);
+		await waitForBitmap(page, drawn.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+		await rm(downloadDirectory, { recursive: true, force: true });
+	}
+});
+
+test('saving is silent and opening a blank drawing sends a complete white WebP', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-wire-'));
+	const downloads = await mkdtemp(join(tmpdir(), 'potocolom-canvas-save-'));
+	const blankPath = join(directory, 'blank.potocolom.json');
+	await writeFile(
+		blankPath,
+		JSON.stringify({ version: 1, width: 512, height: 512, operations: [], cursor: 0 })
+	);
+	const harness = await openCanvas('en', () => {
+		const toBlob = HTMLCanvasElement.prototype.toBlob;
+		window.__webpEncodes = 0;
+		HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+			if (type === 'image/webp') window.__webpEncodes += 1;
+			return toBlob.call(this, callback, type, quality);
+		};
+	});
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await tap(page);
+		await openDrawingFile(page, blankPath);
+		await waitForBitmap(page, blank.hash);
+		assert.equal(await page.evaluate(() => window.__historySockets.length), 0);
+		await connect(page);
+		await selectColor(page, 'Blue');
+		await setBrushSize(page, 32);
+		await tap(page);
+		await expectOutput(page, [37, 99, 235]);
+		await pause(700);
+		const counts = () =>
+			page.evaluate(() => ({
+				frames: window.__historySockets[0].frames.length,
+				encodes: window.__webpEncodes,
+				messages: window.__historySockets[0].sent.length
+			}));
+		const before = await counts();
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: downloads
+		});
+		await clickButton(page, 'Save drawing');
+		await waitForDrawingDownload(downloads);
+		await pause(700);
+		assert.deepEqual(await counts(), before, 'save must not encode or send a frame');
+		await openDrawingFile(page, blankPath);
+		await waitForBitmap(page, blank.hash);
+		await page.waitForFunction(
+			(minimum) => window.__historySockets[0].frames.length > minimum,
+			{},
+			before.frames
+		);
+		await expectOutput(page, [255, 255, 255]);
+		const decoded = await page.evaluate(async () => {
+			const frame = window.__historySockets[0].frames.at(-1);
+			const image = await createImageBitmap(new Blob([frame.slice(17)], { type: 'image/webp' }));
+			const surface = document.createElement('canvas');
+			surface.width = image.width;
+			surface.height = image.height;
+			const context = surface.getContext('2d');
+			context.drawImage(image, 0, 0);
+			const result = {
+				kind: frame[0],
+				width: image.width,
+				height: image.height,
+				white: context
+					.getImageData(0, 0, image.width, image.height)
+					.data.every((value) => value === 255)
+			};
+			image.close();
+			return result;
+		});
+		assert.deepEqual(decoded, { kind: 1, width: 512, height: 512, white: true });
+		await pause(700);
+		assert.equal((await counts()).frames, before.frames + 1);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+		await rm(downloads, { recursive: true, force: true });
+	}
+});
+
+for (const stage of ['encode', 'decode']) {
+	test(`opening a drawing rejects a same-ID checkpoint pending ${stage}`, async () => {
+		const sourceDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-source-'));
+		const targetDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-target-'));
+		const source = await openCanvas();
+		let target;
+		try {
+			const client = await source.page.createCDPSession();
+			await client.send('Browser.setDownloadBehavior', {
+				behavior: 'allow',
+				downloadPath: sourceDirectory
+			});
+			await selectColor(source.page, 'Blue');
+			for (let index = 0; index < 16; index += 1)
+				await tap(source.page, 0.1 + (index % 8) * 0.1, 0.3 + Math.floor(index / 8) * 0.1);
+			const blue = await bitmap(source.page);
+			await clickButton(source.page, 'Save drawing');
+			const blueFile = JSON.parse(
+				await readFile(await waitForDrawingDownload(sourceDirectory), 'utf8')
+			);
+			target = await openCanvas('en', () => {
+				const toBlob = HTMLCanvasElement.prototype.toBlob;
+				const decode = window.createImageBitmap;
+				window.__checkpointRequests = 0;
+				window.__checkpointTasks = [];
+				window.__heldCheckpoints = [];
+				window.__checkpointImages = [];
+				HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+					if (type !== 'image/png') return toBlob.call(this, callback, type, quality);
+					window.__checkpointRequests += 1;
+					return toBlob.call(
+						this,
+						(blob) => {
+							const run = () => {
+								const task = callback(blob);
+								window.__checkpointTasks.push(task);
+								return task;
+							};
+							if (window.__holdStage === 'encode') window.__heldCheckpoints.push(run);
+							else run();
+						},
+						type
+					);
+				};
+				window.createImageBitmap = async (...args) => {
+					const image = await decode(...args);
+					if (!(args[0] instanceof Blob) || args[0].type !== 'image/png') return image;
+					window.__checkpointImages.push(image);
+					if (window.__holdStage === 'decode')
+						await new Promise((resolve) => window.__heldCheckpoints.push(resolve));
+					return image;
+				};
+			});
+			const { page } = target;
+			await page.evaluate((value) => {
+				window.__holdStage = value;
+			}, stage);
+			const downloadClient = await page.createCDPSession();
+			await downloadClient.send('Browser.setDownloadBehavior', {
+				behavior: 'allow',
+				downloadPath: targetDirectory
+			});
+			await selectColor(page, 'Red');
+			for (let index = 0; index < 16; index += 1)
+				await tap(page, 0.1 + (index % 8) * 0.1, 0.3 + Math.floor(index / 8) * 0.1);
+			await page.waitForFunction(() => window.__heldCheckpoints.length === 1);
+			assert.notEqual((await bitmap(page)).hash, blue.hash);
+			await clickButton(page, 'Save drawing');
+			const redFile = JSON.parse(
+				await readFile(await waitForDrawingDownload(targetDirectory), 'utf8')
+			);
+			blueFile.operations.forEach((operation, index) => {
+				operation.id = redFile.operations[index].id;
+			});
+			const bluePath = join(sourceDirectory, 'same-ids.potocolom.json');
+			await writeFile(bluePath, JSON.stringify(blueFile));
+			await openDrawingFile(page, bluePath);
+			await waitForBitmap(page, blue.hash);
+			await selectColor(page, 'Green');
+			for (let index = 0; index < 16; index += 1)
+				await tap(page, 0.1 + (index % 8) * 0.1, 0.6 + Math.floor(index / 8) * 0.1);
+			const edited = await bitmap(page);
+			assert.equal(
+				await page.evaluate(() => window.__checkpointRequests),
+				1,
+				'restore must retain the one-pending-job bound'
+			);
+			await page.evaluate(async () => {
+				window.__holdStage = null;
+				window.__heldCheckpoints.splice(0).forEach((release) => release());
+				await Promise.all(window.__checkpointTasks);
+			});
+			assert.deepEqual(await bitmap(page), edited);
+			assert.ok(
+				await page.evaluate(() => window.__checkpointImages.every((image) => image.width === 0)),
+				'stale decoded images must be closed'
+			);
+			if (stage === 'encode')
+				assert.equal(await page.evaluate(() => window.__checkpointImages.length), 0);
+			for (let index = 0; index < 16; index += 1) await clickButton(page, 'Undo');
+			assert.deepEqual(
+				await bitmap(page),
+				blue,
+				'stale red pixels cannot replace the opened blue drawing'
+			);
+			for (let index = 0; index < 16; index += 1) await clickButton(page, 'Redo');
+			assert.deepEqual(await bitmap(page), edited);
+		} finally {
+			if (target) await target.close();
+			await source.close();
+			await rm(sourceDirectory, { recursive: true, force: true });
+			await rm(targetDirectory, { recursive: true, force: true });
+		}
+	});
+}
+
+test('file read failure unlocks the drawing and a late read cannot change a new panel', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-read-'));
+	const path = join(directory, 'blank.potocolom.json');
+	await writeFile(
+		path,
+		JSON.stringify({ version: 1, width: 512, height: 512, operations: [], cursor: 0 })
+	);
+	const harness = await openCanvas('en', () => {
+		const read = File.prototype.text;
+		window.__fileReadMode = 'fail';
+		window.__fileReads = [];
+		File.prototype.text = async function () {
+			if (window.__fileReadMode === 'fail') throw new Error('file read failed');
+			const text = await read.call(this);
+			return new Promise((resolve) => window.__fileReads.push(() => resolve(text)));
+		};
+	});
+	try {
+		const { page } = harness;
+		await tap(page);
+		const before = await bitmap(page);
+		await expectInvalidDrawingFile(page, path);
+		assert.deepEqual(await bitmap(page), before);
+		await tap(page, 0.3, 0.3);
+		const edited = await bitmap(page);
+		assert.notEqual(edited.hash, before.hash);
+		await page.evaluate(() => {
+			window.__fileReadMode = 'hold';
+		});
+		await openDrawingFile(page, path);
+		await page.waitForFunction(() => window.__fileReads.length === 1);
+		assert.equal((await button(page, 'Save drawing')).disabled, true);
+		assert.equal((await button(page, 'Undo')).disabled, true);
+		await tap(page, 0.7, 0.7);
+		assert.deepEqual(await bitmap(page), edited, 'pending read must lock drawing edits');
+		await clickButton(page, 'Generate');
+		await clickButton(page, 'Realtime canvas');
+		await page.waitForSelector('canvas[aria-label="Drawing surface"]');
+		await selectColor(page, 'Red');
+		await tap(page);
+		const fresh = await bitmap(page);
+		await page.evaluate(async () => {
+			window.__fileReads.splice(0).forEach((release) => release());
+			await new Promise(requestAnimationFrame);
+			await new Promise(requestAnimationFrame);
+		});
+		assert.deepEqual(await bitmap(page), fresh);
+		assert.equal((await button(page, 'Save drawing')).disabled, false);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test('undo removes a complete tap and restores the exact white bitmap', async () => {
 	const harness = await openCanvas();
 	try {
@@ -879,6 +1548,8 @@ test('new canvas controls have Spanish accessible labels', async () => {
 		for (const label of [
 			'Deshacer',
 			'Rehacer',
+			'Guardar dibujo',
+			'Abrir dibujo',
 			'Tamaño del pincel',
 			'Negro',
 			'Rojo',
