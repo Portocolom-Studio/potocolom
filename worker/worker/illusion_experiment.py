@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from worker.illusion_styles import apply_style_template
+
 CLIP_MODEL_ID = "openai/clip-vit-large-patch14"
 
 
@@ -111,8 +113,6 @@ FINAL_PAIRS: list[PromptPair] = [
 
 def _styled_pair(pair_id: str, subject_a: str, subject_b: str, style: str) -> PromptPair:
     """A corpus pair whose prompts are one style template applied once."""
-    from worker.illusions import apply_style_template
-
     return PromptPair(
         pair_id,
         subject_a,
@@ -422,8 +422,6 @@ def resolve_pair_prompts(pair: PromptPair, style: str | None) -> tuple[list[str]
     subjects = [pair.subject_a, pair.subject_b]
     if style in _UNSTYLED or style == pair.baked_style:
         return subjects, [pair.prompt_a, pair.prompt_b]
-    from worker.illusions import apply_style_template
-
     return subjects, [apply_style_template(subject, style) for subject in subjects]
 
 
@@ -880,8 +878,6 @@ def pair_margins(sim_matrix: list[list[float]]) -> tuple[list[float], float]:
 
 
 def styled_prompts(prompts: list[str], style: str | None) -> list[str]:
-    from worker.illusions import apply_style_template
-
     return [apply_style_template(prompt, style) for prompt in prompts]
 
 

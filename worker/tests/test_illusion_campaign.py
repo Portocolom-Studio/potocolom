@@ -121,7 +121,7 @@ def test_gpu_lock_hands_out_exactly_n_slots(tmp_path) -> None:
 
 def test_encode_latent_sample_ignores_sds_generator() -> None:
     """Legacy path must call posterior.sample() with no generator arg."""
-    import torch
+    torch = pytest.importorskip("torch")
     from types import SimpleNamespace
 
     from worker.illusions import DiffusionAdapter
@@ -476,7 +476,7 @@ def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> N
         WINDOW3_WORDINGS,
         build_window3,
     )
-    from worker.illusions import STYLE_TEMPLATES
+    from worker.illusion_styles import STYLE_TEMPLATES
 
     entries = build_window3()
     wording = [e for e in entries if e.profile.startswith("w_")]
@@ -698,7 +698,7 @@ def test_wording_smoke_is_ten_candidates_plus_oil_at_1500_steps() -> None:
         _p1_flags,
         build_wording_smoke,
     )
-    from worker.illusions import STYLE_TEMPLATES
+    from worker.illusion_styles import STYLE_TEMPLATES
 
     entries = build_wording_smoke()
     assert len(entries) == 11

@@ -149,7 +149,7 @@ def test_stage_blind_builds_three_separate_review_stages(tmp_path: Path) -> None
 
 
 def test_phase_timing_from_sds_end_only(tmp_path: Path, monkeypatch) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     import worker.illusion_experiment as mod
     import worker.illusions as illusions
@@ -305,7 +305,7 @@ def test_forked_base_is_complete_only_when_every_arm_is(tmp_path: Path) -> None:
 
 
 def test_forked_run_writes_one_manifest_and_images_per_arm(tmp_path: Path, monkeypatch) -> None:
-    import torch
+    torch = pytest.importorskip("torch")
 
     import worker.illusion_experiment as mod
     import worker.illusions as illusions
@@ -486,7 +486,7 @@ def test_strict_ratings_missing_case_fails(tmp_path: Path) -> None:
 
 
 def test_clip_feature_tensor_unwraps_pooling_output() -> None:
-    import torch
+    torch = pytest.importorskip("torch")
     from worker.illusion_experiment import _clip_feature_tensor
 
     class FakePooling:

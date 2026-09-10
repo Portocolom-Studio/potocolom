@@ -1526,12 +1526,13 @@ def _optimizer_fingerprint() -> str:
     window 2 to window 3 interval illusion_experiment.py gained 213 lines while the
     fingerprint moved only for a comment block, and a review then used the
     unchanged-looking fingerprint as evidence that the harness could not have
-    regressed. illusion_campaign.py is deliberately absent: it only builds plans,
-    and its choices are already in the plan that plan_sha covers.
+    regressed. illusion_styles.py holds the prompt templates. illusion_campaign.py
+    is deliberately absent: it only builds plans, and its choices are already in
+    the plan that plan_sha covers.
     """
     worker = repo_root() / "worker" / "worker"
     digest = hashlib.sha256()
-    for name in ("illusions.py", "illusion_experiment.py"):
+    for name in ("illusions.py", "illusion_experiment.py", "illusion_styles.py"):
         digest.update((worker / name).read_bytes())
     return digest.hexdigest()[:16]
 
