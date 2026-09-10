@@ -1069,12 +1069,26 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    Do not look at the images until the GPU run finishes. Fold a survivor into a
    later window as an extra arm; do not buy a 21.4-hour block on one.
 
-   **Result, 2026-09-10.** 11 of 11 cells, 22 of 22 finals rated. Oil control
-   chroma 75.0 / 57.2 and frame none / none: the smoke is valid. All ten
-   candidates are also frame-clean on both arms. None have chroma under 20 on
-   both arms (closest: linocut 17.4 / 23.2). Survivors: none. The falsifier
-   fired. This set does not repair `reference_sketch`. Do not buy a 21.4-hour
-   follow-up.
+   **Result, 2026-09-10.** 11 of 11 cells, 22 of 22 finals rated. The screen
+   failed on chroma, not on frames. Oil control chroma 75.0 / 57.2 and frame
+   none / none: the smoke is valid. All ten candidates are also frame-clean
+   on both arms. None have chroma under 20 on both arms. Survivors: none.
+   The falsifier fired. This set does not repair `reference_sketch`. Do not
+   buy a 21.4-hour follow-up.
+
+   | wording | chroma indep / joint | frame | survive |
+   |---|---:|---|---|
+   | oil (control) | 75.0 / 57.2 | none / none | control |
+   | ink_wash | 21.1 / 23.7 | none / none | no |
+   | graphite_drawing | 29.7 / 24.0 | none / none | no |
+   | linocut | 17.4 / 23.2 | none / none | no |
+   | woodcut | 101.6 / 79.0 | none / none | no |
+   | etching | 23.6 / 29.6 | none / none | no |
+   | gouache | 73.7 / 60.7 | none / none | no |
+   | fresco | 64.6 / 56.1 | none / none | no |
+   | watercolor | 46.9 / 47.4 | none / none | no |
+   | lithograph | 51.6 / 35.6 | none / none | no |
+   | ink_drawing | 22.9 / 23.2 | none / none | no |
 
 3. **P2, oil replay of the six proven pairs. 18 bases, 8.0 GPU-hours, one evening.**
    This is the code test, and it is the first GPU spend. `oil`, seeds 11, 23 and 37,
@@ -1129,6 +1143,10 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    explained above for free, and a failed P2 would already be most of the answer for
    an eighth of the cost. Run it only if P2 fails and the failure needs sizing across
    a broad corpus.
+
+**Status, 2026-09-10.** P0, P1, P2, P3 and P3b are complete. P4 stays off:
+P2 did not fail. No GPU window is queued. A new window needs a new question
+and a falsifier.
 
 ## Running it
 
