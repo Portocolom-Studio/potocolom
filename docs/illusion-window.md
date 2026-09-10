@@ -1024,7 +1024,7 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
 | step | GPU-hours | what it settles |
 |---|---|---|
 | P0 mixed re-rate | 0 | DONE: gap 1.727, bar 1.0 |
-| P1 wording smoke | ~1.3 | live: `wording-smoke` |
+| P1 wording smoke | ~1.3 | DONE: 0 of 10 survive |
 | P2 oil replay, six proven pairs, 18 bases | **8.0** | DONE: 6 keepers in 18 |
 | P3 depth, six proven pairs, 48 bases | 21.4 | DONE: 9 keepers in 48 |
 | P3b second depth block, 48 bases | 21.4 | DONE: 9 keepers in 48 |
@@ -1037,8 +1037,8 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    stage, mode and seed, re-rate in one session. Unit: item. Endpoint: score on the
    same instrument. Falsifier: if the old fives do not average at least 1.0 point
    above the new threes, part of the collapse is the rater and every cross-window
-   score table here is unsafe. This step had not been run as of 2026-09-09. The
-   pack is 22 plus 22 and is served from `campaigns/window5/review-p0`.
+   score table here is unsafe. The pack is 22 plus 22 and is served from
+   `campaigns/window5/review-p0`.
 
    **Result, 2026-09-09.** 44 of 44 items rated. Old fives mean **4.864**
    (20 of 22 still score 5). Window-4 threes mean **3.136**. Gap **1.727**,
@@ -1068,6 +1068,13 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    frame of none or minor on both arms. Falsifier: none of the ten survive.
    Do not look at the images until the GPU run finishes. Fold a survivor into a
    later window as an extra arm; do not buy a 21.4-hour block on one.
+
+   **Result, 2026-09-10.** 11 of 11 cells, 22 of 22 finals rated. Oil control
+   chroma 75.0 / 57.2 and frame none / none: the smoke is valid. All ten
+   candidates are also frame-clean on both arms. None have chroma under 20 on
+   both arms (closest: linocut 17.4 / 23.2). Survivors: none. The falsifier
+   fired. This set does not repair `reference_sketch`. Do not buy a 21.4-hour
+   follow-up.
 
 3. **P2, oil replay of the six proven pairs. 18 bases, 8.0 GPU-hours, one evening.**
    This is the code test, and it is the first GPU spend. `oil`, seeds 11, 23 and 37,
