@@ -331,6 +331,10 @@ cd frontend
 npm run test:canvas
 ```
 
+Shape checks use pointer drags and pixel samples for line, rectangle and
+ellipse outlines. They also cover preview cleanup, one-step undo, saved
+geometry and reading old version 1 drawing files.
+
 Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH` or
 `CHROME_PATH` for a browser outside the standard Linux paths. The gate fails
 if no browser is found.

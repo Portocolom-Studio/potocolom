@@ -275,6 +275,17 @@ async function bitmap(page) {
 	});
 }
 
+async function surfacePixel(page, x, y) {
+	return page.$eval(
+		'canvas[aria-label="Drawing surface"]',
+		(canvas, pixelX, pixelY) => [
+			...canvas.getContext('2d').getImageData(pixelX, pixelY, 1, 1).data
+		],
+		x,
+		y
+	);
+}
+
 async function waitForBitmap(page, expectedHash) {
 	const deadline = Date.now() + WAIT_MS;
 	while (Date.now() < deadline) {
@@ -502,6 +513,494 @@ async function expectInvalidDrawingFile(page, filePath) {
 	);
 }
 
+test('a rectangle drag has one undo step and no stale preview edges', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		assert.deepEqual(await page.select('#realtime-tool', 'rectangle'), ['rectangle']);
+		await selectColor(page, 'Blue');
+		await setBrushSize(page, 8);
+		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
+		const drawn = await bitmap(page);
+		assert.notEqual(drawn.hash, blank.hash);
+		assert.deepEqual(
+			drawn.center,
+			[255, 255, 255, 255],
+			'moving the preview must not leave inner edges'
+		);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		assert.equal((await button(page, 'Undo')).disabled, true);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, drawn.hash);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('line rectangle and ellipse drags draw outline-only geometry in either direction', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const shapes = [
+			{
+				tool: 'line',
+				from: [0.75, 0.75],
+				to: [0.25, 0.25],
+				edge: [256, 256]
+			},
+			{
+				tool: 'rectangle',
+				from: [0.75, 0.75],
+				to: [0.25, 0.25],
+				edge: [256, 128],
+				interior: [
+					[256, 256],
+					[205, 154]
+				]
+			},
+			{
+				tool: 'ellipse',
+				from: [0.75, 0.75],
+				to: [0.25, 0.25],
+				edge: [256, 128],
+				interior: [
+					[256, 256],
+					[205, 154]
+				]
+			}
+		];
+		for (const shape of shapes) {
+			const blank = await bitmap(page);
+			assert.deepEqual(await page.select('#realtime-tool', shape.tool), [shape.tool]);
+			await stroke(page, shape.from, shape.to, 8);
+			assert.deepEqual(await surfacePixel(page, ...shape.edge), [17, 24, 39, 255]);
+			for (const interior of shape.interior ?? [])
+				assert.deepEqual(
+					await surfacePixel(page, ...interior),
+					[255, 255, 255, 255],
+					`${shape.tool} must not fill its interior or leave a preview edge`
+				);
+			await clickButton(page, 'Undo');
+			await waitForBitmap(page, blank.hash);
+			assert.equal((await button(page, 'Undo')).disabled, true);
+		}
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a shape keeps its starting color and width through a mid-gesture control change', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await page.select('#realtime-tool', 'rectangle');
+		await selectColor(page, 'Red');
+		await setBrushSize(page, 4);
+		const rect = await canvasRect(page);
+		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+		await page.mouse.down();
+		await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 2 });
+		await selectColor(page, 'Blue');
+		await setBrushSize(page, 32);
+		await page.mouse.move(rect.x + rect.width * 0.8, rect.y + rect.height * 0.8, { steps: 4 });
+		await page.mouse.up();
+		assert.deepEqual(await surfacePixel(page, 256, 102), [220, 38, 38, 255]);
+		assert.deepEqual(await surfacePixel(page, 410, 256), [220, 38, 38, 255]);
+		assert.deepEqual(await surfacePixel(page, 256, 256), [255, 255, 255, 255]);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		assert.equal((await button(page, 'Undo')).disabled, true);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('shape draw and erase operations interleave with exact undo and redo bitmaps', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await selectColor(page, 'Red');
+		await tap(page, 0.25, 0.5);
+		const drawn = await bitmap(page);
+		await page.select('#realtime-tool', 'rectangle');
+		await selectColor(page, 'Blue');
+		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
+		const shaped = await bitmap(page);
+		await page.select('#realtime-tool', 'erase');
+		await setBrushSize(page, 32);
+		await tap(page, 0.5, 0.2);
+		const erased = await bitmap(page);
+		assert.notEqual(shaped.hash, erased.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, shaped.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, shaped.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, erased.hash);
+	} finally {
+		await harness.close();
+	}
+});
+
+for (const finish of ['cancel', 'lost capture']) {
+	test(`a ${finish} during a shape commits only the visible preview`, async () => {
+		const harness = await openCanvas();
+		try {
+			const { page } = harness;
+			const blank = await bitmap(page);
+			const rect = await canvasRect(page);
+			await page.select('#realtime-tool', 'ellipse');
+			await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+			await page.mouse.down();
+			await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 3 });
+			const painted = await bitmap(page);
+			if (finish === 'cancel') {
+				await page.evaluate(() => {
+					document.querySelector('canvas[aria-label="Drawing surface"]').dispatchEvent(
+						new PointerEvent('pointercancel', {
+							bubbles: true,
+							pointerId: 1,
+							isPrimary: true
+						})
+					);
+				});
+			} else {
+				await page.$eval('canvas[aria-label="Drawing surface"]', (canvas) =>
+					canvas.releasePointerCapture(1)
+				);
+			}
+			await page.mouse.move(rect.x + rect.width * 0.8, rect.y + rect.height * 0.8, { steps: 3 });
+			await page.mouse.up();
+			assert.deepEqual(await bitmap(page), painted);
+			await clickButton(page, 'Undo');
+			await waitForBitmap(page, blank.hash);
+			await clickButton(page, 'Redo');
+			await waitForBitmap(page, painted.hash);
+		} finally {
+			await harness.close();
+		}
+	});
+}
+
+test('saving a shape uses v2 geometry and round-trips its exact bitmap and redo', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-shape-save-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		await page.select('#realtime-tool', 'ellipse');
+		await selectColor(page, 'Purple');
+		await setBrushSize(page, 10);
+		await stroke(page, [0.2, 0.2], [1.1, 0.8], 8);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Save drawing');
+		const savedPath = await waitForDrawingDownload(directory);
+		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
+		assert.equal(saved.version, 2);
+		assert.deepEqual([saved.width, saved.height], [512, 512]);
+		assert.equal(saved.operations.length, 1);
+		assert.equal(saved.operations[0].kind, 'shape');
+		assert.equal(saved.operations[0].shape, 'ellipse');
+		assert.equal(saved.operations[0].points.length, 2);
+		assert.ok(
+			saved.operations[0].points.some(({ x, y }) => x > 512 || y > 512),
+			'captured shape coordinates must retain points outside the canvas'
+		);
+
+		await clickButton(page, 'Clear canvas');
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, savedPath);
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, drawn.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('a zero-length shape gesture saves, reopens and undoes safely', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-shape-degenerate-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		await page.select('#realtime-tool', 'ellipse');
+		await stroke(page, [0.5, 0.5], [0.5, 0.5], 1);
+		const degenerate = await bitmap(page);
+		await clickButton(page, 'Save drawing');
+		const savedPath = await waitForDrawingDownload(directory);
+		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
+		assert.equal(saved.version, 2);
+		assert.equal(saved.operations.length, 1);
+		assert.equal(saved.operations[0].points.length, 2);
+		await clickButton(page, 'Clear canvas');
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, savedPath);
+		await waitForBitmap(page, degenerate.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, degenerate.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('mixed shape and brush history uses the native PNG checkpoint at sixteen operations', async () => {
+	const harness = await openCanvas('en', () => {
+		const toBlob = HTMLCanvasElement.prototype.toBlob;
+		const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+		window.__shapeCheckpointRequests = 0;
+		window.__shapeCheckpointRestores = 0;
+		HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+			if (type === 'image/png') window.__shapeCheckpointRequests += 1;
+			return toBlob.call(this, callback, type, quality);
+		};
+		CanvasRenderingContext2D.prototype.drawImage = function (...args) {
+			if (
+				this.canvas.getAttribute('aria-label') === 'Drawing surface' &&
+				args[0] instanceof ImageBitmap
+			)
+				window.__shapeCheckpointRestores += 1;
+			return drawImage.apply(this, args);
+		};
+	});
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const snapshots = [blank];
+		for (let group = 0; group < 4; group += 1) {
+			const offset = group * 0.18;
+			await page.select('#realtime-tool', 'draw');
+			await tap(page, 0.1 + offset, 0.1 + offset);
+			snapshots.push(await bitmap(page));
+			await page.select('#realtime-tool', 'line');
+			await stroke(page, [0.15 + offset, 0.2], [0.3 + offset, 0.2], 3);
+			snapshots.push(await bitmap(page));
+			await page.select('#realtime-tool', 'rectangle');
+			await stroke(page, [0.2 + offset, 0.3], [0.32 + offset, 0.42], 3);
+			snapshots.push(await bitmap(page));
+			await page.select('#realtime-tool', 'ellipse');
+			await stroke(page, [0.4 + offset, 0.35], [0.52 + offset, 0.47], 3);
+			snapshots.push(await bitmap(page));
+		}
+		await page.waitForFunction(() => window.__shapeCheckpointRequests === 1);
+		for (let index = snapshots.length - 2; index >= 0; index -= 1) {
+			await clickButton(page, 'Undo');
+			assert.deepEqual(await bitmap(page), snapshots[index]);
+		}
+		for (let index = 1; index < snapshots.length; index += 1) {
+			await clickButton(page, 'Redo');
+			assert.deepEqual(await bitmap(page), snapshots[index]);
+		}
+		assert.equal(await page.evaluate(() => window.__shapeCheckpointRequests), 1);
+		assert.ok(await page.evaluate(() => window.__shapeCheckpointRestores > 0));
+	} finally {
+		await harness.close();
+	}
+});
+
+test('malformed v2 shapes and v1 shape operations are rejected atomically', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-shape-invalid-'));
+	const downloadDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-shape-valid-'));
+	try {
+		const harness = await openCanvas();
+		let valid;
+		try {
+			const { page } = harness;
+			const client = await page.createCDPSession();
+			await client.send('Browser.setDownloadBehavior', {
+				behavior: 'allow',
+				downloadPath: downloadDirectory
+			});
+			await page.select('#realtime-tool', 'rectangle');
+			await stroke(page, [0.2, 0.2], [0.8, 0.8], 6);
+			await clickButton(page, 'Save drawing');
+			const validPath = await waitForDrawingDownload(downloadDirectory);
+			valid = JSON.parse(await readFile(validPath, 'utf8'));
+		} finally {
+			await harness.close();
+		}
+		const malformed = structuredClone(valid);
+		malformed.operations[0].points = [malformed.operations[0].points[0]];
+		const malformedPath = join(directory, 'malformed-shape.potocolom.json');
+		await writeFile(malformedPath, JSON.stringify(malformed));
+		const v1Shape = structuredClone(valid);
+		v1Shape.version = 1;
+		const v1ShapePath = join(directory, 'v1-shape.potocolom.json');
+		await writeFile(v1ShapePath, JSON.stringify(v1Shape));
+
+		for (const path of [malformedPath, v1ShapePath]) {
+			const caseHarness = await openCanvas();
+			try {
+				const { page: casePage } = caseHarness;
+				await tap(casePage, 0.25, 0.25);
+				await tap(casePage, 0.7, 0.3);
+				const redoTarget = await bitmap(casePage);
+				await clickButton(casePage, 'Undo');
+				const current = await bitmap(casePage);
+				await expectInvalidDrawingFile(casePage, path);
+				assert.deepEqual(
+					await bitmap(casePage),
+					current,
+					'invalid shape changed the current pixels'
+				);
+				assert.equal((await button(casePage, 'Undo')).disabled, false);
+				assert.equal((await button(casePage, 'Redo')).disabled, false);
+				await clickButton(casePage, 'Redo');
+				await waitForBitmap(casePage, redoTarget.hash);
+			} finally {
+				await caseHarness.close();
+			}
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		await rm(downloadDirectory, { recursive: true, force: true });
+	}
+});
+
+test('a valid v1 stroke imports with its expected color and remains undoable', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-v1-stroke-'));
+	const path = join(directory, 'stroke-v1.potocolom.json');
+	await writeFile(
+		path,
+		JSON.stringify({
+			version: 1,
+			width: 512,
+			height: 512,
+			operations: [
+				{
+					kind: 'stroke',
+					id: 'operation-1',
+					mode: 'draw',
+					color: '#dc2626',
+					size: 12,
+					points: [{ x: 128, y: 128 }]
+				}
+			],
+			cursor: 1
+		})
+	);
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await openDrawingFile(page, path);
+		await page.waitForFunction(() => {
+			const pixel = document
+				.querySelector('canvas[aria-label="Drawing surface"]')
+				.getContext('2d')
+				.getImageData(128, 128, 1, 1).data;
+			return pixel[0] === 220 && pixel[1] === 38 && pixel[2] === 38 && pixel[3] === 255;
+		});
+		const imported = await bitmap(page);
+		assert.deepEqual(await surfacePixel(page, 128, 128), [220, 38, 38, 255]);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, imported.hash);
+		assert.deepEqual(await surfacePixel(page, 128, 128), [220, 38, 38, 255]);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('shape selection is silent and a connected shape publishes an opaque 512px WebP', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await connect(page);
+		await pause(700);
+		const before = await page.evaluate(() => window.__historySockets[0].frames.length);
+		await page.select('#realtime-tool', 'rectangle');
+		await pause(700);
+		assert.equal(await page.evaluate(() => window.__historySockets[0].frames.length), before);
+		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
+		await page.waitForFunction(
+			(minimum) => window.__historySockets[0].frames.length > minimum,
+			{ timeout: WAIT_MS },
+			before
+		);
+		const decoded = await page.evaluate(async () => {
+			const frame = window.__historySockets[0].frames.at(-1);
+			const image = await createImageBitmap(new Blob([frame.slice(17)], { type: 'image/webp' }));
+			const surface = document.createElement('canvas');
+			surface.width = image.width;
+			surface.height = image.height;
+			const context = surface.getContext('2d');
+			context.drawImage(image, 0, 0);
+			const alphaOpaque = [];
+			const pixels = context.getImageData(0, 0, image.width, image.height).data;
+			for (let index = 3; index < pixels.length; index += 4)
+				alphaOpaque.push(pixels[index] === 255);
+			const edge = [...context.getImageData(256, 102, 1, 1).data];
+			const result = {
+				kind: frame[0],
+				width: image.width,
+				height: image.height,
+				alphaOpaque: alphaOpaque.every(Boolean),
+				edge
+			};
+			image.close();
+			return result;
+		});
+		assert.deepEqual(decoded.kind, 1);
+		assert.deepEqual([decoded.width, decoded.height], [512, 512]);
+		assert.equal(decoded.alphaOpaque, true);
+		assert.equal(decoded.edge[3], 255);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('leaving the canvas while a shape preview is active drops the preview before navigation', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await connect(page);
+		await pause(700);
+		await page.select('#realtime-tool', 'rectangle');
+		const rect = await canvasRect(page);
+		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+		await page.mouse.down();
+		await page.mouse.move(rect.x + rect.width * 0.6, rect.y + rect.height * 0.6, { steps: 4 });
+		assert.notDeepEqual(await bitmap(page), blank);
+		await clickButton(page, 'Generate');
+		await clickButton(page, 'Realtime canvas');
+		await page.waitForSelector('canvas[aria-label="Drawing surface"]');
+		await page.mouse.up();
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+	}
+});
+
 test('saved drawing reopens with exact pixels and undo redo history', async () => {
 	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-'));
 	const harness = await openCanvas();
@@ -526,7 +1025,7 @@ test('saved drawing reopens with exact pixels and undo redo history', async () =
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		assert.equal(basename(savedPath), 'drawing.potocolom.json');
-		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*1/);
+		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*2/);
 
 		await page.reload({ waitUntil: 'networkidle0' });
 		await page.waitForFunction(
@@ -739,7 +1238,7 @@ test('invalid drawing schemas preserve the current bitmap and redo state', async
 		points: [{ x: 128, y: 128 }]
 	};
 	const invalidFiles = [
-		['wrong-version', { version: 2 }],
+		['wrong-version', { version: 99 }],
 		['wrong-dimensions', { width: 511 }],
 		['cursor-outside-journal', { cursor: 2 }],
 		[
@@ -1562,6 +2061,18 @@ test('new canvas controls have Spanish accessible labels', async () => {
 		]) {
 			assert.ok(await page.$(`aria/${label}`), `missing Spanish label ${label}`);
 		}
+		assert.deepEqual(
+			await page.$$eval('#realtime-tool option', (options) =>
+				options.map((option) => [option.value, option.textContent.trim()])
+			),
+			[
+				['draw', 'Dibujar'],
+				['erase', 'Borrar'],
+				['line', 'Línea'],
+				['rectangle', 'Rectángulo'],
+				['ellipse', 'Elipse']
+			]
+		);
 	} finally {
 		await harness.close();
 	}
@@ -1874,38 +2385,41 @@ test('a round brush paints its stated width and controls preserve a pending redo
 	}
 });
 
-test('eraser movement does not read the full bitmap on every pointer sample', async () => {
-	const harness = await openCanvas('en', () => {
-		const getImageData = CanvasRenderingContext2D.prototype.getImageData;
-		window.__fullReadbacks = 0;
-		CanvasRenderingContext2D.prototype.getImageData = function (...args) {
-			if (
-				this.canvas.getAttribute('aria-label') === 'Drawing surface' &&
-				args[2] === 512 &&
-				args[3] === 512
-			)
-				window.__fullReadbacks += 1;
-			return getImageData.apply(this, args);
-		};
-	});
-	try {
-		const { page } = harness;
-		await tap(page, 0.8, 0.8);
-		await page.select('#realtime-tool', 'erase');
-		const rect = await canvasRect(page);
-		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
-		await page.mouse.down();
-		await page.evaluate(() => {
+for (const tool of ['erase', 'rectangle'])
+	test(`${tool} movement does not read the full bitmap on every pointer sample`, async () => {
+		const harness = await openCanvas('en', () => {
+			const getImageData = CanvasRenderingContext2D.prototype.getImageData;
 			window.__fullReadbacks = 0;
+			CanvasRenderingContext2D.prototype.getImageData = function (...args) {
+				if (
+					this.canvas.getAttribute('aria-label') === 'Drawing surface' &&
+					args[2] === 512 &&
+					args[3] === 512
+				)
+					window.__fullReadbacks += 1;
+				return getImageData.apply(this, args);
+			};
 		});
-		await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 24 });
-		assert.equal(await page.evaluate(() => window.__fullReadbacks), 0);
-		await page.mouse.up();
-		assert.ok(await page.evaluate(() => window.__fullReadbacks > 0));
-	} finally {
-		await harness.close();
-	}
-});
+		try {
+			const { page } = harness;
+			if (tool === 'erase') {
+				await tap(page, 0.8, 0.8);
+				await page.select('#realtime-tool', 'erase');
+			} else await page.select('#realtime-tool', 'rectangle');
+			const rect = await canvasRect(page);
+			await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
+			await page.mouse.down();
+			await page.evaluate(() => {
+				window.__fullReadbacks = 0;
+			});
+			await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 24 });
+			assert.equal(await page.evaluate(() => window.__fullReadbacks), 0);
+			await page.mouse.up();
+			if (tool === 'erase') assert.ok(await page.evaluate(() => window.__fullReadbacks > 0));
+		} finally {
+			await harness.close();
+		}
+	});
 
 test('finishing a checkpoint does not publish an extra live frame', async () => {
 	const harness = await openCanvas('en', () => {
