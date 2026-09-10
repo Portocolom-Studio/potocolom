@@ -1,0 +1,831 @@
+"""Tests for campaign plan counts and GPU-lock parsing helpers."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from collections import Counter
+from pathlib import Path
+
+import pytest
+
+from worker.illusion_campaign import (
+    build_early_dream_backup,
+    build_full_plan,
+    build_pilot_wave1,
+    build_pilot_wave2,
+    build_reference_author_60h,
+    plan_counts,
+)
+
+
+def test_wave_counts() -> None:
+    assert len(build_pilot_wave1()) == 24
+    assert len(build_pilot_wave2(["--sds-objective", "legacy"])) == 16
+
+
+def test_reference_campaign_is_breadth_first_and_excludes_walrus() -> None:
+    entries = build_reference_author_60h()
+    assert len(entries) == 36
+    assert entries[0].pair_id == "giraffe_penguin_calibration"
+    assert entries[0].seed == 11
+    assert {entry.seed for entry in entries} == {11, 23, 37, 53, 71, 89}
+    assert "walrus_ladybug" not in {entry.pair_id for entry in entries}
+    assert all("--experimental-recipe" in entry.flags for entry in entries)
+    assert all(entry.estimate_s == 5280 for entry in entries)
+
+
+def test_early_dream_backup_has_48_short_cells() -> None:
+    entries = build_early_dream_backup()
+    assert len(entries) == 48
+    assert all(entry.estimate_s == 600 for entry in entries)
+    assert all("--round-robin" in entry.flags for entry in entries)
+    assert all("--dream-strength" in entry.flags for entry in entries)
+
+
+def test_full_plan_dry_run_bounds(tmp_path: Path) -> None:
+    plan = build_full_plan(
+        evidence_root=tmp_path / "v3",
+        model_id="m",
+        dream_model_id="d",
+        include_away=True,
+    )
+    counts = plan_counts(plan)
+    assert counts["wave1"] == 24
+    assert counts["wave2"] == 16
+    away = sum(v for k, v in counts.items() if k.startswith("tier"))
+    assert away <= 184
+    hashes = [e.spec_hash() for e in plan.entries]
+    assert len(hashes) == len(set(hashes))
+
+
+def test_gpu_lock_parse_rocm_format() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "gpu-lock.sh"
+    # Source the parse function
+    raw = "============================ ROCm System Management Interface ============================\nGPU[0]\t\t\t: GPU use (%): 7\nGPU[1]\t\t\t: GPU use (%): 42\n"
+    out = subprocess.check_output(
+        ["bash", "-c", f'source "{script}"; parse_rocm_gpu_use_pct "$1"', "_", raw],
+        text=True,
+    ).strip()
+    assert out == "42"
+
+
+def test_gpu_lock_hands_out_exactly_n_slots(tmp_path) -> None:
+    """SLOTS=N admits N concurrent holders and refuses the N+1th."""
+    if subprocess.run(["pgrep", "-x", "Runner.Worker"], capture_output=True).returncode == 0:
+        pytest.skip("self-hosted runner active; gpu-lock refuses by design")
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "gpu-lock.sh"
+    lock = tmp_path / "gpu.lock"
+    env = {
+        **os.environ,
+        "POTOCOLOM_GPU_LOCK": str(lock),
+        "POTOCOLOM_GPU_SLOTS": "2",
+        "POTOCOLOM_GPU_WAIT_S": "1",
+    }
+    held = [
+        subprocess.Popen(
+            ["bash", str(script), "--", "sleep", "20"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(2)
+    ]
+    try:
+        # Both slot files exist and are locked once the holders are up.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if lock.exists() and Path(f"{lock}.slot2").exists():
+                break
+            time.sleep(0.2)
+        # Slot 1 keeps the original path so single-slot callers stay exclusive.
+        assert lock.exists()
+        assert Path(f"{lock}.slot2").exists()
+        third = subprocess.run(
+            ["bash", str(script), "--", "true"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert third.returncode == 75, third.stderr
+        assert "busy" in third.stderr
+    finally:
+        for proc in held:
+            proc.kill()
+            proc.wait()
+
+
+def test_encode_latent_sample_ignores_sds_generator() -> None:
+    """Legacy path must call posterior.sample() with no generator arg."""
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+
+    from worker.illusions import DiffusionAdapter
+
+    adapter = object.__new__(DiffusionAdapter)
+    adapter.device = "cpu"
+    adapter.dtype = torch.float32
+    adapter.encode_batch_sizes = []
+    adapter.backward_before_next_encode = []
+    adapter._encodes_since_backward = 0
+
+    calls: list[dict] = []
+
+    class FakePosterior:
+        mean = torch.zeros(1, 4, 2, 2)
+        std = torch.ones(1, 4, 2, 2) * 0.1
+
+        def sample(self, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return self.mean
+
+    class FakeVae:
+        config = SimpleNamespace(scaling_factor=0.18215)
+
+        def encode(self, scaled):
+            return SimpleNamespace(latent_dist=FakePosterior())
+
+    adapter.pipe = SimpleNamespace(vae=FakeVae())
+    image = torch.rand(1, 3, 16, 16)
+    gen = torch.Generator().manual_seed(0)
+    DiffusionAdapter.encode_latent(adapter, image, generator=gen)
+    assert calls and calls[0]["args"] == () and calls[0]["kwargs"] == {}
+
+
+def test_window_plan_is_breadth_first_and_covers_the_prompt_axis() -> None:
+    from worker.illusion_campaign import (
+        WINDOW_SEEDS,
+        build_window,
+        _window_pair_ids,
+    )
+
+    entries = build_window()
+    pair_ids = _window_pair_ids()
+
+    # The curated issue #138 corpus is actually in the sweep, not just the five
+    # reference pairs the earlier plan sampled.
+    assert "stag_oak" in pair_ids
+    assert "penguin_bat" in pair_ids
+    assert len(pair_ids) >= 20
+
+    # The rig check is first, on the one pair whose good outcome is known.
+    assert entries[0].profile == "anchor"
+    assert entries[0].pair_id == "giraffe_penguin_calibration"
+    assert entries[0].seed == WINDOW_SEEDS[0]
+
+    # Breadth-first: every pair gets its first seed and mode before any gets a
+    # second, so a window that ends early still answers which pairs work at all.
+    sweep = [e for e in entries if e.profile.startswith(("anchor", "sweep"))]
+    first_block = sweep[: len(pair_ids)]
+    assert {e.pair_id for e in first_block} == set(pair_ids)
+    assert {e.seed for e in first_block} == {WINDOW_SEEDS[0]}
+    assert all("--dream-joint" not in e.flags for e in first_block)
+
+    # No (pair, seed, mode) is planned twice, and the anchor is not duplicated.
+    keys = [(e.pair_id, e.seed, e.profile, "--dream-joint" in e.flags) for e in entries]
+    assert len(keys) == len(set(keys))
+    sweep_keys = [(e.pair_id, e.seed, "--dream-joint" in e.flags) for e in sweep]
+    assert len(sweep_keys) == len(set(sweep_keys))
+
+    # The full-budget control exists at the paper's budget.
+    controls = [e for e in entries if e.profile == "budget_control_10k"]
+    assert controls
+    assert "--sds-steps" in controls[0].flags
+    assert controls[0].flags[controls[0].flags.index("--sds-steps") + 1] == "10000"
+
+    # Controls sit mid-sweep, not at the end: a short window must drop sweep
+    # tail rather than the comparison the sweep is measured against.
+    all_controls = [e for e in entries if "control" in e.profile]
+    assert all_controls
+    assert max(e.priority for e in all_controls) < max(e.priority for e in entries)
+
+    hashes = [e.spec_hash() for e in entries]
+    assert len(hashes) == len(set(hashes))
+
+
+def test_shard_splits_a_plan_disjointly_and_covers_it() -> None:
+    from worker.illusion_campaign import _shard, build_window
+
+    entries = build_window()
+    assert _shard("0/2") == (0, 2)
+    assert _shard("2/3") == (2, 3)
+    for bad in ("1", "3/3", "-1/2", "0/0"):
+        with pytest.raises(Exception):
+            _shard(bad)
+
+    for count in (2, 3):
+        shards = [
+            [e for i, e in enumerate(entries) if i % count == index] for index in range(count)
+        ]
+        seen = [e.entry_id for shard in shards for e in shard]
+        # Every entry runs exactly once across the shards.
+        assert sorted(seen) == sorted(e.entry_id for e in entries)
+        assert len(seen) == len(set(seen))
+        # And the work is split about evenly.
+        assert max(len(s) for s in shards) - min(len(s) for s in shards) <= 1
+
+
+def test_local_snapshot_resolves_hub_ids_offline(tmp_path, monkeypatch) -> None:
+    """HF_HUB_OFFLINE refuses an incomplete snapshot; a path loads off disk."""
+    from worker.illusion_experiment import local_snapshot
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    repo = tmp_path / "hub" / "models--org--model"
+    (repo / "snapshots" / "abc123").mkdir(parents=True)
+    (repo / "refs").mkdir(parents=True)
+    (repo / "refs" / "main").write_text("abc123\n")
+    assert local_snapshot("org/model") == str(repo / "snapshots" / "abc123")
+
+    # A single snapshot with no ref still resolves unambiguously.
+    solo = tmp_path / "hub" / "models--org--solo"
+    (solo / "snapshots" / "deadbeef").mkdir(parents=True)
+    assert local_snapshot("org/solo") == str(solo / "snapshots" / "deadbeef")
+
+    # Two snapshots and no ref is ambiguous: the caller must name a revision.
+    two = tmp_path / "hub" / "models--org--two"
+    (two / "snapshots" / "aaa").mkdir(parents=True)
+    (two / "snapshots" / "bbb").mkdir(parents=True)
+    assert local_snapshot("org/two") == "org/two"
+
+    # Uncached ids and existing directories pass through, so it is idempotent.
+    assert local_snapshot("org/missing") == "org/missing"
+    assert local_snapshot(str(tmp_path)) == str(tmp_path)
+    assert local_snapshot(local_snapshot("org/model")) == local_snapshot("org/model")
+
+
+def test_plan_pins_model_snapshots_so_offline_cells_can_load(tmp_path) -> None:
+    from worker.illusion_campaign import build_phase_plan
+
+    plan = build_phase_plan(
+        phase="window",
+        evidence_root=tmp_path,
+        model_id="stable-diffusion-v1-5/stable-diffusion-v1-5",
+        dream_model_id="lykon/dreamshaper-8-lcm",
+    )
+    # Whatever the caller passed, the plan records something a pipeline can
+    # actually open with outgoing traffic disabled.
+    for recorded in (plan.model_id, plan.dream_model_id):
+        assert Path(recorded).is_dir(), recorded
+
+
+def test_window_plan_reflects_the_pre_window_measurements() -> None:
+    """The constants encode measured decisions; guard the ones that cost money."""
+    from worker.illusion_campaign import (
+        WINDOW_CELL_ESTIMATE_S,
+        WINDOW_SDS_STEPS,
+        build_window,
+    )
+
+    entries = build_window()
+
+    # A5 and A6: Dream mode is an axis, because joint rescued crown_octopus and
+    # destroyed the calibration pair. Every pair and seed must get BOTH modes,
+    # so yield can be read as the better of the two.
+    sweep = [e for e in entries if e.profile.startswith(("anchor", "sweep"))]
+    joint = {(e.pair_id, e.seed) for e in sweep if "--dream-joint" in e.flags}
+    independent = {(e.pair_id, e.seed) for e in sweep if "--dream-joint" not in e.flags}
+    assert joint == independent, "every pair/seed needs both Dream modes"
+    assert joint
+
+    # Cell 1 is the rig check and must use the mode the smoke was reviewed
+    # under. Leading with joint would reproduce A6's known collapse instead.
+    assert entries[0].profile == "anchor"
+    assert "--dream-joint" not in entries[0].flags
+
+    # A3: quality still improved at 5000, so the budget is not cut below it.
+    assert WINDOW_SDS_STEPS >= 5_000
+    assert all(e.flags[e.flags.index("--sds-steps") + 1] == str(WINDOW_SDS_STEPS) for e in sweep)
+
+    # A2: the wording with a human-approved cell behind it.
+    assert all(e.style == "reference_sketch" for e in entries)
+
+    # A4: 512px primes cost 3.3x for no gain, so no cell asks for them.
+    assert all("--prime-resolution" not in e.flags for e in entries)
+
+    # The matrix deliberately overshoots the window: breadth-first ordering means
+    # the tail is what a short window drops, so planning past the deadline buys
+    # optionality if the absence runs long. What must fit is everything up to and
+    # including the controls, comfortably.
+    assert WINDOW_CELL_ESTIMATE_S >= 1_750, "must not undercut the measured cell time"
+    last_control = max(e.priority for e in entries if "control" in e.profile)
+    guaranteed = sum(e.estimate_s for e in entries if e.priority <= last_control)
+    assert guaranteed < 40 * 3600, f"controls only complete at {guaranteed / 3600:.1f}h"
+
+
+def test_window2_matrix_matches_the_approved_plan() -> None:
+    """98 entries, 206 observations, blocks A B R C D, styles pinned by name."""
+    from worker.illusion_campaign import (
+        WINDOW2_ARMS,
+        WINDOW2_NEGATIVE_PROMPT,
+        build_window2,
+    )
+
+    entries = build_window2()
+    assert len(entries) == 98
+    assert {e.tier for e in entries} == {"window2"}
+
+    blocks = [e.profile.split("_")[0] for e in entries]
+    assert Counter(blocks) == {"a": 36, "b": 8, "r": 6, "c": 36, "d": 12}
+    # Execution order A, B, R, C, D: the factorial that answers both complaints
+    # completes first, and the truncatable tail tests nothing new.
+    assert blocks == sorted(blocks, key="abrcd".index)
+
+    # A forks four Dream arms per base, so 36 bases carry 144 observations and
+    # the 62 single-arm cells carry one each.
+    forked = [e for e in entries if "--dream-arm" in e.flags]
+    assert len(forked) == 36
+    assert all(e.flags.count("--dream-arm") == len(WINDOW2_ARMS) == 4 for e in forked)
+    observations = sum(max(e.flags.count("--dream-arm"), 1) for e in entries)
+    assert observations == 206
+
+    # The first cell is the rig check: window 1's pair, wording, mode and seed,
+    # with only the Dream change. It is marked by profile, not duplicated.
+    first = entries[0]
+    assert first.profile == "a_anchor"
+    assert first.pair_id == "giraffe_penguin_calibration"
+    assert first.seed == 11
+    assert first.style == "reference_sketch"
+    assert first.flags[first.flags.index("--dream-arm") + 1] == "neg_off_indep:indep:off"
+
+    # Only forked bases carry a negative prompt, and it names no medium: the
+    # positive prompt is an HB pencil sketch, and negating that cancels it.
+    assert all((WINDOW2_NEGATIVE_PROMPT in e.flags) == ("--dream-arm" in e.flags) for e in entries)
+    terms = [term.strip() for term in WINDOW2_NEGATIVE_PROMPT.split(",")]
+    for medium in ("pencil", "hb pencil sketch", "pen", "oil", "oil painting"):
+        assert medium not in terms
+
+    # Styles are pinned by identifier: the code has three pencil templates and
+    # only reference_sketch is window 1's validated wording.
+    assert {e.style for e in entries} == {"reference_sketch", "oil"}
+    assert all(e.style == "oil" for e in entries if e.profile.startswith("r_"))
+
+    # One Dream round everywhere except the pinned schedule sentinel, whose
+    # truncation is explicit strengths rather than two spread rounds.
+    for entry in entries:
+        rounds = entry.flags[entry.flags.index("--dream-rounds") + 1]
+        if entry.profile == "b_full_8":
+            assert rounds == "8"
+        elif entry.profile == "b_truncated_2":
+            assert rounds == "2"
+            assert entry.flags.count("--dream-strength") == 2
+            assert "0.821" in entry.flags
+        else:
+            assert rounds == "1"
+
+    # 47.6h against a 58h deadline, with block A costed for its four arms.
+    hours = sum(e.estimate_s for e in entries) / 3600
+    assert 47.0 < hours < 48.0
+
+    # Nothing is planned twice, in any of the three identities that matter.
+    assert len({e.spec_hash() for e in entries}) == 98
+    assert len({e.out_rel for e in entries}) == 98
+    assert len({e.entry_id for e in entries}) == 98
+
+
+def test_window3_matrix_is_acquisition_at_the_settled_recipe() -> None:
+    """116 bases: 98 acquisition at oil, then an 18-base wording screen."""
+    from worker.illusion_campaign import (
+        WINDOW3_ARMS,
+        WINDOW3_SEED_POOL,
+        build_window3,
+        window3_order,
+    )
+    from worker.illusion_experiment import BREADTH_FAMILIES, BREADTH_PAIRS
+
+    entries = build_window3()
+    acquisition = [e for e in entries if not e.profile.startswith("w_")]
+    assert len(acquisition) == 1 + len(BREADTH_PAIRS) == 98
+    assert len(entries) == 116
+    assert {e.tier for e in entries} == {"window3"}
+    assert sum(e.flags.count("--dream-arm") for e in entries) == 232
+
+    # Every base forks both arms from one SDS phase, joint first: joint is the
+    # settled default and independent is the fallback for the pairs it collapses.
+    assert all(e.flags.count("--dream-arm") == len(WINDOW3_ARMS) == 2 for e in entries)
+    for entry in entries:
+        first = entry.flags.index("--dream-arm")
+        assert entry.flags[first + 1] == "joint:joint:off"
+        assert entry.flags[first + 3] == "indep:indep:off"
+
+    # Nothing under test: the recipe is windows 1 and 2's, and the two rules that
+    # rejected a setting are honoured by its absence rather than by a comment.
+    assert all(e.style == "oil" for e in acquisition)
+    assert all("--negative-prompt" not in e.flags for e in entries)
+    assert all("--prime-resolution" not in e.flags for e in entries)
+    for entry in entries:
+        assert entry.flags[entry.flags.index("--sds-steps") + 1] == "5000"
+        assert entry.flags[entry.flags.index("--dream-rounds") + 1] == "1"
+
+    # The anchor runs first and exercises the fallback arm by construction: at
+    # spec_hash fd46cd54684e, negative off, independent beat joint 5 to 0.
+    assert entries[0].profile == "anchor"
+    assert entries[0].pair_id == "wolf_raven"
+    assert [e.profile for e in acquisition[1:]] == ["breadth"] * len(BREADTH_PAIRS)
+
+    # Frozen and stable across calls, or a resumed plan diverges from its own SHA.
+    breadth = [(e.pair_id, e.seed) for e in acquisition[1:]]
+    assert breadth == window3_order() == window3_order()
+
+    # STRATIFIED BY FAMILY, both in order and in seed. An unstratified hash
+    # permutation put 20 scene and 8 object pairs in the first 60 executions and
+    # gave one seed five upright pairs and no object or scene pair at all, which
+    # makes a truncated window unrepresentative and confounds family comparisons.
+    family = {p.pair_id: f for f, pairs in BREADTH_FAMILIES.items() for p in pairs}
+    for prefix in (20, 40, 60, 80):
+        counts = Counter(family[pair_id] for pair_id, _ in breadth[:prefix])
+        assert len(counts) == len(BREADTH_FAMILIES)
+        assert max(counts.values()) - min(counts.values()) <= 1, (prefix, counts)
+    for seed in set(WINDOW3_SEED_POOL):
+        assert len({family[p] for p, s in breadth if s == seed}) >= 3
+
+    # Seeds spread over the pool rather than leaning on window 2's seed 11.
+    seeds = Counter(seed for _, seed in breadth)
+    assert set(seeds) == set(WINDOW3_SEED_POOL)
+    assert max(seeds.values()) - min(seeds.values()) <= 1
+
+    # One seed per pair: ~47h of acquisition, ~65h with the wording tail, inside
+    # a 68h deadline for the confirmed 70h window.
+    assert 46.0 < sum(e.estimate_s for e in acquisition) / 3600 < 49.0
+    assert 55.0 < sum(e.estimate_s for e in entries) / 3600 < 57.0
+
+    assert len({e.spec_hash() for e in entries}) == 116
+    assert len({e.out_rel for e in entries}) == 116
+    assert len({e.entry_id for e in entries}) == 116
+
+
+def test_window3_wording_screen_is_last_and_paired_against_the_incumbents() -> None:
+    """18 bases screening ONE candidate wording, and it must be truncatable.
+
+    Two candidates were planned. Both were smoked at 1,500 steps against a
+    plain-oil control before any block time was committed, and monochrome_oil was
+    cut for summoning a wooden picture frame in both arms - worse than anything
+    plain oil produced in 78 observations, and frame-cleanliness was the whole
+    reason to start from oil. charcoal survived: pencil-grade monochrome
+    (9.9/7.1 against reference_sketch's 9.2) with none of pencil's frames.
+
+    That smoke also refuted the mechanism the screen was built on, so this test
+    pins the survivor rather than the theory.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW2_SEEDS,
+        WINDOW3_WORDINGS,
+        build_window3,
+    )
+    from worker.illusion_styles import STYLE_TEMPLATES
+
+    entries = build_window3()
+    wording = [e for e in entries if e.profile.startswith("w_")]
+    assert len(wording) == 18
+    assert Counter(e.style for e in wording) == {"charcoal": 18}
+    # monochrome_oil stays in STYLE_TEMPLATES as a record of why it was cut, but
+    # must never be planned again.
+    assert "monochrome_oil" not in WINDOW3_WORDINGS
+    assert "monochrome_oil" in STYLE_TEMPLATES
+
+    # LAST, so an acquisition overrun truncates the bonus, never the deliverable.
+    assert min(e.priority for e in wording) > max(
+        e.priority for e in entries if not e.profile.startswith("w_")
+    )
+
+    # Same pairs and seeds as window 2's negative-off bases, or the comparison is
+    # against a remembered number rather than against matched ground.
+    for style in WINDOW3_WORDINGS:
+        block = [e for e in wording if e.style == style]
+        assert {e.pair_id for e in block} == set(WINDOW2_PROVEN)
+        assert {e.seed for e in block} == set(WINDOW2_SEEDS)
+
+    # Same recipe as the acquisition block: only the wording differs.
+    for entry in wording:
+        assert entry.flags.count("--dream-arm") == 2
+        assert "--negative-prompt" not in entry.flags
+        assert entry.flags[entry.flags.index("--sds-steps") + 1] == "5000"
+
+    assert "charcoal" in STYLE_TEMPLATES["charcoal"]
+
+
+def test_window3_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window3",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_window5_replays_window2s_oil_grid_and_only_the_code_differs() -> None:
+    """The whole point of window 5 is that nothing but the code changed.
+
+    If any of these drift, the window stops separating corpus from code and
+    silently becomes a fourth confounded comparison.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW5_SEEDS,
+        _window3_flags,
+        build_window5,
+    )
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    entries = build_window5()
+    assert len(entries) == 18
+    assert {e.tier for e in entries} == {"window5"}
+    assert {e.pair_id for e in entries} == set(WINDOW2_PROVEN)
+    assert {e.seed for e in entries} == set(WINDOW5_SEEDS)
+    # Window 2 ran oil on these pairs at exactly these seeds.
+    assert WINDOW5_SEEDS == (11, 23, 37)
+    assert {e.style for e in entries} == {"oil"}
+    # Current recipe, unmodified: this is what makes the code the only variable.
+    assert all(list(e.flags) == _window3_flags() for e in entries)
+    # One cell per base, and the two Dream arms are forked inside the cell.
+    assert len({e.entry_id for e in entries}) == 18
+
+    # Seed-major: a short window drops a whole seed, not half the pairs.
+    assert [e.seed for e in entries] == [s for s in WINDOW5_SEEDS for _ in WINDOW2_PROVEN]
+
+    # The oil template must resolve to window 2's exact strings. Five of the six
+    # pairs bake "oil", so resolve_pair_prompts returns their verbatim prompts;
+    # giraffe_penguin_calibration bakes reference_sketch and gets the template
+    # applied. Both paths landed on "an oil painting of ..." in window 2.
+    for pair_id in WINDOW2_PROVEN:
+        _subjects, effective = resolve_pair_prompts(PAIR_BY_ID[pair_id], "oil")
+        assert all(text.startswith("an oil painting of ") for text in effective), pair_id
+
+
+def test_window5_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window5",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_window6_is_depth_on_the_six_proven_pairs_at_eight_fresh_seeds() -> None:
+    """P3: same six pairs and oil recipe, eight seeds window 5 did not spend.
+
+    Window 4's three keeper pairs stay out: their oil keeper repeat was 0 of 3.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW3_SEED_POOL,
+        WINDOW4_PAIRS,
+        WINDOW5_SEEDS,
+        WINDOW6_SEEDS,
+        _window3_flags,
+        build_window6,
+    )
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    entries = build_window6()
+    assert len(entries) == 48
+    assert {e.tier for e in entries} == {"window6"}
+    assert {e.pair_id for e in entries} == set(WINDOW2_PROVEN)
+    assert not set(WINDOW4_PAIRS) & {e.pair_id for e in entries}
+    assert {e.seed for e in entries} == set(WINDOW6_SEEDS)
+    assert len(WINDOW6_SEEDS) == 8
+    assert set(WINDOW6_SEEDS).isdisjoint(WINDOW5_SEEDS)
+    assert set(WINDOW6_SEEDS) <= set(WINDOW3_SEED_POOL)
+    assert {e.style for e in entries} == {"oil"}
+    assert all(list(e.flags) == _window3_flags() for e in entries)
+    assert len({e.entry_id for e in entries}) == 48
+    assert [e.seed for e in entries] == [s for s in WINDOW6_SEEDS for _ in WINDOW2_PROVEN]
+    for pair_id in WINDOW2_PROVEN:
+        _subjects, effective = resolve_pair_prompts(PAIR_BY_ID[pair_id], "oil")
+        assert all(text.startswith("an oil painting of ") for text in effective), pair_id
+
+
+def test_window6_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window6",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_window7_is_depth_on_the_six_proven_pairs_at_eight_unused_seeds() -> None:
+    """Second depth block: leftover pool seeds plus the next two primes.
+
+    Window 6 is unrated, so this spend cannot wait on its keeper count. It
+    reuses the authorised P3 design on seeds nobody has rendered on these
+    pairs. Window 4's three keeper pairs stay out.
+    """
+    from worker.illusion_campaign import (
+        WINDOW2_PROVEN,
+        WINDOW3_SEED_POOL,
+        WINDOW4_PAIRS,
+        WINDOW5_SEEDS,
+        WINDOW6_SEEDS,
+        WINDOW7_SEEDS,
+        _window3_flags,
+        build_window7,
+    )
+    from worker.illusion_experiment import PAIR_BY_ID, resolve_pair_prompts
+
+    entries = build_window7()
+    assert len(entries) == 48
+    assert {e.tier for e in entries} == {"window7"}
+    assert {e.pair_id for e in entries} == set(WINDOW2_PROVEN)
+    assert not set(WINDOW4_PAIRS) & {e.pair_id for e in entries}
+    assert {e.seed for e in entries} == set(WINDOW7_SEEDS)
+    assert WINDOW7_SEEDS == (181, 199, 211, 233, 251, 269, 271, 277)
+    leftover = tuple(
+        seed
+        for seed in WINDOW3_SEED_POOL
+        if seed not in WINDOW5_SEEDS and seed not in WINDOW6_SEEDS
+    )
+    assert leftover == (181, 199, 211, 233, 251, 269)
+    assert set(WINDOW7_SEEDS).isdisjoint(WINDOW5_SEEDS)
+    assert set(WINDOW7_SEEDS).isdisjoint(WINDOW6_SEEDS)
+    assert {e.style for e in entries} == {"oil"}
+    assert all(list(e.flags) == _window3_flags() for e in entries)
+    assert len({e.entry_id for e in entries}) == 48
+    assert [e.seed for e in entries] == [s for s in WINDOW7_SEEDS for _ in WINDOW2_PROVEN]
+    for pair_id in WINDOW2_PROVEN:
+        _subjects, effective = resolve_pair_prompts(PAIR_BY_ID[pair_id], "oil")
+        assert all(text.startswith("an oil painting of ") for text in effective), pair_id
+
+
+def test_window7_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window7",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_wording_smoke_is_ten_candidates_plus_oil_at_1500_steps() -> None:
+    """P1: screen replacement strings. Do not reason. Render them.
+
+    Same pair, seed and step count as the window-3 smoke that cut monochrome_oil.
+    Oil control first so a short run still has the control. charcoal and
+    monochrome_oil stay out: one was a full-window miss, one already summons a
+    frame.
+    """
+    from worker.illusion_campaign import (
+        P1_CANDIDATES,
+        P1_CONTROL,
+        P1_PAIR,
+        P1_SEED,
+        P1_SMOKE_STEPS,
+        P1_STYLES,
+        _p1_flags,
+        build_wording_smoke,
+    )
+    from worker.illusion_styles import STYLE_TEMPLATES
+
+    entries = build_wording_smoke()
+    assert len(entries) == 11
+    assert P1_STYLES[0] == P1_CONTROL == "oil"
+    assert len(P1_CANDIDATES) == 10
+    assert entries[0].style == "oil"
+    assert [e.style for e in entries] == list(P1_STYLES)
+    assert {e.pair_id for e in entries} == {P1_PAIR}
+    assert P1_PAIR == "moose_butterfly"
+    assert {e.seed for e in entries} == {P1_SEED}
+    assert P1_SEED == 11
+    assert P1_SMOKE_STEPS == 1500
+    assert all(list(e.flags) == _p1_flags() for e in entries)
+    assert _p1_flags().count("1500") == 1
+    assert "charcoal" not in P1_CANDIDATES
+    assert "monochrome_oil" not in P1_CANDIDATES
+    assert "reference_sketch" not in P1_CANDIDATES
+    for style in P1_STYLES:
+        assert style in STYLE_TEMPLATES
+        assert "{}" in STYLE_TEMPLATES[style]
+    assert len({e.entry_id for e in entries}) == 11
+
+
+def test_wording_smoke_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="wording-smoke",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_window2_plan_passes_dry_run(tmp_path: Path) -> None:
+    from worker.illusion_campaign import build_phase_plan, main
+
+    plan = build_phase_plan(
+        phase="window2",
+        evidence_root=tmp_path / "evidence",
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+    # dry-run asserts unique spec hashes and the expected block count.
+    assert main(["dry-run", "--plan", str(path)]) == 0
+
+
+def test_run_aborts_after_three_consecutive_failures(tmp_path: Path, monkeypatch) -> None:
+    """An unattended window must not spend hours reproducing one failure."""
+    import worker.illusion_campaign as campaign
+
+    plan = campaign.build_phase_plan(
+        phase="window2",
+        # Relative: the driver refuses a /tmp evidence root outright.
+        evidence_root=Path("build/window2-test-evidence"),
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+
+    attempted: list[str] = []
+
+    def fake_run_entry(_plan, entry, **_kwargs):
+        attempted.append(entry.entry_id)
+        return {"entry_id": entry.entry_id, "status": "failed", "out": "missing"}
+
+    monkeypatch.setattr(campaign, "run_entry", fake_run_entry)
+    monkeypatch.setattr(campaign, "git_sha", lambda: plan.git_sha)
+
+    assert campaign.main(["run", "--plan", str(path), "--allow-dirty"]) == 4
+    assert len(attempted) == 3
+
+
+def test_run_refuses_a_dirty_tree_and_aborts_a_busy_streak(tmp_path: Path, monkeypatch) -> None:
+    """Two ways an unattended window can lie about what it did.
+
+    A dirty optimizer under a matching HEAD writes manifests naming the plan's
+    frozen commit, so the evidence claims a provenance it does not have. And a
+    GPU that refuses every cell used to be retried forever, with the driver then
+    exiting 0 at the deadline having produced nothing - a total failure reported
+    as success, which is the worst outcome available.
+    """
+    import worker.illusion_campaign as campaign
+
+    plan = campaign.build_phase_plan(
+        phase="window3",
+        evidence_root=Path("build/window3-test-evidence"),
+        model_id="m",
+        dream_model_id="d",
+    )
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan.to_json(), indent=2) + "\n")
+
+    monkeypatch.setattr(campaign, "git_sha", lambda: plan.git_sha)
+
+    monkeypatch.setattr(
+        campaign.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, " M worker/worker/illusions.py\n", ""),
+    )
+    assert campaign.main(["run", "--plan", str(path)]) == 1
+
+    monkeypatch.setattr(
+        campaign.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "", ""),
+    )
+    monkeypatch.setattr(campaign, "run_entry", lambda *a, **k: {"status": "busy"})
+    monkeypatch.setattr(campaign.time, "sleep", lambda _s: None)
+    assert (
+        campaign.main(
+            [
+                "run",
+                "--plan",
+                str(path),
+                "--allow-dirty",
+                "--abort-after-busy",
+                "3",
+                "--cooldown-s",
+                "0",
+            ]
+        )
+        == 1
+    )
