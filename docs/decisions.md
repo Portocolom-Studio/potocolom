@@ -382,6 +382,15 @@ a replacement document even when the two documents use the same operation
 IDs. Persisted compressed checkpoints and higher-resolution refine remain
 open in #54. The complete WebP wire frames and session protocol are unchanged.
 
+Status (2026-09-10): Line, rectangle and ellipse outlines use the same journal
+and undo cursor as freehand strokes and clear. A shape stores two points,
+color and width, not a stream of intermediate preview positions. One
+temporary canvas holds the artwork under the active preview, so moving a
+shape does not retain old edges or read back every pixel on each pointer move.
+The local file writer uses version 2 for shape operations; the reader still
+opens version 1 stroke/clear files. No SVG scene, selection model, fill tool
+or wire change is needed for these three drawing tools.
+
 ## First public release: after the walking skeleton, API level
 
 v0.1 tags when the M2 acceptance demo passes: a generation POSTed against the real worker completes end to end and CI's tiny-model CPU path is green. Self-hosters get the compose file and a working generation API, clearly marked pre-alpha. The point is early outside installs exercising the risky part, GPU setup on CUDA and ROCm, months before the UI is impressive.

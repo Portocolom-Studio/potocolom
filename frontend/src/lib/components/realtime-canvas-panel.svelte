@@ -11,7 +11,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Slider } from '$lib/components/ui/slider';
-	import { DrawingDocument, DRAWING_FILE_MAX_BYTES } from '$lib/drawing-document';
+	import { DrawingDocument, DRAWING_FILE_MAX_BYTES, type DrawingTool } from '$lib/drawing-document';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		formatParamValue,
@@ -89,7 +89,7 @@
 	let structureTimer: ReturnType<typeof setTimeout> | null = null;
 	let stepsTimer: ReturnType<typeof setTimeout> | null = null;
 
-	let tool = $state<'draw' | 'erase'>('draw');
+	let tool = $state<DrawingTool>('draw');
 	let openingDrawing = $state(false);
 	let fileRequest = 0;
 
@@ -264,7 +264,11 @@
 		if (
 			!drawingDocument.beginStroke(
 				event.pointerId,
-				{ mode: tool, color: selectedColor, size: brushSize },
+				{
+					tool,
+					color: selectedColor,
+					size: brushSize
+				},
 				point
 			)
 		)
@@ -431,6 +435,9 @@
 						>
 							<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
 							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
+							<option value="line">{t('app.realtime_canvas.tool_line')}</option>
+							<option value="rectangle">{t('app.realtime_canvas.tool_rectangle')}</option>
+							<option value="ellipse">{t('app.realtime_canvas.tool_ellipse')}</option>
 						</select>
 					</div>
 					<Field.Group class="gap-3">

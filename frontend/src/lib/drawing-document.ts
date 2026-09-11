@@ -1,14 +1,19 @@
 type DrawingPoint = { x: number; y: number };
 
-type StrokeStyle = {
-	mode: 'draw' | 'erase';
+export type DrawingTool = 'draw' | 'erase' | 'line' | 'rectangle' | 'ellipse';
+
+type GestureStyle = {
+	tool: DrawingTool;
 	color: string;
 	size: number;
 };
 
-type StrokeOperation = StrokeStyle & {
+type StrokeOperation = {
 	kind: 'stroke';
 	id: string;
+	mode: 'draw' | 'erase';
+	color: string;
+	size: number;
 	points: DrawingPoint[];
 };
 
@@ -17,10 +22,19 @@ type ClearOperation = {
 	id: string;
 };
 
-type Operation = StrokeOperation | ClearOperation;
+type ShapeOperation = {
+	kind: 'shape';
+	id: string;
+	shape: 'line' | 'rectangle' | 'ellipse';
+	color: string;
+	size: number;
+	points: [DrawingPoint, DrawingPoint];
+};
+
+type Operation = StrokeOperation | ShapeOperation | ClearOperation;
 
 export type DrawingFile = {
-	version: 1;
+	version: 2;
 	width: 512;
 	height: 512;
 	operations: Operation[];
@@ -57,7 +71,11 @@ export class DrawingDocument {
 	private checkpointPending = false;
 	private generation = 0;
 	private cursor = 0;
-	private active: { pointerId: number; operation: StrokeOperation } | null = null;
+	private active: {
+		pointerId: number;
+		operation: StrokeOperation | ShapeOperation;
+		snapshot: HTMLCanvasElement | null;
+	} | null = null;
 	private blank = true;
 	private destroyed = false;
 
@@ -84,20 +102,29 @@ export class DrawingDocument {
 
 	public serialize(): DrawingFile {
 		const snapshot: DrawingFile = {
-			version: 1,
+			version: 2,
 			width: 512,
 			height: 512,
 			operations: this.operations.map((operation) =>
 				operation.kind === 'clear'
 					? { kind: 'clear', id: operation.id }
-					: {
-							kind: 'stroke',
-							id: operation.id,
-							mode: operation.mode,
-							color: operation.color,
-							size: operation.size,
-							points: operation.points.map((point) => ({ ...point }))
-						}
+					: operation.kind === 'shape'
+						? {
+								kind: 'shape',
+								id: operation.id,
+								shape: operation.shape,
+								color: operation.color,
+								size: operation.size,
+								points: [{ ...operation.points[0] }, { ...operation.points[1] }]
+							}
+						: {
+								kind: 'stroke',
+								id: operation.id,
+								mode: operation.mode,
+								color: operation.color,
+								size: operation.size,
+								points: operation.points.map((point) => ({ ...point }))
+							}
 			),
 			cursor: this.cursor
 		};
@@ -110,6 +137,7 @@ export class DrawingDocument {
 		if (this.destroyed) return;
 		this.generation += 1;
 		this.invalidateCheckpoints();
+		this.releaseSnapshot();
 		this.active = null;
 		this.operations.length = 0;
 		this.operations.push(...validated.operations);
@@ -117,24 +145,51 @@ export class DrawingDocument {
 		this.render();
 	}
 
-	public beginStroke(pointerId: number, style: StrokeStyle, point: DrawingPoint): boolean {
+	public beginStroke(pointerId: number, style: GestureStyle, point: DrawingPoint): boolean {
 		if (this.destroyed || this.active !== null) return false;
+		const tool = style.tool;
+		if (tool !== 'draw' && tool !== 'erase') {
+			const snapshot = document.createElement('canvas');
+			snapshot.width = this.canvas.width;
+			snapshot.height = this.canvas.height;
+			const snapshotContext = snapshot.getContext('2d');
+			if (!snapshotContext) return false;
+			snapshotContext.drawImage(this.canvas, 0, 0);
+			const operation: ShapeOperation = {
+				kind: 'shape',
+				id: this.newOperationId(),
+				shape: tool,
+				color: style.color,
+				size: style.size,
+				points: [{ ...point }, { ...point }]
+			};
+			this.active = { pointerId, operation, snapshot };
+			this.paintShape(operation);
+			return true;
+		}
 		const operation: StrokeOperation = {
 			kind: 'stroke',
 			id: this.newOperationId(),
-			mode: style.mode,
-			color: style.mode === 'erase' ? PAPER : style.color,
+			mode: tool,
+			color: tool === 'erase' ? PAPER : style.color,
 			size: style.size,
 			points: [{ ...point }]
 		};
-		this.active = { pointerId, operation };
+		this.active = { pointerId, operation, snapshot: null };
 		this.paintDot(operation, point);
 		return true;
 	}
 
 	public extendStroke(pointerId: number, point: DrawingPoint): boolean {
 		if (this.destroyed || !this.active || this.active.pointerId !== pointerId) return false;
-		const { operation } = this.active;
+		const { operation, snapshot } = this.active;
+		if (operation.kind === 'shape') {
+			if (!snapshot) return false;
+			this.context.drawImage(snapshot, 0, 0);
+			operation.points[1] = { ...point };
+			this.paintShape(operation);
+			return true;
+		}
 		this.paintSegment(operation, operation.points[operation.points.length - 1], point);
 		operation.points.push({ ...point });
 		return true;
@@ -149,6 +204,7 @@ export class DrawingDocument {
 			return false;
 		}
 		const operation = this.active.operation;
+		this.releaseSnapshot();
 		this.active = null;
 		this.append(operation);
 		// Read back at gesture boundaries; a full readback on every move stalls painting.
@@ -203,6 +259,7 @@ export class DrawingDocument {
 		if (this.destroyed) return;
 		this.destroyed = true;
 		this.generation += 1;
+		this.releaseSnapshot();
 		this.active = null;
 		this.invalidateCheckpoints();
 		this.operations.length = 0;
@@ -233,6 +290,10 @@ export class DrawingDocument {
 			this.paintPaper();
 			return;
 		}
+		if (operation.kind === 'shape') {
+			this.paintShape(operation);
+			return;
+		}
 		this.paintDot(operation, operation.points[0]);
 		for (let index = 1; index < operation.points.length; index += 1) {
 			this.paintSegment(operation, operation.points[index - 1], operation.points[index]);
@@ -259,6 +320,41 @@ export class DrawingDocument {
 		this.context.lineTo(to.x, to.y);
 		this.context.stroke();
 		this.context.restore();
+	}
+
+	private paintShape(operation: ShapeOperation): void {
+		this.context.save();
+		this.context.strokeStyle = operation.color;
+		this.context.lineWidth = operation.size;
+		this.context.lineCap = 'round';
+		this.context.lineJoin = 'round';
+		this.context.beginPath();
+		const [start, end] = operation.points;
+		if (operation.shape === 'line') {
+			this.context.moveTo(start.x, start.y);
+			this.context.lineTo(end.x, end.y);
+		} else if (operation.shape === 'rectangle') {
+			const left = Math.min(start.x, end.x);
+			const top = Math.min(start.y, end.y);
+			const width = Math.abs(end.x - start.x);
+			const height = Math.abs(end.y - start.y);
+			this.context.rect(left, top, width, height);
+		} else {
+			const centerX = (start.x + end.x) / 2;
+			const centerY = (start.y + end.y) / 2;
+			const radiusX = Math.abs(end.x - start.x) / 2;
+			const radiusY = Math.abs(end.y - start.y) / 2;
+			this.context.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
+		}
+		this.context.stroke();
+		this.context.restore();
+	}
+
+	private releaseSnapshot(): void {
+		if (!this.active?.snapshot) return;
+		this.active.snapshot.width = 0;
+		this.active.snapshot.height = 0;
+		this.active.snapshot = null;
 	}
 
 	private updateBlank(): void {
@@ -359,7 +455,7 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 	}
 	if (encodedBytes > DRAWING_FILE_MAX_BYTES) throw new Error('drawing file is too large');
 	if (!isRecord(input)) throw new Error('invalid drawing file');
-	if (input.version !== 1 || input.width !== 512 || input.height !== 512)
+	if ((input.version !== 1 && input.version !== 2) || input.width !== 512 || input.height !== 512)
 		throw new Error('unsupported drawing file');
 	if (!Array.isArray(input.operations) || input.operations.length > MAX_OPERATIONS)
 		throw new Error('drawing file has too many operations');
@@ -382,6 +478,35 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 		if (rawOperation.kind === 'clear') {
 			if (Object.keys(rawOperation).length !== 2) throw new Error('invalid clear operation');
 			operations.push({ kind: 'clear', id });
+			continue;
+		}
+		if (rawOperation.kind === 'shape') {
+			if (input.version !== 2 || Object.keys(rawOperation).length !== 6)
+				throw new Error('invalid shape operation');
+			if (
+				rawOperation.shape !== 'line' &&
+				rawOperation.shape !== 'rectangle' &&
+				rawOperation.shape !== 'ellipse'
+			)
+				throw new Error('invalid shape');
+			if (typeof rawOperation.color !== 'string' || !HEX_COLOR.test(rawOperation.color))
+				throw new Error('invalid shape color');
+			const size = rawOperation.size;
+			if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 32)
+				throw new Error('invalid shape size');
+			totalPoints += 2;
+			if (totalPoints > MAX_POINTS) throw new Error('drawing file has too many points');
+			const points = rawOperation.points;
+			if (!Array.isArray(points) || points.length !== 2)
+				throw new Error('shape must have two points');
+			operations.push({
+				kind: 'shape',
+				id,
+				shape: rawOperation.shape,
+				color: rawOperation.color.toLowerCase(),
+				size,
+				points: [validatePoint(points[0]), validatePoint(points[1])]
+			});
 			continue;
 		}
 		if (rawOperation.kind !== 'stroke' || Object.keys(rawOperation).length !== 6)

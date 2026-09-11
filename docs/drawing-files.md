@@ -15,18 +15,23 @@ or live session IDs. It works without a GPU connection. Saving does not send a
 live frame. Opening a file while connected sends the changed canvas through
 the existing complete-WebP path, including when the opened drawing is blank.
 
-## Version 1
+## Versions
+
+Save writes version 2. Open accepts version 1 and version 2. Version 1 has
+stroke and clear operations only; version 2 also accepts shape operations.
+A version 1 file containing a shape is invalid. Older readers reject version
+2 rather than opening an incomplete drawing.
 
 The document uses a 512 by 512 coordinate space. It records draw and erase
-strokes with stable IDs, colors, widths and ordered points, plus clear
-operations. The undo position selects the visible prefix of the operation
+strokes with stable IDs, colors, widths and ordered points, plus shapes and
+clear operations. The undo position selects the visible prefix of the operation
 list; later operations form the redo branch.
 
 | Field | Value |
 |---|---|
-| `version` | `1` |
+| `version` | `2` when saved; `1` or `2` when opened |
 | `width`, `height` | `512` |
-| `operations` | Ordered stroke and clear operations, including redo history |
+| `operations` | Ordered stroke, shape and clear operations, including redo history |
 | `cursor` | Integer from zero through the operation count |
 
 A stroke has `kind: "stroke"`, a unique `id` starting with `operation-`,
@@ -39,6 +44,18 @@ New IDs use random values, so imported IDs cannot exhaust an edit counter.
 Point coordinates must be finite and between -1,000,000 and 1,000,000.
 Points outside the visible canvas retain the geometry of a captured drag;
 opening does not clamp or rescale them.
+
+A shape has `kind: "shape"`, `id`, `shape: "line"`, `"rectangle"` or
+`"ellipse"`, `color`, `size`, and a `points` array with exactly two points.
+The points are the drag start and end. Line uses them as its endpoints;
+rectangle and ellipse use them as opposite corners of their bounds. All
+shapes are outlines. Reverse drags work the same way. Color, width and point
+limits match strokes, and each shape counts as two points toward the limit.
+
+One shape drag is one undo step. While the pointer moves, the preview uses
+one temporary copy of the canvas from the start of that drag. Old preview
+edges do not enter the journal or remain on the canvas. Save, pointer release
+and lost pointer capture finish the visible shape, as they finish a stroke.
 
 Limits apply to both saving and opening: 8 MiB of UTF-8 JSON, 10,000
 operations and 200,000 points in the full journal, including the redo branch.
