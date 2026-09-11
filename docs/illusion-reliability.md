@@ -12,7 +12,12 @@ loss curves, and gradient conflict stats are diagnostic until calibrated.
 - DeepFloyd / Visual Anagrams remain research-only (gated non-commercial).
 - Defaults stay `sds_objective=legacy` until the acceptance gate passes.
 
-Progress snapshot (what already passed on the reliability branch):
+Measured results (windows 1-7, P0, P1) are in
+[illusion-window.md](illusion-window.md). PR #150 merged that programme into
+the optimizer branch on 2026-09-10. PR #118 stays draft. This file is the
+harness how-to. The Wave 1 campaign below is historical.
+
+The 2026-07-29 snapshot file is
 [illusion-reliability-status.md](illusion-reliability-status.md).
 
 ## Environment

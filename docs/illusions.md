@@ -176,9 +176,10 @@ A/B ratings, and the acceptance gate) are documented in
 [illusion-reliability.md](illusion-reliability.md). Defaults remain legacy
 until that gate passes. Failed experimental modes may stay behind flags for
 reproducibility; they do not become defaults merely because they exist.
-The 60-hour yield window that is the current primary axis is documented in
-[illusion-window.md](illusion-window.md); the author-reference
-campaign it replaced is in
+The measured yield windows and the cheap-first ladder (complete 2026-09-10)
+are in [illusion-window.md](illusion-window.md). That programme landed in
+PR #150, merged into the optimizer branch. PR #118 stays draft. The
+author-reference campaign the window replaced is in
 [illusion-reliability-60h.md](illusion-reliability-60h.md).
 
 ## Fabrication
