@@ -356,7 +356,8 @@ orientations and the printable prime.
 ## Window 2: results
 
 Phase `window2`, 98 entries producing 206 final-stage observations, finished in
-about 44 hours with zero failed cells. Its plan is
+about 44 hours with zero failed cells. SDS-end on the same 98 cells was rated
+2026-09-11 (score only, no frame). Its plan is
 `.local/illusion-reliability/campaigns/window2/PLAN.md`; the decision rules
 below were fixed in writing before any image was seen.
 
@@ -521,17 +522,49 @@ WITHDRAWN, and recorded because it was load-bearing for a day. An earlier versio
 of this section claimed 72 cells across the two windows were reruns of one
 configuration, agreeing at r = 0.10 with keeper status disagreeing 44 percent of
 the time, and concluded that one observation is "close to uninformative". Those
-72 cells match only at the `final` stage, because window 2 rated no other stage,
-and window 1's final is after EIGHT Dream rounds against window 2's one. The
-schedule is the largest effect either window measured, and it appears here as a
-mean shift of 1.19 against 1.81. Matching window 1's `dream_d1` against window
-2's `final` is closer to like-for-like and gives r = 0.196 with 28 of 72
-disagreeing, still crossing two implementations. Neither is a rerun; no
-configuration was ever run twice in either window. The conclusion was also wrong
-in the other direction: run agreement is 85.6 percent, not near-random.
+72 cells match only at the `final` stage, because at write-up time window 2 had
+rated no other stage, and window 1's final is after EIGHT Dream rounds against
+window 2's one. The schedule is the largest effect either window measured, and
+it appears here as a mean shift of 1.19 against 1.81. Matching window 1's
+`dream_d1` against window 2's `final` is closer to like-for-like and gives r =
+0.196 with 28 of 72 disagreeing, still crossing two implementations. Neither is
+a rerun; no configuration was ever run twice in either window. The conclusion
+was also wrong in the other direction: run agreement is 85.6 percent, not
+near-random.
+
+Window 2 SDS-end is now rated, so that hole is filled. The 72-cell final
+comparison stays withdrawn. The SDS-end sitting did not reopen those tables.
 
 What survives is that ranking cells by a single small-n margin ranks noise, which
 is what retired the best-cell hypothesis.
+
+### Window 2 SDS-end, rated 2026-09-11
+
+Zero GPU. 98 of 98 cells, score only. Script:
+`.local/illusion-reliability/campaigns/window2/review/analyse-sds-end.py`.
+
+Unit: one cell. Dream score for a cell is the mean of its negative-OFF finals.
+Forked cells contribute two arms. Unforked cells contribute one. Negative-ON
+is not in the mean. Better-of is not the primary delta.
+
+| Measure | Value |
+|---|---|
+| SDS-end mean | 1.510 |
+| SDS-end keep >= 3 | 40/98 |
+| Dream-mean keep >= 3 | 27/98 |
+| mean paired delta (SDS minus Dream mean) | -0.138 |
+| mean abs paired delta | 1.362 |
+| falsifier, abs(mean delta) >= 0.3 | did not fire |
+
+Histogram: 0x55, 2x3, 3x24, 4x10, 5x6. No frame at this stage. Do not treat a
+missing frame as clean.
+
+Dream-1 on window 2 is a near-tie with SDS-end. That matches window 1 SDS-end
+versus dream_d1 (both mean 0.93). Settled final-stage tables stay closed.
+
+Report only, not a falsifier: window 1 SDS-end at 5,000 steps is 35/180 keep
+>= 3. The corpora differ. Unique (pair, seed) `reference_sketch` match n=36,
+r = 0.700, MAD = 0.838. Not a rerun. Two implementations.
 
 ### The colour rule measured the wrong endpoint
 
@@ -1145,9 +1178,10 @@ which are the pairs that FAILED the >= 3 bar and so are negatively selected.
    an eighth of the cost. Run it only if P2 fails and the failure needs sizing across
    a broad corpus.
 
-**Status, 2026-09-10.** P0, P1, P2, P3 and P3b are complete. P4 stays off:
-P2 did not fail. No GPU window is queued. A new window needs a new question
-and a falsifier.
+**Status, 2026-09-11.** P0, P1, P2, P3 and P3b are complete. P4 stays off:
+P2 did not fail. Window 2 SDS-end is rated: 40/98 keep >= 3, mean paired
+delta -0.138, falsifier did not fire. No GPU window is queued. A new window
+needs a new question and a falsifier.
 
 ## Running it
 

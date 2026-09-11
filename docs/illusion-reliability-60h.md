@@ -1,5 +1,11 @@
 # Illusion Reliability: Author-Reference Campaign
 
+**Not run as the primary window.** The 36-cell `reference60h` plan was
+replaced by the measured yield window in
+[illusion-window.md](illusion-window.md). Keep this file as the record of
+that decision. PR #150 merged the later programme into the optimizer
+branch. PR #118 stays draft. `IllusionConfig` defaults are unchanged.
+
 This is an experiment-only reliability program. It does not change
 `IllusionConfig` defaults, select a new product default, or alter the PR #118
 acceptance gate.

@@ -1,17 +1,22 @@
 # Illusion reliability - status for next agent
 
-> **SUPERSEDED, last accurate 2026-07-29.** This file predates windows 2, 3, 4 and
-> 5 and its status is five windows out of date. The current state lives in
-> `.local/illusion-reliability/HANDOFF.md` (gitignored, primary checkout), and the
-> results write-up is [illusion-window.md](illusion-window.md). Read those first.
-> What stays useful here is the branch and PR discipline below.
+> **SUPERSEDED as a live status file, last fully accurate 2026-07-29.**
+> This file predates windows 2-7, P0 and P1. Measured results live in
+> [illusion-window.md](illusion-window.md). Pickup for the next agent is
+> `.local/illusion-reliability/HANDOFF.md` (gitignored, primary checkout).
+>
+> **PR #150 merged 2026-09-10** into `issue-115-illusion-optimizer`
+> (merge `019e962`). PR #118 stays draft on `main`. Product defaults stay
+> `legacy`. The cheap-first ladder is complete. P4 is off.
 
 Full protocol: [illusion-reliability.md](illusion-reliability.md).
 
 ## Branch
 
-- Branch: `illusion-reliability-program` (worktree may be used for GPU work)
-- Do **not** cherry-pick into PR #118 or change optimizer defaults yet.
+- Live stack after the merge: `issue-115-illusion-optimizer` (PR #118, still draft).
+- A worktree may still sit on `illusion-reliability-program`. Those commits
+  are in the merge. New work on this stack starts from the optimizer branch.
+- Do **not** merge #118 or change optimizer defaults yet.
 - Authorship: `leonfullxr` / DCO `-s` / no Co-authored-by.
 
 ## Durable local layout (gitignored)
