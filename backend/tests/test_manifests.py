@@ -1,3 +1,6 @@
+import urllib.request
+from unittest.mock import patch
+
 from app.manifests import (
     Manifest,
     _params_validator,
@@ -124,15 +127,90 @@ def test_parse_manifests_rejects_upscale_mixed_with_diffusion():
         raise AssertionError("expected ValueError")
 
 
-def test_unresolvable_schema_reference_does_not_escape():
-    # jsonschema raises Unresolvable past ValidationError, so an unhandled one
-    # would reach the request handler as a 500 (issue #203).
+def test_parse_manifests_rejects_remote_schema_reference():
+    try:
+        parse_manifests([{
+            "id": "remote",
+            "name": "Remote",
+            "capabilities": ["text_to_image"],
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": {"$ref": "https://example.com/a.json"}},
+            },
+        }])
+    except ValueError as error:
+        assert "same-document fragment" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_rejects_pattern_keyword():
+    try:
+        parse_manifests([{
+            "id": "patterned",
+            "name": "Patterned",
+            "capabilities": ["text_to_image"],
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": {"type": "string", "pattern": "^[a-z]+$"}},
+            },
+        }])
+    except ValueError as error:
+        assert "must not use pattern" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_allows_a_parameter_named_pattern():
+    parsed = parse_manifests([{
+        "id": "named-pattern",
+        "name": "Named pattern",
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}},
+        },
+    }])
+    assert parsed[0].id == "named-pattern"
+
+
+def test_validate_params_accepts_fragment_schema_reference():
     manifest = Manifest(
-        id="broken", name="broken", capabilities=["text_to_image"],
+        id="fragment", name="fragment", capabilities=["text_to_image"],
+        parameters={
+            "$defs": {"prompt": {"type": "string", "minLength": 1}},
+            "type": "object",
+            "properties": {"prompt": {"$ref": "#/$defs/prompt"}},
+            "required": ["prompt"],
+        },
+    )
+    assert validate_params(manifest, {"prompt": "hello"}) is None
+    assert validate_params(manifest, {"prompt": ""}) is not None
+
+
+def test_remote_schema_reference_does_not_fetch_at_validate_time():
+    manifest = Manifest(
+        id="remote", name="remote", capabilities=["text_to_image"],
         parameters={"type": "object",
                     "properties": {"prompt": {"$ref": "https://example.com/a.json"}}},
     )
-    assert validate_params(manifest, {"prompt": "x"}) is None
+    with patch.object(urllib.request, "urlopen") as urlopen:
+        validate_params(manifest, {"prompt": "x"})
+    urlopen.assert_not_called()
+
+
+def test_unresolvable_schema_reference_does_not_escape():
+    # jsonschema raises Unresolvable past ValidationError, so an unhandled one
+    # would reach the request handler as a 500 (issue #203). A missing fragment
+    # must not fetch over the network.
+    manifest = Manifest(
+        id="broken", name="broken", capabilities=["text_to_image"],
+        parameters={"type": "object",
+                    "properties": {"prompt": {"$ref": "#/$defs/missing"}}},
+    )
+    with patch.object(urllib.request, "urlopen") as urlopen:
+        assert validate_params(manifest, {"prompt": "x"}) is None
+    urlopen.assert_not_called()
 
 
 def test_schema_too_deep_to_walk_fails_closed():

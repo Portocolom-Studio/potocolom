@@ -1,6 +1,7 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { apiFetch } from '$lib/api';
 import { runFavoriteMigration } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
 import {
@@ -485,7 +486,7 @@ export async function migrateStoredFavorites(): Promise<void> {
 	if (stored.length === 0 || typeof localStorage === 'undefined') return;
 	const { retry, missing } = await runFavoriteMigration(stored, async (id) => {
 		try {
-			return (await fetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
+			return (await apiFetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
 		} catch {
 			return null;
 		}
@@ -699,7 +700,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		}
 	};
 	try {
-		const response = await fetch(`/api/v1/generations/${id}/star`, {
+		const response = await apiFetch(`/api/v1/generations/${id}/star`, {
 			method: optimistic.mutation.wasStarred ? 'DELETE' : 'POST'
 		});
 		if (!response.ok) {

@@ -27,6 +27,7 @@
 		strengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
+	import { apiFetch } from '$lib/api';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
 	import { estimatePromptTokens, exceedsWindow } from '$lib/prompt-tokens';
@@ -375,7 +376,7 @@
 				};
 				if (mode === 'image_to_image') params.strength = strengthValue;
 				if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
-				const response = await fetch('/api/v1/generations', {
+				const response = await apiFetch('/api/v1/generations', {
 					method: 'POST',
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify({
@@ -407,7 +408,7 @@
 		await runExclusive(submitLock, async () => {
 			errorText = '';
 			studio.selectedId = null;
-			const response = await fetch('/api/v1/generations', {
+			const response = await apiFetch('/api/v1/generations', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({

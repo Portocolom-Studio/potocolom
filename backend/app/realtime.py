@@ -54,6 +54,9 @@ CONTROL_GENERATION_PROTOCOL_VERSION = 4
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17  # 1 byte kind + 16 byte session uuid
+# Same 1 MiB as the JSON body cap; the wire sentence is in
+# docs/connection-handling.md. The worker bounds pixels and format separately.
+MAX_CANVAS_PAYLOAD_BYTES = 1 * 1024 * 1024
 
 CLOSE_PROTOCOL_VIOLATION = 4000
 CLOSE_UNSUPPORTED_VERSION = 4002
@@ -1187,6 +1190,8 @@ async def realtime(ws: WebSocket) -> None:
                     # for this connection's own session, nothing else.
                     if frame_session_id(data) != session.id or data[0] != CANVAS_FRAME:
                         raise ProtocolError("frame does not belong to this session")
+                    if len(data) > FRAME_HEADER_BYTES + MAX_CANVAS_PAYLOAD_BYTES:
+                        continue
                     if session.worker is not None:  # a dead worker means reassign is in flight
                         await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
