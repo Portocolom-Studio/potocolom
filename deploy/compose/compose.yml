@@ -9,6 +9,7 @@ x-logging: &default-logging
 services:
   api:
     logging: *default-logging
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
@@ -32,6 +33,7 @@ services:
 
   postgres:
     logging: *default-logging
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_USER: potocolom
@@ -47,6 +49,7 @@ services:
 
   worker:
     logging: *default-logging
+    restart: unless-stopped
     profiles: ["gpu"]
     build:
       context: ../..
@@ -78,6 +81,7 @@ services:
   # worker: run one profile or the other, not both.
   worker-rocm:
     logging: *default-logging
+    restart: unless-stopped
     profiles: ["rocm"]
     build:
       context: ../..
@@ -86,6 +90,10 @@ services:
       DEVICE: rocm
       API_URL: ws://api:8080/api/v1/fleet
       MODELS_DIR: /models
+      # Gated repositories (sd35-medium) need a Hugging Face read token; the
+      # hub client picks HF_TOKEN up from the environment. Empty is fine when
+      # no gated model is enabled.
+      HF_TOKEN: ${HF_TOKEN:-}
       FLEET_TOKEN: ${FLEET_SECRET}
     volumes:
       - models:/models
@@ -101,6 +109,7 @@ services:
   # Simulated worker for smoke tests (docker compose --profile smoke).
   worker-sim:
     logging: *default-logging
+    restart: unless-stopped
     profiles: ["smoke"]
     build:
       context: ../..

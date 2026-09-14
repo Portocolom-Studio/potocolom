@@ -17,6 +17,7 @@ from app.manifests import FRAME_P95_MAX_MS, Manifest
 from app.realtime import (
     CANVAS_FRAME,
     GENERATED_FRAME,
+    MAX_CANVAS_PAYLOAD_BYTES,
     MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     fleet_token_allowed,
@@ -786,6 +787,40 @@ def test_session_and_frame_relay_both_directions():
             assert worker_ws.receive_bytes() == canvas
 
             generated = bytes([GENERATED_FRAME]) + session.bytes + b"generated-payload"
+            worker_ws.send_bytes(generated)
+            assert browser_ws.receive_bytes() == generated
+
+
+def test_canvas_frame_payload_cap():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello())
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+
+            ready = expect(browser_ws, "ready")
+            session = uuid.UUID(ready["session_id"])
+
+            # The fixture is the documented 1 MiB, not the imported name, so a
+            # raised cap still forwards the oversize frame and this fails.
+            payload_cap = 1 * 1024 * 1024
+            assert MAX_CANVAS_PAYLOAD_BYTES == payload_cap
+            at_cap = bytes([CANVAS_FRAME]) + session.bytes + (b"x" * payload_cap)
+            browser_ws.send_bytes(at_cap)
+            assert worker_ws.receive_bytes() == at_cap
+
+            over_cap = bytes([CANVAS_FRAME]) + session.bytes + (b"x" * (payload_cap + 1))
+            browser_ws.send_bytes(over_cap)
+
+            after_drop = bytes([CANVAS_FRAME]) + session.bytes + b"after-drop"
+            browser_ws.send_bytes(after_drop)
+            assert worker_ws.receive_bytes() == after_drop
+
+            generated = bytes([GENERATED_FRAME]) + session.bytes + b"still-open"
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
 

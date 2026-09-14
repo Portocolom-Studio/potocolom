@@ -1597,6 +1597,20 @@ The shipped self-hosted profile publishes Uvicorn on the host with no reverse pr
 Rejected alternatives: relying on an operator-supplied proxy (the shipped compose file has none); a `Depends` on each route after FastAPI has already read the body (too late); a single 64 MiB cap for every path (JSON routes would still let an unauthenticated client pin hundreds of megabytes across concurrent requests).
 
 
+## Worker parameter schemas are evaluated locally
+
+A fleet hello carries a JSON Schema for each model's call parameters. The default jsonschema registry retrieves a remote `$ref` on the API event loop, and `pattern` is a ReDoS footgun. `parse_manifests` refuses a `$ref` that is not a same-document fragment and refuses `pattern` anywhere in the tree. Validators are constructed with an empty registry, so `validate` cannot retrieve even if parse is skipped. RecursionError still fails closed. No shipped manifest uses `$ref` or `pattern`.
+
+Rejected alternatives: a fetch timeout (the schema still talks to the network); allowing `pattern` with a complexity budget (nothing in tree needs it); merging this with the JSON body cap (hello schemas are not request bodies).
+
+
+## SSE progress is latest-value, not a history
+
+Each `GET /api/v1/generations/{id}/events` subscriber is an `asyncio.Queue` of size 1. A progress event replaces a queued one so a slow client cannot pin a tick per denoise step. A terminal event (`succeeded`, `failed`, `cancelled`) drains the queue and then puts, so a completion is never dropped for a stale progress sample. This is fleet backpressure, not HTTP rate limiting.
+
+Rejected alternatives: an unbounded queue (a paused tab holds every tick until it disconnects); dropping terminal events the same way as progress (the client would miss the completion); describing this as rate limiting (that decision remains deferred).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

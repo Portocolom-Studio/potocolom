@@ -10,7 +10,7 @@ can create an SNS topic, and every topic in a region is signed with the same
 key, so the signature alone says "some AWS customer sent this" and not "our
 provider said this". The topic is what makes it ours, and the topic's own
 access policy, which admits only SES, is what makes the topic worth anything
-(docs/aws-setup.md).
+(docs/decisions.md).
 """
 
 import base64

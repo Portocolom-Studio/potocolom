@@ -20,6 +20,8 @@ bytes 1-16   session id, UUID big endian
 bytes 17-    image payload (WebP in production; the simulation carries opaque bytes)
 ```
 
+Canvas payloads larger than 1 MiB after the 17-byte header are dropped by the API and the realtime socket stays open.
+
 Frames never contain JSON and control messages never contain image bytes; the two kinds are routable without parsing payloads.
 
 > Shipped status (2026-07-30): the 17-byte header above is the current wire and contains no sequence number or revision: one kind byte plus one 16-byte session UUID. Issue #19, "Real-Time Generation Protocol", owns monotonic input revisions and generated-output correlation, so its protocol-versioned result will supersede this header description when implemented.

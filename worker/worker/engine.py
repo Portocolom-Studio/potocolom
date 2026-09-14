@@ -49,6 +49,8 @@ ProgressFn = Callable[[float], None]
 T = TypeVar("T")
 
 REALTIME_SIZE = 512  # the realtime bar is 512 px (docs/decisions.md)
+_CANVAS_IMAGE_FORMATS = frozenset({"PNG", "WEBP"})
+_MAX_CANVAS_PIXELS = REALTIME_SIZE * REALTIME_SIZE * 4
 # After a non-OOM generation error, drop the resident model at most this often
 # so a permanently broken weight set cannot thrash load/unload (issue #103).
 POISON_EVICT_COOLDOWN_S = 30.0
@@ -2154,7 +2156,23 @@ class DiffusersEngine:
         frame_params = dict(params)
 
         def prepare_canvas() -> Image.Image:
-            canvas = Image.open(io.BytesIO(payload)).convert("RGB")
+            try:
+                with Image.open(io.BytesIO(payload)) as opened:
+                    if opened.format not in _CANVAS_IMAGE_FORMATS:
+                        raise ValueError(
+                            f"canvas image format {opened.format!r} is not supported",
+                        )
+                    width, height = opened.size
+                    if width * height > _MAX_CANVAS_PIXELS:
+                        raise ValueError(
+                            f"canvas image dimensions {width}x{height} exceed the "
+                            f"{_MAX_CANVAS_PIXELS} pixel limit",
+                        )
+                    canvas = opened.convert("RGB")
+            except Image.DecompressionBombError as error:
+                raise ValueError("canvas image exceeds the pixel limit") from error
+            except OSError as error:
+                raise ValueError("canvas image could not be decoded") from error
             canvas = canvas.resize((REALTIME_SIZE, REALTIME_SIZE))
             if manifest.t2i_adapter:
                 # Sketch-map conversion is Pillow work: keep it outside the

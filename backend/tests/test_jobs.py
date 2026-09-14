@@ -3351,6 +3351,43 @@ def test_thumbnail_source_is_rejected_and_not_counted_as_derivative():
             assert response.status_code == 422
             assert response.json()["detail"] == "source asset cannot be a thumbnail"
 
+def test_publish_progress_keeps_latest_only():
+    job_id = uuid.uuid4()
+    queue = asyncio.Queue(maxsize=1)
+    jobs.subscribers[job_id] = [queue]
+    try:
+        for index in range(150):
+            jobs.publish(job_id, {"state": "running", "progress": index / 150})
+            assert queue.qsize() <= 1
+        item = queue.get_nowait()
+        assert item["state"] == "running"
+        assert item["progress"] == 149 / 150
+        assert item["job_id"] == str(job_id)
+        assert queue.empty()
+    finally:
+        jobs.subscribers.pop(job_id, None)
+
+
+@pytest.mark.parametrize("terminal_state", jobs.TERMINAL_STATES)
+def test_publish_terminal_replaces_buffered_progress(terminal_state):
+    job_id = uuid.uuid4()
+    queue = asyncio.Queue(maxsize=1)
+    jobs.subscribers[job_id] = [queue]
+    try:
+        jobs.publish(job_id, {"state": "running", "progress": 0.1})
+        assert queue.qsize() == 1
+        if terminal_state == "succeeded":
+            jobs.publish(job_id, {"state": terminal_state, "url": "http://example.test/x"})
+        else:
+            jobs.publish(job_id, {"state": terminal_state, "reason": "done"})
+        item = queue.get_nowait()
+        assert item["state"] == terminal_state
+        assert item["job_id"] == str(job_id)
+        assert queue.empty()
+    finally:
+        jobs.subscribers.pop(job_id, None)
+
+
 def test_non_finite_progress_is_ignored():
     # A stored NaN breaks every generation response that carries it, and
     # publish() would emit the non-standard NaN token into SSE (issue #203).

@@ -62,3 +62,15 @@ test('wiring: login submit uses the shared guard', () => {
 	assert.match(loginSource, /view = initialAuthView\(page\.url\.search\)/);
 	assert.doesNotMatch(loginSource, /\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/);
 });
+
+test('wiring: generate panel posts use apiFetch', () => {
+	const generateSource = readFileSync(join(here, 'components/generate-panel.svelte'), 'utf8');
+	assert.match(generateSource, /apiFetch/);
+	assert.match(generateSource, /apiFetch\('\/api\/v1\/generations'/);
+});
+
+test('wiring: studio star writes use apiFetch', () => {
+	const studioSource = readFileSync(join(here, 'studio.svelte.ts'), 'utf8');
+	assert.match(studioSource, /apiFetch/);
+	assert.match(studioSource, /apiFetch\(`\/api\/v1\/generations\/\$\{id\}\/star`/);
+});

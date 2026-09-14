@@ -1,7 +1,9 @@
 import asyncio
 import io
+import struct
 import sys
 import time
+import zlib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -325,6 +327,79 @@ def _canvas_payload() -> bytes:
     source = io.BytesIO()
     Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
     return source.getvalue()
+
+
+def _webp_canvas_payload() -> bytes:
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "WEBP")
+    return source.getvalue()
+
+
+def _oversized_png_payload(width: int = 1025, height: int = 1025) -> bytes:
+    def png_chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    idat = png_chunk(b"IDAT", zlib.compress(b"\x00"))
+    return signature + png_chunk(b"IHDR", ihdr) + idat + png_chunk(b"IEND", b"")
+
+
+def test_prepare_canvas_accepts_png_and_webp():
+    pipeline = _RenderPipeline()
+    engine = _frame_engine(pipeline)
+    manifest = _realtime_manifest()
+
+    async def scenario():
+        await engine.frame(manifest, {"prompt": "w0 w1"}, _canvas_payload())
+        await engine.frame(manifest, {"prompt": "w0 w1"}, _webp_canvas_payload())
+
+    asyncio.run(scenario())
+    assert len(pipeline.render_kwargs) == 2
+    for kwargs in pipeline.render_kwargs:
+        assert kwargs["image"].size == (REALTIME_SIZE, REALTIME_SIZE)
+
+
+def test_prepare_canvas_refuses_oversized_dimensions():
+    engine = _frame_engine(_RenderPipeline())
+    manifest = _realtime_manifest()
+
+    async def scenario():
+        with pytest.raises(ValueError, match="pixel limit"):
+            await engine.frame(
+                manifest, {"prompt": "w0 w1"}, _oversized_png_payload(),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_prepare_canvas_refuses_non_image_payload():
+    engine = _frame_engine(_RenderPipeline())
+    manifest = _realtime_manifest()
+
+    async def scenario():
+        with pytest.raises(ValueError, match="could not be decoded"):
+            await engine.frame(manifest, {"prompt": "w0 w1"}, b"not-an-image")
+
+    asyncio.run(scenario())
+
+
+def test_prepare_canvas_refuses_unsupported_format():
+    engine = _frame_engine(_RenderPipeline())
+    manifest = _realtime_manifest()
+    source = io.BytesIO()
+    Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "JPEG")
+
+    async def scenario():
+        with pytest.raises(ValueError, match="not supported"):
+            await engine.frame(manifest, {"prompt": "w0 w1"}, source.getvalue())
+
+    asyncio.run(scenario())
 
 
 def test_long_prompt_embeddings_span_multiple_clip_windows():

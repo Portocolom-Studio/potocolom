@@ -263,8 +263,23 @@ def _worker_int(value: object, default: int = 0) -> int:
 
 def publish(job_id: uuid.UUID, event: dict) -> None:
     event = {"job_id": str(job_id), **event}
+    terminal = event.get("state") in TERMINAL_STATES
     for queue in subscribers.get(job_id, []):
-        queue.put_nowait(event)
+        if terminal:
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            queue.put_nowait(event)
+        else:
+            while True:
+                try:
+                    queue.put_nowait(event)
+                    break
+                except asyncio.QueueFull:
+                    with suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
 
 
 class GenerationRequest(BaseModel):
@@ -1170,7 +1185,7 @@ async def generation_events(
 ) -> StreamingResponse:
     job = await owned_job(session, job_id, user)
     # Subscribe before snapshotting so nothing falls between the two.
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     subscribers.setdefault(job_id, []).append(queue)
     snapshot = (await serialize_jobs(session, [job]))[0]
 

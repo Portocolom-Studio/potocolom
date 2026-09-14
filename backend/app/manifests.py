@@ -11,6 +11,7 @@ from functools import lru_cache
 
 import jsonschema
 from jsonschema import Draft202012Validator
+from referencing import Registry
 from referencing.exceptions import Unresolvable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -81,11 +82,32 @@ def validate_capability_exclusivity(manifest: Manifest) -> None:
         )
 
 
+def _reject_unsafe_parameter_schema(schema: object, manifest_id: str) -> None:
+    """Reject remote $ref and pattern before schemas reach validation."""
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            ref = schema["$ref"]
+            if not isinstance(ref, str) or not ref.startswith("#"):
+                raise ValueError(
+                    f"manifest {manifest_id}: parameter schema $ref must be a "
+                    "same-document fragment"
+                )
+        if "pattern" in schema:
+            raise ValueError(
+                f"manifest {manifest_id}: parameter schema must not use pattern"
+            )
+        for value in schema.values():
+            _reject_unsafe_parameter_schema(value, manifest_id)
+    elif isinstance(schema, list):
+        for item in schema:
+            _reject_unsafe_parameter_schema(item, manifest_id)
+
+
 @lru_cache(maxsize=128)
 def _params_validator(schema_json: str) -> Draft202012Validator:
     schema = json.loads(schema_json)
     Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema)
+    return Draft202012Validator(schema, registry=Registry())
 
 
 # Deeper than any real parameter set or schema, and far below the depth at
@@ -208,9 +230,12 @@ def parse_manifests(raw: object) -> list[Manifest]:
         validate_capability_exclusivity(manifest)
         # parameters is persisted to a JSONB column, which has no NaN or
         # Infinity; without this the upsert kills the socket on every reconnect.
+        # Depth is checked here first so the schema walk below cannot
+        # RecursionError on a tree json.loads already accepted.
         if not json_finite(manifest.parameters):
             raise ValueError(
                 f"manifest {manifest.id}: parameters are too deeply nested or contain "
                 "a value JSON storage cannot hold"
             )
+        _reject_unsafe_parameter_schema(manifest.parameters, manifest.id)
     return manifests
