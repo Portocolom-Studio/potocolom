@@ -83,13 +83,20 @@ def validate_capability_exclusivity(manifest: Manifest) -> None:
 
 
 _SCHEMA_MAP_KEYS = frozenset({
-    "properties", "patternProperties", "$defs", "definitions", "dependentSchemas",
+    "properties", "$defs", "definitions", "dependentSchemas",
 })
 _SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+# Instance data, not subschemas. Walking them treats a default named pattern
+# as the ReDoS keyword and refuses a legal hello.
+_SCHEMA_DATA_KEYS = frozenset({"default", "const", "enum", "examples"})
 
 
 def _reject_unsafe_parameter_schema(schema: object, manifest_id: str) -> None:
-    """Reject remote $ref and pattern keywords, not property names."""
+    """Reject remote $ref, pattern, and patternProperties as schema keywords.
+
+    Property names and annotation values (default, const, enum, examples) are
+    instance data, not keywords.
+    """
     _reject_schema_node(schema, manifest_id)
 
 
@@ -106,7 +113,14 @@ def _reject_schema_node(node: object, manifest_id: str) -> None:
             raise ValueError(
                 f"manifest {manifest_id}: parameter schema must not use pattern"
             )
+        if "patternProperties" in node:
+            raise ValueError(
+                f"manifest {manifest_id}: parameter schema must not use "
+                "patternProperties"
+            )
         for key, value in node.items():
+            if key in _SCHEMA_DATA_KEYS:
+                continue
             if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
                 for item in value.values():
                     _reject_schema_node(item, manifest_id)
