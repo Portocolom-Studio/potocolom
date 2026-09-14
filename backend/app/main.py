@@ -40,6 +40,7 @@ from app.registry import router as registry_router
 from app.roles import router as roles_router
 from app.states import router as states_router
 from app.shares import router as shares_router
+from app.body_limit import RequestBodyLimitMiddleware
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.storage import get_storage
@@ -130,9 +131,10 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
-# User middleware covers API, static, SPA fallbacks, and handled HTTP errors.
-# Unhandled 500s are emitted by ServerErrorMiddleware outside that stack, so
-# they get headers from the Exception handler below instead.
+# Body limit is inside the headers wrapper so a 413 still carries
+# SECURITY_HEADERS. Unhandled 500s are emitted by ServerErrorMiddleware
+# outside that stack, so they get headers from the Exception handler below.
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
