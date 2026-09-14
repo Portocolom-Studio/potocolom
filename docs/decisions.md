@@ -1599,7 +1599,7 @@ Rejected alternatives: relying on an operator-supplied proxy (the shipped compos
 
 ## Worker parameter schemas are evaluated locally
 
-A fleet hello carries a JSON Schema for each model's call parameters. The default jsonschema registry retrieves a remote `$ref` on the API event loop, and `pattern` is a ReDoS footgun. `parse_manifests` refuses a `$ref` that is not a same-document fragment and refuses `pattern` anywhere in the tree. Validators are constructed with an empty registry, so `validate` cannot retrieve even if parse is skipped. RecursionError still fails closed. No shipped manifest uses `$ref` or `pattern`.
+A fleet hello carries a JSON Schema for each model's call parameters. The default jsonschema registry retrieves a remote `$ref` on the API event loop, and `pattern` and `patternProperties` are ReDoS footguns. `parse_manifests` refuses a `$ref` that is not a same-document fragment and refuses `pattern` and `patternProperties` as schema keywords. Annotation values (`default`, `const`, `enum`, `examples`) are instance data and are not walked. Validators are constructed with an empty registry, so `validate` cannot retrieve even if parse is skipped. RecursionError still fails closed. No shipped manifest uses `$ref`, `pattern` or `patternProperties`.
 
 Rejected alternatives: a fetch timeout (the schema still talks to the network); allowing `pattern` with a complexity budget (nothing in tree needs it); merging this with the JSON body cap (hello schemas are not request bodies).
 

@@ -174,6 +174,44 @@ def test_parse_manifests_allows_a_parameter_named_pattern():
     assert parsed[0].id == "named-pattern"
 
 
+def test_parse_manifests_rejects_pattern_properties():
+    try:
+        parse_manifests([{
+            "id": "pattern-properties",
+            "name": "Pattern properties",
+            "capabilities": ["text_to_image"],
+            "parameters": {
+                "type": "object",
+                "patternProperties": {"^(a+)+$": {"type": "string"}},
+            },
+        }])
+    except ValueError as error:
+        assert "must not use patternProperties" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_allows_pattern_in_annotation_values():
+    parsed = parse_manifests([{
+        "id": "annotated",
+        "name": "Annotated",
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "object",
+                    "default": {"pattern": "x"},
+                    "const": {"$ref": "https://example.com/a.json"},
+                    "enum": [{"pattern": "^[a-z]+$"}],
+                    "examples": [{"$ref": "https://example.com/b.json"}],
+                },
+            },
+        },
+    }])
+    assert parsed[0].id == "annotated"
+
+
 def test_validate_params_accepts_fragment_schema_reference():
     manifest = Manifest(
         id="fragment", name="fragment", capabilities=["text_to_image"],
