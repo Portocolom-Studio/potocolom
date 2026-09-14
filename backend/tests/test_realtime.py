@@ -1,6 +1,8 @@
 import asyncio
+import re
 import time
 import uuid
+from pathlib import Path
 
 import anyio
 import pytest
@@ -823,6 +825,25 @@ def test_canvas_frame_payload_cap():
             generated = bytes([GENERATED_FRAME]) + session.bytes + b"still-open"
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
+
+
+def test_api_start_commands_cap_websocket_receive():
+    # The fixture is the documented 2 MiB, not an imported name, so raising
+    # the receive cap without updating the start commands still fails.
+    receive_cap = 2 * 1024 * 1024
+    payload_cap = 1 * 1024 * 1024
+    assert receive_cap > 17 + payload_cap
+    root = Path(__file__).resolve().parents[2]
+    for rel in (
+        "deploy/docker/Dockerfile.api",
+        "Makefile",
+        "scripts/dev-stack.sh",
+        "scripts/simulate.py",
+        "scripts/prototype-slow-consumer.py",
+        "scripts/profile-two-session-e2e.py",
+    ):
+        found = re.findall(r"--ws-max-size[\",= ]+(\d+)", (root / rel).read_text())
+        assert found == [str(receive_cap)], rel
 
 
 def test_worker_relay_requires_its_session_and_generated_frames():

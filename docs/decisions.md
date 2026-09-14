@@ -1611,6 +1611,13 @@ Each `GET /api/v1/generations/{id}/events` subscriber is an `asyncio.Queue` of s
 Rejected alternatives: an unbounded queue (a paused tab holds every tick until it disconnects); dropping terminal events the same way as progress (the client would miss the completion); describing this as rate limiting (that decision remains deferred).
 
 
+## WebSocket receive size is 2 MiB
+
+Uvicorn's default `--ws-max-size` is 16 MiB. The 1 MiB canvas drop runs after the whole message is in memory. Every in-tree uvicorn start command sets 2 MiB. That is larger than 17 bytes plus 1 MiB, so an oversize canvas still drops and the socket stays open. A message over 2 MiB closes with 1009.
+
+Rejected alternatives: leaving the 16 MiB default (a browser can pin 16 MiB per message); setting the receive size to 1 MiB plus the header (uvicorn would close the socket before the drop).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

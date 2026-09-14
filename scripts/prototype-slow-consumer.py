@@ -173,7 +173,8 @@ async def main() -> None:
     api = worker = None
     api = subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
-         "--port", str(PORT), "--log-level", "warning"],
+         "--port", str(PORT), "--log-level", "warning",
+         "--ws-max-size", "2097152"],
         cwd=ROOT / "backend")
     worker = subprocess.Popen(
         [interpreter("worker"), "-m", "worker"],
