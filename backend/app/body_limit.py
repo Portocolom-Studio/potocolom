@@ -14,9 +14,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 import app.files as files
 import app.ses_feedback as ses_feedback
 
-# Larger than any JSON the routes accept. Small enough that concurrent
-# unauthenticated requests cannot pin gigabytes in the API process. File
-# uploads stay at 64 MiB and SES feedback stays at 512 KiB.
+# Larger than any JSON the routes accept. This is a per-request bound, not
+# a process bound: one unauthenticated JSON body cannot exceed 1 MiB.
+# File uploads stay at 64 MiB and SES feedback stays at 512 KiB.
 MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
 
 TOO_LARGE = "request body too large"

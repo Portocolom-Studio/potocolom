@@ -153,6 +153,7 @@ def test_chunked_file_upload_over_the_upload_cap_is_413(monkeypatch):
         )
     assert response.status_code == 413
     assert response.json() == {"detail": TOO_LARGE}
+    _assert_security_headers(response)
     assert ran == ["handler"]
 
 
