@@ -161,6 +161,19 @@ def test_parse_manifests_rejects_pattern_keyword():
         raise AssertionError("expected ValueError")
 
 
+def test_parse_manifests_allows_a_parameter_named_pattern():
+    parsed = parse_manifests([{
+        "id": "named-pattern",
+        "name": "Named pattern",
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}},
+        },
+    }])
+    assert parsed[0].id == "named-pattern"
+
+
 def test_validate_params_accepts_fragment_schema_reference():
     manifest = Manifest(
         id="fragment", name="fragment", capabilities=["text_to_image"],

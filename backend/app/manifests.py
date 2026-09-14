@@ -82,25 +82,42 @@ def validate_capability_exclusivity(manifest: Manifest) -> None:
         )
 
 
+_SCHEMA_MAP_KEYS = frozenset({
+    "properties", "patternProperties", "$defs", "definitions", "dependentSchemas",
+})
+_SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
+
 def _reject_unsafe_parameter_schema(schema: object, manifest_id: str) -> None:
-    """Reject remote $ref and pattern before schemas reach validation."""
-    if isinstance(schema, dict):
-        if "$ref" in schema:
-            ref = schema["$ref"]
+    """Reject remote $ref and pattern keywords, not property names."""
+    _reject_schema_node(schema, manifest_id)
+
+
+def _reject_schema_node(node: object, manifest_id: str) -> None:
+    if isinstance(node, dict):
+        if "$ref" in node:
+            ref = node["$ref"]
             if not isinstance(ref, str) or not ref.startswith("#"):
                 raise ValueError(
                     f"manifest {manifest_id}: parameter schema $ref must be a "
                     "same-document fragment"
                 )
-        if "pattern" in schema:
+        if "pattern" in node:
             raise ValueError(
                 f"manifest {manifest_id}: parameter schema must not use pattern"
             )
-        for value in schema.values():
-            _reject_unsafe_parameter_schema(value, manifest_id)
-    elif isinstance(schema, list):
-        for item in schema:
-            _reject_unsafe_parameter_schema(item, manifest_id)
+        for key, value in node.items():
+            if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+                for item in value.values():
+                    _reject_schema_node(item, manifest_id)
+            elif key in _SCHEMA_ARRAY_KEYS and isinstance(value, list):
+                for item in value:
+                    _reject_schema_node(item, manifest_id)
+            else:
+                _reject_schema_node(value, manifest_id)
+    elif isinstance(node, list):
+        for item in node:
+            _reject_schema_node(item, manifest_id)
 
 
 @lru_cache(maxsize=128)

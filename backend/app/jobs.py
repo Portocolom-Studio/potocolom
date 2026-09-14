@@ -272,14 +272,19 @@ def publish(job_id: uuid.UUID, event: dict) -> None:
                 except asyncio.QueueEmpty:
                     break
             queue.put_nowait(event)
-        else:
-            while True:
+            continue
+        while True:
+            try:
+                queue.put_nowait(event)
+                break
+            except asyncio.QueueFull:
                 try:
-                    queue.put_nowait(event)
+                    queued = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    continue
+                if queued.get("state") in TERMINAL_STATES:
+                    queue.put_nowait(queued)
                     break
-                except asyncio.QueueFull:
-                    with suppress(asyncio.QueueEmpty):
-                        queue.get_nowait()
 
 
 class GenerationRequest(BaseModel):

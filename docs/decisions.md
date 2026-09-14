@@ -1606,7 +1606,7 @@ Rejected alternatives: a fetch timeout (the schema still talks to the network); 
 
 ## SSE progress is latest-value, not a history
 
-Each `GET /api/v1/generations/{id}/events` subscriber is an `asyncio.Queue` of size 1. A progress event replaces a queued one so a slow client cannot pin a tick per denoise step. A terminal event (`succeeded`, `failed`, `cancelled`) drains the queue and then puts, so a completion is never dropped for a stale progress sample. This is fleet backpressure, not HTTP rate limiting.
+Each `GET /api/v1/generations/{id}/events` subscriber is an `asyncio.Queue` of size 1. A progress event replaces a queued one so a slow client cannot pin a tick per denoise step. A terminal event (`succeeded`, `failed`, `cancelled`) drains the queue and then puts. A later progress event does not replace a queued completion. This is fleet backpressure, not HTTP rate limiting.
 
 Rejected alternatives: an unbounded queue (a paused tab holds every tick until it disconnects); dropping terminal events the same way as progress (the client would miss the completion); describing this as rate limiting (that decision remains deferred).
 
