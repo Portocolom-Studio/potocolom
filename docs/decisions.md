@@ -1590,6 +1590,13 @@ Rejected alternative: rewriting the edge `{#each}` or extracting
 churn.
 
 
+## Request bodies are capped in the API process
+
+The shipped self-hosted profile publishes Uvicorn on the host with no reverse proxy in front, so a body limit has to live in the application. One ASGI wrapper counts bytes and answers 413 before FastAPI buffers JSON. File uploads keep 64 MiB. SES feedback keeps 512 KiB. Other JSON and form requests cap at 1 MiB.
+
+Rejected alternatives: relying on an operator-supplied proxy (the shipped compose file has none); a `Depends` on each route after FastAPI has already read the body (too late); a single 64 MiB cap for every path (JSON routes would still let an unauthenticated client pin hundreds of megabytes across concurrent requests).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

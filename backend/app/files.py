@@ -61,6 +61,8 @@ async def upload(key: str, request: Request) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    # Same ceiling as RequestBodyLimitMiddleware. That wrapper raises first
+    # on the live stack; this stays so the route still caps if mounted alone.
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > MAX_UPLOAD_BYTES:

@@ -213,6 +213,8 @@ def _addresses(payload: dict) -> tuple[str, list[str]]:
 
 async def _envelope(request: Request) -> dict:
     """Read with a ceiling, then parse. None of this is authenticated yet."""
+    # Same ceiling as RequestBodyLimitMiddleware. That wrapper raises first
+    # on the live stack; this stays so the route still caps if mounted alone.
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > MAX_BODY_BYTES:
