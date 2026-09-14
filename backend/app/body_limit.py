@@ -106,9 +106,11 @@ class RequestBodyLimitMiddleware:
 
         async def replay() -> Message:
             nonlocal replayed
-            if replayed:
-                return {"type": "http.request", "body": b"", "more_body": False}
-            replayed = True
-            return {"type": "http.request", "body": bytes(body), "more_body": False}
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            # Streaming responses wait here for http.disconnect. Swallowing
+            # that message leaves the sender looping on the request body.
+            return await receive()
 
         await self.app(scope, replay, send)

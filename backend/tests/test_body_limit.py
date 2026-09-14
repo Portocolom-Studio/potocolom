@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
+from starlette.responses import StreamingResponse
 
 from app.body_limit import (
     MAX_JSON_BODY_BYTES,
@@ -66,6 +67,15 @@ def _limited_app(monkeypatch, json_limit: int = 16):
         ran.append("handler")
         await request.body()
         return {"ok": True}
+
+    @inner.get("/api/v1/export-stream")
+    async def export_stream() -> StreamingResponse:
+        ran.append("handler")
+
+        async def chunks():
+            yield b"ok"
+
+        return StreamingResponse(chunks())
 
     return inner, ran
 
@@ -166,6 +176,17 @@ def test_shared_oversized_body_is_413_on_the_real_app(monkeypatch):
     assert response.status_code == 413
     assert response.json() == {"detail": TOO_LARGE}
     _assert_security_headers(response)
+
+
+def test_streaming_response_still_completes(monkeypatch):
+    """Starlette waits on receive() for disconnect while it streams. The
+    wrapper must not eat that message after it has replayed the body."""
+    inner, ran = _limited_app(monkeypatch, json_limit=64)
+    with TestClient(inner) as client:
+        response = client.get("/api/v1/export-stream")
+    assert response.status_code == 200
+    assert response.content == b"ok"
+    assert ran == ["handler"]
 
 
 def test_body_limit_skips_websocket():
