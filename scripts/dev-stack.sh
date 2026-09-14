@@ -214,7 +214,7 @@ cmd_start() {
 		ALLOWED_ORIGINS=\"http://localhost:$WEB_PORT\" \
 		PUBLIC_URL=\"http://localhost:$API_PORT\" \
 		DATABASE_URL=$(printf '%q' "$DATABASE_URL") \
-		exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $API_PORT"
+		exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $API_PORT --ws-max-size 2097152"
 
 	echo "Starting frontend on :$WEB_PORT..."
 	start_one web "$DEV_DIR/web.pid" \

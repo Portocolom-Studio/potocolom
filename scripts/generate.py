@@ -4,7 +4,7 @@
 
 Requires the backend and a worker running (docs/local-development.md), e.g.:
 
-    cd backend && STORAGE_LOCAL_PATH=../data .venv/bin/uvicorn app.main:app
+    cd backend && STORAGE_LOCAL_PATH=../data .venv/bin/uvicorn app.main:app --ws-max-size 2097152
     cd worker  && MODELS_DIR=models DEVICE=rocm .venv/bin/python -m worker
 
 Without MODELS_DIR the worker runs the simulated engine and this script

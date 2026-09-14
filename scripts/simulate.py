@@ -71,7 +71,8 @@ def spawn_api() -> subprocess.Popen:
     env = os.environ | {"FLEET_TOKEN_KEY": _FLEET_TOKEN}
     return subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
-         "--port", str(PORT), "--log-level", "warning"],
+         "--port", str(PORT), "--log-level", "warning",
+         "--ws-max-size", "2097152"],
         cwd=ROOT / "backend",
         env=env,
     )

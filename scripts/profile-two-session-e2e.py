@@ -176,7 +176,8 @@ def spawn_api(port: int, storage: Path) -> subprocess.Popen:
     log = open(storage / "api.log", "w")
     return subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
-         "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+         "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning",
+         "--ws-max-size", "2097152"],
         cwd=ROOT / "backend",
         env=env,
         stdout=log,

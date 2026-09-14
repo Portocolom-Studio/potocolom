@@ -104,7 +104,7 @@ docker compose -f deploy/compose/dev.yml up -d
 # Manual equivalent - the interpreter must be 3.11+, not a system python3 of 3.10:
 # backend, from backend/
 python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e ".[dev]"
-.venv/bin/uvicorn app.main:app --reload          # http://localhost:8000/api/v1/health
+.venv/bin/uvicorn app.main:app --reload --ws-max-size 2097152          # http://localhost:8000/api/v1/health
 .venv/bin/ruff check . && .venv/bin/pytest       # lint and tests
 
 # frontend, from frontend/

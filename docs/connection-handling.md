@@ -20,7 +20,7 @@ bytes 1-16   session id, UUID big endian
 bytes 17-    image payload (WebP in production; the simulation carries opaque bytes)
 ```
 
-Canvas payloads larger than 1 MiB after the 17-byte header are dropped by the API and the realtime socket stays open.
+Canvas payloads larger than 1 MiB after the 17-byte header are dropped by the API and the realtime socket stays open. Uvicorn receives at most 2 MiB (`--ws-max-size`). A larger message closes the socket with 1009.
 
 Frames never contain JSON and control messages never contain image bytes; the two kinds are routable without parsing payloads.
 
