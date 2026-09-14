@@ -1618,6 +1618,13 @@ Uvicorn's default `--ws-max-size` is 16 MiB. The 1 MiB canvas drop runs after th
 Rejected alternatives: leaving the 16 MiB default (a browser can pin 16 MiB per message); setting the receive size to 1 MiB plus the header (uvicorn would close the socket before the drop).
 
 
+## Worker Pillow floor is 12.3
+
+The range was `>=12,<13`, which already admits 12.3. A local venv can still sit on 12.2. The floor is 12.3 so resolve cannot pick 12.0 through 12.2.
+
+Rejected alternatives: leaving `>=12,<13` (a stale venv stays on 12.2); raising only the Docker image (the worker extra is what `make setup` installs).
+
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.
