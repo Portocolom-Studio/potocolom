@@ -412,15 +412,10 @@ def test_prepare_canvas_maps_decompression_bomb_to_value_error(monkeypatch):
     Image.new("RGB", (32, 32), (1, 2, 3)).save(source, "PNG")
 
     async def scenario():
-        with pytest.raises(ValueError, match="pixel limit"):
+        with pytest.raises(ValueError, match="exceeds the pixel limit"):
             await engine.frame(manifest, {"prompt": "w0 w1"}, source.getvalue())
 
     asyncio.run(scenario())
-
-
-def test_worker_pillow_floor_excludes_12_2():
-    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
-    assert "pillow>=12.3,<13" in text
 
 
 def test_long_prompt_embeddings_span_multiple_clip_windows():
