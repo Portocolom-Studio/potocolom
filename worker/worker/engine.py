@@ -2170,6 +2170,8 @@ class DiffusersEngine:
                         )
                     canvas = opened.convert("RGB")
             except Image.DecompressionBombError as error:
+                # Not an OSError in Pillow 12, so this cannot share the
+                # decode handler.
                 raise ValueError("canvas image exceeds the pixel limit") from error
             except OSError as error:
                 raise ValueError("canvas image could not be decoded") from error

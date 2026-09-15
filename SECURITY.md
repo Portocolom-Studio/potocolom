@@ -40,6 +40,7 @@ Known and deliberate, so not vulnerabilities:
 - **Request bodies are bounded before the framework parses them.** JSON and form requests cap at 1 MiB. `PUT /api/v1/files/...` keeps the 64 MiB upload cap. `POST /api/v1/mail/feedback` keeps the 512 KiB SNS cap. Anything larger answers 413 without running the JSON route. This is a size cap, not rate limiting.
 - **WebSocket messages are received up to 2 MiB.** Canvas payloads over 1 MiB after the 17-byte header are dropped and the realtime socket stays open. A message over 2 MiB closes the socket (1009). This is a size cap, not rate limiting.
 - **Worker parameter schemas never fetch.** Hello refuses a `$ref` that is not a same-document fragment and refuses the `pattern` and `patternProperties` keywords. Validation uses an empty JSON Schema registry, so a schema that bypasses parse still cannot retrieve a URL.
+- **Worker Pillow is `>=12.3,<13`.** 12.0 through 12.2 admitted EPS and JPEG2000 decoder bugs. The canvas path still refuses those formats. The floor keeps a stale venv from resolving them.
 - **There is no rate limiting.** Deferred by recorded decision, see [docs/decisions.md](docs/decisions.md).
 - **Pull requests execute contributor code on a self-hosted runner.** Accepted for a solo org and documented in [docs/self-hosted-runner.md](docs/self-hosted-runner.md).
 
