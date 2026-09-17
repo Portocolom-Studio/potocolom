@@ -2127,7 +2127,7 @@
 						<dd class="mt-2 grid grid-cols-2 gap-x-4 gap-y-2">
 							{#each selectedParams as [key, value] (key)}
 								<span class="text-muted-foreground">{key}</span>
-								<span class="min-w-0 break-words text-end font-mono text-xs">
+								<span class="min-w-0 break-words text-end font-sans text-xs tabular-nums">
 									{paramValue(value)}
 								</span>
 							{/each}

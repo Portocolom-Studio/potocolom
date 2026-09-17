@@ -241,6 +241,7 @@
 	}
 
 	.readout strong {
+		font-family: var(--k-display);
 		font-size: 1rem;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.03em;
@@ -248,6 +249,7 @@
 
 	.readout span {
 		color: var(--k-muted);
+		font-family: var(--k-display);
 		font-size: 0.72rem;
 		letter-spacing: 0.03em;
 	}

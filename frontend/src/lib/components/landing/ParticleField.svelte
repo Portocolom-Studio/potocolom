@@ -38,13 +38,13 @@
 		let height = 0;
 		let quiet = 'rgba(255,255,255,0.18)';
 		let accent = 'rgb(80,140,255)';
-		let face = 'sans-serif';
+		let face = "'Lato', ui-sans-serif, system-ui, sans-serif";
 
 		const readStyles = () => {
 			const styles = getComputedStyle(canvas);
 			quiet = styles.getPropertyValue('--pf-quiet').trim() || 'rgba(255,255,255,0.18)';
 			accent = styles.getPropertyValue('--pf-accent').trim() || 'rgb(80,140,255)';
-			face = styles.fontFamily || 'sans-serif';
+			face = styles.fontFamily || "'Lato', ui-sans-serif, system-ui, sans-serif";
 		};
 		readStyles();
 
@@ -225,5 +225,6 @@
 		width: 100%;
 		height: 100%;
 		pointer-events: none;
+		font-family: var(--k-display, 'Lato', ui-sans-serif, system-ui, sans-serif);
 	}
 </style>

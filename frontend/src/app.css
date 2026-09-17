@@ -1,15 +1,17 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn-svelte/tailwind.css';
-@import '@fontsource-variable/geist';
+@import '@fontsource/lato/latin-300.css';
+@import '@fontsource/lato/latin-400.css';
+@import '@fontsource/lato/latin-700.css';
+@import '@fontsource/lato/latin-900.css';
 
 @custom-variant dark (&:is(.dark *));
 
 /* Dark is the designed theme (decided): dark values live on :root directly.
    Light-ready: a future light pass moves these under .dark and puts light
    values here - the token structure does not change.
-   Palette: preset b5d4GulZA (style maia, radius 0, Geist) with its warm
-   taupe neutrals re-tinted to the black + blue brand hue (~265). */
+   Trial: Lato + black chrome with dark-navy accents, not a blue fill. */
 :root {
 	--radius: 0rem;
 	--background: oklch(0.145 0.012 265);
@@ -18,18 +20,18 @@
 	--card-foreground: oklch(0.985 0.002 265);
 	--popover: oklch(0.205 0.012 265);
 	--popover-foreground: oklch(0.985 0.002 265);
-	--primary: oklch(0.424 0.199 265.6);
-	--primary-foreground: oklch(0.97 0.014 254.6);
+	--primary: oklch(0.32 0.09 265);
+	--primary-foreground: oklch(0.96 0.01 265);
 	--secondary: oklch(0.27 0.012 265);
 	--secondary-foreground: oklch(0.985 0.002 265);
 	--muted: oklch(0.26 0.012 265);
 	--muted-foreground: oklch(0.71 0.02 262);
-	--accent: oklch(0.26 0.02 262);
+	--accent: oklch(0.24 0.04 268);
 	--accent-foreground: oklch(0.985 0.002 265);
 	--destructive: oklch(0.704 0.191 22.2);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.55 0.06 262);
+	--ring: oklch(0.32 0.09 265);
 	/* Categorical chart palette (dark, validated via .local/validate_palette.js;
 	   adjacent-pair CVD checks pass for all six slots) */
 	--chart-1: #5588e8;
@@ -43,21 +45,21 @@
 	--status-error: #d95f58;
 	--status-running: #45b8d4;
 	--status-neutral: #7a7f8c;
-	--sidebar: oklch(0.17 0.012 265);
+	--sidebar: oklch(0.17 0.02 268);
 	--sidebar-foreground: oklch(0.985 0.002 265);
-	--sidebar-primary: oklch(0.623 0.214 259.8);
-	--sidebar-primary-foreground: oklch(0.97 0.014 254.6);
-	--sidebar-accent: oklch(0.26 0.012 265);
+	--sidebar-primary: oklch(0.32 0.09 265);
+	--sidebar-primary-foreground: oklch(0.96 0.01 265);
+	--sidebar-accent: oklch(0.24 0.05 268);
 	--sidebar-accent-foreground: oklch(0.985 0.002 265);
 	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.55 0.06 262);
+	--sidebar-ring: oklch(0.32 0.09 265);
 	/* the one flourish that survives the redesign: the hero headline gradient */
-	--gradient-accent: linear-gradient(120deg, #7c6fff, #22d3ee);
+	--gradient-accent: linear-gradient(120deg, #112377, #1e328f);
 	color-scheme: dark;
 }
 
 @theme inline {
-	--font-sans: 'Geist Variable', sans-serif;
+	--font-sans: 'Lato', sans-serif;
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
@@ -109,7 +111,18 @@
 	}
 
 	body {
-		@apply bg-background text-foreground antialiased;
+		@apply bg-background text-foreground font-sans antialiased;
+	}
+
+	button,
+	input,
+	textarea,
+	select {
+		font-family: inherit;
+	}
+
+	input[type='number'] {
+		font-variant-numeric: tabular-nums;
 	}
 
 	::selection {
