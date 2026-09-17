@@ -29,14 +29,14 @@
 				{
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
-					width: 1404,
-					height: 784
+					width: 2560,
+					height: 1440
 				},
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
-					width: 1404,
-					height: 564
+					width: 2560,
+					height: 1440
 				}
 			]
 		},
@@ -48,8 +48,8 @@
 				{
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
-					width: 1404,
-					height: 664
+					width: 2560,
+					height: 1440
 				}
 			]
 		},
@@ -61,8 +61,8 @@
 				{
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
-					width: 1404,
-					height: 664
+					width: 2560,
+					height: 1560
 				}
 			]
 		},
@@ -74,14 +74,14 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 1404,
-					height: 604
+					width: 2560,
+					height: 1560
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
-					width: 1404,
-					height: 644
+					width: 2560,
+					height: 1440
 				}
 			]
 		},
@@ -93,8 +93,8 @@
 				{
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
-					width: 1004,
-					height: 1344
+					width: 1520,
+					height: 2680
 				}
 			]
 		},
@@ -106,14 +106,14 @@
 				{
 					src: '/illusions/recipe.webp',
 					cap: 'ill.fig_recipe_cap',
-					width: 1404,
-					height: 604
+					width: 2560,
+					height: 1600
 				},
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 1404,
-					height: 564
+					width: 2560,
+					height: 1560
 				}
 			]
 		},
@@ -125,8 +125,8 @@
 				{
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
-					width: 1404,
-					height: 564
+					width: 2560,
+					height: 1440
 				}
 			]
 		},

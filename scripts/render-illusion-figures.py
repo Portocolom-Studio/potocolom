@@ -1,491 +1,677 @@
-"""Build the six /illusions figures as drawio sources, then export + composite.
+"""Build the ten /illusions figures as self-contained HTML, then export webp.
 
-Each figure is drawio boxes/arrows/math (script-generated XML) with dashed
-photo wells that PIL fills with real keeper photos after export. Headless
-drawio cannot load images, hence the two steps.
+Each figure is one inline SVG: boxes, arrows, math, and real run photos
+embedded as base64 data URIs. Headless Chrome screenshots the page at
+scale 2, and PIL writes the webp that the page ships.
 
 Usage (from repo root):
-  python3 scripts/render-illusion-figures.py --out /tmp/ill/draw
-  # exports PNGs with drawio, composites photos, writes <name>.png + <name>.drawio
+  python3 scripts/render-illusion-figures.py            # write into frontend/static/illusions
+  python3 scripts/render-illusion-figures.py --out /tmp/figs --only sds recipe
 
 Photo wells read from frontend/static/illusions (committed) and from the
-gitignored research exports (.local/illusion-reliability/...). Missing
-photos leave dashed wells: structure still renders, photos need the
-research checkout.
+gitignored research exports (.local/illusion-reliability/...). Without the
+research checkout the photo figures cannot build, and the script says so.
 
-Figure sources of truth:
-  architecture/ffn/sds/joint .. elephant-swan keeper (seed 11, oil, joint)
-  two-phase/dream ............ window-2 giraffe-penguin calibration smoke run
+Every number printed on a figure is either a CLI default read from
+worker/worker/illusions.py or a measured value from the window-2 campaign.
+The two differ: the gallery ran --experimental-recipe author_reference,
+which swaps the network, the optimizer, the guidance, and the SDS
+objective. Figures that show a photo label the recipe that made it.
 """
 
 import argparse
-import html
+import base64
+import io
+import math
 import subprocess
+import sys
 from pathlib import Path
+
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static" / "illusions"
-CLEAN = ROOT / ".local" / "illusion-reliability" / "keepers" / "window2-2026-08-clean"
-SMOKE = ROOT / ".local" / "illusion-reliability" / "campaigns" / "window2" / "smoke"
+LOCAL = ROOT / ".local" / "illusion-reliability"
+CLEAN = LOCAL / "keepers" / "window2-2026-08-clean"
+SMOKE = LOCAL / "campaigns" / "window2" / "smoke"
 SMOKE_ARM = SMOKE / "arm_neg_on_indep"
+SWAN = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/elephant_swan/seed_11/attempt_001"
+EAGLE = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/eagle_phoenix/seed_11/attempt_001"
 
-FONT = "DejaVu Sans"
+FONTS = ("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1"
+         "&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap")
+SANS = "'Geist','DejaVu Sans',sans-serif"
+MONO = "'Geist Mono','DejaVu Sans Mono',monospace"
+SERIF = "'Instrument Serif',Georgia,serif"
 
-C_TRAIN = ("#dbeafe", "#2563eb", "#1e3a8a")
-C_FROZEN = ("#ffffff", "#64748b", "#0f172a")
-C_INPUT = ("#dcfce7", "#16a34a", "#14532d")
-C_MID = ("#fee2e2", "#dc2626", "#7f1d1d")
-C_NOTE = ("#fffbeb", "#d97706", "#78350f")
-C_EDGE = "#334155"
-C_GRAY = "#64748b"
-
-
-def esc(text):
-    return html.escape(text, quote=True).replace("\n", "&#10;")
-
-
-class Figure:
-    def __init__(self, name, width, height):
-        self.name = name
-        self.width = width
-        self.height = height
-        self.cells = []
-        self.wells = []
-        self._next = 2
-
-    def _id(self):
-        self._next += 1
-        return str(self._next)
-
-    def rect(self, x, y, w, h, text="", colors=C_FROZEN, size=15, rounded=1, dashed=0, bold=0):
-        fill, edge, tcolor = colors
-        style = (
-            f"rounded={rounded};whiteSpace=wrap;html=1;fillColor={fill};"
-            f"strokeColor={edge};fontColor={tcolor};fontSize={size};"
-            f"fontFamily={FONT};"
-        )
-        if dashed:
-            style += "dashed=1;dashPattern=5 4;"
-        if bold:
-            style += "fontStyle=1;"
-        cid = self._id()
-        self.cells.append(
-            f'<mxCell id="{cid}" value="{esc(text)}" style="{style}" '
-            f'vertex="1" parent="1"><mxGeometry x="{x}" y="{y}" width="{w}" '
-            f'height="{h}" as="geometry"/></mxCell>'
-        )
-        return cid
-
-    def text(self, x, y, w, h, text, size=15, color="#0f172a", bold=0, align="center"):
-        style = (
-            "text;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;"
-            f"fontColor={color};fontSize={size};fontFamily={FONT};"
-            f"align={align};verticalAlign=middle;"
-        )
-        if bold:
-            style += "fontStyle=1;"
-        cid = self._id()
-        self.cells.append(
-            f'<mxCell id="{cid}" value="{esc(text)}" style="{style}" '
-            f'vertex="1" parent="1"><mxGeometry x="{x}" y="{y}" width="{w}" '
-            f'height="{h}" as="geometry"/></mxCell>'
-        )
-        return cid
-
-    def photo(self, x, y, w, h, path, caption=None, cap_colors=C_MID):
-        self.wells.append({"x": x, "y": y, "w": w, "h": h, "path": str(path)})
-        self.rect(x, y, w, h, "photo", colors=("#ffffff", "#94a3b8", "#94a3b8"), size=11, dashed=1)
-        if caption:
-            self.rect(x, y + h + 8, w, 34, caption, colors=cap_colors, size=13)
-
-    def edge(self, pts, dashed=0, color=C_EDGE, width=2):
-        style = f"endArrow=classic;html=1;strokeColor={color};strokeWidth={width};rounded=1;"
-        if dashed:
-            style += "dashed=1;dashPattern=5 4;"
-        cid = self._id()
-        geo = (
-            f'<mxGeometry relative="1" as="geometry">'
-            f'<mxPoint x="{pts[0][0]}" y="{pts[0][1]}" as="sourcePoint"/>'
-            f'<mxPoint x="{pts[-1][0]}" y="{pts[-1][1]}" as="targetPoint"/>'
-        )
-        for x, y in pts[1:-1]:
-            geo += f'<mxPoint x="{x}" y="{y}" as="Array"/>'
-        geo += "</mxGeometry>"
-        self.cells.append(
-            f'<mxCell id="{cid}" value="" style="{style}" edge="1" parent="1">{geo}</mxCell>'
-        )
-        return cid
-
-    def tag(self, text):
-        self.text(30, 8, 900, 26, text, size=13, color=C_GRAY, align="left")
-
-    def legend(self, y=0):
-        y = y or self.height - 62
-        items = [
-            ("■ input", C_INPUT),
-            ("■ trainable", C_TRAIN),
-            ("■ frozen", C_FROZEN),
-            ("■ intermediate", C_MID),
-        ]
-        w = 250
-        x = 60
-        for label, colors in items:
-            self.rect(x, y, w, 44, label, colors=colors, size=14)
-            x += w + 30
-
-    def save_drawio(self, path):
-        bg = (
-            f'<mxCell id="bg" value="" style="rounded=0;fillColor=#ffffff;'
-            f'strokeColor=#ffffff;" vertex="1" parent="1">'
-            f'<mxGeometry x="0" y="0" width="{self.width}" height="{self.height}" '
-            f'as="geometry"/></mxCell>'
-        )
-        body = "\n".join([bg] + self.cells)
-        xml = (
-            f'<mxfile><diagram name="{self.name}" id="{self.name}">'
-            f'<mxGraphModel dx="0" dy="0" grid="0" page="1" pageScale="1" '
-            f'pageWidth="{self.width}" pageHeight="{self.height}">'
-            f'<root><mxCell id="0"/><mxCell id="1" parent="0"/>\n{body}\n'
-            f"</root></mxGraphModel></diagram></mxfile>"
-        )
-        Path(path).write_text(xml, encoding="utf-8")
-
-    def composite(self, png_in, png_out):
-        from PIL import Image
-
-        base = Image.open(png_in).convert("RGB")
-        # drawio -s 1 export adds a 2px border around the page: undo it.
-        offx = (base.size[0] - self.width) // 2
-        offy = (base.size[1] - self.height) // 2
-        scale = (base.size[0] - 2 * offx) / self.width
-        for well in self.wells:
-            src = Path(well["path"])
-            if not src.is_file():
-                print(f"  warn: missing photo {src}, well left dashed")
-                continue
-            img = Image.open(src).convert("RGB")
-            tw, th = round(well["w"] * scale) + 2, round(well["h"] * scale) + 2
-            img = img.resize((tw, th))
-            base.paste(
-                img, (round(offx + well["x"] * scale) - 1, round(offy + well["y"] * scale) - 1)
-            )
-        base.save(png_out)
+PAPER, INK = "#f5f5f5", "#2d3142"
+MUTED, SOFT = "#4f5d75", "#7a8399"
+ACCENT, ACCENT_TINT = "#eb6c36", "rgba(235,108,54,0.08)"
+CUT = "#b4232a"
+RULE = "rgba(45,49,66,0.12)"
+INPUT_FILL, INPUT_STROKE = "rgba(79,93,117,0.10)", "#8e98ac"
+KEEP_PNG = False
+NOTE_FILL, NOTE_STROKE = "rgba(45,49,66,0.02)", "rgba(45,49,66,0.20)"
 
 
-HERO_PRIME = STATIC / "elephant-swan-prime.webp"
-HERO_VIEW = STATIC / "elephant-swan-view.webp"
-HERO_VIEW2 = CLEAN / "s5-elephant_swan-seed11-oil-neg_off_joint-final-view2.png"
+def chrome() -> str:
+    """Headless Chrome, preferring the system browser over the playwright copy."""
+    system = Path("/usr/bin/google-chrome")
+    if system.exists():
+        return str(system)
+    pattern = ".cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
+    found = sorted(Path.home().glob(pattern))
+    if not found:
+        raise SystemExit("no headless chrome: install google-chrome or playwright chromium")
+    return str(found[-1])
 
 
-def fig_architecture():
-    f = Figure("architecture", 1400, 780)
-    f.tag("running example · elephant–swan keeper, seed 11, oil, joint")
-    f.photo(60, 120, 190, 190, HERO_PRIME, "p · print this", C_INPUT)
-    f.rect(320, 140, 190, 110, "a₁(p) = p")
-    f.rect(320, 330, 190, 110, "a₂(p) = rot₁₈₀(p)")
-    f.photo(580, 90, 190, 190, HERO_VIEW, "d₁ · upright")
-    f.photo(580, 340, 190, 190, HERO_VIEW2, "d₂ · inverted")
-    f.rect(840, 90, 250, 150, "SDS\nr = w·(ε̂ − ε)\nUNet frozen · CFG 100")
-    f.rect(840, 340, 250, 150, "Dream Target\nz = SDEdit(d, s)\nL = (1−SSIM) + MSE")
-    f.rect(1150, 200, 220, 110, "θ · FFN weights\nonly thing trained", colors=C_TRAIN)
-    f.edge([(250, 215), (320, 195)])
-    f.edge([(250, 215), (320, 385)])
-    f.edge([(510, 195), (580, 185)])
-    f.edge([(510, 385), (580, 435)])
-    f.edge([(770, 165), (840, 150)])
-    f.edge([(770, 420), (840, 190)])
-    f.edge([(770, 200), (840, 400)])
-    f.edge([(770, 450), (840, 430)])
-    f.edge([(1090, 165), (1150, 230)], dashed=1, color=C_TRAIN[1])
-    f.edge([(1090, 415), (1150, 265)], dashed=1, color=C_TRAIN[1])
-    f.text(140, 600, 1120, 36, "d₁ = a₁(p) = p · d₂ = a₂(p) = rot₁₈₀(p) · gradients reach θ only")
-    f.legend(660)
-    return f
+def photo_uri(path, size=320, quality=72, rotate=0):
+    img = Image.open(path).convert("RGB")
+    if rotate:
+        img = img.rotate(rotate)
+    img.thumbnail((size, size))
+    return _jpeg_uri(img, quality)
 
 
-def _default_asset_dir():
-    import tempfile
+def _jpeg_uri(img, quality=72):
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
-    out = Path(tempfile.mkdtemp(prefix="ill-fig-assets-"))
-    return out
+
+def svg_open(slug, title, desc, w, h):
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" '
+            f'width="{w}" height="{h}" role="img" aria-labelledby="{slug}-title {slug}-desc">'
+            f'<title id="{slug}-title">{title}</title><desc id="{slug}-desc">{desc}</desc>'
+            f'<defs>'
+            f'<marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">'
+            f'<polygon points="0 0,8 3,0 6" fill="{MUTED}"/></marker>'
+            f'<marker id="arr-a" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">'
+            f'<polygon points="0 0,8 3,0 6" fill="{ACCENT}"/></marker>'
+            f'</defs><rect width="100%" height="100%" fill="{PAPER}"/>')
 
 
-def _evidence_assets(outdir):
-    """Small explanatory plots drawn with PIL (math visuals, not data)."""
-    from PIL import Image, ImageDraw
-    import math
+def shell(svg):
+    return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<link href="{FONTS}" rel="stylesheet">'
+            f'<style>html,body{{margin:0;padding:0;background:{PAPER};}}</style>'
+            f'</head><body>{svg}</body></html>')
 
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    grid = Image.new("RGB", (150, 150), "white")
+
+def eyebrow(x, y, text):
+    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="11" font-family="{MONO}" '
+            f'letter-spacing="0.14em">{text}</text>')
+
+
+def heading(x, y, text, size=30):
+    return f'<text x="{x}" y="{y}" fill="{INK}" font-size="{size}" font-family="{SERIF}">{text}</text>'
+
+
+def box(x, y, w, h, name, sub=None, fill="#ffffff", stroke=INK, name_size=12, sub_size=9):
+    s = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{PAPER}"/>',
+         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill}" '
+         f'stroke="{stroke}" stroke-width="1"/>']
+    lines = sub.split("\n") if sub else []
+    cy = y + h / 2 - (len(lines) * 7 - 4)
+    s.append(f'<text x="{x + w / 2}" y="{cy}" fill="{INK}" font-size="{name_size}" font-weight="600" '
+             f'font-family="{SANS}" text-anchor="middle">{name}</text>')
+    for i, line in enumerate(lines):
+        s.append(f'<text x="{x + w / 2}" y="{cy + 18 + i * 14}" fill="{MUTED}" '
+                 f'font-size="{sub_size}" font-family="{MONO}" text-anchor="middle">{line}</text>')
+    return "\n".join(s)
+
+
+def caption(x, y, text, size=9):
+    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="{size}" font-family="{MONO}" '
+            f'text-anchor="middle">{text}</text>')
+
+
+def note(x, y, text, size=10, anchor="middle", fill=MUTED):
+    return (f'<text x="{x}" y="{y}" fill="{fill}" font-size="{size}" font-family="{MONO}" '
+            f'text-anchor="{anchor}">{text}</text>')
+
+
+def arrow(x1, y1, x2, y2, colour=MUTED, dash=None):
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    marker = "arr-a" if colour == ACCENT else "arr"
+    return (f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{colour}" '
+            f'stroke-width="1.2"{d} marker-end="url(#{marker})"/>')
+
+
+def path(d, colour=MUTED, dash=None, head=True):
+    da = f' stroke-dasharray="{dash}"' if dash else ""
+    marker = ""
+    if head:
+        marker = ' marker-end="url(#arr-a)"' if colour == ACCENT else ' marker-end="url(#arr)"'
+    return f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="1.2"{da}{marker}/>'
+
+
+def arrow_label(x, y, text, w=120):
+    return (f'<rect x="{x - w / 2}" y="{y - 18}" width="{w}" height="12" rx="2" fill="{PAPER}"/>'
+            f'<text x="{x}" y="{y - 9}" fill="{SOFT}" font-size="8" font-family="{MONO}" '
+            f'text-anchor="middle" letter-spacing="0.06em">{text}</text>')
+
+
+def legend(items, w, y):
+    s = [f'<line x1="30" y1="{y - 8}" x2="{w - 30}" y2="{y - 8}" stroke="{RULE}" stroke-width="0.8"/>',
+         f'<text x="30" y="{y + 8}" fill="{MUTED}" font-size="8" font-family="{MONO}" '
+         f'letter-spacing="0.14em">LEGEND</text>']
+    x = 140
+    step = min(170, (w - 200) / max(len(items), 1))
+    for swatch, label in items:
+        s.append(f'<rect x="{x}" y="{y - 2}" width="10" height="10" fill="{swatch}"/>')
+        s.append(f'<text x="{x + 16}" y="{y + 7}" fill="{MUTED}" font-size="9" '
+                 f'font-family="{SANS}">{label}</text>')
+        x += step
+    return "\n".join(s)
+
+
+def photo(uri, x, y, size, label=None, label_gap=18):
+    s = [f'<image href="{uri}" x="{x}" y="{y}" width="{size}" height="{size}"/>']
+    if label:
+        s.append(caption(x + size / 2, y + size + label_gap, label))
+    return "\n".join(s)
+
+
+def write(out, slug, svg, w, h):
+    out.mkdir(parents=True, exist_ok=True)
+    html_path = out / f"{slug}.html"
+    png_path = out / f"{slug}.png"
+    html_path.write_text(shell(svg))
+    subprocess.run([chrome(), "--headless", "--disable-gpu", "--no-sandbox",
+                    f"--screenshot={png_path}", f"--window-size={w},{h}",
+                    "--hide-scrollbars", "--force-device-scale-factor=2",
+                    "--virtual-time-budget=5000", f"file://{html_path}"],
+                   check=True, capture_output=True)
+    Image.open(png_path).save(out / f"{slug}.webp", quality=85)
+    if not KEEP_PNG:
+        png_path.unlink()
+        html_path.unlink()
+    print(f"{slug}: {w * 2}x{h * 2}")
+
+
+# --------------------------------------------------------------- figures
+
+def fig_architecture(out):
+    prime = photo_uri(STATIC / "elephant-swan-prime.webp", 300)
+    view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
+    view2 = photo_uri(CLEAN / "s5-elephant_swan-seed11-oil-neg_off_joint-final-view2.png", 300)
+    w, h = 1280, 720
+    s = [svg_open("arch", "Flip pipeline: one prime, two views",
+                  "Prime p becomes views d1 and d2 through flip arrangements. Frozen "
+                  "diffusion scores both views. Gradients update only the prime weights.",
+                  w, h)]
+    s.append(eyebrow(40, 44, "DIFFUSION ILLUSIONS · FLIP PIPELINE"))
+    s.append(heading(40, 78, "One prime, two views"))
+    s.append(path("M115,184 V260"))
+    s.append(path("M190,300 H337 Q345,300 345,292 V254"))
+    s.append(path("M190,335 H292 Q300,335 300,343 V400"))
+    s.append(arrow(440, 212, 500, 212))
+    s.append(path("M440,442 H462 Q470,442 470,450 V467 Q470,475 478,475 H500"))
+    s.append(path("M650,215 H672 Q680,215 680,223 V300 Q680,308 688,308 H710"))
+    s.append(path("M650,475 H672 Q680,475 680,467 V330 Q680,322 688,322 H710"))
+    s.append(path("M825,240 V112 Q825,104 817,104 H123 Q115,104 115,112 V116", ACCENT, "4,3"))
+    s.append(arrow_label(700, 112, "GRAD θ", 90))
+    s.append(box(40, 120, 150, 64, "θ · FFN weights", "only thing trained",
+                 fill=ACCENT_TINT, stroke=ACCENT))
+    s.append(photo(prime, 40, 260, 150, "p · print this"))
+    s.append(box(250, 170, 190, 84, "a₁(p) = p", "identity"))
+    s.append(box(250, 400, 190, 84, "a₂(p) = rot₁₈₀(p)", "180° turn"))
+    s.append(photo(view1, 500, 140, 150, "d₁ · upright"))
+    s.append(photo(view2, 500, 400, 150, "d₂ · after the turn"))
+    s.append(box(710, 240, 240, 140, "Frozen diffusion",
+                 "SDS: r = w(t)·(εcfg − ε)\nDream: L = (1−SSIM) + MSE\nSD 1.5 · DreamShaper LCM"))
+    s.append(box(990, 240, 250, 140, "nothing else moves",
+                 "UNet, VAE, text encoder\narrangements are fixed ops\nphotos: elephant + swan, seed 11",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE))
+    s.append(note(640, 604, "d₁ = a₁(p) = p · d₂ = a₂(p) = rot₁₈₀(p) · the printed sheet is p"))
+    s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "trainable"),
+                     ("#ffffff", "frozen"), (NOTE_FILL, "note")], w, 648))
+    s.append("</svg>")
+    write(out, "architecture", "\n".join(s), w, h)
+
+
+def fig_ffn(out):
+    prime_path = STATIC / "elephant-swan-prime.webp"
+    grid = Image.new("RGB", (150, 130), "white")
     gx = ImageDraw.Draw(grid)
-    for j in range(15):
+    for j in range(13):
         for i in range(15):
-            gx.rectangle(
-                [10 + i * 9, 10 + j * 9, 10 + (i + 1) * 9 - 1, 10 + (j + 1) * 9 - 1],
-                fill=(int(255 * i / 14), int(255 * j / 14), 128),
-            )
-    grid.save(outdir / "coords-grid.png")
-    waves = Image.new("RGB", (220, 150), "white")
+            gx.rectangle([8 + i * 9, 8 + j * 9, 8 + (i + 1) * 9 - 1, 8 + (j + 1) * 9 - 1],
+                         fill=(int(255 * i / 14), int(255 * j / 12), 128))
+    waves = Image.new("RGB", (220, 130), "white")
     wx = ImageDraw.Draw(waves)
-    wx.line([(10, 75), (210, 75)], fill="#94a3b8", width=1)
-    wx.line(
-        [(10 + i * 2, 75 - int(55 * math.sin(i / 31.8 * 2 * math.pi))) for i in range(101)],
-        fill="#2563eb",
-        width=3,
-    )
-    wx.line(
-        [(10 + i * 2, 75 - int(55 * math.cos(i / 31.8 * 2 * math.pi))) for i in range(101)],
-        fill="#dc2626",
-        width=3,
-    )
-    waves.save(outdir / "sincos.png")
-    prime = Image.open(HERO_PRIME).convert("RGB")
-    prime.crop((60, 150, 124, 214)).resize((192, 192)).save(outdir / "crop-a.png")
-    prime.crop((120, 40, 184, 104)).resize((192, 192)).save(outdir / "crop-b.png")
-    return outdir
+    wx.line([(8, 65), (212, 65)], fill="#94a3b8", width=1)
+    wx.line([(8 + i * 2, 65 - int(48 * math.sin(i / 31.8 * 2 * math.pi))) for i in range(103)],
+            fill="#2563eb", width=3)
+    wx.line([(8 + i * 2, 65 - int(48 * math.cos(i / 31.8 * 2 * math.pi))) for i in range(103)],
+            fill="#dc2626", width=3)
+    prime_img = Image.open(prime_path).convert("RGB")
+    crop_a = _jpeg_uri(prime_img.crop((60, 150, 124, 214)).resize((150, 130)))
+    crop_b = _jpeg_uri(prime_img.crop((120, 40, 184, 104)).resize((150, 130)))
+
+    w, h = 1280, 720
+    s = [svg_open("ffn", "Prime network: coordinates become printable RGB",
+                  "Pixel coordinates pass fixed Fourier features and a small trained "
+                  "network. Evidence below shows smooth printable output.", w, h)]
+    s.append(eyebrow(40, 44, "PRIME NETWORK · FOURIER FEATURES"))
+    s.append(heading(40, 78, "Coordinates in, printable RGB out"))
+    for x1, x2 in [(140, 170), (360, 390), (560, 590), (870, 900), (1050, 1080)]:
+        s.append(arrow(x1, 200, x2, 200))
+    s.append(box(40, 160, 100, 80, "(x, y)", "grid in [0,1)", fill=INPUT_FILL, stroke=INPUT_STROKE))
+    s.append(box(170, 160, 190, 80, "B ∼ N(0, 10²)", "2 x 128 · fixed buffer"))
+    s.append(box(390, 160, 170, 80, "sin + cos", "256-d features"))
+    s.append(box(590, 140, 280, 120, "Conv 1x1 · 256-256-256-256-3",
+                 "ReLU + BatchNorm x3\n199,683 trained weights", fill=ACCENT_TINT, stroke=ACCENT))
+    s.append(box(900, 160, 150, 80, "σ · sigmoid", "RGB (1,3,256,256)"))
+    s.append(photo(photo_uri(prime_path, 320), 1080, 120, 160, "printable prime"))
+    s.append(box(590, 290, 460, 56, "this is the gallery network: --experimental-recipe author_reference",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
+    s.append(box(40, 290, 520, 56,
+                 "CLI default instead: Linear MLP 512-256-256-256-3 · B 2 x 256 · 512px · 263,683 θ",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
+    s.append(f'<image href="{_jpeg_uri(grid)}" x="60" y="400" width="150" height="130"/>')
+    s.append(caption(135, 548, "every pixel: (x, y)"))
+    s.append(f'<image href="{_jpeg_uri(waves)}" x="250" y="400" width="220" height="130"/>')
+    s.append(caption(360, 548, "fixed waves, not learned"))
+    s.append(f'<image href="{crop_a}" x="510" y="400" width="150" height="130"/>')
+    s.append(f'<image href="{crop_b}" x="680" y="400" width="150" height="130"/>')
+    s.append(caption(670, 548, "2x crops: smooth, printable"))
+    s.append(box(870, 400, 370, 130, "pixels: hide the art in noise",
+                 "weights: hold the shape\nsmooth enough to print\npaper Sec. 4.3"))
+    s.append(note(640, 606, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(net(v))"))
+    s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "trainable"),
+                     ("#ffffff", "fixed"), (NOTE_FILL, "note")], w, 648))
+    s.append("</svg>")
+    write(out, "ffn", "\n".join(s), w, h)
 
 
-def fig_ffn(evidence_dir=None):
-    f = Figure("ffn", 1400, 660)
-    f.tag("one prime = one network · ≈264k weights")
-    f.rect(40, 120, 100, 80, "(x, y)", colors=C_INPUT)
-    f.rect(160, 110, 180, 100, "B ∼ N(0, 10²)\n2 × 256 · fixed")
-    f.rect(360, 110, 160, 100, "sin + cos\n512-d feats")
-    f.rect(540, 100, 280, 120, "MLP 512→256→256→256→3\nReLU ×3 · θ trained", colors=C_TRAIN)
-    f.rect(840, 110, 150, 100, "σ · sigmoid\nRGB (1,3,512,512)")
-    f.photo(1010, 80, 190, 190, HERO_PRIME, "printable prime", C_INPUT)
-    for a, b in [(140, 160), (340, 360), (520, 540), (820, 840), (990, 1010)]:
-        f.edge([(a, 160), (b, 160)])
-    assets = _evidence_assets(evidence_dir or _default_asset_dir())
-    f.photo(80, 330, 150, 150, assets / "coords-grid.png", "every pixel: (x, y)", C_INPUT)
-    f.photo(300, 330, 220, 150, assets / "sincos.png", "fixed waves, not learned")
-    f.photo(590, 330, 150, 150, assets / "crop-a.png")
-    f.photo(760, 330, 150, 150, assets / "crop-b.png")
-    f.rect(590, 488, 320, 34, "2× crops: smooth, printable", colors=C_INPUT, size=13)
-    f.rect(
-        980,
-        330,
-        340,
-        150,
-        "pixels × hide art in noise\nweights ✓ hold shape\npaper Sec. 4.3",
-        size=14,
-    )
-    f.text(140, 580, 1120, 36, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(MLP(v))")
-    return f
-
-
-def fig_sds():
-    f = Figure("sds", 1400, 660)
-    f.tag("one SDS step · sds_loss_batch · all views share one UNet forward")
-    f.photo(40, 150, 160, 160, HERO_VIEW, "d · derived view")
-    f.rect(240, 160, 160, 140, "VAE enc\nz: (1,4,64,64)")
-    f.rect(440, 160, 170, 140, "+ ε\nt ∈ 0.02…0.98")
-    f.rect(650, 130, 250, 200, "UNet · CFG-doubled ×1\nG = 100")
-    f.rect(700, 112, 150, 30, "FROZEN", colors=C_NOTE, size=13, bold=1)
-    f.rect(940, 160, 180, 140, "r = w·(ε̂c − ε̂u)")
-    f.rect(1160, 160, 200, 140, "θ −= η·∇θ\n(z·r̄).sum()", colors=C_TRAIN)
-    for a, b in [(200, 240), (400, 440), (610, 650), (900, 940), (1120, 1160)]:
-        f.edge([(a, 230), (b, 230)])
-    f.text(
-        140, 420, 1120, 36, "z_t = sched(z, ε, t) · ε̂ = UNet(z_t, t, prompt) · no grad through UNet"
-    )
-    f.text(60, 478, 1280, 30, "symbols", size=14, bold=1, align="left")
-    left = (
-        "ε · noise sampled from N(0, I)\n"
-        "ε̂c / ε̂u · UNet guess, with / without prompt\n"
-        "w · guidance weight (G = 100)\n"
-        "r · guided residual serves as the gradient"
-    )
-    right = (
-        "z · view encoded to VAE latent (1, 4, 64, 64)\n"
-        "z_t · schedule noises latent to step t\n"
-        "r̄ · r detached: no gradient into the UNet\n"
-        "η · Adam step on θ only (lr 1e-3)"
-    )
-    f.text(60, 512, 620, 130, left, size=14, align="left")
-    f.text(720, 512, 620, 130, right, size=14, align="left")
-    return f
-
-
-def _smoke_derived(step):
-    return SMOKE / f"ckpt_sds_{step:04d}" / "derived_1.png"
-
-
-def fig_two_phase():
-    f = Figure("two-phase", 1400, 600)
-    f.tag("real checkpoints · giraffe–penguin calibration smoke run")
-    f.rect(60, 80, 640, 60, "Phase 1 · SDS · frozen SD 1.5")
-    f.rect(730, 80, 130, 60, "↻ fresh\nAdam", colors=C_TRAIN)
-    f.rect(890, 80, 450, 60, "Phase 2 · Dream Target · DreamShaper LCM")
-    imgs = [
-        (_smoke_derived(250), "SDS 250"),
-        (_smoke_derived(1000), "SDS 1000"),
-        (_smoke_derived(2500), "SDS 2500"),
-        (_smoke_derived(5000), "SDS 5000"),
-        (SMOKE_ARM / "ckpt_dream_round_01" / "derived_1.png", "Dream r1"),
-        (SMOKE_ARM / "ckpt_final" / "derived_1.png", "final"),
+def fig_sds(out):
+    view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
+    w, h = 1280, 780
+    s = [svg_open("sds", "One Score Distillation step",
+                  "The derived view encodes to a latent, gains noise, and the frozen UNet "
+                  "scores it. The residual re-enters as a gradient on the prime weights only.",
+                  w, h)]
+    s.append(eyebrow(40, 44, "SCORE DISTILLATION · ONE STEP"))
+    s.append(heading(40, 78, "Noise in, gradient out"))
+    for x1, x2 in [(150, 180), (300, 330), (460, 490), (640, 670), (830, 860), (1080, 1110)]:
+        s.append(arrow(x1, 215, x2, 215))
+    s.append(box(40, 170, 110, 90, "θ", "FFN weights", fill=ACCENT_TINT, stroke=ACCENT))
+    s.append(box(180, 170, 120, 90, "render p", "differentiable"))
+    s.append(photo(view1, 330, 155, 120, "d = a(p)"))
+    s.append(box(490, 170, 150, 90, "VAE encode", "z · (1,4,64,64)"))
+    s.append(box(670, 170, 160, 90, "add noise", "z_t = sched(z, ε, t)"))
+    s.append(box(860, 155, 220, 120, "frozen UNet",
+                 "one CFG-doubled forward\nreturns εu and εc"))
+    s.append(box(1110, 170, 130, 90, "residual r", "built no_grad"))
+    s.append(path("M95,265 V300 Q95,308 103,308 H557 Q565,308 565,300 V265", ACCENT, head=False))
+    s.append(note(330, 330, "GRADIENT PATH: θ TO z", 9, fill=SOFT))
+    s.append(f'<line x1="845" y1="180" x2="845" y2="250" stroke="{CUT}" stroke-width="1.6"/>')
+    s.append(note(838, 140, "no grad past here", 9, anchor="end", fill=CUT))
+    s.append(box(40, 360, 580, 130, "how the gradient is made",
+                 "εcfg = εu + G·(εc − εu)\n"
+                 "r = w(t)·(εcfg − ε)\n"
+                 "w(t) = 1 − ᾱt, the timestep weight\n"
+                 "L = (z · r.detach()).sum(), then the optimizer steps θ",
+                 sub_size=11))
+    s.append(box(660, 360, 580, 130, "what the flags change",
+                 "default objective legacy drops w(t): r = εcfg − ε\n"
+                 "the gallery ran weighted_sds · G = 60 · grad scale 0.1\n"
+                 "the csd branch ignores guidance: r = w(t)·(εc − εu)\n"
+                 "--view-batch-size splits the one forward into chunks",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
+    keys = [
+        ("ε", "noise added to the latent"),
+        ("εc", "UNet score with the prompt"),
+        ("εu", "UNet score with no prompt"),
+        ("εcfg", "guided score, G mixes the two"),
+        ("G", "guidance scale, 60 in the gallery"),
+        ("w(t)", "timestep weight 1 − ᾱt, not G"),
+        ("r", "residual, the gradient we want"),
+        ("ᾱt", "the scheduler's alpha bar at step t"),
+        ("z", "latent of the derived view"),
+        ("z_t", "the same latent after noise"),
+        ("t", "integer step, 2% to 98% of T = 1000"),
+        ("a(p)", "one fixed arrangement of the prime"),
     ]
+    s.append(note(40, 556, "SYMBOL KEY", 9, anchor="start", fill=SOFT))
+    for i, (sym, meaning) in enumerate(keys):
+        col, row = divmod(i, 4)
+        x = 40 + col * 410
+        y = 586 + row * 28
+        s.append(f'<text x="{x}" y="{y}" fill="{INK}" font-size="12" font-family="{MONO}" '
+                 f'font-weight="600">{sym}</text>')
+        s.append(f'<text x="{x + 70}" y="{y}" fill="{MUTED}" font-size="11" '
+                 f'font-family="{SANS}">{meaning}</text>')
+    s.append(legend([(ACCENT_TINT, "trainable"), ("#ffffff", "frozen or fixed"),
+                     (NOTE_FILL, "note"), (CUT, "gradient stops")], w, 726))
+    s.append("</svg>")
+    write(out, "sds", "\n".join(s), w, h)
+
+
+CHECKPOINTS = [(250, 173.1, 2237.6), (1000, -134.5, 2097.7),
+               (2500, 29.2, 952.1), (5000, -685.4, 1282.4)]
+
+
+def fig_two_phase(out):
+    names = [SMOKE / f"ckpt_sds_{n:04d}" / "derived_1.png" for n in (250, 1000, 2500, 5000)]
+    names.append(SMOKE_ARM / "ckpt_dream_round_01" / "derived_1.png")
+    names.append(SMOKE_ARM / "ckpt_final" / "derived_1.png")
+    labels = ["SDS 250", "SDS 1000", "SDS 2500", "SDS 5000", "Dream r1", "final"]
+    w, h = 1280, 780
+    s = [svg_open("two-phase", "Two phases: real optimization checkpoints",
+                  "A giraffe sketch from noise at step 250 to a clean final image. Phase 1 "
+                  "distills, a fresh Adam starts phase 2, Dream Target polishes.", w, h)]
+    s.append(eyebrow(40, 44, "TWO PHASES · REAL CHECKPOINTS"))
+    s.append(heading(40, 78, "Noise, then a giraffe"))
+    s.append(box(60, 120, 760, 56, "Phase 1 · SDS · frozen SD 1.5", None))
+    s.append(box(830, 120, 130, 56, "fresh Adam", None, fill=ACCENT_TINT, stroke=ACCENT))
+    s.append(box(970, 120, 250, 56, "Phase 2 · Dream Target", None))
     x = 60
-    for path, label in imgs:
-        f.photo(x, 180, 180, 180, path)
-        f.text(x, 368, 180, 52, label, size=14)
-        x += 220
-    f.text(
-        140,
-        470,
-        1120,
-        40,
-        "defaults 500 + 8×300 · gallery recipe 5000 + 1×300 · strength 0.95 → 0.05",
-    )
-    return f
+    for src, lab in zip(names, labels):
+        s.append(photo(photo_uri(src, 320), x, 200, 160, lab, 28))
+        x += 200
+    s.append(note(640, 408, "window-2 calibration smoke run · giraffe and penguin · seed 11 · "
+                            "Dream frames from the independent arm with the negative prompt on", 9))
+
+    s.append(box(40, 428, 580, 252, "", None, fill="#ffffff"))
+    s.append(note(70, 460, "DREAM STRENGTH LADDER", 9, anchor="start", fill=SOFT))
+    x0, x1, base, span = 90, 570, 616, 130
+    s.append(f'<line x1="{x0}" y1="{base}" x2="{x1}" y2="{base}" stroke="{RULE}" stroke-width="1"/>')
+    s.append(f'<line x1="{x0}" y1="{base - span}" x2="{x0}" y2="{base}" stroke="{RULE}" stroke-width="1"/>')
+    ladder = [0.9 * (1 - i / 7) + 0.05 for i in range(8)]
+    points = [(x0 + i * (x1 - x0) / 7, base - v * span) for i, v in enumerate(ladder)]
+    s.append('<polyline points="' + " ".join(f"{px:.1f},{py:.1f}" for px, py in points) +
+             f'" fill="none" stroke="{MUTED}" stroke-width="1.4"/>')
+    for (px, py), v in zip(points, ladder):
+        s.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.5" fill="{MUTED}"/>')
+    s.append(f'<circle cx="{points[0][0]:.1f}" cy="{points[0][1]:.1f}" r="6" fill="none" '
+             f'stroke="{ACCENT}" stroke-width="2"/>')
+    s.append(note(x0 + 14, base - span - 4, "s = 0.95", 9, anchor="start"))
+    s.append(note(x0, base + 18, "round 1", 9, anchor="start", fill=SOFT))
+    s.append(note(x1, base + 18, "round 8", 9, anchor="end", fill=SOFT))
+    s.append(note(330, base + 38, "default: 8 rounds walk 0.95 down to 0.05", 10))
+    s.append(note(330, base + 54, "gallery: 1 round, so the ladder is [0.95] and never decays", 10, fill=ACCENT))
+
+    s.append(box(660, 428, 580, 252, "", None, fill="#ffffff"))
+    s.append(note(690, 460, "SDS LOSS AND GRADIENT NORM", 9, anchor="start", fill=SOFT))
+    gx0, gx1 = 780, 1190
+    grad_base, loss_base, band = 540, 615, 60
+    lpts, gpts = [], []
+    for i, (step, loss, grad) in enumerate(CHECKPOINTS):
+        px = gx0 + i * (gx1 - gx0) / 3
+        lpts.append((px, loss_base - (loss + 700) / 900 * band))
+        gpts.append((px, grad_base - (grad - 800) / 1600 * band))
+        s.append(note(px, loss_base + 20, str(step), 9, fill=SOFT))
+    s.append(f'<line x1="{gx0}" y1="{loss_base}" x2="{gx1}" y2="{loss_base}" '
+             f'stroke="{RULE}" stroke-width="1"/>')
+    s.append(note(770, grad_base - 26, "grad norm", 9, anchor="end", fill=ACCENT))
+    s.append(note(770, loss_base - 26, "loss", 9, anchor="end", fill=INK))
+    s.append('<polyline points="' + " ".join(f"{px:.1f},{py:.1f}" for px, py in lpts) +
+             f'" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    s.append('<polyline points="' + " ".join(f"{px:.1f},{py:.1f}" for px, py in gpts) +
+             f'" fill="none" stroke="{ACCENT}" stroke-width="1.6" stroke-dasharray="5,3"/>')
+    for (px, py), (_, loss, _) in zip(lpts, CHECKPOINTS):
+        s.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.5" fill="{INK}"/>')
+        s.append(note(px, py - 9, f"{loss:.0f}", 9, fill=INK))
+    for (px, py), (_, _, grad) in zip(gpts, CHECKPOINTS):
+        s.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.5" fill="{ACCENT}"/>')
+        s.append(note(px, py - 9, f"{grad:.0f}", 9, fill=ACCENT))
+    s.append(note(950, 654, "loss swings sign while the image only improves", 10))
+    s.append(note(950, 670, "SDS loss is not a quality signal, which is why a human gates", 10))
+
+    s.append(note(640, 714, "defaults: 500 SDS steps + 8 Dream rounds x 300 steps per round · "
+                            "gallery: 5000 SDS steps + 1 Dream round x 300 steps"))
+    s.append(legend([(ACCENT_TINT, "optimizer reset"), ("#ffffff", "phase"),
+                     (INK, "loss"), (ACCENT, "grad norm")], w, 750))
+    s.append("</svg>")
+    write(out, "two-phase", "\n".join(s), w, h)
 
 
-def fig_dream():
-    f = Figure("dream", 1400, 640)
-    f.tag("one Dream Target round · real round-1 triple, smoke run")
-    f.photo(40, 140, 220, 220, _smoke_derived(5000), "d · entering Dream")
-    f.rect(310, 150, 250, 200, "SDEdit(d, s, prompt)\nLCM · CFG 2\ns = 0.95 → 0.05")
-    f.photo(
-        610,
-        140,
-        220,
-        220,
-        SMOKE_ARM / "ckpt_dream_round_01" / "target_1.png",
-        "z · frozen this round",
-    )
-    f.rect(880, 150, 220, 200, "L = (1−SSIM) + MSE\n300 steps")
-    f.photo(
-        1150,
-        140,
-        220,
-        220,
-        SMOKE_ARM / "ckpt_dream_round_01" / "derived_1.png",
-        "d′ · regressed to z",
-    )
-    for a, b in [(260, 310), (560, 610), (830, 880), (1100, 1150)]:
-        f.edge([(a, 250), (b, 250)])
-    f.edge([(1260, 360), (1260, 510), (435, 510), (435, 350)], dashed=1, color=C_TRAIN[1], width=3)
-    f.rect(700, 492, 420, 36, "next round re-dreams from d′", colors=C_TRAIN, size=14)
-    f.text(140, 566, 1120, 36, "8 rounds default · the gallery used 1")
-    return f
+def fig_dream(out):
+    d_uri = photo_uri(SMOKE / "ckpt_sds_5000" / "derived_1.png", 340)
+    z_uri = photo_uri(SMOKE_ARM / "ckpt_dream_round_01" / "target_1.png", 340)
+    dp_uri = photo_uri(SMOKE_ARM / "ckpt_dream_round_01" / "derived_1.png", 340)
+    w, h = 1280, 720
+    s = [svg_open("dream", "One Dream Target round",
+                  "A derived view is dreamed into a target and frozen for the round. SSIM "
+                  "plus MSE pulls the view toward it. The next round dreams again.", w, h)]
+    s.append(eyebrow(40, 44, "DREAM TARGET · ONE ROUND"))
+    s.append(heading(40, 78, "Dream it, then match it"))
+    for x1, x2 in [(230, 260), (490, 530), (720, 760), (960, 1000)]:
+        s.append(arrow(x1, 290, x2, 290))
+    s.append(photo(d_uri, 40, 200, 180, "d · entering Dream"))
+    s.append(box(260, 210, 230, 160, "SDEdit(d, s, prompt)",
+                 "DreamShaper LCM · CFG 2\ns = 0.95 this round"))
+    s.append(photo(z_uri, 530, 200, 180, "z · frozen this round"))
+    s.append(box(760, 210, 200, 160, "L = (1−SSIM) + MSE", "300 steps · fresh Adam\nlr 3e-3 here"))
+    s.append(photo(dp_uri, 1000, 200, 180, "d′ · regressed to z"))
+    s.append(path("M1090,460 V520 Q1090,528 1082,528 H383 Q375,528 375,520 V378",
+                  ACCENT, "4,3"))
+    s.append(arrow_label(740, 528, "NEXT ROUND DREAMS AGAIN", 220))
+    s.append(box(40, 566, 1200, 52,
+                 "default: 8 rounds, s walks 0.95 down to 0.05 · gallery: 1 round, so s stays 0.95 · "
+                 "photos from the independent arm with the negative prompt on",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
+    s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "loop back"),
+                     ("#ffffff", "frozen op"), (NOTE_FILL, "note")], w, 668))
+    s.append("</svg>")
+    write(out, "dream", "\n".join(s), w, h)
 
 
-def fig_joint():
-    f = Figure("joint", 1000, 1340)
-    f.tag("joint Dream · elephant–swan keeper (joint mode)")
-    f.photo(210, 70, 220, 220, HERO_VIEW, "vA · upright")
-    f.photo(570, 70, 220, 220, HERO_VIEW2, "vB · as rot₁₈₀")
-    f.rect(210, 360, 580, 80, "decode predicted x₀ · both views")
-    f.rect(210, 470, 580, 80, "rot₁₈₀(vB prediction) → upright frame")
-    f.rect(210, 580, 580, 100, "c = (x̂A + rot₁₈₀(x̂B)) / 2\npixel space, not latent")
-    f.photo(390, 730, 220, 220, HERO_PRIME, "consensus lives in the prime", C_INPUT)
-    f.photo(210, 990, 220, 220, HERO_VIEW, "target A")
-    f.photo(570, 990, 220, 220, HERO_VIEW2, "target B · as rot₁₈₀")
-    f.edge([(320, 336), (400, 360)])
-    f.edge([(680, 336), (600, 360)])
-    f.edge([(500, 440), (500, 470)])
-    f.edge([(500, 550), (500, 580)])
-    f.edge([(500, 680), (500, 730)])
-    f.edge([(500, 950), (320, 990)])
-    f.edge([(500, 950), (680, 990)])
-    f.rect(
-        140,
-        1250,
-        720,
-        56,
-        "VAE does not commute with rot₁₈₀ · latent error 0.78–0.97",
-        colors=C_NOTE,
-        size=14,
-    )
-    return f
+def fig_joint(out):
+    indep = SWAN / "arm_neg_off_indep" / "ckpt_dream_round_01"
+    joint = SWAN / "arm_neg_off_joint" / "ckpt_dream_round_01"
+    va = photo_uri(joint / "derived_1.png", 340)
+    vb = photo_uri(joint / "derived_2.png", 340)
+    pr = photo_uri(joint / "target_1.png", 340)
+    pairs = [("independent targets", indep, 60), ("joint targets", joint, 420)]
+    w, h = 760, 1340
+    s = [svg_open("joint", "Joint Dream: two views, one consensus",
+                  "Both flip views denoise together and reconcile to one consensus image in "
+                  "pixel space. The two Dream targets become orientations of that image.", w, h)]
+    s.append(eyebrow(40, 44, "JOINT DREAM · CONSENSUS"))
+    s.append(heading(40, 78, "Two views, one image"))
+    s.append(path("M290,330 V372 Q290,380 298,380 H352 Q360,380 360,388 V420"))
+    s.append(path("M470,330 V372 Q470,380 462,380 H408 Q400,380 400,388 V420"))
+    s.append(arrow(380, 500, 380, 540))
+    s.append(arrow(380, 620, 380, 660))
+    s.append(arrow(380, 760, 380, 806))
+    s.append(photo(va, 170, 130, 180, "vA · upright"))
+    s.append(photo(vb, 410, 130, 180, "vB · as rot180"))
+    s.append(box(180, 420, 400, 80, "decode predicted x₀ · both views", None))
+    s.append(box(180, 540, 400, 80, "rot₁₈₀(vB) into the upright frame", None))
+    s.append(box(180, 660, 400, 100, "c = (xA + rot₁₈₀(xB)) / 2",
+                 "xA and xB are the decoded x₀\npredictions · pixel space, not latent"))
+    s.append(photo(pr, 290, 806, 180, "c · one consensus image"))
+    s.append(note(380, 1022, "c becomes both Dream targets. The prime only follows later,", 10))
+    s.append(note(380, 1038, "when 300 regression steps pull the views back onto them.", 10))
+    for label, base, x in pairs:
+        s.append(note(x + 125, 1078, label, 10, fill=ACCENT if "joint" in label else MUTED))
+        s.append(f'<image href="{photo_uri(base / "target_1.png", 260)}" x="{x}" y="1092" '
+                 f'width="115" height="115"/>')
+        s.append(f'<image href="{photo_uri(base / "target_2.png", 260, rotate=180)}" x="{x + 135}" '
+                 f'y="1092" width="115" height="115"/>')
+        s.append(caption(x + 125, 1226, "target A · target B turned upright"))
+    s.append(note(380, 1262, "same pair, same seed 11, one flag apart: independent targets disagree "
+                             "about the shared pixels,", 10))
+    s.append(note(380, 1278, "joint targets are one image seen two ways · "
+                             "elephant and swan, sketch, Dream round 1", 10))
+    s.append(legend([(INPUT_FILL, "input"), ("#ffffff", "frozen op"),
+                     (NOTE_FILL, "evidence")], w, 1312))
+    s.append("</svg>")
+    write(out, "joint", "\n".join(s), w, h)
 
 
-def fig_workflow():
-    f = Figure("workflow", 1400, 560)
-    f.tag("bake one keeper · optimize_illusion")
-    f.rect(40, 140, 150, 140, "in\npair + 2 prompts\nseed · --type flip", colors=C_INPUT)
-    f.rect(215, 140, 150, 140, "FFN primes\n256px · random θ")
-    f.rect(390, 140, 150, 140, "flip views\nd₁ = p\nd₂ = rot₁₈₀(p)")
-    f.rect(565, 140, 150, 140, "SDS ×500\nSD 1.5 · CFG 100")
-    f.rect(740, 140, 150, 140, "↻ fresh Adam\nlr 1e-3", colors=C_TRAIN)
-    f.rect(915, 140, 150, 140, "Dream 8×300\nLCM · s ↓")
-    f.photo(1090, 130, 120, 120, HERO_PRIME)
-    f.photo(1220, 130, 120, 120, HERO_VIEW)
-    f.rect(1090, 258, 250, 34, "prime_N.png + derived_N.png", colors=C_INPUT, size=13)
-    xs = [190, 365, 540, 715, 890, 1065]
-    for a in xs:
-        f.edge([(a, 210), (a + 25, 210)])
-    f.text(140, 460, 1120, 36, "gallery recipe: 5000 + 1×300 · CLI defaults above")
-    return f
-
-
-def fig_recipe():
-    f = Figure("recipe", 1400, 600)
-    f.tag("same optimizer, different budget")
-    f.rect(140, 80, 500, 60, "CLI defaults", size=16, bold=1)
-    f.rect(760, 80, 500, 60, "gallery recipe", colors=C_TRAIN, size=16, bold=1)
-    rows = [
-        ("500 SDS steps", "5000 SDS steps"),
-        ("8 Dream rounds", "1 Dream round"),
-        ("joint off", "joint opt-in"),
+def fig_workflow(out):
+    prime = photo_uri(STATIC / "elephant-swan-prime.webp", 300)
+    view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
+    view2 = photo_uri(CLEAN / "s5-elephant_swan-seed11-oil-neg_off_joint-final-view2.png", 300)
+    w, h = 1280, 720
+    s = [svg_open("workflow", "Baking one keeper",
+                  "A pair, two prompts, and a seed become flip views. Score Distillation, a "
+                  "fresh Adam, and Dream Target produce the printable prime and both views.",
+                  w, h)]
+    s.append(eyebrow(40, 44, "OPTIMIZER · BAKE PIPELINE"))
+    s.append(heading(40, 78, "Bake one keeper"))
+    stages = [
+        (40, 200, "input", "pair · 2 prompts\nseed · --type flip", INPUT_FILL, INPUT_STROKE),
+        (250, 170, "FFN primes", "random θ\n256px here, 512px default", "#ffffff", INK),
+        (450, 170, "flip views", "d₁ = p\nd₂ = rot₁₈₀(p)", "#ffffff", INK),
+        (650, 190, "SDS steps", "500 default\n5000 here", "#ffffff", INK),
+        (860, 150, "fresh Adam", "lr 1e-3 default\n3e-3 here", ACCENT_TINT, ACCENT),
+        (1020, 200, "Dream rounds", "8 x 300 default\n1 x 300 here", "#ffffff", INK),
     ]
-    y = 160
-    for left, right in rows:
-        f.rect(140, y, 500, 56, left, size=15)
-        f.rect(760, y, 500, 56, right, colors=C_TRAIN, size=15)
-        y += 76
-    verdicts = [
-        "256px primes · 512px costs 3.3×, no gain",
-        "extra Dream rounds worse",
-        "negative prompts rejected",
-        "oil kept for color, not yield",
-    ]
-    x = 60
-    for v in verdicts:
-        f.rect(x, 420, 295, 60, v, colors=C_NOTE, size=13)
-        x += 320
-    f.text(140, 510, 1120, 36, "measured after the gallery was baked · kept oil for color")
-    return f
+    for x, bw, name, sub, fill, stroke in stages:
+        s.append(box(x, 190, bw, 130, name, sub, fill=fill, stroke=stroke))
+    for x1, x2 in [(240, 250), (420, 450), (620, 650), (840, 860), (1010, 1020)]:
+        s.append(arrow(x1, 255, x2, 255))
+    s.append(path("M1220,320 V360 Q1220,368 1212,368 H438 Q430,368 430,376 V470 "
+                  "Q430,478 438,478 H462"))
+    s.append(arrow_label(900, 368, "OUTPUTS", 100))
+    s.append(photo(prime, 470, 404, 150, "prime_1.png · print this"))
+    s.append(photo(view1, 640, 404, 150, "derived_1.png · upright"))
+    s.append(photo(view2, 810, 404, 150, "derived_2.png · turned"))
+    s.append(box(990, 404, 250, 150, "d₁ and p look alike on purpose",
+                 "a₁ is the identity, so the\nfirst view is the prime\nitself. "
+                 "d₂ is the one\nyou have to earn.",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE))
+    s.append(note(640, 606, "one cell = one pair + seed + mode · the gallery ran "
+                            "--experimental-recipe author_reference"))
+    s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "optimizer reset"),
+                     ("#ffffff", "step"), (NOTE_FILL, "note")], w, 648))
+    s.append("</svg>")
+    write(out, "workflow", "\n".join(s), w, h)
 
 
-def fig_review():
-    f = Figure("review", 1400, 560)
-    f.tag("human review is the gate")
-    f.rect(40, 150, 200, 130, "206 cells\nbaked")
-    f.rect(290, 150, 240, 130, "blind human review\nthe gate", colors=C_TRAIN)
-    f.rect(580, 150, 260, 130, "score ≥ 4\nframe none / minor")
-    f.rect(890, 150, 220, 130, "26 keepers\nfrom window2 export", colors=C_INPUT)
-    for a, b in [(240, 290), (530, 580), (840, 890)]:
-        f.edge([(a, 215), (b, 215)])
-    f.rect(290, 340, 240, 100, "CLIP pair score\nrecorded only")
-    f.rect(580, 340, 260, 100, "AUC 0.706 < 0.75 bar\nnot a screen", colors=C_NOTE)
-    f.edge([(410, 280), (410, 340)], dashed=1)
-    f.edge([(530, 390), (580, 390)], dashed=1)
-    f.text(140, 470, 1120, 36, "keeper = one pair + seed + mode · window2-2026-08-clean")
-    return f
+RECIPE_ROWS = [
+    ("prime network", "Linear MLP · 263,683 θ", "Conv 1x1 + BatchNorm · 199,683 θ"),
+    ("prime resolution", "512 px", "256 px"),
+    ("phase 1 optimizer", "Adam · lr 1e-3", "SGD · lr 1e-4"),
+    ("phase 2 optimizer", "Adam · lr 1e-3", "Adam · lr 3e-3"),
+    ("guidance G", "100", "60"),
+    ("SDS objective", "legacy · no w(t)", "weighted_sds · grad scale 0.1"),
+    ("budget", "500 SDS + 8 rounds x 300", "5000 SDS + 1 round x 300"),
+    ("joint Dream", "off", "opt-in · 16 of the 26 keepers"),
+]
+
+VERDICTS = [
+    ("256 px primes were enough", "512 px cost 3.3x for no gain"),
+    ("one Dream round", "more rounds made images worse"),
+    ("no negative prompt", "it did not lift the keeper rate"),
+    ("oil style", "kept for colour, not for yield"),
+]
 
 
-def fig_print():
-    f = Figure("print", 1400, 560)
-    f.tag("flip needs paper only")
-    f.photo(60, 140, 200, 200, HERO_PRIME, "prime_1.png · 256px")
-    f.rect(310, 160, 230, 160, "any laser printer\nplain paper · desk test")
-    f.photo(590, 140, 200, 200, HERO_VIEW, "sheet on the desk")
-    f.rect(840, 160, 200, 160, "turn 180°\n↻")
-    f.photo(1150, 140, 200, 200, HERO_VIEW2, "second subject")
-    for a, b in [(260, 310), (540, 590), (790, 840), (1040, 1150)]:
-        f.edge([(a, 240), (b, 240)])
-    f.rect(
-        140,
-        440,
-        1120,
-        56,
-        "rotate + hidden types need transparency film + backlight · not on this page",
-        colors=C_NOTE,
-        size=14,
-    )
-    return f
+def fig_recipe(out):
+    w, h = 1280, 800
+    s = [svg_open("recipe", "CLI defaults against the recipe that baked the gallery",
+                  "Eight settings, the shipped default, and the research value. The gallery "
+                  "ran author_reference, which changes the network, the optimizer, the "
+                  "guidance, and the objective.", w, h)]
+    s.append(eyebrow(40, 44, "TWO RECIPES · MEASURED VERDICTS"))
+    s.append(heading(40, 78, "Different network, different budget"))
+    cols = [(60, 300, "setting"), (380, 380, "CLI default"), (790, 420, "gallery recipe")]
+    for x, cw, label in cols:
+        accent = label == "gallery recipe"
+        s.append(f'<rect x="{x}" y="130" width="{cw}" height="40" rx="4" '
+                 f'fill="{ACCENT_TINT if accent else "rgba(45,49,66,0.04)"}"/>')
+        s.append(f'<text x="{x + 14}" y="156" fill="{ACCENT if accent else MUTED}" font-size="11" '
+                 f'font-family="{MONO}" letter-spacing="0.1em">{label.upper()}</text>')
+    y = 194
+    for i, (name, default, gallery) in enumerate(RECIPE_ROWS):
+        if i % 2:
+            s.append(f'<rect x="60" y="{y - 22}" width="1150" height="52" fill="rgba(45,49,66,0.02)"/>')
+        s.append(f'<text x="74" y="{y + 6}" fill="{INK}" font-size="13" font-weight="600" '
+                 f'font-family="{SANS}">{name}</text>')
+        s.append(f'<text x="394" y="{y + 6}" fill="{MUTED}" font-size="12" '
+                 f'font-family="{MONO}">{default}</text>')
+        s.append(f'<text x="804" y="{y + 6}" fill="{INK}" font-size="12" '
+                 f'font-family="{MONO}">{gallery}</text>')
+        y += 52
+    s.append(f'<line x1="60" y1="{y - 22}" x2="1210" y2="{y - 22}" stroke="{RULE}" stroke-width="0.8"/>')
+    s.append(note(60, y + 6, "every photo on this page came from the right column: "
+                             "--experimental-recipe author_reference swaps four things at once",
+                  10, anchor="start"))
+    cy = y + 30
+    for i, (head, body) in enumerate(VERDICTS):
+        s.append(box(60 + i * 295, cy, 265, 86, head, body, fill=NOTE_FILL, stroke=NOTE_STROKE))
+    s.append(legend([("rgba(45,49,66,0.04)", "default"), (ACCENT_TINT, "gallery"),
+                     (NOTE_FILL, "measured verdict")], w, cy + 128))
+    s.append("</svg>")
+    write(out, "recipe", "\n".join(s), w, h)
+
+
+def fig_review(out):
+    rejected = photo_uri(SWAN / "arm_neg_off_indep" / "ckpt_final" / "derived_1.png", 340)
+    kept = photo_uri(STATIC / "elephant-swan-view.webp", 340)
+    w, h = 1280, 780
+    s = [svg_open("review", "Review funnel: a human is the gate",
+                  "Two hundred and six baked cells reach a blind human review. Forty three "
+                  "score four or five. Sixteen of those lose on a frame defect. Twenty six "
+                  "become keepers.", w, h)]
+    s.append(eyebrow(40, 44, "SELECTION · THE GATE"))
+    s.append(heading(40, 78, "Human review is the gate"))
+    s.append(box(40, 170, 230, 120, "206 cells baked", "98 bases x 4 Dream arms"))
+    s.append(box(350, 170, 260, 120, "blind human review", "score 0 to 5 · frame flag",
+                 fill=ACCENT_TINT, stroke=ACCENT))
+    s.append(box(690, 170, 230, 120, "43 score 4 or 5", "21 fours · 22 fives"))
+    s.append(box(1000, 170, 240, 120, "26 keepers", "window2-2026-08-clean"))
+    for x1, x2 in [(270, 350), (610, 690), (920, 1000)]:
+        s.append(arrow(x1, 230, x2, 230))
+    s.append(path("M960,290 V318 Q960,326 968,326 H1010", MUTED, "4,3"))
+    s.append(box(1020, 310, 220, 56, "16 cut on the frame flag", None,
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    s.append(path("M480,290 V326", MUTED, "4,3"))
+    s.append(box(300, 336, 520, 56, "CLIP pair score: AUC 0.706, under the 0.75 bar · recorded, never a gate",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    s.append(photo(rejected, 60, 420, 200, None))
+    s.append(caption(160, 646, "cut · score 5 · frame disqualifying"))
+    s.append(caption(160, 664, "elephant and swan · seed 11 · sketch · independent"))
+    s.append(photo(kept, 330, 420, 200, None))
+    s.append(caption(430, 646, "kept · score 5 · frame none"))
+    s.append(caption(430, 664, "elephant and swan · seed 11 · oil · joint"))
+    s.append(box(600, 420, 640, 200, "what a frame defect is",
+                 "A printed border, a torn sheet edge, a desk, or a\n"
+                 "signature that the model painted into the image.\n"
+                 "The subject can read perfectly and the cell still goes:\n"
+                 "the artifact tells you it is a photo of a drawing.\n"
+                 "Same pair, same seed, both scored 5. Sixteen cells\n"
+                 "at score 4 or 5 died on this flag alone.",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
+    s.append(note(640, 706, "keeper = one pair + seed + mode · a score alone never made the cut"))
+    s.append(legend([(ACCENT_TINT, "the gate"), ("#ffffff", "count"),
+                     (NOTE_FILL, "cut or side channel")], w, 748))
+    s.append("</svg>")
+    write(out, "review", "\n".join(s), w, h)
+
+
+def fig_print(out):
+    prime = photo_uri(STATIC / "elephant-swan-prime.webp", 300)
+    view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
+    view2 = photo_uri(CLEAN / "s5-elephant_swan-seed11-oil-neg_off_joint-final-view2.png", 300)
+    w, h = 1280, 720
+    s = [svg_open("print", "Printing a flip illusion",
+                  "Print the prime on plain paper, put it on a desk, and turn the sheet "
+                  "180 degrees to see the second subject.", w, h)]
+    s.append(eyebrow(40, 44, "FABRICATION · FLIP ONLY"))
+    s.append(heading(40, 78, "Print it, turn it"))
+    for x1, x2 in [(220, 250), (470, 510), (690, 740), (920, 960)]:
+        s.append(arrow(x1, 300, x2, 300))
+    s.append(photo(prime, 40, 210, 180, "prime_1.png · 256 px"))
+    s.append(box(250, 220, 220, 160, "any laser printer", "plain paper\nno film needed"))
+    s.append(photo(view1, 510, 210, 180, "the sheet on a desk"))
+    s.append(box(740, 220, 180, 160, "turn the sheet", "180 degrees"))
+    s.append(photo(view2, 960, 210, 180, "the second subject"))
+    s.append(box(40, 480, 1200, 100, "other illusion types need more than paper",
+                 "rotate and hidden overlays need transparency film and a backlight.\n"
+                 "Flip is the only type that works on one plain sheet, which is why the gallery is flip.",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
+    s.append(legend([(INPUT_FILL, "input"), ("#ffffff", "step"), (NOTE_FILL, "note")], w, 648))
+    s.append("</svg>")
+    write(out, "print", "\n".join(s), w, h)
 
 
 FIGURES = {
@@ -503,23 +689,18 @@ FIGURES = {
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True, help="output dir for .drawio + .png")
-    ap.add_argument("--drawio", default="drawio")
-    args = ap.parse_args()
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    for name, build in FIGURES.items():
-        fig = build()
-        src = out / f"{name}.drawio"
-        raw = out / f"{name}-raw.png"
-        final = out / f"{name}.png"
-        fig.save_drawio(src)
-        subprocess.run(
-            [args.drawio, "-x", "-f", "png", "-s", "1", "-o", str(raw), str(src)], check=True
-        )
-        fig.composite(raw, final)
-        print(f"{name}: {final}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, default=STATIC)
+    parser.add_argument("--only", nargs="*", choices=sorted(FIGURES), default=None)
+    parser.add_argument("--keep-png", action="store_true",
+                        help="leave the intermediate png and html next to each webp")
+    args = parser.parse_args()
+    global KEEP_PNG
+    KEEP_PNG = args.keep_png
+    if not LOCAL.exists():
+        sys.exit(f"research exports missing: {LOCAL}")
+    for name in args.only or FIGURES:
+        FIGURES[name](args.out)
 
 
 if __name__ == "__main__":
