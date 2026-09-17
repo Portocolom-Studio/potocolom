@@ -583,7 +583,10 @@
 								<!-- Described by the field rather than announced from a live region:
 								the count changes on every keystroke, which a polite region would
 								read out again and again while the user is still typing. -->
-								<p id="gen-prompt-window" class="text-muted-foreground text-sm leading-relaxed tabular-nums">
+								<p
+									id="gen-prompt-window"
+									class="text-muted-foreground text-sm leading-relaxed tabular-nums"
+								>
 									{promptTokenNotice}
 								</p>
 							{/if}

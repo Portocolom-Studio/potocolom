@@ -44,8 +44,7 @@
 			const styles = getComputedStyle(canvas);
 			quiet = styles.getPropertyValue('--pf-quiet').trim() || 'rgba(255,255,255,0.18)';
 			accent = styles.getPropertyValue('--pf-accent').trim() || 'rgb(80,140,255)';
-			face =
-				styles.fontFamily || "'Lato', ui-sans-serif, system-ui, sans-serif";
+			face = styles.fontFamily || "'Lato', ui-sans-serif, system-ui, sans-serif";
 		};
 		readStyles();
 
