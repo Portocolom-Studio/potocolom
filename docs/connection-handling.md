@@ -75,7 +75,7 @@ Realtime connection, browser to API:
 |---|---|---|
 | `open` | `model_id`, `params` (optional) | first message after connect; params follow the model's schema |
 | `update_params` | `params` | a subset of the session's params to change live. The API validates against the manifest's schema with `required` removed; a `seed` is refused (fixed at session open) and so is an update whose assigned worker predates `update_session`; both are answered with an `error` that leaves the session running |
-| `close` | | end the session cleanly |
+| `close` | | end the session cleanly. The studio client may instead close the socket with 1000 and send no JSON; the API treats disconnect as end. |
 
 Realtime connection, API to browser:
 
@@ -110,9 +110,33 @@ The version gate implements the N-1 promise: with current protocol version N, ve
 
 ### Browser authentication and authorization
 
-Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized; a viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal, create no admission or worker state, and send an error before closing. Logout, revocation, disable, deletion, or role change cancels queued work or closes indexed live connections. After gateway extraction, the browser presents a short-lived API-minted ticket and the gateway validates transport admission without taking API authority.
+Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized. A viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal. They create no admission or worker state. They send an error before closing. Logout, revocation, disable, deletion, or role change closes indexed live connections. Designed: it would also cancel queued work. After gateway extraction, the browser presents a short-lived API-minted ticket. The gateway validates transport admission without taking API authority.
 
-> Shipped status: **authentication and authorization are implemented; the rest of the protocol is not.** In `AUTH_MODE=none` the socket binds the implicit local user, as before. In `AUTH_MODE=accounts` the upgrade resolves the session cookie before `accept`: no cookie fails the handshake as HTTP 403, a cookie that resolves to nothing closes `4401`, and a principal that may not spend a realtime slot (a `viewer`, or any account that is not `active`) closes `4403`. The principal binds once and the browser cannot select it. Revoking the account session, which is what logout, disable, deletion and a role change all do, closes the live socket with `4401`. That close walks a socket index that exists only inside the process holding the socket, so a revocation performed anywhere else reaches nothing; the process that owns the sockets therefore also asks PostgreSQL every thirty seconds which of its bound account sessions are still live and closes the rest with the same code. The connection binds the server-derived user id and account session id. It does NOT bind a role or a quota subject: the role is checked once at the handshake and not carried on the session, so a role change is enforced by revoking the account session and closing the socket rather than by re-reading a bound role. Still absent, and still owned by issue #19: role and quota-subject binding, the admission queue, resume, frame sequence numbers, codec negotiation, idle release, and writer isolation. The gateway ticket path is owned by "Gateway realtime tickets and revocation". The governing decision is "Realtime authorization: bind once, invalidate explicitly".
+> Shipped status: **authentication, authorization, open/ready/frames, update_params, SessionManager, and the studio WebSocket client are implemented.**
+>
+> In `AUTH_MODE=none` the socket binds the implicit local user.
+> In `AUTH_MODE=accounts` the upgrade resolves the session cookie before `accept`.
+> No cookie fails the handshake as HTTP 403.
+> A cookie that resolves to nothing closes `4401`.
+> A principal that may not spend a realtime slot closes `4403`.
+> That includes a `viewer` and any account that is not `active`.
+> The principal binds once. The browser cannot select it.
+> Logout, disable, deletion, and a role change revoke the account session.
+> That revocation closes the live socket with `4401`.
+> Logout does **not** cancel queued jobs.
+> That close walks a socket index inside the process that holds the socket.
+> A revocation in another process reaches nothing.
+> The owning process asks PostgreSQL every thirty seconds which bound account sessions are still live.
+> It closes the rest with the same code.
+> The connection binds the server-derived user id and account session id.
+> It does not bind a role or a quota subject.
+> The role is checked once at the handshake. It is not carried on the session.
+> A role change is enforced by revoking the account session and closing the socket.
+>
+> Issue #19 still owns the missing work.
+> That list is role and quota-subject binding, the admission queue, resume sequence numbers, codec negotiation, idle release, and writer isolation.
+> The gateway ticket path is owned by "Gateway realtime tickets and revocation".
+> The governing decision is "Realtime authorization: bind once, invalidate explicitly".
 
 ## GPU work is not interruptible
 

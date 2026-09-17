@@ -33,7 +33,7 @@ What lives where, at the edges:
 ## Boundary rules
 
 1. No imports across the boundary, ever. HTTP only.
-2. The contract is the tested artifact. The public repository tests the API against the fake QuotaService; the private repository's CI pulls the public images from GHCR and runs the same simulation against the real billing service. If both pass, the boundary holds. No shared code, no shared types: the contract lives in [blueprint.md](blueprint.md) and [api.md](api.md) plus the fake.
+2. The contract is the tested artifact. **Designed:** the public repository will test the API against a fake QuotaService. The private repository CI will pull the public images from GHCR. It will run the same simulation against the real billing service. No fake ships yet. If both pass, the boundary holds. No shared code. No shared types. The contract lives in [blueprint.md](blueprint.md) and [api.md](api.md) plus that fake when it exists.
 3. The contract is versioned like the worker protocol. A `/v1/` path on the quota and metering endpoints, expand-contract changes only, and the private repository pins which public release it deploys against. Worker to API already promises N-1 ([connection-handling.md](connection-handling.md)); the quota boundary gets the same discipline.
 
 ## Adding a feature: where the code goes and how it reaches each mode
@@ -93,19 +93,17 @@ flowchart LR
 
 ### CI in the public repository, staged so nothing arrives before its issue
 
-Already in place: per-component path-triggered workflows (lint, type check, test, build), the connection simulation as a CI job, and Dependabot.
+Already in place: per-component path-triggered workflows (backend, worker, frontend, simulation, deploy, docs, toolchain), the connection simulation as a CI job against `potocolom_ci`, concurrency groups on workflows that bind host ports, and `make verify-mermaid` on `docs/**`.
 
-Worth adding now, independent of any issue:
+Worth adding later, independent of any issue:
 
-- docs.yml, path-triggered on `docs/**`: render every Mermaid block with mermaid-cli, check the draw.io XML parses, run a link checker. This converts the "validate before push" convention into an enforced check.
-- Concurrency groups with cancel-in-progress on the PR workflows, so force-pushes stop stale runs instead of paying for them.
 - CodeQL (Python and JavaScript, weekly and on PRs): free for public repositories, near-zero noise at this size.
 
 Arriving with their issues, not before:
 
 - Migration check (with Alembic, issues #14/#16): upgrade from empty to head against the postgres service container, plus a drift check so a model change without its migration fails CI.
 - Image build check on PRs touching Dockerfiles: build, do not push.
-- release.yml (this is issue #18): on a `v*` tag, build and push `api`, `worker-cuda` and `worker-rocm` to GHCR, run the simulation against the built images as the release gate, scan them with trivy, attach the SPA artifact. It ends at GHCR deliberately.
+- A tag-driven release workflow: on a `v*` tag, build and push `api`, `worker-cuda` and `worker-rocm` to GHCR, run the simulation against the built images as the release gate, scan them with trivy, attach the SPA artifact. It ends at GHCR deliberately. Compose smoke already lives in `deploy.yml`; GHCR publish is still open.
 - The ROCm rung stays a manual pre-release verification on the reference AMD desktop, as decided; CI does not pretend to cover it.
 
 ### CI in the private repository
@@ -114,4 +112,4 @@ Its pipeline picks up where release.yml ends: mirror GHCR to ECR through the OID
 
 ### Deliberately not added
 
-Coverage gates, browser end-to-end rigs (waits for issue #3), nightly builds, workflow linting, PR title linting: process weight with no current failure mode behind it.
+Coverage gates, full-kit Playwright, nightly builds, workflow linting, PR title linting: process weight with no current failure mode behind it. The frontend gate already runs a headless Chrome pass over the built drawing canvas (`npm run test:canvas`).

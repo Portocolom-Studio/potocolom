@@ -17,7 +17,7 @@ The same three deployable components exist in every mode.
 
 ### frontend/
 
-SvelteKit single page application built with the static adapter. There is exactly one build artifact for all deployments: runtime behavior is driven by `GET /api/v1/config` (which auth methods exist, whether billing is enabled) instead of build time flags. In self-hosted mode the API server serves the built files; in the cloud they are served from a CDN.
+SvelteKit single page application built with the static adapter. Product runtime behavior comes from `GET /api/v1/config`. That response says which auth methods exist and whether billing is enabled. A second static build, `PUBLIC_SITE_MODE=landing`, prerenders the marketing site. That build hides studio API preload. In self-hosted mode the API server serves the built files. In the cloud a CDN serves them.
 
 Every user facing string passes through an i18n layer from the first component onward; English and Spanish ship at launch. Retrofitting string extraction into a finished SPA is the expensive path, so the discipline starts on day one.
 
@@ -107,7 +107,7 @@ flowchart TB
 
 ### The cloud profile in detail
 
-The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: the session-cookie path inside `current_user` (issue #5), the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95).
+The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: Redis session cache, the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95). Cookie and bearer session resolution in `current_user` is shipped.
 
 ```mermaid
 flowchart TB
@@ -177,22 +177,24 @@ Reading the boxes against the seams: `AUTH` is the authentication seam (`none` s
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud; sessions can therefore be listed and revoked instantly, which is what the session management in issue #5 needs. The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available, satisfying the discovery requirement in issue #5.
+- Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud (the Redis cache is still designed). The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available.
 - Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
 - Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
 
 ## GPU scheduling
 
-GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. A Redis-free, `AUTH_MODE=none` self-hosted install is the simplest profile, not the definition of self-hosting: issue #9, "Authentication", adds local accounts, and "Realtime and queue Redis seam: optional, behaviorally equivalent" permits a self-hosted operator to enable Redis and multiple socket-owning processes without changing queue behavior.
+GPU seconds are the scarce and expensive resource, so how work maps onto workers is specified here rather than left to implementation. A Redis-free, `AUTH_MODE=none` self-hosted install is the simplest profile, not the definition of self-hosting: `AUTH_MODE=accounts` is the shipped multi-user path, and "Realtime and queue Redis seam: optional, behaviorally equivalent" permits a self-hosted operator to enable Redis and multiple socket-owning processes without changing queue behavior.
 
 ### Capacity and the real time bar
 
-The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Workers admit from a measured batch curve when present; mixed classes that serialized p95 would admit are refused when their measured curve exceeds the 500 ms bar. Scalar slots are the minimum curve length, or floor(500 / p95) without a curve. On the reference RX 7600 XT, the fourth turbo session and heavier models wait on a faster UNet once the 40 ms window and WebP are included. Compatible frames now share one GPU cycle (issue #294), while the picker still shows the single-frame p95 from issue #288. Worker-internal batching remains below the slot abstraction, and the scheduler never sees batches.
+The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Workers admit from a measured batch curve when present; mixed classes that serialized p95 would admit are refused when their measured curve exceeds the 500 ms bar. Scalar slots are the minimum curve length, or floor(500 / p95) without a curve. On the reference RX 7600 XT, the fourth turbo session and heavier models are **refused** (close 4003) once the 40 ms window and WebP are included. They do not wait in an admission queue. Compatible frames now share one GPU cycle (issue #294), while the picker still shows the single-frame p95 from issue #288. Worker-internal batching remains below the slot abstraction, and the scheduler never sees batches.
 
 ### One pool, real time first
 
 Queued jobs and real time sessions share the same workers. Jobs fill idle capacity; an arriving session request preempts queued work (the worker finishes or checkpoints the current job between denoising steps, then frees the slot), and queued work resumes when sessions end. When several workers can take a job, the scheduler prefers those serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. This is the right trade at launch scale, where the pool may be one or two GPUs and a dedicated real time pool would mean paying for an idle machine. The scheduler treats pool membership as configuration, so splitting into dedicated real time and batch pools later (scaling stage 2) is a config change, not a redesign.
+
+> Shipped status (2026-09-17): **preemption and checkpoint-between-steps are not implemented.** Jobs and sessions share the worker. A full realtime pool closes the new browser with 4003. Rung-aware placement across a fleet is designed. `JOB_DISPATCH_DEPTH` pipelining on one worker is shipped.
 
 ### Model placement
 
@@ -200,6 +202,8 @@ A worker's VRAM holds roughly one or two models, so balancing users onto models 
 
 - A hot set, defined in fleet configuration, stays pinned: the real time model always, plus the most used generation models. Requests for these never wait on a model load.
 - Everything else loads on demand: the scheduler picks a worker, the user sees a loading state (about 60 seconds) once, and the model stays warm for a while afterward so a second request is instant.
+
+> Shipped status (2026-09-17): **no fleet hot-set scheduler.** The worker loads models locally (LRU, memory ladder). There is no scheduler-driven on-demand placement across machines.
 
 ### Model routing
 
@@ -428,7 +432,7 @@ Self-hosted installs have a single worker, so there is no second candidate: the 
 
 ### Authentication by deployment mode
 
-Issues #5 and #9.
+Issues #5 and #9 shipped the foundations. Remaining account UI is issue #10.
 
 ```mermaid
 flowchart TB
@@ -609,7 +613,7 @@ Object keys are `{prefix}{asset_id}.png` for PNG masters with a sibling `{asset_
 
 **Access:** objects are private by default. The API mints short-lived CloudFront signed GET URLs after session or API-key auth, only for rows the principal owns. Share links expose one asset under an unguessable token carried in the `/shared#<token>` fragment and resolved by `POST /api/v1/shared`, which answers with a 60-second signed URL for the picture; no share is cached at the edge, so a revoked link stops working at once. Payment flips quota in the billing service; it never creates AWS IAM principals, buckets or access points for users.
 
-**Self-hosted:** master keys are `{user_id}/{job_id}.png` with `{user_id}/{job_id}-thumb.webp` thumbnails under `STORAGE_LOCAL_PATH`, served through the API's file route. There is no tier prefix because installs are single-tenant.
+**Self-hosted:** master keys are `{user_id}/{job_id}-attempt-{attempt}.png` with `{user_id}/{job_id}-attempt-{attempt}-thumb.webp` thumbnails under `STORAGE_LOCAL_PATH`. The browser reads `/api/v1/assets/{id}`. `GET /api/v1/files/{key}` always answers 404. There is no tier prefix because installs are single-tenant.
 
 How the pieces reference each other - bytes live once in object storage, every relationship (thumbnail, lineage, favorite per issue #124, category per issue #95) is a column or foreign key on the PostgreSQL rows, and the browser only ever reaches bytes through URLs the API minted from those rows:
 
@@ -635,12 +639,12 @@ flowchart LR
     B -->|"session cookie"| API
     API -->|"owned rows only"| PG
     API -->|"URLs it minted for owned rows<br>never ListBucket"| B
-    B -->|"fetch bytes: straight to the CDN or bucket<br>in the cloud, back through the API file<br>route on a local install"| STORE
+    B -->|"fetch bytes: straight to the CDN or bucket<br>in the cloud, back through /api/v1/assets/{id}<br>on a local install"| STORE
     CLEAN -.-> AS
     CLEAN -.-> STORE
 ```
 
-**Today versus target:** the S3 backend currently uses the same `{user_id}/{job_id}.png` master key shape and returns presigned S3 GET URLs (backend/app/storage.py); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
+**Today versus target:** the S3 backend currently uses `{user_id}/{job_id}-attempt-{attempt}.png` master keys and returns presigned S3 GET URLs (`backend/app/storage.py`); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
 **Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
 

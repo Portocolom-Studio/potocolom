@@ -5,9 +5,8 @@ milestones remain the planning source of truth; this file is the readable
 summary. Decisions and their rejected alternatives live in
 [docs/decisions.md](docs/decisions.md).
 
-Refreshed 2026-08-23 to cover the realtime density and region-composite pass.
-The GitHub issues and milestones remain the authoritative, grouped (M2-M8)
-view of what is open.
+Refreshed 2026-09-17 against `main`. The GitHub issues and milestones remain
+the authoritative, grouped (M2-M8) view of what is open.
 
 > Correction: an earlier version of this file listed worker thumbnails (#56),
 > lineage columns (#57), self-hosted packaging (#18) under "To close M2" and the
@@ -19,8 +18,9 @@ view of what is open.
 ### Platform (backend)
 
 - Configuration profile (#14): storage, database and public URL settings read
-  once at startup. (`GET /api/v1/config` exists; the shipped SPA does not yet
-  consume it.)
+  once at startup. `GET /api/v1/config` is consumed by `/login` (and `/join`
+  landing gating) so the SPA can render the sign-in methods that this install
+  actually offers.
 - Storage seam (#17): one interface, two implementations. LocalStorage uploads
   and serves through `/api/v1/files/{key}`; S3Storage presigns PUT and GET
   (SigV4, MinIO in development). Workers receive an upload target with each job
@@ -67,11 +67,12 @@ view of what is open.
 - Survival on one card: OOM during a load or run evicts other resident models and
   retries once, so model switching works on 16 GB.
 - Generation masters are lossless PNG; realtime frames and thumbnails are WebP.
-- Models shipped: SDXL Base (default, 1024, DPM++ 2M Karras), SDXL Fast
-  (Lightning 8-step), SSD-1B and SSD-1B-Lightning (fast batch tier), DreamShaper-LCM
-  (smallest at ~6 GB), and VegaRT (Apache-2.0, the studio-shippable realtime model,
-  ~452 ms warm img2img @512). SD Turbo, SDXL Turbo and SDXL Hyper-SD remain
-  `benchmark_only` (license or measurement reasons).
+- Models shipped: SDXL Base (queued default, 1024, DPM++ 2M Karras), SDXL Fast
+  (Lightning 8-step), SSD-1B and SSD-1B-Lightning (fast batch tier), SD 3.5 Medium
+  (quality tier, gated weights), VegaRT (Apache-2.0 realtime), and SDXL Turbo
+  (studio realtime default via `studio_capabilities: ["realtime"]`). SD Turbo,
+  DreamShaper-LCM, SDXL Hyper-SD, FLUX.2 Klein 4B, SANA-Sprint 0.6B and Z-Image
+  Turbo remain `benchmark_only`.
 
 ### Upscale (post-generation, #76)
 
@@ -82,10 +83,12 @@ view of what is open.
 
 ### Studio UI (sketch scope, ahead of the frontend track)
 
-- Generate panel (model select, schema-driven controls, count 1-8, non-blocking
-  submits, progress thumbnails, viewer), an Upscale panel, a metrics dashboard
-  (live GPU sampling plus the 5-minute persisted lane), starred/favorite history,
-  sidebar with Models and History, en/es strings throughout.
+- Generate panel (model select, schema-driven controls, count 1-8, one POST per
+  click, progress via SSE with poll fallback, viewer), an Upscale panel, a live
+  drawing pane over `/api/v1/realtime` (colors, undo, shapes, save/open local
+  drawing files), an Images lineage canvas, a metrics dashboard, starred history
+  via the API, `/login` and `/join`, sidebar with Models and History, en/es
+  strings throughout.
 - Dev loop: the vite server proxies `/api/v1` to the native API.
 
 ### Performance, measured on the reference RX 7600 XT
@@ -116,18 +119,26 @@ tracker-verified detail (open issues and in-flight PRs).
 
 - Tiny-model CPU integration test in CI (the testing ladder's rung 2).
 - v0.1 tag: three images plus the compose file, cut together.
-- #1 UI component and theme system, #4 multi-tool interface foundation.
 - Model routing tier field (designed; not shipped - see decisions.md).
 - Optional: flip `TORCH_COMPILE` default on after a CUDA fleet bake-off
   (ROCm A/B in PR #141 was ~0-7% warm gain; left opt-in).
 
 ### M3 Real-time drawing
 
-- #3 drawing tool, #19 realtime protocol extensions (prompt_update, queued
-  position with the admission queue, idle slot release, browser keepalive),
-  #41 pointer and stylus input, #42 canvas input optimizations, #54 stroke-op
-  replay log, #55 vector masks and selections, #45 SPA/API version skew, #46
-  status banner.
+Studio drawing core is on `main` (PRs #240, #477, #479, #480, #482): WebSocket
+client, drawing journal, colors, undo, line/rectangle/ellipse, save/open local
+files, SessionManager on the worker. Epic #3 stays open for leftovers.
+
+Still open:
+
+- #19 realtime protocol extras (prompt_update, queued position with the
+  admission queue, idle slot release, browser keepalive, frame revisions)
+- #41 pointer and stylus input
+- #42 canvas input optimizations
+- #54 higher-resolution refine and compressed checkpoints (journal, undo and
+  save/open already shipped)
+- #55 vector masks and selections
+- #46 status banner
 
 Shipped this pass:
 
@@ -146,17 +157,20 @@ Still open:
 
 ### M4 Accounts
 
-- Still-open epics: leftover #5 session and principal policy work, leftover #9 first-admin and adoption work, and the rest of #10 account UI (settings, first-admin setup, export, deletion, restore, purge).
+- Still open: the rest of #10 account UI (settings, first-admin setup, export,
+  deletion, restore, purge). The API for those already exists. Issues #5 and #9
+  are closed.
 - Shipped slices: invitations and roles (PR #364), realtime socket authentication (PR #365 / #383; #19 still owns admission queue, idle release, and other protocol work), mail outbox (PR #367 / #385), Google and GitHub OAuth sign-in and linking (PR #369 / #386; linking only, never enrolment by email), TOTP and recovery (PR #371 / #387), credential changes (PR #374 / #388), studio `/login` and `/join` (PR #470, first slice of #10), and the per-account advisory lock (PR #467 / #444).
 
 ### M5 Cloud readiness (largest)
 
 - #20 multi-worker scheduler, #21 usage metering and quota seam, #27 content
-  safety screening, #28 in-app admin area, #29 usage metrics and opt-out telemetry,
-  #48 relay load harness, #60 inference-speed baseline and optimization backlog,
-  #95 CLIP output categorizer, #107 one-click benchmark pipeline, and the
-  lineage-canvas items still open: #124 (persist favorites) and #125 (PNG masters).
-  PR #210 shipped #129 (lineage on the detail view).
+  safety screening, #28 studio admin UI (the admin API is shipped), #29 usage
+  metrics and opt-out telemetry (the `usage_events` path and TELEMETRY flag
+  are shipped; cloud ingest stays private), #48 relay load harness, #60
+  inference-speed baseline and optimization backlog, #95 CLIP output
+  categorizer, #107 one-click benchmark pipeline. Lineage favorites (#124) and
+  PNG masters (#125) shipped. PR #210 shipped #129 (lineage on the detail view).
 - Inference backlog note (#60): torch.compile warmup and measured realtime slots
   are in-flight in PR #141. That PR recommends against enabling torch.compile by
   default (measured ROCm speedup only 0.8-7.4% against a large cold-load cost).
@@ -164,9 +178,9 @@ Still open:
   four-step vega with three-frame lag. Do not adopt it. Do not vendor
   StreamDiffusion. SSF remains unstarted; CUDA compile, Sage and TensorRT stay
   last, fleet card only.
-- In flight: PR #339 adds four self-hosted runners and concurrency groups.
-  Shipped: PR #366 gives jobs isolated ports and compose projects; PR #382 lets
-  simulation choose a free port.
+- Shipped: PR #339 self-hosted runners and concurrency groups; PR #366 isolated
+  ports and compose projects; PR #382 simulation free port; PR #464
+  `potocolom_ci`. Image publish on a `v*` tag and GHCR push are still open.
 
 ### M6 Launch and beta
 
@@ -201,6 +215,7 @@ Still open:
 
 - Have a human look at the region PNGs, then decide #376 step 2 (Engine
   composite) or stop.
-- Drawing UI remains #3 and related issues.
+- Drawing leftovers remain #3 / #19 / #41 / #42 / #54 / #55 / #46. The studio
+  pane and WebSocket client already ship.
 - Do not shrink BATCH_WINDOW_MS. Do not start SSF, Sage, TRT, Flux or img2img
   realtime.

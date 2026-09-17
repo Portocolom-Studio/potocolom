@@ -2,11 +2,16 @@
 
 What the platform measures about its own use, where those measurements live, and what leaves a self-hosted install. The goal is to answer product and investor questions - what are people creating, with which models, how often do they come back - without cookies, third party trackers or any client side beacon. Everything here is server side rows derived from requests the API already handles.
 
+Self-hosted and local: GPU samples land in PostgreSQL (`gpu_samples`). Redis worker hashes and CloudWatch aggregates are cloud-profile destinations. They are not wired in this repository yet. `usage_events` and the TELEMETRY opt-out path are shipped. CLIP categories and QuotaService metering are not.
+
 ## The questions this answers
 
-- What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan.
-- Which models and tiers do they choose, and how does the optional `model_id` routing actually get used.
-- How much time do they spend: realtime drawing minutes, queued generations per session, days active per week.
+Designed product questions. Shipped today: GPU samples, usage_events without prompt/image/IP,
+and TELEMETRY aggregates. CLIP categories stay stub `other`. Tier routing is not shipped.
+
+- What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan. (needs CLIP; stub today)
+- Which models they choose. Optional `model_id` routing by tier is designed, not shipped.
+- How much time they spend: realtime drawing minutes, queued generations per session, days active per week.
 - Retention and cohorts: DAU/WAU, how usage changes after the first week, which categories retain.
 - The self-hosted install base: how many installs exist, which versions, which GPUs and memory ladder rungs.
 
@@ -18,7 +23,7 @@ What flows where, and what never leaves the deployment:
 
 ```mermaid
 flowchart TB
-    W["Worker<br>GPU sample rides every 30 s heartbeat<br>CLIP category attached at job_done"]
+    W["Worker<br>GPU sample rides every 30 s heartbeat<br>category stub other until CLIP ships"]
     A["API"]
     subgraph FLEET["Fleet plane: per heartbeat, hardware detail"]
         RH[("Redis worker hash<br>live fleet view, autoscaler")]
@@ -108,9 +113,9 @@ foreign keys use `ON DELETE CASCADE`, so both are hard deleted with the account'
 
 ## Content categorization
 
-The worker categorizes each output image with a CLIP zero-shot pass against a fixed label set - `art`, `photo_edit`, `design`, `character`, `nsfw`, `other` - and attaches the top label and score to `job_done` (for queued jobs) and to `session_closed` (for realtime, classifying the final frame). SD-class pipelines already ship a CLIP encoder, so this is one extra embedding comparison at a point where the image is already in memory, in both modes and on every device type.
+Designed: the worker would categorize each output with a CLIP zero-shot pass against a fixed label set - `art`, `photo_edit`, `design`, `character`, `nsfw`, `other` - and attach the top label and score to `job_done` (queued) and `session_closed` (realtime, last frame).
 
-Categorization is metrics, not moderation: it runs regardless of `SAFETY_CHECKS`, and the diffusers safety checker remains the only enforcement path. A self-hosted install with safety off still labels its own NSFW output correctly in its own statistics.
+Shipped: `worker/worker/categorize.py` returns stub `other` with no score. SD-class pipelines already ship a CLIP encoder, so the extra comparison is still the planned path. Categorization is metrics, not moderation: it would run regardless of `SAFETY_CHECKS`. A self-hosted install does not yet label NSFW correctly in its own statistics.
 
 ## Telemetry from self-hosted installs
 
@@ -152,7 +157,7 @@ Usage events and telemetry are the product plane. Three more planes cover operat
 
 | Plane | Source | Export path | Where it lands |
 |---|---|---|---|
-| Fleet and GPU | worker heartbeat samples | the existing WSS connection - workers are never AWS principals | Redis worker hash (live), CloudWatch fleet aggregates, one JSON log line per heartbeat |
+| Fleet and GPU | worker heartbeat samples | the existing WSS connection - workers are never AWS principals | PostgreSQL `gpu_samples` today. Redis worker hash, CloudWatch fleet aggregates, and JSON log fan-out are designed (cloud) |
 | Service | API and private services | `PutMetricData` in the `potocolom` namespace + structured JSON logs | CloudWatch metrics, Logs Insights |
 | Money path | API outbox, billing webhooks, autoscaler | same as service plane | CloudWatch metrics and alarms; machine-hour rows in the autoscaler's store |
 
@@ -160,11 +165,11 @@ The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, det
 
 ## GPU fleet metrics
 
-The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - with one `nvidia-smi` subprocess on CUDA or one combined `rocm-smi --json` subprocess on ROCm. The blocking hardware query runs through `asyncio.to_thread`, off the async event loop that relays realtime frames and dispatches jobs. The ROCm parser prefers structured output and retains the human-readable regex parsers as defensive fallbacks. The API fans each heartbeat out three ways: the `worker:{id}` Redis hash (the admin fleet view and the autoscaler read this), fleet-level CloudWatch aggregates (workers connected, slots in use and free, average and max GPU utilization, minimum VRAM free), and one JSON log line for history.
+The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - with one `nvidia-smi` subprocess on CUDA or one combined `rocm-smi --json` subprocess on ROCm. The blocking hardware query runs through `asyncio.to_thread`, off the async event loop that relays realtime frames and dispatches jobs. The ROCm parser prefers structured output and retains the human-readable regex parsers as defensive fallbacks. Self-hosted, the API writes `gpu_samples` in PostgreSQL. Designed cloud fan-out: the `worker:{id}` Redis hash (admin fleet view and autoscaler), fleet-level CloudWatch aggregates, and one JSON log line for history.
 
 In-process NVML and amd-smi bindings remain a possible future optimization with no licensing obstacle. They are not adopted here because each GPU family would add a new vendor dependency, while the single subprocess per heartbeat captures most of the benefit.
 
-A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots - the fleet view lists them all individually with no special casing. The admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker.
+A multi-GPU machine runs one worker process per GPU, pinned by device index, so every GPU is one connection, one heartbeat stream and one set of slots. Designed: the admin area is the live many-GPU console; CloudWatch is for trends and alarms; Logs Insights is for the post-mortem on one specific worker. Shipped studio surface: the metrics panel reading PostgreSQL samples. Admin fleet/users UI still trails issue #10 / #28.
 
 The studio's own usage panel has a fourth consumer: each heartbeat's GPU sample is also written to the deployment's PostgreSQL (`gpu_samples`, raw rows kept 48 hours) and rolled into five-minute buckets (`gpu_sample_rollups`, kept 30 days) by a maintenance loop in the API. Static `device` and `memory_mode` facts live once per worker in `workers`, refreshed at registration and heartbeat, instead of being repeated on every sample. `GET /api/v1/metrics/gpu/history` serves raw and rolled-up samples: raw rows for windows up to an hour, rollups beyond. This is per-install history for the user's own hardware; the CloudWatch plane above stays aggregate-only.
 
