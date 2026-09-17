@@ -62,7 +62,7 @@
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
 					width: 2560,
-					height: 1560
+					height: 1600
 				}
 			]
 		},
@@ -114,6 +114,18 @@
 					cap: 'ill.fig_review_cap',
 					width: 2560,
 					height: 1560
+				},
+				{
+					src: '/illusions/seeds.webp',
+					cap: 'ill.fig_seeds_cap',
+					width: 2560,
+					height: 1440
+				},
+				{
+					src: '/illusions/failures.webp',
+					cap: 'ill.fig_failures_cap',
+					width: 2560,
+					height: 1312
 				}
 			]
 		},

@@ -141,6 +141,8 @@
 	"ill.s7_p3": "We rejected negative prompts. Extra Dream rounds after the first made images worse. 256 px primes were enough. 512 px cost about {cost} times as much for no visible gain. That is the prime render resolution, not the Score Distillation ladder.",
 	"ill.s7_p4": "These conclusions came after the gallery was baked. The {galleryCount} images above span both wordings and both styles. {jointCount} of {galleryCount} used joint Dream. The rest used independent targets. Export {export}.",
 	"ill.fig_review_cap": "206 cells, 43 at score four or five, 26 keepers. A frame defect cut 16 of them. CLIP scores are recorded. They are not a gate.",
+	"ill.fig_seeds_cap": "One pair at three seeds, baked twice. Joint Dream on top, independent targets below. Nothing else changes, and the human score runs from zero to five.",
+	"ill.fig_failures_cap": "Three real cells that did not become keepers, each with both views and the reason it was cut.",
 	"ill.fig_recipe_cap": "The shipped defaults against the recipe that baked this gallery. The recipe changes the network, the optimizer, the guidance, and the objective.",
 	"ill.s8_title": "Gallery",
 	"ill.s8_p1": "{galleryCount} keepers from a blind review. Their scores are {minScore} and {score}. They have no major frame defect. Flip each card. They do not promise that the same pair will work on a new seed.",

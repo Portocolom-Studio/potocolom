@@ -108,6 +108,8 @@ test('study diagrams are exported as webp', () => {
 		'joint',
 		'recipe',
 		'review',
+		'seeds',
+		'failures',
 		'print'
 	];
 	for (const name of names) {

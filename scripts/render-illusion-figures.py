@@ -38,11 +38,10 @@ SMOKE_ARM = SMOKE / "arm_neg_on_indep"
 SWAN = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/elephant_swan/seed_11/attempt_001"
 EAGLE = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/eagle_phoenix/seed_11/attempt_001"
 
-FONTS = ("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1"
-         "&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap")
-SANS = "'Geist','DejaVu Sans',sans-serif"
-MONO = "'Geist Mono','DejaVu Sans Mono',monospace"
-SERIF = "'Instrument Serif',Georgia,serif"
+FONTS = "https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap"
+SANS = "'Lato','DejaVu Sans',sans-serif"
+MONO = "'DejaVu Sans Mono',ui-monospace,monospace"
+DISPLAY = "'Lato','DejaVu Sans',sans-serif"
 
 PAPER, INK = "#f5f5f5", "#2d3142"
 MUTED, SOFT = "#4f5d75", "#7a8399"
@@ -104,8 +103,9 @@ def eyebrow(x, y, text):
             f'letter-spacing="0.14em">{text}</text>')
 
 
-def heading(x, y, text, size=30):
-    return f'<text x="{x}" y="{y}" fill="{INK}" font-size="{size}" font-family="{SERIF}">{text}</text>'
+def heading(x, y, text, size=28):
+    return (f'<text x="{x}" y="{y}" fill="{INK}" font-size="{size}" font-family="{DISPLAY}" '
+            f'font-weight="700" letter-spacing="-0.01em">{text}</text>')
 
 
 def box(x, y, w, h, name, sub=None, fill="#ffffff", stroke=INK, name_size=12, sub_size=9):
@@ -191,6 +191,48 @@ def write(out, slug, svg, w, h):
     print(f"{slug}: {w * 2}x{h * 2}")
 
 
+def alphas_cumprod(steps=1000, beta_start=0.00085, beta_end=0.012):
+    """SD 1.5's scaled_linear schedule, straight from its scheduler_config.json."""
+    lo, hi = beta_start ** 0.5, beta_end ** 0.5
+    out, running = [], 1.0
+    for i in range(steps):
+        beta = (lo + (hi - lo) * i / (steps - 1)) ** 2
+        running *= 1.0 - beta
+        out.append(running)
+    return out
+
+
+def weight_panel(x, y, pw, ph):
+    """w(t) = 1 - alpha_bar(t) over the schedule, with the sampled window shaded.
+
+    Readers keep reading w as the guidance scale. Drawing it settles the point:
+    w lives in [0, 1] and G is 60.
+    """
+    ac = alphas_cumprod()
+    weights = [1.0 - a for a in ac]
+    x0, x1 = x + 50, x + pw - 24
+    base, span = y + ph - 60, ph - 114
+    lo, hi = int(0.02 * len(weights)), int(0.98 * len(weights))
+    s = [box(x, y, pw, ph, "", None, fill="#ffffff"),
+         note(x + 30, y + 32, "TIMESTEP WEIGHT w(t) = 1 − ᾱt", 9, anchor="start", fill=SOFT),
+         f'<rect x="{x0 + (x1 - x0) * lo / len(weights):.1f}" y="{base - span}" '
+         f'width="{(x1 - x0) * (hi - lo) / len(weights):.1f}" height="{span}" '
+         f'fill="{ACCENT_TINT}"/>',
+         f'<line x1="{x0}" y1="{base}" x2="{x1}" y2="{base}" stroke="{RULE}" stroke-width="1"/>',
+         f'<line x1="{x0}" y1="{base - span}" x2="{x0}" y2="{base}" stroke="{RULE}" stroke-width="1"/>']
+    pts = " ".join(f"{x0 + (x1 - x0) * i / (len(weights) - 1):.1f},{base - v * span:.1f}"
+                   for i, v in enumerate(weights))
+    s.append(f'<polyline points="{pts}" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    s.append(note(x0 - 8, base - span + 4, "1.0", 9, anchor="end", fill=SOFT))
+    s.append(note(x0 - 8, base + 3, "0", 9, anchor="end", fill=SOFT))
+    s.append(note(x0, base + 18, "t = 0", 9, anchor="start", fill=SOFT))
+    s.append(note(x1, base + 18, "t = 1000", 9, anchor="end", fill=SOFT))
+    s.append(note(x0 + (x1 - x0) * 0.5, base - span - 6, "sampled window: 2% to 98%", 9, fill=ACCENT))
+    s.append(note(x + pw / 2, base + 36, "w runs 0.019 to 0.994 across that window.", 10))
+    s.append(note(x + pw / 2, base + 52, "G is 60. They are different numbers.", 10))
+    return "\n".join(s)
+
+
 # --------------------------------------------------------------- figures
 
 def fig_architecture(out):
@@ -212,7 +254,7 @@ def fig_architecture(out):
     s.append(path("M650,215 H672 Q680,215 680,223 V300 Q680,308 688,308 H710"))
     s.append(path("M650,475 H672 Q680,475 680,467 V330 Q680,322 688,322 H710"))
     s.append(path("M825,240 V112 Q825,104 817,104 H123 Q115,104 115,112 V116", ACCENT, "4,3"))
-    s.append(arrow_label(700, 112, "GRAD θ", 90))
+    s.append(note(700, 96, "GRAD θ", 9, fill=SOFT))
     s.append(box(40, 120, 150, 64, "θ · FFN weights", "only thing trained",
                  fill=ACCENT_TINT, stroke=ACCENT))
     s.append(photo(prime, 40, 260, 150, "p · print this"))
@@ -289,7 +331,7 @@ def fig_ffn(out):
 
 def fig_sds(out):
     view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
-    w, h = 1280, 780
+    w, h = 1280, 800
     s = [svg_open("sds", "One Score Distillation step",
                   "The derived view encodes to a latent, gains noise, and the frozen UNet "
                   "scores it. The residual re-enters as a gradient on the prime weights only.",
@@ -310,13 +352,13 @@ def fig_sds(out):
     s.append(note(330, 330, "GRADIENT PATH: θ TO z", 9, fill=SOFT))
     s.append(f'<line x1="845" y1="180" x2="845" y2="250" stroke="{CUT}" stroke-width="1.6"/>')
     s.append(note(838, 140, "no grad past here", 9, anchor="end", fill=CUT))
-    s.append(box(40, 360, 580, 130, "how the gradient is made",
+    s.append(box(40, 350, 580, 130, "how the gradient is made",
                  "εcfg = εu + G·(εc − εu)\n"
                  "r = w(t)·(εcfg − ε)\n"
                  "w(t) = 1 − ᾱt, the timestep weight\n"
                  "L = (z · r.detach()).sum(), then the optimizer steps θ",
                  sub_size=11))
-    s.append(box(660, 360, 580, 130, "what the flags change",
+    s.append(box(660, 350, 580, 130, "what the flags change",
                  "default objective legacy drops w(t): r = εcfg − ε\n"
                  "the gallery ran weighted_sds · G = 60 · grad scale 0.1\n"
                  "the csd branch ignores guidance: r = w(t)·(εc − εu)\n"
@@ -336,17 +378,18 @@ def fig_sds(out):
         ("t", "integer step, 2% to 98% of T = 1000"),
         ("a(p)", "one fixed arrangement of the prime"),
     ]
-    s.append(note(40, 556, "SYMBOL KEY", 9, anchor="start", fill=SOFT))
+    s.append(note(540, 536, "SYMBOL KEY", 9, anchor="start", fill=SOFT))
     for i, (sym, meaning) in enumerate(keys):
-        col, row = divmod(i, 4)
-        x = 40 + col * 410
-        y = 586 + row * 28
-        s.append(f'<text x="{x}" y="{y}" fill="{INK}" font-size="12" font-family="{MONO}" '
+        col, row = divmod(i, 6)
+        x = 540 + col * 355
+        y = 566 + row * 26
+        s.append(f'<text x="{x}" y="{y}" fill="{INK}" font-size="11" font-family="{MONO}" '
                  f'font-weight="600">{sym}</text>')
-        s.append(f'<text x="{x + 70}" y="{y}" fill="{MUTED}" font-size="11" '
+        s.append(f'<text x="{x + 58}" y="{y}" fill="{MUTED}" font-size="11" '
                  f'font-family="{SANS}">{meaning}</text>')
+    s.append(weight_panel(40, 512, 460, 214))
     s.append(legend([(ACCENT_TINT, "trainable"), ("#ffffff", "frozen or fixed"),
-                     (NOTE_FILL, "note"), (CUT, "gradient stops")], w, 726))
+                     (NOTE_FILL, "note"), (CUT, "gradient stops")], w, 762))
     s.append("</svg>")
     write(out, "sds", "\n".join(s), w, h)
 
@@ -674,6 +717,97 @@ def fig_print(out):
     write(out, "print", "\n".join(s), w, h)
 
 
+OIL = LOCAL / "campaigns/window2/runs/window2/a_forked_oil/elephant_swan"
+SKETCH = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/elephant_swan"
+SEED_SCORES = {("joint", 11): 5, ("joint", 23): 3, ("joint", 37): 4,
+               ("indep", 11): 0, ("indep", 23): 0, ("indep", 37): 3}
+
+
+def fig_seeds(out):
+    """Same pair, same prompts, same budget. Only the seed and the mode move."""
+    w, h = 1280, 720
+    s = [svg_open("seeds", "The seed decides as much as the recipe",
+                  "One pair at three seeds, baked twice: joint Dream and independent "
+                  "targets. Human scores run from zero to five with nothing else changed.",
+                  w, h)]
+    s.append(eyebrow(40, 44, "ABLATION · ONE PAIR, SIX CELLS"))
+    s.append(heading(40, 78, "A keeper is a seed, not a recipe"))
+    cols = [(11, 210), (23, 560), (37, 910)]
+    rows = [("joint Dream", "arm_neg_off_joint", 150), ("independent targets", "arm_neg_off_indep", 400)]
+    for seed, x in cols:
+        s.append(note(x + 155, 138, f"seed {seed}", 11, fill=INK))
+    for seed, x in cols:
+        s.append(note(x + 155, 158, "upright · turned", 9, fill=SOFT))
+    for label, arm, y in rows:
+        s.append(f'<rect x="40" y="{y + 30}" width="150" height="125" rx="6" fill="{NOTE_FILL}"/>')
+        s.append(note(115, y + 84, label.split()[0], 12, fill=INK))
+        s.append(note(115, y + 102, label.split()[1], 12, fill=INK))
+        for seed, x in cols:
+            base = OIL / f"seed_{seed}" / "attempt_001" / arm / "ckpt_final"
+            s.append(f'<image href="{photo_uri(base / "derived_1.png", 260)}" x="{x}" '
+                     f'y="{y + 20}" width="145" height="145"/>')
+            s.append(f'<image href="{photo_uri(base / "derived_2.png", 260)}" x="{x + 165}" '
+                     f'y="{y + 20}" width="145" height="145"/>')
+            score = SEED_SCORES[(arm.split("_")[-1], seed)]
+            keeper = score >= 4
+            s.append(f'<rect x="{x + 110}" y="{y + 178}" width="100" height="22" rx="11" '
+                     f'fill="{ACCENT_TINT if keeper else NOTE_FILL}" '
+                     f'stroke="{ACCENT if keeper else NOTE_STROKE}" stroke-width="1"/>')
+            s.append(f'<text x="{x + 160}" y="{y + 193}" fill="{ACCENT if keeper else MUTED}" '
+                     f'font-size="11" font-family="{MONO}" text-anchor="middle">score {score}</text>')
+    s.append(box(40, 616, 1200, 52,
+                 "elephant and swan · oil · no negative prompt · 5000 SDS steps + 1 Dream round · "
+                 "only the seed and the Dream mode change",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    s.append(legend([(ACCENT_TINT, "would be a keeper"), (NOTE_FILL, "cut")], w, 700))
+    s.append("</svg>")
+    write(out, "seeds", "\n".join(s), w, h)
+
+
+FAILURES = [
+    (OIL / "seed_37/attempt_001/arm_neg_on_joint/ckpt_final", "score 2 · the turn is confused",
+     "Upright is a clean elephant.", "Turned, swan and elephant overlap.", "seed 37 · joint · oil"),
+    (OIL / "seed_23/attempt_001/arm_neg_off_indep/ckpt_final", "score 0 · only the turn reads",
+     "Upright resolves into nothing.", "Turned, the swan is clean.", "seed 23 · independent · oil"),
+    (SKETCH / "seed_11/attempt_001/arm_neg_off_indep/ckpt_final", "score 5 · cut on the frame flag",
+     "Both subjects read here.", "Pencils and a desk are painted in.", "seed 11 · independent · sketch"),
+]
+
+
+def fig_failures(out):
+    """Three real cut cells, each with what the reviewer saw."""
+    w, h = 1280, 656
+    s = [svg_open("failures", "What the human gate catches",
+                  "Three real cells that did not become keepers, each with both views and "
+                  "the reason it was cut.", w, h)]
+    s.append(eyebrow(40, 44, "FAILURE CASES · REAL CUT CELLS"))
+    s.append(heading(40, 78, "What gets cut, and why"))
+    for i, (base, verdict, line1, line2, prov) in enumerate(FAILURES):
+        x = 40 + i * 410
+        s.append(f'<image href="{photo_uri(base / "derived_1.png", 300)}" x="{x}" y="{170}" '
+                 f'width="170" height="170"/>')
+        s.append(f'<image href="{photo_uri(base / "derived_2.png", 300)}" x="{x + 185}" y="{170}" '
+                 f'width="170" height="170"/>')
+        s.append(caption(x + 85, 360, "upright"))
+        s.append(caption(x + 270, 360, "turned"))
+        s.append(f'<rect x="{x}" y="{388}" width="355" height="26" rx="4" fill="{NOTE_FILL}"/>')
+        s.append(f'<text x="{x + 12}" y="{406}" fill="{INK}" font-size="12" font-weight="600" '
+                 f'font-family="{SANS}">{verdict}</text>')
+        s.append(f'<text x="{x}" y="{440}" fill="{MUTED}" font-size="11" '
+                 f'font-family="{SANS}">{line1}</text>')
+        s.append(f'<text x="{x}" y="{460}" fill="{MUTED}" font-size="11" '
+                 f'font-family="{SANS}">{line2}</text>')
+        s.append(f'<text x="{x}" y="{484}" fill="{SOFT}" font-size="9" '
+                 f'font-family="{MONO}">{prov}</text>')
+    s.append(box(40, 526, 1200, 92, "the score and the frame flag are two separate judgements",
+                 "The score asks whether both subjects read. The frame flag asks whether the "
+                 "image pretends to be\na photo of a drawing. A cell needs 4 or 5 on the score "
+                 "and no disqualifying frame. The third cell\nscored 5 and was still cut.",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
+    s.append("</svg>")
+    write(out, "failures", "\n".join(s), w, h)
+
+
 FIGURES = {
     "architecture": fig_architecture,
     "ffn": fig_ffn,
@@ -684,6 +818,8 @@ FIGURES = {
     "workflow": fig_workflow,
     "recipe": fig_recipe,
     "review": fig_review,
+    "seeds": fig_seeds,
+    "failures": fig_failures,
     "print": fig_print,
 }
 

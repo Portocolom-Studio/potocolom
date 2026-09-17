@@ -262,6 +262,22 @@ can flip each card. A human promotes what reads clean.
 *Figure: the review funnel: 206 baked cells, 43 at score 4 or 5, 16 of those cut on a frame defect, 26 keepers. The photo pair is one cut cell beside one kept cell, same pair and seed. The CLIP branch is recorded, never gating.*
 
 
+The seed matters as much as the recipe. One pair, one style, one budget,
+three seeds, baked twice: joint Dream scored 5, 3 and 4, and independent
+targets scored 0, 0 and 3 on the same three seeds. Two of those six cells
+would clear the gallery bar. Four would not.
+
+<!-- figure: seeds -->
+*Figure: elephant and swan at seeds 11, 23 and 37, in joint and independent modes. Same prompts, same style, same budget. Only the seed and the Dream mode change.*
+
+
+A score of 4 or 5 is not the only way through, and a high score is not a
+pass on its own.
+
+<!-- figure: failures -->
+*Figure: three real cut cells with both views. One scored 2 because the turned view is confused. One scored 0 because only the turned view reads. One scored 5 and still lost, because a desk and pencils are painted into the image.*
+
+
 ## Print
 
 <!-- figure: print -->

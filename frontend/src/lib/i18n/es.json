@@ -141,6 +141,8 @@
 	"ill.s7_p3": "Rechazamos los prompts negativos. Las rondas Dream extra despues de la primera empeoraron las imagenes. Primas de 256 px bastaron. 512 px costo unas {cost} veces mas sin ganancia visible. Se trata de la resolucion de dibujo de la prima, no de la escalera de Score Distillation.",
 	"ill.s7_p4": "Estas conclusiones llegaron despues de cocer la galeria. Las {galleryCount} imagenes de arriba cubren ambos textos y ambos estilos. {jointCount} de {galleryCount} usaron Joint Dream. El resto uso objetivos independientes. Export {export}.",
 	"ill.fig_review_cap": "206 celdas, 43 con nota cuatro o cinco, 26 keepers. Un defecto de marco corto 16. Los puntajes CLIP se registran. No son una puerta.",
+	"ill.fig_seeds_cap": "Un par con tres semillas, horneado dos veces. Joint Dream arriba, objetivos independientes abajo. Nada mas cambia, y la nota humana va de cero a cinco.",
+	"ill.fig_failures_cap": "Tres celdas reales que no llegaron a keeper, cada una con sus dos vistas y el motivo del corte.",
 	"ill.fig_recipe_cap": "Los valores por defecto frente a la receta que horneo esta galeria. La receta cambia la red, el optimizador, la guia y el objetivo.",
 	"ill.s8_title": "Galeria",
 	"ill.s8_p1": "{galleryCount} keepers de una revision ciega. Notas {minScore} y {score}, y sin defecto mayor de marco. Gira cada tarjeta. Esto no promete que el mismo par funcione con una semilla nueva.",
