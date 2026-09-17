@@ -11,7 +11,7 @@
 		current,
 		children
 	}: {
-		current?: 'whitepaper' | 'benchmark';
+		current?: 'whitepaper' | 'benchmark' | 'illusions';
 		children: Snippet;
 	} = $props();
 </script>
@@ -30,6 +30,9 @@
 			</a>
 			<a href={resolve('/benchmark')} aria-current={current === 'benchmark' ? 'page' : undefined}>
 				{t('nav.benchmark')}
+			</a>
+			<a href={resolve('/illusions')} aria-current={current === 'illusions' ? 'page' : undefined}>
+				{t('nav.illusions')}
 			</a>
 			<a href={repoUrl}>{t('nav.open')}</a>
 		</nav>

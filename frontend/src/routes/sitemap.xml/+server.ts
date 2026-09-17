@@ -4,7 +4,7 @@ import type { RequestHandler } from './$types';
 export const prerender = true;
 
 const siteUrl = 'https://potocolom.leonfuller.com';
-const marketingPaths = ['/', '/app', '/benchmark', '/whitepaper'];
+const marketingPaths = ['/', '/app', '/benchmark', '/whitepaper', '/illusions'];
 
 export const GET: RequestHandler = () => {
 	const urls =
