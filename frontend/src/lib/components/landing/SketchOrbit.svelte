@@ -538,7 +538,8 @@
 	.typing {
 		min-height: 1.1em;
 		color: var(--k-muted);
-		font-weight: 500;
+		font-family: var(--k-display);
+		font-weight: 400;
 		overflow-wrap: anywhere;
 	}
 
@@ -599,7 +600,9 @@
 	.orbit-name {
 		min-height: 1.3rem;
 		color: var(--k-accent);
+		font-family: var(--k-display);
 		font-size: 0.85rem;
+		font-weight: 700;
 	}
 
 	.arc-spin {
@@ -657,6 +660,7 @@
 		border: 1px solid var(--k-line);
 		border-radius: 999px;
 		background: var(--k-panel);
+		font-family: var(--k-display);
 		cursor: pointer;
 		/* --grow rides the radius, so it pushes a tile outward along its own
 		   spoke. Counter-rotating next leaves the picture upright, which makes
@@ -806,12 +810,14 @@
 	.piece {
 		padding-block-start: 0.65rem;
 		border-block-start: 1px solid var(--k-line);
+		font-family: var(--k-display);
 		font-size: 1.05rem;
-		font-weight: 600;
+		font-weight: 700;
 	}
 
 	.meta {
 		color: var(--k-muted);
+		font-family: var(--k-display);
 		font-size: 0.85rem;
 	}
 
@@ -1055,7 +1061,8 @@
 
 	.quiet {
 		color: var(--k-muted);
-		font-weight: 500;
+		font-family: var(--k-display);
+		font-weight: 400;
 	}
 
 	footer {

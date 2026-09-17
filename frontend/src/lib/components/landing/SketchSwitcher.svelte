@@ -51,7 +51,7 @@
 		backdrop-filter: blur(18px);
 		box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 45%);
 		transform: translateX(-50%);
-		font-family: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+		font-family: 'Lato', ui-sans-serif, system-ui, sans-serif;
 	}
 
 	.sketch-switcher :global([data-slot='toggle-group']) {

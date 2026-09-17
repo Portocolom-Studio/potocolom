@@ -380,9 +380,9 @@
 						<tbody>
 							{#each session.recent as row (row.id)}
 								<tr class="border-border/60 border-t">
-									<td class="px-4 py-2.5 font-mono text-xs">{row.modelId}</td>
-									<td class="px-4 py-2.5 font-mono text-xs tabular-nums">{formatMs(row.gpuMs)}</td>
-									<td class="px-4 py-2.5 font-mono text-xs tabular-nums">
+									<td class="px-4 py-2.5 text-xs">{row.modelId}</td>
+									<td class="px-4 py-2.5 text-xs tabular-nums">{formatMs(row.gpuMs)}</td>
+									<td class="px-4 py-2.5 text-xs tabular-nums">
 										{row.width} x {row.height}
 									</td>
 								</tr>
@@ -412,11 +412,11 @@
 						<tbody>
 							{#each displayedFailures as row (row.id)}
 								<tr class="border-border/60 border-t align-top">
-									<td class="text-muted-foreground px-4 py-2.5 font-mono text-xs whitespace-nowrap">
+									<td class="text-muted-foreground px-4 py-2.5 text-xs whitespace-nowrap">
 										{formatFailureWhen(row.finished_at ?? row.created_at)}
 									</td>
-									<td class="px-4 py-2.5 font-mono text-xs">{row.model_id}</td>
-									<td class="px-4 py-2.5 font-mono text-xs wrap-break-word whitespace-pre-wrap">
+									<td class="px-4 py-2.5 text-xs">{row.model_id}</td>
+									<td class="px-4 py-2.5 text-xs wrap-break-word whitespace-pre-wrap">
 										{row.failure_reason ?? '-'}
 									</td>
 								</tr>

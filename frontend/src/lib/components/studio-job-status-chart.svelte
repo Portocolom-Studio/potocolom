@@ -66,7 +66,7 @@
 						></span>
 						<span class="truncate">{slice.label}</span>
 					</span>
-					<span class="font-mono text-xs tabular-nums">
+					<span class="text-xs tabular-nums">
 						{slice.count}
 						{#if breakdown.total > 0}
 							<span class="text-muted-foreground">

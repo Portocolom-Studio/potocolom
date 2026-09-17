@@ -431,7 +431,7 @@
 						<select
 							id="realtime-tool"
 							bind:value={tool}
-							class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+							class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 font-sans text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
 							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
@@ -586,7 +586,7 @@
 								id="realtime-model"
 								bind:value={modelId}
 								disabled={busy}
-								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 font-sans text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{#each realtimeModels as model (model.id)}
 									<option value={model.id}>{modelOptionLabel(model)}</option>

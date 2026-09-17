@@ -31,7 +31,7 @@
 	data-chart={chartId}
 	data-slot="chart"
 	class={cn(
-		'flex aspect-video justify-center overflow-visible text-xs',
+		'flex aspect-video justify-center overflow-visible font-sans text-xs',
 		// Overrides
 		//
 		// Stroke around dots/marks when hovering
@@ -67,7 +67,7 @@
 		'[&_.lc-labels-text:not([fill])]:fill-foreground [&_text]:stroke-transparent',
 
 		// Tick labels on th x/y axes
-		'[&_.lc-axis-tick-label]:fill-muted-foreground [&_.lc-axis-tick-label]:font-normal',
+		'[&_.lc-axis-tick-label]:fill-muted-foreground [&_.lc-axis-tick-label]:font-sans [&_.lc-axis-tick-label]:font-normal [&_.lc-axis-tick-label]:tabular-nums',
 		'[&_.lc-tooltip-rects-g]:fill-transparent',
 		'[&_.lc-layout-svg-g]:fill-transparent',
 		'[&_.lc-root-container]:w-full',

@@ -59,7 +59,7 @@
 							<div class="flex min-w-0 items-start justify-between gap-3">
 								<div class="min-w-0">
 									<Card.Title class="truncate text-base">{model.name}</Card.Title>
-									<Card.Description class="mt-1 truncate font-mono text-xs">
+									<Card.Description class="mt-1 truncate text-xs">
 										{model.id}
 									</Card.Description>
 								</div>
@@ -77,11 +77,11 @@
 							<div class="grid grid-cols-2 gap-3 text-sm">
 								<div>
 									<p class="text-muted-foreground text-xs">{t('app.models.vram')}</p>
-									<p class="mt-1 font-medium">{model.min_vram_gb} GB</p>
+									<p class="mt-1 font-medium tabular-nums">{model.min_vram_gb} GB</p>
 								</div>
 								<div>
 									<p class="text-muted-foreground text-xs">{t('app.models.gpu_estimate')}</p>
-									<p class="mt-1 font-medium">
+									<p class="mt-1 font-medium tabular-nums">
 										{model.estimated_gpu_ms_default == null
 											? t('app.models.not_measured')
 											: formatMs(model.estimated_gpu_ms_default)}

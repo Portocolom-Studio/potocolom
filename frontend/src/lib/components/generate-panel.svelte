@@ -58,7 +58,7 @@
 	const fieldClass =
 		'dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 ' +
 		'placeholder:text-muted-foreground w-full min-w-0 rounded-lg border bg-transparent ' +
-		'px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
+		'px-2.5 py-1 font-sans text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
 	// Default toggle `data-[state=on]:bg-muted` is nearly invisible on the card;
 	// match LanguageToggle so Fast/Quality/factor picks read clearly.
@@ -485,7 +485,7 @@
 	}
 </script>
 
-<div class="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
+<div class="grid h-full min-h-0 gap-4 font-sans lg:grid-cols-[minmax(300px,380px)_1fr]">
 	<Card.Root class="no-scrollbar flex min-h-0 flex-col overflow-y-auto">
 		<Card.Header class="gap-3">
 			<div class="flex flex-col gap-1.5">
@@ -508,7 +508,7 @@
 								value={activeModelId}
 								onValueChange={(value) => value && onModelChange(value)}
 							>
-								<Select.Trigger id="gen-model" class="w-full" size="sm">
+								<Select.Trigger id="gen-model" class="w-full font-sans" size="sm">
 									{modelOptionLabel(
 										diffusionModels.find((model) => model.id === activeModelId) ??
 											diffusionModels[0]
@@ -583,7 +583,10 @@
 								<!-- Described by the field rather than announced from a live region:
 								the count changes on every keystroke, which a polite region would
 								read out again and again while the user is still typing. -->
-								<p id="gen-prompt-window" class="text-muted-foreground text-sm leading-relaxed">
+								<p
+									id="gen-prompt-window"
+									class="text-muted-foreground text-sm leading-relaxed tabular-nums"
+								>
 									{promptTokenNotice}
 								</p>
 							{/if}
@@ -591,12 +594,20 @@
 						<div class="grid grid-cols-2 gap-3">
 							<div class="flex flex-col gap-2">
 								<Label for="gen-count">{t('app.gen.count')}</Label>
-								<Input id="gen-count" type="number" min="1" max="8" bind:value={count} />
+								<Input
+									id="gen-count"
+									class="tabular-nums"
+									type="number"
+									min="1"
+									max="8"
+									bind:value={count}
+								/>
 							</div>
 							<div class="flex flex-col gap-2">
 								<Label for="gen-seed">{t('app.gen.seed')}</Label>
 								<Input
 									id="gen-seed"
+									class="tabular-nums"
 									type="number"
 									placeholder={t('app.gen.seed_placeholder')}
 									bind:value={seed}
@@ -616,7 +627,7 @@
 								{#each sizeOptions as option (option)}
 									<ToggleGroup.Item
 										value={String(option)}
-										class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}
+										class={`min-w-0 flex-1 text-xs tabular-nums ${toggleOnClass}`}
 									>
 										{option} x {option}
 									</ToggleGroup.Item>
@@ -658,6 +669,7 @@
 						{/if}
 						<Button
 							type="submit"
+							class="tabular-nums"
 							disabled={submitLock.busy ||
 								studio.prompt.trim() === '' ||
 								(mode === 'image_to_image' && sourceAssetId === null)}
@@ -715,7 +727,7 @@
 							</div>
 						</div>
 						{#if working > 0}
-							<p class="text-muted-foreground text-sm">
+							<p class="text-muted-foreground text-sm tabular-nums">
 								{working}
 								{t('app.gen.working_suffix')}{runningProgress !== null
 									? ` (${Math.round(runningProgress * 100)}%)`
@@ -762,7 +774,7 @@
 							value={upscaleModelId}
 							onValueChange={(value) => value && onUpscaleModelChange(value)}
 						>
-							<Select.Trigger id="upscale-model" class="w-full" size="sm">
+							<Select.Trigger id="upscale-model" class="w-full font-sans" size="sm">
 								{modelOptionLabel(upscaleModel)}
 							</Select.Trigger>
 							<Select.Content>
@@ -795,7 +807,12 @@
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
 					</div>
-					<Button type="button" disabled={submitLock.busy || !canUpscale} onclick={upscaleShown}>
+					<Button
+						type="button"
+						class="tabular-nums"
+						disabled={submitLock.busy || !canUpscale}
+						onclick={upscaleShown}
+					>
 						<ScanLineIcon />
 						{t('app.gen.upscale')}{upscaleEstimateLabel != null ? ` ${upscaleEstimateLabel}` : ''}
 					</Button>
@@ -813,7 +830,7 @@
 						</Button>
 					</div>
 					{#if working > 0}
-						<p class="text-muted-foreground text-sm">
+						<p class="text-muted-foreground text-sm tabular-nums">
 							{working}
 							{t('app.gen.working_suffix')}{runningProgress !== null
 								? ` (${Math.round(runningProgress * 100)}%)`
@@ -923,7 +940,7 @@
 							{t('app.lineage.missing')}
 						</div>
 					{/if}
-					<p class="text-muted-foreground min-w-0 truncate text-center text-xs">
+					<p class="text-muted-foreground min-w-0 truncate text-center text-xs tabular-nums">
 						{#if shown.params.prompt}
 							{shown.params.prompt}
 						{:else}
@@ -976,7 +993,7 @@
 					{/if}
 				{:else}
 					<div
-						class="text-foreground/55 grid h-full place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
+						class="text-foreground/55 grid h-full place-items-center px-6 text-center font-sans text-xs tracking-[0.14em] uppercase"
 					>
 						{t('app.gen.result_hint')}
 					</div>

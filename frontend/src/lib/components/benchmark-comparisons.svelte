@@ -658,7 +658,9 @@
 		font-size: 0.78rem;
 	}
 
-	.num {
+	.num,
+	.mono.num {
+		font-family: var(--k-display);
 		font-variant-numeric: tabular-nums;
 	}
 
@@ -735,8 +737,9 @@
 
 	.tick {
 		fill: var(--k-muted);
-		font-family: var(--k-mono);
+		font-family: var(--k-display);
 		font-size: 13px;
+		font-variant-numeric: tabular-nums;
 	}
 
 	/* The labels run up the first model's axis, so give them a halo to sit in. */
