@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import PromptMarquee from '$lib/components/PromptMarquee.svelte';
 	import { collageImages, collageLandingSources } from '$lib/collage-images';
@@ -176,7 +177,7 @@
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
-		<a class="mark" href={resolve('/')}>potocolom</a>
+		<a class="mark" href={resolve('/')}><BrandMark /></a>
 		<nav aria-label={t('nav.features')}>
 			<a href="#does">{t('nav.features')}</a>
 			<a href="#work">{t('gallery.kicker')}</a>
