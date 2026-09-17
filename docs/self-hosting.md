@@ -19,10 +19,11 @@ self-hoster can actually select span 8 GB (`ssd-1b`, `ssd-1b-lightning`,
 upscalers at 1-4 GB.
 
 Manifests marked `benchmark_only` (`dreamshaper-lcm`, `sd-turbo`,
-`sdxl-hypersd`) are excluded from `GET /api/v1/models` by
-`registry.public()` and never appear in the studio, so their lower floors are
-not capacity you can plan around. `dreamshaper-lcm` in particular declares
-6 GB but is not selectable.
+`sdxl-hypersd`, `flux2-klein-4b`, `sana-sprint-06b`, `z-image-turbo`) are
+excluded from `GET /api/v1/models` by `registry.public()` and never appear in
+the studio, so their floors are not capacity you can plan around.
+`dreamshaper-lcm` in particular declares 6 GB but is not selectable.
+`z-image-turbo` declares 20 GB.
 
 The floor is not a gate. A card below a model's floor still loads it: the
 worker measures free VRAM and steps down a memory ladder (full residency ->
@@ -254,11 +255,10 @@ that is recorded against it. Without mail there is nothing else that can say
 who an address belongs to, so the record names the administrator who vouched.
 Nobody can change their own role, and the last administrator cannot be demoted.
 
-Multi-user is the intended shape, not a maybe: an operator holding `admin`, invited people
-signing in with an email and password or with Google or GitHub, and a read-only `viewer`
-tier for someone who should see the gallery without spending the GPU. That is recorded in
-[decisions.md](decisions.md) under "Self-hosted installs are multi-user" and tracked in issues
-#5 and #9. Until those land, treat the install as single-operator.
+Multi-user accounts mode has shipped: `AUTH_MODE=accounts` via `make auth-enable`, with
+password sign-in and optional Google or GitHub. `AUTH_MODE=none` remains the single-operator
+default on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
+are still issue #10.
 
 ## Gated models
 

@@ -12,7 +12,7 @@ Re-examined against a Go port and reaffirmed. FastAPI's native plumbing (uvloop 
 
 ## Frontend: SvelteKit as a static SPA
 
-The application is a login gated interactive tool (canvas drawing, live previews, tool views), so server side rendering adds nothing. SvelteKit with the static adapter produces one build artifact that the API server can serve when self-hosted and a CDN can serve in the cloud. Runtime configuration comes from the API, never from build flags.
+The application is a login gated interactive tool (canvas drawing, live previews, tool views), so server side rendering adds nothing. SvelteKit with the static adapter produces a static artifact that the API server can serve when self-hosted and a CDN can serve in the cloud. Product runtime configuration (auth methods, billing) comes from the API. The marketing site uses a second build, `PUBLIC_SITE_MODE=landing`.
 
 Rejected alternative: React with Vite. Larger ecosystem, but SvelteKit was preferred for this project.
 
@@ -615,7 +615,7 @@ All cloud images live in one private S3 bucket. Subscriber objects sit under `us
 
 Paying does not create AWS permissions for the user. Quota changes happen in the billing service over HTTP; storage authorization stays at the API layer.
 
-This entry records the cloud-profile design. The current S3 backend still uses the self-hosted key shape (`{user_id}/{job_id}.webp`) and presigned S3 GET URLs; the prefixes and CloudFront signing arrive with billing tiers and the CDN.
+This entry records the cloud-profile design. The current S3 backend still uses the self-hosted key shape (`{user_id}/{job_id}-attempt-{attempt}.png` masters and `-thumb.webp`) and presigned S3 GET URLs; the prefixes and CloudFront signing arrive with billing tiers and the CDN.
 
 Rejected alternatives: per-user IAM roles or buckets (account limits near one thousand of each, privileged control-plane calls on signup, authorization at the wrong layer); per-user S3 Access Points (ten-thousand cap, same wrong layer).
 
@@ -871,7 +871,7 @@ First run therefore generates its secrets. The preflight script writes `deploy/c
 
 With that step, a new install always has a fleet secret, so permissive mode applies only to an install that predates this. Closed-by-default follows immediately for new installs rather than waiting for a release boundary: the socket refuses an unset key, and the only deployments affected are existing ones, which is the scope the breaking-change worry was ever really about. An operator upgrading gets a startup error naming the variable and the command that generates it, not a silent downgrade.
 
-The same step is where accounts begin when issues #5 and #9 land. A self-hosted install is multi-user by design, and asking a self-hoster to hand-craft the first admin credential is the same mistake as asking them to invent a fleet secret: first run mints it and prints it once.
+Accounts mode uses the same first-run idea: `make auth-enable` writes the root key ring and prints a one-use claim link. Asking a self-hoster to hand-craft the first admin credential is the same mistake as asking them to invent a fleet secret. Remaining account UI is issue #10.
 
 Rejected alternatives: keeping permissive-when-unset and relying on the address restriction, which the measurement in the entry above shows does not close IPv6 on the shipped compose topology and was explicitly called a mitigation rather than a boundary; generating the secret inside the API at startup and persisting it, which hides a credential the operator needs in order to configure a worker on another machine and makes the compose file and the running process disagree; shipping a fixed default secret, which is a published credential; and prompting interactively, which breaks the unattended install that scripted deployments depend on.
 

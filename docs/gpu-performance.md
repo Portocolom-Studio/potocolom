@@ -134,10 +134,10 @@ matter how many steps ran. Text encoding is 50 ms, which is noise. For a
 50-step render the floor is 2% of runtime and irrelevant; for `vega-rt` at
 1.87 s it is **36% of the total**, and on the fast tier it is the single
 largest optimisation target left. `AutoencoderTiny` (TAESD) decodes in
-roughly 10 ms instead of 667 ms at some fidelity cost, and the deferred
-realtime ladder in [decisions.md](decisions.md) already anticipates exactly
-this ("tiny-autoencoder decode for the live preview with full VAE on refine").
-This measurement is the quantitative case for it.
+roughly 10 ms instead of 667 ms at some fidelity cost, and the realtime
+path now uses it when the manifest sets `preview_decoder` (`sdxl-turbo`,
+`vega-rt`). Full VAE remains on queued generate. This measurement is the
+quantitative case that shipped that split.
 
 **Guidance above 1.0 doubles per-step cost.** Diffusers sets
 `do_classifier_free_guidance = guidance_scale > 1.0`, so every step runs the

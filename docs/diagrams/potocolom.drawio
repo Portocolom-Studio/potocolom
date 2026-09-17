@@ -276,13 +276,13 @@
         <mxCell id="sim" value="cloud-sim compose (validates the cloud seams locally, zero cost)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="520" y="300" width="420" height="260" as="geometry" />
         </mxCell>
-        <mxCell id="sim_inner" value="nginx (ALB stand-in)&#10;API replica 1 + API replica 2&#10;Redis (queues, pub/sub relay)&#10;PostgreSQL, MinIO (S3), Mailpit (SES)&#10;fake QuotaService (100 lines)&#10;worker, previous tag for N-1 checks" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+        <mxCell id="sim_inner" value="cloud-sim today: Redis, MinIO, Mailpit&#10;(no nginx, no second API, no fake Quota)&#10;Designed later: nginx stand-in, two APIs,&#10;Redis queues/pub-sub, fake QuotaService" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
           <mxGeometry x="550" y="340" width="360" height="190" as="geometry" />
         </mxCell>
         <mxCell id="selfhost" value="Self-hosted install (one machine, one GPU)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="1000" y="60" width="420" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="selfhost_inner" value="docker compose: api (serves the SPA build),&#10;postgres, worker (:v0.x-cuda or -rocm)&#10;No Redis, no billing: in-process seams,&#10;UnlimitedQuota, AUTH_MODE none or accounts" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+        <mxCell id="selfhost_inner" value="docker compose: api (serves the SPA build),&#10;postgres, worker (:v0.x-cuda or -rocm)&#10;No Redis, no billing: in-process seams,&#10;no Quota class, AUTH_MODE none or accounts" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="1030" y="100" width="360" height="150" as="geometry" />
         </mxCell>
         <mxCell id="aws" value="AWS staging (scaled down) + production" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#8C4FFF;fontStyle=1;" vertex="1" parent="1">
@@ -347,7 +347,7 @@
         <mxCell id="pcL3" value="Payments and quota" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
           <mxGeometry x="60" y="320" width="220" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="pcS3" value="UnlimitedQuota: no billing, no credits&#10;(QUOTA_SERVICE_URL empty, BILLING_ENABLED=false)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="pcS3" value="No quota class: no billing, no credits&#10;(no QUOTA_SERVICE_URL setting; BILLING_ENABLED=false)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="320" y="320" width="520" height="70" as="geometry" />
         </mxCell>
         <mxCell id="pcC3" value="BillingQuota over HTTP to the billing service (private repo):&#10;Stripe subscriptions; idempotent reserve/commit/refund&#10;on caller-supplied reservation ids with a TTL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">

@@ -40,8 +40,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/health` | implemented | process liveness for the load balancer |
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
-| WS `/api/v1/realtime` | implemented (prototype) | realtime drawing sessions; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
-| WS `/api/v1/fleet` | implemented (prototype) | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret |
+| WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
+| WS `/api/v1/fleet` | implemented | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret; an unset key refuses API startup |
 | GET `/api/v1/models` | implemented | registered models with parameter schemas and GPU-time estimates; requires a principal |
 | POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
@@ -54,12 +54,17 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/benchmark/sessions` | implemented, `BENCHMARK_API`-gated | ingest a completed benchmark session; admin only |
 | GET `/api/v1/studio/gpu` | implemented | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel; admin only |
 | GET `/api/v1/metrics/gpu/history` | implemented | GPU telemetry over a time range (raw, or 5-minute rollups); admin only |
-| GET, POST `/api/v1/benchmark/*` | implemented, `BENCHMARK_API`-gated | list, run, load and unload models for benchmarking; admin only |
+| GET `/api/v1/benchmark/models` | implemented, `BENCHMARK_API`-gated | list benchmarkable models; admin only |
+| GET `/api/v1/benchmark/gpu` | implemented, `BENCHMARK_API`-gated | live GPU status from a connected worker; admin only |
+| POST `/api/v1/benchmark/gpu/load` | implemented, `BENCHMARK_API`-gated | load a model for a benchmark run; admin only |
+| POST `/api/v1/benchmark/gpu/unload` | implemented, `BENCHMARK_API`-gated | unload a model after a benchmark run; admin only |
 | PUT `/api/v1/files/{key}` | implemented | local-storage upload target; capability-bound worker writes |
 | GET `/api/v1/files/{key}` | retired | answers `404`. Key-addressed asset reads were removed in R1; assets are read by id. The route is still declared, because the `PUT` above matches the same path and removing it would answer `405` instead |
 | GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
+| GET `/api/v1/shared-picture` | implemented | short-lived picture bytes for a resolved share; no account needed |
+| GET `/api/v1/worker-input` | implemented | local-storage worker fetch of a source image; opaque 15-minute capability |
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
-| GET `/api/v1/auth/verify` | issue #5 | email verification link target |
+| GET `/api/v1/auth/verify` | not implemented | no mail-verification link target; invitation accept is `POST /api/v1/auth/register` |
 | POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies; rate limited per identifier, and delayed but never refused per address |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
@@ -137,7 +142,7 @@ The drawing tool's connection. Text messages are JSON control, binary messages a
 
 Both WebSocket endpoints refuse a handshake carrying an `Origin` that is not `PUBLIC_URL` or one of `ALLOWED_ORIGINS`; the connection fails as HTTP 403 before any close code applies (see [connection-handling.md](connection-handling.md)).
 
-Browser to API: `{"type": "open", "model_id": "sd-sim", "params": {"prompt": "a red house"}}` first, then binary canvas frames carrying the session id, `{"type": "update_params", "params": {"prompt": "a blue house"}}` to change a subset of the session's parameters, then `{"type": "close"}`.
+Browser to API: send `{"type": "open", "model_id": "sd-sim", "params": {"prompt": "a red house"}}` first. Then send binary canvas frames that carry the session id. Send `{"type": "update_params", "params": {"prompt": "a blue house"}}` to change a subset of the session parameters. The studio client ends the session with WebSocket close 1000. `{"type": "close"}` is still accepted. Disconnect is treated as end.
 
 API to browser: `{"type": "ready", "session_id": "..."}`, generated frames as binary, and during recovery `{"type": "interrupted"}` then `{"type": "resumed"}` (re-send the current canvas). An accepted parameter update is confirmed with `{"type": "params_updated", "params": {...}}` carrying the merged parameters the API holds for the session (the browser's keys over the session's, the seed riding along) - what later frames are rendered with once a worker has them, though the worker may fill in the manifest's declared defaults for keys nobody has set, and the acknowledgement arrives even when no worker holds the session at that moment (a reassignment in flight). The browser re-sends the current canvas when this confirmation arrives, so a prompt or slider change takes effect without a new stroke. Terminal failures arrive as `error` messages before the close. A rejected `update_params` (invalid params, a `seed` change - a session's seed is fixed at open - or an assigned worker whose protocol predates `update_session`, which ships at protocol 3) also arrives as an `error` but leaves the session running. From protocol 4, `update_session` carries `control_generation` so a stale update cannot land on a newer attempt; a protocol 3 worker still gets the unfenced form and may serve a session's first attempt only. When no worker answers the `open` within the ready timeout, the browser sees `{"type": "error", "code": 4003, "message": "worker did not become ready"}` before the close. A worker that cannot serve the attempt sends `session_refused`; the API tries another protocol 4 worker or closes 4003. Issue #19 adds `queued` with a live position, `idle` and `resuming` for slot release, `credits_tick`, and an out of credits close (an `error` message then the close) when a session's chunked reservation cannot be extended.
 
@@ -185,8 +190,10 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              "source_asset_id"; upscale requires a source and is mutually
                              exclusive with the diffusion capabilities. A thumbnail cannot be
                              used as source_asset_id and returns 422.
-                             202 {"job_id": "..."}   after rate limit, prompt screen (cloud) and quota reserve
-                             402 when credits are insufficient, 422 when params fail the model's schema
+                             202 {"job_id": "..."}
+                             422 when params fail the model's schema.
+                             Cloud rate limit, prompt screen, quota reserve and 402
+                             are designed and not on this handler.
 
 GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed|cancelled",
                               "asset": {...} when succeeded, "thumbnail_url": "...",
@@ -262,7 +269,9 @@ job is streamed, each streamed row is reconciled on its own every 15 seconds;
 while any job is on the fallback, the 1.5-second history refresh already covers
 every row, streamed or not.
 
-Progress also streams as control messages over the realtime WebSocket once issue #19 lands. A failed job (after its single automatic retry) carries the refunded state and the UI shows a retry button.
+Job progress on this path is SSE (`/events`) and history polling. Realtime WebSocket
+progress for queued jobs, credit refunds, and a retry button wait on billing and
+issue #19. A failed job after its single automatic retry stays `failed`.
 
 <!-- Corrected 2026-07-23: model_id is required (was documented optional with tier routing, which is unshipped); history is GET /api/v1/generations (was mislabeled GET /api/v1/assets); added shipped response fields and the SSE events endpoint. -->
 
@@ -275,7 +284,11 @@ GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
 GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
-POST /api/v1/benchmark/{load|unload|run}   admin only; drive a model for a benchmark run
+GET  /api/v1/benchmark/gpu             admin only; live GPU status from a connected worker
+POST /api/v1/benchmark/gpu/load        admin only; load a model for scripts/benchmark.py
+POST /api/v1/benchmark/gpu/unload      admin only; unload that model
+                                       There is no POST /api/v1/benchmark/run; the script
+                                       uses ordinary generations plus these GPU controls.
 POST /api/v1/benchmark/sessions       admin only; BENCHMARK_API-gated completed
                                         scripts/benchmark.py report;
                                         201 {"id": "..."}; 404 when the benchmark API is disabled;
@@ -296,6 +309,8 @@ PUT  /api/v1/files/{key}               local-storage upload target (self-hosted,
 GET  /api/v1/files/{key}               always 404; this route is retired
 GET  /api/v1/assets/{id}                owner or admin; serves local bytes, with 404 for missing or
                                         unauthorized assets and 400 for an unsafe download name
+GET  /api/v1/shared-picture             no account; picture bytes for a resolved share
+GET  /api/v1/worker-input               worker fetch of a local source image
 ```
 
 For local storage, worker input URLs use `/api/v1/worker-input` with an opaque 32-byte capability.
@@ -307,7 +322,8 @@ Request and response shapes below are the contract [blueprint.md](blueprint.md) 
 
 ### Authentication (shipped, kept here for the exact shapes)
 
-These four routes and the OAuth flow below them are implemented. Only `GET /api/v1/auth/verify` is still open under issue #5.
+These four routes and the OAuth flow below them are implemented. There is no
+`GET /api/v1/auth/verify`; invitation accept is `POST /api/v1/auth/register`.
 
 ```
 POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}
@@ -429,20 +445,17 @@ sequenceDiagram
     participant S as Storage
     B->>A: GET /api/v1/config
     A-->>B: auth_methods, billing_enabled, languages
-    B->>A: POST /api/v1/auth/register (issue 5)
-    A-->>B: verification email sent
-    B->>A: GET /api/v1/auth/verify?token=... (issue 5)
+    B->>A: POST /api/v1/auth/login or /auth/register
     A-->>B: session cookie
     B->>A: GET /api/v1/models
     A-->>B: manifests with parameter schemas and estimates
     B->>A: POST /api/v1/generations
-    A->>A: rate limit, prompt screen, quota reserve
     A-->>B: 202 job id
     A->>W: dispatch
-    W->>S: upload result, presigned URL
+    W->>S: upload PNG master and WebP thumb
     W-->>A: done, gpu_ms
-    A-->>B: succeeded, signed asset URL
-    B->>S: GET signed URL, render the image
+    A-->>B: succeeded, /api/v1/assets/{id}
+    B->>A: GET /api/v1/assets/{id}
 ```
 
 ### A drawing session, including the rough parts

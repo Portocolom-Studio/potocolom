@@ -4,6 +4,7 @@
 	import SendIcon from '@lucide/svelte/icons/send';
 	import FrameIcon from '@lucide/svelte/icons/frame';
 	import { resolve } from '$app/paths';
+	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import NavGallery from './nav-gallery.svelte';
@@ -40,10 +41,9 @@
 				<Sidebar.MenuButton size="lg">
 					{#snippet child({ props })}
 						<a href={resolve('/')} title={t('app.back')} {...props}>
-							<img src="/favicon.svg" alt="" class="size-8 shrink-0 rounded-lg" />
 							<div class="grid flex-1 text-start text-sm leading-tight">
 								<span class="truncate font-medium">
-									potocolom<span class="text-foreground">_</span>
+									<BrandMark />
 								</span>
 								<span class="truncate text-xs">{t('app.title')}</span>
 							</div>

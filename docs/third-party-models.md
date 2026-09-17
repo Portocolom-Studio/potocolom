@@ -51,8 +51,10 @@ select them. Reference timings may still appear on `/benchmark`.
 | --- | --- | --- |
 | sdxl-hypersd | Open RAIL++-M base + CreativeML Open RAIL++-M LoRA | Benchmark reference (issue #75); no license blocker, held back on measurement (see below) |
 | sd-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
-| sdxl-turbo | Stability AI Community | Benchmark speed anchor; hidden from studio for quality |
 | dreamshaper-lcm | CreativeML Open RAIL-M | Benchmark / self-host reference; hidden from studio for quality |
+| flux2-klein-4b | Apache 2.0 | Benchmark only; not in the studio picker |
+| sana-sprint-06b | Apache 2.0 | Benchmark only; not in the studio picker |
+| z-image-turbo | Apache 2.0 | Benchmark only; 20 GB floor; not in the studio picker |
 
 ### Hyper-SD carries three licenses in one file
 
@@ -85,6 +87,7 @@ structured this way.
 
 | Model | License | Product status |
 | --- | --- | --- |
+| sdxl-turbo | Stability AI Community | Studio realtime default (`studio_capabilities: ["realtime"]`; not `benchmark_only`) |
 | sd35-medium | Stability AI Community | Studio quality tier (issue #151). Gated weights, `HF_TOKEN` required; runs on the model-offload rung on a 16 GB card at roughly 56 s per 1024 px image |
 
 ## Stability AI Community License (sd-turbo, sdxl-turbo, sd35-medium)

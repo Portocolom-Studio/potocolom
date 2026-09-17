@@ -194,7 +194,7 @@ Re-mint the invitation rather than expecting the queue to resume.
 
 ## The local cloud simulation
 
-The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud topology with generic containers, which the pluggable seams make cheap: the code cannot tell nginx from an ALB or MinIO from S3, and that is the point of the seams.
+The cloud profile is not tested by emulating AWS. It is tested by reproducing the cloud *seams* with generic containers. `make deps-all` / `--profile cloud-sim` starts Redis on 6379, MinIO on 9100 (API) and 9101 (console), and Mailpit on 1125 (SMTP) and 8125 (web UI). There is no nginx. There is no second API replica. There is no fake QuotaService container yet. Those remain the design target. See [deployment-profiles.md](deployment-profiles.md) shipped-status notes. MinIO and Mailpit already cover the two AWS APIs the application code touches (S3 and SMTP). The API still uses in-process queues unless Redis queue code lands.
 
 ```
 deploy/compose/dev.yml (profile: cloud-sim)
@@ -203,51 +203,36 @@ deploy/compose/dev.yml (profile: cloud-sim)
 ```mermaid
 flowchart TB
     B["Browser"]
-    N["nginx<br>round robin, WebSocket pass-through"]
-    A1["API replica 1"]
-    A2["API replica 2"]
-    R[("Redis")]
+    A["API (native or one container)"]
+    R[("Redis<br>started, unused by API today")]
     P[("PostgreSQL")]
-    M[("MinIO<br>S3 compatible")]
-    MP["Mailpit<br>catches SES-bound mail"]
-    Q["Fake quota service<br>QuotaService over HTTP<br>designed, not built"]
-    W["Worker<br>rocm on this desktop"]
-    B <--> N
-    N --> A1
-    N --> A2
-    A1 <--> R
-    A2 <--> R
-    A1 --> P
-    A2 --> P
-    A1 --> M
-    A2 --> M
-    A1 --> MP
-    A1 <--> Q
-    W -->|"dials the fleet endpoint<br>through nginx"| N
+    M[("MinIO 9100/9101")]
+    MP["Mailpit 1125/8125"]
+    W["Worker"]
+    B <--> A
+    A --> P
+    A -.-> R
+    A -.-> M
+    A -.-> MP
+    W -->|"dials /api/v1/fleet"| A
 ```
 
-| Cloud piece | Local stand-in | What it validates |
+| Cloud piece | Local stand-in today | What it validates |
 |---|---|---|
-| ALB | nginx (round robin, long WebSocket timeouts) | two-replica routing, WebSocket pass-through, health checks |
-| ECS Fargate, 2+ API tasks | the same API image, two containers | scheduler leader election, session cache invalidation across replicas |
-| ElastiCache Redis | redis container | queues, pub/sub frame relay between replicas, rate limits |
-| RDS PostgreSQL | postgres container | migrations, the gated expand-contract discipline |
-| S3 + presigned URLs | MinIO | the S3 storage adapter, direct worker uploads |
-| CloudFront signed URLs | MinIO presigned GET | approximate; real CloudFront signing is staging-only |
-| SES | Mailpit (SMTP catcher with web UI) | verification and sign-in notification emails, end to end |
-| Billing service (private repo) | a 100-line fake implementing QuotaService, designed and not built | reserve, commit, refund, insufficient-credits paths |
-| Stripe | Stripe CLI in test mode, against the fake | webhook handling, later, when the billing service exists |
-| GPU fleet on RunPod | the local worker | dispatch, streaming, drain; N-1 by running the previous image tag |
+| S3 + presigned URLs | MinIO on 9100/9101 | the S3 storage adapter, once `STORAGE_BACKEND=s3` is set |
+| SES | Mailpit on 1125/8125 | invitation and reset mail when `EMAIL_BACKEND=smtp` |
+| ElastiCache Redis | redis on 6379 | container only; API queues stay in-process |
+| ALB / two API replicas / fake QuotaService | not in compose | designed; see deployment-profiles.md |
 
 Deliberately not used: LocalStack or other AWS emulators. MinIO and Mailpit already cover the two AWS APIs the application code touches (S3 and SMTP). Everything else AWS-specific (ALB details, ECS, IAM, CloudFront signing) is control plane that emulators reproduce poorly; it gets validated once, on the real scaled-down staging, via Terraform.
 
 Useful runs this enables on one desktop:
 
-- Kill a worker mid job and mid session: retry-once and session recovery paths.
-- Kill the leader API replica: scheduler failover within the lease window.
-- Stop Redis: degradation behavior, nobody logged out, queue rebuilt on return.
-- Run the previous release's worker image against the current API: the N-1 promise.
-- Open the drawing tool in two browsers against a one-slot worker: admission queue and position display.
+- Kill a worker mid job and mid session: retry-once and session recovery paths. **Shipped.**
+- Kill the leader API replica: scheduler failover within the lease window. **Designed.** One API process today; no Redis leader lease.
+- Stop Redis: degradation behavior, nobody logged out, queue rebuilt on return. **Designed.** Redis in cloud-sim is unused by the API.
+- Run the previous release's worker image against the current API: the N-1 promise. **Shipped.**
+- Open the drawing tool in two browsers against a one-slot worker: the second open is refused with 4003. Admission queue and position display are **designed** (issue #19).
 
 ## What only real AWS can validate
 
@@ -263,19 +248,18 @@ Per component, no GPU:
 2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+ and recreate a pip-less venv, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
 3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
 4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
-5. Backend integration tests against postgres and redis service containers, including the Lua scripts and the leader election.
-6. On main: build all images (cuda and rocm worker variants), push to GHCR, then run the cloud-sim compose against the built images as a smoke test.
+5. Backend integration tests against a postgres service container. There is no Redis in the backend job and no leader-election Lua in this repository.
+6. Image publish to GHCR on a tag is still open. `deploy.yml` builds smoke images locally and runs `scripts/compose-smoke.sh`; it does not push GHCR.
 
 ```mermaid
 flowchart LR
     PR["Pull request"] --> LINT["Lint + unit tests<br>frontend, backend, worker"]
     LINT --> WCPU["Worker integration<br>DEVICE=cpu, tiny model"]
-    LINT --> BINT["Backend integration<br>postgres + redis containers<br>Lua scripts, leader election"]
+    LINT --> BINT["Backend integration<br>postgres service"]
+    LINT --> DOCS["docs.yml mermaid"]
+    LINT --> DEPLOY["deploy.yml compose smoke"]
     WCPU --> MAIN["Merge to main"]
     BINT --> MAIN
-    MAIN --> IMG["Build images<br>api, worker-cuda, worker-rocm"]
-    IMG --> GHCR["Push to GHCR"]
-    IMG --> SIM["cloud-sim compose<br>smoke test"]
 ```
 
 GPU inference is never in CI. The release checklist runs it manually twice: ROCm on this desktop, CUDA on a rented machine for an hour.

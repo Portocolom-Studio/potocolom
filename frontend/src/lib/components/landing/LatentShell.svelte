@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import BrandMark from '$lib/components/brand-mark.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -23,7 +24,7 @@
 	<div class="veil" aria-hidden="true"></div>
 
 	<header>
-		<a class="mark" href={resolve('/')}>potocolom</a>
+		<a class="mark" href={resolve('/')}><BrandMark /></a>
 		<nav aria-label={t('nav.features')}>
 			<a href={resolve('/whitepaper')} aria-current={current === 'whitepaper' ? 'page' : undefined}>
 				{t('nav.whitepaper')}

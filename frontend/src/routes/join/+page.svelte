@@ -11,6 +11,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { apiFetch } from '$lib/api';
 	import { createSubmitGuard, parseAuthError, readInviteTokenFromHash } from '$lib/auth-flow';
+	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
@@ -79,7 +80,7 @@
 	<header class="border-b">
 		<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
 			<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-				potocolom<span class="text-primary">_</span>
+				<BrandMark />
 			</a>
 			<LanguageToggle />
 		</div>

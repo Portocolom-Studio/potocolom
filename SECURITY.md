@@ -41,7 +41,7 @@ Known and deliberate, so not vulnerabilities:
 - **WebSocket messages are received up to 2 MiB.** Canvas payloads over 1 MiB after the 17-byte header are dropped and the realtime socket stays open. A message over 2 MiB closes the socket (1009). This is a size cap, not rate limiting.
 - **Worker parameter schemas never fetch.** Hello refuses a `$ref` that is not a same-document fragment and refuses the `pattern` and `patternProperties` keywords. Validation uses an empty JSON Schema registry, so a schema that bypasses parse still cannot retrieve a URL.
 - **Worker Pillow is `>=12.3,<13`.** 12.0 through 12.2 admitted EPS and JPEG2000 decoder bugs. The canvas path still refuses those formats. The floor keeps a stale venv from resolving them.
-- **There is no rate limiting.** Deferred by recorded decision, see [docs/decisions.md](docs/decisions.md).
+- **There is no general API rate limiting or WAF.** Sign-in is rate-limited per identifier and delayed per peer address (`backend/app/rate_limit.py`). Body and WebSocket size caps are not rate limits. See [docs/decisions.md](docs/decisions.md).
 - **Pull requests execute contributor code on a self-hosted runner.** Accepted for a solo org and documented in [docs/self-hosted-runner.md](docs/self-hosted-runner.md).
 
 In scope, and worth reporting:

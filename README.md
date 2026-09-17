@@ -16,7 +16,7 @@ Pre-alpha, under active development in the open. The architecture, protocols and
 - One codebase, two modes: the self-hosted install and the paid cloud run the same three container images; every difference is configuration behind documented seams.
 - Self-hosting is a first-class citizen: docker compose, one machine, NVIDIA (CUDA) or AMD (ROCm), no account, no telemetry you cannot see and switch off.
 - Models without releases: drop a model manifest and the interface adapts to its parameters.
-- Private by default: no public gallery, signed URLs, self-serve GDPR export and deletion.
+- Private by default: no public gallery, owner-checked asset URLs (S3 signed URLs in cloud), self-serve GDPR export and deletion APIs.
 
 ## Requirements
 
@@ -73,6 +73,7 @@ The design is documentation-first: every load-bearing decision is recorded with 
 - [API reference and user journeys](docs/api.md)
 - [Connection handling](docs/connection-handling.md)
 - [Local development and testing](docs/local-development.md)
+- [Self-hosted GitHub Actions runner](docs/self-hosted-runner.md)
 - [Repository boundary, licensing and delivery pipeline](docs/repository-boundary.md)
 - [Usage metrics and telemetry](docs/metrics.md)
 - [GPU performance reference](docs/gpu-performance.md)
@@ -89,7 +90,7 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 - Docker with Compose v2, for the development dependencies.
 - Python 3.11 or newer, for the backend and the worker, with its `venv` module: Debian and Ubuntu ship that separately, as `python3.11-venv` or equivalent. `make setup` uses `python3` when it is new enough and otherwise falls back to `python3.13` / `python3.12` / `python3.11` on PATH, so the system default may stay at 3.10; project packages install into `backend/.venv` and `worker/.venv` only.
 - Node.js 24 or newer, for the frontend. `frontend/package.json` declares it and `engine-strict` is on, so npm refuses to install on an older Node rather than failing later in the build.
-- A GPU is optional until inference lands (issue #15). Both NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets; machines without a supported GPU run the simulated worker (flat images, real protocol). Machine-specific setup, including AMD desktops, is documented in [Local development and testing](docs/local-development.md).
+- A GPU is optional. NVIDIA (CUDA) and AMD Radeon (ROCm) are supported worker targets. Machines without a supported GPU run the simulated worker (flat images, real protocol). Machine-specific setup, including AMD desktops, is in [Local development and testing](docs/local-development.md).
 
 ### Common tasks
 

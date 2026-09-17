@@ -4,7 +4,7 @@ Run pull request CI on the reference development desktop when GitHub-hosted minu
 
 ## What it runs
 
-The four path-filtered workflows in `.github/workflows/`:
+The four path-filtered product workflows plus deploy, docs and toolchain:
 
 | Workflow | Needs on the host |
 |---|---|
@@ -12,6 +12,9 @@ The four path-filtered workflows in `.github/workflows/`:
 | worker | Python 3.11 |
 | frontend | Node 24, Chrome or Chromium |
 | simulation | Python 3.11, host postgres database `potocolom_ci` |
+| deploy | Docker (`verify-compose` + compose-smoke) |
+| docs | mermaid-cli + Chrome (`verify-mermaid`) |
+| toolchain | Python 3.11, Node (`verify-guards` + `make setup`) |
 
 GPU inference is not in CI. `make verify` locally matches what these jobs run.
 

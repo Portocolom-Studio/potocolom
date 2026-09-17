@@ -7,10 +7,10 @@ How one codebase is every deployment, and how an installation moves between prof
 The self-hosted version is the base and the cloud is a configuration of it, never a fork. Three rules enforce this:
 
 1. One build. A release tag produces one set of container images and one SPA artifact. GHCR serves self-hosters, ECR mirrors the same digests for the cloud. There is no cloud build.
-2. No mode branches. Application code never asks "am I self-hosted or cloud"; it reads specific settings (`REDIS_URL`, `STORAGE_BACKEND`, `AUTH_MODE`, `QUOTA_SERVICE_URL`, `BILLING_ENABLED`, `SAFETY_CHECKS`). Every difference between deployments is one of these values.
-3. Seams with two implementations. Where behavior must differ, an interface owns the difference: `Queues` and `FrameBus` (in-process or Redis), `Storage` (local filesystem or S3 with signed URLs), `QuotaService` (unlimited or the billing service over HTTP), and the auth mode module (`none`, `accounts`). The interfaces are specified in [blueprint.md](blueprint.md); the wire and API surface above them never change.
+2. No mode branches. Application code never asks "am I self-hosted or cloud". It reads specific settings (`STORAGE_BACKEND`, `AUTH_MODE`, `EMAIL_BACKEND`, `BILLING_ENABLED`, `SAFETY_CHECKS`, `TELEMETRY`). Designed, not Settings keys yet: `REDIS_URL`, `QUOTA_SERVICE_URL`. Every difference between deployments is one of these values.
+3. Seams with two implementations. Where behavior must differ, an interface owns the difference. `Queues` is in-process today. Redis queues are designed. Sockets are process-local today. FrameBus is designed. `Storage` is local filesystem or S3. QuotaService is not coded. Billing over HTTP lives in the private repo. Auth mode is `none` or `accounts`. The interfaces are specified in [blueprint.md](blueprint.md). The wire and API surface above them never change.
 
-The proof mechanism is the cloud-sim compose in [local-development.md](local-development.md): the application demonstrably cannot tell nginx from an ALB or MinIO from S3, because the seams are the only place the difference could show.
+The proof mechanism is the cloud-sim compose in [local-development.md](local-development.md): Redis, MinIO and Mailpit. MinIO vs S3 is the storage seam. nginx vs ALB, two API replicas, and a fake QuotaService are designed and are not in that compose file.
 
 > Shipped status (2026-07-30): **partially implemented.** Storage and the generation-job in-process queue have concrete seams. The Redis queue adapter, realtime admission queue, FrameBus implementations, shared invalidation, and multi-owner scheduler do not exist yet. "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts" govern those designed profile differences.
 
@@ -35,19 +35,19 @@ flowchart LR
 |---|---|---|---|---|---|
 | AUTH_MODE | none | none or accounts | accounts | accounts | accounts |
 | OAUTH_PROVIDERS | | | | | google,github |
-| BILLING_ENABLED | false | false | false | true (fake) | true |
+| BILLING_ENABLED | false | false | false | false (QuotaService designed) | true |
 | SAFETY_CHECKS | false | false | false | false | true |
 | TELEMETRY | false | true (default) | true | false | false, not applicable |
 | DATABASE_URL | dev compose | compose postgres | compose postgres | compose postgres | RDS |
-| REDIS_URL | empty | empty | compose redis | compose redis | ElastiCache |
+| REDIS_URL | empty | empty | compose redis (container only today) | compose redis (container only today) | ElastiCache |
 | STORAGE_BACKEND | local | local | local | s3 (MinIO) | s3 + CloudFront signing |
-| QUOTA_SERVICE_URL | empty | empty | empty | fake service | billing service |
+| QUOTA_SERVICE_URL | empty | empty | empty | empty (fake designed) | billing service |
 | EMAIL_BACKEND | none or Mailpit | none | smtp | Mailpit | SES |
 | SES_FEEDBACK_TOPIC_ARN | | | | | the SNS topic SES bounces and complaints arrive on |
 | LOG_FORMAT | plain | plain | plain | plain | json |
 | Workers | 1, native | 1, compose | N, compose | 1-2 | rented fleet, autoscaled |
 
-The scaled self-hosted column deserves a note: it is not a separately designed product. Setting `REDIS_URL` switches dispatch and the frame relay to the Redis implementations, and additional worker containers simply dial the same fleet endpoint. A lab or studio with three GPU machines gets multi-worker scheduling with the exact scheduler the cloud runs (issue #20), for the cost of one Redis container.
+The scaled self-hosted column deserves a note: it is not a separately designed product. **Designed:** setting `REDIS_URL` would switch dispatch and the frame relay to Redis implementations, and additional worker containers would dial the same fleet endpoint. A lab or studio with three GPU machines would get multi-worker scheduling with the exact scheduler the cloud runs (issue #20), for the cost of one Redis container.
 
 `AUTH_MODE` is `none` or `accounts`; the retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented, for REST and for the realtime socket: in `accounts` the socket authenticates from the session cookie on the upgrade, and revoking the session closes it.
 
@@ -65,7 +65,7 @@ The scaled self-hosted column deserves a note: it is not a separately designed p
 | Storage | the interface, storage keys, asset rows | filesystem vs S3; plain paths vs signed URLs |
 | Quota | the reserve/commit/refund interface, metering events | unlimited vs the billing service |
 | Auth | session mechanics, cookie, revocation | which methods exist |
-| Metrics | `usage_events` schema, output categorizer, admin usage view ([metrics.md](metrics.md)) | self-hosted sends daily anonymous telemetry; the analytics warehouse is cloud only, private repo |
+| Metrics | `usage_events` schema, stub categorizer, studio metrics panel ([metrics.md](metrics.md)) | CLIP labels, admin fleet console, and the analytics warehouse are designed / cloud-only |
 | Not shared at all | | AWS infrastructure; the private billing, autoscaler and analytics services |
 
 ## Side by side: the same request through both profiles
@@ -77,7 +77,7 @@ flowchart TB
     subgraph SH["Self-hosted: AGPL, your hardware, free"]
         B1["Browser"] -->|"SPA, REST and WS served by the API itself"| A1["API server, one container"]
         A1 --> AU1["Auth: none (auto login) or accounts (email+password)"]
-        A1 --> Q1["Quota: UnlimitedQuota, no payments"]
+        A1 --> Q1["Quota: no class, no payments"]
         A1 -->|"in-process dispatch"| W1["Your GPU worker(s)<br>memory ladder for small VRAM"]
         A1 --> S1["Storage: local disk"]
         A1 --> M1["Metrics: usage_events in own PostgreSQL<br>+ daily anonymous telemetry, TELEMETRY=false to stop"]
