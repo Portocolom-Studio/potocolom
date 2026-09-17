@@ -5,47 +5,49 @@ is on PR #118. That branch is not merged. Product defaults are unchanged.
 A typeset paper can follow. This document is the public study.
 
 Figures on `/illusions` are webp exports built by
-`scripts/render-illusion-figures.py`: drawio boxes, arrows, and math
-generated from code, with real keeper photos composited by PIL in a
-second step (headless drawio cannot load images). Regen with
-`python3 scripts/render-illusion-figures.py --out /tmp/illfig`, convert
-each PNG to webp, and copy to `frontend/static/illusions/`. Photo wells
-read from `frontend/static/illusions` and from the gitignored research
-exports under `.local/`; without those files the structure still
-renders with dashed wells.
+`scripts/render-illusion-figures.py`. The script generates drawio
+boxes, arrows, and math from code. Then PIL composites real keeper
+photos in a second step. Headless drawio cannot load images. Regen
+with `python3 scripts/render-illusion-figures.py --out /tmp/illfig`.
+Convert each PNG to webp. Copy the files to
+`frontend/static/illusions/`. Photo wells read from
+`frontend/static/illusions` and from the gitignored research exports
+under `.local/`. Without those files, the structure still renders
+with dashed wells.
 
 The method is Burgert et al.,
 [Diffusion Illusions](https://diffusionillusions.com). Optimize printable
-prime images so a fixed physical arrangement of them reads as a different
+prime images so a fixed physical arrangement of them shows a different
 subject. Here the arrangement is a flip of the sheet. The primes are the
-only free variables. Arrangements model real physics and are
+only free variables. Arrangements model real physics. They are
 differentiable. A frozen diffusion model scores each derived view against
 its prompt.
 
 ## Architecture
 
-The optimizer has four parts, in dependency order. In code they are
-`FourierFeatureNetwork`, the `ILLUSIONS` flip arrangement, and
-`DiffusionAdapter`; the paper calls the same parts prime images,
-arrangement processes, and the frozen model (paper Sec. 2-3).
+The optimizer has four parts, in dependency order. In code the parts
+have these names: `FourierFeatureNetwork`, the `ILLUSIONS` flip
+arrangement, and `DiffusionAdapter`. The paper calls the same parts
+prime images, arrangement processes, and the frozen model
+(paper Sec. 2-3).
 
 1. Each prime is a Fourier Feature Network rendering RGB
-   `(1, 3, 512, 512)` in `[0, 1]`. Only its weights move: about 264k
-   parameters per prime.
+   `(1, 3, 512, 512)` in `[0, 1]`. Only its weights move. That is
+   about 264k parameters per prime.
 2. Fixed arrangements turn primes into derived views. Flip is
    `a1(p) = p` and `a2(p) = rot180(p)`.
 3. A frozen diffusion model scores those views: Score Distillation on
    frozen SD 1.5, then Dream Target SDEdit on DreamShaper LCM.
-4. Only the prime network is trained. Gradients never flow through the
-   UNet or the VAE decoder.
+4. Only the prime network trains. Gradients do not enter the UNet.
+   They do not enter the VAE decoder.
 
 <!-- figure: architecture -->
 *Figure: flip pipeline with the elephant–swan keeper (seed 11, oil, joint). Colors follow paper Fig. 3: green input, blue trainable, white frozen, red intermediate. Arrangement math is paper Table 1, flip row.*
 
 
 Rotate and hidden overlay exist in the paper and in the unmerged CLI. The
-public page shows flip only. Flip is the type the reliability program
-measured.
+public page shows flip only. The reliability program measured the flip
+type.
 
 This workflow bakes the gallery keepers.
 
@@ -55,21 +57,21 @@ This workflow bakes the gallery keepers.
 
 ## The prime network
 
-Each prime is an implicit image: a Fourier Feature Network. Pixel
-coordinates on a 512 x 512 grid in `[-1, 1]` go through a fixed random
-Gaussian projection (`2 x 256`, scale 10). Then sine and cosine wrap
-that projection into 512 features. Then a small MLP
-(`512-256-256-256-3`, ReLU x3) maps the features to sigmoid RGB. The
-loop optimizes those weights, not raw pixels. That keeps the signal in
-printable structure. Pixel-space optimization hides the signal in high
+Each prime is an implicit image: a Fourier Feature Network. Take pixel
+coordinates on a 512 x 512 grid in `[-1, 1]`. Send them through a fixed
+random Gaussian projection (`2 x 256`, scale 10). Wrap that projection
+with sine and cosine into 512 features. Map the features through a small
+MLP (`512-256-256-256-3`, ReLU x3) to sigmoid RGB. The loop optimizes
+those weights, not raw pixels. That keeps the signal in printable
+structure. Pixel-space optimization hides the signal in high
 frequencies. A printer cannot hold that noise (paper Sec. 4.3).
 
 <!-- figure: ffn -->
 *Figure: the prime network with its real output, the elephant–swan printable prime. Dimensions are the optimizer defaults (paper Sec. 4.3 motivates the FFN over pixels).*
 
 
-Flip uses one prime and two views: identity and a 180-degree turn.
-Rotate uses two primes and stacked transparencies. Hidden uses four
+Flip uses one prime and two views. They are identity and a 180-degree
+turn. Rotate uses two primes and stacked transparencies. Hidden uses four
 primes plus a product overlay. Multiplication models light through film.
 Those overlay types are not on the public page.
 
@@ -81,9 +83,9 @@ one shared random timestep in `[0.02, 0.98]` of the schedule. The frozen
 UNet scores the noised latents with high classifier-free guidance
 (default 100). All prompt-target views share one CFG-doubled UNet
 forward per step (`sds_loss_batch`). The step applies the guided noise
-residual as a gradient on those latents through the
+residual as a gradient on those latents. It uses the
 `(latent * residual.detach()).sum()` trick. That gradient updates only
-the prime network at Adam learning rate 1e-3.
+the prime network. The Adam learning rate is 1e-3.
 
 The paper printed pseudocode computes an absolute residual under
 `no_grad` (paper Eq. 2-3). That form has no gradient path to the image.
@@ -98,14 +100,14 @@ uses that form.
 
 The optimizer CLI defaults are 500 Score Distillation steps and 8 Dream
 Target rounds. Joint Dream is off. We baked the gallery on `/illusions`
-with a research recipe: 5000 SDS steps and one Dream round.
+with a research recipe. It uses 5000 SDS steps and one Dream round.
 
 The loop creates a fresh Adam optimizer at the phase boundary. SDS
 gradients run about four orders of magnitude larger than Dream Target
 gradients. Without the reset, phase 2 moved loss by under 2 percent per
-round. With the reset, it moved 44 to 60 percent (issue #122). Those
-figures come from a short flip run: 250 SDS steps and 4 Dream Target
-rounds of 150 steps each.
+round. With the reset, loss moved 44 to 60 percent (issue #122). Those
+figures come from a short flip run. The run used 250 SDS steps and
+4 Dream Target rounds of 150 steps each.
 
 <!-- figure: two-phase -->
 *Figure: real checkpoints from the window-2 giraffe–penguin calibration smoke run: SDS steps 250–5000, Dream round 1, final.*
@@ -115,7 +117,7 @@ rounds of 150 steps each.
 Phase 2 is Dream Target (paper Eq. 4-6). It uses DreamShaper LCM with
 an LCMScheduler swap at guidance 2. Each round asks img2img for a
 cleaner target at strength `s`. Strength starts high (0.95) and decays
-to a light polish (0.05). The target stays frozen for the round while
+to a light polish (0.05). The target stays frozen for the round.
 `(1 - SSIM) + MSE` pulls the derived views toward it for 300 steps.
 Then the next round re-dreams from the improved views. Extra Dream
 rounds after the first made images worse.
@@ -128,17 +130,18 @@ rounds after the first made images worse.
 
 Independent Dream Targets can fight over the same pixels. Joint Dream
 (`--dream-joint`, `sdedit_joint`) denoises both flip views together. At
-every step it decodes each view's predicted image, rotates the B
-prediction into the upright frame, averages both in pixel space
-(`reconcile_flip`), re-encodes, and steps from that consensus. The two
-views become two orientations of one image, and the returned targets are
+every step it decodes each view's predicted image. It rotates the B
+prediction into the upright frame. It averages both in pixel space
+(`reconcile_flip`). It re-encodes. It steps from that consensus. The two
+views become two orientations of one image. The returned targets are
 two orientations of that same consensus.
 
 The loop averages in pixel space on purpose. The SD 1.5 VAE does not
-commute with a 180-degree turn in latent space (measured 0.78-0.97
-relative latent error). Joint Dream is an opt-in flag. It is not the
-product default. It can rescue a pair whose shapes can be one
-picture. It can also collapse a pair whose subjects cannot.
+commute with a 180-degree turn in latent space. Measurements show
+0.78-0.97 relative latent error. Joint Dream is an opt-in flag. It is not
+the product default. It can rescue a pair whose shapes can be one
+picture. It can also collapse a pair whose subjects cannot share one
+picture.
 
 <!-- figure: joint -->
 *Figure: joint Dream with the elephant–swan keeper, which ran in joint mode. Pixel-space reconciliation, as the code requires.*
@@ -182,10 +185,10 @@ merged into that branch. Do not treat these as product defaults.
 
 - A keeper is a specific pair, seed, and viewing mode. It is not a
   recipe that works every time.
-- Human review is the gate. CLIP pair score ROC-AUC was 0.706 against a
-  required 0.75, so no automatic screen.
-- Prompt wording is the biggest lever. It is not predictable by
-  argument. Frame artifacts belong to the specific phrase. They do not
+- Human review is the gate. CLIP pair score ROC-AUC was 0.706. The
+  bar was 0.75. So there is no automatic screen.
+- Prompt wording is the biggest lever. Arguments do not predict it.
+  Frame artifacts belong to the specific phrase. They do not
   belong to sketch versus oil as a medium.
 - We kept oil for color and fewer photographic frames. We did not keep
   oil because it yielded more keepers than sketch.
@@ -201,22 +204,22 @@ These conclusions came after the gallery was baked. The keepers on
 *Figure: optimizer defaults versus the gallery recipe, with the four measured verdicts below them.*
 
 
-Gallery images are window-2 clean keepers: score 4 or 5, frame rated
-none or minor, export `window2-2026-08-clean`. The gallery shows all 26
-cells at that bar: 14 at score 5 and 12 at score 4, grouped by pair.
-Some pairs earned several keepers across seeds, styles, and arms, which
-is expected because a keeper is one specific cell, not a recipe.
-Sixteen of twenty-six used joint Dream; the rest used independent
-targets. Provenance for every card (pair, seed, style, mode, arm,
-source PNG, sha256) is in
+Gallery images are window-2 clean keepers. Scores are 4 or 5. Frames
+are none or minor. The export is `window2-2026-08-clean`. The gallery
+shows all 26 cells at that bar: 14 at score 5 and 12 at score 4,
+grouped by pair. Some pairs earned several keepers across seeds,
+styles, and arms. This is expected. A keeper is one specific cell,
+not a recipe. Sixteen of twenty-six used joint Dream. The rest used
+independent targets. Provenance for every card (pair, seed, style,
+mode, arm, source PNG, sha256) is in
 `frontend/src/lib/illusion-public-facts.ts`.
 
 Below the gallery, `/illusions` shows a candidates tray
-(`ILLUSION_CANDIDATES` in the same file): 60 more cells from older and
-later exports, each tagged with its score, seed, mode, and export. Some
-are middle stages, and the oldest export never rated frames. Nothing
-there is a keeper yet; the tray exists so a human can flip each card
-and promote what reads clean.
+(`ILLUSION_CANDIDATES` in the same file). It holds 60 more cells from
+older and later exports. Each cell carries its score, seed, mode, and
+export as a tag. Some are middle stages, and the oldest export never
+rated frames. Nothing there is a keeper yet. The tray exists so a human
+can flip each card. A human promotes what reads clean.
 
 <!-- figure: review -->
 *Figure: the review funnel, 206 baked cells to 26 keepers, with the CLIP side branch recorded but not gating.*

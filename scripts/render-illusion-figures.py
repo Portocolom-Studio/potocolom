@@ -258,9 +258,7 @@ def fig_ffn(evidence_dir=None):
     for a, b in [(140, 160), (340, 360), (520, 540), (820, 840), (990, 1010)]:
         f.edge([(a, 160), (b, 160)])
     assets = _evidence_assets(evidence_dir or _default_asset_dir())
-    f.photo(
-        80, 330, 150, 150, assets / "coords-grid.png", "every pixel: (x, y)", C_INPUT
-    )
+    f.photo(80, 330, 150, 150, assets / "coords-grid.png", "every pixel: (x, y)", C_INPUT)
     f.photo(300, 330, 220, 150, assets / "sincos.png", "fixed waves, not learned")
     f.photo(590, 330, 150, 150, assets / "crop-a.png")
     f.photo(760, 330, 150, 150, assets / "crop-b.png")
@@ -297,11 +295,11 @@ def fig_sds():
         "ε · noise sampled from N(0, I)\n"
         "ε̂c / ε̂u · UNet guess, with / without prompt\n"
         "w · guidance weight (G = 100)\n"
-        "r · guided residual, used as the gradient"
+        "r · guided residual serves as the gradient"
     )
     right = (
-        "z · view as VAE latent (1, 4, 64, 64)\n"
-        "z_t · latent noised to step t by the schedule\n"
+        "z · view encoded to VAE latent (1, 4, 64, 64)\n"
+        "z_t · schedule noises latent to step t\n"
         "r̄ · r detached: no gradient into the UNet\n"
         "η · Adam step on θ only (lr 1e-3)"
     )
@@ -418,9 +416,7 @@ def fig_workflow():
     xs = [190, 365, 540, 715, 890, 1065]
     for a in xs:
         f.edge([(a, 210), (a + 25, 210)])
-    f.text(
-        140, 460, 1120, 36, "gallery recipe: 5000 + 1×300 · CLI defaults above"
-    )
+    f.text(140, 460, 1120, 36, "gallery recipe: 5000 + 1×300 · CLI defaults above")
     return f
 
 
@@ -459,16 +455,14 @@ def fig_review():
     f.rect(40, 150, 200, 130, "206 cells\nbaked")
     f.rect(290, 150, 240, 130, "blind human review\nthe gate", colors=C_TRAIN)
     f.rect(580, 150, 260, 130, "score ≥ 4\nframe none / minor")
-    f.rect(890, 150, 220, 130, "26 keepers\nexport window2", colors=C_INPUT)
+    f.rect(890, 150, 220, 130, "26 keepers\nfrom window2 export", colors=C_INPUT)
     for a, b in [(240, 290), (530, 580), (840, 890)]:
         f.edge([(a, 215), (b, 215)])
     f.rect(290, 340, 240, 100, "CLIP pair score\nrecorded only")
     f.rect(580, 340, 260, 100, "AUC 0.706 < 0.75 bar\nnot a screen", colors=C_NOTE)
     f.edge([(410, 280), (410, 340)], dashed=1)
     f.edge([(530, 390), (580, 390)], dashed=1)
-    f.text(
-        140, 470, 1120, 36, "keeper = one pair + seed + mode · window2-2026-08-clean"
-    )
+    f.text(140, 470, 1120, 36, "keeper = one pair + seed + mode · window2-2026-08-clean")
     return f
 
 
