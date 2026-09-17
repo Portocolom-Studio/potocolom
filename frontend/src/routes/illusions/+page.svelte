@@ -49,7 +49,7 @@
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
 					width: 1404,
-					height: 474
+					height: 664
 				}
 			]
 		},
@@ -81,7 +81,7 @@
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
 					width: 1404,
-					height: 624
+					height: 644
 				}
 			]
 		},
@@ -94,7 +94,7 @@
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
 					width: 1004,
-					height: 1404
+					height: 1344
 				}
 			]
 		},

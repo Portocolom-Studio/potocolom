@@ -203,18 +203,77 @@ def fig_architecture():
     return f
 
 
-def fig_ffn():
-    f = Figure("ffn", 1400, 470)
+def _default_asset_dir():
+    import tempfile
+
+    out = Path(tempfile.mkdtemp(prefix="ill-fig-assets-"))
+    return out
+
+
+def _evidence_assets(outdir):
+    """Small explanatory plots drawn with PIL (math visuals, not data)."""
+    from PIL import Image, ImageDraw
+    import math
+
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    grid = Image.new("RGB", (150, 150), "white")
+    gx = ImageDraw.Draw(grid)
+    for j in range(15):
+        for i in range(15):
+            gx.rectangle(
+                [10 + i * 9, 10 + j * 9, 10 + (i + 1) * 9 - 1, 10 + (j + 1) * 9 - 1],
+                fill=(int(255 * i / 14), int(255 * j / 14), 128),
+            )
+    grid.save(outdir / "coords-grid.png")
+    waves = Image.new("RGB", (220, 150), "white")
+    wx = ImageDraw.Draw(waves)
+    wx.line([(10, 75), (210, 75)], fill="#94a3b8", width=1)
+    wx.line(
+        [(10 + i * 2, 75 - int(55 * math.sin(i / 31.8 * 2 * math.pi))) for i in range(101)],
+        fill="#2563eb",
+        width=3,
+    )
+    wx.line(
+        [(10 + i * 2, 75 - int(55 * math.cos(i / 31.8 * 2 * math.pi))) for i in range(101)],
+        fill="#dc2626",
+        width=3,
+    )
+    waves.save(outdir / "sincos.png")
+    prime = Image.open(HERO_PRIME).convert("RGB")
+    prime.crop((60, 150, 124, 214)).resize((192, 192)).save(outdir / "crop-a.png")
+    prime.crop((120, 40, 184, 104)).resize((192, 192)).save(outdir / "crop-b.png")
+    return outdir
+
+
+def fig_ffn(evidence_dir=None):
+    f = Figure("ffn", 1400, 660)
     f.tag("one prime = one network · ≈264k weights")
-    f.rect(40, 170, 110, 90, "(x, y)", colors=C_INPUT)
-    f.rect(180, 160, 210, 110, "B ∼ N(0, 10²)\n2 × 256 · fixed")
-    f.rect(420, 160, 170, 110, "sin + cos\n512-d feats")
-    f.rect(620, 140, 300, 150, "MLP 512→256→256→256→3\nReLU ×3 · θ trained", colors=C_TRAIN)
-    f.rect(950, 160, 150, 110, "σ · sigmoid\nRGB (1,3,512,512)")
-    f.photo(1130, 120, 190, 190, HERO_PRIME, "printable prime", C_INPUT)
-    for a, b in [(150, 180), (390, 420), (590, 620), (920, 950), (1100, 1130)]:
-        f.edge([(a, 215), (b, 215)])
-    f.text(140, 390, 1120, 40, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(MLP(v))")
+    f.rect(40, 120, 100, 80, "(x, y)", colors=C_INPUT)
+    f.rect(160, 110, 180, 100, "B ∼ N(0, 10²)\n2 × 256 · fixed")
+    f.rect(360, 110, 160, 100, "sin + cos\n512-d feats")
+    f.rect(540, 100, 280, 120, "MLP 512→256→256→256→3\nReLU ×3 · θ trained", colors=C_TRAIN)
+    f.rect(840, 110, 150, 100, "σ · sigmoid\nRGB (1,3,512,512)")
+    f.photo(1010, 80, 190, 190, HERO_PRIME, "printable prime", C_INPUT)
+    for a, b in [(140, 160), (340, 360), (520, 540), (820, 840), (990, 1010)]:
+        f.edge([(a, 160), (b, 160)])
+    assets = _evidence_assets(evidence_dir or _default_asset_dir())
+    f.photo(
+        80, 330, 150, 150, assets / "coords-grid.png", "every pixel: (x, y)", C_INPUT
+    )
+    f.photo(300, 330, 220, 150, assets / "sincos.png", "fixed waves, not learned")
+    f.photo(590, 330, 150, 150, assets / "crop-a.png")
+    f.photo(760, 330, 150, 150, assets / "crop-b.png")
+    f.rect(590, 488, 320, 34, "2× crops: smooth, printable", colors=C_INPUT, size=13)
+    f.rect(
+        980,
+        330,
+        340,
+        150,
+        "pixels × hide art in noise\nweights ✓ hold shape\npaper Sec. 4.3",
+        size=14,
+    )
+    f.text(140, 580, 1120, 36, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(MLP(v))")
     return f
 
 
@@ -285,37 +344,37 @@ def fig_two_phase():
 
 
 def fig_dream():
-    f = Figure("dream", 1400, 620)
+    f = Figure("dream", 1400, 640)
     f.tag("one Dream Target round · real round-1 triple, smoke run")
-    f.photo(60, 150, 200, 200, _smoke_derived(5000), "d · entering Dream")
-    f.rect(310, 160, 250, 180, "SDEdit(d, s, prompt)\nLCM · CFG 2\ns = 0.95 → 0.05")
+    f.photo(40, 140, 220, 220, _smoke_derived(5000), "d · entering Dream")
+    f.rect(310, 150, 250, 200, "SDEdit(d, s, prompt)\nLCM · CFG 2\ns = 0.95 → 0.05")
     f.photo(
         610,
-        150,
-        200,
-        200,
+        140,
+        220,
+        220,
         SMOKE_ARM / "ckpt_dream_round_01" / "target_1.png",
         "z · frozen this round",
     )
-    f.rect(860, 160, 220, 180, "L = (1−SSIM) + MSE\n300 steps")
+    f.rect(880, 150, 220, 200, "L = (1−SSIM) + MSE\n300 steps")
     f.photo(
-        1130,
-        150,
-        200,
-        200,
+        1150,
+        140,
+        220,
+        220,
         SMOKE_ARM / "ckpt_dream_round_01" / "derived_1.png",
         "d′ · regressed to z",
     )
-    for a, b in [(260, 310), (560, 610), (810, 860), (1080, 1130)]:
+    for a, b in [(260, 310), (560, 610), (830, 880), (1100, 1150)]:
         f.edge([(a, 250), (b, 250)])
-    f.edge([(1230, 350), (1230, 500), (435, 500), (435, 340)], dashed=1)
-    f.text(560, 486, 560, 36, "next round re-dreams from d′", size=14)
-    f.text(140, 540, 1120, 36, "8 rounds default · the gallery used 1")
+    f.edge([(1260, 360), (1260, 510), (435, 510), (435, 350)], dashed=1, color=C_TRAIN[1], width=3)
+    f.rect(700, 492, 420, 36, "next round re-dreams from d′", colors=C_TRAIN, size=14)
+    f.text(140, 566, 1120, 36, "8 rounds default · the gallery used 1")
     return f
 
 
 def fig_joint():
-    f = Figure("joint", 1000, 1400)
+    f = Figure("joint", 1000, 1340)
     f.tag("joint Dream · elephant–swan keeper (joint mode)")
     f.photo(210, 70, 220, 220, HERO_VIEW, "vA · upright")
     f.photo(570, 70, 220, 220, HERO_VIEW2, "vB · as rot₁₈₀")
@@ -323,18 +382,18 @@ def fig_joint():
     f.rect(210, 470, 580, 80, "rot₁₈₀(vB prediction) → upright frame")
     f.rect(210, 580, 580, 100, "c = (x̂A + rot₁₈₀(x̂B)) / 2\npixel space, not latent")
     f.photo(390, 730, 220, 220, HERO_PRIME, "consensus lives in the prime", C_INPUT)
-    f.photo(210, 1040, 220, 220, HERO_VIEW, "target A")
-    f.photo(570, 1040, 220, 220, HERO_VIEW2, "target B · as rot₁₈₀")
+    f.photo(210, 990, 220, 220, HERO_VIEW, "target A")
+    f.photo(570, 990, 220, 220, HERO_VIEW2, "target B · as rot₁₈₀")
     f.edge([(320, 336), (400, 360)])
     f.edge([(680, 336), (600, 360)])
     f.edge([(500, 440), (500, 470)])
     f.edge([(500, 550), (500, 580)])
     f.edge([(500, 680), (500, 730)])
-    f.edge([(500, 950), (320, 1040)])
-    f.edge([(500, 950), (680, 1040)])
+    f.edge([(500, 950), (320, 990)])
+    f.edge([(500, 950), (680, 990)])
     f.rect(
         140,
-        1310,
+        1250,
         720,
         56,
         "VAE does not commute with rot₁₈₀ · latent error 0.78–0.97",
