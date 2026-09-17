@@ -403,6 +403,97 @@ def fig_joint():
     return f
 
 
+def fig_workflow():
+    f = Figure("workflow", 1400, 560)
+    f.tag("bake one keeper · optimize_illusion")
+    f.rect(40, 140, 150, 140, "in\npair + 2 prompts\nseed · --type flip", colors=C_INPUT)
+    f.rect(215, 140, 150, 140, "FFN primes\n256px · random θ")
+    f.rect(390, 140, 150, 140, "flip views\nd₁ = p\nd₂ = rot₁₈₀(p)")
+    f.rect(565, 140, 150, 140, "SDS ×500\nSD 1.5 · CFG 100")
+    f.rect(740, 140, 150, 140, "↻ fresh Adam\nlr 1e-3", colors=C_TRAIN)
+    f.rect(915, 140, 150, 140, "Dream 8×300\nLCM · s ↓")
+    f.photo(1090, 130, 120, 120, HERO_PRIME)
+    f.photo(1220, 130, 120, 120, HERO_VIEW)
+    f.rect(1090, 258, 250, 34, "prime_N.png + derived_N.png", colors=C_INPUT, size=13)
+    xs = [190, 365, 540, 715, 890, 1065]
+    for a in xs:
+        f.edge([(a, 210), (a + 25, 210)])
+    f.text(
+        140, 460, 1120, 36, "gallery recipe: 5000 + 1×300 · CLI defaults above"
+    )
+    return f
+
+
+def fig_recipe():
+    f = Figure("recipe", 1400, 600)
+    f.tag("same optimizer, different budget")
+    f.rect(140, 80, 500, 60, "CLI defaults", size=16, bold=1)
+    f.rect(760, 80, 500, 60, "gallery recipe", colors=C_TRAIN, size=16, bold=1)
+    rows = [
+        ("500 SDS steps", "5000 SDS steps"),
+        ("8 Dream rounds", "1 Dream round"),
+        ("joint off", "joint opt-in"),
+    ]
+    y = 160
+    for left, right in rows:
+        f.rect(140, y, 500, 56, left, size=15)
+        f.rect(760, y, 500, 56, right, colors=C_TRAIN, size=15)
+        y += 76
+    verdicts = [
+        "256px primes · 512px costs 3.3×, no gain",
+        "extra Dream rounds worse",
+        "negative prompts rejected",
+        "oil kept for color, not yield",
+    ]
+    x = 60
+    for v in verdicts:
+        f.rect(x, 420, 295, 60, v, colors=C_NOTE, size=13)
+        x += 320
+    f.text(140, 510, 1120, 36, "measured after the gallery was baked · kept oil for color")
+    return f
+
+
+def fig_review():
+    f = Figure("review", 1400, 560)
+    f.tag("human review is the gate")
+    f.rect(40, 150, 200, 130, "206 cells\nbaked")
+    f.rect(290, 150, 240, 130, "blind human review\nthe gate", colors=C_TRAIN)
+    f.rect(580, 150, 260, 130, "score ≥ 4\nframe none / minor")
+    f.rect(890, 150, 220, 130, "26 keepers\nexport window2", colors=C_INPUT)
+    for a, b in [(240, 290), (530, 580), (840, 890)]:
+        f.edge([(a, 215), (b, 215)])
+    f.rect(290, 340, 240, 100, "CLIP pair score\nrecorded only")
+    f.rect(580, 340, 260, 100, "AUC 0.706 < 0.75 bar\nnot a screen", colors=C_NOTE)
+    f.edge([(410, 280), (410, 340)], dashed=1)
+    f.edge([(530, 390), (580, 390)], dashed=1)
+    f.text(
+        140, 470, 1120, 36, "keeper = one pair + seed + mode · window2-2026-08-clean"
+    )
+    return f
+
+
+def fig_print():
+    f = Figure("print", 1400, 560)
+    f.tag("flip needs paper only")
+    f.photo(60, 140, 200, 200, HERO_PRIME, "prime_1.png · 256px")
+    f.rect(310, 160, 230, 160, "any laser printer\nplain paper · desk test")
+    f.photo(590, 140, 200, 200, HERO_VIEW, "sheet on the desk")
+    f.rect(840, 160, 200, 160, "turn 180°\n↻")
+    f.photo(1150, 140, 200, 200, HERO_VIEW2, "second subject")
+    for a, b in [(260, 310), (540, 590), (790, 840), (1040, 1150)]:
+        f.edge([(a, 240), (b, 240)])
+    f.rect(
+        140,
+        440,
+        1120,
+        56,
+        "rotate + hidden types need transparency film + backlight · not on this page",
+        colors=C_NOTE,
+        size=14,
+    )
+    return f
+
+
 FIGURES = {
     "architecture": fig_architecture,
     "ffn": fig_ffn,
@@ -410,6 +501,10 @@ FIGURES = {
     "two-phase": fig_two_phase,
     "dream": fig_dream,
     "joint": fig_joint,
+    "workflow": fig_workflow,
+    "recipe": fig_recipe,
+    "review": fig_review,
+    "print": fig_print,
 }
 
 

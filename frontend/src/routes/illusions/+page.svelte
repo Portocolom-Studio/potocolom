@@ -35,8 +35,8 @@
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
-					width: 568,
-					height: 1588
+					width: 1404,
+					height: 564
 				}
 			]
 		},
@@ -106,14 +106,14 @@
 				{
 					src: '/illusions/recipe.webp',
 					cap: 'ill.fig_recipe_cap',
-					width: 608,
-					height: 1460
+					width: 1404,
+					height: 604
 				},
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 2116,
-					height: 890
+					width: 1404,
+					height: 564
 				}
 			]
 		},
@@ -125,8 +125,8 @@
 				{
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
-					width: 1952,
-					height: 280
+					width: 1404,
+					height: 564
 				}
 			]
 		},

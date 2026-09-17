@@ -50,29 +50,8 @@ measured.
 This workflow bakes the gallery keepers.
 
 <!-- figure: workflow -->
-```mermaid
-flowchart TB
-  subgraph BAKE["Bake"]
-    IN["Pair, prompts, seed"]
-    PRIMES["FFN primes"]
-    VIEWS["Flip views"]
-  end
-  subgraph LOOP["Two-phase loop"]
-    SDS["Score Distillation"]
-    RESET["Fresh Adam"]
-    DREAM["Dream Target"]
-  end
-  FILES["Printable prime and views"]
+*Figure: the bake pipeline with CLI defaults, gallery recipe, and real output files (elephant–swan prime and view).*
 
-  IN --> PRIMES --> VIEWS --> SDS --> RESET --> DREAM --> FILES
-
-  style BAKE fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  style LOOP fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  classDef hot fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
-  classDef box fill:#ffffff,stroke:#64748b,color:#0f172a
-  class SDS,DREAM hot
-  class IN,PRIMES,VIEWS,RESET,FILES box
-```
 
 ## The prime network
 
@@ -219,28 +198,8 @@ These conclusions came after the gallery was baked. The keepers on
 `/illusions` span both wordings and both styles.
 
 <!-- figure: recipe -->
-```mermaid
-flowchart TB
-  subgraph CODE["Optimizer CLI defaults"]
-    C1["500 SDS steps"]
-    C2["8 Dream rounds"]
-    C3["Joint off"]
-  end
-  subgraph RES["Gallery recipe"]
-    R1["5000 SDS steps"]
-    R2["1 Dream round"]
-    R3["Joint as an opt-in flag"]
-  end
+*Figure: optimizer defaults versus the gallery recipe, with the four measured verdicts below them.*
 
-  CODE -.-> RES
-
-  style CODE fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  style RES fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  classDef hot fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
-  classDef box fill:#ffffff,stroke:#64748b,color:#0f172a
-  class R1,R2,R3 hot
-  class C1,C2,C3 box
-```
 
 Gallery images are window-2 clean keepers: score 4 or 5, frame rated
 none or minor, export `window2-2026-08-clean`. The gallery shows all 26
@@ -260,56 +219,14 @@ there is a keeper yet; the tray exists so a human can flip each card
 and promote what reads clean.
 
 <!-- figure: review -->
-```mermaid
-flowchart LR
-  subgraph RUN["Bake"]
-    BAKE["Pair, seed, and mode"]
-  end
-  subgraph GATE["Review"]
-    HUMAN["Blind human review"]
-    SCORE["Score 5, frame none or minor"]
-  end
-  subgraph CLIPBOX["CLIP"]
-    CLIP["Pair score"]
-    SKIP["Not a screen"]
-  end
-  KEEP["Keeper"]
+*Figure: the review funnel, 206 baked cells to 26 keepers, with the CLIP side branch recorded but not gating.*
 
-  BAKE --> HUMAN --> SCORE --> KEEP
-  CLIP -.-> SKIP
-
-  style RUN fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  style GATE fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  style CLIPBOX fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  classDef hot fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
-  classDef box fill:#ffffff,stroke:#64748b,color:#0f172a
-  class HUMAN,KEEP hot
-  class BAKE,CLIP,SKIP,SCORE box
-```
 
 ## Print
 
 <!-- figure: print -->
-```mermaid
-flowchart LR
-  subgraph PRINT["Fabrication"]
-    PRIME["Print the prime"]
-    SHEET["Paper on the desk"]
-  end
-  subgraph LOOK["Viewing"]
-    TURN["Turn 180 degrees"]
-    VIEW["Second subject"]
-  end
+*Figure: flip fabrication with the elephant–swan keeper: print the prime, turn the sheet.*
 
-  PRIME --> SHEET --> TURN --> VIEW
-
-  style PRINT fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  style LOOK fill:#f8fafc,stroke:#cbd5e1,color:#334155
-  classDef hot fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
-  classDef box fill:#ffffff,stroke:#64748b,color:#0f172a
-  class PRIME,TURN hot
-  class SHEET,VIEW box
-```
 
 Flip needs paper. Rotate and hidden types need transparency film and a
 backlight. They are not on the public page.
