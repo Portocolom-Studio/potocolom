@@ -184,6 +184,7 @@
 			<a href="#run">{t('nav.open')}</a>
 			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
+			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
 		</nav>
 		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
 	</header>
@@ -396,6 +397,7 @@
 			<a href={repoUrl}>{t('footer.github')}</a>
 			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
+			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
 			<a href={resolve('/legal')}>{t('footer.legal')}</a>
 			<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
 		</nav>
