@@ -208,6 +208,9 @@ Burgert et al. sections and equations. Code references are
 | x̂ | Predicted clean image decoded during joint denoise | `sdedit_joint` |
 | c | Consensus: c = (x̂A + rot₁₈₀(x̂B)) / 2, averaged in pixel space | `reconcile_flip` |
 
+<!-- figure: symbols -->
+*Figure: the same table on the page, with each symbol's range or shape beside the function that computes it. The figures spell the decoded predictions xA and xB, because no font here renders a circumflex over a Greek or italic letter.*
+
 ## What we measured
 
 The reliability program on PR #118 recorded these results. PR #150

@@ -103,6 +103,7 @@ test('study diagrams are exported as webp', () => {
 		'workflow',
 		'ffn',
 		'sds',
+		'symbols',
 		'two-phase',
 		'dream',
 		'joint',
