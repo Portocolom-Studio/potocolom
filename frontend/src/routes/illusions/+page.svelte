@@ -7,6 +7,7 @@
 	import { t } from '$lib/i18n.svelte';
 	import {
 		fillIllusionCopy,
+		ILLUSION_CANDIDATES,
 		ILLUSION_GALLERY,
 		ILLUSION_HERO,
 		ILLUSION_PAPER_URL
@@ -16,17 +17,20 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	const sections = [
+		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
+		{ id: 's11', title: 'ill.s11_title', paragraphs: ['ill.s11_p1'], candidates: true },
 		{ id: 's1', title: 'ill.s1_title', paragraphs: ['ill.s1_p1', 'ill.s1_p2', 'ill.s1_p3'] },
 		{
 			id: 's2',
 			title: 'ill.s2_title',
 			paragraphs: ['ill.s2_p1', 'ill.s2_p2', 'ill.s2_p3'],
+			workedExample: true,
 			figures: [
 				{
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
-					width: 1012,
-					height: 1372
+					width: 1404,
+					height: 784
 				},
 				{
 					src: '/illusions/workflow.webp',
@@ -44,8 +48,8 @@
 				{
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
-					width: 2108,
-					height: 140
+					width: 1404,
+					height: 474
 				}
 			]
 		},
@@ -57,8 +61,8 @@
 				{
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
-					width: 672,
-					height: 1480
+					width: 1404,
+					height: 664
 				}
 			]
 		},
@@ -70,14 +74,14 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 1860,
-					height: 236
+					width: 1404,
+					height: 604
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
-					width: 2148,
-					height: 210
+					width: 1404,
+					height: 624
 				}
 			]
 		},
@@ -89,8 +93,8 @@
 				{
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
-					width: 2656,
-					height: 488
+					width: 1004,
+					height: 1404
 				}
 			]
 		},
@@ -113,7 +117,6 @@
 				}
 			]
 		},
-		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
 		{
 			id: 's9',
 			title: 'ill.s9_title',
@@ -171,8 +174,53 @@
 						{#if 'gallery' in section}
 							<div class="gallery">
 								{#each ILLUSION_GALLERY as item (item.id)}
-									<IllusionFlip {item} />
+									<IllusionFlip {item} meta="keeper" />
 								{/each}
+							</div>
+						{/if}
+						{#if 'candidates' in section}
+							<div class="gallery">
+								{#each ILLUSION_CANDIDATES as item (item.id)}
+									<IllusionFlip {item} meta="candidate" />
+								{/each}
+							</div>
+						{/if}
+						{#if 'workedExample' in section}
+							<div class="worked">
+								<figure>
+									<img
+										src={ILLUSION_HERO.prime}
+										alt={t('ill.prime_label')}
+										width={ILLUSION_HERO.primeWidth}
+										height={ILLUSION_HERO.primeHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.prime_label')}</figcaption>
+								</figure>
+								<figure>
+									<img
+										src={ILLUSION_HERO.view}
+										alt={t('ill.worked_view')}
+										width={ILLUSION_HERO.viewWidth}
+										height={ILLUSION_HERO.viewHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.worked_view')}</figcaption>
+								</figure>
+								<figure>
+									<img
+										class="turned"
+										src={ILLUSION_HERO.view}
+										alt={t('ill.worked_turned')}
+										width={ILLUSION_HERO.viewWidth}
+										height={ILLUSION_HERO.viewHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.worked_turned')}</figcaption>
+								</figure>
 							</div>
 						{/if}
 						{#if 'figures' in section}
@@ -328,7 +376,17 @@
 	.gallery {
 		display: grid;
 		gap: 1.25rem;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.worked {
+		display: grid;
+		gap: 1rem;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+	}
+
+	.worked img.turned {
+		transform: rotate(180deg);
 	}
 
 	.fig-scroll {
@@ -371,6 +429,10 @@
 	@media (min-width: 64rem) {
 		.document {
 			grid-template-columns: 14rem minmax(0, 1fr);
+		}
+
+		.gallery {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
 		}
 
 		aside {
