@@ -43,7 +43,7 @@
 <div class="flex flex-col gap-2">
 	<div class="flex items-center justify-between gap-2">
 		<Label id="{id}-label" for={id} onclick={focusSlider}>{label}</Label>
-		<span class="text-muted-foreground text-xs tabular-nums">{valueLabel}</span>
+		<span class="text-muted-foreground text-xs font-sans tabular-nums">{valueLabel}</span>
 	</div>
 	<Slider
 		thumbId={id}
@@ -58,7 +58,7 @@
 		{onValueChange}
 		class="w-full"
 	/>
-	<div class="text-muted-foreground flex justify-between text-xs tabular-nums">
+	<div class="text-muted-foreground flex justify-between text-xs font-sans tabular-nums">
 		<span>{minLabel}</span>
 		<span>{maxLabel}</span>
 	</div>

@@ -70,6 +70,7 @@
 		padding: 0;
 		border: 0;
 		background: none;
+		font-family: inherit;
 		cursor: pointer;
 		overflow: clip;
 	}

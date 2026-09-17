@@ -407,7 +407,7 @@
 
 	.model-stat {
 		color: var(--k-muted);
-		font-family: var(--k-mono);
+		font-family: var(--k-display);
 		font-size: 0.75rem;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
@@ -483,7 +483,9 @@
 		font-size: 0.78rem;
 	}
 
-	.num {
+	.num,
+	.mono.num {
+		font-family: var(--k-display);
 		font-variant-numeric: tabular-nums;
 	}
 

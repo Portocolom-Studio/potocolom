@@ -122,7 +122,7 @@
 						<text
 							x={swimMargin.left}
 							y={y + rowH / 2 + 1}
-							class="fill-muted-foreground font-mono text-[10px]"
+							class="fill-muted-foreground font-sans text-[10px]"
 						>
 							{lane.label.length > 14 ? `${lane.label.slice(0, 13)}…` : lane.label}
 						</text>
@@ -156,7 +156,7 @@
 							x={xScale(tick, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)}
 							y={swimHeight - 6}
 							text-anchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'}
-							class="fill-muted-foreground font-mono text-[10px] tabular-nums"
+							class="fill-muted-foreground font-sans text-[10px] tabular-nums"
 						>
 							{formatTimeTick(tick, range)}
 						</text>
@@ -170,7 +170,7 @@
 						<span class="text-muted-foreground flex items-center gap-1.5 text-xs">
 							<span class="inline-block size-2.5 rounded-sm" style={`background: ${lane.color}`}
 							></span>
-							<span class="font-mono">{lane.label}</span>
+							<span>{lane.label}</span>
 						</span>
 					{/each}
 				</div>
