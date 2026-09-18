@@ -23,6 +23,7 @@ import argparse
 import base64
 import io
 import math
+import random
 import subprocess
 import sys
 from pathlib import Path
@@ -270,6 +271,27 @@ def objective_panel(x, y, pw, ph):
     return "\n".join(s)
 
 
+def fourier_tile(scale, index, size=72, seed=0):
+    """One real Fourier feature: sin(2*pi*(x,y) @ B[:, index]), B ~ N(0, scale^2).
+
+    The code draws B once with torch.randn(2, features) * scale and never
+    trains it, so drawing the basis is drawing the whole fixed part.
+    """
+    rng = random.Random(seed)
+    columns = [(rng.gauss(0, 1) * scale, rng.gauss(0, 1) * scale) for _ in range(index + 1)]
+    bx, by = columns[index]
+    img = Image.new("L", (size, size))
+    pixels = []
+    for row in range(size):
+        v = row / size
+        for col in range(size):
+            u = col / size
+            value = math.sin(2 * math.pi * (u * bx + v * by))
+            pixels.append(int((value + 1) * 127.5))
+    img.putdata(pixels)
+    return _jpeg_uri(img.convert("RGB"), 80)
+
+
 # --------------------------------------------------------------- figures
 
 def fig_architecture(out):
@@ -319,21 +341,15 @@ def fig_ffn(out):
         for i in range(15):
             gx.rectangle([8 + i * 9, 8 + j * 9, 8 + (i + 1) * 9 - 1, 8 + (j + 1) * 9 - 1],
                          fill=(int(255 * i / 14), int(255 * j / 12), 128))
-    waves = Image.new("RGB", (220, 130), "white")
-    wx = ImageDraw.Draw(waves)
-    wx.line([(8, 65), (212, 65)], fill="#94a3b8", width=1)
-    wx.line([(8 + i * 2, 65 - int(48 * math.sin(i / 31.8 * 2 * math.pi))) for i in range(103)],
-            fill="#2563eb", width=3)
-    wx.line([(8 + i * 2, 65 - int(48 * math.cos(i / 31.8 * 2 * math.pi))) for i in range(103)],
-            fill="#dc2626", width=3)
     prime_img = Image.open(prime_path).convert("RGB")
-    crop_a = _jpeg_uri(prime_img.crop((60, 150, 124, 214)).resize((150, 130)))
-    crop_b = _jpeg_uri(prime_img.crop((120, 40, 184, 104)).resize((150, 130)))
+    crop_a = _jpeg_uri(prime_img.crop((60, 150, 124, 214)).resize((156, 132)))
+    crop_b = _jpeg_uri(prime_img.crop((120, 40, 184, 104)).resize((156, 132)))
 
-    w, h = 1280, 720
+    w, h = 1280, 776
     s = [svg_open("ffn", "Prime network: coordinates become printable RGB",
                   "Pixel coordinates pass fixed Fourier features and a small trained "
-                  "network. Evidence below shows smooth printable output.", w, h)]
+                  "network. Below: the real fixed basis, a scale sweep, and crops of "
+                  "the printable output.", w, h)]
     s.append(eyebrow(40, 44, "PRIME NETWORK · FOURIER FEATURES"))
     s.append(heading(40, 78, "Coordinates in, printable RGB out"))
     for x1, x2 in [(140, 170), (360, 390), (560, 590), (870, 900), (1050, 1080)]:
@@ -352,16 +368,27 @@ def fig_ffn(out):
                  None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
     s.append(f'<image href="{_jpeg_uri(grid)}" x="60" y="400" width="150" height="130"/>')
     s.append(caption(135, 548, "every pixel: (x, y)"))
-    s.append(f'<image href="{_jpeg_uri(waves)}" x="250" y="400" width="220" height="130"/>')
-    s.append(caption(360, 548, "fixed waves, not learned"))
-    s.append(f'<image href="{crop_a}" x="510" y="400" width="150" height="130"/>')
-    s.append(f'<image href="{crop_b}" x="680" y="400" width="150" height="130"/>')
-    s.append(caption(670, 548, "2x crops: smooth, printable"))
-    s.append(box(870, 400, 370, 130, "pixels: hide the art in noise",
-                 "weights: hold the shape\nsmooth enough to print\npaper Sec. 4.3"))
-    s.append(note(640, 606, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(net(v))"))
+    for i in range(4):
+        s.append(f'<image href="{fourier_tile(10.0, i)}" x="{250 + i * 78}" y="400" '
+                 f'width="72" height="72"/>')
+        s.append(f'<image href="{fourier_tile(10.0, i + 4)}" x="{250 + i * 78}" y="478" '
+                 f'width="72" height="72"/>')
+    s.append(caption(391, 568, "eight waves drawn the way the code draws B, at scale 10"))
+    for i, (scale, label) in enumerate(((1.0, "scale 1"), (10.0, "scale 10"), (100.0, "scale 100"))):
+        s.append(f'<image href="{fourier_tile(scale, 0)}" x="{590 + i * 82}" y="400" '
+                 f'width="76" height="76"/>')
+        s.append(caption(628 + i * 82, 492, label))
+    s.append(caption(712, 512, "one soft ramp · the working range · aliases on a 256 px grid"))
+    s.append(f'<image href="{crop_a}" x="590" y="534" width="78" height="66"/>')
+    s.append(f'<image href="{crop_b}" x="672" y="534" width="78" height="66"/>')
+    s.append(caption(712, 616, "2x crops of the prime: smooth, printable"))
+    s.append(box(870, 400, 370, 200, "pixels: hide the art in noise",
+                 "weights: hold the shape\nB is drawn once and frozen, so the\n"
+                 "basis above is the whole fixed part\nof the network\npaper Sec. 4.3",
+                 sub_size=10))
+    s.append(note(640, 662, "v = [ sin(2πBx) ‖ cos(2πBx) ] · RGB = σ(net(v))"))
     s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "trainable"),
-                     ("#ffffff", "fixed"), (NOTE_FILL, "note")], w, 648))
+                     ("#ffffff", "fixed"), (NOTE_FILL, "note")], w, 704))
     s.append("</svg>")
     write(out, "ffn", "\n".join(s), w, h)
 
@@ -923,7 +950,49 @@ def fig_symbols(out):
     write(out, "symbols", "\n".join(s), w, h)
 
 
+def fig_families(out):
+    """Two families of illusion method, drawn from each paper's own description."""
+    w, h = 1280, 664
+    s = [svg_open("families", "Two families of illusion method",
+                  "Sampling-time methods combine noise estimates across views inside one "
+                  "diffusion pass. Optimisation-time methods train an image until every "
+                  "view scores well. This page is the second kind.", w, h)]
+    s.append(eyebrow(40, 44, "WHERE THIS METHOD SITS"))
+    s.append(heading(40, 78, "Two ways to make one image read twice"))
+    s.append(box(40, 120, 580, 44, "sampling time", None, fill=NOTE_FILL, stroke=NOTE_STROKE))
+    s.append(box(660, 120, 580, 44, "optimisation time · this page", None,
+                 fill=ACCENT_TINT, stroke=ACCENT))
+    left = [
+        ("one reverse diffusion pass", "no image parameters are trained"),
+        ("at each step", "score each view, undo the view,\naverage the estimates, denoise"),
+        ("the cost", "one sampling pass, seconds"),
+        ("the constraint", "views must be orthogonal transforms:\nflips, rotations, pixel permutations"),
+    ]
+    right = [
+        ("thousands of optimiser steps", "a prime network is trained"),
+        ("at each step", "render the views, score each one,\npush the residual back into θ"),
+        ("the cost", "5000 SDS steps, 26 minutes on this card,\nthen a Dream round of 88 seconds"),
+        ("the constraint", "the arrangement only has to be\ndifferentiable, so overlays are in scope"),
+    ]
+    y = 190
+    for (lname, lsub), (rname, rsub) in zip(left, right):
+        rows = max(len(lsub.split("\n")), len(rsub.split("\n")))
+        height = 44 + rows * 16
+        s.append(box(40, y, 580, height, lname, lsub, sub_size=10))
+        s.append(box(660, y, 580, height, rname, rsub, fill="#ffffff", stroke=ACCENT, sub_size=10))
+        y += height + 14
+    s.append(box(40, y, 1200, 46,
+                 "Visual Anagrams (Geng, Park and Owens, arXiv 2311.17919) is the sampling-time "
+                 "family. Diffusion Illusions (Burgert et al.) is this one.",
+                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    s.append(legend([(NOTE_FILL, "the other family"), (ACCENT_TINT, "what this page does")],
+                    w, y + 82))
+    s.append("</svg>")
+    write(out, "families", "\n".join(s), w, h)
+
+
 FIGURES = {
+    "families": fig_families,
     "architecture": fig_architecture,
     "ffn": fig_ffn,
     "sds": fig_sds,

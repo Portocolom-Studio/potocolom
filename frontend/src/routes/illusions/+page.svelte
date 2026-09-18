@@ -19,7 +19,19 @@
 	const sections = [
 		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
 		{ id: 's11', title: 'ill.s11_title', paragraphs: ['ill.s11_p1'], candidates: true },
-		{ id: 's1', title: 'ill.s1_title', paragraphs: ['ill.s1_p1', 'ill.s1_p2', 'ill.s1_p3'] },
+		{
+			id: 's1',
+			title: 'ill.s1_title',
+			paragraphs: ['ill.s1_p1', 'ill.s1_p2', 'ill.s1_p3'],
+			figures: [
+				{
+					src: '/illusions/families.webp',
+					cap: 'ill.fig_families_cap',
+					width: 2560,
+					height: 1328
+				}
+			]
+		},
 		{
 			id: 's2',
 			title: 'ill.s2_title',
@@ -49,7 +61,7 @@
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
 					width: 2560,
-					height: 1440
+					height: 1552
 				}
 			]
 		},

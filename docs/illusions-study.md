@@ -16,6 +16,10 @@ two figures and `--out <dir>` to write somewhere else. Photos read from
 under `.local/`. Without those files, the structure still renders
 with dashed wells.
 
+<!-- figure: families -->
+*Figure: the two families. Sampling-time methods such as Visual Anagrams (Geng, Park and Owens, arXiv 2311.17919) combine noise estimates from each view inside one reverse diffusion pass and train nothing. This page optimises a prime network instead: 5000 Score Distillation steps, 26 minutes on one RX 7600 XT, then a Dream round of 88 seconds. The cost buys arrangements that are not pixel permutations, which is how the overlay types work.*
+
+
 The method is Burgert et al.,
 [Diffusion Illusions](https://diffusionillusions.com). Optimize printable
 prime images so a fixed physical arrangement of them shows a different

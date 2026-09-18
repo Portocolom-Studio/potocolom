@@ -99,6 +99,7 @@ test('the public illusions route is wired', () => {
 
 test('study diagrams are exported as webp', () => {
 	const names = [
+		'families',
 		'architecture',
 		'workflow',
 		'ffn',
