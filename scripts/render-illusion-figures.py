@@ -36,6 +36,7 @@ LOCAL = ROOT / ".local" / "illusion-reliability"
 CLEAN = LOCAL / "keepers" / "window2-2026-08-clean"
 SMOKE = LOCAL / "campaigns" / "window2" / "smoke"
 SMOKE_ARM = SMOKE / "arm_neg_on_indep"
+SOURCES = ROOT / "docs" / "figure-sources"
 SWAN = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/elephant_swan/seed_11/attempt_001"
 EAGLE = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/eagle_phoenix/seed_11/attempt_001"
 
@@ -979,7 +980,7 @@ def fig_symbols(out):
 
 def fig_families(out):
     """Two families of illusion method, drawn from each paper's own description."""
-    w, h = 1280, 664
+    w, h = 1280, 1490
     s = [svg_open("families", "Two families of illusion method",
                   "Sampling-time methods combine noise estimates across views inside one "
                   "diffusion pass. Optimisation-time methods train an image until every "
@@ -1012,8 +1013,24 @@ def fig_families(out):
                  "Visual Anagrams (Geng, Park and Owens, arXiv 2311.17919) is the sampling-time "
                  "family. Diffusion Illusions (Burgert et al.) is this one.",
                  None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    y += 82
+    s.append(f'<line x1="40" y1="{y - 24}" x2="1240" y2="{y - 24}" stroke="{RULE}" stroke-width="0.8"/>')
+    s.append(note(40, y, "THE SAME FAMILY, A DIFFERENT ARRANGEMENT", 10, anchor="start", fill=ACCENT))
+    s.append(note(40, y + 24, "Optimise the same way, but make the arrangement a 3D renderer, "
+                              "and the sheet becomes a sphere, a cube or a", 10, anchor="start"))
+    s.append(note(40, y + 42, "reflective cylinder. The constraint was never the flip. It was that "
+                              "the arrangement stays differentiable.", 10, anchor="start"))
+    art = photo_uri(SOURCES / "illusion3d-fig1.jpg", 1200)
+    s.append(f'<image href="{art}" x="40" y="{y + 60}" width="1100" height="681"/>')
+    s.append(f'<rect x="40" y="{y + 60}" width="1100" height="681" fill="none" '
+             f'stroke="{RULE}" stroke-width="1"/>')
+    s.append(note(40, y + 782, "Illusion3D: 3D Multiview Illusion with 2D Diffusion Priors · "
+                               "Feng, Sanjay, Lutz, AlBahar, Ge and Huang · arXiv 2412.09625,", 9,
+                  anchor="start", fill=SOFT))
+    s.append(note(40, y + 798, "Figure 1, cropped · CC BY 4.0, "
+                               "creativecommons.org/licenses/by/4.0", 9, anchor="start", fill=SOFT))
     s.append(legend([(NOTE_FILL, "the other family"), (ACCENT_TINT, "what this page does")],
-                    w, y + 82))
+                    w, y + 840))
     s.append("</svg>")
     write(out, "families", "\n".join(s), w, h)
 

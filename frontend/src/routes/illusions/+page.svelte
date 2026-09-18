@@ -28,7 +28,7 @@
 					src: '/illusions/families.webp',
 					cap: 'ill.fig_families_cap',
 					width: 2560,
-					height: 1328
+					height: 2980
 				}
 			]
 		},
