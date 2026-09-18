@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
 	fillIllusionCopy,
+	ILLUSION_CANDIDATES,
 	ILLUSION_COPY_VARS,
 	ILLUSION_GALLERY,
 	ILLUSION_HERO,
@@ -14,7 +15,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const staticDir = join(here, '../../static');
 
-test('gallery keepers are unique score-5 exports', () => {
+test('gallery keepers are unique score-4-or-5 exports', () => {
 	assert.equal(ILLUSION_HERO.id, ILLUSION_HERO_ID);
 	const ids = ILLUSION_GALLERY.map((item) => item.id);
 	assert.equal(new Set(ids).size, ids.length);
@@ -22,23 +23,37 @@ test('gallery keepers are unique score-5 exports', () => {
 	const primeShas = ILLUSION_GALLERY.map((item) => item.primeSha256);
 	assert.equal(new Set(viewShas).size, viewShas.length);
 	assert.equal(new Set(primeShas).size, primeShas.length);
-	const scores = new Set(ILLUSION_GALLERY.map((item) => item.score));
-	assert.equal(scores.size, 1);
 	for (const item of ILLUSION_GALLERY) {
+		assert.ok(item.score === 4 || item.score === 5, item.id);
 		assert.ok(item.frame === 'none' || item.frame === 'minor');
 		assert.ok(existsSync(join(staticDir, item.view.slice(1))));
 		assert.ok(existsSync(join(staticDir, item.prime.slice(1))));
 	}
 });
 
+test('candidate tray items exist with provenance', () => {
+	assert.ok(ILLUSION_CANDIDATES.length > 0);
+	const ids = [
+		...ILLUSION_GALLERY.map((item) => item.id),
+		...ILLUSION_CANDIDATES.map((item) => item.id)
+	];
+	assert.equal(new Set(ids).size, ids.length);
+	for (const item of ILLUSION_CANDIDATES) {
+		assert.ok(item.score === 4 || item.score === 5, item.id);
+		assert.ok(item.frame === 'none' || item.frame === 'minor' || item.frame === 'unrated');
+		assert.ok(existsSync(join(staticDir, item.view.slice(1))), item.id);
+		assert.ok(existsSync(join(staticDir, item.prime.slice(1))), item.id);
+	}
+});
+
 test('public copy placeholders resolve to measured numbers', () => {
 	const jointCount = ILLUSION_GALLERY.filter((item) => item.mode === 'joint').length;
 	const filled = fillIllusionCopy(
-		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score}'
+		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score} {minScore}'
 	);
 	assert.equal(
 		filled,
-		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score}`
+		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score} 4`
 	);
 	assert.equal(fillIllusionCopy('keep {unknown}'), 'keep {unknown}');
 	assert.equal(ILLUSION_COPY_VARS.galleryCount, String(ILLUSION_GALLERY.length));
@@ -84,15 +99,19 @@ test('the public illusions route is wired', () => {
 
 test('study diagrams are exported as webp', () => {
 	const names = [
+		'families',
 		'architecture',
 		'workflow',
 		'ffn',
 		'sds',
+		'symbols',
 		'two-phase',
 		'dream',
 		'joint',
 		'recipe',
 		'review',
+		'seeds',
+		'failures',
 		'print'
 	];
 	for (const name of names) {
