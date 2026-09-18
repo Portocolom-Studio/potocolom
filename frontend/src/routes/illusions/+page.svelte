@@ -74,13 +74,13 @@
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
 					width: 2560,
-					height: 1600
+					height: 1640
 				},
 				{
 					src: '/illusions/symbols.webp',
 					cap: 'ill.fig_symbols_cap',
 					width: 2560,
-					height: 1680
+					height: 2000
 				}
 			]
 		},
@@ -112,7 +112,7 @@
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
 					width: 1520,
-					height: 2680
+					height: 2780
 				}
 			]
 		},

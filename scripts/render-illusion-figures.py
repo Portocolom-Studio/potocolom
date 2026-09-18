@@ -51,6 +51,16 @@ CUT = "#b4232a"
 RULE = "rgba(45,49,66,0.12)"
 INPUT_FILL, INPUT_STROKE = "rgba(79,93,117,0.10)", "#8e98ac"
 KEEP_PNG = False
+
+# The page renders a 1280-unit figure in an article column about 800 px wide,
+# so every size here lands on screen at roughly 0.6 of its nominal value.
+# This is the correction; it is not a design choice.
+TYPE_SCALE = 1.45
+
+
+def fs(px):
+    """Scale one font size, or any spacing that has to track the type."""
+    return round(px * TYPE_SCALE, 1)
 NOTE_FILL, NOTE_STROKE = "rgba(45,49,66,0.02)", "rgba(45,49,66,0.20)"
 
 
@@ -66,15 +76,17 @@ def chrome() -> str:
     return str(found[-1])
 
 
-def photo_uri(path, size=320, quality=72, rotate=0):
+def photo_uri(path, size=320, quality=88, rotate=0):
+    """Load a photo for embedding. PIL never upscales, so asking for more than
+    the file holds is free; asking for less than the figure draws is not."""
     img = Image.open(path).convert("RGB")
     if rotate:
         img = img.rotate(rotate)
-    img.thumbnail((size, size))
+    img.thumbnail((round(size * 2.2), round(size * 2.2)))
     return _jpeg_uri(img, quality)
 
 
-def _jpeg_uri(img, quality=72):
+def _jpeg_uri(img, quality=88):
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
@@ -100,12 +112,12 @@ def shell(svg):
 
 
 def eyebrow(x, y, text):
-    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="11" font-family="{MONO}" '
+    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="{fs(11)}" font-family="{MONO}" '
             f'letter-spacing="0.14em">{text}</text>')
 
 
 def heading(x, y, text, size=28):
-    return (f'<text x="{x}" y="{y}" fill="{INK}" font-size="{size}" font-family="{DISPLAY}" '
+    return (f'<text x="{x}" y="{y}" fill="{INK}" font-size="{fs(size)}" font-family="{DISPLAY}" '
             f'font-weight="700" letter-spacing="-0.01em">{text}</text>')
 
 
@@ -114,22 +126,23 @@ def box(x, y, w, h, name, sub=None, fill="#ffffff", stroke=INK, name_size=12, su
          f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill}" '
          f'stroke="{stroke}" stroke-width="1"/>']
     lines = sub.split("\n") if sub else []
-    cy = y + h / 2 - (len(lines) * 7 - 4)
-    s.append(f'<text x="{x + w / 2}" y="{cy}" fill="{INK}" font-size="{name_size}" font-weight="600" '
+    lead = fs(14)
+    cy = y + h / 2 - (len(lines) * lead / 2 - 4)
+    s.append(f'<text x="{x + w / 2}" y="{cy}" fill="{INK}" font-size="{fs(name_size)}" font-weight="600" '
              f'font-family="{SANS}" text-anchor="middle">{name}</text>')
     for i, line in enumerate(lines):
-        s.append(f'<text x="{x + w / 2}" y="{cy + 18 + i * 14}" fill="{MUTED}" '
-                 f'font-size="{sub_size}" font-family="{MONO}" text-anchor="middle">{line}</text>')
+        s.append(f'<text x="{x + w / 2}" y="{cy + fs(18) + i * lead}" fill="{MUTED}" '
+                 f'font-size="{fs(sub_size)}" font-family="{MONO}" text-anchor="middle">{line}</text>')
     return "\n".join(s)
 
 
 def caption(x, y, text, size=9):
-    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="{size}" font-family="{MONO}" '
+    return (f'<text x="{x}" y="{y}" fill="{SOFT}" font-size="{fs(size)}" font-family="{MONO}" '
             f'text-anchor="middle">{text}</text>')
 
 
 def note(x, y, text, size=10, anchor="middle", fill=MUTED):
-    return (f'<text x="{x}" y="{y}" fill="{fill}" font-size="{size}" font-family="{MONO}" '
+    return (f'<text x="{x}" y="{y}" fill="{fill}" font-size="{fs(size)}" font-family="{MONO}" '
             f'text-anchor="{anchor}">{text}</text>')
 
 
@@ -150,19 +163,19 @@ def path(d, colour=MUTED, dash=None, head=True):
 
 def arrow_label(x, y, text, w=120):
     return (f'<rect x="{x - w / 2}" y="{y - 18}" width="{w}" height="12" rx="2" fill="{PAPER}"/>'
-            f'<text x="{x}" y="{y - 9}" fill="{SOFT}" font-size="8" font-family="{MONO}" '
+            f'<text x="{x}" y="{y - 9}" fill="{SOFT}" font-size="{fs(8)}" font-family="{MONO}" '
             f'text-anchor="middle" letter-spacing="0.06em">{text}</text>')
 
 
 def legend(items, w, y):
     s = [f'<line x1="30" y1="{y - 8}" x2="{w - 30}" y2="{y - 8}" stroke="{RULE}" stroke-width="0.8"/>',
-         f'<text x="30" y="{y + 8}" fill="{MUTED}" font-size="8" font-family="{MONO}" '
+         f'<text x="30" y="{y + 8}" fill="{MUTED}" font-size="{fs(8)}" font-family="{MONO}" '
          f'letter-spacing="0.14em">LEGEND</text>']
     x = 140
     step = min(170, (w - 200) / max(len(items), 1))
     for swatch, label in items:
         s.append(f'<rect x="{x}" y="{y - 2}" width="10" height="10" fill="{swatch}"/>')
-        s.append(f'<text x="{x + 16}" y="{y + 7}" fill="{MUTED}" font-size="9" '
+        s.append(f'<text x="{x + 16}" y="{y + 7}" fill="{MUTED}" font-size="{fs(9)}" '
                  f'font-family="{SANS}">{label}</text>')
         x += step
     return "\n".join(s)
@@ -185,7 +198,14 @@ def write(out, slug, svg, w, h):
                     "--hide-scrollbars", "--force-device-scale-factor=2",
                     "--virtual-time-budget=5000", f"file://{html_path}"],
                    check=True, capture_output=True)
-    Image.open(png_path).save(out / f"{slug}.webp", quality=85)
+    source = Image.open(png_path)
+    lossless = io.BytesIO()
+    lossy = io.BytesIO()
+    source.save(lossless, format="WEBP", lossless=True, method=6)
+    source.save(lossy, format="WEBP", quality=93, method=6)
+    # Text-only figures compress smaller lossless than lossy, and stay crisp.
+    best = min((lossless, lossy), key=lambda buf: buf.getbuffer().nbytes)
+    (out / f"{slug}.webp").write_bytes(best.getvalue())
     if not KEEP_PNG:
         png_path.unlink()
         html_path.unlink()
@@ -235,10 +255,10 @@ def weight_panel(x, y, pw, ph):
 
 
 SDS_OBJECTIVES = [
-    ("legacy", "εcfg − ε", "no w(t) at all", "the CLI default"),
+    ("legacy", "εcfg − ε", "no w(t)", "CLI default"),
     ("weighted_sds", "w(t)·(εcfg − ε)", "w(t) scales it", "this gallery"),
-    ("csd", "w(t)·(εc − εu)", "ignores G", "not used here"),
-    ("nfsd", "w(t)·(δD + G·δC)", "adds a δD term", "not used here"),
+    ("csd", "w(t)·(εc − εu)", "ignores G", "not used"),
+    ("nfsd", "w(t)·(δD + G·δC)", "adds δD", "not used"),
 ]
 
 
@@ -246,9 +266,9 @@ def objective_panel(x, y, pw, ph):
     """The four residuals compute_sds_gradient can build, side by side."""
     s = [box(x, y, pw, ph, "", None, fill="#ffffff"),
          note(x + 30, y + 32, "THE FOUR RESIDUALS r", 9, anchor="start", fill=SOFT)]
-    cols = [(x + 30, "objective"), (x + 158, "r ="), (x + 330, "note"), (x + 452, "used")]
+    cols = [(x + 26, "objective"), (x + 170, "r ="), (x + 356, "note"), (x + 462, "used")]
     for cx, label in cols:
-        s.append(f'<text x="{cx}" y="{y + 56}" fill="{SOFT}" font-size="9" '
+        s.append(f'<text x="{cx}" y="{y + 56}" fill="{SOFT}" font-size="{fs(9)}" '
                  f'font-family="{MONO}" letter-spacing="0.1em">{label.upper()}</text>')
     ry = y + 82
     for name, expr, why, used in SDS_OBJECTIVES:
@@ -257,21 +277,21 @@ def objective_panel(x, y, pw, ph):
             s.append(f'<rect x="{x + 22}" y="{ry - 14}" width="{pw - 44}" height="22" rx="4" '
                      f'fill="{ACCENT_TINT}"/>')
         ink = ACCENT if live else INK
-        s.append(f'<text x="{x + 30}" y="{ry}" fill="{ink}" font-size="11" font-weight="600" '
+        s.append(f'<text x="{x + 26}" y="{ry}" fill="{ink}" font-size="{fs(10)}" font-weight="600" '
                  f'font-family="{MONO}">{name}</text>')
-        s.append(f'<text x="{x + 158}" y="{ry}" fill="{ink}" font-size="11" '
+        s.append(f'<text x="{x + 170}" y="{ry}" fill="{ink}" font-size="{fs(10)}" '
                  f'font-family="{MONO}">{expr}</text>')
-        s.append(f'<text x="{x + 330}" y="{ry}" fill="{MUTED}" font-size="10" '
+        s.append(f'<text x="{x + 356}" y="{ry}" fill="{MUTED}" font-size="{fs(9)}" '
                  f'font-family="{SANS}">{why}</text>')
-        s.append(f'<text x="{x + 452}" y="{ry}" fill="{ACCENT if live else SOFT}" font-size="10" '
+        s.append(f'<text x="{x + 462}" y="{ry}" fill="{ACCENT if live else SOFT}" font-size="{fs(9)}" '
                  f'font-family="{MONO}">{used}</text>')
-        ry += 28
-    s.append(note(x + pw / 2, y + ph - 16,
-                  "every symbol here is in the reference table below", 10))
+        ry += 30
+    s.append(note(x + pw / 2, y + ph - 14,
+                  "every symbol here is in the reference table below", 9))
     return "\n".join(s)
 
 
-def fourier_tile(scale, index, size=72, seed=0):
+def fourier_tile(scale, index, size=180, seed=0):
     """One real Fourier feature: sin(2*pi*(x,y) @ B[:, index]), B ~ N(0, scale^2).
 
     The code draws B once with torch.randn(2, features) * scale and never
@@ -324,7 +344,7 @@ def fig_architecture(out):
     s.append(box(710, 240, 240, 140, "Frozen diffusion",
                  "SDS: r = w(t)·(εcfg − ε)\nDream: L = (1−SSIM) + MSE\nSD 1.5 · DreamShaper LCM"))
     s.append(box(990, 240, 250, 140, "nothing else moves",
-                 "UNet, VAE, text encoder\narrangements are fixed ops\nphotos: elephant + swan, seed 11",
+                 "UNet, VAE, text encoder\narrangements are fixed ops\nphotos: seed 11 keeper",
                  fill=NOTE_FILL, stroke=NOTE_STROKE))
     s.append(note(640, 604, "d₁ = a₁(p) = p · d₂ = a₂(p) = rot₁₈₀(p) · the printed sheet is p"))
     s.append(legend([(INPUT_FILL, "input"), (ACCENT_TINT, "trainable"),
@@ -335,15 +355,15 @@ def fig_architecture(out):
 
 def fig_ffn(out):
     prime_path = STATIC / "elephant-swan-prime.webp"
-    grid = Image.new("RGB", (150, 130), "white")
+    grid = Image.new("RGB", (300, 260), "white")
     gx = ImageDraw.Draw(grid)
     for j in range(13):
         for i in range(15):
-            gx.rectangle([8 + i * 9, 8 + j * 9, 8 + (i + 1) * 9 - 1, 8 + (j + 1) * 9 - 1],
+            gx.rectangle([16 + i * 18, 16 + j * 18, 16 + (i + 1) * 18 - 1, 16 + (j + 1) * 18 - 1],
                          fill=(int(255 * i / 14), int(255 * j / 12), 128))
     prime_img = Image.open(prime_path).convert("RGB")
-    crop_a = _jpeg_uri(prime_img.crop((60, 150, 124, 214)).resize((156, 132)))
-    crop_b = _jpeg_uri(prime_img.crop((120, 40, 184, 104)).resize((156, 132)))
+    crop_a = _jpeg_uri(prime_img.crop((60, 150, 124, 214)).resize((312, 264)))
+    crop_b = _jpeg_uri(prime_img.crop((120, 40, 184, 104)).resize((312, 264)))
 
     w, h = 1280, 776
     s = [svg_open("ffn", "Prime network: coordinates become printable RGB",
@@ -361,11 +381,12 @@ def fig_ffn(out):
                  "ReLU + BatchNorm x3\n199,683 trained weights", fill=ACCENT_TINT, stroke=ACCENT))
     s.append(box(900, 160, 150, 80, "σ · sigmoid", "RGB (1,3,256,256)"))
     s.append(photo(photo_uri(prime_path, 320), 1080, 120, 160, "printable prime"))
-    s.append(box(590, 290, 460, 56, "this is the gallery network: --experimental-recipe author_reference",
-                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
-    s.append(box(40, 290, 520, 56,
-                 "CLI default instead: Linear MLP 512-256-256-256-3 · B 2 x 256 · 512px · 263,683 θ",
-                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=10))
+    s.append(box(590, 284, 460, 68, "the chain above is the gallery network",
+                 "--experimental-recipe author_reference",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11, sub_size=9))
+    s.append(box(40, 284, 520, 68, "the CLI default is a different network",
+                 "Linear MLP 512-256-256-256-3 · B 2 x 256 · 512 px · 263,683 θ",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11, sub_size=9))
     s.append(f'<image href="{_jpeg_uri(grid)}" x="60" y="400" width="150" height="130"/>')
     s.append(caption(135, 548, "every pixel: (x, y)"))
     for i in range(4):
@@ -373,12 +394,14 @@ def fig_ffn(out):
                  f'width="72" height="72"/>')
         s.append(f'<image href="{fourier_tile(10.0, i + 4)}" x="{250 + i * 78}" y="478" '
                  f'width="72" height="72"/>')
-    s.append(caption(391, 568, "eight waves drawn the way the code draws B, at scale 10"))
-    for i, (scale, label) in enumerate(((1.0, "scale 1"), (10.0, "scale 10"), (100.0, "scale 100"))):
+    s.append(caption(391, 568, "eight waves, drawn as the code draws B"))
+    sweep = ((1.0, "scale 1", "one soft ramp"), (10.0, "scale 10", "used here"),
+             (100.0, "scale 100", "aliases"))
+    for i, (scale, label, verdict) in enumerate(sweep):
         s.append(f'<image href="{fourier_tile(scale, 0)}" x="{590 + i * 82}" y="400" '
                  f'width="76" height="76"/>')
-        s.append(caption(628 + i * 82, 492, label))
-    s.append(caption(712, 512, "one soft ramp · the working range · aliases on a 256 px grid"))
+        s.append(caption(628 + i * 82, 494, label))
+        s.append(caption(628 + i * 82, 512, verdict))
     s.append(f'<image href="{crop_a}" x="590" y="534" width="78" height="66"/>')
     s.append(f'<image href="{crop_b}" x="672" y="534" width="78" height="66"/>')
     s.append(caption(712, 616, "2x crops of the prime: smooth, printable"))
@@ -395,7 +418,7 @@ def fig_ffn(out):
 
 def fig_sds(out):
     view1 = photo_uri(STATIC / "elephant-swan-view.webp", 300)
-    w, h = 1280, 800
+    w, h = 1280, 820
     s = [svg_open("sds", "One Score Distillation step",
                   "The derived view encodes to a latent, gains noise, and the frozen UNet "
                   "scores it. The residual re-enters as a gradient on the prime weights only.",
@@ -408,7 +431,7 @@ def fig_sds(out):
     s.append(box(180, 170, 120, 90, "render p", "differentiable"))
     s.append(photo(view1, 330, 155, 120, "d = a(p)"))
     s.append(box(490, 170, 150, 90, "VAE encode", "z · (1,4,64,64)"))
-    s.append(box(670, 170, 160, 90, "add noise", "z_t = sched(z, ε, t)"))
+    s.append(box(670, 165, 160, 100, "add noise", "z_t =\nsched(z, ε, t)"))
     s.append(box(860, 155, 220, 120, "frozen UNet",
                  "one CFG-doubled forward\nreturns εu and εc"))
     s.append(box(1110, 170, 130, 90, "residual r", "built no_grad"))
@@ -423,15 +446,15 @@ def fig_sds(out):
                  "L = (z · r.detach()).sum(), then the optimizer steps θ",
                  sub_size=11))
     s.append(box(660, 350, 580, 130, "what the flags change",
-                 "--experimental-recipe author_reference swapped the network,\n"
-                 "the optimizer, G and the objective in one flag\n"
-                 "--view-batch-size splits the one forward into chunks\n"
-                 "sds_gradient_scale multiplied r by 0.1 for this gallery",
+                 "author_reference swapped the network, the\n"
+                 "optimizer, G and the objective in one flag\n"
+                 "--view-batch-size splits the one forward\n"
+                 "sds_gradient_scale scaled r by 0.1 here",
                  fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
-    s.append(objective_panel(660, 512, 580, 214))
-    s.append(weight_panel(40, 512, 580, 214))
+    s.append(objective_panel(660, 506, 580, 230))
+    s.append(weight_panel(40, 506, 580, 230))
     s.append(legend([(ACCENT_TINT, "trainable"), ("#ffffff", "frozen or fixed"),
-                     (NOTE_FILL, "note"), (CUT, "gradient stops")], w, 762))
+                     (NOTE_FILL, "note"), (CUT, "gradient stops")], w, 780))
     s.append("</svg>")
     write(out, "sds", "\n".join(s), w, h)
 
@@ -482,7 +505,7 @@ def fig_two_phase(out):
 
     s.append(box(660, 428, 580, 252, "", None, fill="#ffffff"))
     s.append(note(690, 460, "SDS LOSS AND GRADIENT NORM", 9, anchor="start", fill=SOFT))
-    gx0, gx1 = 780, 1190
+    gx0, gx1 = 790, 1150
     grad_base, loss_base, band = 540, 615, 60
     lpts, gpts = [], []
     for i, (step, loss, grad) in enumerate(CHECKPOINTS):
@@ -553,7 +576,7 @@ def fig_joint(out):
     vb = photo_uri(joint / "derived_2.png", 340)
     pr = photo_uri(joint / "target_1.png", 340)
     pairs = [("independent targets", indep, 60), ("joint targets", joint, 420)]
-    w, h = 760, 1340
+    w, h = 760, 1390
     s = [svg_open("joint", "Joint Dream: two views, one consensus",
                   "Both flip views denoise together and reconcile to one consensus image in "
                   "pixel space. The two Dream targets become orientations of that image.", w, h)]
@@ -580,12 +603,12 @@ def fig_joint(out):
         s.append(f'<image href="{photo_uri(base / "target_2.png", 260, rotate=180)}" x="{x + 135}" '
                  f'y="1092" width="115" height="115"/>')
         s.append(caption(x + 125, 1226, "target A · target B turned upright"))
-    s.append(note(380, 1262, "same pair, same seed 11, one flag apart: independent targets disagree "
-                             "about the shared pixels,", 10))
-    s.append(note(380, 1278, "joint targets are one image seen two ways · "
-                             "elephant and swan, sketch, Dream round 1", 10))
+    s.append(note(380, 1262, "same pair, same seed 11, one flag apart.", 10))
+    s.append(note(380, 1282, "independent targets disagree about the shared pixels.", 10))
+    s.append(note(380, 1302, "joint targets are one image seen two ways.", 10))
+    s.append(note(380, 1326, "elephant and swan · sketch · Dream round 1", 9, fill=SOFT))
     s.append(legend([(INPUT_FILL, "input"), ("#ffffff", "frozen op"),
-                     (NOTE_FILL, "evidence")], w, 1312))
+                     (NOTE_FILL, "evidence")], w, 1362))
     s.append("</svg>")
     write(out, "joint", "\n".join(s), w, h)
 
@@ -603,7 +626,7 @@ def fig_workflow(out):
     s.append(heading(40, 78, "Bake one keeper"))
     stages = [
         (40, 200, "input", "pair · 2 prompts\nseed · --type flip", INPUT_FILL, INPUT_STROKE),
-        (250, 170, "FFN primes", "random θ\n256px here, 512px default", "#ffffff", INK),
+        (250, 170, "FFN primes", "random θ\n256 px here\n512 px default", "#ffffff", INK),
         (450, 170, "flip views", "d₁ = p\nd₂ = rot₁₈₀(p)", "#ffffff", INK),
         (650, 190, "SDS steps", "500 default\n5000 here", "#ffffff", INK),
         (860, 150, "fresh Adam", "lr 1e-3 default\n3e-3 here", ACCENT_TINT, ACCENT),
@@ -616,9 +639,12 @@ def fig_workflow(out):
     s.append(path("M1220,320 V360 Q1220,368 1212,368 H438 Q430,368 430,376 V470 "
                   "Q430,478 438,478 H462"))
     s.append(arrow_label(900, 368, "OUTPUTS", 100))
-    s.append(photo(prime, 470, 404, 150, "prime_1.png · print this"))
-    s.append(photo(view1, 640, 404, 150, "derived_1.png · upright"))
-    s.append(photo(view2, 810, 404, 150, "derived_2.png · turned"))
+    for src, x, first, second in ((prime, 470, "prime_1.png", "print this"),
+                                  (view1, 640, "derived_1.png", "upright"),
+                                  (view2, 810, "derived_2.png", "turned")):
+        s.append(photo(src, x, 404, 150))
+        s.append(caption(x + 75, 574, first))
+        s.append(caption(x + 75, 592, second))
     s.append(box(990, 404, 250, 150, "d₁ and p look alike on purpose",
                  "a₁ is the identity, so the\nfirst view is the prime\nitself. "
                  "d₂ is the one\nyou have to earn.",
@@ -663,17 +689,17 @@ def fig_recipe(out):
         accent = label == "gallery recipe"
         s.append(f'<rect x="{x}" y="130" width="{cw}" height="40" rx="4" '
                  f'fill="{ACCENT_TINT if accent else "rgba(45,49,66,0.04)"}"/>')
-        s.append(f'<text x="{x + 14}" y="156" fill="{ACCENT if accent else MUTED}" font-size="11" '
+        s.append(f'<text x="{x + 14}" y="156" fill="{ACCENT if accent else MUTED}" font-size="{fs(11)}" '
                  f'font-family="{MONO}" letter-spacing="0.1em">{label.upper()}</text>')
     y = 194
     for i, (name, default, gallery) in enumerate(RECIPE_ROWS):
         if i % 2:
             s.append(f'<rect x="60" y="{y - 22}" width="1150" height="52" fill="rgba(45,49,66,0.02)"/>')
-        s.append(f'<text x="74" y="{y + 6}" fill="{INK}" font-size="13" font-weight="600" '
+        s.append(f'<text x="74" y="{y + 6}" fill="{INK}" font-size="{fs(13)}" font-weight="600" '
                  f'font-family="{SANS}">{name}</text>')
-        s.append(f'<text x="394" y="{y + 6}" fill="{MUTED}" font-size="12" '
+        s.append(f'<text x="394" y="{y + 6}" fill="{MUTED}" font-size="{fs(12)}" '
                  f'font-family="{MONO}">{default}</text>')
-        s.append(f'<text x="804" y="{y + 6}" fill="{INK}" font-size="12" '
+        s.append(f'<text x="804" y="{y + 6}" fill="{INK}" font-size="{fs(12)}" '
                  f'font-family="{MONO}">{gallery}</text>')
         y += 52
     s.append(f'<line x1="60" y1="{y - 22}" x2="1210" y2="{y - 22}" stroke="{RULE}" stroke-width="0.8"/>')
@@ -710,14 +736,15 @@ def fig_review(out):
     s.append(box(1020, 310, 220, 56, "16 cut on the frame flag", None,
                  fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
     s.append(path("M480,290 V326", MUTED, "4,3"))
-    s.append(box(300, 336, 520, 56, "CLIP pair score: AUC 0.706, under the 0.75 bar · recorded, never a gate",
-                 None, fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11))
+    s.append(box(300, 330, 520, 64, "CLIP pair score: AUC 0.706",
+                 "under the 0.75 bar · recorded, never a gate",
+                 fill=NOTE_FILL, stroke=NOTE_STROKE, name_size=11, sub_size=9))
     s.append(photo(rejected, 60, 420, 200, None))
     s.append(caption(160, 646, "cut · score 5 · frame disqualifying"))
-    s.append(caption(160, 664, "elephant and swan · seed 11 · sketch · independent"))
+    s.append(caption(160, 666, "seed 11 · sketch · independent"))
     s.append(photo(kept, 330, 420, 200, None))
     s.append(caption(430, 646, "kept · score 5 · frame none"))
-    s.append(caption(430, 664, "elephant and swan · seed 11 · oil · joint"))
+    s.append(caption(430, 666, "seed 11 · oil · joint"))
     s.append(box(600, 420, 640, 200, "what a frame defect is",
                  "A printed border, a torn sheet edge, a desk, or a\n"
                  "signature that the model painted into the image.\n"
@@ -726,7 +753,7 @@ def fig_review(out):
                  "Same pair, same seed, both scored 5. Sixteen cells\n"
                  "at score 4 or 5 died on this flag alone.",
                  fill=NOTE_FILL, stroke=NOTE_STROKE, sub_size=11))
-    s.append(note(640, 706, "keeper = one pair + seed + mode · a score alone never made the cut"))
+    s.append(note(640, 708, "both cells are elephant and swan · a score alone never made the cut"))
     s.append(legend([(ACCENT_TINT, "the gate"), ("#ffffff", "count"),
                      (NOTE_FILL, "cut or side channel")], w, 748))
     s.append("</svg>")
@@ -796,7 +823,7 @@ def fig_seeds(out):
                      f'fill="{ACCENT_TINT if keeper else NOTE_FILL}" '
                      f'stroke="{ACCENT if keeper else NOTE_STROKE}" stroke-width="1"/>')
             s.append(f'<text x="{x + 160}" y="{y + 193}" fill="{ACCENT if keeper else MUTED}" '
-                     f'font-size="11" font-family="{MONO}" text-anchor="middle">score {score}</text>')
+                     f'font-size="{fs(11)}" font-family="{MONO}" text-anchor="middle">score {score}</text>')
     s.append(box(40, 616, 1200, 52,
                  "elephant and swan · oil · no negative prompt · 5000 SDS steps + 1 Dream round · "
                  "only the seed and the Dream mode change",
@@ -833,13 +860,13 @@ def fig_failures(out):
         s.append(caption(x + 85, 360, "upright"))
         s.append(caption(x + 270, 360, "turned"))
         s.append(f'<rect x="{x}" y="{388}" width="355" height="26" rx="4" fill="{NOTE_FILL}"/>')
-        s.append(f'<text x="{x + 12}" y="{406}" fill="{INK}" font-size="12" font-weight="600" '
+        s.append(f'<text x="{x + 12}" y="{406}" fill="{INK}" font-size="{fs(12)}" font-weight="600" '
                  f'font-family="{SANS}">{verdict}</text>')
-        s.append(f'<text x="{x}" y="{440}" fill="{MUTED}" font-size="11" '
+        s.append(f'<text x="{x}" y="{440}" fill="{MUTED}" font-size="{fs(11)}" '
                  f'font-family="{SANS}">{line1}</text>')
-        s.append(f'<text x="{x}" y="{460}" fill="{MUTED}" font-size="11" '
+        s.append(f'<text x="{x}" y="{460}" fill="{MUTED}" font-size="{fs(11)}" '
                  f'font-family="{SANS}">{line2}</text>')
-        s.append(f'<text x="{x}" y="{484}" fill="{SOFT}" font-size="9" '
+        s.append(f'<text x="{x}" y="{484}" fill="{SOFT}" font-size="{fs(9)}" '
                  f'font-family="{MONO}">{prov}</text>')
     s.append(box(40, 526, 1200, 92, "the score and the frame flag are two separate judgements",
                  "The score asks whether both subjects read. The frame flag asks whether the "
@@ -853,21 +880,21 @@ def fig_failures(out):
 SYMBOL_GROUPS = [
     ("the prime and its views", [
         ("p", "the printable prime: the one sheet you actually print",
-         "RGB in [0,1] · (1,3,512,512), 256 px here", "FourierFeatureNetwork.image"),
+         "RGB in [0,1] · 512 px, 256 px here", "FourierFeatureNetwork.image"),
         ("θ", "the prime network's weights, the only tensor that trains",
-         "263,683 by default · 199,683 here", "optimize_illusion"),
-        ("x, y", "the pixel coordinates the network reads, one pair per pixel",
-         "512x512 in [-1,1] · 256x256 in [0,1) here", "FourierFeatureNetwork.image"),
-        ("B", "fixed random projection. It decides which frequencies exist",
-         "2 x 256, scale 10 · 2 x 128 here · never trained", "register_buffer(frequencies)"),
+         "263,683 default · 199,683 here", "optimize_illusion"),
+        ("x, y", "the pixel coordinates the network reads, one per pixel",
+         "512x512 in [-1,1] · 256x256 here", "FourierFeatureNetwork.image"),
+        ("B", "fixed random projection. It sets which frequencies exist",
+         "2 x 256, scale 10 · 2 x 128 here", "register_buffer(frequencies)"),
         ("v", "Fourier features: the coordinates wrapped into waves",
-         "512-d by default · 256-d here", "v = [sin(2πBx) ‖ cos(2πBx)]"),
-        ("σ", "sigmoid. It squashes the network output into printable RGB",
+         "512-d default · 256-d here", "v = [sin(2πBx) ‖ cos(2πBx)]"),
+        ("σ", "sigmoid. It squashes the output into printable RGB",
          "output in [0,1]", "torch.sigmoid(mlp(v))"),
-        ("a₁, a₂", "the two arrangements: leave the sheet, and turn it 180 degrees",
-         "fixed, differentiable, physically real", "ILLUSIONS[flip], _flip"),
-        ("d₁, d₂", "the derived views: what a person sees before and after the turn",
-         "d₁ = a₁(p) = p · d₂ = rot₁₈₀(p)", "_flip"),
+        ("a₁, a₂", "the two arrangements: leave the sheet, or turn it",
+         "fixed, differentiable, physical", "ILLUSIONS[flip], _flip"),
+        ("d₁, d₂", "the derived views: what a person sees before and after",
+         "d₁ = p · d₂ = rot₁₈₀(p)", "_flip"),
     ]),
     ("one Score Distillation step", [
         ("z", "the derived view encoded into the diffusion latent space",
@@ -875,17 +902,17 @@ SYMBOL_GROUPS = [
         ("t", "the timestep drawn fresh each step, shared by both views",
          "integer, 2% to 98% of T = 1000", "randint(0.02T, 0.98T)"),
         ("ε", "the noise actually added to the latent this step",
-         "same shape as z, standard normal", "add_training_noise"),
-        ("z_t", "the latent after that noise: the only thing the UNet is shown",
+         "shape of z, standard normal", "add_training_noise"),
+        ("z_t", "the latent after that noise: all the UNet ever sees",
          "(1,4,64,64)", "z_t = sched(z, ε, t)"),
-        ("εc, εu", "what the frozen UNet predicts with the prompt, and without it",
-         "one CFG-doubled forward returns both", "sds_loss_batch"),
+        ("εc, εu", "what the UNet predicts with the prompt, and without it",
+         "one CFG-doubled forward gives both", "sds_loss_batch"),
         ("G", "guidance scale: how hard the prompt pulls the prediction",
-         "100 by default · 60 here", "--sds-guidance"),
+         "100 default · 60 here", "--sds-guidance"),
         ("εcfg", "the guided prediction the two are mixed into",
          "εu + G·(εc − εu)", "compute_sds_gradient"),
         ("ᾱt", "the scheduler's cumulative alpha at step t",
-         "0.9991 at t = 0 down to 0.0047 at t = 999", "alphas_cumprod[t]"),
+         "0.9991 at t = 0 · 0.0047 at 999", "alphas_cumprod[t]"),
         ("w(t)", "the timestep weight. It is not the guidance scale",
          "1 − ᾱt, so 0.0009 to 0.9953", "sds_timestep_weight"),
         ("r", "the residual, used directly as the gradient on the latent",
@@ -893,7 +920,7 @@ SYMBOL_GROUPS = [
         ("L", "the surrogate loss whose gradient is exactly r",
          "(z · r.detach()).sum()", "_sds_loss_from_latent"),
         ("η", "the step the optimizer takes on θ, and on nothing else",
-         "Adam 1e-3 by default · SGD 1e-4 here", "resolve_learning_rates"),
+         "Adam 1e-3 default · SGD 1e-4 here", "resolve_learning_rates"),
     ]),
     ("Dream Target and joint Dream", [
         ("s", "SDEdit strength: how far the target may drift from the view",
@@ -912,38 +939,38 @@ SYMBOL_GROUPS = [
 
 def fig_symbols(out):
     """Every symbol the other figures use, with its value and its source."""
-    w, h = 1280, 840
+    w, h = 1280, 1000
     s = [svg_open("symbols", "Every symbol on this page",
                   "A reference table: what each symbol means, the value or shape it "
                   "carries, and the function that computes it.", w, h)]
     s.append(eyebrow(40, 44, "REFERENCE · READ THE OTHER FIGURES WITH THIS"))
     s.append(heading(40, 78, "What each symbol means"))
-    heads = [(44, "SYMBOL"), (168, "WHAT IT IS"), (658, "RANGE, SHAPE OR VALUE"),
-             (962, "WHERE IT IS COMPUTED")]
+    heads = [(44, "SYMBOL"), (154, "WHAT IT IS"), (640, "RANGE, SHAPE OR VALUE"),
+             (978, "WHERE IT IS COMPUTED")]
     for x, label in heads:
-        s.append(f'<text x="{x}" y="112" fill="{SOFT}" font-size="9" font-family="{MONO}" '
+        s.append(f'<text x="{x}" y="112" fill="{SOFT}" font-size="{fs(9)}" font-family="{MONO}" '
                  f'letter-spacing="0.12em">{label}</text>')
     s.append(f'<line x1="40" y1="120" x2="1240" y2="120" stroke="{RULE}" stroke-width="0.8"/>')
-    y = 142
+    y = 150
     for title, rows in SYMBOL_GROUPS:
-        s.append(f'<text x="44" y="{y}" fill="{ACCENT}" font-size="11" font-family="{MONO}" '
+        s.append(f'<text x="44" y="{y}" fill="{ACCENT}" font-size="{fs(10)}" font-family="{MONO}" '
                  f'letter-spacing="0.1em">{title.upper()}</text>')
-        y += 20
+        y += 26
         for i, (sym, meaning, value, source) in enumerate(rows):
             if i % 2:
-                s.append(f'<rect x="40" y="{y - 15}" width="1200" height="22" '
+                s.append(f'<rect x="40" y="{y - 19}" width="1200" height="27" '
                          f'fill="rgba(45,49,66,0.02)"/>')
-            s.append(f'<text x="44" y="{y}" fill="{INK}" font-size="12" font-weight="600" '
+            s.append(f'<text x="44" y="{y}" fill="{INK}" font-size="{fs(11)}" font-weight="600" '
                      f'font-family="{MONO}">{sym}</text>')
-            s.append(f'<text x="168" y="{y}" fill="{MUTED}" font-size="11" '
+            s.append(f'<text x="154" y="{y}" fill="{MUTED}" font-size="{fs(11)}" '
                      f'font-family="{SANS}">{meaning}</text>')
-            s.append(f'<text x="658" y="{y}" fill="{INK}" font-size="10" '
+            s.append(f'<text x="640" y="{y}" fill="{INK}" font-size="{fs(9)}" '
                      f'font-family="{MONO}">{value}</text>')
-            s.append(f'<text x="962" y="{y}" fill="{SOFT}" font-size="10" '
+            s.append(f'<text x="978" y="{y}" fill="{SOFT}" font-size="{fs(9)}" '
                      f'font-family="{MONO}">{source}</text>')
-            y += 22
-        y += 18
-    s.append(f'<line x1="40" y1="{y - 22}" x2="1240" y2="{y - 22}" stroke="{RULE}" stroke-width="0.8"/>')
+            y += 27
+        y += 22
+    s.append(f'<line x1="40" y1="{y - 26}" x2="1240" y2="{y - 26}" stroke="{RULE}" stroke-width="0.8"/>')
     s.append(note(44, y, "Function names are worker/worker/illusions.py on PR #118. "
                          "\"here\" means the recipe that baked this gallery.", 10, anchor="start"))
     s.append("</svg>")
