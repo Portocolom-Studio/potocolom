@@ -41,9 +41,11 @@ SWAN = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/elephan
 EAGLE = LOCAL / "campaigns/window2/runs/window2/a_forked_reference_sketch/eagle_phoenix/seed_11/attempt_001"
 
 FONTS = "https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap"
-SANS = "'Lato','DejaVu Sans',sans-serif"
-MONO = "'DejaVu Sans Mono',ui-monospace,monospace"
-DISPLAY = "'Lato','DejaVu Sans',sans-serif"
+# One family everywhere. The three names are the roles a label plays, not
+# three typefaces: SANS is body, MONO is code and measured values, DISPLAY
+# is a heading. Numbers stay aligned through tabular-nums, not a monospace.
+LATO = "'Lato','DejaVu Sans',sans-serif"
+SANS = MONO = DISPLAY = LATO
 
 PAPER, INK = "#f5f5f5", "#2d3142"
 MUTED, SOFT = "#4f5d75", "#7a8399"
@@ -108,7 +110,7 @@ def svg_open(slug, title, desc, w, h):
 def shell(svg):
     return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<link href="{FONTS}" rel="stylesheet">'
-            f'<style>html,body{{margin:0;padding:0;background:{PAPER};}}</style>'
+            f'<style>html,body{{margin:0;padding:0;background:{PAPER};}}text{{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;}}</style>'
             f'</head><body>{svg}</body></html>')
 
 
