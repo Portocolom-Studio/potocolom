@@ -28,7 +28,7 @@
 					src: '/illusions/families.webp',
 					cap: 'ill.fig_families_cap',
 					width: 2602,
-					height: 3457
+					height: 3407
 				}
 			]
 		},
@@ -42,13 +42,13 @@
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
 					width: 2602,
-					height: 1542
+					height: 1492
 				},
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
 					width: 2602,
-					height: 1492
+					height: 1442
 				}
 			]
 		},
@@ -61,7 +61,7 @@
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
 					width: 2602,
-					height: 1982
+					height: 1932
 				}
 			]
 		},
@@ -74,13 +74,13 @@
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
 					width: 2602,
-					height: 2042
+					height: 1992
 				},
 				{
 					src: '/illusions/symbols.webp',
 					cap: 'ill.fig_symbols_cap',
 					width: 2602,
-					height: 2587
+					height: 2537
 				}
 			]
 		},
@@ -93,13 +93,13 @@
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
 					width: 2602,
-					height: 1912
+					height: 1862
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
 					width: 2602,
-					height: 1152
+					height: 1102
 				}
 			]
 		},
@@ -112,7 +112,7 @@
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
 					width: 1602,
-					height: 3062
+					height: 3012
 				}
 			]
 		},
@@ -125,25 +125,25 @@
 					src: '/illusions/recipe.webp',
 					cap: 'ill.fig_recipe_cap',
 					width: 2602,
-					height: 1732
+					height: 1682
 				},
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
 					width: 2602,
-					height: 1662
+					height: 1612
 				},
 				{
 					src: '/illusions/seeds.webp',
 					cap: 'ill.fig_seeds_cap',
 					width: 2602,
-					height: 1542
+					height: 1492
 				},
 				{
 					src: '/illusions/failures.webp',
 					cap: 'ill.fig_failures_cap',
 					width: 2602,
-					height: 1412
+					height: 1362
 				}
 			]
 		},
@@ -156,7 +156,7 @@
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
 					width: 2602,
-					height: 1162
+					height: 1112
 				}
 			]
 		},
