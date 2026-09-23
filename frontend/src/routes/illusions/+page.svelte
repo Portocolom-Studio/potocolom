@@ -27,8 +27,8 @@
 				{
 					src: '/illusions/families.webp',
 					cap: 'ill.fig_families_cap',
-					width: 2560,
-					height: 2980
+					width: 2602,
+					height: 3457
 				}
 			]
 		},
@@ -41,14 +41,14 @@
 				{
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
-					width: 2560,
-					height: 1440
+					width: 2602,
+					height: 1542
 				},
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
-					width: 2560,
-					height: 1440
+					width: 2602,
+					height: 1492
 				}
 			]
 		},
@@ -60,8 +60,8 @@
 				{
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
-					width: 2560,
-					height: 1552
+					width: 2602,
+					height: 1982
 				}
 			]
 		},
@@ -73,14 +73,14 @@
 				{
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
-					width: 2560,
-					height: 1640
+					width: 2602,
+					height: 2042
 				},
 				{
 					src: '/illusions/symbols.webp',
 					cap: 'ill.fig_symbols_cap',
-					width: 2560,
-					height: 2000
+					width: 2602,
+					height: 2587
 				}
 			]
 		},
@@ -92,14 +92,14 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 2560,
-					height: 1560
+					width: 2602,
+					height: 1912
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
-					width: 2560,
-					height: 1440
+					width: 2602,
+					height: 1152
 				}
 			]
 		},
@@ -111,8 +111,8 @@
 				{
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
-					width: 1520,
-					height: 2780
+					width: 1602,
+					height: 3062
 				}
 			]
 		},
@@ -124,26 +124,26 @@
 				{
 					src: '/illusions/recipe.webp',
 					cap: 'ill.fig_recipe_cap',
-					width: 2560,
-					height: 1600
+					width: 2602,
+					height: 1732
 				},
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 2560,
-					height: 1560
+					width: 2602,
+					height: 1662
 				},
 				{
 					src: '/illusions/seeds.webp',
 					cap: 'ill.fig_seeds_cap',
-					width: 2560,
-					height: 1440
+					width: 2602,
+					height: 1542
 				},
 				{
 					src: '/illusions/failures.webp',
 					cap: 'ill.fig_failures_cap',
-					width: 2560,
-					height: 1312
+					width: 2602,
+					height: 1412
 				}
 			]
 		},
@@ -155,8 +155,8 @@
 				{
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
-					width: 2560,
-					height: 1440
+					width: 2602,
+					height: 1162
 				}
 			]
 		},

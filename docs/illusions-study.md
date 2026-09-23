@@ -4,17 +4,16 @@ Public study for the `/illusions` page (issue #121). The optimizer CLI
 is on PR #118. That branch is not merged. Product defaults are unchanged.
 A typeset paper can follow. This document is the public study.
 
-Figures on `/illusions` are webp exports built by
-`scripts/render-illusion-figures.py`. The script writes one HTML page
-per figure with an inline SVG. Real run photos are embedded as base64
-data URIs. Headless Chrome screenshots each page at scale 2, and PIL
-writes the webp. Regen with
-`python3 scripts/render-illusion-figures.py`, which writes straight
-into `frontend/static/illusions/`. Add `--only sds recipe` for one or
-two figures and `--out <dir>` to write somewhere else. Photos read from
-`frontend/static/illusions` and from the gitignored research exports
-under `.local/`. Without those files, the structure still renders
-with dashed wells.
+Figures on `/illusions` are draw.io diagrams. Each one lives in
+`docs/figures/<name>.drawio`, which is the source of truth: open it in
+draw.io, edit it, save it. Photos and charts are embedded in the file,
+so nothing else is needed to render it. Then run
+`python3 scripts/render-illusion-figures.py` to export every figure to
+`frontend/static/illusions/`, or name one or two, as in
+`python3 scripts/render-illusion-figures.py sds recipe`. The export needs
+the draw.io desktop CLI and the Lato font installed. Update the width and
+height in `frontend/src/routes/illusions/+page.svelte` when a figure
+changes size.
 
 <!-- figure: families -->
 *Figure: the two families. Sampling-time methods such as Visual Anagrams (Geng, Park and Owens, arXiv 2311.17919) combine noise estimates from each view inside one reverse diffusion pass and train nothing. This page optimises a prime network instead: 5000 Score Distillation steps, 26 minutes on one RX 7600 XT, then a Dream round of 88 seconds. The cost buys arrangements that are not pixel permutations, which is how the overlay types work. The gallery at the foot of the figure is Figure 1 of Illusion3D (Feng, Sanjay, Lutz, AlBahar, Ge and Huang, [arXiv 2412.09625](https://arxiv.org/abs/2412.09625)), cropped, used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). It shows the same optimisation family with a 3D renderer as the arrangement. Third-party figure provenance is in `docs/figure-sources/README.md`.*
