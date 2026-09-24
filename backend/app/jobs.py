@@ -598,7 +598,8 @@ async def list_generations(
     cap = min(max(limit, 1), 5000 if fields == "ids" else 200)
     rows = await session.execute(query.order_by(*order).limit(cap))
     if fields == "ids":
-        return {"ids": [str(job_id) for job_id in rows.scalars()]}
+        ids: list[uuid.UUID] = list(rows.scalars())
+        return {"ids": [str(job_id) for job_id in ids]}
     return await serialize_jobs(session, list(rows.scalars()))
 
 
