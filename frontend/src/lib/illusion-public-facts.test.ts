@@ -49,11 +49,11 @@ test('candidate tray items exist with provenance', () => {
 test('public copy placeholders resolve to measured numbers', () => {
 	const jointCount = ILLUSION_GALLERY.filter((item) => item.mode === 'joint').length;
 	const filled = fillIllusionCopy(
-		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score} {minScore}'
+		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score} {minScore} {keeperCount}'
 	);
 	assert.equal(
 		filled,
-		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score} 4`
+		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score} 4 26`
 	);
 	assert.equal(fillIllusionCopy('keep {unknown}'), 'keep {unknown}');
 	assert.equal(ILLUSION_COPY_VARS.galleryCount, String(ILLUSION_GALLERY.length));
