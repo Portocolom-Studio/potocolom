@@ -6,9 +6,12 @@ source of truth; `scripts/render-illusion-figures.py` only exports it.
 
 ## Visual language
 
-- One style for every figure: the card style, in a light and a dark twin. Paper-grey ground
+- The card style for most figures, in a light and a dark twin. Paper-grey ground
   (`#f5f5f5`), white rounded cards with a thin ink stroke, photos with a
   light border. A figure borrowed from another style is redrawn in this one.
+- Three figures are process diagrams in the `/whitepaper` style instead,
+  chosen per figure: `families`, `two-phase` and `review`. See "Whitepaper
+  style" below.
 - Lato for every piece of text, including table headers and labels. Math is
   the one exception: it renders in the TeX font, like a paper.
 - Colour carries meaning, never decoration:
@@ -52,6 +55,30 @@ card borders and plotted lines; on a dark ground text turns light, a card
 border turns quiet, and a drawn line turns bright. A new light colour needs
 its dark partner in `scripts/render-illusion-figures.py`, and the export
 fails until it has one. Photos never change. Math follows the text colour.
+
+## Whitepaper style
+
+Some figures read best as a process, drawn like the `/whitepaper` diagrams:
+big rounded lanes with a centred bold title, flowchart diamonds for
+decisions, labelled coloured connectors, dashed loops, amber call-out
+boxes, dark code blocks and grid tables with a navy header. Helvetica on a
+white ground, plain words instead of LaTeX, a "Title - clause" heading with
+one grey subtitle sentence, and no panel labels.
+
+| meaning                          | fill      | dark twin |
+| -------------------------------- | --------- | --------- |
+| what trains                      | `#6366f1` | unchanged |
+| frozen model, Score Distillation | `#0ea5e9` | unchanged |
+| Dream stage                      | `#f59e0b` | unchanged |
+| keeper, pass                     | `#10b981` | unchanged |
+| cut, failure                     | `#f43f5e` | unchanged |
+| input and output                 | `#1e293b` | `#334155` |
+| plain step                       | `#e2e8f0` | `#2a2925` |
+| lane                             | `#f8fafc` | `#1a1917` |
+| call-out                         | `#fefce8` | `#2a2410` |
+
+Saturated fills keep their colour and their white text in the dark twin;
+everything else maps by role as in the card style.
 
 ## Research furniture
 

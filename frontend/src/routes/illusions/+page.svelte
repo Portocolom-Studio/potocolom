@@ -27,8 +27,8 @@
 				{
 					src: '/illusions/families.webp',
 					cap: 'ill.fig_families_cap',
-					width: 2602,
-					height: 3407
+					width: 2752,
+					height: 3977
 				}
 			]
 		},
@@ -92,8 +92,8 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 2602,
-					height: 1932
+					width: 2752,
+					height: 3740
 				},
 				{
 					src: '/illusions/dream.webp',
@@ -130,14 +130,14 @@
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 2602,
-					height: 1612
+					width: 2752,
+					height: 2202
 				},
 				{
 					src: '/illusions/seeds.webp',
 					cap: 'ill.fig_seeds_cap',
 					width: 2602,
-					height: 1492
+					height: 1702
 				},
 				{
 					src: '/illusions/failures.webp',
