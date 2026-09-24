@@ -210,7 +210,7 @@ async def config() -> dict:
 
 
 class SPAStaticFiles(StaticFiles):
-    """Serve a built SPA: unknown GET paths fall back to index.html."""
+    """Serve the prerendered build: /login is login.html, a miss is 404.html."""
 
     def file_response(
         self,
@@ -220,26 +220,29 @@ class SPAStaticFiles(StaticFiles):
         status_code: int = 200,
     ) -> Response:
         response = super().file_response(full_path, stat_result, scope, status_code)
-        if Path(full_path).name == "index.html":
+        if Path(full_path).suffix == ".html":
             response.headers["Cache-Control"] = "no-cache"
         return response
 
-    def _may_fall_back(self, path: str, scope) -> bool:
-        # Unknown API paths must stay 404s; only page routes fall back.
-        return scope["method"] == "GET" and path != "api" and not path.startswith("api/")
+    def _page(self, path: str, scope) -> Response | None:
+        # The build prerenders /login as login.html, which html=True never
+        # looks for: it only tries login/index.html.
+        full_path, stat_result = self.lookup_path(f"{path.rstrip('/')}.html")
+        if stat_result is None:
+            return None
+        return self.file_response(full_path, stat_result, scope)
 
     async def get_response(self, path: str, scope):
         try:
             response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404 and self._may_fall_back(path, scope):
-                return await super().get_response("index.html", scope)
+            if exc.status_code == 404 and (page := self._page(path, scope)):
+                return page
             raise
-        # With html=True, StaticFiles answers a miss with 404.html when the build
-        # ships one instead of raising, which would leave every client-side route
-        # (/app, /benchmark) serving the error page in the self-hosted container.
-        if response.status_code == 404 and self._may_fall_back(path, scope):
-            return await super().get_response("index.html", scope)
+        # With html=True, a miss comes back as 404.html with a 404 status rather
+        # than raising, so the prerendered page has to be looked up here too.
+        if response.status_code == 404 and (page := self._page(path, scope)):
+            return page
         return response
 
 

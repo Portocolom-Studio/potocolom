@@ -72,10 +72,10 @@ def test_security_headers_on_unhandled_500():
         assert response.headers["cache-control"] == "no-store"
 
 
-def test_security_headers_on_static_and_spa_fallback(tmp_path: Path):
+def test_security_headers_on_static_and_prerendered_page(tmp_path: Path):
     dist = tmp_path / "static"
     dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><title>potocolom</title>")
+    (dist / "app.html").write_text("<!doctype html><title>potocolom</title>")
     (dist / "asset.txt").write_text("ok")
 
     spa = FastAPI()
@@ -88,10 +88,10 @@ def test_security_headers_on_static_and_spa_fallback(tmp_path: Path):
         assert static.text == "ok"
         _assert_security_headers(static)
 
-        fallback = spa_client.get("/app/generate")
-        assert fallback.status_code == 200
-        assert "potocolom" in fallback.text
-        _assert_security_headers(fallback)
+        page = spa_client.get("/app")
+        assert page.status_code == 200
+        assert "potocolom" in page.text
+        _assert_security_headers(page)
 
 
 def test_security_headers_skip_websocket():
