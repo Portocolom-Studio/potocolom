@@ -1,14 +1,16 @@
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
-	import type { IllusionGalleryItem } from '$lib/illusion-public-facts';
+	import type { IllusionCandidateItem, IllusionGalleryItem } from '$lib/illusion-public-facts';
 
 	let {
 		item,
 		showPrime = false,
+		meta = null,
 		priority = false
 	}: {
-		item: IllusionGalleryItem;
+		item: IllusionGalleryItem | IllusionCandidateItem;
 		showPrime?: boolean;
+		meta?: 'keeper' | 'candidate' | null;
 		priority?: boolean;
 	} = $props();
 
@@ -16,6 +18,7 @@
 
 	const liveLabel = $derived(flipped ? t(item.invertedKey) : t(item.uprightKey));
 	const viewAlt = $derived(`${t(item.titleKey)}: ${liveLabel}`);
+	const exportTag = $derived('exportTag' in item ? item.exportTag : '');
 
 	function toggle(): void {
 		flipped = !flipped;
@@ -48,8 +51,16 @@
 		</div>
 	{/if}
 	<figcaption>
+		{#if meta === 'candidate'}
+			<p><span class="badge">{t('ill.candidate_tag')}</span></p>
+		{/if}
 		<p class="pair">{t(item.titleKey)}</p>
 		<p class="live">{liveLabel}</p>
+		{#if meta === 'keeper'}
+			<p class="meta">seed {item.seed} · {item.mode} · {item.style}</p>
+		{:else if meta === 'candidate'}
+			<p class="meta">score {item.score} · seed {item.seed} · {item.mode} · {exportTag}</p>
+		{/if}
 		<button type="button" aria-pressed={flipped} onclick={toggle}>
 			{flipped ? t('ill.flipped') : t('ill.flip')}
 		</button>
@@ -107,6 +118,20 @@
 	.live {
 		color: var(--k-muted);
 		font-size: 0.82rem;
+	}
+
+	.meta {
+		color: var(--k-muted);
+		font-size: 0.74rem;
+	}
+
+	.badge {
+		display: inline-block;
+		padding: 0.1rem 0.6rem;
+		border: 1px dashed var(--k-accent);
+		border-radius: 999px;
+		color: var(--k-muted);
+		font-size: 0.72rem;
 	}
 
 	button {

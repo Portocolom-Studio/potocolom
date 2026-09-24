@@ -7,6 +7,7 @@
 	import { t } from '$lib/i18n.svelte';
 	import {
 		fillIllusionCopy,
+		ILLUSION_CANDIDATES,
 		ILLUSION_GALLERY,
 		ILLUSION_HERO,
 		ILLUSION_PAPER_URL
@@ -16,23 +17,38 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	const sections = [
-		{ id: 's1', title: 'ill.s1_title', paragraphs: ['ill.s1_p1', 'ill.s1_p2', 'ill.s1_p3'] },
+		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
+		{ id: 's11', title: 'ill.s11_title', paragraphs: ['ill.s11_p1'], candidates: true },
+		{
+			id: 's1',
+			title: 'ill.s1_title',
+			paragraphs: ['ill.s1_p1', 'ill.s1_p2', 'ill.s1_p3'],
+			figures: [
+				{
+					src: '/illusions/families.webp',
+					cap: 'ill.fig_families_cap',
+					width: 2602,
+					height: 3407
+				}
+			]
+		},
 		{
 			id: 's2',
 			title: 'ill.s2_title',
 			paragraphs: ['ill.s2_p1', 'ill.s2_p2', 'ill.s2_p3'],
+			workedExample: true,
 			figures: [
 				{
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
-					width: 1012,
-					height: 1372
+					width: 2602,
+					height: 1512
 				},
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
-					width: 568,
-					height: 1588
+					width: 2602,
+					height: 2537
 				}
 			]
 		},
@@ -44,8 +60,8 @@
 				{
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
-					width: 2108,
-					height: 140
+					width: 2602,
+					height: 2827
 				}
 			]
 		},
@@ -57,8 +73,14 @@
 				{
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
-					width: 672,
-					height: 1480
+					width: 2602,
+					height: 2662
+				},
+				{
+					src: '/illusions/symbols.webp',
+					cap: 'ill.fig_symbols_cap',
+					width: 2602,
+					height: 2727
 				}
 			]
 		},
@@ -70,14 +92,14 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 1860,
-					height: 236
+					width: 2602,
+					height: 1932
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
-					width: 2148,
-					height: 210
+					width: 2602,
+					height: 2162
 				}
 			]
 		},
@@ -89,8 +111,8 @@
 				{
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
-					width: 2656,
-					height: 488
+					width: 2602,
+					height: 1857
 				}
 			]
 		},
@@ -102,18 +124,29 @@
 				{
 					src: '/illusions/recipe.webp',
 					cap: 'ill.fig_recipe_cap',
-					width: 608,
-					height: 1460
+					width: 2602,
+					height: 1682
 				},
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 2116,
-					height: 890
+					width: 2602,
+					height: 1612
+				},
+				{
+					src: '/illusions/seeds.webp',
+					cap: 'ill.fig_seeds_cap',
+					width: 2602,
+					height: 1492
+				},
+				{
+					src: '/illusions/failures.webp',
+					cap: 'ill.fig_failures_cap',
+					width: 2602,
+					height: 1447
 				}
 			]
 		},
-		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
 		{
 			id: 's9',
 			title: 'ill.s9_title',
@@ -122,13 +155,20 @@
 				{
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
-					width: 1952,
-					height: 280
+					width: 2602,
+					height: 1392
 				}
 			]
 		},
 		{ id: 's10', title: 'ill.s10_title', paragraphs: ['ill.s10_p1', 'ill.s10_p2', 'ill.s10_p3'] }
 	] as const;
+
+	// Papers number figures in reading order across the whole document.
+	const figureNumber = new Map(
+		sections
+			.flatMap((s): readonly { src: string }[] => ('figures' in s ? s.figures : []))
+			.map((f, i) => [f.src, i + 1] as const)
+	);
 </script>
 
 <Seo
@@ -171,22 +211,80 @@
 						{#if 'gallery' in section}
 							<div class="gallery">
 								{#each ILLUSION_GALLERY as item (item.id)}
-									<IllusionFlip {item} />
+									<IllusionFlip {item} meta="keeper" />
 								{/each}
+							</div>
+						{/if}
+						{#if 'candidates' in section}
+							<div class="gallery">
+								{#each ILLUSION_CANDIDATES as item (item.id)}
+									<IllusionFlip {item} meta="candidate" />
+								{/each}
+							</div>
+						{/if}
+						{#if 'workedExample' in section}
+							<div class="worked">
+								<figure>
+									<img
+										src={ILLUSION_HERO.prime}
+										alt={t('ill.prime_label')}
+										width={ILLUSION_HERO.primeWidth}
+										height={ILLUSION_HERO.primeHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.prime_label')}</figcaption>
+								</figure>
+								<figure>
+									<img
+										src={ILLUSION_HERO.view}
+										alt={t('ill.worked_view')}
+										width={ILLUSION_HERO.viewWidth}
+										height={ILLUSION_HERO.viewHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.worked_view')}</figcaption>
+								</figure>
+								<figure>
+									<img
+										class="turned"
+										src={ILLUSION_HERO.view}
+										alt={t('ill.worked_turned')}
+										width={ILLUSION_HERO.viewWidth}
+										height={ILLUSION_HERO.viewHeight}
+										loading="lazy"
+										decoding="async"
+									/>
+									<figcaption>{t('ill.worked_turned')}</figcaption>
+								</figure>
 							</div>
 						{/if}
 						{#if 'figures' in section}
 							{#each section.figures as figure (figure.src)}
 								<div class="fig-scroll">
 									<figure>
+										<!-- Each figure ships a dark twin; the page theme picks one. -->
 										<img
+											class="fig-dark"
+											src={figure.src.replace(/\.webp$/, '-dark.webp')}
+											alt={t(figure.cap)}
+											width={figure.width}
+											height={figure.height}
+											loading="lazy"
+										/>
+										<img
+											class="fig-light"
 											src={figure.src}
 											alt={t(figure.cap)}
 											width={figure.width}
 											height={figure.height}
 											loading="lazy"
 										/>
-										<figcaption>{t(figure.cap)}</figcaption>
+										<figcaption>
+											<strong>{t('ill.figure_label')} {figureNumber.get(figure.src)}.</strong>
+											{t(figure.cap)}
+										</figcaption>
 									</figure>
 								</div>
 							{/each}
@@ -328,7 +426,17 @@
 	.gallery {
 		display: grid;
 		gap: 1.25rem;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.worked {
+		display: grid;
+		gap: 1rem;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+	}
+
+	.worked img.turned {
+		transform: rotate(180deg);
 	}
 
 	.fig-scroll {
@@ -341,7 +449,20 @@
 		padding: 0.75rem;
 		border: 1px solid var(--k-line);
 		border-radius: 1rem;
+		background: #141413;
+	}
+
+	:global(:root[data-landing-mode='light']) figure {
 		background: oklch(0.99 0.003 255);
+	}
+
+	figure img.fig-light,
+	:global(:root[data-landing-mode='light']) figure img.fig-dark {
+		display: none;
+	}
+
+	:global(:root[data-landing-mode='light']) figure img.fig-light {
+		display: block;
 	}
 
 	figure img {
@@ -353,7 +474,7 @@
 
 	figcaption {
 		padding: 0.6rem 0.25rem 0.1rem;
-		color: oklch(0.42 0.02 258);
+		color: var(--k-muted);
 		font-size: 0.78rem;
 		line-height: 1.5;
 	}
@@ -371,6 +492,10 @@
 	@media (min-width: 64rem) {
 		.document {
 			grid-template-columns: 14rem minmax(0, 1fr);
+		}
+
+		.gallery {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
 		}
 
 		aside {
