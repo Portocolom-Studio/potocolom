@@ -116,6 +116,7 @@
 	"ill.s2_p2": "Flip uses one prime and a 180-degree turn. Rotate and hidden types stack transparencies. This page shows flip only. We measured the flip type.",
 	"ill.s2_p3": "Gradients never flow through the UNet. The large model stays frozen. First comes Score Distillation. Then comes Dream Target.",
 	"ill.fig_arch_cap": "One prime, two arrangements, two views. Frozen SD 1.5 scores the views. Only the prime weights move.",
+	"ill.figure_label": "Figure",
 	"ill.fig_families_cap": "Where this method sits. Sampling-time methods combine noise estimates inside one diffusion pass. This page optimises a prime network instead, which costs far more and accepts arrangements that are not pixel permutations. The gallery at the foot is Figure 1 of Illusion3D (Feng et al., arXiv 2412.09625), cropped, used under CC BY 4.0.",
 	"ill.fig_workflow_cap": "How we bake one cell. Make primes. Make flip views. Run Score Distillation. Reset Adam. Run Dream Target. Out come the prime and both views.",
 	"ill.s3_title": "The prime is a small network",

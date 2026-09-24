@@ -42,13 +42,13 @@
 					src: '/illusions/architecture.webp',
 					cap: 'ill.fig_arch_cap',
 					width: 2602,
-					height: 1492
+					height: 1512
 				},
 				{
 					src: '/illusions/workflow.webp',
 					cap: 'ill.fig_workflow_cap',
 					width: 2602,
-					height: 1442
+					height: 2537
 				}
 			]
 		},
@@ -61,7 +61,7 @@
 					src: '/illusions/ffn.webp',
 					cap: 'ill.fig_ffn_cap',
 					width: 2602,
-					height: 1932
+					height: 2827
 				}
 			]
 		},
@@ -74,13 +74,13 @@
 					src: '/illusions/sds.webp',
 					cap: 'ill.fig_sds_cap',
 					width: 2602,
-					height: 1992
+					height: 2662
 				},
 				{
 					src: '/illusions/symbols.webp',
 					cap: 'ill.fig_symbols_cap',
 					width: 2602,
-					height: 2537
+					height: 2727
 				}
 			]
 		},
@@ -93,13 +93,13 @@
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
 					width: 2602,
-					height: 1862
+					height: 1932
 				},
 				{
 					src: '/illusions/dream.webp',
 					cap: 'ill.fig_dream_cap',
 					width: 2602,
-					height: 1102
+					height: 2162
 				}
 			]
 		},
@@ -111,8 +111,8 @@
 				{
 					src: '/illusions/joint.webp',
 					cap: 'ill.fig_joint_cap',
-					width: 1602,
-					height: 3012
+					width: 2602,
+					height: 1857
 				}
 			]
 		},
@@ -143,7 +143,7 @@
 					src: '/illusions/failures.webp',
 					cap: 'ill.fig_failures_cap',
 					width: 2602,
-					height: 1362
+					height: 1447
 				}
 			]
 		},
@@ -156,12 +156,19 @@
 					src: '/illusions/print.webp',
 					cap: 'ill.fig_print_cap',
 					width: 2602,
-					height: 1112
+					height: 1392
 				}
 			]
 		},
 		{ id: 's10', title: 'ill.s10_title', paragraphs: ['ill.s10_p1', 'ill.s10_p2', 'ill.s10_p3'] }
 	] as const;
+
+	// Papers number figures in reading order across the whole document.
+	const figureNumber = new Map(
+		sections
+			.flatMap((s): readonly { src: string }[] => ('figures' in s ? s.figures : []))
+			.map((f, i) => [f.src, i + 1] as const)
+	);
 </script>
 
 <Seo
@@ -264,7 +271,10 @@
 											height={figure.height}
 											loading="lazy"
 										/>
-										<figcaption>{t(figure.cap)}</figcaption>
+										<figcaption>
+											<strong>{t('ill.figure_label')} {figureNumber.get(figure.src)}.</strong>
+											{t(figure.cap)}
+										</figcaption>
 									</figure>
 								</div>
 							{/each}

@@ -116,6 +116,7 @@
 	"ill.s2_p2": "El giro usa una prima y un giro de 180 grados. Rotacion y oculto apilan transparencias. Esta pagina muestra solo el giro. El giro es el tipo que medimos.",
 	"ill.s2_p3": "Los gradientes no pasan por el UNet. El modelo grande permanece congelado. Eso es Score Distillation y luego Dream Target.",
 	"ill.fig_arch_cap": "Una prima, dos arreglos, dos vistas. SD 1.5 congelado puntua las vistas. Solo se mueven los pesos de la prima.",
+	"ill.figure_label": "Figura",
 	"ill.fig_families_cap": "Donde encaja este metodo. Los metodos de muestreo combinan estimaciones de ruido dentro de una sola pasada de difusion. Esta pagina optimiza una red de prima, que cuesta mucho mas y admite arreglos que no son permutaciones de pixeles. La galeria del pie es la Figura 1 de Illusion3D (Feng et al., arXiv 2412.09625), recortada, usada bajo CC BY 4.0.",
 	"ill.fig_workflow_cap": "Como horneamos una celda. Crea primas. Crea vistas flip. Corre Score Distillation. Reinicia Adam. Corre Dream Target. Salen la prima y las dos vistas.",
 	"ill.s3_title": "La prima es una red pequena",
