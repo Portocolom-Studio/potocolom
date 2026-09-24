@@ -7,10 +7,9 @@
 	import { t } from '$lib/i18n.svelte';
 	import {
 		fillIllusionCopy,
-		ILLUSION_CANDIDATES,
-		ILLUSION_GALLERY,
 		ILLUSION_HERO,
-		ILLUSION_PAPER_URL
+		ILLUSION_PAPER_URL,
+		ILLUSION_SHOWCASE
 	} from '$lib/illusion-public-facts';
 	import '../../landing-tokens.css';
 
@@ -18,7 +17,6 @@
 
 	const sections = [
 		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
-		{ id: 's11', title: 'ill.s11_title', paragraphs: ['ill.s11_p1'], candidates: true },
 		{
 			id: 's1',
 			title: 'ill.s1_title',
@@ -210,15 +208,8 @@
 						{/each}
 						{#if 'gallery' in section}
 							<div class="gallery">
-								{#each ILLUSION_GALLERY as item (item.id)}
-									<IllusionFlip {item} meta="keeper" />
-								{/each}
-							</div>
-						{/if}
-						{#if 'candidates' in section}
-							<div class="gallery">
-								{#each ILLUSION_CANDIDATES as item (item.id)}
-									<IllusionFlip {item} meta="candidate" />
+								{#each ILLUSION_SHOWCASE as item (item.id)}
+									<IllusionFlip {item} />
 								{/each}
 							</div>
 						{/if}

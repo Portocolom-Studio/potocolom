@@ -1054,6 +1054,56 @@ export const ILLUSION_CANDIDATES: readonly IllusionCandidateItem[] = [
 	}
 ];
 
+// One gallery for keepers and candidates alike, in a fixed shuffled order that keeps
+// two cells of the same pair at least four places apart, so neighbours never echo.
+const SHOWCASE_ORDER: readonly string[] = [
+	'elephant-swan-seed37',
+	'giraffe-penguin',
+	'wolf-raven-seed53',
+	'c-horse-wave-37-joint-dreamd1',
+	'stag-oak',
+	'c-eagle-phoenix-149-joint',
+	'c-wolf-raven-181-indep',
+	'c-dog-sloth-23-indep',
+	'c-deer-turtle-11-joint-sdsend',
+	'c-squirrel-pelican-23-joint',
+	'moose-butterfly-seed11',
+	'c-kingfisher-wisteria-11-joint',
+	'elephant-swan-neg-on',
+	'c-wolf-raven-269-joint',
+	'c-eagle-phoenix-11-indep',
+	'c-heron-swan-11-indep',
+	'c-octopus-camel-37-joint-sdsend',
+	'c-penguin-bat-11-indep',
+	'c-wolf-raven-11-indep-sdsend',
+	'c-moose-butterfly-37-indep-dreamd1',
+	'c-giraffe-penguin-calibration-37-joint-dreamd1',
+	'c-stag-oak-11-indep-sdsend',
+	'c-squirrel-pelican-11-indep-sdsend',
+	'c-wolf-raven-23-joint-dreamd1',
+	'elephant-swan',
+	'moose-butterfly-neg-on',
+	'deer-turtle-neg-off',
+	'c-wolf-raven-181-joint',
+	'c-giraffe-penguin-calibration-11-joint-dreamd1',
+	'c-eagle-phoenix-37-joint-dreamd1',
+	'c-elephant-swan-211-joint',
+	'c-wolf-raven-23-joint',
+	'giraffe-penguin-seed37',
+	'c-bear-salmon-37-joint-dreamd1',
+	'eagle-phoenix',
+	'wolf-raven',
+	'elephant-swan-sketch',
+	'c-moose-butterfly-37-indep-sdsend',
+	'c-eagle-phoenix-277-joint',
+	'wolf-raven-seed11'
+];
+
+export const ILLUSION_SHOWCASE: readonly (IllusionGalleryItem | IllusionCandidateItem)[] = [
+	...ILLUSION_GALLERY,
+	...ILLUSION_CANDIDATES
+].sort((a, b) => SHOWCASE_ORDER.indexOf(a.id) - SHOWCASE_ORDER.indexOf(b.id));
+
 export const ILLUSION_HERO = ILLUSION_GALLERY.find((item) => item.id === ILLUSION_HERO_ID)!;
 
 export const ILLUSION_COPY_VARS = {
@@ -1073,10 +1123,7 @@ export const ILLUSION_COPY_VARS = {
 	export: ILLUSION_EXPORT,
 	galleryCount: String(ILLUSION_GALLERY.length),
 	keeperCount: String(ILLUSION_EXPORT_KEEPERS),
-	candidateCount: String(ILLUSION_CANDIDATES.length),
-	candidateRated: String(ILLUSION_CANDIDATES.filter((item) => item.frame !== 'unrated').length),
-	candidateClean: String(ILLUSION_CANDIDATES.filter((item) => item.frame === 'none').length),
-	candidateMinor: String(ILLUSION_CANDIDATES.filter((item) => item.frame === 'minor').length),
+	showcaseCount: String(ILLUSION_SHOWCASE.length),
 	jointCount: String(ILLUSION_GALLERY.filter((item) => item.mode === 'joint').length),
 	minScore: String(Math.min(...ILLUSION_GALLERY.map((item) => item.score))),
 	score: String(ILLUSION_GALLERY[0].score)

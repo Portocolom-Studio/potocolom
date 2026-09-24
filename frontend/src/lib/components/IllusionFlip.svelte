@@ -5,12 +5,10 @@
 	let {
 		item,
 		showPrime = false,
-		meta = null,
 		priority = false
 	}: {
 		item: IllusionGalleryItem | IllusionCandidateItem;
 		showPrime?: boolean;
-		meta?: 'keeper' | 'candidate' | null;
 		priority?: boolean;
 	} = $props();
 
@@ -18,7 +16,6 @@
 
 	const liveLabel = $derived(flipped ? t(item.invertedKey) : t(item.uprightKey));
 	const viewAlt = $derived(`${t(item.titleKey)}: ${liveLabel}`);
-	const exportTag = $derived('exportTag' in item ? item.exportTag : '');
 
 	function toggle(): void {
 		flipped = !flipped;
@@ -26,17 +23,18 @@
 </script>
 
 <figure class={['flip', showPrime && 'with-prime']}>
-	<div class="sheet">
+	<!-- The sheet is a second, pointer-only way to turn the card; the Flip button is the keyboard one. -->
+	<button type="button" class="sheet" tabindex="-1" aria-label={viewAlt} onclick={toggle}>
 		<img
 			class={{ turned: flipped }}
 			src={item.view}
-			alt={viewAlt}
+			alt=""
 			width={item.viewWidth}
 			height={item.viewHeight}
 			loading={priority ? 'eager' : 'lazy'}
 			decoding="async"
 		/>
-	</div>
+	</button>
 	{#if showPrime}
 		<div class="prime">
 			<img
@@ -51,15 +49,9 @@
 		</div>
 	{/if}
 	<figcaption>
-		{#if meta === 'candidate'}
-			<p><span class="badge">{t('ill.candidate_tag')}</span></p>
-		{/if}
 		<p class="pair">{t(item.titleKey)}</p>
-		<p class="live">{liveLabel}</p>
-		{#if meta === 'keeper'}
-			<p class="meta">seed {item.seed} · {item.mode} · {item.style}</p>
-		{:else if meta === 'candidate'}
-			<p class="meta">score {item.score} · seed {item.seed} · {item.mode} · {exportTag}</p>
+		{#if showPrime}
+			<p class="live">{liveLabel}</p>
 		{/if}
 		<button type="button" aria-pressed={flipped} onclick={toggle}>
 			{flipped ? t('ill.flipped') : t('ill.flip')}
@@ -81,8 +73,12 @@
 	}
 
 	.sheet {
+		display: block;
+		width: 100%;
 		min-width: 0;
+		padding: 0;
 		overflow: clip;
+		cursor: pointer;
 		border: 1px solid var(--k-line);
 		border-radius: 1rem;
 		background: oklch(0.99 0.003 255);
@@ -120,21 +116,7 @@
 		font-size: 0.82rem;
 	}
 
-	.meta {
-		color: var(--k-muted);
-		font-size: 0.74rem;
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 0.1rem 0.6rem;
-		border: 1px dashed var(--k-accent);
-		border-radius: 999px;
-		color: var(--k-muted);
-		font-size: 0.72rem;
-	}
-
-	button {
+	figcaption button {
 		margin-block-start: 0.35rem;
 		padding: 0.35rem 0.9rem;
 		border: 1px solid var(--k-line);
@@ -145,12 +127,12 @@
 		cursor: pointer;
 	}
 
-	button:hover,
-	button[aria-pressed='true'] {
+	figcaption button:hover,
+	figcaption button[aria-pressed='true'] {
 		border-color: var(--k-accent);
 	}
 
-	button:focus-visible {
+	figcaption button:focus-visible {
 		outline: 2px solid var(--k-accent);
 		outline-offset: 2px;
 	}
