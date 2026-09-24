@@ -205,6 +205,22 @@ def test_a_bearer_request_needs_no_csrf_header(accounts):
 
 
 @pytest.mark.db
+def test_logging_out_a_dead_session_still_clears_its_cookies(accounts):
+    _account(accounts, "stale@example.com")
+    with TestClient(app) as client:
+        assert _login(client, "stale@example.com").status_code == 204
+        headers = _csrf(client)
+        stale = dict(client.cookies)
+        assert client.post("/api/v1/auth/logout", headers=headers).status_code == 204
+        client.cookies.update(stale)
+        out = client.post("/api/v1/auth/logout", headers=headers)
+        assert out.status_code == 204
+        cleared = out.headers.get_list("set-cookie")
+        for name in ("potocolom_session=", "potocolom_csrf="):
+            assert any(h.startswith(name) and "Max-Age=0" in h for h in cleared)
+
+
+@pytest.mark.db
 def test_logging_out_kills_the_session_it_used(accounts):
     _account(accounts, "bye@example.com")
     with TestClient(app) as client:

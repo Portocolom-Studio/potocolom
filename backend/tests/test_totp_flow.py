@@ -237,6 +237,23 @@ def test_the_right_code_turns_the_challenge_into_a_session(accounts):
 
 
 @pytest.mark.db
+def test_an_unticked_retry_is_not_remembered_by_the_attempt_before_it(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "changed-mind@example.com")
+        assert _login(client, "changed-mind@example.com").status_code == 204
+        secret, _ = _enrol(client)
+    with TestClient(app, base_url=ORIGIN) as fresh:
+        assert _login(fresh, "changed-mind@example.com", remember_me=True).status_code == 200
+        assert _login(fresh, "changed-mind@example.com").status_code == 200
+        passed = fresh.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                            json={"code": _next_code(secret)})
+        assert passed.status_code == 204
+        session_header = next(h for h in passed.headers.get_list("set-cookie")
+                              if "potocolom_session=" in h)
+        assert "Max-Age=" not in session_header
+
+
+@pytest.mark.db
 def test_a_challenge_is_spent_once(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "once@example.com")

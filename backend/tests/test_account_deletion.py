@@ -132,7 +132,11 @@ def test_asking_to_be_deleted_stops_the_account_and_keeps_the_way_back(library):
         user = client.portal.call(_make, "leaving@example.com")
         assert _login(client, "leaving@example.com").status_code == 204
         theirs = _session_cookie(client)
-        assert client.delete("/api/v1/account", headers=_csrf(client)).status_code == 204
+        left = client.delete("/api/v1/account", headers=_csrf(client))
+        assert left.status_code == 204
+        cleared = left.headers.get_list("set-cookie")
+        for name in ("potocolom_session=", "potocolom_csrf="):
+            assert any(name in h and "Max-Age=0" in h for h in cleared)
 
         _wearing(client, theirs)
         assert client.get("/api/v1/account").status_code == 401
