@@ -69,13 +69,23 @@
 		pointer-events: none;
 	}
 
-	header,
+	/* Sticky, so the mark that leads home stays in reach on long pages. */
 	header {
+		position: sticky;
+		inset-block-start: 0;
+		z-index: 2;
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
 		gap: 1rem;
 		padding: 1.1rem clamp(1rem, 3vw, 2.5rem);
+		border-block-end: 1px solid var(--k-line);
+		background: oklch(0.08 0.012 265 / 72%);
+		backdrop-filter: blur(20px);
+	}
+
+	:global(:root[data-landing-mode='light']) header {
+		background: oklch(0.97 0.004 255 / 78%);
 	}
 
 	.chrome-actions {
@@ -85,6 +95,7 @@
 	}
 
 	.mark {
+		color: var(--k-ink);
 		font-size: 1.05rem;
 		font-weight: 800;
 		letter-spacing: -0.03em;
