@@ -6,7 +6,7 @@ source of truth; `scripts/render-illusion-figures.py` only exports it.
 
 ## Visual language
 
-- One style for every figure: the card style. Paper-grey ground
+- One style for every figure: the card style, in a light and a dark twin. Paper-grey ground
   (`#f5f5f5`), white rounded cards with a thin ink stroke, photos with a
   light border. A figure borrowed from another style is redrawn in this one.
 - Lato for every piece of text, including table headers and labels. Math is
@@ -19,6 +19,39 @@ source of truth; `scripts/render-illusion-figures.py` only exports it.
     reviewer saw
 - A figure opens with its title, and the legend sits on the same row at the
   right. No small upper-case label above the title.
+
+## Dark theme
+
+Every figure ships twice: `<name>.webp` for the light theme and
+`<name>-dark.webp` for the dark one, and the page shows the one that matches
+its theme toggle. Draw only the light figure. The export script derives the
+dark twin, so the two cannot drift apart.
+
+The dark palette follows the dark diagram style of cursor.com and
+anthropic.com: a warm near-black ground, quiet borders, light text.
+
+| role                       | light     | dark      |
+| -------------------------- | --------- | --------- |
+| ground                     | `#f5f5f5` | `#141413` |
+| card fill                  | `#ffffff` | `#1c1b18` |
+| raised fill (input, chips) | `#e4e7ec` | `#24231f` |
+| note fill                  | `#eeeff2` | `#1f1e1b` |
+| text                       | `#2d3142` | `#edecec` |
+| secondary text             | `#4f5d75` | `#b3b1ac` |
+| tertiary text              | `#7a8399` | `#8a8883` |
+| card border                | `#2d3142` | `#4a4943` |
+| hairline border            | `#c9cdd6` | `#34332e` |
+| drawn line, curve, axis    | `#2d3142` | `#dcdad5` |
+| connector                  | `#4f5d75` | `#8e8c86` |
+| accent                     | `#005ee3` | `#79a8ff` |
+| accent tint                | `#e6effc` | `#172238` |
+| stop red                   | `#b4232a` | `#ff7d70` |
+
+Colour maps by role, not by value. The light palette uses one ink for text,
+card borders and plotted lines; on a dark ground text turns light, a card
+border turns quiet, and a drawn line turns bright. A new light colour needs
+its dark partner in `scripts/render-illusion-figures.py`, and the export
+fails until it has one. Photos never change. Math follows the text colour.
 
 ## Research furniture
 

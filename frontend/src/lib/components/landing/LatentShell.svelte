@@ -3,10 +3,9 @@
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import SiteFooter from './SiteFooter.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import type { Snippet } from 'svelte';
-
-	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	let {
 		current,
@@ -25,7 +24,7 @@
 
 	<header>
 		<a class="mark" href={resolve('/')}><BrandMark /></a>
-		<nav aria-label={t('nav.features')}>
+		<nav aria-label={t('nav.primary')}>
 			<a href={resolve('/whitepaper')} aria-current={current === 'whitepaper' ? 'page' : undefined}>
 				{t('nav.whitepaper')}
 			</a>
@@ -35,7 +34,6 @@
 			<a href={resolve('/illusions')} aria-current={current === 'illusions' ? 'page' : undefined}>
 				{t('nav.illusions')}
 			</a>
-			<a href={repoUrl}>{t('nav.open')}</a>
 		</nav>
 		<div class="chrome-actions">
 			<LanguageToggle />
@@ -45,16 +43,7 @@
 
 	{@render children()}
 
-	<footer>
-		<p>{t('footer.tagline')}</p>
-		<nav aria-label={t('footer.docs')}>
-			<a href={repoUrl}>{t('footer.github')}</a>
-			<a href={`${repoUrl}/tree/main/docs`}>{t('footer.docs')}</a>
-			<a href={resolve('/legal')}>{t('footer.legal')}</a>
-			<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
-			<a href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>
-		</nav>
-	</footer>
+	<SiteFooter />
 </div>
 
 <style>
@@ -81,11 +70,6 @@
 	}
 
 	header,
-	footer {
-		position: relative;
-		z-index: 1;
-	}
-
 	header {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
@@ -117,30 +101,6 @@
 	header nav a:hover,
 	header nav a[aria-current='page'] {
 		color: var(--k-ink);
-	}
-
-	footer {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem 2rem;
-		padding: 2rem clamp(1rem, 4vw, 3rem);
-		border-block-start: 1px solid var(--k-line);
-		background: oklch(0.08 0.012 265 / 72%);
-		color: var(--k-muted);
-		font-size: 0.85rem;
-		backdrop-filter: blur(28px);
-	}
-
-	:global(:root[data-landing-mode='light']) footer {
-		background: oklch(0.97 0.004 255 / 78%);
-	}
-
-	footer nav {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem 1.25rem;
 	}
 
 	@media (min-width: 48rem) {

@@ -21,6 +21,7 @@
 	} from './LandingLoader.svelte';
 	import ParticleField from './ParticleField.svelte';
 	import SalonGrid, { type SalonTile } from './SalonGrid.svelte';
+	import SiteFooter from './SiteFooter.svelte';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
@@ -178,11 +179,7 @@
 		aria-hidden={entrancePhase !== 'ready'}
 	>
 		<a class="mark" href={resolve('/')}><BrandMark /></a>
-		<nav aria-label={t('nav.features')}>
-			<a href="#does">{t('nav.features')}</a>
-			<a href="#work">{t('gallery.kicker')}</a>
-			<a href="#pricing">{t('nav.pricing')}</a>
-			<a href="#run">{t('nav.open')}</a>
+		<nav aria-label={t('nav.primary')}>
 			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
@@ -388,21 +385,13 @@
 		</section>
 	</main>
 
-	<footer
+	<div
 		class="landing-content"
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
-		<p>{t('footer.tagline')}</p>
-		<nav aria-label={t('footer.docs')}>
-			<a href={repoUrl}>{t('footer.github')}</a>
-			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
-			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
-			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
-			<a href={resolve('/legal')}>{t('footer.legal')}</a>
-			<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
-		</nav>
-	</footer>
+		<SiteFooter />
+	</div>
 </div>
 
 <style>
@@ -1064,26 +1053,6 @@
 		color: var(--k-muted);
 		font-family: var(--k-display);
 		font-weight: 400;
-	}
-
-	footer {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem 2rem;
-		max-width: 78rem;
-		margin-inline: auto;
-		padding: 2rem clamp(1rem, 4vw, 3rem);
-		border-block-start: 1px solid var(--k-line);
-		color: var(--k-muted);
-		font-size: 0.85rem;
-	}
-
-	footer nav {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem 1.25rem;
 	}
 
 	@media (min-width: 48rem) {

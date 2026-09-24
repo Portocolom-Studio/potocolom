@@ -264,7 +264,17 @@
 							{#each section.figures as figure (figure.src)}
 								<div class="fig-scroll">
 									<figure>
+										<!-- Each figure ships a dark twin; the page theme picks one. -->
 										<img
+											class="fig-dark"
+											src={figure.src.replace(/\.webp$/, '-dark.webp')}
+											alt={t(figure.cap)}
+											width={figure.width}
+											height={figure.height}
+											loading="lazy"
+										/>
+										<img
+											class="fig-light"
 											src={figure.src}
 											alt={t(figure.cap)}
 											width={figure.width}
@@ -439,7 +449,20 @@
 		padding: 0.75rem;
 		border: 1px solid var(--k-line);
 		border-radius: 1rem;
+		background: #141413;
+	}
+
+	:global(:root[data-landing-mode='light']) figure {
 		background: oklch(0.99 0.003 255);
+	}
+
+	figure img.fig-light,
+	:global(:root[data-landing-mode='light']) figure img.fig-dark {
+		display: none;
+	}
+
+	:global(:root[data-landing-mode='light']) figure img.fig-light {
+		display: block;
 	}
 
 	figure img {
@@ -451,7 +474,7 @@
 
 	figcaption {
 		padding: 0.6rem 0.25rem 0.1rem;
-		color: oklch(0.42 0.02 258);
+		color: var(--k-muted);
 		font-size: 0.78rem;
 		line-height: 1.5;
 	}

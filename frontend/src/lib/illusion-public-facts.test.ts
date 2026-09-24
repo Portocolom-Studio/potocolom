@@ -116,5 +116,6 @@ test('study diagrams are exported as webp', () => {
 	];
 	for (const name of names) {
 		assert.ok(existsSync(join(staticDir, 'illusions', `${name}.webp`)), name);
+		assert.ok(existsSync(join(staticDir, 'illusions', `${name}-dark.webp`)), `${name}-dark`);
 	}
 });

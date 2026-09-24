@@ -9,7 +9,8 @@ Figures on `/illusions` are draw.io diagrams. Each one lives in
 draw.io, edit it, save it. Photos and charts are embedded in the file,
 so nothing else is needed to render it. Then run
 `python3 scripts/render-illusion-figures.py` to export every figure to
-`frontend/static/illusions/`, or name one or two, as in
+`frontend/static/illusions/`, as a light `<name>.webp` and a derived dark
+`<name>-dark.webp` that the page picks by theme, or name one or two, as in
 `python3 scripts/render-illusion-figures.py sds recipe`. The export needs
 the draw.io desktop CLI and the Lato font installed. Update the width and
 height in `frontend/src/routes/illusions/+page.svelte` when a figure
