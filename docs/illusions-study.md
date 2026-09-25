@@ -227,7 +227,9 @@ merged into that branch. Do not treat these as product defaults.
 - The funnel was 206 baked cells, 43 at score 4 or 5, and 26 keepers.
   The 206 are 98 bases across 4 Dream arms, so the keepers are not 26
   independent runs. Score alone did not decide: a frame defect cut 16
-  of the 43.
+  of the 43, and one more (moose and butterfly, seed 11, score 5) was
+  never frame-rated, so the export left it out rather than count a
+  missing answer as clean. 43 - 16 - 1 = 26.
 - Prompt wording is the biggest lever. Arguments do not predict it.
   Frame artifacts belong to the specific phrase. They do not
   belong to sketch versus oil as a medium.
@@ -248,25 +250,25 @@ These conclusions came after the gallery was baked. The keepers on
 
 
 Gallery images are window-2 clean keepers. Scores are 4 or 5. Frames
-are none or minor. The export is `window2-2026-08-clean`. The gallery
-shows all 26 cells at that bar: 14 at score 5 and 12 at score 4,
-grouped by pair. Some pairs earned several keepers across seeds,
+are none or minor. The export is `window2-2026-08-clean`, 26 cells at
+that bar: 14 at score 5 and 12 at score 4. The page shows a hand-picked
+14 of them. Some pairs earned several keepers across seeds,
 styles, and arms. This is expected. A keeper is one specific cell,
 not a recipe. Sixteen of twenty-six used joint Dream. The rest used
 independent targets. Provenance for every card (pair, seed, style,
 mode, arm, source PNG, sha256) is in
 `frontend/src/lib/illusion-public-facts.ts`.
 
-Below the gallery, `/illusions` shows a candidates tray
-(`ILLUSION_CANDIDATES` in the same file). It holds 60 more cells from
-older and later exports. Each cell carries its score, seed, mode, and
-export as a tag. All 60 scored 4 or 5, 35 of them a 5. Some are middle
-stages. Only 24 carry a frame rating: 20 none and 4 minor. The other 36
-come from an export that never rated frames. Nothing there is a keeper yet. The tray exists so a human
-can flip each card. A human promotes what reads clean.
+The same gallery also shows 26 hand-picked candidates
+(`ILLUSION_CANDIDATES` in the same file) from older and later exports,
+in one fixed shuffled order (`ILLUSION_SHOWCASE`) that keeps two cells
+of the same pair at least four places apart. All 26 scored 4 or 5, 19
+of them a 5. Some are middle stages. Only 7 carry a frame rating: 4
+none and 3 minor; the rest come from exports that never rated frames.
+Candidates are not keepers. Each card flips on a click.
 
 <!-- figure: review -->
-*Figure: the review funnel: 206 baked cells, 43 at score 4 or 5, 16 of those cut on a frame defect, 26 keepers. The photo pair is one cut cell beside one kept cell, same pair and seed. The CLIP branch is recorded, never gating.*
+*Figure: the review funnel: 206 baked cells, 43 at score 4 or 5, 16 of those cut on a frame defect and 1 never frame-rated, 26 keepers. The photo pair is one cut cell beside one kept cell, same pair and seed. The CLIP branch is recorded, never gating.*
 
 
 The seed matters as much as the recipe. One pair, one style, one budget,
