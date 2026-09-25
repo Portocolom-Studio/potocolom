@@ -9,7 +9,8 @@ import {
 	ILLUSION_COPY_VARS,
 	ILLUSION_GALLERY,
 	ILLUSION_HERO,
-	ILLUSION_HERO_ID
+	ILLUSION_HERO_ID,
+	ILLUSION_SHOWCASE
 } from './illusion-public-facts.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -46,14 +47,25 @@ test('candidate tray items exist with provenance', () => {
 	}
 });
 
+test('the gallery shows every keeper and candidate once, with no pair repeated nearby', () => {
+	const shown = ILLUSION_SHOWCASE.map((item) => item.id);
+	const listed = [...ILLUSION_GALLERY, ...ILLUSION_CANDIDATES].map((item) => item.id);
+	assert.deepEqual([...shown].sort(), [...listed].sort());
+	for (let i = 0; i < ILLUSION_SHOWCASE.length; i++) {
+		for (let j = i + 1; j < Math.min(i + 4, ILLUSION_SHOWCASE.length); j++) {
+			assert.notEqual(ILLUSION_SHOWCASE[i].titleKey, ILLUSION_SHOWCASE[j].titleKey, shown[j]);
+		}
+	}
+});
+
 test('public copy placeholders resolve to measured numbers', () => {
 	const jointCount = ILLUSION_GALLERY.filter((item) => item.mode === 'joint').length;
 	const filled = fillIllusionCopy(
-		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score} {minScore}'
+		'{auc} {bar} {codeSds} {codeDream} {researchSds} {researchDream} {cost} {adamWithout} {adamLow} {adamHigh} {adamSds} {adamDream} {adamDreamSteps} {export} {galleryCount} {jointCount} {score} {minScore} {keeperCount} {showcaseCount}'
 	);
 	assert.equal(
 		filled,
-		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score} 4`
+		`0.706 0.75 500 8 5000 1 3.3 2 44 60 250 4 150 window2-2026-08-clean ${ILLUSION_GALLERY.length} ${jointCount} ${ILLUSION_GALLERY[0].score} 4 26 ${ILLUSION_SHOWCASE.length}`
 	);
 	assert.equal(fillIllusionCopy('keep {unknown}'), 'keep {unknown}');
 	assert.equal(ILLUSION_COPY_VARS.galleryCount, String(ILLUSION_GALLERY.length));

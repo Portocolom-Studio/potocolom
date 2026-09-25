@@ -7,10 +7,9 @@
 	import { t } from '$lib/i18n.svelte';
 	import {
 		fillIllusionCopy,
-		ILLUSION_CANDIDATES,
-		ILLUSION_GALLERY,
 		ILLUSION_HERO,
-		ILLUSION_PAPER_URL
+		ILLUSION_PAPER_URL,
+		ILLUSION_SHOWCASE
 	} from '$lib/illusion-public-facts';
 	import '../../landing-tokens.css';
 
@@ -18,7 +17,6 @@
 
 	const sections = [
 		{ id: 's8', title: 'ill.s8_title', paragraphs: ['ill.s8_p1'], gallery: true },
-		{ id: 's11', title: 'ill.s11_title', paragraphs: ['ill.s11_p1'], candidates: true },
 		{
 			id: 's1',
 			title: 'ill.s1_title',
@@ -27,8 +25,8 @@
 				{
 					src: '/illusions/families.webp',
 					cap: 'ill.fig_families_cap',
-					width: 2602,
-					height: 3407
+					width: 2752,
+					height: 3977
 				}
 			]
 		},
@@ -92,8 +90,8 @@
 				{
 					src: '/illusions/two-phase.webp',
 					cap: 'ill.fig_loop_cap',
-					width: 2602,
-					height: 1932
+					width: 2752,
+					height: 3740
 				},
 				{
 					src: '/illusions/dream.webp',
@@ -130,14 +128,14 @@
 				{
 					src: '/illusions/review.webp',
 					cap: 'ill.fig_review_cap',
-					width: 2602,
-					height: 1612
+					width: 2752,
+					height: 2202
 				},
 				{
 					src: '/illusions/seeds.webp',
 					cap: 'ill.fig_seeds_cap',
 					width: 2602,
-					height: 1492
+					height: 1702
 				},
 				{
 					src: '/illusions/failures.webp',
@@ -210,15 +208,8 @@
 						{/each}
 						{#if 'gallery' in section}
 							<div class="gallery">
-								{#each ILLUSION_GALLERY as item (item.id)}
-									<IllusionFlip {item} meta="keeper" />
-								{/each}
-							</div>
-						{/if}
-						{#if 'candidates' in section}
-							<div class="gallery">
-								{#each ILLUSION_CANDIDATES as item (item.id)}
-									<IllusionFlip {item} meta="candidate" />
+								{#each ILLUSION_SHOWCASE as item (item.id)}
+									<IllusionFlip {item} />
 								{/each}
 							</div>
 						{/if}
