@@ -11,6 +11,10 @@ export function initialAuthView(search: string): AuthView {
 	return params.get('totp') === 'required' ? 'challenge' : 'password';
 }
 
+export function resetJustHappened(search: string): boolean {
+	return new URLSearchParams(search).get('reset') === 'done';
+}
+
 export function shouldShowChallenge(view: AuthView): boolean {
 	return view === 'challenge';
 }
