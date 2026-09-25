@@ -4,9 +4,11 @@ import json
 import uuid
 
 import pytest
+import websockets
 from PIL import Image
 
 from worker.client import (
+    FLEET_MAX_MESSAGE_BYTES,
     FRAME_HEADER_BYTES,
     PROTOCOL_VERSION,
     RegistrationRejected,
@@ -1137,7 +1139,44 @@ def test_run_sends_the_fleet_token_as_a_handshake_header(monkeypatch):
 
     assert calls == [(settings.api_url, {"additional_headers": {
         "x-fleet-token": "fleet-secret",
-    }})]
+    }, "max_size": FLEET_MAX_MESSAGE_BYTES})]
+
+
+def test_the_fleet_socket_takes_the_largest_frame_the_api_forwards(monkeypatch):
+    """The API forwards a canvas frame of 17 header bytes plus 1 MiB. The
+    websockets default of exactly 1 MiB would close the fleet socket with 1009
+    and end every session on this worker."""
+    largest = FRAME_HEADER_BYTES + 1024 * 1024
+    received = []
+
+    class StopReconnect(Exception):
+        pass
+
+    async def fake_serve_connection(ws, *args):
+        try:
+            received.append(len(await ws.recv()))
+        except websockets.ConnectionClosed as closed:
+            received.append(closed.rcvd)
+        raise StopReconnect
+
+    async def scenario():
+        async def send_largest(connection):
+            await connection.send(b"\x01" * largest)
+            await connection.wait_closed()
+
+        async with websockets.serve(send_largest, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            settings = Settings(worker_id="w-big", api_url=f"ws://127.0.0.1:{port}")
+            monkeypatch.setattr("worker.client.get_settings", lambda: settings)
+            with pytest.raises(StopReconnect):
+                await run()
+
+    monkeypatch.setattr("worker.client.build_runtime",
+                        lambda _settings: ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    monkeypatch.setattr("worker.client.serve_connection", fake_serve_connection)
+    asyncio.run(scenario())
+
+    assert received == [largest]
 
 
 class FakeUpload:

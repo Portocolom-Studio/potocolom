@@ -132,9 +132,7 @@ async def list_models(_user: User = Depends(current_user)) -> list[dict]:
     return models
 
 
-async def persist_manifests(manifests: list[Manifest]) -> None:
-    if db.session_factory is None or not manifests:
-        return  # degraded mode: the in-memory registry still serves /models
+def manifest_upsert(manifests: list[Manifest]):
     rows = [
         {
             "id": m.id,
@@ -155,6 +153,12 @@ async def persist_manifests(manifests: list[Manifest]) -> None:
             "min_vram_gb": statement.excluded.min_vram_gb,
         },
     )
+    return statement
+
+
+async def persist_manifests(manifests: list[Manifest]) -> None:
+    if db.session_factory is None or not manifests:
+        return  # degraded mode: the in-memory registry still serves /models
     async with db.session_factory() as session:
-        await session.execute(statement)
+        await session.execute(manifest_upsert(manifests))
         await session.commit()

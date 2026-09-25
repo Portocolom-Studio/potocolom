@@ -1625,6 +1625,12 @@ The range was `>=12,<13`, which already admits 12.3. A local venv can still sit 
 Rejected alternatives: leaving `>=12,<13` (a stale venv stays on 12.2); raising only the Docker image (the worker extra is what `make setup` installs).
 
 
+## An administrator may call off another account's job
+
+An administrator reads any account and changes none of its work, with one exception: cancelling a queued or running generation. A job that is stuck, runaway or abusive holds a GPU that other people are waiting for, and the owner may not be there to stop it. The job ends with the reason "cancelled by an administrator", and the call writes a high-severity audit row carrying the owner and the job id. The route takes any role, so the audit hook for administrator routes never sees it, and the route records the row itself. Starring, sharing and deleting another account's work stay refused.
+
+Rejected alternatives: refusing it like every other change (the only remedy for a runaway job is then an operator restarting a worker, which drops every other session on it); an admin-only cancel route (a second path to the same action, with its own checks to keep in step); allowing it without a record (an administrator could then quietly stop another person's work).
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

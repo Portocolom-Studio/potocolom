@@ -105,8 +105,8 @@ def test_reading_another_account_records_who_was_read(library):
 
 @pytest.mark.db
 def test_an_administrator_cannot_change_another_accounts_work(library):
-    """Administrators read and administer. Nothing here lets one star, cancel
-    or delete somebody else's generation through an admin route."""
+    """Administrators read and administer. Nothing here lets one star or
+    delete somebody else's generation through an admin route."""
     from tests.test_account_deletion import _owned_work
 
     with TestClient(app, base_url=ORIGIN) as client:
@@ -115,6 +115,23 @@ def test_an_administrator_cannot_change_another_accounts_work(library):
         _admin(client)
         assert client.post(f"/api/v1/generations/{asset.job_id}/star",
                            headers=_csrf(client)).status_code == 404
+
+
+@pytest.mark.db
+def test_an_administrator_calling_off_someone_elses_job_is_recorded(library):
+    """Cancelling is the one change an administrator may make to another
+    account's work, so it records who it reached like a privileged read."""
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "called-off@example.com")
+        asset = client.portal.call(_owned_work, subject.id)
+        _admin(client)
+        assert client.post(f"/api/v1/generations/{asset.job_id}/cancel",
+                           headers=_csrf(client)).status_code == 204
+        recorded = _wait_for_audit(client, "generation.cancelled")
+    assert recorded[0].target_user_id == subject.id
+    assert str(asset.job_id) in recorded[0].object_ids
 
 
 @pytest.mark.db

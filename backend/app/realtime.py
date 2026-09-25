@@ -683,6 +683,11 @@ async def release(session: Session) -> None:
     worker.slots_in_use -= 1
     generation = session.control_generation
     if workers.get(worker.id) is worker:  # still connected, same incarnation
+        if session.user_id is not None:
+            # Armed here rather than by whoever ends the session: a revocation
+            # releases before the browser handler's own teardown runs, and the
+            # worker's session_closed totals would find nobody to bill.
+            closing_sessions[session.id] = (session.user_id, session.model_id, worker)
         # Bounded: the slot is already back, and a worker that stopped reading
         # would otherwise hold up whatever asked for this session to end,
         # including the revocation that has other sockets waiting behind it.
@@ -1280,14 +1285,6 @@ async def realtime(ws: WebSocket) -> None:
         sessions.pop(session.id, None)
         transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
         transition(session, "ending", "ended")
-        worker = session.worker
-        if (
-            worker is not None
-            and session.user_id is not None
-            and workers.get(worker.id) is worker
-        ):
-            closing_sessions[session.id] = (
-                session.user_id, session.model_id, worker)
         await release(session)
 
 
