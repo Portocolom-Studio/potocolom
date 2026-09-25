@@ -13,7 +13,7 @@ from sqlalchemy import select, text, update
 
 from app import db
 from app.main import app
-from app.tables import AuditEvent, Job
+from app.tables import Asset, AuditEvent, Job
 from tests.test_account_states import _admin, _set_state
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 
@@ -55,6 +55,15 @@ async def _events(action: str | None = None) -> list[AuditEvent]:
         if action is not None:
             query = query.where(AuditEvent.action == action)
         return list((await session.execute(query)).scalars().all())
+
+
+async def _stored(asset: Asset) -> None:
+    """The asset route serves a file, so the row needs one behind it."""
+    from app.storage import get_storage
+
+    path = get_storage().path(asset.storage_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n not a real image, and nothing here reads it")
 
 
 def _wait_for_audit(client, action, count=1, timeout=5.0):
@@ -101,6 +110,71 @@ def test_reading_another_account_records_who_was_read(library):
         assert client.get(f"/api/v1/users/{subject.id}").status_code == 200
         recorded = _wait_for_audit(client, "user.read")
     assert recorded[0].target_user_id == subject.id
+
+
+@pytest.mark.db
+def test_an_administrator_reading_another_accounts_asset_bytes_is_recorded(library):
+    """Asset bytes are another account's data, and only the route knows whose
+    bytes an administrator asked for, so it records the read with its target."""
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "asset-read@example.com")
+        asset = client.portal.call(_owned_work, subject.id)
+        client.portal.call(_stored, asset)
+        _admin(client)
+        assert client.get(f"/api/v1/assets/{asset.id}").status_code == 200
+        recorded = _wait_for_audit(client, "user.read")
+    assert recorded[0].target_user_id == subject.id
+
+
+@pytest.mark.db
+def test_an_asset_whose_file_is_gone_records_no_read(library):
+    """Nothing reached the administrator, so nothing was read."""
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "asset-gone@example.com")
+        asset = client.portal.call(_owned_work, subject.id)
+        _admin(client)
+        assert client.get(f"/api/v1/assets/{asset.id}").status_code == 404
+        assert client.portal.call(_events, "user.read") == []
+
+
+@pytest.mark.db
+def test_the_owner_reading_their_own_asset_bytes_records_nothing(library):
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "own-asset@example.com")
+        asset = client.portal.call(_owned_work, subject.id)
+        client.portal.call(_stored, asset)
+        assert _login(client, "own-asset@example.com").status_code == 204
+        assert client.get(f"/api/v1/assets/{asset.id}").status_code == 200
+        assert client.portal.call(_events, "user.read") == []
+
+
+@pytest.mark.db
+def test_reading_assets_of_many_different_accounts_raises_a_flag(library):
+    """Bytes count like pages: opening account after account is the same
+    pattern whether the read is a page or an image."""
+    from app import admin
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        subjects = [client.portal.call(_make, f"asset-crowd{n}@example.com")
+                    for n in range(admin.ANOMALY_TARGETS + 1)]
+        for subject in subjects:
+            asset = client.portal.call(_owned_work, subject.id)
+            client.portal.call(_stored, asset)
+            assert client.get(f"/api/v1/assets/{asset.id}").status_code == 200
+        flagged = _wait_for_audit(client, "admin.anomaly")
+
+        panel = client.get("/api/v1/audit/anomalies")
+        assert panel.status_code == 200
+        assert panel.json()[0]["distinct_targets"] >= admin.ANOMALY_TARGETS
+    assert flagged[0].severity == "high"
 
 
 @pytest.mark.db
