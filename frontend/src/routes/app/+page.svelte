@@ -6,6 +6,7 @@
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { apiFetch } from '$lib/api';
 	import { account } from '$lib/account.svelte';
+	import { parseAccount } from '$lib/account-display';
 	import { accountCheckForcesLogin } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
@@ -57,8 +58,7 @@
 			const response = await apiFetch('/api/v1/account');
 			status = response.status;
 			if (status === 200) {
-				const body = await response.json();
-				account.current = { email: body.email, role: body.role };
+				account.current = parseAccount(await response.json());
 			}
 		} catch {
 			// No answer from the API: open the studio as before, and the panels
