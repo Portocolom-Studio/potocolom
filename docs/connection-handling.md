@@ -60,7 +60,7 @@ Fleet connection, API to worker:
 
 | type | Fields | Notes |
 |---|---|---|
-| `registered` | | hello accepted |
+| `registered` | | hello accepted; the registration writes one `fleet.worker_registered` audit event carrying the worker id, its peer address and its model ids; the address is the peer as uvicorn saw it, so behind a proxy it is the proxy, or a client-asserted `X-Forwarded-For` when the proxy is trusted, not an authenticated identity |
 | `checkpoint_ack` | `session_id`, `control_generation`, `frames`, `gpu_ms`, `duration_ms` | the totals the API has persisted for that attempt; sent only after the write commits, so an acknowledged checkpoint is a durable one |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params`, `control_generation` | acquire a slot and warm the model. Accepted only when the generation is above the highest this worker has seen for the session, and an equal one is idempotent, so a delayed open from a superseded attempt cannot replace a live runner |
@@ -221,7 +221,7 @@ Batch membership is not a session state. A batch is collected, executed and reti
 
 ## Reconnection and resume
 
-Both dialers reconnect with exponential backoff: 1 s doubling to a 30 s cap, with up to 25 percent random jitter so a restarted API is not hit by the whole fleet in the same second. Reconnection is a fresh `hello`; the API holds no memory of previous incarnations of a worker.
+Both dialers reconnect with exponential backoff: 1 s doubling to a 30 s cap, with up to 25 percent random jitter so a restarted API is not hit by the whole fleet in the same second. Reconnection is a fresh `hello`; the API holds no memory of previous incarnations, but a hello whose `worker_id` is still connected is refused 4000 (reason: `worker id already connected`) until the old socket's cleanup or the 90 s reaper frees the id, and the worker's backoff retries.
 
 Session recovery is asymmetric by design:
 

@@ -33,7 +33,7 @@ from app.manifests import (
     validate_params,
 )
 from app.settings import get_settings
-from app import db
+from app import audit, db
 
 logger = logging.getLogger("potocolom.realtime")
 
@@ -918,13 +918,30 @@ async def fleet(ws: WebSocket) -> None:
                             "min_supported_version": MIN_SUPPORTED_VERSION})
         await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
         return
+    if worker.id in workers:
+        # Refused, not replaced: taking over a live id would hand the new
+        # peer its sessions (reason: worker id already connected). Default
+        # ids are random per process (worker/worker/settings.py), so this is
+        # a fixed WORKER_ID reconnecting before its old socket is reaped; the
+        # worker's backoff retries.
+        logger.warning("worker id %s already connected from %s", worker.id, ws.client)
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason="worker id already connected")
+        return
     workers[worker.id] = worker
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
     await ws.send_json({"type": "registered"})
     from app import gpu_samples, registry  # late import; registry reads this module's state
     gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
+    peer = ws.client.host if ws.client is not None else "unknown"
     try:
+        # The registered message is already out, so a slow store cannot delay
+        # registration, and inside the try so a failure still reaches cleanup.
+        await audit.record(
+            "fleet.worker_registered",
+            object_ids=[worker.id, peer, *worker.models],
+            severity="info",
+        )
         # Inside the try: this awaits a database write, and a failure before
         # the try left the worker in `workers` with no cleanup path, so it kept
         # being advertised until the 90 second reaper noticed.
