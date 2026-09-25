@@ -51,6 +51,7 @@
 	});
 
 	async function guardStudioEntry() {
+		account.current = null;
 		let status: number | null = null;
 		try {
 			const response = await apiFetch('/api/v1/account');

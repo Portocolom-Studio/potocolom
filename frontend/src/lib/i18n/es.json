@@ -655,7 +655,7 @@
 	"app.shell.log_out": "Cerrar sesión",
 	"app.shell.role_admin": "Administrador",
 	"app.shell.role_user": "Usuario",
-	"app.shell.role_viewer": "Espectador",
+	"app.shell.role_viewer": "Lector",
 	"app.shell.playground": "Zona de pruebas",
 	"app.shell.services": "Servicios",
 	"app.shell.workspace": "Espacio de trabajo",
