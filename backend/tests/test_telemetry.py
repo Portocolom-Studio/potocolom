@@ -1,14 +1,44 @@
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
 
 import pytest
+from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app import db, telemetry
 from app.main import app
 from app.tables import TelemetryState, UsageEvent, User, WorkerIdentity
+
+
+def test_usage_event_schedulers_hold_their_tasks_until_done(monkeypatch):
+    # asyncio.create_task keeps only a weak reference, so a task the scheduler
+    # does not hold can be garbage-collected mid-write (issue #497).
+    from app import usage_events
+
+    gate = asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        await gate.wait()
+
+    monkeypatch.setattr(usage_events, "record_job", blocked)
+    monkeypatch.setattr(usage_events, "record_realtime", blocked)
+
+    async def exercise() -> None:
+        usage_events.schedule_job(uuid.uuid4(), {"category": "art"})
+        usage_events.schedule_realtime(uuid.uuid4(), "sd-test", {"gpu_ms": 1})
+        assert len(usage_events._background_tasks) == 2
+        gate.set()
+        deadline = time.monotonic() + 5
+        while usage_events._background_tasks:
+            if time.monotonic() >= deadline:
+                raise AssertionError("a scheduled task was never released")
+            await asyncio.sleep(0.01)
+
+    run_on_test_loop(exercise())
 
 
 @pytest.mark.db

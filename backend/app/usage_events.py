@@ -107,9 +107,18 @@ def _optional_float(value: Any) -> float | None:
     return float(value) if _numeric(value) else None
 
 
+# Strong reference so the garbage collector cannot drop a task mid-flight
+# (issue #497); done tasks remove themselves.
+_background_tasks: set[asyncio.Task] = set()
+
+
 def schedule_job(job_id: uuid.UUID, control: dict) -> None:
-    asyncio.create_task(record_job(job_id, dict(control)))
+    task = asyncio.create_task(record_job(job_id, dict(control)))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def schedule_realtime(user_id: uuid.UUID, model_id: str, control: dict) -> None:
-    asyncio.create_task(record_realtime(user_id, model_id, dict(control)))
+    task = asyncio.create_task(record_realtime(user_id, model_id, dict(control)))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)

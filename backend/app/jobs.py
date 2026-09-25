@@ -1409,8 +1409,13 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             last_progress_at.pop(job.id, None)
             release_job_slot(worker)
             return True  # harness bumped epoch; session rolls back, job stays queued
+        # Bounded like the cancel and close_session sends: a reader that stops
+        # must not hold the row lock and this dispatch task. TimeoutError falls
+        # through to the handler below, which drops the worker and requeues.
         try:
-            await worker.ws.send_json(dispatch_msg)
+            await asyncio.wait_for(
+                worker.ws.send_json(dispatch_msg), realtime.CLOSE_TIMEOUT
+            )
         except Exception:  # the socket is dead however the transport spells it
             if realtime.workers.get(worker.id) is worker:
                 del realtime.workers[worker.id]  # what the reaper would conclude

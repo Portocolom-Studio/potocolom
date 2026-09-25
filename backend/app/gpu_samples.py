@@ -139,12 +139,19 @@ async def record_worker_identity(
         logger.warning("worker identity persistence skipped: %s", error)
 
 
+# Strong reference so the garbage collector cannot drop a task mid-flight
+# (issue #497); done tasks remove themselves.
+_background_tasks: set[asyncio.Task] = set()
+
+
 def schedule_worker_identity(
     worker_id: str,
     device: str | None,
     memory_mode: str | None,
 ) -> None:
-    asyncio.create_task(record_worker_identity(worker_id, device, memory_mode))
+    task = asyncio.create_task(record_worker_identity(worker_id, device, memory_mode))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def record_heartbeat(
@@ -188,7 +195,9 @@ def schedule_heartbeat_sample(
     """Fire-and-forget persistence so the fleet socket loop stays responsive."""
     if control.get("type") != "heartbeat":
         return
-    asyncio.create_task(record_heartbeat(worker_id, control, device, memory_mode))
+    task = asyncio.create_task(record_heartbeat(worker_id, control, device, memory_mode))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 RollupMode = Literal["auto", "raw", "5m"]
