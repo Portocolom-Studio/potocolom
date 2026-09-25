@@ -2,8 +2,9 @@
 
 Targets an API that is already running (AUTH_MODE=none, no worker needed).
 Fake workers speak the fleet protocol inside this process, so no GPU and no
-worker process are involved. What is sent is fixed by --seed and the counts;
-only measured timings vary between runs. Prints one table and exits 1 when
+worker process are involved. The schedule is fixed by --seed and the counts:
+the same messages go out in the same order, and only timings, send stamps and
+server-minted ids vary between runs. Prints one table and exits 1 when
 any threshold fails.
 
     FLEET_TOKEN=... backend/.venv/bin/python scripts/stress.py --api http://localhost:8427
@@ -12,6 +13,7 @@ any threshold fails.
 import argparse
 import asyncio
 import json
+import math
 import os
 import random
 import struct
@@ -66,7 +68,7 @@ def pct(values: list[float], q: float) -> float:
     if not values:
         return float("nan")
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int(q / 100 * len(ordered)))]
+    return ordered[max(0, math.ceil(q / 100 * len(ordered)) - 1)]
 
 
 def jain(values: list[int]) -> float:
@@ -205,19 +207,19 @@ class FakeWorker:
         await self.loop
 
     async def close(self) -> None:
+        await self.http.aclose()
         await self.ws.close()
         await self.loop
-        await self.http.aclose()
 
 
 @asynccontextmanager
 async def fleet(args: argparse.Namespace, count: int, slots: int):
     workers = [FakeWorker(args, number, slots) for number in range(count)]
-    await asyncio.gather(*(worker.connect() for worker in workers))
     try:
+        await asyncio.gather(*(worker.connect() for worker in workers))
         yield workers
     finally:
-        await asyncio.gather(*(worker.close() for worker in workers))
+        await asyncio.gather(*(worker.close() for worker in workers), return_exceptions=True)
 
 
 class Browser:
@@ -322,8 +324,9 @@ async def realtime_load(args, rng, report: Report, count: int, fps: float) -> tu
         await asyncio.gather(*(browser.finish() for browser in ready))
         expected = min(count, capacity)
         report.add("ready", len(ready), len(ready) == expected, f"== {expected}")
-        report.add("refused_4003", sum(b.close_code == CLOSE_NO_CAPACITY for b in refused),
-                   len(refused) == count - expected, f"== {count - expected}")
+        refused_4003 = sum(b.close_code == CLOSE_NO_CAPACITY for b in refused)
+        report.add("refused_4003", refused_4003, refused_4003 == count - expected,
+                   f"== {count - expected}")
         sent = sum(browser.sent for browser in ready)
         rendered = [len(browser.latencies) for browser in ready]
         report.add("frames_sent", sent)

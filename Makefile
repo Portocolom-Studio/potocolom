@@ -334,7 +334,11 @@ simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
 
 stress: ## deterministic socket stress test against a running API (docs/local-development.md)
-	backend/.venv/bin/python scripts/stress.py
+	@set -a; \
+	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
+	set +a; \
+	FLEET_TOKEN="$${FLEET_TOKEN:-$$FLEET_SECRET}" \
+		backend/.venv/bin/python scripts/stress.py --api http://localhost:$(API_PORT)
 
 # The local M2 stack. Each target runs in the foreground in its own terminal.
 # Or use dev-start / dev-stop / dev-restart for API + frontend + worker in the background.

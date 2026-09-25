@@ -157,6 +157,9 @@ speak the fleet protocol in the same process, so no GPU and no worker process
 are needed:
 
 ```bash
+make api      # in another terminal
+make stress   # same FLEET_SECRET from deploy/compose/.env, same API_PORT
+# or by hand, for another API:
 FLEET_TOKEN=<the API's FLEET_TOKEN_KEY> backend/.venv/bin/python scripts/stress.py \
     --api http://localhost:8000 --api-pid <API pid>
 ```
@@ -166,7 +169,8 @@ It runs six scenarios, or the ones you name with `--scenario`: `sessions`
 (workers die and reconnect mid-session), `conn-churn` (sockets that open and
 close fast), `slow-consumer` (a browser that stops reading) and `rest-burst`
 (concurrent `POST /api/v1/generations`). `--seed`, the counts and the
-durations fix the schedule, so two runs send the same messages. It prints one
+durations fix the schedule, so two runs send the same messages in the same
+order; only timings, send stamps and server-minted ids differ. It prints one
 table and exits 1 if a threshold fails. `--api-pid` adds the API's resident set
 and open descriptors from `/proc`. Scale the load with `--sessions`,
 `--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` fails until
