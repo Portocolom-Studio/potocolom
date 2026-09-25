@@ -17,7 +17,7 @@
 	setup setup-rocm setup-cuda setup-inference check-python check-node check-worker-venv \
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards verify-mermaid simulate test-db-clean dev-db \
+	verify-frontend verify-compose verify-guards verify-mermaid simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -332,6 +332,9 @@ verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and C
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
+
+stress: ## deterministic socket stress test against a running API (docs/local-development.md)
+	backend/.venv/bin/python scripts/stress.py
 
 # The local M2 stack. Each target runs in the foreground in its own terminal.
 # Or use dev-start / dev-stop / dev-restart for API + frontend + worker in the background.
