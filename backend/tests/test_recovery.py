@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,6 +43,39 @@ def _ask(client, email):
                        json={"email": email})
 
 
+def _reset_scope(email: str) -> tuple[dict, bytes]:
+    """A raw ASGI scope for the reset route, so a test can drive the app
+    without a server and watch when the account work runs."""
+    body = json.dumps({"email": email}).encode()
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/v1/auth/reset",
+        "raw_path": b"/api/v1/auth/reset",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", ORIGIN.encode()),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            (b"origin", ORIGIN.encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 443),
+    }, body
+
+
+async def _wait_for_reset_deliveries() -> None:
+    """The deliveries run detached from the request, so the mail may still be
+    in flight when the response arrives; wait for them before reading the
+    outbox."""
+    while recovery._reset_delivery_tasks:
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.db
 def test_asking_answers_the_same_whoever_asked(accounts):
     """A different answer for an address nobody holds turns this route into a
@@ -63,6 +98,125 @@ def test_asking_does_not_take_the_account_gate():
 
 
 @pytest.mark.db
+def test_ask_answers_before_the_account_work_runs(accounts, monkeypatch):
+    """The 202 and its body must reach the caller before the account work
+    starts, or the cost of that work is visible as response time. Fails if
+    the work moves back onto the request path."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    accounts(_make("timed@example.com"))
+    scope, body = _reset_scope("timed@example.com")
+
+    async def drive() -> None:
+        work_started = asyncio.Event()
+        release = asyncio.Event()
+        body_sent = asyncio.Event()
+        work_done = asyncio.Event()
+        original = recovery._deliver_reset
+
+        async def blocked(email: str) -> None:
+            work_started.set()
+            await release.wait()
+            await original(email)
+            work_done.set()
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body":
+                assert not work_started.is_set()
+                body_sent.set()
+
+        replayed = False
+
+        async def receive() -> dict:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        with monkeypatch.context() as patched:
+            patched.setattr(recovery, "_deliver_reset", blocked)
+            request = asyncio.create_task(app(scope, receive, send))
+            try:
+                await asyncio.wait_for(body_sent.wait(), timeout=10)
+                release.set()
+                await asyncio.wait_for(work_done.wait(), timeout=10)
+                await request
+            finally:
+                release.set()
+                if not request.done():
+                    request.cancel()
+        assert work_started.is_set()
+
+    accounts(drive())
+    queued = accounts(_outbox())
+    assert len(queued) == 1
+    assert queued[0].template == "reset"
+    assert queued[0].to_email == "timed@example.com"
+
+
+@pytest.mark.db
+def test_the_connection_is_freed_before_the_account_work_runs(accounts, monkeypatch):
+    """The reset route hands the connection back while the account work is
+    still running: a keep-alive connection held until the mail is queued
+    turns the account-existence answer into a timing signal on the next
+    request. Fails if the work is delivered with BackgroundTasks, which runs
+    the task before the response returns."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    accounts(_make("probe@example.com"))
+    scope, body = _reset_scope("probe@example.com")
+
+    async def drive() -> None:
+        work_started = asyncio.Event()
+        release = asyncio.Event()
+        work_done = asyncio.Event()
+        original = recovery._deliver_reset
+
+        async def blocked(email: str) -> None:
+            work_started.set()
+            await release.wait()
+            await original(email)
+            work_done.set()
+
+        async def send(message: dict) -> None:
+            pass
+
+        replayed = False
+
+        async def receive() -> dict:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        with monkeypatch.context() as patched:
+            patched.setattr(recovery, "_deliver_reset", blocked)
+            request = asyncio.create_task(app(scope, receive, send))
+            try:
+                await asyncio.wait_for(work_started.wait(), timeout=10)
+                await asyncio.wait_for(request, timeout=10)
+                assert not work_done.is_set()
+                release.set()
+                await asyncio.wait_for(work_done.wait(), timeout=10)
+            finally:
+                release.set()
+                if not request.done():
+                    request.cancel()
+
+    accounts(drive())
+    queued = accounts(_outbox())
+    assert len(queued) == 1
+    assert queued[0].template == "reset"
+    assert queued[0].to_email == "probe@example.com"
+
+
+@pytest.mark.db
 def test_a_reset_is_queued_only_for_an_address_somebody_holds(accounts, monkeypatch):
     monkeypatch.setenv("EMAIL_BACKEND", "smtp")
     monkeypatch.setenv("SMTP_HOST", "mail.example.com")
@@ -73,6 +227,7 @@ def test_a_reset_is_queued_only_for_an_address_somebody_holds(accounts, monkeypa
         assert _ask(client, "nobody@example.com").status_code == 202
         assert client.portal.call(_outbox) == []
         assert _ask(client, "real2@example.com").status_code == 202
+        client.portal.call(_wait_for_reset_deliveries)
         queued = client.portal.call(_outbox)
     assert len(queued) == 1
     assert queued[0].template == "reset"
