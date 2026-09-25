@@ -56,11 +56,11 @@ def _migrate(database_url: str) -> None:
     command.upgrade(config, "head")
 
 
-def _postgres_version_supported(version: tuple[int, ...]) -> bool:
+def _postgres_version_supported(version: tuple[int | str, ...]) -> bool:
     return version >= MIN_POSTGRES_VERSION
 
 
-async def _postgres_version(database_url: str) -> tuple[int, ...]:
+async def _postgres_version(database_url: str) -> tuple[int | str, ...]:
     check_engine = create_async_engine(async_url(database_url), poolclass=NullPool)
     try:
         async with check_engine.connect() as connection:
