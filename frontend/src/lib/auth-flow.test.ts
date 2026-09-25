@@ -110,6 +110,7 @@ test('wiring: the complete form handles success, a spent link, a mismatch and a 
 	assert.match(flowSource, /\/api\/v1\/auth\/reset\/complete'/);
 	assert.match(flowSource, /response\.status === 204/);
 	assert.match(flowSource, /reset=done/);
+	assert.match(flowSource, /goto\([\s\S]*?\?reset=done[\s\S]*?replaceState: true/);
 	assert.match(flowSource, /parsed\.kind === 'policy'/);
 	assert.match(flowSource, /auth\.reset\.policy/);
 	assert.match(flowSource, /parsed\.kind === 'invalid'/);
@@ -117,6 +118,19 @@ test('wiring: the complete form handles success, a spent link, a mismatch and a 
 	assert.match(flowSource, /password !== confirmPassword/);
 	assert.match(flowSource, /auth\.reset\.password_mismatch/);
 	assert.match(flowSource, /auth\.reset\.ask_new/);
+});
+
+test('wiring: a hashchange clears the password fields so one link never inherits another', () => {
+	const flowSource = readFileSync(join(here, 'components/reset-flow.svelte'), 'utf8');
+	assert.match(
+		flowSource,
+		/function onHashChange\(\) \{[\s\S]*?password = '';[\s\S]*?confirmPassword = '';/
+	);
+});
+
+test('wiring: the neutral asked answer carries role="status" so a screen reader announces it', () => {
+	const flowSource = readFileSync(join(here, 'components/reset-flow.svelte'), 'utf8');
+	assert.match(flowSource, /<Card\.Description role="status">[\s\S]*?auth\.reset\.asked/);
 });
 
 test('wiring: generate panel posts use apiFetch', () => {

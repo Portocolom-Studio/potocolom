@@ -35,12 +35,16 @@
 
 	function onHashChange() {
 		// A link pasted into an already-open tab changes only the fragment, so
-		// the form follows it rather than waiting for a reload.
+		// the form follows it rather than waiting for a reload. The password
+		// fields reset too, so a password typed for one link is not carried
+		// into another.
 		token = readInviteTokenFromHash(location.hash);
 		asked = false;
 		invalid = false;
 		error = '';
 		submitting = false;
+		password = '';
+		confirmPassword = '';
 	}
 
 	async function submitAsk(event: SubmitEvent) {
@@ -86,7 +90,9 @@
 				if (response.status === 204) {
 					// The reset returned no session, so the account holder
 					// lands on the login screen, which shows the confirmation.
-					await goto(`${resolve('/login')}?reset=done`);
+					// Replacing the entry drops the spent /reset#<token> from
+					// history, so Back does not resurrect it.
+					await goto(`${resolve('/login')}?reset=done`, { replaceState: true });
 					return;
 				}
 				const parsed = await parseAuthError(response);
@@ -123,7 +129,7 @@
 		<Card.Root>
 			<Card.Header>
 				<Card.Title>{t('auth.reset.title')}</Card.Title>
-				<Card.Description>{t('auth.reset.asked')}</Card.Description>
+				<Card.Description role="status">{t('auth.reset.asked')}</Card.Description>
 			</Card.Header>
 		</Card.Root>
 	{:else}
