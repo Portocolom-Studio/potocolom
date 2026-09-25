@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { applyLandingMode, readLandingMode } from './landing-mode.ts';
 
@@ -45,4 +47,13 @@ test('blocked storage still switches the theme for the visit', () => {
 	assert.equal(readLandingMode(), 'dark');
 	applyLandingMode('light');
 	assert.equal(dataset.landingMode, 'light');
+});
+
+test('the pre-paint theme script in app.html is allowed by the CSP hash', () => {
+	const html = readFileSync(new URL('../app.html', import.meta.url), 'utf8');
+	const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? '';
+	assert.ok(script.includes('landing-mode'));
+	const hash = `sha256-${createHash('sha256').update(script).digest('base64')}`;
+	const config = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
+	assert.ok(config.includes(`'${hash}'`), `vite.config.ts script-src lacks ${hash}`);
 });

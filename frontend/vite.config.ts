@@ -65,7 +65,8 @@ export default defineConfig({
 					'connect-src': ['self'],
 					'font-src': ['self'],
 					'img-src': ['self', 'https:', 'http:'],
-					'script-src': ['self'],
+					// the pre-paint theme script in src/app.html; landing-mode.test.ts keeps this hash in step
+					'script-src': ['self', 'sha256-FedVWEyxrUeqQuLDbtym4ngFvT9rZIm5fizwt4zA28o='],
 					'style-src': ['self', 'unsafe-inline']
 				}
 			}
