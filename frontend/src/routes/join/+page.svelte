@@ -27,9 +27,23 @@
 
 	onMount(() => {
 		if (landing) return;
-		token = readInviteTokenFromHash(location.hash);
+		onHashChange();
+		window.addEventListener('hashchange', onHashChange);
 		ready = true;
+		return () => window.removeEventListener('hashchange', onHashChange);
 	});
+
+	function onHashChange() {
+		// A link pasted into an already-open tab changes only the fragment, so
+		// the form follows it rather than waiting for a reload. The password
+		// fields reset too, so a password typed for one link is not carried
+		// into another.
+		token = readInviteTokenFromHash(location.hash);
+		error = '';
+		submitting = false;
+		password = '';
+		confirmPassword = '';
+	}
 
 	async function submitJoin(event: SubmitEvent) {
 		event.preventDefault();
