@@ -7,11 +7,11 @@
 	import { readCsrfToken } from '$lib/api';
 	import {
 		loadBenchmarkSessionReport,
-		loadBenchmarkSessions,
-		mayReadSessions
+		loadBenchmarkSessions
 	} from '$lib/studio-benchmark-sessions';
 	import {
 		formatMs,
+		mayReadSessions,
 		formatSeconds,
 		promptAverages,
 		variantAverages,
