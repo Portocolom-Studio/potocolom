@@ -35,7 +35,7 @@ DARK_TEXT = {
     "#0f172a": "#edecec", "#1e293b": "#e6e4e0", "#475569": "#b3b1ac", "#64748b": "#8a8883",
     "#e2e8f0": "#e2e8f0", "#f8fafc": "#f8fafc", "#854d0e": "#fcd34d", "#0369a1": "#38bdf8",
     "#047857": "#34d399", "#4338ca": "#a5b4fc", "#be123c": "#fb7185", "#b45309": "#fbbf24",
-    "#94a3b8": "#8a8883",
+    "#94a3b8": "#8a8883", "#1f7a4d": "#4fbf82", "#b26b00": "#f0b454",
 }
 DARK_FILL = {
     "#f5f5f5": DARK_BG, "#ffffff": DARK_CARD, "#e6effc": "#172238", "#eeeff2": "#1f1e1b",
@@ -45,19 +45,21 @@ DARK_FILL = {
     "#f8fafc": "#1a1917", "#e2e8f0": "#2a2925", "#0f172a": "#1e293b", "#1e293b": "#334155",
     "#fefce8": "#2a2410", "#6366f1": "#6366f1", "#0ea5e9": "#0ea5e9", "#10b981": "#10b981",
     "#f43f5e": "#f43f5e", "#f59e0b": "#f59e0b", "#334155": "#dcdad5", "#64748b": "#8e8c86",
+    "#e3f1e8": "#13261b", "#fbeed6": "#2b2112", "#f8e3e3": "#2e1616", "#1f7a4d": "#4fbf82",
+    "#b26b00": "#f0b454",
 }
 DARK_BORDER = {
     "#2d3142": "#4a4943", "#005ee3": "#79a8ff", "#b4232a": "#ff7d70", "#c9cdd6": "#34332e",
     "#8e98ac": "#5a5852", "#4f5d75": "#6d6b65", "#7a8399": "#5f5d58", "#ffffff": DARK_CARD,
     "#cbd5e1": "#3a3934", "#e2e8f0": "#2a2925", "#eab308": "#a16207", "#f43f5e": "#f43f5e",
-    "#6366f1": "#818cf8", "#64748b": "#8e8c86",
+    "#6366f1": "#818cf8", "#64748b": "#8e8c86", "#1f7a4d": "#4fbf82", "#b26b00": "#f0b454",
 }
 DARK_LINE = {
     "#2d3142": "#dcdad5", "#4f5d75": "#8e8c86", "#7a8399": "#6f6d68", "#005ee3": "#79a8ff",
     "#b4232a": "#ff7d70", "#c9cdd6": "#4a4943", "#8e98ac": "#6f6d68",
     "#64748b": "#8e8c86", "#94a3b8": "#6f6d68", "#1e293b": "#dcdad5", "#334155": "#dcdad5",
     "#6366f1": "#818cf8", "#0ea5e9": "#0ea5e9", "#10b981": "#10b981", "#f43f5e": "#f43f5e",
-    "#f59e0b": "#f59e0b", "#cbd5e1": "#4a4943",
+    "#f59e0b": "#f59e0b", "#cbd5e1": "#4a4943", "#1f7a4d": "#4fbf82", "#b26b00": "#f0b454",
 }
 # The whitepaper-style figures put white text on saturated and navy fills, which keep
 # their colour in the dark twin, so that white stays white.

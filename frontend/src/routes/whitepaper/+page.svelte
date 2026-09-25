@@ -9,7 +9,17 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	const sections = [
-		{ id: 's1', title: 'wp.s1_title', paragraphs: ['wp.s1_p1', 'wp.s1_p2'] },
+		{
+			id: 's1',
+			title: 'wp.s1_title',
+			paragraphs: ['wp.s1_p1', 'wp.s1_p2'],
+			figure: {
+				src: '/whitepaper/stroke-journey.webp',
+				cap: 'wp.fig_journey_cap',
+				width: 2602,
+				height: 2842
+			}
+		},
 		{
 			id: 's2',
 			title: 'wp.s2_title',
@@ -17,8 +27,8 @@
 			figure: {
 				src: '/whitepaper/under-the-hood.webp',
 				cap: 'wp.fig_arch_cap',
-				width: 3146,
-				height: 1084
+				width: 2602,
+				height: 2467
 			}
 		},
 		{
@@ -28,16 +38,42 @@
 			figure: {
 				src: '/whitepaper/realtime-loop.webp',
 				cap: 'wp.fig_loop_cap',
-				width: 2365,
-				height: 1587
+				width: 2602,
+				height: 2592
 			}
 		},
-		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
-		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
+		{
+			id: 's4',
+			title: 'wp.s4_title',
+			paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'],
+			figure: {
+				src: '/whitepaper/gpu-scheduling.webp',
+				cap: 'wp.fig_gpu_cap',
+				width: 2602,
+				height: 2257
+			}
+		},
+		{
+			id: 's5',
+			title: 'wp.s5_title',
+			paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'],
+			figure: {
+				src: '/whitepaper/model-manifest.webp',
+				cap: 'wp.fig_manifest_cap',
+				width: 2602,
+				height: 2207
+			}
+		},
 		{
 			id: 's6',
 			title: 'wp.s6_title',
-			paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3', 'wp.s6_p4']
+			paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3', 'wp.s6_p4'],
+			figure: {
+				src: '/whitepaper/image-lifecycle.webp',
+				cap: 'wp.fig_images_cap',
+				width: 2602,
+				height: 2352
+			}
 		},
 		{
 			id: 's7',
@@ -46,8 +82,8 @@
 			figure: {
 				src: '/whitepaper/credit-lifecycle.webp',
 				cap: 'wp.fig_credits_cap',
-				width: 2325,
-				height: 1627
+				width: 2602,
+				height: 3202
 			}
 		},
 		{
@@ -57,11 +93,21 @@
 			figure: {
 				src: '/whitepaper/failure-map.webp',
 				cap: 'wp.fig_failures_cap',
-				width: 2363,
-				height: 1502
+				width: 2602,
+				height: 2147
 			}
 		},
-		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
+		{
+			id: 's9',
+			title: 'wp.s9_title',
+			paragraphs: ['wp.s9_p1', 'wp.s9_p2'],
+			figure: {
+				src: '/whitepaper/deployment-modes.webp',
+				cap: 'wp.fig_deploy_cap',
+				width: 2602,
+				height: 2397
+			}
+		}
 	] as const;
 </script>
 
@@ -102,6 +148,15 @@
 						{#if 'figure' in section}
 							<figure>
 								<img
+									class="fig-dark"
+									src={section.figure.src.replace(/\.webp$/, '-dark.webp')}
+									alt={t(section.figure.cap)}
+									width={section.figure.width}
+									height={section.figure.height}
+									loading="lazy"
+								/>
+								<img
+									class="fig-light"
 									src={section.figure.src}
 									alt={t(section.figure.cap)}
 									width={section.figure.width}
@@ -234,13 +289,25 @@
 		line-height: 1.75;
 	}
 
-	/* The diagrams are dark-on-light, so they keep a paper card of their own. */
 	figure {
 		margin: 0.5rem 0 0;
 		padding: 0.75rem;
 		border: 1px solid var(--k-line);
 		border-radius: 1rem;
+		background: #141413;
+	}
+
+	:global(:root[data-landing-mode='light']) figure {
 		background: oklch(0.99 0.003 255);
+	}
+
+	figure img.fig-light,
+	:global(:root[data-landing-mode='light']) figure img.fig-dark {
+		display: none;
+	}
+
+	:global(:root[data-landing-mode='light']) figure img.fig-light {
+		display: block;
 	}
 
 	figure img {
@@ -251,7 +318,7 @@
 
 	figcaption {
 		padding: 0.6rem 0.25rem 0.1rem;
-		color: oklch(0.42 0.02 258);
+		color: var(--k-muted);
 		font-size: 0.78rem;
 		line-height: 1.5;
 	}
