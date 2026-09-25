@@ -852,11 +852,17 @@ async def fleet(ws: WebSocket) -> None:
                     for model_id, values in (batch or {}).items()
                     if model_id in worker.models
                 }
-        if not (isinstance(version, int) and isinstance(worker.id, str)
+        if not (isinstance(version, int) and not isinstance(version, bool)
+                and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
                 and (worker.device is None or isinstance(worker.device, str))
                 and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
+    except WebSocketDisconnect:
+        # A worker closing mid-handshake is ordinary network behaviour, not a
+        # protocol violation; letting it escape would log "Exception in ASGI
+        # application" for every client that leaves during hello.
+        return
     except (ProtocolError, KeyError) as error:
         # Logged: a rejected hello is otherwise silent on both sides, so an
         # operator with a bad manifest sees a worker that starts and never
@@ -1130,15 +1136,28 @@ async def realtime(ws: WebSocket) -> None:
         await refuse(ws, handshake.close_code, "not permitted to open a realtime session")
         return
     try:
-        opening = parse_control(await ws.receive_text())
+        # An accepted socket that never sends open is otherwise held by this
+        # receive forever, so the wait is bounded like the assignment below.
+        opening = parse_control(await asyncio.wait_for(
+            ws.receive_text(), SESSION_READY_TIMEOUT))
         if opening["type"] != "open":
             raise ProtocolError("first message must be open")
-        model_id = opening["model_id"]
+        model_id = opening.get("model_id")
+        if not isinstance(model_id, str):
+            raise ProtocolError("model_id must be a string")
         params = opening.get("params") or {}
         if not isinstance(params, dict):
             raise ProtocolError("params must be an object")
-    except (ProtocolError, KeyError):
-        await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+    except WebSocketDisconnect:
+        # A peer closing mid-handshake is ordinary network behaviour, not an
+        # error; letting it escape would log "Exception in ASGI application"
+        # for every client that leaves before its open.
+        return
+    except TimeoutError:
+        await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "did not send open")
+        return
+    except (ProtocolError, KeyError) as error:
+        await refuse(ws, CLOSE_PROTOCOL_VIOLATION, str(error))
         return
     if not model_known(model_id):
         await refuse(ws, CLOSE_UNKNOWN_MODEL, "unknown model")
@@ -1183,7 +1202,7 @@ async def realtime(ws: WebSocket) -> None:
             transition(session, "assigning", "ending")
             await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
-        await ws.send_json({"type": "ready", "session_id": str(session.id)})
+        await safe_send(ws.send_json({"type": "ready", "session_id": str(session.id)}))
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
@@ -1202,6 +1221,7 @@ async def realtime(ws: WebSocket) -> None:
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     if control["type"] == "close":
+                        await safe_send(ws.close(code=1000))
                         break
                     if control["type"] == "update_params":
                         params = control.get("params")
@@ -1278,8 +1298,8 @@ async def realtime(ws: WebSocket) -> None:
                             "type": "params_updated",
                             "params": session.params,
                         }))
-            except ProtocolError:
-                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+            except ProtocolError as error:
+                await refuse(ws, CLOSE_PROTOCOL_VIOLATION, str(error))
                 break
     finally:
         sessions.pop(session.id, None)
