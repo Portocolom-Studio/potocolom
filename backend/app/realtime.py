@@ -713,6 +713,18 @@ async def place_session(session: Session, *, exclude_ids: set[str] | None = None
     return session.state == "live"
 
 
+def arm_settlement(session: Session, worker: Worker, generation: int) -> None:
+    """Wait for this attempt's session_closed totals from this worker.
+
+    Every path that ends an attempt on a still-connected worker arms it, or
+    the worker's report finds nobody to bill: release() for a close, an idle
+    release or a revocation, and reassign() for a shed or a refusal.
+    """
+    if workers.get(worker.id) is worker and session.user_id is not None:
+        closing_sessions[(session.id, generation)] = (
+            session.user_id, session.model_id, worker)
+
+
 async def release(session: Session) -> None:
     if session.worker is None:
         return
@@ -720,12 +732,9 @@ async def release(session: Session) -> None:
     worker.slots_in_use -= 1
     generation = session.control_generation
     if workers.get(worker.id) is worker:  # still connected, same incarnation
-        if session.user_id is not None:
-            # Armed here rather than by whoever ends the session: a revocation
-            # releases before the browser handler's own teardown runs, and the
-            # worker's session_closed totals would find nobody to bill.
-            closing_sessions[(session.id, generation)] = (
-                session.user_id, session.model_id, worker)
+        # Armed here rather than by whoever ends the session: a revocation
+        # releases before the browser handler's own teardown runs.
+        arm_settlement(session, worker, generation)
         # Bounded: the slot is already back, and a worker that stopped reading
         # would otherwise hold up whatever asked for this session to end,
         # including the revocation that has other sockets waiting behind it.
@@ -751,6 +760,9 @@ async def reassign(session: Session) -> None:
         if session.worker is worker:
             worker.slots_in_use -= 1
             session.worker = None
+        # A shed or a refusal leaves the worker connected with a runner whose
+        # totals are real; a lost worker is not in `workers` and arms nothing.
+        arm_settlement(session, worker, generation)
         await close_abandoned_session(worker, session, generation)
     if not session.is_live:
         return
@@ -1067,17 +1079,16 @@ async def fleet(ws: WebSocket) -> None:
                         # earlier still knows its id, and popping on its word
                         # would drop the current owner's entry and bill this
                         # user for a session it did not run.
-                        generation = control.get("control_generation")
-                        # A protocol 3 worker omits the generation; it is never a
-                        # resume candidate, so its session has one attempt.
-                        key = ((session_id, generation) if isinstance(generation, int)
-                               else next((k for k, v in closing_sessions.items()
-                                          if k[0] == session_id and v[2] is worker), None))
-                        owner = closing_sessions.get(key) if key is not None else None
-                        if key is not None and owner is not None and owner[2] is worker:
-                            del closing_sessions[key]
-                            from app import usage_events
-                            usage_events.schedule_realtime(owner[0], owner[1], control)
+                        # message_generation refuses an unfenced protocol 4
+                        # report and reads protocol 3 as its only attempt, 1.
+                        generation = message_generation(control, worker)
+                        if generation is not None:
+                            key = (session_id, generation)
+                            owner = closing_sessions.get(key)
+                            if owner is not None and owner[2] is worker:
+                                del closing_sessions[key]
+                                from app import usage_events
+                                usage_events.schedule_realtime(owner[0], owner[1], control)
                     elif control["type"] in ("gpu_status", "model_loaded",
                                              "model_unloaded", "gpu_error"):
                         resolve_gpu_request(control)

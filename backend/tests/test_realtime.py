@@ -1002,6 +1002,7 @@ def test_closed_session_persists_usage_event():
             worker_ws.send_json({
                 "type": "session_closed",
                 "session_id": opened["session_id"],
+                "control_generation": 1,
                 "frames": 3,
                 "gpu_ms": 90,
                 "duration_ms": 2000,
@@ -1640,6 +1641,7 @@ def test_session_closed_from_another_worker_is_ignored():
                 time.sleep(0.05)
 
             owner_ws.send_json({"type": "session_closed", "session_id": session_id,
+                                "control_generation": 1,
                                 "frames": 7, "gpu_ms": 70, "duration_ms": 700,
                                 "category": "other"})
             deadline = time.monotonic() + 3
@@ -2689,6 +2691,157 @@ def test_usage_settles_per_attempt_across_a_resume(monkeypatch):
                     assert sorted(c.get("control_generation") for _, _, c in calls) == [1, 2]
                     assert [user for user, _, _ in calls] == [session.user_id] * 2
                     assert [model for _, model, _ in calls] == ["sd-sim"] * 2
+
+
+def test_reassign_arms_the_old_generation_for_the_still_connected_worker(monkeypatch):
+    """A shed or a refusal ends an attempt on a worker that is still
+    connected, so reassign() must arm that attempt's session_closed like
+    release() does, or the totals that worker reports find nobody to bill.
+
+    Driven with no spare worker so reassign() completes immediately (it
+    cannot place the session and refuses 4003) instead of waiting on an
+    open_session that needs answering on the same loop.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-reassign-arms"))
+        expect(worker_ws, "registered")
+        worker = realtime.workers["w-reassign-arms"]
+        user_id = uuid.uuid4()
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+            user_id=user_id, worker=worker, state="live",
+            assigned_at=time.monotonic(),
+        )
+        realtime.sessions[session.id] = session
+        try:
+            client.portal.call(realtime.reassign, session)
+            assert (session.id, 1) in realtime.closing_sessions
+            assert realtime.closing_sessions[(session.id, 1)] == (
+                user_id, "sd-sim", worker)
+
+            closed = expect(worker_ws, "close_session")
+            assert closed["session_id"] == str(session.id)
+            assert closed["control_generation"] == 1
+            worker_ws.send_json({
+                "type": "session_closed",
+                "session_id": str(session.id),
+                "control_generation": 1,
+                "frames": 4, "gpu_ms": 40, "duration_ms": 400,
+                "category": "other",
+            })
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not calls:
+                time.sleep(0.05)
+            assert calls, "the reassigned worker's totals were never billed"
+            assert calls[0][0] == user_id
+            assert calls[0][1] == "sd-sim"
+        finally:
+            realtime.sessions.pop(session.id, None)
+            realtime.closing_sessions.pop((session.id, 1), None)
+
+
+def test_an_unfenced_protocol_4_session_closed_is_ignored(monkeypatch):
+    """Protocol 4 demands a fenced session_closed: a report without
+    control_generation is not believed. The armed entry stays and nothing is
+    scheduled, where the removed fallback scan treated any generation-less
+    report as the session's first attempt and billed on the worker's word
+    alone.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(db, "local_user_id", uuid.uuid4())
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-unfenced-close"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session_id = uuid.UUID(opened["session_id"])
+            browser_ws.send_json({"type": "close"})
+        expect(worker_ws, "close_session")
+        assert (session_id, 1) in realtime.closing_sessions
+        worker_ws.send_json({
+            "type": "session_closed",
+            "session_id": str(session_id),
+            "frames": 9, "gpu_ms": 90, "duration_ms": 900,
+            "category": "other",
+        })
+        # The server gets a window in which its claim would have been written,
+        # then the entry must still be armed and nothing scheduled.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            assert calls == [], "an unfenced report scheduled usage"
+            time.sleep(0.05)
+        assert (session_id, 1) in realtime.closing_sessions
+
+
+def test_a_protocol_3_worker_settles_its_only_attempt(monkeypatch):
+    """Protocol 3 has no generations, so its session_closed is the session's
+    first attempt: it settles (session_id, 1) with no control_generation on
+    the wire. A report that still carries the field (shared worker code) must
+    not be read by it either: the API reads a protocol 3 report as attempt 1
+    whatever the payload says, or a stale value looks up a generation that
+    does not exist and the attempt is never billed.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(db, "local_user_id", uuid.uuid4())
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION,
+                                  worker_id="w-p3-settle"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            assert "control_generation" not in opened
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            expect(browser_ws, "ready")
+            session_id = uuid.UUID(opened["session_id"])
+            browser_ws.send_json({"type": "close"})
+        closed = expect(worker_ws, "close_session")
+        assert "control_generation" not in closed
+        user_id, model_id, worker = realtime.closing_sessions[(session_id, 1)]
+
+        worker_ws.send_json({"type": "session_closed",
+                             "session_id": str(session_id),
+                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
+                             "category": "other"})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(calls) < 1:
+            time.sleep(0.05)
+        assert calls, "the protocol 3 report was never settled"
+        assert calls[0][0] == user_id
+        assert calls[0][1] == model_id
+        assert (session_id, 1) not in realtime.closing_sessions
+
+        # A report carrying the field it does not understand: the armed entry
+        # is again (session_id, 1), so the stale value must not point the
+        # settlement at a generation that does not exist.
+        realtime.closing_sessions[(session_id, 1)] = (user_id, model_id, worker)
+        worker_ws.send_json({"type": "session_closed",
+                             "session_id": str(session_id),
+                             "control_generation": 2,
+                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
+                             "category": "other"})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(calls) < 2:
+            time.sleep(0.05)
+        assert len(calls) == 2
+        assert (session_id, 1) not in realtime.closing_sessions
 
 
 def test_a_relayed_frame_clears_a_pending_frame():
