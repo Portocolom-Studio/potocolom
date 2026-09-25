@@ -9,11 +9,11 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app import db
 from app.main import app
-from app.tables import AuditEvent
+from app.tables import AuditEvent, Job
 from tests.test_account_states import _admin, _set_state
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 
@@ -123,13 +123,23 @@ def test_an_administrator_calling_off_someone_elses_job_is_recorded(library):
     account's work, so it records who it reached like a privileged read."""
     from tests.test_account_deletion import _owned_work
 
+    async def queued(job_id: uuid.UUID) -> None:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            await session.execute(update(Job).where(Job.id == job_id).values(state="queued"))
+            await session.commit()
+
     with TestClient(app, base_url=ORIGIN) as client:
         subject = client.portal.call(_make, "called-off@example.com")
         asset = client.portal.call(_owned_work, subject.id)
+        client.portal.call(queued, asset.job_id)
         _admin(client)
-        assert client.post(f"/api/v1/generations/{asset.job_id}/cancel",
-                           headers=_csrf(client)).status_code == 204
+        for _ in range(2):
+            assert client.post(f"/api/v1/generations/{asset.job_id}/cancel",
+                               headers=_csrf(client)).status_code == 204
         recorded = _wait_for_audit(client, "generation.cancelled")
+        # The second call found the job already cancelled and changed nothing.
+        assert len(client.portal.call(_events, "generation.cancelled")) == 1
     assert recorded[0].target_user_id == subject.id
     assert str(asset.job_id) in recorded[0].object_ids
 

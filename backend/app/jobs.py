@@ -1180,9 +1180,9 @@ async def cancel_generation(
         select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
     if owner is None or (owner != user.id and user.role != "admin"):
         raise HTTPException(status_code=404, detail="no such generation")
-    await cancel(job_id, reason="cancelled by the owner"
-                 if owner == user.id else "cancelled by an administrator")
-    if owner != user.id:
+    cancelled = await cancel(job_id, reason="cancelled by the owner"
+                             if owner == user.id else "cancelled by an administrator")
+    if cancelled and owner != user.id:
         # The route takes any role, so the audit hook for administrator
         # routes never sees it; the one change an administrator may make to
         # another account's work records itself.
