@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import {
+	accountCheckForcesLogin,
 	createSubmitGuard,
 	initialAuthView,
 	readInviteTokenFromHash,
@@ -53,6 +54,14 @@ test('resetJustHappened reads the reset-done flag from the login query', () => {
 	assert.equal(resetJustHappened('?totp=required&reset=done'), true);
 });
 
+test('account check forces login only on 401', () => {
+	assert.equal(accountCheckForcesLogin(200), false);
+	assert.equal(accountCheckForcesLogin(401), true);
+	assert.equal(accountCheckForcesLogin(404), false);
+	// The component passes null when the probe throws (API unreachable).
+	assert.equal(accountCheckForcesLogin(null), false);
+});
+
 test('wiring: join route reads location.hash', () => {
 	assert.match(joinSource, /location\.hash/);
 	assert.match(joinSource, /joinGuard\.run/);
@@ -82,6 +91,31 @@ test('wiring: login submit uses the shared guard', () => {
 	assert.match(loginSource, /let view = \$state<AuthView>\('password'\)/);
 	assert.match(loginSource, /view = initialAuthView\(page\.url\.search\)/);
 	assert.doesNotMatch(loginSource, /\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/);
+});
+
+test('wiring: both successful sign-ins replace the history entry so Back skips /app', () => {
+	const loginSource = readFileSync(join(here, '../routes/login/+page.svelte'), 'utf8');
+	assert.equal(
+		[...loginSource.matchAll(/goto\(resolve\('\/app'\), \{ replaceState: true \}\)/g)].length,
+		2
+	);
+});
+
+test('wiring: the app route checks the account before opening the studio', () => {
+	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
+	assert.match(appSource, /apiFetch\('\/api\/v1\/account'\)/);
+	assert.match(appSource, /accountCheckForcesLogin\(/);
+	assert.match(appSource, /goto\(resolve\('\/login'\), \{ replaceState: true \}\)/);
+	assert.match(appSource, /checkingAccount/);
+	assert.match(appSource, /app\.loading/);
+});
+
+test('wiring: the app route loads nothing until the account probe answers', () => {
+	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
+	assert.match(
+		appSource,
+		/accountCheckForcesLogin\(status\)[\s\S]*?checkingAccount = false;[\s\S]*?void loadModels\(\)/
+	);
 });
 
 test('wiring: login links to the reset route and reads the reset-done flag', () => {

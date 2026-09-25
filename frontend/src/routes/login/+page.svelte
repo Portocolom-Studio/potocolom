@@ -73,7 +73,7 @@
 					body: JSON.stringify({ email, password, remember_me: rememberMe })
 				});
 				if (response.status === 204) {
-					await goto(resolve('/app'));
+					await goto(resolve('/app'), { replaceState: true });
 					return;
 				}
 				if (response.status === 200) {
@@ -105,7 +105,7 @@
 					body: JSON.stringify({ code })
 				});
 				if (response.status === 204) {
-					await goto(resolve('/app'));
+					await goto(resolve('/app'), { replaceState: true });
 					return;
 				}
 				const parsed = await parseAuthError(response);
