@@ -129,6 +129,19 @@ def test_an_administrator_reading_another_accounts_asset_bytes_is_recorded(libra
 
 
 @pytest.mark.db
+def test_an_asset_whose_file_is_gone_records_no_read(library):
+    """Nothing reached the administrator, so nothing was read."""
+    from tests.test_account_deletion import _owned_work
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "asset-gone@example.com")
+        asset = client.portal.call(_owned_work, subject.id)
+        _admin(client)
+        assert client.get(f"/api/v1/assets/{asset.id}").status_code == 404
+        assert client.portal.call(_events, "user.read") == []
+
+
+@pytest.mark.db
 def test_the_owner_reading_their_own_asset_bytes_records_nothing(library):
     from tests.test_account_deletion import _owned_work
 

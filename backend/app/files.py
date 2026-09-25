@@ -157,11 +157,13 @@ async def asset(
         download_name = validate_download_name(download) if download is not None else None
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    response = await _serve(row, download_name)
     if row.user_id != user.id:
         # Only this route knows whose bytes an administrator read, so the
-        # read is recorded with its target, like the other admin reads.
+        # read is recorded with its target, like the other admin reads. After
+        # the serve: a missing file reached nobody and is not a read.
         await _seen(user, row.user_id)
-    return await _serve(row, download_name)
+    return response
 
 
 @router.get("/api/v1/shared-picture")
