@@ -265,7 +265,7 @@
 						</Button>
 					</form>
 					<p class="text-center text-sm">
-						<a class="text-primary hover:underline" href={resolve('/reset')}
+						<a class="text-foreground underline underline-offset-4" href={resolve('/reset')}
 							>{t('auth.login.forgot')}</a
 						>
 					</p>

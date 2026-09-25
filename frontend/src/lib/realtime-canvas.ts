@@ -156,14 +156,18 @@ export type ConnectionState =
 	'idle' | 'connecting' | 'queued' | 'active' | 'resuming' | 'interrupted' | 'failed';
 
 /**
- * The state a close code leaves the session in. The API's refusal codes are
- * docs/api.md: 4000 protocol violation, 4002 unsupported version, 4003 no
- * worker capacity, 4004 unknown model. A refusal is failed because retrying
- * the same open would be refused the same way; anything else is interrupted,
- * which keeps the canvas and invites a reconnect.
+ * The state a close code leaves the session in. The API's terminal close
+ * codes (docs/connection-handling.md) are 4000 protocol violation, 4002
+ * unsupported version, 4003 no worker capacity, 4004 unknown model, 4401
+ * authentication no longer valid, and 4403 not permitted to open a realtime
+ * session. A terminal close is failed because retrying the same open would
+ * end the same way; anything else is interrupted, which keeps the canvas and
+ * invites a reconnect.
  */
 export function stateForCloseCode(code: number): ConnectionState {
-	return code >= 4000 && code <= 4004 ? 'failed' : 'interrupted';
+	return (code >= 4000 && code <= 4004) || code === 4401 || code === 4403
+		? 'failed'
+		: 'interrupted';
 }
 
 const OPEN = 1;
@@ -213,7 +217,22 @@ export type RealtimeCanvasNotice =
 	| 'refused_protocol'
 	| 'refused_version'
 	| 'refused_capacity'
-	| 'refused_model';
+	| 'refused_model'
+	| 'refused_forbidden'
+	| 'session_revoked';
+
+/**
+ * Whether a notice is terminal: the session or the account refused the open,
+ * so retrying on this page would end the same way. A revoked session recovers
+ * only by signing in again, which reloads the studio, and a role change cannot
+ * happen within the page, so the panel keeps Connect disabled until then.
+ * Every other notice clears on a retry: capacity and a vanished model are
+ * momentary, and a socket error or an encode failure says nothing about the
+ * next attempt.
+ */
+export function isTerminalNotice(notice: RealtimeCanvasNotice): boolean {
+	return notice === 'session_revoked' || notice === 'refused_forbidden';
+}
 
 export interface RealtimeCanvasSessionOptions {
 	getDrawCanvas: () => HTMLCanvasElement | undefined;
@@ -269,6 +288,8 @@ function defaultSocketFactory(): CanvasSocket {
 }
 
 function refusalNotice(code: number): RealtimeCanvasNotice {
+	if (code === 4403) return 'refused_forbidden';
+	if (code === 4401) return 'session_revoked';
 	if (code === 4004) return 'refused_model';
 	if (code === 4003) return 'refused_capacity';
 	if (code === 4002) return 'refused_version';

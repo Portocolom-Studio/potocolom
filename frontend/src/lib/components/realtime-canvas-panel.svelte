@@ -24,9 +24,11 @@
 	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
 		createRealtimeCanvasSession,
+		isTerminalNotice,
 		type ConnectionState,
 		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
+	import { resolve } from '$app/paths';
 
 	/** The wire dimensions. CSS scales the display without changing these. */
 	const CANVAS_SIZE = 512;
@@ -58,12 +60,17 @@
 		refused_protocol: 'app.realtime_canvas.refused_protocol',
 		refused_version: 'app.realtime_canvas.refused_version',
 		refused_capacity: 'app.realtime_canvas.refused_capacity',
-		refused_model: 'app.realtime_canvas.refused_model'
+		refused_model: 'app.realtime_canvas.refused_model',
+		refused_forbidden: 'app.realtime_canvas.refused_forbidden',
+		session_revoked: 'app.realtime_canvas.session_revoked'
 	};
 
 	let prompt = $state('');
 	let connection = $state<ConnectionState>('idle');
-	let notice = $state<NoticeKey | ''>('');
+	// The notice as the session reported it, kept beside its translated key
+	// because whether it is terminal decides canConnect.
+	let rawNotice = $state<RealtimeCanvasNotice>('');
+	const notice = $derived(rawNotice === '' ? '' : NOTICE_KEYS[rawNotice]);
 	let drawingNotice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
@@ -120,7 +127,9 @@
 	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	const busy = $derived(connection === 'connecting' || connected);
-	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
+	const canConnect = $derived(
+		!busy && !isTerminalNotice(rawNotice) && modelId !== '' && prompt.trim() !== ''
+	);
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
@@ -133,7 +142,7 @@
 			connection = state;
 		},
 		onNotice: (key: RealtimeCanvasNotice) => {
-			notice = key === '' ? '' : NOTICE_KEYS[key];
+			rawNotice = key;
 		},
 		onCounters: (sent, rendered) => {
 			sentFrames = sent;
@@ -645,7 +654,15 @@
 						<p class="text-muted-foreground text-sm">{t('app.realtime_canvas.no_model')}</p>
 					{/if}
 					{#if notice}
-						<p class="text-destructive text-sm" role="status" aria-live="polite">{t(notice)}</p>
+						<p class="text-destructive text-sm" role="status" aria-live="polite">
+							{t(notice)}
+							{#if notice === 'app.realtime_canvas.session_revoked'}
+								{' '}
+								<a class="text-foreground underline underline-offset-4" href={resolve('/login')}
+									>{t('app.realtime_canvas.sign_in_again')}</a
+								>
+							{/if}
+						</p>
 					{/if}
 					{#if busy}
 						<Button variant="secondary" onclick={disconnect}>
