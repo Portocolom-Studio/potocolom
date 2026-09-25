@@ -100,54 +100,50 @@ def test_auth_mode_unset_starts(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_spa_static_files_fallback_to_index(tmp_path: Path):
+def _prerendered_build(tmp_path: Path) -> Path:
     dist = tmp_path / "static"
     dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><title>potocolom</title>")
+    (dist / "index.html").write_text("<!doctype html><title>landing</title>")
+    (dist / "login.html").write_text("<!doctype html><title>sign in</title>")
+    (dist / "404.html").write_text("<!doctype html><title>not found</title>")
     (dist / "asset.txt").write_text("asset")
+    (dist / "folder.html").mkdir()
+    return dist
 
+
+def test_prerendered_page_is_served_for_its_route(tmp_path: Path):
     app = Starlette()
-    app.mount("/", SPAStaticFiles(directory=dist, html=True))
+    app.mount("/", SPAStaticFiles(directory=_prerendered_build(tmp_path), html=True))
 
     with TestClient(app) as client:
         for path in ("/", "/index.html"):
             response = client.get(path)
             assert response.status_code == 200
+            assert "landing" in response.text
             assert response.headers["Cache-Control"] == "no-cache"
-        for path in ("/app", "/app/generate", "/whitepaper"):
+        for path in ("/login", "/login/"):
             response = client.get(path)
             assert response.status_code == 200
-            assert "potocolom" in response.text
+            assert "sign in" in response.text
             assert response.headers["Cache-Control"] == "no-cache"
+        assert client.head("/login").status_code == 200
         # The contract is that a hashed asset is not forced to revalidate, not
         # that the framework omits the header entirely.
         asset = client.get("/asset.txt")
         assert "no-cache" not in asset.headers.get("Cache-Control", "")
-        # API paths must stay 404s, never the SPA shell.
-        for path in ("/api", "/api/v1/no-such-endpoint"):
-            response = client.get(path)
-            assert response.status_code == 404
 
 
-def test_spa_fallback_wins_over_a_shipped_404_document(tmp_path: Path):
-    """A build carrying 404.html must not shadow the client-side routes.
-
-    StaticFiles(html=True) answers a miss with that document and a 404 status
-    rather than raising, so the fallback has to inspect the response too.
-    """
-    dist = tmp_path / "static"
-    dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><title>potocolom</title>")
-    (dist / "404.html").write_text("<!doctype html><title>not found</title>")
-
+def test_unknown_path_is_the_not_found_page(tmp_path: Path):
     app = Starlette()
-    app.mount("/", SPAStaticFiles(directory=dist, html=True))
+    app.mount("/", SPAStaticFiles(directory=_prerendered_build(tmp_path), html=True))
 
     with TestClient(app) as client:
-        for path in ("/app", "/app/generate", "/benchmark"):
+        for path in ("/nope", "/app/generate", "/api/v1/no-such-endpoint"):
             response = client.get(path)
-            assert response.status_code == 200
-            assert "potocolom" in response.text
+            assert response.status_code == 404
+            assert "not found" in response.text
             assert response.headers["Cache-Control"] == "no-cache"
-        for path in ("/api", "/api/v1/no-such-endpoint"):
-            assert client.get(path).status_code == 404
+        assert client.head("/nope").status_code == 404
+        assert client.get("/folder").status_code == 404
+        for malformed in ("/nope%00", "/" + "x" * 5000):
+            assert client.get(malformed).status_code == 404
