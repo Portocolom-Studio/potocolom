@@ -17,8 +17,8 @@
 			figure: {
 				src: '/whitepaper/under-the-hood.webp',
 				cap: 'wp.fig_arch_cap',
-				width: 3146,
-				height: 1084
+				width: 2602,
+				height: 2477
 			}
 		},
 		{
@@ -28,8 +28,8 @@
 			figure: {
 				src: '/whitepaper/realtime-loop.webp',
 				cap: 'wp.fig_loop_cap',
-				width: 2365,
-				height: 1587
+				width: 2602,
+				height: 2652
 			}
 		},
 		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
@@ -46,8 +46,8 @@
 			figure: {
 				src: '/whitepaper/credit-lifecycle.webp',
 				cap: 'wp.fig_credits_cap',
-				width: 2325,
-				height: 1627
+				width: 2602,
+				height: 3092
 			}
 		},
 		{
@@ -57,8 +57,8 @@
 			figure: {
 				src: '/whitepaper/failure-map.webp',
 				cap: 'wp.fig_failures_cap',
-				width: 2363,
-				height: 1502
+				width: 2602,
+				height: 2147
 			}
 		},
 		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
@@ -102,6 +102,15 @@
 						{#if 'figure' in section}
 							<figure>
 								<img
+									class="fig-dark"
+									src={section.figure.src.replace(/\.webp$/, '-dark.webp')}
+									alt={t(section.figure.cap)}
+									width={section.figure.width}
+									height={section.figure.height}
+									loading="lazy"
+								/>
+								<img
+									class="fig-light"
 									src={section.figure.src}
 									alt={t(section.figure.cap)}
 									width={section.figure.width}
@@ -234,13 +243,25 @@
 		line-height: 1.75;
 	}
 
-	/* The diagrams are dark-on-light, so they keep a paper card of their own. */
 	figure {
 		margin: 0.5rem 0 0;
 		padding: 0.75rem;
 		border: 1px solid var(--k-line);
 		border-radius: 1rem;
+		background: #141413;
+	}
+
+	:global(:root[data-landing-mode='light']) figure {
 		background: oklch(0.99 0.003 255);
+	}
+
+	figure img.fig-light,
+	:global(:root[data-landing-mode='light']) figure img.fig-dark {
+		display: none;
+	}
+
+	:global(:root[data-landing-mode='light']) figure img.fig-light {
+		display: block;
 	}
 
 	figure img {
@@ -251,7 +272,7 @@
 
 	figcaption {
 		padding: 0.6rem 0.25rem 0.1rem;
-		color: oklch(0.42 0.02 258);
+		color: var(--k-muted);
 		font-size: 0.78rem;
 		line-height: 1.5;
 	}
