@@ -107,6 +107,7 @@ def _prerendered_build(tmp_path: Path) -> Path:
     (dist / "login.html").write_text("<!doctype html><title>sign in</title>")
     (dist / "404.html").write_text("<!doctype html><title>not found</title>")
     (dist / "asset.txt").write_text("asset")
+    (dist / "folder.html").mkdir()
     return dist
 
 
@@ -141,4 +142,8 @@ def test_unknown_path_is_the_not_found_page(tmp_path: Path):
             response = client.get(path)
             assert response.status_code == 404
             assert "not found" in response.text
+            assert response.headers["Cache-Control"] == "no-cache"
         assert client.head("/nope").status_code == 404
+        assert client.get("/folder").status_code == 404
+        for malformed in ("/nope%00", "/" + "x" * 5000):
+            assert client.get(malformed).status_code == 404

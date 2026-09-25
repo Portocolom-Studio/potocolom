@@ -14,8 +14,8 @@
 # Other prerendered routes (/app, /benchmark, ...) are separate HTML documents
 # served directly by Pages, which revalidates HTML by default.
 # This file is read only by Cloudflare Pages. The self-hosted profile sets the
-# same header in SPAStaticFiles (backend/app/main.py), where every client-side
-# route arrives through the index.html fallback.
+# same header in SPAStaticFiles (backend/app/main.py), which serves each route
+# its own prerendered file and a miss the 404.html page.
 /
   Cache-Control: no-cache
 

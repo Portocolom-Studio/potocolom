@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import stat
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -227,8 +228,13 @@ class SPAStaticFiles(StaticFiles):
     def _page(self, path: str, scope) -> Response | None:
         # The build prerenders /login as login.html, which html=True never
         # looks for: it only tries login/index.html.
-        full_path, stat_result = self.lookup_path(f"{path.rstrip('/')}.html")
-        if stat_result is None:
+        try:
+            full_path, stat_result = self.lookup_path(f"{path.rstrip('/')}.html")
+        except (ValueError, OSError):
+            # A null byte or an overlong name: StaticFiles already answered
+            # 404 for the same path, and this lookup must not turn it into 500.
+            return None
+        if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
             return None
         return self.file_response(full_path, stat_result, scope)
 
@@ -241,8 +247,11 @@ class SPAStaticFiles(StaticFiles):
             raise
         # With html=True, a miss comes back as 404.html with a 404 status rather
         # than raising, so the prerendered page has to be looked up here too.
-        if response.status_code == 404 and (page := self._page(path, scope)):
-            return page
+        if response.status_code == 404:
+            if page := self._page(path, scope):
+                return page
+            # StaticFiles builds this 404.html answer itself, past file_response.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 

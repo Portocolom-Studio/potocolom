@@ -42,8 +42,8 @@ export default defineConfig({
 			// Static build: every known route is prerendered. The fallback document
 			// is the error page, so a CDN answers an unknown path with a real 404
 			// carrying this project's page rather than a 200 app shell that a
-			// crawler reads as a soft 404. The API server still falls back to
-			// index.html for unknown GET paths in self-hosted mode.
+			// crawler reads as a soft 404. The self-hosted API answers the same
+			// way: each route gets its own prerendered file, a miss gets this page.
 			adapter: adapter({ fallback: '404.html' }),
 
 			// Hash-mode CSP for prerendered pages: SvelteKit injects a SHA-256
