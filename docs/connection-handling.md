@@ -60,7 +60,7 @@ Fleet connection, API to worker:
 
 | type | Fields | Notes |
 |---|---|---|
-| `registered` | | hello accepted; the registration writes one `fleet.worker_registered` audit event carrying the worker id, its peer address and its model ids |
+| `registered` | | hello accepted; the registration writes one `fleet.worker_registered` audit event carrying the worker id, its peer address and its model ids; the address is the peer as uvicorn saw it, so behind a proxy it is the proxy, or a client-asserted `X-Forwarded-For` when the proxy is trusted, not an authenticated identity |
 | `checkpoint_ack` | `session_id`, `control_generation`, `frames`, `gpu_ms`, `duration_ms` | the totals the API has persisted for that attempt; sent only after the write commits, so an acknowledged checkpoint is a durable one |
 | `rejected` | `reason`, `min_supported_version` | hello refused; the API closes after sending |
 | `open_session` | `session_id`, `model_id`, `params`, `control_generation` | acquire a slot and warm the model. Accepted only when the generation is above the highest this worker has seen for the session, and an equal one is idempotent, so a delayed open from a superseded attempt cannot replace a live runner |
