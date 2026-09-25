@@ -9,7 +9,17 @@
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 
 	const sections = [
-		{ id: 's1', title: 'wp.s1_title', paragraphs: ['wp.s1_p1', 'wp.s1_p2'] },
+		{
+			id: 's1',
+			title: 'wp.s1_title',
+			paragraphs: ['wp.s1_p1', 'wp.s1_p2'],
+			figure: {
+				src: '/whitepaper/stroke-journey.webp',
+				cap: 'wp.fig_journey_cap',
+				width: 2602,
+				height: 2842
+			}
+		},
 		{
 			id: 's2',
 			title: 'wp.s2_title',
@@ -18,7 +28,7 @@
 				src: '/whitepaper/under-the-hood.webp',
 				cap: 'wp.fig_arch_cap',
 				width: 2602,
-				height: 2477
+				height: 2467
 			}
 		},
 		{
@@ -29,15 +39,41 @@
 				src: '/whitepaper/realtime-loop.webp',
 				cap: 'wp.fig_loop_cap',
 				width: 2602,
-				height: 2652
+				height: 2592
 			}
 		},
-		{ id: 's4', title: 'wp.s4_title', paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'] },
-		{ id: 's5', title: 'wp.s5_title', paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'] },
+		{
+			id: 's4',
+			title: 'wp.s4_title',
+			paragraphs: ['wp.s4_p1', 'wp.s4_p2', 'wp.s4_p3'],
+			figure: {
+				src: '/whitepaper/gpu-scheduling.webp',
+				cap: 'wp.fig_gpu_cap',
+				width: 2602,
+				height: 2257
+			}
+		},
+		{
+			id: 's5',
+			title: 'wp.s5_title',
+			paragraphs: ['wp.s5_p1', 'wp.s5_p2', 'wp.s5_p3'],
+			figure: {
+				src: '/whitepaper/model-manifest.webp',
+				cap: 'wp.fig_manifest_cap',
+				width: 2602,
+				height: 2207
+			}
+		},
 		{
 			id: 's6',
 			title: 'wp.s6_title',
-			paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3', 'wp.s6_p4']
+			paragraphs: ['wp.s6_p1', 'wp.s6_p2', 'wp.s6_p3', 'wp.s6_p4'],
+			figure: {
+				src: '/whitepaper/image-lifecycle.webp',
+				cap: 'wp.fig_images_cap',
+				width: 2602,
+				height: 2352
+			}
 		},
 		{
 			id: 's7',
@@ -47,7 +83,7 @@
 				src: '/whitepaper/credit-lifecycle.webp',
 				cap: 'wp.fig_credits_cap',
 				width: 2602,
-				height: 3092
+				height: 3202
 			}
 		},
 		{
@@ -61,7 +97,17 @@
 				height: 2147
 			}
 		},
-		{ id: 's9', title: 'wp.s9_title', paragraphs: ['wp.s9_p1', 'wp.s9_p2'] }
+		{
+			id: 's9',
+			title: 'wp.s9_title',
+			paragraphs: ['wp.s9_p1', 'wp.s9_p2'],
+			figure: {
+				src: '/whitepaper/deployment-modes.webp',
+				cap: 'wp.fig_deploy_cap',
+				width: 2602,
+				height: 2397
+			}
+		}
 	] as const;
 </script>
 
