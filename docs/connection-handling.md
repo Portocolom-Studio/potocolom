@@ -163,6 +163,7 @@ slot calibration in [decisions.md](decisions.md) is measured against.
 |---|---|---|
 | Worker heartbeat interval | 30 s | keeps the connection alive through the ALB (120 s idle timeout, 4x margin) |
 | Worker declared dead | 90 s without heartbeat | 3 missed heartbeats; sessions on it are reassigned, jobs requeued |
+| First message wait | 10 s | a browser socket that sends nothing is refused 4000 after SESSION_READY_TIMEOUT; the fleet socket waits the same for hello |
 | Browser ping interval | 20 s | browsers on quiet canvases still traverse the ALB |
 | Idle slot release | 60 s without canvas input | credit metering stops; canvas stays in the browser |
 | Simulated inference time | configurable | the prototype sleeps instead of denoising |

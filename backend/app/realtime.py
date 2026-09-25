@@ -267,6 +267,27 @@ def parse_control(text: str) -> dict:
     return control
 
 
+async def first_control(ws: WebSocket) -> dict | None:
+    """The first control message a peer sends, or None when it left first.
+
+    Leaving first is ordinary network behaviour; raising for it would log
+    "Exception in ASGI application" for every client that goes during the
+    handshake.
+
+    The frame is read whole rather than through receive_text: on a binary
+    first message receive_text raises WebSocketDisconnect(1003) (a KeyError
+    under the TestClient), which the handshake handlers read as the peer
+    leaving or as a malformed control. A disconnect arrives as a message
+    here and is not a protocol violation; a non-text first message is.
+    """
+    message = await ws.receive()
+    if message["type"] == "websocket.disconnect":
+        return None
+    if message.get("text") is None:
+        raise ProtocolError("first message must be text")
+    return parse_control(message["text"])
+
+
 def peer_uuid(value: object) -> uuid.UUID:
     """Parse an id a peer sent.
 
@@ -823,7 +844,12 @@ async def fleet(ws: WebSocket) -> None:
         return
     await ws.accept()
     try:
-        hello = parse_control(await ws.receive_text())
+        # A fleet socket that never sends hello is otherwise held by this
+        # receive forever, so the wait is bounded like the browser's wait for
+        # open below; a timeout is a hello failure like any other.
+        hello = await asyncio.wait_for(first_control(ws), SESSION_READY_TIMEOUT)
+        if hello is None:
+            return
         if hello["type"] != "hello":
             raise ProtocolError("first message must be hello")
         version = hello["protocol_version"]
@@ -855,13 +881,18 @@ async def fleet(ws: WebSocket) -> None:
         if not (isinstance(version, int) and not isinstance(version, bool)
                 and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
+                and not isinstance(worker.realtime_slots, bool)
                 and (worker.device is None or isinstance(worker.device, str))
                 and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
-    except WebSocketDisconnect:
-        # A worker closing mid-handshake is ordinary network behaviour, not a
-        # protocol violation; letting it escape would log "Exception in ASGI
-        # application" for every client that leaves during hello.
+    except TimeoutError:
+        # A fleet socket that connects and says nothing is a hello failure
+        # like any other, so it closes 4000 with the reason (the browser's
+        # wait for open is bounded the same way). The reason is a constant,
+        # so it needs none of the truncation the manifest-driven refusal
+        # below applies.
+        logger.warning("fleet hello refused: did not send hello")
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason="did not send hello")
         return
     except (ProtocolError, KeyError) as error:
         # Logged: a rejected hello is otherwise silent on both sides, so an
@@ -1138,8 +1169,9 @@ async def realtime(ws: WebSocket) -> None:
     try:
         # An accepted socket that never sends open is otherwise held by this
         # receive forever, so the wait is bounded like the assignment below.
-        opening = parse_control(await asyncio.wait_for(
-            ws.receive_text(), SESSION_READY_TIMEOUT))
+        opening = await asyncio.wait_for(first_control(ws), SESSION_READY_TIMEOUT)
+        if opening is None:
+            return
         if opening["type"] != "open":
             raise ProtocolError("first message must be open")
         model_id = opening.get("model_id")
@@ -1148,11 +1180,6 @@ async def realtime(ws: WebSocket) -> None:
         params = opening.get("params") or {}
         if not isinstance(params, dict):
             raise ProtocolError("params must be an object")
-    except WebSocketDisconnect:
-        # A peer closing mid-handshake is ordinary network behaviour, not an
-        # error; letting it escape would log "Exception in ASGI application"
-        # for every client that leaves before its open.
-        return
     except TimeoutError:
         await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "did not send open")
         return

@@ -2295,6 +2295,30 @@ def test_a_first_message_that_is_not_open_carries_the_error_frame():
         assert refused["message"] == "first message must be open"
 
 
+def test_a_binary_first_message_is_a_protocol_violation_on_both_sockets():
+    """receive_text raises on a binary first message (WebSocketDisconnect(1003)
+    on the real server, KeyError under the TestClient), which the handshake
+    handlers read as the peer leaving or as a malformed control. Reading the
+    frame whole makes a non-text first message a protocol violation: error
+    frame and 4000 on the browser socket, close 4000 with the reason on the
+    fleet socket."""
+    with client.websocket_connect("/api/v1/realtime") as ws:
+        ws.send_bytes(b"\x01\x02\x03")
+        refused = expect(ws, "error")
+        assert refused["code"] == 4000
+        assert refused["message"] == "first message must be text"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_bytes(b"\x01\x02\x03")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert closed.value.reason == "first message must be text"
+
+
 def test_open_with_a_non_string_model_id_is_a_protocol_violation():
     # Without the type check, model_id 123 is merely "unknown" and closes
     # 4004; a value that cannot name a model is a malformed open, not a
@@ -2317,12 +2341,32 @@ def test_hello_with_a_boolean_protocol_version_is_a_protocol_violation():
         assert closed.value.code == 4000
 
 
+def test_hello_with_a_boolean_realtime_slots_is_a_protocol_violation():
+    # bool subclasses int, so without the explicit exclusion a boolean slot
+    # count passes the type gate and the worker registers advertising a bool
+    # as its capacity, instead of being refused as a protocol violation.
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(slots=True))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+
+
 def test_an_accepted_browser_that_never_sends_open_is_closed(monkeypatch):
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
     with client.websocket_connect("/api/v1/realtime") as ws:
         refused = expect(ws, "error")
         assert refused["code"] == 4000
         assert refused["message"] == "did not send open"
+
+
+def test_a_fleet_socket_that_never_sends_hello_is_closed(monkeypatch):
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert closed.value.reason == "did not send hello"
 
 
 def test_the_ready_send_tolerates_a_browser_that_left():
