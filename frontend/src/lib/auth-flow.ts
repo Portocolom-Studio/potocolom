@@ -11,6 +11,20 @@ export function initialAuthView(search: string): AuthView {
 	return params.get('totp') === 'required' ? 'challenge' : 'password';
 }
 
+// Keeps ?totp=required in sync with the on-screen view, so a reload reopens
+// the challenge (initialAuthView) instead of dropping back to the password
+// form. Other query params (e.g. reset=done) pass through untouched.
+export function challengeSearch(search: string, inChallenge: boolean): string {
+	const params = new URLSearchParams(search);
+	if (inChallenge) {
+		params.set('totp', 'required');
+	} else {
+		params.delete('totp');
+	}
+	const query = params.toString();
+	return query ? `?${query}` : '';
+}
+
 export function resetJustHappened(search: string): boolean {
 	return new URLSearchParams(search).get('reset') === 'done';
 }
