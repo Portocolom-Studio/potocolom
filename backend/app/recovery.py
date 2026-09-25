@@ -6,6 +6,7 @@ recovered from a mailbox is only as strong as that mailbox, so their way back
 is an offline command run at the machine.
 """
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -17,7 +18,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.background import BackgroundTasks
 from starlette.responses import Response
 
 from app import db, mail, sessions
@@ -121,15 +121,25 @@ class ResetRequest(BaseModel):
     email: str
 
 
+_reset_delivery_tasks: set[asyncio.Task] = set()
+
+
 @router.post("/api/v1/auth/reset", status_code=202)
-async def ask(request: ResetRequest, background_tasks: BackgroundTasks) -> dict:
+async def ask(request: ResetRequest) -> dict:
     """The same answer whoever asked, and it lands before the account work
     runs: a different answer, or a different wait, for an address nobody
     holds turns this route into a way to enumerate accounts.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    background_tasks.add_task(_deliver_reset, request.email)
+    # Detached rather than a BackgroundTask: Starlette runs those inside the
+    # ASGI call, so the connection would wait for the account work and the
+    # next request on the same keep-alive connection could measure whether
+    # the address has an account. The set keeps a strong reference until the
+    # task finishes, as jobs.schedule_blob_cleanup does.
+    task = asyncio.create_task(_deliver_reset(request.email))
+    _reset_delivery_tasks.add(task)
+    task.add_done_callback(_reset_delivery_tasks.discard)
     return ACCEPTED
 
 
@@ -223,7 +233,6 @@ async def _recover(email: str) -> str:
 
 
 def main() -> None:
-    import asyncio
     import sys
 
     if len(sys.argv) != 2:
