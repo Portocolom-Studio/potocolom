@@ -59,6 +59,19 @@ test('wiring: join route reads location.hash', () => {
 	assert.doesNotMatch(joinSource, /location\.search/);
 });
 
+test('wiring: join follows a hashchange and removes the listener on unmount', () => {
+	assert.match(joinSource, /readInviteTokenFromHash\(location\.hash\)/);
+	assert.match(joinSource, /addEventListener\('hashchange'/);
+	assert.match(joinSource, /removeEventListener\('hashchange'/);
+});
+
+test('wiring: a hashchange clears the join form so one link never inherits another', () => {
+	assert.match(
+		joinSource,
+		/function onHashChange\(\) \{[\s\S]*?password = '';[\s\S]*?confirmPassword = '';/
+	);
+});
+
 test('wiring: login submit uses the shared guard', () => {
 	const loginSource = readFileSync(join(here, '../routes/login/+page.svelte'), 'utf8');
 	assert.match(loginSource, /createSubmitGuard/);
