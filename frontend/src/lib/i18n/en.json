@@ -767,5 +767,16 @@
 	"auth.recover.title": "Recover account",
 	"auth.recover.complete_sub": "Choose a new password for the administrator account.",
 	"auth.recover.invalid": "This recovery link is not valid or has expired.",
-	"auth.recover.missing_token": "Open the recovery link printed on the machine. The token lives in the address after the hash."
+	"auth.recover.missing_token": "Open the recovery link printed on the machine. The token lives in the address after the hash.",
+	"shared.title": "Shared picture",
+	"shared.loading": "Loading the picture...",
+	"shared.invalid": "This link is not valid, was revoked, or has expired.",
+	"shared.error": "The picture could not be loaded. Try again.",
+	"shared.landing.unavailable": "Shared pictures are available on a self-hosted or cloud studio install, not on this marketing preview.",
+	"shared.picture_alt": "Shared picture",
+	"shared.prompt": "Prompt",
+	"shared.no_prompt": "No prompt",
+	"shared.model": "Model",
+	"shared.unknown": "Unknown",
+	"shared.download": "Download"
 }

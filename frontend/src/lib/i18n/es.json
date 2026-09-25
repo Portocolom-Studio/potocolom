@@ -767,5 +767,16 @@
 	"auth.recover.title": "Recuperar cuenta",
 	"auth.recover.complete_sub": "Elige una contraseña nueva para la cuenta de administrador.",
 	"auth.recover.invalid": "Este enlace de recuperación no es válido o ha caducado.",
-	"auth.recover.missing_token": "Abre el enlace de recuperación impreso en la máquina. El token está en la dirección después del hash."
+	"auth.recover.missing_token": "Abre el enlace de recuperación impreso en la máquina. El token está en la dirección después del hash.",
+	"shared.title": "Imagen compartida",
+	"shared.loading": "Cargando la imagen...",
+	"shared.invalid": "Este enlace no es válido, fue revocado o ha caducado.",
+	"shared.error": "No se pudo cargar la imagen. Prueba otra vez.",
+	"shared.landing.unavailable": "Las imágenes compartidas están disponibles en una instalación autoalojada o en la nube del estudio, no en esta vista previa de marketing.",
+	"shared.picture_alt": "Imagen compartida",
+	"shared.prompt": "Prompt",
+	"shared.no_prompt": "Sin prompt",
+	"shared.model": "Modelo",
+	"shared.unknown": "Desconocido",
+	"shared.download": "Descargar"
 }
