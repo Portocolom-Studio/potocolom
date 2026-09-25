@@ -4,6 +4,7 @@
 	import SendIcon from '@lucide/svelte/icons/send';
 	import FrameIcon from '@lucide/svelte/icons/frame';
 	import { resolve } from '$app/paths';
+	import { account } from '$lib/account.svelte';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
@@ -15,12 +16,6 @@
 	import NavUser from './nav-user.svelte';
 
 	let { ref = $bindable(null), ...restProps }: ComponentProps<typeof Sidebar.Root> = $props();
-
-	const user = $derived({
-		name: t('app.shell.user_name'),
-		email: t('app.shell.user_email'),
-		avatar: ''
-	});
 
 	const navSecondary = $derived([
 		{ title: t('app.shell.support'), url: '#', icon: LifeBuoyIcon },
@@ -61,6 +56,8 @@
 		<NavSecondary items={navSecondary} class="mt-auto" />
 	</Sidebar.Content>
 	<Sidebar.Footer>
-		<NavUser {user} />
+		{#if account.current}
+			<NavUser account={account.current} />
+		{/if}
 	</Sidebar.Footer>
 </Sidebar.Root>

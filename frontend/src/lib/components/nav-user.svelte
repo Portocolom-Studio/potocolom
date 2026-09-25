@@ -9,19 +9,15 @@
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { accountInitial, accountRoleLabelKey } from '$lib/account-display';
+	import type { Account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 
-	let {
-		user
-	}: {
-		user: {
-			name: string;
-			email: string;
-			avatar: string;
-		};
-	} = $props();
+	let { account }: { account: Account } = $props();
 
 	const sidebar = Sidebar.useSidebar();
+	const initial = $derived(accountInitial(account.email));
+	const roleLabel = $derived(t(accountRoleLabelKey(account.role)));
 </script>
 
 <Sidebar.Menu>
@@ -31,16 +27,13 @@
 				{#snippet child({ props })}
 					<Sidebar.MenuButton size="lg" class="data-[state=open]:text-foreground" {...props}>
 						<Avatar.Root class="size-8 rounded-lg">
-							{#if user.avatar}
-								<Avatar.Image src={user.avatar} alt={user.name} />
-							{/if}
 							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
-								>CN</Avatar.Fallback
+								>{initial}</Avatar.Fallback
 							>
 						</Avatar.Root>
 						<div class="grid flex-1 text-start text-sm leading-tight">
-							<span class="truncate font-medium">{user.name}</span>
-							<span class="truncate text-xs">{user.email}</span>
+							<span class="truncate font-medium">{account.email}</span>
+							<span class="truncate text-xs">{roleLabel}</span>
 						</div>
 						<ChevronsUpDownIcon class="ms-auto size-4" />
 					</Sidebar.MenuButton>
@@ -55,16 +48,13 @@
 				<DropdownMenu.Label class="p-0 font-normal">
 					<div class="flex items-center gap-2 px-1 py-1.5 text-start text-sm">
 						<Avatar.Root class="size-8 rounded-lg">
-							{#if user.avatar}
-								<Avatar.Image src={user.avatar} alt={user.name} />
-							{/if}
 							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
-								>CN</Avatar.Fallback
+								>{initial}</Avatar.Fallback
 							>
 						</Avatar.Root>
 						<div class="grid flex-1 text-start text-sm leading-tight">
-							<span class="truncate font-medium">{user.name}</span>
-							<span class="truncate text-xs">{user.email}</span>
+							<span class="truncate font-medium">{account.email}</span>
+							<span class="truncate text-xs">{roleLabel}</span>
 						</div>
 					</div>
 				</DropdownMenu.Label>
