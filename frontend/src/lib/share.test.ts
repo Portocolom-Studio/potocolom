@@ -4,7 +4,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { ShareGoneError, downloadSharedPicture, resolveShare, shareDownloadName } from './share.ts';
+import {
+	ShareGoneError,
+	downloadSharedPicture,
+	resolveShare,
+	shareDownloadName,
+	shareResolveStillCurrent
+} from './share.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +82,12 @@ test('shareDownloadName names the file from the mime', () => {
 	assert.equal(shareDownloadName('asset-1', 'image/png'), 'potocolom-asset-1.png');
 	assert.equal(shareDownloadName('asset-1', 'image/webp'), 'potocolom-asset-1.webp');
 	assert.equal(shareDownloadName('asset-1', 'image/jpeg'), 'potocolom-asset-1.bin');
+});
+
+test('shareResolveStillCurrent keeps only an answer for the token the page shows now', () => {
+	assert.equal(shareResolveStillCurrent('older', 'older'), true);
+	assert.equal(shareResolveStillCurrent('older', 'newer'), false);
+	assert.equal(shareResolveStillCurrent('older', null), false);
 });
 
 test('downloadSharedPicture re-resolves the token and downloads the fresh address', async () => {
@@ -158,6 +170,11 @@ test('wiring: shared page reads the token from the hash, reacts to hashchange, a
 	assert.match(sharedSource, /resolveShare/);
 	assert.match(sharedSource, /downloadSharedPicture/);
 	assert.doesNotMatch(sharedSource, /location\.search/);
+});
+
+test('wiring: shared page discards a resolve answer for a token the hash moved on from', () => {
+	const sharedSource = readFileSync(join(here, '../routes/shared/+page.svelte'), 'utf8');
+	assert.match(sharedSource, /shareResolveStillCurrent\(current, token\)/);
 });
 
 test('wiring: shared page gates on the landing build and stays out of the sitemap', () => {

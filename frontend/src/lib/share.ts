@@ -16,6 +16,12 @@ export type ShareInfo = {
 
 export class ShareGoneError extends Error {}
 
+// A resolve started for one hash may finish after the hash has moved on;
+// writing its answer then would paint the old share over the new one.
+export function shareResolveStillCurrent(requested: string, latest: string | null): boolean {
+	return latest === requested;
+}
+
 export async function resolveShare(token: string): Promise<ShareInfo> {
 	const response = await apiFetch('/api/v1/shared', {
 		method: 'POST',

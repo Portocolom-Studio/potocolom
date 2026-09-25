@@ -775,8 +775,10 @@
 	"shared.landing.unavailable": "Shared pictures are available on a self-hosted or cloud studio install, not on this marketing preview.",
 	"shared.picture_alt": "Shared picture",
 	"shared.prompt": "Prompt",
+	"shared.retry": "Retry",
 	"shared.no_prompt": "No prompt",
 	"shared.model": "Model",
 	"shared.unknown": "Unknown",
-	"shared.download": "Download"
+	"shared.download": "Download",
+	"shared.download_failed": "The download did not start. Try again."
 }

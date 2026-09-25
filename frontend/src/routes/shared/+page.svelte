@@ -9,7 +9,13 @@
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { readInviteTokenFromHash } from '$lib/auth-flow';
 	import { t } from '$lib/i18n.svelte';
-	import { ShareGoneError, downloadSharedPicture, resolveShare, type ShareInfo } from '$lib/share';
+	import {
+		ShareGoneError,
+		downloadSharedPicture,
+		resolveShare,
+		shareResolveStillCurrent,
+		type ShareInfo
+	} from '$lib/share';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
 
@@ -18,12 +24,14 @@
 	let info = $state<ShareInfo | null>(null);
 	let pictureUrl = $state('');
 	let pictureRetries = $state(0);
+	let downloadFailed = $state(false);
 
 	async function load(hash: string) {
 		const next = readInviteTokenFromHash(hash);
 		token = next;
 		info = null;
 		pictureRetries = 0;
+		downloadFailed = false;
 		if (!next) {
 			status = 'invalid';
 			return;
@@ -39,10 +47,15 @@
 		}
 		status = 'loading';
 		try {
-			info = await resolveShare(current);
-			pictureUrl = info.url;
+			const fresh = await resolveShare(current);
+			// The hash may have moved on while the resolve was in flight; a
+			// late answer for the old token must not paint over the new share.
+			if (!shareResolveStillCurrent(current, token)) return;
+			info = fresh;
+			pictureUrl = fresh.url;
 			status = 'ready';
 		} catch (error) {
+			if (!shareResolveStillCurrent(current, token)) return;
 			// Every refusal is the same 404, whether a token was never minted,
 			// was revoked, or ran out, so one message names all three.
 			status = error instanceof ShareGoneError ? 'invalid' : 'error';
@@ -62,11 +75,25 @@
 
 	async function download() {
 		if (!token) return;
+		downloadFailed = false;
 		try {
 			await downloadSharedPicture(token);
 		} catch (error) {
-			status = error instanceof ShareGoneError ? 'invalid' : 'error';
+			if (error instanceof ShareGoneError) {
+				status = 'invalid';
+				return;
+			}
+			// A refused resolve must not take the picture away; the button
+			// stays and the page says the download did not start.
+			downloadFailed = true;
 		}
+	}
+
+	function retry() {
+		// The error state may be the picture retry budget running out, so the
+		// retry starts that budget over.
+		pictureRetries = 0;
+		void resolveToken();
 	}
 
 	onMount(() => {
@@ -134,9 +161,16 @@
 						<p class="text-muted-foreground text-sm">
 							{t('shared.model')}: {info.model ?? t('shared.unknown')}
 						</p>
-						<Button onclick={download} variant="outline" size="sm">
-							{t('shared.download')}
-						</Button>
+						<div class="flex items-center gap-3">
+							{#if downloadFailed}
+								<p role="alert" class="text-destructive text-sm">
+									{t('shared.download_failed')}
+								</p>
+							{/if}
+							<Button onclick={download} variant="outline" size="sm">
+								{t('shared.download')}
+							</Button>
+						</div>
 					</div>
 				</Card.Content>
 			</Card.Root>
@@ -153,6 +187,11 @@
 					<Card.Title>{t('shared.title')}</Card.Title>
 					<Card.Description>{t('shared.error')}</Card.Description>
 				</Card.Header>
+				<Card.Footer>
+					<Button onclick={retry} variant="outline" size="sm">
+						{t('shared.retry')}
+					</Button>
+				</Card.Footer>
 			</Card.Root>
 		{/if}
 	</main>

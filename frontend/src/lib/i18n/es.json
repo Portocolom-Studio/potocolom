@@ -775,8 +775,10 @@
 	"shared.landing.unavailable": "Las imágenes compartidas están disponibles en una instalación autoalojada o en la nube del estudio, no en esta vista previa de marketing.",
 	"shared.picture_alt": "Imagen compartida",
 	"shared.prompt": "Prompt",
+	"shared.retry": "Reintentar",
 	"shared.no_prompt": "Sin prompt",
 	"shared.model": "Modelo",
 	"shared.unknown": "Desconocido",
-	"shared.download": "Descargar"
+	"shared.download": "Descargar",
+	"shared.download_failed": "La descarga no comenzó. Prueba otra vez."
 }
