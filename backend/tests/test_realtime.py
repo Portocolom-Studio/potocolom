@@ -31,7 +31,7 @@ from app.realtime import (
     peer_is_unroutable,
 )
 from app.settings import get_settings
-from app.tables import UsageEvent, User
+from app.tables import AuditEvent, UsageEvent, User
 
 # A real peer address rather than the default "testclient", which no ASGI server
 # would ever report: the handshake still sees a production-shaped address.
@@ -485,6 +485,81 @@ def test_version_gate_accepts_n_minus_1():
     with client.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(version=MIN_SUPPORTED_VERSION))
         expect(ws, "registered")
+
+
+def test_a_hello_with_a_connected_workers_id_is_refused_and_the_original_keeps_it():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-id-lock", parameters=REQUIRES_PROMPT))
+        expect(worker_ws, "registered")
+        original = realtime.workers["w-id-lock"]
+
+        # A duplicate id must be refused, not answered: an accepted hello
+        # would silently replace the registered worker and steal its sessions.
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with client.websocket_connect("/api/v1/fleet") as second_ws:
+                second_ws.send_json(hello(worker_id="w-id-lock"))
+                second_ws.receive_json()
+        assert closed.value.code == 4000
+        assert closed.value.reason == "worker id already connected"
+
+        # The refusal left the original registered, so a browser session
+        # still dispatches to it.
+        assert realtime.workers["w-id-lock"] is original
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+
+
+def test_the_same_worker_id_registers_again_once_the_first_connection_is_gone():
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-id-reuse"))
+        expect(worker_ws, "registered")
+        original = realtime.workers["w-id-reuse"]
+    # The close above wakes the handler, whose finally removes the id; the
+    # wait keeps the reconnect from racing that cleanup.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and "w-id-reuse" in realtime.workers:
+        time.sleep(0.05)
+    assert "w-id-reuse" not in realtime.workers
+    with client.websocket_connect("/api/v1/fleet") as again_ws:
+        again_ws.send_json(hello(worker_id="w-id-reuse"))
+        expect(again_ws, "registered")
+        assert realtime.workers["w-id-reuse"] is not original
+
+
+@pytest.mark.db
+def test_a_registered_worker_writes_a_fleet_worker_registered_audit_event():
+    with TestClient(app, client=("127.0.0.1", 50000),
+                    headers=FLEET_HEADERS) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-register-audit",
+                                      models=("sd-sim", "vega-rt")))
+            expect(worker_ws, "registered")
+
+            async def recorded() -> list[AuditEvent]:
+                assert db.session_factory is not None
+                async with db.session_factory() as session:
+                    rows = (await session.execute(
+                        select(AuditEvent).where(
+                            AuditEvent.action == "fleet.worker_registered")
+                    )).scalars().all()
+                    return [row for row in rows
+                            if row.object_ids and row.object_ids[0] == "w-register-audit"]
+
+            deadline = time.monotonic() + 3
+            events = []
+            while time.monotonic() < deadline and not events:
+                time.sleep(0.05)
+                events = db_client.portal.call(recorded)
+            assert len(events) == 1
+            event = events[0]
+            assert event.object_ids[0] == "w-register-audit"
+            assert event.object_ids[1] == "127.0.0.1"
+            assert set(event.object_ids[2:]) == {"sd-sim", "vega-rt"}
+            assert event.severity == "info"
 
 
 def test_unknown_model_is_refused():
