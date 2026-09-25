@@ -267,6 +267,27 @@ def parse_control(text: str) -> dict:
     return control
 
 
+async def first_control(ws: WebSocket) -> dict | None:
+    """The first control message a peer sends, or None when it left first.
+
+    Leaving first is ordinary network behaviour; raising for it would log
+    "Exception in ASGI application" for every client that goes during the
+    handshake.
+
+    The frame is read whole rather than through receive_text: on a binary
+    first message receive_text raises WebSocketDisconnect(1003) (a KeyError
+    under the TestClient), which the handshake handlers read as the peer
+    leaving or as a malformed control. A disconnect arrives as a message
+    here and is not a protocol violation; a non-text first message is.
+    """
+    message = await ws.receive()
+    if message["type"] == "websocket.disconnect":
+        return None
+    if message.get("text") is None:
+        raise ProtocolError("first message must be text")
+    return parse_control(message["text"])
+
+
 def peer_uuid(value: object) -> uuid.UUID:
     """Parse an id a peer sent.
 
@@ -823,7 +844,12 @@ async def fleet(ws: WebSocket) -> None:
         return
     await ws.accept()
     try:
-        hello = parse_control(await ws.receive_text())
+        # A fleet socket that never sends hello is otherwise held by this
+        # receive forever, so the wait is bounded like the browser's wait for
+        # open below; a timeout is a hello failure like any other.
+        hello = await asyncio.wait_for(first_control(ws), SESSION_READY_TIMEOUT)
+        if hello is None:
+            return
         if hello["type"] != "hello":
             raise ProtocolError("first message must be hello")
         version = hello["protocol_version"]
@@ -852,11 +878,22 @@ async def fleet(ws: WebSocket) -> None:
                     for model_id, values in (batch or {}).items()
                     if model_id in worker.models
                 }
-        if not (isinstance(version, int) and isinstance(worker.id, str)
+        if not (isinstance(version, int) and not isinstance(version, bool)
+                and isinstance(worker.id, str)
                 and isinstance(worker.realtime_slots, int)
+                and not isinstance(worker.realtime_slots, bool)
                 and (worker.device is None or isinstance(worker.device, str))
                 and (worker.memory_mode is None or isinstance(worker.memory_mode, str))):
             raise ProtocolError("hello fields have wrong types")
+    except TimeoutError:
+        # A fleet socket that connects and says nothing is a hello failure
+        # like any other, so it closes 4000 with the reason (the browser's
+        # wait for open is bounded the same way). The reason is a constant,
+        # so it needs none of the truncation the manifest-driven refusal
+        # below applies.
+        logger.warning("fleet hello refused: did not send hello")
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason="did not send hello")
+        return
     except (ProtocolError, KeyError) as error:
         # Logged: a rejected hello is otherwise silent on both sides, so an
         # operator with a bad manifest sees a worker that starts and never
@@ -1130,15 +1167,24 @@ async def realtime(ws: WebSocket) -> None:
         await refuse(ws, handshake.close_code, "not permitted to open a realtime session")
         return
     try:
-        opening = parse_control(await ws.receive_text())
+        # An accepted socket that never sends open is otherwise held by this
+        # receive forever, so the wait is bounded like the assignment below.
+        opening = await asyncio.wait_for(first_control(ws), SESSION_READY_TIMEOUT)
+        if opening is None:
+            return
         if opening["type"] != "open":
             raise ProtocolError("first message must be open")
-        model_id = opening["model_id"]
+        model_id = opening.get("model_id")
+        if not isinstance(model_id, str):
+            raise ProtocolError("model_id must be a string")
         params = opening.get("params") or {}
         if not isinstance(params, dict):
             raise ProtocolError("params must be an object")
-    except (ProtocolError, KeyError):
-        await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+    except TimeoutError:
+        await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "did not send open")
+        return
+    except (ProtocolError, KeyError) as error:
+        await refuse(ws, CLOSE_PROTOCOL_VIOLATION, str(error))
         return
     if not model_known(model_id):
         await refuse(ws, CLOSE_UNKNOWN_MODEL, "unknown model")
@@ -1183,7 +1229,7 @@ async def realtime(ws: WebSocket) -> None:
             transition(session, "assigning", "ending")
             await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
             return
-        await ws.send_json({"type": "ready", "session_id": str(session.id)})
+        await safe_send(ws.send_json({"type": "ready", "session_id": str(session.id)}))
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
@@ -1202,6 +1248,7 @@ async def realtime(ws: WebSocket) -> None:
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     if control["type"] == "close":
+                        await safe_send(ws.close(code=1000))
                         break
                     if control["type"] == "update_params":
                         params = control.get("params")
@@ -1278,8 +1325,8 @@ async def realtime(ws: WebSocket) -> None:
                             "type": "params_updated",
                             "params": session.params,
                         }))
-            except ProtocolError:
-                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+            except ProtocolError as error:
+                await refuse(ws, CLOSE_PROTOCOL_VIOLATION, str(error))
                 break
     finally:
         sessions.pop(session.id, None)

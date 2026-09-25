@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -765,9 +766,8 @@ def test_malformed_update_params_closes_as_a_protocol_violation():
             expect(browser_ws, "ready")
 
             browser_ws.send_json({"type": "update_params", "params": "not an object"})
-            with pytest.raises(WebSocketDisconnect) as closed:
-                browser_ws.receive_json()
-            assert closed.value.code == 4000
+            refused = expect(browser_ws, "error")
+            assert refused["code"] == 4000
 
 
 def test_session_and_frame_relay_both_directions():
@@ -1007,9 +1007,8 @@ def test_frame_for_another_session_closes_with_protocol_violation():
 
             foreign = bytes([CANVAS_FRAME]) + uuid.uuid4().bytes + b"not-my-session"
             browser_ws.send_bytes(foreign)
-            with pytest.raises(WebSocketDisconnect) as closed:
-                browser_ws.receive_bytes()
-            assert closed.value.code == 4000
+            refused = expect(browser_ws, "error")
+            assert refused["code"] == 4000
 
 
 def test_short_binary_frame_closes_browser_with_protocol_violation():
@@ -1023,9 +1022,8 @@ def test_short_binary_frame_closes_browser_with_protocol_violation():
             expect(browser_ws, "ready")
 
             browser_ws.send_bytes(b"\x01tiny")
-            with pytest.raises(WebSocketDisconnect) as closed:
-                browser_ws.receive_bytes()
-            assert closed.value.code == 4000
+            refused = expect(browser_ws, "error")
+            assert refused["code"] == 4000
 
 
 def test_heartbeat_does_not_free_committed_slots():
@@ -2225,3 +2223,209 @@ def test_ended_absorbs_transitions():
     assert session.state == "ended"
     assert not realtime.transition(session, "live", "ending")
     assert session.state == "ended"
+
+
+def _ws_scope(path, headers=()):
+    """A minimal ASGI websocket scope for driving an endpoint directly, so a
+    test can hand it a receive and send of its own, as the handshake-refusal
+    test above does."""
+    return {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": list(headers),
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8000),
+        "subprotocols": [],
+    }
+
+
+def test_a_browser_that_closes_before_open_returns_quietly():
+    """A peer closing mid-handshake is ordinary network behaviour, not an
+    error: the endpoint returns rather than let WebSocketDisconnect escape
+    and log "Exception in ASGI application" (once per close, and on the
+    realtime endpoint with no credential in AUTH_MODE=none)."""
+    sent = []
+    messages = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.disconnect", "code": 1000},
+    ]
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(message):
+        sent.append(message)
+
+    run_on_test_loop(app(_ws_scope("/api/v1/realtime"), receive, send))
+    assert [message["type"] for message in sent] == ["websocket.accept"], sent
+
+
+def test_a_worker_that_closes_before_hello_returns_quietly():
+    sent = []
+    messages = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.disconnect", "code": 1009},
+    ]
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = _ws_scope("/api/v1/fleet", headers=[(b"x-fleet-token", b"test-fleet-token")])
+    run_on_test_loop(app(scope, receive, send))
+    assert [message["type"] for message in sent] == ["websocket.accept"], sent
+
+
+def test_a_first_message_that_is_not_open_carries_the_error_frame():
+    """Every documented error close carries the error frame docs/api.md
+    promises, including the pre-open protocol violations that used to close
+    bare with no message."""
+    with client.websocket_connect("/api/v1/realtime") as ws:
+        ws.send_json({"type": "not-open"})
+        refused = expect(ws, "error")
+        assert refused["code"] == 4000
+        assert refused["message"] == "first message must be open"
+
+
+def test_a_binary_first_message_is_a_protocol_violation_on_both_sockets():
+    """receive_text raises on a binary first message (WebSocketDisconnect(1003)
+    on the real server, KeyError under the TestClient), which the handshake
+    handlers read as the peer leaving or as a malformed control. Reading the
+    frame whole makes a non-text first message a protocol violation: error
+    frame and 4000 on the browser socket, close 4000 with the reason on the
+    fleet socket."""
+    with client.websocket_connect("/api/v1/realtime") as ws:
+        ws.send_bytes(b"\x01\x02\x03")
+        refused = expect(ws, "error")
+        assert refused["code"] == 4000
+        assert refused["message"] == "first message must be text"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_bytes(b"\x01\x02\x03")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert closed.value.reason == "first message must be text"
+
+
+def test_open_with_a_non_string_model_id_is_a_protocol_violation():
+    # Without the type check, model_id 123 is merely "unknown" and closes
+    # 4004; a value that cannot name a model is a malformed open, not a
+    # model that does not exist.
+    with client.websocket_connect("/api/v1/realtime") as ws:
+        ws.send_json({"type": "open", "model_id": 123})
+        refused = expect(ws, "error")
+        assert refused["code"] == 4000
+        assert refused["message"] == "model_id must be a string"
+
+
+def test_hello_with_a_boolean_protocol_version_is_a_protocol_violation():
+    # bool subclasses int, so without the explicit exclusion a boolean
+    # version passes the type gate and is rejected as too old (4002) instead
+    # of refused as a protocol violation (4000).
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(version=True))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+
+
+def test_hello_with_a_boolean_realtime_slots_is_a_protocol_violation():
+    # bool subclasses int, so without the explicit exclusion a boolean slot
+    # count passes the type gate and the worker registers advertising a bool
+    # as its capacity, instead of being refused as a protocol violation.
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(slots=True))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+
+
+def test_an_accepted_browser_that_never_sends_open_is_closed(monkeypatch):
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+    with client.websocket_connect("/api/v1/realtime") as ws:
+        refused = expect(ws, "error")
+        assert refused["code"] == 4000
+        assert refused["message"] == "did not send open"
+
+
+def test_a_fleet_socket_that_never_sends_hello_is_closed(monkeypatch):
+    monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert closed.value.reason == "did not send hello"
+
+
+def test_the_ready_send_tolerates_a_browser_that_left():
+    """A browser that leaves while the worker warms makes the ready send
+    fail; that is not an error either, and the handler must release the
+    session rather than raise out of the endpoint (which uvicorn logs as
+    "Exception in ASGI application")."""
+    worker = realtime.Worker(id="w-ready-gone", ws=FakeSocket(),
+                             manifests=[Manifest.model_validate(manifest())],
+                             realtime_slots=1)
+    realtime.workers[worker.id] = worker
+    sent = []
+    messages = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.receive",
+         "text": json.dumps({"type": "open", "model_id": "sd-sim",
+                             "params": {"prompt": "a red house"}})},
+        {"type": "websocket.disconnect", "code": 1000},
+    ]
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(message):
+        if message["type"] == "websocket.send":
+            payload = json.loads(message["text"])
+            if payload["type"] == "ready":
+                raise WebSocketDisconnect(1006)
+        sent.append(message)
+
+    async def scenario():
+        task = asyncio.create_task(app(_ws_scope("/api/v1/realtime"), receive, send))
+        while not realtime.sessions:
+            await asyncio.sleep(0.01)
+        complete_attempt(next(iter(realtime.sessions.values())))
+        await task
+
+    try:
+        run_on_test_loop(scenario())
+    finally:
+        realtime.workers.pop(worker.id, None)
+        realtime.sessions.clear()
+    assert worker.slots_in_use == 0
+    assert realtime.sessions == {}
+
+
+def test_a_close_control_message_closes_with_1000():
+    """The documented close control message used to fall out of the loop and
+    end with 1006 on the browser's side; it now closes explicitly with 1000."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-close-1000"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            browser_ws.send_json({"type": "close"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 1000
+            expect(worker_ws, "close_session")
