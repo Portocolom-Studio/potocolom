@@ -211,8 +211,8 @@ def test_a_revoked_canvas_still_settles_its_usage(accounts):
                 client.portal.call(sessions.revoke, resolved.session.id)
                 assert browser_ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
 
-            assert uuid.UUID(opened["session_id"]) in realtime.closing_sessions
-            assert realtime.closing_sessions[uuid.UUID(opened["session_id"])][0] == user.id
+            assert (uuid.UUID(opened["session_id"]), 1) in realtime.closing_sessions
+            assert realtime.closing_sessions[(uuid.UUID(opened["session_id"]), 1)][0] == user.id
 
 
 @pytest.mark.db

@@ -491,7 +491,9 @@ def with_generation(payload: dict, worker: Worker, generation: int) -> dict:
 workers: dict[str, Worker] = {}
 sessions: dict[uuid.UUID, Session] = {}
 gpu_requests: dict[str, asyncio.Future] = {}
-closing_sessions: dict[uuid.UUID, tuple[uuid.UUID, str, Worker]] = {}
+# Keyed per attempt, not per session: an idle release and a resume give one
+# session several attempts, and each worker reports session_closed for its own.
+closing_sessions: dict[tuple[uuid.UUID, int], tuple[uuid.UUID, str, Worker]] = {}
 
 
 def pick_any_worker() -> Worker | None:
@@ -722,7 +724,8 @@ async def release(session: Session) -> None:
             # Armed here rather than by whoever ends the session: a revocation
             # releases before the browser handler's own teardown runs, and the
             # worker's session_closed totals would find nobody to bill.
-            closing_sessions[session.id] = (session.user_id, session.model_id, worker)
+            closing_sessions[(session.id, generation)] = (
+                session.user_id, session.model_id, worker)
         # Bounded: the slot is already back, and a worker that stopped reading
         # would otherwise hold up whatever asked for this session to end,
         # including the revocation that has other sockets waiting behind it.
@@ -841,8 +844,9 @@ async def resume_idle(session: Session) -> None:
         return
     logger.warning("session %s was idle and no worker had room to resume it",
                    session.id)
-    transition(session, "assigning", "ending")
-    await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+    # A revocation may already own this session's end and be refusing it 4401.
+    if transition(session, "assigning", "ending"):
+        await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
 
 
 def over_capacity_sessions(worker: Worker) -> list[Session]:
@@ -1063,9 +1067,15 @@ async def fleet(ws: WebSocket) -> None:
                         # earlier still knows its id, and popping on its word
                         # would drop the current owner's entry and bill this
                         # user for a session it did not run.
-                        owner = closing_sessions.get(session_id)
-                        if owner is not None and owner[2] is worker:
-                            del closing_sessions[session_id]
+                        generation = control.get("control_generation")
+                        # A protocol 3 worker omits the generation; it is never a
+                        # resume candidate, so its session has one attempt.
+                        key = ((session_id, generation) if isinstance(generation, int)
+                               else next((k for k, v in closing_sessions.items()
+                                          if k[0] == session_id and v[2] is worker), None))
+                        owner = closing_sessions.get(key) if key is not None else None
+                        if key is not None and owner is not None and owner[2] is worker:
+                            del closing_sessions[key]
                             from app import usage_events
                             usage_events.schedule_realtime(owner[0], owner[1], control)
                     elif control["type"] in ("gpu_status", "model_loaded",
@@ -1132,9 +1142,9 @@ async def fleet(ws: WebSocket) -> None:
     finally:
         if workers.get(worker.id) is worker:
             del workers[worker.id]
-        for session_id, owner in list(closing_sessions.items()):
+        for key, owner in list(closing_sessions.items()):
             if owner[2] is worker:
-                closing_sessions.pop(session_id, None)
+                closing_sessions.pop(key, None)
         from app import jobs
         jobs.on_worker_lost(worker)
         orphaned = [s for s in sessions.values() if s.worker is worker]
@@ -1347,6 +1357,9 @@ async def realtime(ws: WebSocket) -> None:
                         # A resume in flight: keep only the newest frame.
                         session.pending_frame = data
                     elif session.worker is not None:  # a dead worker means reassign is in flight
+                        # Newer than anything a resume still holds, so the
+                        # resume must not forward its older frame after this.
+                        session.pending_frame = None
                         await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])

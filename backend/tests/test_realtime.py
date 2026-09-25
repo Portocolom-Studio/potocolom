@@ -1041,9 +1041,9 @@ def test_closing_session_is_removed_when_worker_is_lost():
                 browser_ws.send_json({"type": "close"})
             expect(worker_ws, "close_session")
             session_id = uuid.UUID(opened["session_id"])
-            assert session_id in realtime.closing_sessions
+            assert (session_id, 1) in realtime.closing_sessions
 
-        assert session_id not in realtime.closing_sessions
+        assert (session_id, 1) not in realtime.closing_sessions
 
 
 def test_malformed_hello_closes_with_protocol_violation():
@@ -2580,8 +2580,8 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
                 assert realtime.workers["w-idle-resume"].slots_in_use == 0
                 # The first attempt is armed so its session_closed settles the
                 # usage segment when the worker reports it.
-                assert realtime.closing_sessions[session_id][0] == session.user_id
-                assert realtime.closing_sessions[session_id][2] is realtime.workers["w-idle-resume"]
+                assert realtime.closing_sessions[(session_id, 1)][0] == session.user_id
+                assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
 
                 canvas = bytes([CANVAS_FRAME]) + session_id.bytes + b"resume-me"
                 browser_ws.send_bytes(canvas)
@@ -2594,7 +2594,7 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
                 assert session.control_generation == 2
                 assert session.worker is realtime.workers["w-idle-resume"]
                 assert realtime.workers["w-idle-resume"].slots_in_use == 1
-                assert realtime.closing_sessions[session_id][2] is realtime.workers["w-idle-resume"]
+                assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
 
 
 def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
@@ -2625,6 +2625,123 @@ def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
                 refused = expect(first_ws, "error")
                 assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
                 assert refused["message"] == "no worker capacity"
+
+
+@pytest.mark.db
+def test_usage_settles_per_attempt_across_a_resume(monkeypatch):
+    """An idle release and a resume give one session two attempts, one on each
+    worker. Each worker's session_closed settles its own generation's usage; a
+    later arming must not orphan the earlier attempt's accounting."""
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as first_ws:
+            first_ws.send_json(hello(worker_id="w-settle-a"))
+            expect(first_ws, "registered")
+            with db_client.websocket_connect("/api/v1/fleet") as second_ws:
+                second_ws.send_json(hello(worker_id="w-settle-b"))
+                expect(second_ws, "registered")
+                with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                    browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                    opened = expect(first_ws, "open_session")
+                    answer_ready(first_ws, opened)
+                    expect(browser_ws, "ready")
+                    session_id = uuid.UUID(opened["session_id"])
+                    session = realtime.sessions[session_id]
+
+                    # First attempt: the idle release arms generation 1 on worker A.
+                    session.last_input = time.monotonic() - 1
+                    db_client.portal.call(realtime.release_idle_sessions)
+                    closed = expect(first_ws, "close_session")
+                    assert closed["control_generation"] == 1
+                    assert (session_id, 1) in realtime.closing_sessions
+
+                    # Second attempt: the resume placed the session on worker B,
+                    # and its own idle release arms generation 2 there.
+                    session.control_generation = 2
+                    session.worker = realtime.workers["w-settle-b"]
+                    realtime.workers["w-settle-b"].slots_in_use = 1
+                    session.state = "live"
+                    db_client.portal.call(realtime.release_idle_sessions)
+                    reopened = expect(second_ws, "close_session")
+                    assert reopened["control_generation"] == 2
+                    assert (session_id, 2) in realtime.closing_sessions
+
+                    # Each worker settles the attempt it actually ran.
+                    first_ws.send_json({"type": "session_closed",
+                                        "session_id": str(session_id),
+                                        "control_generation": 1, "frames": 5,
+                                        "gpu_ms": 50, "duration_ms": 500,
+                                        "category": "other"})
+                    second_ws.send_json({"type": "session_closed",
+                                         "session_id": str(session_id),
+                                         "control_generation": 2, "frames": 7,
+                                         "gpu_ms": 70, "duration_ms": 700,
+                                         "category": "other"})
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline and len(calls) < 2:
+                        time.sleep(0.05)
+                    assert len(calls) == 2
+                    assert sorted(c.get("control_generation") for _, _, c in calls) == [1, 2]
+                    assert [user for user, _, _ in calls] == [session.user_id] * 2
+                    assert [model for _, model, _ in calls] == ["sd-sim"] * 2
+
+
+def test_a_relayed_frame_clears_a_pending_frame():
+    """A frame relayed straight to a live worker is newer than anything a
+    resume still holds, so it clears pending_frame and the resume forwards
+    nothing older."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-frame-clear"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.pending_frame = b"older-than-anything-a-resume-holds"
+            canvas = bytes([CANVAS_FRAME]) + session.id.bytes + b"newer"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            assert session.pending_frame is None
+
+
+def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
+    """A revocation can already own a session's end and be refusing its socket
+    4401 when an idle resume races it. With no room left the resume must not
+    stack a second refusal (4003) on the same socket."""
+    refused: list[tuple[int, str]] = []
+
+    async def spy(ws, code, message):
+        refused.append((code, message))
+
+    monkeypatch.setattr(realtime, "refuse", spy)
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-resume-race"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert session.state == "idle"
+            # The frame that would have started the resume task is pre-empted
+            # by a revocation that already owns the session's end.
+            assert realtime.transition(session, "idle", "assigning")
+            assert realtime.transition(session, "assigning", "ending")
+
+            client.portal.call(realtime.resume_idle, session)
+            assert refused == []
 
 
 def test_a_third_session_for_one_account_is_refused():
