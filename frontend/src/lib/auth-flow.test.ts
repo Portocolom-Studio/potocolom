@@ -80,6 +80,14 @@ test('wiring: login submit uses the shared guard', () => {
 	assert.doesNotMatch(loginSource, /\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/);
 });
 
+test('wiring: both successful sign-ins replace the history entry so Back skips /app', () => {
+	const loginSource = readFileSync(join(here, '../routes/login/+page.svelte'), 'utf8');
+	assert.equal(
+		[...loginSource.matchAll(/goto\(resolve\('\/app'\), \{ replaceState: true \}\)/g)].length,
+		2
+	);
+});
+
 test('wiring: the app route checks the account before opening the studio', () => {
 	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
 	assert.match(appSource, /apiFetch\('\/api\/v1\/account'\)/);
@@ -91,7 +99,10 @@ test('wiring: the app route checks the account before opening the studio', () =>
 
 test('wiring: the app route loads nothing until the account probe answers', () => {
 	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
-	assert.match(appSource, /accountCheckForcesLogin\(status\)[\s\S]*?void loadModels\(\)/);
+	assert.match(
+		appSource,
+		/accountCheckForcesLogin\(status\)[\s\S]*?checkingAccount = false;[\s\S]*?void loadModels\(\)/
+	);
 });
 
 test('wiring: login links to the reset route and reads the reset-done flag', () => {
