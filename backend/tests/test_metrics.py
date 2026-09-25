@@ -6,6 +6,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
@@ -607,3 +608,32 @@ def test_benchmark_input_bounds_its_int4_columns():
         pass
     else:
         raise AssertionError("a non-finite benchmark param was accepted")
+
+
+def test_gpu_sample_schedulers_hold_their_tasks_until_done(monkeypatch):
+    # asyncio.create_task keeps only a weak reference, so a task the scheduler
+    # does not hold can be garbage-collected mid-write (issue #497).
+    from app import gpu_samples
+
+    gate = asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        await gate.wait()
+
+    monkeypatch.setattr(gpu_samples, "record_worker_identity", blocked)
+    monkeypatch.setattr(gpu_samples, "record_heartbeat", blocked)
+
+    async def exercise() -> None:
+        gpu_samples.schedule_worker_identity("w-held", None, None)
+        gpu_samples.schedule_heartbeat_sample(
+            "w-held", {"type": "heartbeat"}, None, None
+        )
+        assert len(gpu_samples._background_tasks) == 2
+        gate.set()
+        deadline = time.monotonic() + 5
+        while gpu_samples._background_tasks:
+            if time.monotonic() >= deadline:
+                raise AssertionError("a scheduled task was never released")
+            await asyncio.sleep(0.01)
+
+    run_on_test_loop(exercise())

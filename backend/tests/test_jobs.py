@@ -2363,6 +2363,86 @@ def test_dispatch_depth_blocks_third_until_slot_frees(monkeypatch):
             _finish_job(client, worker, d3)
 
 
+@pytest.mark.db
+def test_dispatch_send_timeout_drops_worker_and_keeps_job_queued(monkeypatch):
+    """A worker that stops reading must not hold the dispatch task (issue #497).
+
+    The send inside the SELECT ... FOR UPDATE transaction is bounded by
+    CLOSE_TIMEOUT, so a stalled reader costs one worker and one pass rather
+    than the whole dispatch loop and the row lock behind it.
+    """
+    from unittest.mock import MagicMock
+
+    from app.manifests import Manifest
+
+    async def seed() -> uuid.UUID:
+        if not await db.connect():
+            pytest.skip("database unavailable")
+        assert db.local_user_id is not None
+        assert db.session_factory is not None
+        job_id = uuid.uuid4()
+        async with db.session_factory() as session:
+            if await session.get(Model, "sd-test") is None:
+                session.add(Model(
+                    id="sd-test",
+                    name="SD Test",
+                    capabilities=["text_to_image"],
+                    parameters_schema=MANIFEST["parameters"],
+                    min_vram_gb=0,
+                ))
+            await session.flush()
+            session.add(Job(
+                id=job_id,
+                user_id=db.local_user_id,
+                model_id="sd-test",
+                params={"prompt": "stuck reader"},
+                state="queued",
+                attempt=1,
+            ))
+            await session.commit()
+        return job_id
+
+    job_id = run_on_test_loop(seed())
+
+    stuck = asyncio.Event()
+    ws = MagicMock()
+
+    async def never_sends(*args, **kwargs):
+        await stuck.wait()
+
+    ws.send_json = never_sends
+    manifest = Manifest(id="sd-test", name="SD Test",
+                        capabilities=["text_to_image"], parameters={})
+    worker = realtime.Worker(id="w-stuck-reader", ws=ws, manifests=[manifest],
+                             realtime_slots=1)
+    realtime.workers.clear()
+    realtime.workers[worker.id] = worker
+    monkeypatch.setattr(realtime, "CLOSE_TIMEOUT", 0.05)
+
+    try:
+        # The outer bound turns a missing wait_for into a failure rather than
+        # a hang; the inner one is what the test is about.
+        dispatched = run_on_test_loop(asyncio.wait_for(jobs.dispatch(job_id), 5))
+        assert dispatched is False
+    finally:
+        realtime.workers.clear()
+        jobs.inflight.pop(job_id, None)
+        jobs.last_progress_at.pop(job_id, None)
+
+    assert worker.id not in realtime.workers, "a timed-out worker must be dropped"
+    assert worker.jobs_in_flight == 0, "the slot must be released"
+    assert job_id not in jobs.inflight
+
+    async def job_state() -> str | None:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            job = await session.get(Job, job_id)
+            return job.state if job is not None else None
+
+    assert run_on_test_loop(job_state()) == "queued"
+    run_on_test_loop(db.dispose())
+
+
 def test_pick_job_worker_prefers_least_loaded():
     from unittest.mock import MagicMock
 
