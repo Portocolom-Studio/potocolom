@@ -3,6 +3,7 @@
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import ModeToggle from './ModeToggle.svelte';
 	import SiteFooter from './SiteFooter.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import type { Snippet } from 'svelte';
@@ -37,6 +38,7 @@
 		</nav>
 		<div class="chrome-actions">
 			<LanguageToggle />
+			<ModeToggle />
 			<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
 		</div>
 	</header>
