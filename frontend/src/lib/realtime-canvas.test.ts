@@ -178,8 +178,8 @@ test('the update message trims the prompt exactly like the open message', () => 
 	assert.equal(message.params.steps, 6);
 });
 
-test('a refusal fails the session and anything else invites a reconnect', () => {
-	for (const code of [4000, 4002, 4003, 4004]) {
+test('a terminal close fails the session and anything else invites a reconnect', () => {
+	for (const code of [4000, 4002, 4003, 4004, 4401, 4403]) {
 		assert.equal(stateForCloseCode(code), 'failed', `code ${code}`);
 	}
 	// A normal close, or a dropped connection, keeps the canvas recoverable.
@@ -571,6 +571,45 @@ test('encode and decode failures notify while preserving the session', async () 
 	await Promise.resolve();
 	assert.equal(harness.notices.at(-1), 'decode_failed');
 	assert.equal(harness.states.at(-1), 'active');
+});
+
+test('a revoked session and a forbidden one fail with their own notices', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	// The API sends the error before it closes, as docs/connection-handling.md
+	// specifies for a revoked session.
+	harness.sockets[0].message(
+		JSON.stringify({ type: 'error', code: 4401, message: 'session revoked' })
+	);
+	harness.sockets[0].close(4401);
+	assert.equal(harness.states.at(-1), 'failed');
+	assert.equal(harness.notices.at(-1), 'session_revoked');
+
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	harness.sockets[1].message(JSON.stringify({ type: 'error', code: 4403, message: 'forbidden' }));
+	harness.sockets[1].close(4403);
+	assert.equal(harness.states.at(-1), 'failed');
+	assert.equal(harness.notices.at(-1), 'refused_forbidden');
+});
+
+test('a revoked close without a prior error still names the revocation', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	harness.sockets[0].close(4401);
+	assert.equal(harness.states.at(-1), 'failed');
+	assert.equal(harness.notices.at(-1), 'session_revoked');
 });
 
 test('params acknowledgement updates controls and wakes capture', () => {

@@ -27,6 +27,7 @@
 		type ConnectionState,
 		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
+	import { resolve } from '$app/paths';
 
 	/** The wire dimensions. CSS scales the display without changing these. */
 	const CANVAS_SIZE = 512;
@@ -58,7 +59,9 @@
 		refused_protocol: 'app.realtime_canvas.refused_protocol',
 		refused_version: 'app.realtime_canvas.refused_version',
 		refused_capacity: 'app.realtime_canvas.refused_capacity',
-		refused_model: 'app.realtime_canvas.refused_model'
+		refused_model: 'app.realtime_canvas.refused_model',
+		refused_forbidden: 'app.realtime_canvas.refused_forbidden',
+		session_revoked: 'app.realtime_canvas.session_revoked'
 	};
 
 	let prompt = $state('');
@@ -645,7 +648,15 @@
 						<p class="text-muted-foreground text-sm">{t('app.realtime_canvas.no_model')}</p>
 					{/if}
 					{#if notice}
-						<p class="text-destructive text-sm" role="status" aria-live="polite">{t(notice)}</p>
+						<p class="text-destructive text-sm" role="status" aria-live="polite">
+							{t(notice)}
+							{#if notice === 'app.realtime_canvas.session_revoked'}
+								{' '}
+								<a class="text-foreground underline underline-offset-4" href={resolve('/login')}
+									>{t('app.realtime_canvas.sign_in_again')}</a
+								>
+							{/if}
+						</p>
 					{/if}
 					{#if busy}
 						<Button variant="secondary" onclick={disconnect}>
