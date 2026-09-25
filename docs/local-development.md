@@ -147,6 +147,36 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 .venv/bin/ruff check . && .venv/bin/pytest
 ```
 
+### Stress testing the sockets
+
+`make simulate` shows the connection story once
+([connection-handling.md](connection-handling.md), The simulation).
+`make stress` loads it. It runs `scripts/stress.py` against an API that is
+already running in `AUTH_MODE=none`. It brings its own fake workers, which
+speak the fleet protocol in the same process, so no GPU and no worker process
+are needed:
+
+```bash
+make api      # in another terminal
+make stress   # same FLEET_SECRET from deploy/compose/.env, same API_PORT
+# or by hand, for another API:
+FLEET_TOKEN=<the API's FLEET_TOKEN_KEY> backend/.venv/bin/python scripts/stress.py \
+    --api http://localhost:8000 --api-pid <API pid>
+```
+
+It runs six scenarios, or the ones you name with `--scenario`: `sessions`
+(more browsers than slots), `throughput` (every slot live), `worker-churn`
+(workers die and reconnect mid-session), `conn-churn` (sockets that open and
+close fast), `slow-consumer` (a browser that stops reading) and `rest-burst`
+(concurrent `POST /api/v1/generations`). `--seed`, the counts and the
+durations fix the schedule, so two runs send the same messages in the same
+order; only timings, send stamps and server-minted ids differ. It prints one
+table and exits 1 if a threshold fails. `--api-pid` adds the API's resident set
+and open descriptors from `/proc`. Scale the load with `--sessions`,
+`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` fails until
+the per-session mailboxes in [connection-handling.md](connection-handling.md)
+ship: today the API buffers every frame for a browser that stopped reading.
+
 ## Trying accounts mode locally
 
 `AUTH_MODE` defaults to `none` and the dev loop wants it that way: every request
