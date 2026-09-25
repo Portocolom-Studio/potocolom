@@ -2504,3 +2504,202 @@ def test_a_close_control_message_closes_with_1000():
                 browser_ws.receive_json()
             assert closed.value.code == 1000
             expect(worker_ws, "close_session")
+
+
+def test_idle_session_is_released_after_the_idle_time(monkeypatch):
+    """The sweep releases a live session whose last input is old: the worker
+    is told, the slot is back, and the browser keeps its socket because the
+    release is invisible to it."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-out"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            closed = expect(worker_ws, "close_session")
+            assert closed["session_id"] == opened["session_id"]
+            assert closed["control_generation"] == 1
+            assert session.state == "idle"
+            assert session.worker is None
+            assert realtime.workers["w-idle-out"].slots_in_use == 0
+            # Only the browser's own teardown removes the socket; the release
+            # did not.
+            assert uuid.UUID(opened["session_id"]) in realtime.sessions
+
+
+def test_a_live_session_with_recent_input_is_not_released(monkeypatch):
+    """A relayed frame refreshes last_input, so the sweep leaves a session
+    that is still drawing alone even once the idle threshold is past."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.2)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-kept"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"drawing"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            client.portal.call(realtime.release_idle_sessions)
+            assert session.state == "live"
+            assert realtime.workers["w-idle-kept"].slots_in_use == 1
+
+
+@pytest.mark.db
+def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
+    """A frame for an idle session re-opens it on a worker with the next
+    generation and is forwarded once the session is live again, and the first
+    attempt's usage stays armed for settlement."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-idle-resume", slots=2))
+            expect(worker_ws, "registered")
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, opened)
+                expect(browser_ws, "ready")
+                session_id = uuid.UUID(opened["session_id"])
+                session = realtime.sessions[session_id]
+                session.last_input = time.monotonic() - 1
+                db_client.portal.call(realtime.release_idle_sessions)
+                closed = expect(worker_ws, "close_session")
+                assert closed["control_generation"] == 1
+                assert session.state == "idle"
+                assert realtime.workers["w-idle-resume"].slots_in_use == 0
+                # The first attempt is armed so its session_closed settles the
+                # usage segment when the worker reports it.
+                assert realtime.closing_sessions[session_id][0] == session.user_id
+                assert realtime.closing_sessions[session_id][2] is realtime.workers["w-idle-resume"]
+
+                canvas = bytes([CANVAS_FRAME]) + session_id.bytes + b"resume-me"
+                browser_ws.send_bytes(canvas)
+                reopened = expect(worker_ws, "open_session")
+                assert reopened["session_id"] == opened["session_id"]
+                assert reopened["control_generation"] == 2
+                answer_ready(worker_ws, reopened)
+                assert worker_ws.receive_bytes() == canvas
+                assert session.state == "live"
+                assert session.control_generation == 2
+                assert session.worker is realtime.workers["w-idle-resume"]
+                assert realtime.workers["w-idle-resume"].slots_in_use == 1
+                assert realtime.closing_sessions[session_id][2] is realtime.workers["w-idle-resume"]
+
+
+def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
+    """If every slot is taken by the time an idle session draws again, its
+    frame is refused 4003 like any other admission; the admission queue is
+    issue #19 and does not ship."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-full", slots=1))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as first_ws:
+            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(first_ws, "ready")
+            first = realtime.sessions[uuid.UUID(opened["session_id"])]
+            first.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert first.state == "idle"
+            with client.websocket_connect("/api/v1/realtime") as second_ws:
+                second_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                second_opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, second_opened)
+                expect(second_ws, "ready")
+                canvas = bytes([CANVAS_FRAME]) + first.id.bytes + b"nowhere"
+                first_ws.send_bytes(canvas)
+                refused = expect(first_ws, "error")
+                assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
+                assert refused["message"] == "no worker capacity"
+
+
+def test_a_third_session_for_one_account_is_refused():
+    """Two sockets are the cap: a third is refused 4003 with the account
+    message, before any worker is chosen. In AUTH_MODE=none every browser is
+    the one local user, which is what binds the three sockets together."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-cap", slots=3))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as first_ws:
+            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            first_opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, first_opened)
+            expect(first_ws, "ready")
+            with client.websocket_connect("/api/v1/realtime") as second_ws:
+                second_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                second_opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, second_opened)
+                expect(second_ws, "ready")
+                with client.websocket_connect("/api/v1/realtime") as third_ws:
+                    third_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                    refused = expect(third_ws, "error")
+                    assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
+                    assert refused["message"] == "too many realtime sessions for this account"
+                # The refusal chose no worker and opened no session.
+                assert len(realtime.sessions) == 2
+
+
+def test_another_accounts_sessions_do_not_count_toward_the_cap():
+    """The cap is per account: an account holding its limit does not block a
+    different account's socket."""
+    saved = dict(realtime.sessions)
+    try:
+        other = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                 browser=FakeSocket(), user_id=uuid.uuid4(), state="live")
+        also = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                browser=FakeSocket(), user_id=uuid.uuid4(), state="live")
+        realtime.sessions.update({other.id: other, also.id: also})
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-cap-other", slots=1))
+            expect(worker_ws, "registered")
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, opened)
+                expect(browser_ws, "ready")
+    finally:
+        realtime.sessions.clear()
+        realtime.sessions.update(saved)
+
+
+def test_update_params_on_an_idle_session_needs_no_worker(monkeypatch):
+    """An idle session accepts an update without a worker: the params change,
+    the browser is told, and nothing has to be placed to do it."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-update", parameters=REQUIRES_PROMPT))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert session.state == "idle"
+            assert session.worker is None
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            acknowledged = expect(browser_ws, "params_updated")
+            assert acknowledged["params"]["prompt"] == "a blue house"
+            assert session.params["prompt"] == "a blue house"
+            assert session.state == "idle"
+            assert session.worker is None

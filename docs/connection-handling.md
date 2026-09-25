@@ -112,7 +112,7 @@ The version gate implements the N-1 promise: with current protocol version N, ve
 
 Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized. A viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal. They create no admission or worker state. They send an error before closing. Logout, revocation, disable, deletion, or role change closes indexed live connections. Designed: it would also cancel queued work. After gateway extraction, the browser presents a short-lived API-minted ticket. The gateway validates transport admission without taking API authority.
 
-> Shipped status: **authentication, authorization, open/ready/frames, update_params, SessionManager, and the studio WebSocket client are implemented.**
+> Shipped status: **authentication, authorization, open/ready/frames, update_params, idle release with transparent resume, the per-account session cap, SessionManager, and the studio WebSocket client are implemented.**
 >
 > In `AUTH_MODE=none` the socket binds the implicit local user.
 > In `AUTH_MODE=accounts` the upgrade resolves the session cookie before `accept`.
@@ -133,8 +133,15 @@ Authenticate and authorize a browser realtime connection before queueing, reserv
 > The role is checked once at the handshake. It is not carried on the session.
 > A role change is enforced by revoking the account session and closing the socket.
 >
+> Idle release and resume ship (issue #526): a live session with no canvas
+> input for about 60 seconds is released by the session sweep, and its next
+> canvas frame re-places it on a worker, forwarding only the newest frame.
+> The browser is never told and the canvas stays put. One account may hold at
+> most two realtime sockets at once, idle ones included; a third is refused
+> `4003` with "too many realtime sessions for this account".
+>
 > Issue #19 still owns the missing work.
-> That list is role and quota-subject binding, the admission queue, resume sequence numbers, codec negotiation, idle release, and writer isolation.
+> That list is role and quota-subject binding, the admission queue, resume sequence numbers, codec negotiation, and writer isolation.
 > The gateway ticket path is owned by "Gateway realtime tickets and revocation".
 > The governing decision is "Realtime authorization: bind once, invalidate explicitly".
 
@@ -168,7 +175,7 @@ slot calibration in [decisions.md](decisions.md) is measured against.
 | Idle slot release | 60 s without canvas input | credit metering stops; canvas stays in the browser |
 | Simulated inference time | configurable | the prototype sleeps instead of denoising |
 
-> Shipped status (2026-07-30): **partially implemented.** Worker heartbeats and the 90-second reap path ship. The browser handler implements neither an application keepalive nor 60-second idle release; a ready slot stays pinned until close. Issue #19, "Real-Time Generation Protocol", governs both missing rows.
+> Shipped status (2026-07-30, corrected 2026-09-25): **partially implemented.** Worker heartbeats, the 90-second reap path, and 60-second idle release (via the session sweep) ship. The browser handler implements no application keepalive, and the release is invisible to the browser: the slot is returned, the canvas stays put, and the next canvas frame re-places the session. Issue #19, "Real-Time Generation Protocol", governs the keepalive and the admission queue.
 
 TCP-level disconnects are acted on immediately; the heartbeat timeout only matters when a connection dies silently, which load balancers make possible. Browser keepalive is an application-level control message because browser WebSocket APIs cannot send protocol pings.
 
@@ -181,7 +188,7 @@ It does not change the wire format or prove a GPU cost saving.
 
 ## Session states
 
-> Shipped status (2026-08-19): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). `queued` and `idle` still wait on the admission queue and idle release. Checkpoints, durable outbox, and per-session mailboxes do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
+> Shipped status (2026-08-19, corrected 2026-09-25): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `idle` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). Idle release and transparent resume ship (issue #526): a live session with no input for about 60 seconds is released to `idle`, and its next canvas frame moves it to `assigning` and re-places it on a worker, with only the newest frame forwarded once it is live again. `queued` still waits on the admission queue. Checkpoints, durable outbox, and per-session mailboxes do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
 
 A realtime session is in exactly one state, and one place moves it between them, comparing the expected state and transitioning atomically. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
 
@@ -308,7 +315,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | 4401 | authentication required or no longer valid | browser |
 | 4403 | authenticated, but not permitted to open a realtime session | browser |
 
-> Shipped status (2026-07-30): code 4003 is currently an immediate full-pool rejection. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
+> Shipped status (2026-07-30, corrected 2026-09-25): code 4003 is currently an immediate full-pool rejection, and it also refuses a session when its account already holds the two-socket per-account cap. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
 
 ## Delivery semantics
 

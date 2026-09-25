@@ -94,7 +94,7 @@ An idle drawing session releases its slot and stops metering after about 60 seco
 
 Rejected alternative: pinning the slot while the tab is open. Zero resume friction, but forgotten tabs silently drain credits, which is a support complaint machine.
 
-> Shipped status (2026-07-30): **not yet implemented.** The current browser handler records no last-input time and pins a ready slot until the connection closes. Issue #19, "Real-Time Generation Protocol", owns idle release and resume controls; issue #20, "Multi-Worker Scheduling", owns reacquisition and priority.
+> Shipped status (2026-09-25): **implemented without the queue.** The session sweep releases a `live` session with no canvas input for `IDLE_RELEASE_SECONDS` (60 s; the 30 s sweep interval bounds the delay) through `release()`, which stops metering and settles the attempt, and the next canvas frame re-places the session transparently. With no free slot the resume is refused 4003, because the admission queue (issue #19) does not ship; issue #20 still owns priority.
 
 ## Model placement: hot set plus on-demand loading
 
@@ -1636,6 +1636,14 @@ Rejected alternatives: refusing it like every other change (the only remedy for 
 Nothing a person creates on the platform, prompts, canvases, generated images or their parameters, is used to train or fine-tune any model, in the hosted service or in the open code. The models are third-party weights run as published; the platform stores user content only to serve it back to its owner and to anyone the owner shares it with. Usage statistics stay the rows the server already has (model, duration, a category label), never the content itself. The public pages may state this plainly because it is a commitment, not a description of a pipeline that happens not to exist yet.
 
 Rejected alternatives: an opt-in to contribute content for training (a second consent flow and a data pipeline for a benefit the product does not need); saying nothing (people ask, and the answer is a deliberate choice worth recording).
+
+## Realtime sessions per account are capped at two
+
+An account may hold at most two realtime canvas sessions at once, counting idle ones; a third open is refused 4003 with the reason "too many realtime sessions for this account" before any worker is chosen. Idle release frees the slots of sockets that stop drawing, but it does nothing about sockets that keep drawing: without a cap, one account opening a socket per slot and sending a frame every few seconds holds every GPU slot on the install and everyone else is refused. Two lets a person keep a second tab or window open without being refused. Idle sessions count because they hold a socket and take a slot back on their next frame. In `AUTH_MODE=none` every browser is the one implicit local user, so the cap is two canvases for the whole install, which is the single-operator shape that mode exists for; an install with several people uses accounts.
+
+The cap is a constant, `MAX_REALTIME_SESSIONS_PER_USER`, not a setting: nobody has asked to tune it, and a per-plan limit belongs to QuotaService in the cloud profile, not to this handler.
+
+Rejected alternatives: no cap, relying on idle release alone, which leaves the drawing-socket exhaustion open; a per-IP cap, which one NAT or one proxy turns into a cap for a whole office while an attacker with several addresses walks past it; a cap of one, which refuses the ordinary second tab; a new close code for the refusal, which every client would have to learn for no behaviour it can take beyond what 4003 with a reason already gives.
 
 Chosen as conventional defaults rather than debated decisions:
 

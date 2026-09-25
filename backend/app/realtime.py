@@ -83,6 +83,13 @@ SESSION_READY_TIMEOUT = 10.0
 # account sessions behind its sockets are still live.
 SESSION_SWEEP_SECONDS = 30.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
+# A live session whose last canvas input is older than this is released by
+# the sweep. The sweep interval bounds the delay, which is what the "about
+# 60 s" contract in docs/connection-handling.md promises.
+IDLE_RELEASE_SECONDS = 60.0
+# How many realtime sockets one account may hold, idle ones included: an idle
+# session still holds its socket and can reclaim a slot at any time.
+MAX_REALTIME_SESSIONS_PER_USER = 2
 
 # One bound for every session seed, shared with the worker's SEED_BOUND
 # (worker/worker/client.py): the API fills the seed at session open and the
@@ -418,12 +425,19 @@ class Session:
     auth_session_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
-    # queued and idle are in the enum so later work does not widen it;
-    # this protocol does not ship the admission queue or idle release.
+    # queued stays in the enum so later work does not widen it; this protocol
+    # does not ship the admission queue. idle ships: the sweep releases an idle
+    # slot and the next canvas frame re-places the session.
     state: SessionState = "assigning"
     control_generation: int = 1
     attempt_ok: bool = False
     assigned_at: float = 0.0
+    # Monotonic time of the last canvas input (a relayed frame or an accepted
+    # update_params); the sweep releases a live session past that age.
+    last_input: float = field(default_factory=time.monotonic)
+    # Newest canvas frame awaiting a worker while an idle session re-places
+    # itself; the resume task forwards it once a worker is live again.
+    pending_frame: bytes | None = None
 
     @property
     def is_live(self) -> bool:
@@ -778,6 +792,57 @@ def schedule_reassign(session: Session) -> None:
     task = asyncio.create_task(guarded())
     _reassign_tasks.add(task)
     task.add_done_callback(_reassign_tasks.discard)
+
+
+_resume_tasks: set[asyncio.Task] = set()
+
+
+def schedule_resume_idle(session: Session) -> None:
+    """Re-place an idle session without telling the browser.
+
+    The idle release was invisible to the browser, which kept sending frames,
+    so the next one has to win the slot back. Only a won idle-to-assigning
+    transition starts a task, the same guard as schedule_reassign.
+    """
+    if not transition(session, "idle", "assigning"):
+        return
+
+    async def guarded() -> None:
+        try:
+            await resume_idle(session)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            logger.exception("idle resume failed for session %s", session.id)
+
+    task = asyncio.create_task(guarded())
+    _resume_tasks.add(task)
+    task.add_done_callback(_resume_tasks.discard)
+
+
+async def resume_idle(session: Session) -> None:
+    """Place an idle session on a worker and forward the newest pending frame.
+
+    Mirrors reassign()'s placement without its interrupted/resumed controls:
+    the browser does not know the slot was released, so nothing is told. If no
+    worker has room the browser is refused 4003; the admission queue is issue
+    #19 and does not ship.
+    """
+    if not session.is_live:
+        return
+    session.control_generation += 1
+    if await place_session(session):
+        if not session.is_live:
+            await release(session)
+            return
+        frame, session.pending_frame = session.pending_frame, None
+        if frame is not None and session.worker is not None:
+            await safe_send(session.worker.ws.send_bytes(frame))
+        return
+    logger.warning("session %s was idle and no worker had room to resume it",
+                   session.id)
+    transition(session, "assigning", "ending")
+    await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
 
 
 def over_capacity_sessions(worker: Worker) -> list[Session]:
@@ -1226,6 +1291,17 @@ async def realtime(ws: WebSocket) -> None:
     # for its life), so it must not be repeated there.
     params = {**params, "seed": seed if seed is not None
               else random.randrange(SESSION_SEED_BOUND)}
+    # Per-account cap, before any worker is chosen: in AUTH_MODE=none every
+    # browser is the one local user. Idle sessions count; they hold their
+    # socket and can reclaim a slot at any time.
+    held = sum(
+        1 for existing in sessions.values()
+        if existing.user_id == handshake.user_id
+        and existing.state not in ("ending", "ended")
+    )
+    if held >= MAX_REALTIME_SESSIONS_PER_USER:
+        await refuse(ws, CLOSE_NO_CAPACITY, "too many realtime sessions for this account")
+        return
     if pick_worker(model_id) is None:
         await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
         return
@@ -1260,7 +1336,17 @@ async def realtime(ws: WebSocket) -> None:
                         raise ProtocolError("frame does not belong to this session")
                     if len(data) > FRAME_HEADER_BYTES + MAX_CANVAS_PAYLOAD_BYTES:
                         continue
-                    if session.worker is not None:  # a dead worker means reassign is in flight
+                    session.last_input = time.monotonic()
+                    if session.state == "idle":
+                        # The idle release was invisible to the browser, which
+                        # kept sending: re-place the session and forward the
+                        # newest frame once a worker is live again.
+                        session.pending_frame = data
+                        schedule_resume_idle(session)
+                    elif session.state == "assigning":
+                        # A resume in flight: keep only the newest frame.
+                        session.pending_frame = data
+                    elif session.worker is not None:  # a dead worker means reassign is in flight
                         await safe_send(session.worker.ws.send_bytes(data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
@@ -1332,6 +1418,7 @@ async def realtime(ws: WebSocket) -> None:
                         # worker, and a worker fills in manifest defaults for
                         # keys nobody set, which never appear here.
                         session.params.update(params)
+                        session.last_input = time.monotonic()
                         if session.worker is not None:
                             await safe_send(session.worker.ws.send_json(with_generation({
                                 "type": "update_session",
@@ -1427,6 +1514,25 @@ async def close_dead_sessions() -> None:
             await close_revoked(user_id, auth_session_id)
 
 
+async def release_idle_sessions() -> None:
+    """Return the slots whose sessions stopped drawing.
+
+    This is the sweep's own second job and deliberately not a second timer:
+    "about 60 s" is the contract, so the sweep interval bounds the delay. The
+    browser is not told and its socket stays open; the next canvas frame
+    re-places the session (schedule_resume_idle). An idle session still holds
+    its socket, so it keeps counting against its account's session cap.
+    """
+    cutoff = time.monotonic() - IDLE_RELEASE_SECONDS
+    for session in list(sessions.values()):
+        if session.state != "live" or session.last_input >= cutoff:
+            continue
+        transition(session, "live", "idle")
+        await release(session)
+        logger.info("session %s released its slot after %ds without input",
+                    session.id, int(time.monotonic() - session.last_input))
+
+
 async def sweep_dead_sessions() -> None:
     while True:
         await asyncio.sleep(SESSION_SWEEP_SECONDS)
@@ -1436,3 +1542,9 @@ async def sweep_dead_sessions() -> None:
             # One failure must not stop the sweep for the life of the process:
             # that would silently restore the defect this exists to fix.
             logger.warning("realtime session sweep failed")
+        try:
+            await release_idle_sessions()
+        except Exception:
+            # Independent of the database check: a blip there must not pause
+            # the anti-exhaustion release too.
+            logger.warning("realtime idle release failed")
