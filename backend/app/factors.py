@@ -177,6 +177,12 @@ async def begin_challenge(user: User, remember_me: bool,
         response.set_cookie(f"{_cookie_name(settings)}_remember", "1", path="/",
                             samesite="lax", secure=sessions.is_secure(settings.public_url),
                             httponly=True, max_age=int(CHALLENGE_TTL.total_seconds()))
+    else:
+        # A ticked attempt this browser abandoned would otherwise still answer
+        # for this one, whoever is signing in now.
+        response.delete_cookie(f"{_cookie_name(settings)}_remember", path="/",
+                               samesite="lax", secure=sessions.is_secure(settings.public_url),
+                               httponly=True)
     return response
 
 

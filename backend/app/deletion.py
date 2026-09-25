@@ -22,6 +22,7 @@ from starlette.responses import Response, StreamingResponse
 
 from app import audit, db, jobs, sessions
 from app.account_lock import hold_the_account
+from app.accounts import _clear
 from app.auth import current_principal, require_accounts_mode, require_role
 from app.tables import Asset, AuthIdentity, AuthToken, Job, Session, User
 
@@ -189,7 +190,9 @@ async def delete_account(
         for job_id in stopping:
             await jobs.cancel(job_id, reason="account deleted")
         await audit.record(DELETION_REQUESTED, actor=principal.user, target_user_id=user_id)
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    _clear(response)
+    return response
 
 
 @router.post("/api/v1/users/{user_id}/restore", status_code=204)

@@ -339,7 +339,9 @@ POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "re
                              untrusted proxy arrives here as a single address
                              from the sixth attempt against either, the answer is held back 0.5s
                              doubling to 8s, whether or not the credentials are right
-POST /api/v1/auth/logout     204, session revoked and both cookies cleared
+POST /api/v1/auth/logout     204, session revoked and both cookies cleared; a session that already
+                             ended, or a bearer nobody holds, still gets 204 and cleared cookies, so a
+                             browser can always sign out and the answer says nothing about the token
 ```
 
 OAuth: the browser navigates to `/api/v1/auth/redirect/google`; the callback exchanges the code and ends in the same session cookies as a password login. It **never finds or creates an account by email**. Registration is invitation-only, so a provider sign-in only succeeds for an identity somebody already linked deliberately, and a provider account that happens to know an address cannot become that person. Linking is a separate act: `POST /api/v1/account/identities/{provider}` needs a live session and authentication within the last 30 minutes.
@@ -419,7 +421,7 @@ DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
 GET    /api/v1/account/export     200 application/json, streamed:
                                   {"account": {...}, "identities": [...],
                                    "generations": [{..., "assets": [...]}, ...]}
-DELETE /api/v1/account            204, the account stops now and is purged in 30 days
+DELETE /api/v1/account            204, the account stops now, both cookies are cleared, and it is purged in 30 days
 POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an account
                                   that was never waiting to be deleted, and for
                                   one that passed its 30 day window

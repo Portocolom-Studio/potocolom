@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from starlette.responses import Response
 
 from app import db, factors, rate_limit, sessions
-from app.auth import current_principal, require_accounts_mode
+from app.auth import UNAUTHENTICATED, current_principal, require_accounts_mode
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, Session, User
@@ -96,8 +96,16 @@ async def login(request: LoginRequest, http: Request) -> Response:
 
 
 @router.post("/api/v1/auth/logout", status_code=204)
-async def logout(principal: sessions.Resolved = Depends(current_principal)) -> Response:
-    await sessions.revoke(principal.session.id)
+async def logout(request: Request) -> Response:
+    try:
+        principal = await current_principal(request)
+    except HTTPException as exc:
+        # A session that already ended leaves its cookies behind, and this is
+        # the only route that can take them off the device.
+        if exc is not UNAUTHENTICATED:
+            raise
+    else:
+        await sessions.revoke(principal.session.id)
     response = Response(status_code=204)
     _clear(response)
     return response
