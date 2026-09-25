@@ -2,10 +2,14 @@
 	import { onDestroy, tick } from 'svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import CircleXIcon from '@lucide/svelte/icons/circle-x';
 	import StarIcon from '@lucide/svelte/icons/star';
+	import { isCancellable } from '$lib/generation-state';
 	import {
+		cancelGeneration,
 		isStarred,
 		loadOlderHistory,
 		resetHistoryToRecent,
@@ -17,6 +21,19 @@
 	let stripEl = $state<HTMLDivElement | null>(null);
 	let loadingOlder = $state(false);
 	let loadError = $state('');
+	let cancellingIds = $state<Set<string>>(new Set());
+	let cancelError = $state('');
+
+	async function cancelJob(id: string): Promise<void> {
+		if (cancellingIds.has(id)) return;
+		cancellingIds = new Set(cancellingIds).add(id);
+		cancelError = '';
+		const ok = await cancelGeneration(id);
+		if (!ok) cancelError = t('app.gen.cancel_failed');
+		const next = new Set(cancellingIds);
+		next.delete(id);
+		cancellingIds = next;
+	}
 
 	// Click-drag horizontal scroll (scrollbar is hidden via no-scrollbar).
 	// Capture only after the move threshold so plain clicks still select.
@@ -247,6 +264,19 @@
 						<Badge variant="outline">
 							{t('app.gen.badge_working')}
 						</Badge>
+						{#if isCancellable(generation.state)}
+							<Button
+								type="button"
+								variant="outline"
+								size="icon-xs"
+								class="bg-background/80 absolute end-1 top-1"
+								title={t('app.gen.cancel')}
+								disabled={cancellingIds.has(generation.id)}
+								onclick={() => cancelJob(generation.id)}
+							>
+								<CircleXIcon />
+							</Button>
+						{/if}
 						{#if generation.state === 'running' && generation.progress !== null}
 							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
 								<div
@@ -275,5 +305,8 @@
 	</div>
 	{#if loadError !== ''}
 		<p class="text-muted-foreground text-xs">{loadError}</p>
+	{/if}
+	{#if cancelError !== ''}
+		<p class="text-destructive text-xs">{cancelError}</p>
 	{/if}
 {/if}
