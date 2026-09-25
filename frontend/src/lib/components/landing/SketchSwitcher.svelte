@@ -29,6 +29,7 @@
 		font-family: 'Lato', ui-sans-serif, system-ui, sans-serif;
 		--mode-toggle-color: oklch(0.72 0.015 255);
 		--mode-toggle-hover: oklch(0.98 0.005 250);
+		--mode-toggle-focus: oklch(0.72 0.18 255);
 	}
 
 	.sketch-switcher :global([data-slot='toggle-group']) {

@@ -27,8 +27,9 @@ test('the theme defaults to dark and remembers a switch to light', () => {
 test('applying the stored theme on load does not write it back', () => {
 	const storage = memoryStorage();
 	let writes = 0;
-	page({ getItem: storage.getItem, setItem: () => void writes++ });
-	applyLandingMode('dark', false);
+	const dataset = page({ getItem: storage.getItem, setItem: () => void writes++ });
+	applyLandingMode('light', false);
+	assert.equal(dataset.landingMode, 'light');
 	assert.equal(writes, 0);
 });
 
