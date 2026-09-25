@@ -1,9 +1,12 @@
 // Shared studio state: the sidebar (model list, gallery) and the generate
 // panel look at the same registry and history.
 
+import { goto } from '$app/navigation';
+import { resolve } from '$app/paths';
 import { apiFetch } from '$lib/api';
 import { runFavoriteMigration } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
+import { studioViewSearch, type MetricsTab, type ShellView } from '$lib/studio-view';
 import {
 	beginOptimisticStarMutation,
 	clampLineageCoordinate,
@@ -274,17 +277,10 @@ export const studio = $state({
 	starredIds: [] as string[],
 	starredExtras: [] as Generation[], // starred jobs fetched outside the history pages
 	favoriteNotice: '',
-	shellView: 'generate' as
-		| 'generate'
-		| 'image_to_image'
-		| 'upscale'
-		| 'edit_image'
-		| 'image_to_text'
-		| 'realtime_canvas'
-		| 'images'
-		| 'models'
-		| 'metrics',
-	metricsTab: 'usage' as 'usage' | 'benchmarks'
+	// Mirrors the /app URL, which +page.svelte applies; change it through the
+	// open* functions below so the view survives reload, Back and deep links.
+	shellView: 'generate' as ShellView,
+	metricsTab: 'usage' as MetricsTab
 });
 
 export function saveLineageViewport(viewport: LineageViewport): void {
@@ -346,27 +342,23 @@ function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): vo
 	studio.favoriteNotice = [...favoriteNotices.values()].join(' ');
 }
 
+function openView(view: ShellView, tab: MetricsTab = 'usage'): void {
+	const search = studioViewSearch(location.search, view, tab);
+	// Clicking the view already open must not stack a duplicate history entry.
+	if (search === location.search) return;
+	void goto(`${resolve('/app')}${search}`, { keepFocus: true, noScroll: true });
+}
+
 export function openPlayground(): void {
-	studio.shellView = 'generate';
+	openView('generate');
 }
 
-export function openService(
-	view:
-		| 'generate'
-		| 'image_to_image'
-		| 'upscale'
-		| 'edit_image'
-		| 'image_to_text'
-		| 'realtime_canvas'
-		| 'images'
-		| 'models'
-): void {
-	studio.shellView = view;
+export function openService(view: Exclude<ShellView, 'metrics'>): void {
+	openView(view);
 }
 
-export function openMetrics(tab: 'usage' | 'benchmarks' = 'usage'): void {
-	studio.shellView = 'metrics';
-	studio.metricsTab = tab;
+export function openMetrics(tab: MetricsTab = 'usage'): void {
+	openView('metrics', tab);
 }
 
 let polling = false;
