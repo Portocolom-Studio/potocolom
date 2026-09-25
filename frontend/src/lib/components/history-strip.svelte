@@ -257,26 +257,25 @@
 							</span>
 						{/if}
 					</button>
-				{:else if generation.state === 'queued' || generation.state === 'running'}
+				{:else if isCancellable(generation.state)}
 					<div
 						class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
 					>
 						<Badge variant="outline">
 							{t('app.gen.badge_working')}
 						</Badge>
-						{#if isCancellable(generation.state)}
-							<Button
-								type="button"
-								variant="outline"
-								size="icon-xs"
-								class="bg-background/80 absolute end-1 top-1"
-								title={t('app.gen.cancel')}
-								disabled={cancellingIds.has(generation.id)}
-								onclick={() => cancelJob(generation.id)}
-							>
-								<CircleXIcon />
-							</Button>
-						{/if}
+						<Button
+							type="button"
+							variant="outline"
+							size="icon-xs"
+							class="bg-background/80 absolute end-1 top-1"
+							title={t('app.gen.cancel')}
+							aria-label={t('app.gen.cancel')}
+							disabled={cancellingIds.has(generation.id)}
+							onclick={() => cancelJob(generation.id)}
+						>
+							<CircleXIcon />
+						</Button>
 						{#if generation.state === 'running' && generation.progress !== null}
 							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
 								<div
@@ -307,6 +306,6 @@
 		<p class="text-muted-foreground text-xs">{loadError}</p>
 	{/if}
 	{#if cancelError !== ''}
-		<p class="text-destructive text-xs">{cancelError}</p>
+		<p role="status" class="text-destructive text-xs">{cancelError}</p>
 	{/if}
 {/if}
