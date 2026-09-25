@@ -60,7 +60,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/benchmark/gpu/unload` | implemented, `BENCHMARK_API`-gated | unload a model after a benchmark run; admin only |
 | PUT `/api/v1/files/{key}` | implemented | local-storage upload target; capability-bound worker writes |
 | GET `/api/v1/files/{key}` | retired | answers `404`. Key-addressed asset reads were removed in R1; assets are read by id. The route is still declared, because the `PUT` above matches the same path and removing it would answer `405` instead |
-| GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404 |
+| GET `/api/v1/assets/{id}` | implemented | owner- or admin-checked asset bytes; missing and unauthorized assets return 404; an administrator's read of another account's bytes is recorded |
 | GET `/api/v1/shared-picture` | implemented | short-lived picture bytes for a resolved share; no account needed |
 | GET `/api/v1/worker-input` | implemented | local-storage worker fetch of a source image; opaque 15-minute capability |
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
@@ -261,6 +261,8 @@ GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#13
 
 Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or admin role. A missing
 or unauthorized asset returns 404. For an accessible asset, an unsafe `download` name returns 400.
+An administrator's read of another account's bytes records a `user.read` event with that account
+as the target, like every other admin read; the owner reading their own records nothing.
 
 The studio opens at most four generation event streams. An `EventSource` error
 before or after the initial event moves that job to the 1.5-second history
@@ -311,7 +313,9 @@ PUT  /api/v1/files/{key}               local-storage upload target (self-hosted,
                                         409 on a second write, since outputs are write-once
 GET  /api/v1/files/{key}               always 404; this route is retired
 GET  /api/v1/assets/{id}                owner or admin; serves local bytes, with 404 for missing or
-                                        unauthorized assets and 400 for an unsafe download name
+                                        unauthorized assets and 400 for an unsafe download name;
+                                        an administrator's read of another account's bytes is
+                                        recorded with that account as the target
 GET  /api/v1/shared-picture             no account; picture bytes for a resolved share
 GET  /api/v1/worker-input               worker fetch of a local source image
 ```

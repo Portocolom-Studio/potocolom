@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
+from app.admin import _seen
 from app.auth import current_user
 from app.storage import (
     UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
@@ -156,6 +157,10 @@ async def asset(
         download_name = validate_download_name(download) if download is not None else None
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    if row.user_id != user.id:
+        # Only this route knows whose bytes an administrator read, so the
+        # read is recorded with its target, like the other admin reads.
+        await _seen(user, row.user_id)
     return await _serve(row, download_name)
 
 
