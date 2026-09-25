@@ -221,6 +221,19 @@ export type RealtimeCanvasNotice =
 	| 'refused_forbidden'
 	| 'session_revoked';
 
+/**
+ * Whether a notice is terminal: the session or the account refused the open,
+ * so retrying on this page would end the same way. A revoked session recovers
+ * only by signing in again, which reloads the studio, and a role change cannot
+ * happen within the page, so the panel keeps Connect disabled until then.
+ * Every other notice clears on a retry: capacity and a vanished model are
+ * momentary, and a socket error or an encode failure says nothing about the
+ * next attempt.
+ */
+export function isTerminalNotice(notice: RealtimeCanvasNotice): boolean {
+	return notice === 'session_revoked' || notice === 'refused_forbidden';
+}
+
 export interface RealtimeCanvasSessionOptions {
 	getDrawCanvas: () => HTMLCanvasElement | undefined;
 	getOutputCanvas: () => HTMLCanvasElement | undefined;

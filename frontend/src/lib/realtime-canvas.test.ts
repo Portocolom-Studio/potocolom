@@ -23,7 +23,9 @@ import {
 	updateParamsMessage,
 	uuidBytes,
 	createRealtimeCanvasSession,
+	isTerminalNotice,
 	type ConnectionState,
+	type RealtimeCanvasNotice,
 	type RealtimeCanvasSession
 } from './realtime-canvas.ts';
 
@@ -185,6 +187,22 @@ test('a terminal close fails the session and anything else invites a reconnect',
 	// A normal close, or a dropped connection, keeps the canvas recoverable.
 	assert.equal(stateForCloseCode(1000), 'interrupted');
 	assert.equal(stateForCloseCode(1006), 'interrupted');
+});
+
+test('a revoked session and a forbidden one are terminal, every other notice invites a retry', () => {
+	const terminal: RealtimeCanvasNotice[] = ['session_revoked', 'refused_forbidden'];
+	for (const notice of terminal) assert.ok(isTerminalNotice(notice), notice);
+	const retryable: RealtimeCanvasNotice[] = [
+		'',
+		'encode_failed',
+		'decode_failed',
+		'socket_error',
+		'refused_protocol',
+		'refused_version',
+		'refused_capacity',
+		'refused_model'
+	];
+	for (const notice of retryable) assert.ok(!isTerminalNotice(notice), notice);
 });
 
 class TestSocket {

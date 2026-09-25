@@ -24,6 +24,7 @@
 	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
 	import {
 		createRealtimeCanvasSession,
+		isTerminalNotice,
 		type ConnectionState,
 		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
@@ -66,7 +67,10 @@
 
 	let prompt = $state('');
 	let connection = $state<ConnectionState>('idle');
-	let notice = $state<NoticeKey | ''>('');
+	// The notice as the session reported it, kept beside its translated key
+	// because whether it is terminal decides canConnect.
+	let rawNotice = $state<RealtimeCanvasNotice>('');
+	const notice = $derived(rawNotice === '' ? '' : NOTICE_KEYS[rawNotice]);
 	let drawingNotice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
@@ -123,7 +127,9 @@
 	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	const busy = $derived(connection === 'connecting' || connected);
-	const canConnect = $derived(!busy && modelId !== '' && prompt.trim() !== '');
+	const canConnect = $derived(
+		!busy && !isTerminalNotice(rawNotice) && modelId !== '' && prompt.trim() !== ''
+	);
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
@@ -136,7 +142,7 @@
 			connection = state;
 		},
 		onNotice: (key: RealtimeCanvasNotice) => {
-			notice = key === '' ? '' : NOTICE_KEYS[key];
+			rawNotice = key;
 		},
 		onCounters: (sent, rendered) => {
 			sentFrames = sent;
