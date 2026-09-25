@@ -485,6 +485,7 @@
 	"app.gen.favorite_unrestored": "{count} saved favorite(s) could not be restored.",
 	"app.gen.favorite_expired": "An expired favorite is gone because favorites do not extend retention.",
 	"app.gen.favorite_save_failed": "The favorite could not be saved.",
+	"app.loading": "Loading the studio...",
 	"app.update.available": "A new version is available.",
 	"app.update.reload": "Reload",
 	"app.update.dismiss": "Dismiss",

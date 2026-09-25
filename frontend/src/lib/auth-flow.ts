@@ -19,6 +19,13 @@ export function shouldShowChallenge(view: AuthView): boolean {
 	return view === 'challenge';
 }
 
+// The account probe answers 401 only when accounts mode is on and the visitor
+// holds no session. Anything else (200 signed in, 404 when the account routes
+// are not mounted, a null status when the API did not answer) opens the studio.
+export function accountCheckForcesLogin(status: number | null): boolean {
+	return status === 401;
+}
+
 export function createSubmitGuard() {
 	let busy = false;
 

@@ -485,6 +485,7 @@
 	"app.gen.favorite_unrestored": "No se pudieron restaurar {count} favoritos guardados.",
 	"app.gen.favorite_expired": "Un favorito caducado ya no está porque los favoritos no amplían la retención.",
 	"app.gen.favorite_save_failed": "No se pudo guardar el favorito.",
+	"app.loading": "Cargando el estudio...",
 	"app.update.available": "Hay una versión nueva disponible.",
 	"app.update.reload": "Recargar",
 	"app.update.dismiss": "Descartar",
