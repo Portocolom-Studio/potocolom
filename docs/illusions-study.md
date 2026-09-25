@@ -152,7 +152,9 @@ The paper's Sec. 3.3.2 schedule walks 0.90 to 0.01; ours is shifted by
 the SDEdit floor. The target stays frozen for the round.
 `(1 - SSIM) + MSE` pulls the derived views toward it for 300 steps.
 Then the next round re-dreams from the improved views. Extra Dream
-rounds after the first made images worse.
+rounds after the first did not help: in window 1, readable cells fell
+from 35 to 25 of 182, but the window 2 test did not clear its
+preset bar (mean paired delta -0.138 against an absolute 0.3).
 
 <!-- figure: dream -->
 *Figure: a real round-1 triple from the same smoke run: derived view, dreamed target, regressed view (paper Eq. 4-6).*
@@ -236,7 +238,8 @@ merged into that branch. Do not treat these as product defaults.
 - We kept oil for color and fewer photographic frames. We did not keep
   oil because it yielded more keepers than sketch.
 - We rejected negative prompts.
-- Extra Dream rounds after the first made images worse.
+- Extra Dream rounds after the first did not help (35 to 25 readable
+  of 182 in window 1); the window 2 test did not clear its preset bar.
 - 256 px primes were enough. 512 px cost about 3.3 times as much for no
   visible gain. This is the prime render resolution
   (`--prime-resolution`), not the SDS ladder (`--sds-low-res-fraction`),
