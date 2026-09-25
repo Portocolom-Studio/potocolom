@@ -72,7 +72,7 @@
 				src: '/whitepaper/image-lifecycle.webp',
 				cap: 'wp.fig_images_cap',
 				width: 2602,
-				height: 2352
+				height: 2417
 			}
 		},
 		{
@@ -83,7 +83,7 @@
 				src: '/whitepaper/credit-lifecycle.webp',
 				cap: 'wp.fig_credits_cap',
 				width: 2602,
-				height: 3202
+				height: 3392
 			}
 		},
 		{
@@ -94,7 +94,7 @@
 				src: '/whitepaper/failure-map.webp',
 				cap: 'wp.fig_failures_cap',
 				width: 2602,
-				height: 2147
+				height: 2442
 			}
 		},
 		{
