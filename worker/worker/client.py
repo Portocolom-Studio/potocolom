@@ -36,6 +36,10 @@ logger = logging.getLogger("potocolom.worker")
 PROTOCOL_VERSION = 4
 GENERATED_FRAME = 0x02
 FRAME_HEADER_BYTES = 17
+# The API's own receive limit (uvicorn --ws-max-size). It forwards canvas
+# frames of up to 17 + 1 MiB bytes, over the websockets default of exactly
+# 1 MiB, which would drop the fleet socket and every session on it.
+FLEET_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 CLOSE_PROTOCOL_VIOLATION = 4000
 
 UPLOAD_TIMEOUT = 60.0
@@ -880,6 +884,7 @@ async def run() -> None:
                     # Lowercase: header names are case-insensitive, but not every
                     # ASGI stack normalises them before the application looks.
                     additional_headers={"x-fleet-token": settings.fleet_token},
+                    max_size=FLEET_MAX_MESSAGE_BYTES,
                 ) as ws:
                     delay = BACKOFF_INITIAL
                     await serve_connection(ws, settings, manifests, engine)

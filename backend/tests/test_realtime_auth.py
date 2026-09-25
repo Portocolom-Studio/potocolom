@@ -191,6 +191,31 @@ def test_revoking_the_account_session_closes_the_live_socket(accounts):
 
 
 @pytest.mark.db
+def test_a_revoked_canvas_still_settles_its_usage(accounts):
+    """The worker's session_closed carries the attempt's final totals. A
+    revocation hands the slot back before the browser handler finishes, and
+    if nothing is waiting for those totals by then the session is never
+    billed."""
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        user, issued = _signed_in(client, "billed@example.com")
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-rt-billed", parameters=REQUIRES_PROMPT))
+            assert worker_ws.receive_json()["type"] == "registered"
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                _open(browser_ws)
+                opened = worker_ws.receive_json()
+                answer_ready(worker_ws, opened)
+                assert browser_ws.receive_json()["type"] == "ready"
+
+                resolved = client.portal.call(sessions.resolve, issued.token)
+                client.portal.call(sessions.revoke, resolved.session.id)
+                assert browser_ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
+
+            assert uuid.UUID(opened["session_id"]) in realtime.closing_sessions
+            assert realtime.closing_sessions[uuid.UUID(opened["session_id"])][0] == user.id
+
+
+@pytest.mark.db
 def test_a_worker_that_stopped_reading_does_not_hold_up_a_revocation(accounts):
     """The slot is handed back before the worker is told it is gone, so the
     notification is a courtesy. Waiting on it without a bound would leave the

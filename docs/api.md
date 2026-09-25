@@ -218,7 +218,10 @@ GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a
 
 POST /api/v1/generations/{id}/cancel  204; idempotent, and open to the owner whatever their
                                       role, since calling off your own work is not a mutation
-                                      of anybody else's. 404 for a job that is not yours.
+                                      of anybody else's. An administrator may cancel any
+                                      account's job; a call that stops one writes a
+                                      high-severity audit row with the owner and job id.
+                                      404 for anybody else's job.
                                       A job that already finished stays finished.
 
 POST /api/v1/generations/{id}/star    user or admin; 204; idempotent, 403 for viewer,
@@ -354,7 +357,7 @@ A provider-verified address raises this account's `mail_verified` only when it n
 
 ## Administration
 
-An administrator reads any one account completely and mutates none of them. There is no view that crosses accounts: the way in is always a named user.
+An administrator reads any one account completely and mutates none of them, except to call off a job (see the cancel route above). There is no view that crosses accounts: the way in is always a named user.
 
 ```text
 GET /api/v1/users                     every account, with role and state, no work and no credential;

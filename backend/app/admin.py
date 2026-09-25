@@ -1,6 +1,7 @@
 """What an administrator can see, and what seeing it leaves behind.
 
-An administrator reads any one account completely and mutates none of them.
+An administrator reads any one account completely and mutates none of them,
+except to call off a job (jobs.py, cancel_generation).
 There is no view that crosses accounts: the way in is always a named user, and
 naming one is recorded against that user, because the role check that guards
 these routes cannot know which account a read reached.

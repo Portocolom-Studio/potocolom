@@ -38,7 +38,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app import db, realtime, registry
+from app import audit, db, realtime, registry
 from app.auth import current_user, require_role
 from app.manifests import validate_params
 from app.settings import get_settings
@@ -396,7 +396,9 @@ async def create_generation(
                 status_code=422,
                 detail="model does not support image_to_image or upscale",
             )
-    await registry.persist_manifests([persisted])
+    # In this request's own session: a second one per request lets a burst
+    # fill the pool with requests that each wait for their second connection.
+    await session.execute(registry.manifest_upsert([persisted]))
     job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
               source_asset_id=source_asset_id)
     session.add(job)
@@ -1178,8 +1180,14 @@ async def cancel_generation(
         select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
     if owner is None or (owner != user.id and user.role != "admin"):
         raise HTTPException(status_code=404, detail="no such generation")
-    await cancel(job_id, reason="cancelled by the owner"
-                 if owner == user.id else "cancelled by an administrator")
+    cancelled = await cancel(job_id, reason="cancelled by the owner"
+                             if owner == user.id else "cancelled by an administrator")
+    if cancelled and owner != user.id:
+        # The route takes any role, so the audit hook for administrator
+        # routes never sees it; the one change an administrator may make to
+        # another account's work records itself.
+        await audit.record("generation.cancelled", actor=user, target_user_id=owner,
+                           object_ids=[str(job_id)], severity="high")
     return Response(status_code=204)
 
 

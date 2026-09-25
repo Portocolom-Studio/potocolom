@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from conftest import run_on_test_loop
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, event, func, select
 from fastapi.testclient import TestClient
 
 from app import db, jobs, realtime, registry
@@ -536,6 +536,40 @@ def test_generation_persists_the_full_capability_list_for_a_narrowed_model(
 
             capabilities = client.portal.call(row_capabilities)
     assert capabilities == ["text_to_image", "image_to_image", "realtime"]
+
+
+@pytest.mark.db
+def test_creating_a_generation_holds_one_database_connection_at_a_time():
+    """A request that holds a connection and waits for a second one stalls a
+    burst: fifteen of them fill the pool and every one waits on the others
+    until the thirty second checkout timeout."""
+    held: dict[object, int] = {}
+    peak: dict[object, int] = {}
+
+    def checkout(*_args) -> None:
+        task = asyncio.current_task()
+        held[task] = held.get(task, 0) + 1
+        peak[task] = max(peak.get(task, 0), held[task])
+
+    def checkin(*_args) -> None:
+        task = asyncio.current_task()
+        held[task] = held.get(task, 0) - 1
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-one-connection")
+            assert db.engine is not None
+            pool = db.engine.sync_engine.pool
+            event.listen(pool, "checkout", checkout)
+            event.listen(pool, "checkin", checkin)
+            try:
+                created = client.post("/api/v1/generations",
+                                      json={"model_id": "sd-test", "params": {"prompt": "x"}})
+            finally:
+                event.remove(pool, "checkout", checkout)
+                event.remove(pool, "checkin", checkin)
+    assert created.status_code == 202
+    assert peak and max(peak.values()) == 1
 
 
 @pytest.mark.db

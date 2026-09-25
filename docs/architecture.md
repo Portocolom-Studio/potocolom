@@ -316,7 +316,7 @@ Every attempt writes to keys of its own, so nothing overwrites anything and ever
 
 ### Administration
 
-An administrator has complete read of any one account and mutation of none. The install has no cross-user gallery and no cross-user search: every privileged read names an account, and naming one writes an audit row against it. That is the half the role check cannot do for itself, because it sees the caller and the route and not the target.
+An administrator has complete read of any one account and mutation of none, except calling off a job, which is audited. The install has no cross-user gallery and no cross-user search: every privileged read names an account, and naming one writes an audit row against it. That is the half the role check cannot do for itself, because it sees the caller and the route and not the target.
 
 Reading many different accounts quickly is what a stolen administrator session looks like from the outside, and it is also what an administrator working through a queue of complaints looks like. The install counts distinct targets per administrator over thirty minutes, raises one high-severity event past the threshold, and refuses nothing: the panel is for a person to look at, and only a person can tell those two apart. The counting is in process, beside the rest of the self-hosted path; the cloud profile moves it to Redis with the rate limiting it belongs next to.
 
