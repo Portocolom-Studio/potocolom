@@ -1002,6 +1002,7 @@ def test_closed_session_persists_usage_event():
             worker_ws.send_json({
                 "type": "session_closed",
                 "session_id": opened["session_id"],
+                "control_generation": 1,
                 "frames": 3,
                 "gpu_ms": 90,
                 "duration_ms": 2000,
@@ -1041,9 +1042,9 @@ def test_closing_session_is_removed_when_worker_is_lost():
                 browser_ws.send_json({"type": "close"})
             expect(worker_ws, "close_session")
             session_id = uuid.UUID(opened["session_id"])
-            assert session_id in realtime.closing_sessions
+            assert (session_id, 1) in realtime.closing_sessions
 
-        assert session_id not in realtime.closing_sessions
+        assert (session_id, 1) not in realtime.closing_sessions
 
 
 def test_malformed_hello_closes_with_protocol_violation():
@@ -1640,6 +1641,7 @@ def test_session_closed_from_another_worker_is_ignored():
                 time.sleep(0.05)
 
             owner_ws.send_json({"type": "session_closed", "session_id": session_id,
+                                "control_generation": 1,
                                 "frames": 7, "gpu_ms": 70, "duration_ms": 700,
                                 "category": "other"})
             deadline = time.monotonic() + 3
@@ -2504,3 +2506,470 @@ def test_a_close_control_message_closes_with_1000():
                 browser_ws.receive_json()
             assert closed.value.code == 1000
             expect(worker_ws, "close_session")
+
+
+def test_idle_session_is_released_after_the_idle_time(monkeypatch):
+    """The sweep releases a live session whose last input is old: the worker
+    is told, the slot is back, and the browser keeps its socket because the
+    release is invisible to it."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-out"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            closed = expect(worker_ws, "close_session")
+            assert closed["session_id"] == opened["session_id"]
+            assert closed["control_generation"] == 1
+            assert session.state == "idle"
+            assert session.worker is None
+            assert realtime.workers["w-idle-out"].slots_in_use == 0
+            # Only the browser's own teardown removes the socket; the release
+            # did not.
+            assert uuid.UUID(opened["session_id"]) in realtime.sessions
+
+
+def test_a_live_session_with_recent_input_is_not_released(monkeypatch):
+    """A relayed frame refreshes last_input, so the sweep leaves a session
+    that is still drawing alone even once the idle threshold is past."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.2)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-kept"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"drawing"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            client.portal.call(realtime.release_idle_sessions)
+            assert session.state == "live"
+            assert realtime.workers["w-idle-kept"].slots_in_use == 1
+
+
+@pytest.mark.db
+def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
+    """A frame for an idle session re-opens it on a worker with the next
+    generation and is forwarded once the session is live again, and the first
+    attempt's usage stays armed for settlement."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-idle-resume", slots=2))
+            expect(worker_ws, "registered")
+            with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, opened)
+                expect(browser_ws, "ready")
+                session_id = uuid.UUID(opened["session_id"])
+                session = realtime.sessions[session_id]
+                session.last_input = time.monotonic() - 1
+                db_client.portal.call(realtime.release_idle_sessions)
+                closed = expect(worker_ws, "close_session")
+                assert closed["control_generation"] == 1
+                assert session.state == "idle"
+                assert realtime.workers["w-idle-resume"].slots_in_use == 0
+                # The first attempt is armed so its session_closed settles the
+                # usage segment when the worker reports it.
+                assert realtime.closing_sessions[(session_id, 1)][0] == session.user_id
+                assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
+
+                canvas = bytes([CANVAS_FRAME]) + session_id.bytes + b"resume-me"
+                browser_ws.send_bytes(canvas)
+                reopened = expect(worker_ws, "open_session")
+                assert reopened["session_id"] == opened["session_id"]
+                assert reopened["control_generation"] == 2
+                answer_ready(worker_ws, reopened)
+                assert worker_ws.receive_bytes() == canvas
+                assert session.state == "live"
+                assert session.control_generation == 2
+                assert session.worker is realtime.workers["w-idle-resume"]
+                assert realtime.workers["w-idle-resume"].slots_in_use == 1
+                assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
+
+
+def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
+    """If every slot is taken by the time an idle session draws again, its
+    frame is refused 4003 like any other admission; the admission queue is
+    issue #19 and does not ship."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-full", slots=1))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as first_ws:
+            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(first_ws, "ready")
+            first = realtime.sessions[uuid.UUID(opened["session_id"])]
+            first.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert first.state == "idle"
+            with client.websocket_connect("/api/v1/realtime") as second_ws:
+                second_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                second_opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, second_opened)
+                expect(second_ws, "ready")
+                canvas = bytes([CANVAS_FRAME]) + first.id.bytes + b"nowhere"
+                first_ws.send_bytes(canvas)
+                refused = expect(first_ws, "error")
+                assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
+                assert refused["message"] == "no worker capacity"
+
+
+@pytest.mark.db
+def test_usage_settles_per_attempt_across_a_resume(monkeypatch):
+    """An idle release and a resume give one session two attempts, one on each
+    worker. Each worker's session_closed settles its own generation's usage; a
+    later arming must not orphan the earlier attempt's accounting."""
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with TestClient(app, headers=FLEET_HEADERS) as db_client:
+        with db_client.websocket_connect("/api/v1/fleet") as first_ws:
+            first_ws.send_json(hello(worker_id="w-settle-a"))
+            expect(first_ws, "registered")
+            with db_client.websocket_connect("/api/v1/fleet") as second_ws:
+                second_ws.send_json(hello(worker_id="w-settle-b"))
+                expect(second_ws, "registered")
+                with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
+                    browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                    opened = expect(first_ws, "open_session")
+                    answer_ready(first_ws, opened)
+                    expect(browser_ws, "ready")
+                    session_id = uuid.UUID(opened["session_id"])
+                    session = realtime.sessions[session_id]
+
+                    # First attempt: the idle release arms generation 1 on worker A.
+                    session.last_input = time.monotonic() - 1
+                    db_client.portal.call(realtime.release_idle_sessions)
+                    closed = expect(first_ws, "close_session")
+                    assert closed["control_generation"] == 1
+                    assert (session_id, 1) in realtime.closing_sessions
+
+                    # Second attempt: the resume placed the session on worker B,
+                    # and its own idle release arms generation 2 there.
+                    session.control_generation = 2
+                    session.worker = realtime.workers["w-settle-b"]
+                    realtime.workers["w-settle-b"].slots_in_use = 1
+                    session.state = "live"
+                    db_client.portal.call(realtime.release_idle_sessions)
+                    reopened = expect(second_ws, "close_session")
+                    assert reopened["control_generation"] == 2
+                    assert (session_id, 2) in realtime.closing_sessions
+
+                    # Each worker settles the attempt it actually ran.
+                    first_ws.send_json({"type": "session_closed",
+                                        "session_id": str(session_id),
+                                        "control_generation": 1, "frames": 5,
+                                        "gpu_ms": 50, "duration_ms": 500,
+                                        "category": "other"})
+                    second_ws.send_json({"type": "session_closed",
+                                         "session_id": str(session_id),
+                                         "control_generation": 2, "frames": 7,
+                                         "gpu_ms": 70, "duration_ms": 700,
+                                         "category": "other"})
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline and len(calls) < 2:
+                        time.sleep(0.05)
+                    assert len(calls) == 2
+                    assert sorted(c.get("control_generation") for _, _, c in calls) == [1, 2]
+                    assert [user for user, _, _ in calls] == [session.user_id] * 2
+                    assert [model for _, model, _ in calls] == ["sd-sim"] * 2
+
+
+def test_reassign_arms_the_old_generation_for_the_still_connected_worker(monkeypatch):
+    """A shed or a refusal ends an attempt on a worker that is still
+    connected, so reassign() must arm that attempt's session_closed like
+    release() does, or the totals that worker reports find nobody to bill.
+
+    Driven with no spare worker so reassign() completes immediately (it
+    cannot place the session and refuses 4003) instead of waiting on an
+    open_session that needs answering on the same loop.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-reassign-arms"))
+        expect(worker_ws, "registered")
+        worker = realtime.workers["w-reassign-arms"]
+        user_id = uuid.uuid4()
+        session = realtime.Session(
+            id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
+            user_id=user_id, worker=worker, state="live",
+            assigned_at=time.monotonic(),
+        )
+        realtime.sessions[session.id] = session
+        try:
+            client.portal.call(realtime.reassign, session)
+            assert (session.id, 1) in realtime.closing_sessions
+            assert realtime.closing_sessions[(session.id, 1)] == (
+                user_id, "sd-sim", worker)
+
+            closed = expect(worker_ws, "close_session")
+            assert closed["session_id"] == str(session.id)
+            assert closed["control_generation"] == 1
+            worker_ws.send_json({
+                "type": "session_closed",
+                "session_id": str(session.id),
+                "control_generation": 1,
+                "frames": 4, "gpu_ms": 40, "duration_ms": 400,
+                "category": "other",
+            })
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not calls:
+                time.sleep(0.05)
+            assert calls, "the reassigned worker's totals were never billed"
+            assert calls[0][0] == user_id
+            assert calls[0][1] == "sd-sim"
+        finally:
+            realtime.sessions.pop(session.id, None)
+            realtime.closing_sessions.pop((session.id, 1), None)
+
+
+def test_an_unfenced_protocol_4_session_closed_is_ignored(monkeypatch):
+    """Protocol 4 demands a fenced session_closed: a report without
+    control_generation is not believed. The armed entry stays and nothing is
+    scheduled, where the removed fallback scan treated any generation-less
+    report as the session's first attempt and billed on the worker's word
+    alone.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(db, "local_user_id", uuid.uuid4())
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-unfenced-close"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session_id = uuid.UUID(opened["session_id"])
+            browser_ws.send_json({"type": "close"})
+        expect(worker_ws, "close_session")
+        assert (session_id, 1) in realtime.closing_sessions
+        worker_ws.send_json({
+            "type": "session_closed",
+            "session_id": str(session_id),
+            "frames": 9, "gpu_ms": 90, "duration_ms": 900,
+            "category": "other",
+        })
+        # The server gets a window in which its claim would have been written,
+        # then the entry must still be armed and nothing scheduled.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            assert calls == [], "an unfenced report scheduled usage"
+            time.sleep(0.05)
+        assert (session_id, 1) in realtime.closing_sessions
+
+
+def test_a_protocol_3_worker_settles_its_only_attempt(monkeypatch):
+    """Protocol 3 has no generations, so its session_closed is the session's
+    first attempt: it settles (session_id, 1) with no control_generation on
+    the wire. A report that still carries the field (shared worker code) must
+    not be read by it either: the API reads a protocol 3 report as attempt 1
+    whatever the payload says, or a stale value looks up a generation that
+    does not exist and the attempt is never billed.
+    """
+    calls: list[tuple[uuid.UUID, str, dict]] = []
+    monkeypatch.setattr(
+        "app.usage_events.schedule_realtime",
+        lambda user_id, model_id, control: calls.append((user_id, model_id, control)),
+    )
+    monkeypatch.setattr(db, "local_user_id", uuid.uuid4())
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION,
+                                  worker_id="w-p3-settle"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            assert "control_generation" not in opened
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"]})
+            expect(browser_ws, "ready")
+            session_id = uuid.UUID(opened["session_id"])
+            browser_ws.send_json({"type": "close"})
+        closed = expect(worker_ws, "close_session")
+        assert "control_generation" not in closed
+        user_id, model_id, worker = realtime.closing_sessions[(session_id, 1)]
+
+        worker_ws.send_json({"type": "session_closed",
+                             "session_id": str(session_id),
+                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
+                             "category": "other"})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(calls) < 1:
+            time.sleep(0.05)
+        assert calls, "the protocol 3 report was never settled"
+        assert calls[0][0] == user_id
+        assert calls[0][1] == model_id
+        assert (session_id, 1) not in realtime.closing_sessions
+
+        # A report carrying the field it does not understand: the armed entry
+        # is again (session_id, 1), so the stale value must not point the
+        # settlement at a generation that does not exist.
+        realtime.closing_sessions[(session_id, 1)] = (user_id, model_id, worker)
+        worker_ws.send_json({"type": "session_closed",
+                             "session_id": str(session_id),
+                             "control_generation": 2,
+                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
+                             "category": "other"})
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(calls) < 2:
+            time.sleep(0.05)
+        assert len(calls) == 2
+        assert (session_id, 1) not in realtime.closing_sessions
+
+
+def test_a_relayed_frame_clears_a_pending_frame():
+    """A frame relayed straight to a live worker is newer than anything a
+    resume still holds, so it clears pending_frame and the resume forwards
+    nothing older."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-frame-clear"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.pending_frame = b"older-than-anything-a-resume-holds"
+            canvas = bytes([CANVAS_FRAME]) + session.id.bytes + b"newer"
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            assert session.pending_frame is None
+
+
+def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
+    """A revocation can already own a session's end and be refusing its socket
+    4401 when an idle resume races it. With no room left the resume must not
+    stack a second refusal (4003) on the same socket."""
+    refused: list[tuple[int, str]] = []
+
+    async def spy(ws, code, message):
+        refused.append((code, message))
+
+    monkeypatch.setattr(realtime, "refuse", spy)
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-resume-race"))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert session.state == "idle"
+            # The frame that would have started the resume task is pre-empted
+            # by a revocation that already owns the session's end.
+            assert realtime.transition(session, "idle", "assigning")
+            assert realtime.transition(session, "assigning", "ending")
+
+            client.portal.call(realtime.resume_idle, session)
+            assert refused == []
+
+
+def test_a_third_session_for_one_account_is_refused():
+    """Two sockets are the cap: a third is refused 4003 with the account
+    message, before any worker is chosen. In AUTH_MODE=none every browser is
+    the one local user, which is what binds the three sockets together."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-cap", slots=3))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as first_ws:
+            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            first_opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, first_opened)
+            expect(first_ws, "ready")
+            with client.websocket_connect("/api/v1/realtime") as second_ws:
+                second_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                second_opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, second_opened)
+                expect(second_ws, "ready")
+                with client.websocket_connect("/api/v1/realtime") as third_ws:
+                    third_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                    refused = expect(third_ws, "error")
+                    assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
+                    assert refused["message"] == "too many realtime sessions for this account"
+                # The refusal chose no worker and opened no session.
+                assert len(realtime.sessions) == 2
+
+
+def test_another_accounts_sessions_do_not_count_toward_the_cap():
+    """The cap is per account: an account holding its limit does not block a
+    different account's socket."""
+    saved = dict(realtime.sessions)
+    try:
+        other = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                 browser=FakeSocket(), user_id=uuid.uuid4(), state="live")
+        also = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                browser=FakeSocket(), user_id=uuid.uuid4(), state="live")
+        realtime.sessions.update({other.id: other, also.id: also})
+        with client.websocket_connect("/api/v1/fleet") as worker_ws:
+            worker_ws.send_json(hello(worker_id="w-cap-other", slots=1))
+            expect(worker_ws, "registered")
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                opened = expect(worker_ws, "open_session")
+                answer_ready(worker_ws, opened)
+                expect(browser_ws, "ready")
+    finally:
+        realtime.sessions.clear()
+        realtime.sessions.update(saved)
+
+
+def test_update_params_on_an_idle_session_needs_no_worker(monkeypatch):
+    """An idle session accepts an update without a worker: the params change,
+    the browser is told, and nothing has to be placed to do it."""
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-idle-update", parameters=REQUIRES_PROMPT))
+        expect(worker_ws, "registered")
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "params": {"prompt": "a red house"}})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            session.last_input = time.monotonic() - 1
+            client.portal.call(realtime.release_idle_sessions)
+            expect(worker_ws, "close_session")
+            assert session.state == "idle"
+            assert session.worker is None
+
+            browser_ws.send_json({"type": "update_params",
+                                  "params": {"prompt": "a blue house"}})
+            acknowledged = expect(browser_ws, "params_updated")
+            assert acknowledged["params"]["prompt"] == "a blue house"
+            assert session.params["prompt"] == "a blue house"
+            assert session.state == "idle"
+            assert session.worker is None

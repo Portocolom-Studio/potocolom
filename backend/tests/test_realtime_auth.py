@@ -211,8 +211,8 @@ def test_a_revoked_canvas_still_settles_its_usage(accounts):
                 client.portal.call(sessions.revoke, resolved.session.id)
                 assert browser_ws.receive_json()["code"] == realtime.CLOSE_UNAUTHORIZED
 
-            assert uuid.UUID(opened["session_id"]) in realtime.closing_sessions
-            assert realtime.closing_sessions[uuid.UUID(opened["session_id"])][0] == user.id
+            assert (uuid.UUID(opened["session_id"]), 1) in realtime.closing_sessions
+            assert realtime.closing_sessions[(uuid.UUID(opened["session_id"]), 1)][0] == user.id
 
 
 @pytest.mark.db
@@ -477,3 +477,24 @@ def test_the_running_app_runs_the_sweep(accounts, monkeypatch):
                 break
             client.portal.call(_settle)
     assert swept, "the scheduled loop never called close_dead_sessions"
+
+
+@pytest.mark.db
+def test_the_running_app_sweep_releases_idle_sessions(accounts, monkeypatch):
+    """The idle release is a fix only if the scheduled loop runs it, on its
+    own: the realtime tests call release_idle_sessions by hand, so both the
+    line that schedules the loop and the line in the loop that calls it could
+    go with those still green."""
+    released: list[int] = []
+
+    async def counting() -> None:
+        released.append(1)
+
+    monkeypatch.setattr(realtime, "SESSION_SWEEP_SECONDS", 0.05)
+    monkeypatch.setattr(realtime, "release_idle_sessions", counting)
+    with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
+        for _ in range(100):
+            if released:
+                break
+            client.portal.call(_settle)
+    assert released, "the scheduled loop never called release_idle_sessions"
