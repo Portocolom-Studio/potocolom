@@ -75,7 +75,7 @@
 						</p>
 					</div>
 					<a
-						class="text-primary text-sm hover:underline"
+						class="text-foreground text-sm underline underline-offset-4"
 						href="/collage-preview/{variant.id}"
 						target="_blank"
 						rel="noreferrer"
@@ -105,7 +105,10 @@
 		<h2 class="font-medium">Dedicated servers</h2>
 		<ul class="text-muted-foreground mt-2 space-y-1 text-sm">
 			<li>
-				<a class="text-primary hover:underline" href="http://{host}:5189/collage-preview">
+				<a
+					class="text-foreground underline underline-offset-4"
+					href="http://{host}:5189/collage-preview"
+				>
 					http://{host}:5189/collage-preview
 				</a>
 				<span> (hub)</span>
@@ -113,7 +116,7 @@
 			{#each collagePreviewList as variant (variant.id)}
 				<li>
 					<a
-						class="text-primary hover:underline"
+						class="text-foreground underline underline-offset-4"
 						href="http://{host}:{variant.port}/collage-preview/{variant.id}"
 					>
 						http://{host}:{variant.port}/collage-preview/{variant.id}
