@@ -4,9 +4,11 @@
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
 	import { onMount } from 'svelte';
+	import { readCsrfToken } from '$lib/api';
 	import {
 		loadBenchmarkSessionReport,
-		loadBenchmarkSessions
+		loadBenchmarkSessions,
+		mayReadSessions
 	} from '$lib/studio-benchmark-sessions';
 	import {
 		formatMs,
@@ -17,7 +19,35 @@
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
 	import { t } from '$lib/i18n.svelte';
+	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import '../../landing-tokens.css';
+
+	const landing = PUBLIC_SITE_MODE === 'landing';
+
+	// A visitor may be anonymous, so this asks the sessions API only when the
+	// probes say they can read it: AUTH_MODE=none (no auth methods), or
+	// accounts mode with a signed-in admin. The marketing build has no API
+	// behind it at all, so it never probes.
+	async function probeMayReadSessions(): Promise<boolean> {
+		if (landing) return false;
+		try {
+			const configResponse = await fetch('/api/v1/config');
+			if (!configResponse.ok) return false;
+			const config = (await configResponse.json()) as { auth_methods?: string[] };
+			const authMethods = config.auth_methods ?? [];
+			const hasCsrf = readCsrfToken(document.cookie) !== null;
+			let role: string | null = null;
+			if (authMethods.length > 0 && hasCsrf) {
+				const accountResponse = await fetch('/api/v1/account');
+				if (!accountResponse.ok) return false;
+				const account = (await accountResponse.json()) as { role?: string };
+				role = account.role ?? null;
+			}
+			return mayReadSessions({ authMethods, hasCsrf, role });
+		} catch {
+			return false;
+		}
+	}
 
 	// Fetch at runtime so prerender does not inline the multi-MB results JSON
 	// into an unhashed script tag (main's CSP check).
@@ -54,7 +84,8 @@
 
 	onMount(async () => {
 		try {
-			const sessions = await loadBenchmarkSessions();
+			const allowApi = await probeMayReadSessions();
+			const sessions = await loadBenchmarkSessions(allowApi);
 			const first = sessions[0];
 			const result = first?.report ?? (first ? await loadBenchmarkSessionReport(first.id) : null);
 			if (

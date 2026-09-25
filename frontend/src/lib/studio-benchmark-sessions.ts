@@ -25,8 +25,26 @@ function sessionLabel(createdAt: string): string {
 	});
 }
 
-export async function loadBenchmarkSessions(): Promise<BenchmarkSession[]> {
-	if (!landing) {
+// The /benchmark page probes before calling this so an anonymous visitor in
+// accounts mode never triggers the admin-only sessions endpoint. The studio
+// metrics panel is admin-facing already, so it calls with the default.
+export function mayReadSessions({
+	authMethods,
+	hasCsrf,
+	role
+}: {
+	authMethods: string[] | null;
+	hasCsrf: boolean;
+	role: string | null;
+}): boolean {
+	if (authMethods === null) return false;
+	if (authMethods.length === 0) return true;
+	if (!hasCsrf) return false;
+	return role === 'admin';
+}
+
+export async function loadBenchmarkSessions(allowApi = true): Promise<BenchmarkSession[]> {
+	if (!landing && allowApi) {
 		try {
 			const response = await fetch('/api/v1/benchmark/sessions');
 			if (response.ok) {
