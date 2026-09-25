@@ -15,6 +15,7 @@
 		createSubmitGuard,
 		initialAuthView,
 		parseAuthError,
+		resetJustHappened,
 		shouldShowChallenge,
 		type AuthView
 	} from '$lib/auth-flow';
@@ -43,6 +44,7 @@
 	const showChallengeForm = $derived(!landing && shouldShowChallenge(view));
 	const showGoogle = $derived(!landing && authMethods.includes('google'));
 	const showGithub = $derived(!landing && authMethods.includes('github'));
+	const resetDone = $derived(!landing && resetJustHappened(page.url.search));
 
 	onMount(async () => {
 		if (landing) return;
@@ -219,6 +221,9 @@
 					<Card.Description>{t('auth.login.sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-4">
+					{#if resetDone}
+						<p class="text-muted-foreground text-sm" role="status">{t('auth.login.reset_done')}</p>
+					{/if}
 					<form class="flex flex-col gap-4" onsubmit={submitLogin}>
 						<Field.Field>
 							<Label for="login-email">{t('auth.login.email_label')}</Label>
@@ -259,6 +264,11 @@
 							{submitting ? t('auth.submitting') : t('auth.login.submit')}
 						</Button>
 					</form>
+					<p class="text-center text-sm">
+						<a class="text-primary hover:underline" href={resolve('/reset')}
+							>{t('auth.login.forgot')}</a
+						>
+					</p>
 					{#if showGoogle || showGithub}
 						<div class="flex flex-col gap-2">
 							<p class="text-muted-foreground text-center text-sm">{t('auth.login.or_oauth')}</p>

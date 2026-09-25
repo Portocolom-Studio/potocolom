@@ -441,7 +441,7 @@ flowchart TB
     M -->|"accounts"| A["Email and password forms<br>provider buttons where configured<br>DB-backed session cookie"]
 ```
 
-The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`. Studio account UI starts at `/login` (password, OAuth, TOTP challenge) and `/join` (invitation accept). The invite token sits in the URL hash. An OAuth flow that still needs a second factor lands on `/login?totp=required`. The marketing build prerenders those routes and does not show working forms. Account settings and first-admin setup remain later slices of issue #10.
+The frontend never hardcodes this: it builds the login screen from the `auth_methods` field of `GET /api/v1/config`. Studio account UI starts at `/login` (password, OAuth, TOTP challenge), `/join` (invitation accept), `/reset` (password reset) and `/recover` (administrator recovery). The invite, reset and recovery tokens sit in the URL hash. An OAuth flow that still needs a second factor lands on `/login?totp=required`. The marketing build prerenders those routes and does not show working forms. Account settings and first-admin setup remain later slices of issue #10.
 
 ### Registration and login
 
@@ -1032,7 +1032,7 @@ Generate tool, with controls rendered from the model's parameter schema (issues 
 +--------------------------------------+------------------------------------+
 ```
 
-Account view (issue #10). The first slice is `/login` and `/join`. Settings, sessions, and plan come later:
+Account view (issue #10). The first slice is `/login`, `/join`, `/reset` and `/recover`. Settings, sessions, and plan come later:
 
 ```
 +---------------------------------------------+
