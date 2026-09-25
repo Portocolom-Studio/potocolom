@@ -7,6 +7,7 @@ is an offline command run at the machine.
 """
 
 import hashlib
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTasks
 from starlette.responses import Response
 
 from app import db, mail, sessions
@@ -34,6 +36,8 @@ INVALID_LINK = "invalid or expired reset link"
 ACCEPTED = {"detail": "if that address has an account, a reset link is on its way"}
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
+
+logger = logging.getLogger("potocolom.recovery")
 
 
 class NoSuchAdministrator(Exception):
@@ -95,27 +99,37 @@ async def mint_admin_recovery(email: str) -> str:
     return _link("recover", token)
 
 
+async def _deliver_reset(email: str) -> None:
+    """An administrator is answered alike and sent nothing at all. The token
+    and its delivery share one transaction, so they become durable together
+    or neither does."""
+    if db.session_factory is None:
+        return
+    try:
+        async with db.session_factory() as session:
+            async with session.begin():
+                user = await _active_account(session, email)
+                if user is not None and user.role != "admin":
+                    token = _mint(session, user.id, "reset", RESET_TTL)
+                    await mail.queue(session, user.email, "reset",
+                                     {"link": _link("reset", token)})
+    except Exception:
+        logger.exception("could not queue a password reset link")
+
+
 class ResetRequest(BaseModel):
     email: str
 
 
 @router.post("/api/v1/auth/reset", status_code=202)
-async def ask(request: ResetRequest) -> dict:
-    """The same answer whoever asked, because a different one for an address
-    nobody holds turns this route into a way to enumerate accounts.
-
-    An administrator is answered alike and sent nothing at all. The token and
-    its delivery share one transaction, so they become durable together or
-    neither does.
+async def ask(request: ResetRequest, background_tasks: BackgroundTasks) -> dict:
+    """The same answer whoever asked, and it lands before the account work
+    runs: a different answer, or a different wait, for an address nobody
+    holds turns this route into a way to enumerate accounts.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    async with db.session_factory() as session:
-        async with session.begin():
-            user = await _active_account(session, request.email)
-            if user is not None and user.role != "admin":
-                token = _mint(session, user.id, "reset", RESET_TTL)
-                await mail.queue(session, user.email, "reset", {"link": _link("reset", token)})
+    background_tasks.add_task(_deliver_reset, request.email)
     return ACCEPTED
 
 

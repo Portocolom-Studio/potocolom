@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -60,6 +62,81 @@ def test_asking_does_not_take_the_account_gate():
     start = body.index("async def ask")
     end = body.index("async def complete")
     assert "hold_the_account(" not in body[start:end]
+
+
+@pytest.mark.db
+def test_ask_answers_before_the_account_work_runs(accounts, monkeypatch):
+    """The 202 and its body must reach the caller before the account work
+    starts, or the cost of that work is visible as response time. Fails if
+    the work moves back onto the request path."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    accounts(_make("timed@example.com"))
+    body = json.dumps({"email": "timed@example.com"}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/v1/auth/reset",
+        "raw_path": b"/api/v1/auth/reset",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", ORIGIN.encode()),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            (b"origin", ORIGIN.encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 443),
+    }
+
+    async def drive() -> None:
+        work_started = asyncio.Event()
+        release = asyncio.Event()
+        body_sent = asyncio.Event()
+        original = recovery._deliver_reset
+
+        async def blocked(email: str) -> None:
+            work_started.set()
+            await release.wait()
+            await original(email)
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body":
+                assert not work_started.is_set()
+                body_sent.set()
+
+        replayed = False
+
+        async def receive() -> dict:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        with monkeypatch.context() as patched:
+            patched.setattr(recovery, "_deliver_reset", blocked)
+            request = asyncio.create_task(app(scope, receive, send))
+            try:
+                await asyncio.wait_for(body_sent.wait(), timeout=10)
+                release.set()
+                await request
+            finally:
+                if not request.done():
+                    request.cancel()
+        assert work_started.is_set()
+
+    accounts(drive())
+    queued = accounts(_outbox())
+    assert len(queued) == 1
+    assert queued[0].template == "reset"
+    assert queued[0].to_email == "timed@example.com"
 
 
 @pytest.mark.db
