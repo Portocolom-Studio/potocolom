@@ -7,12 +7,18 @@ on:
       - "frontend/**"
       - "Makefile"
       - ".github/workflows/frontend.yml"
+      # The sign-in gate checks the cookies and the CSRF header the backend
+      # issues, so a backend change must also run it.
+      - "backend/app/**"
   push:
     branches: [main]
     paths:
       - "frontend/**"
       - "Makefile"
       - ".github/workflows/frontend.yml"
+      # The sign-in gate checks the cookies and the CSRF header the backend
+      # issues, so a backend change must also run it.
+      - "backend/app/**"
 
 permissions:
   contents: read
@@ -21,6 +27,25 @@ jobs:
   frontend:
     # Self-hosted: docs/self-hosted-runner.md (system node 24, not setup-node).
     runs-on: [self-hosted, Linux, X64, potocolom]
+    services:
+      # The sign-in gate (scripts/test-signin-cookie.mjs) boots the real API
+      # against a throwaway database made from this container.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: potocolom
+          POSTGRES_PASSWORD: potocolom
+          POSTGRES_DB: potocolom
+        ports:
+          # No fixed host port: four self-hosted runners share one machine
+          # (the backend job learned this the hard way). Docker picks a free
+          # one and the verify step below reads it back.
+          - 5432
+        options: >-
+          --health-cmd "pg_isready -U potocolom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: frontend
@@ -34,3 +59,6 @@ jobs:
       # The Makefile target is the single definition of what the job checks.
       - run: make verify-frontend
         working-directory: .
+        env:
+          POSTGRES_ADMIN_URL: >-
+            postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/postgres

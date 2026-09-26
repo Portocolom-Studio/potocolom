@@ -14,6 +14,13 @@ const backend = resolve(fileURLToPath(new URL('../../backend', import.meta.url))
 const python =
 	process.env.PYTHON ??
 	resolve(fileURLToPath(new URL('../../backend/.venv/bin/python', import.meta.url)));
+if (
+	!(await access(python, constants.X_OK).then(
+		() => true,
+		() => false
+	))
+)
+	throw new Error(`backend venv missing at ${python}; run make setup first`);
 const adminUrl =
 	process.env.POSTGRES_ADMIN_URL ?? 'postgresql://potocolom:potocolom@localhost:5432/postgres';
 const WAIT_MS = 15000;
@@ -86,7 +93,7 @@ async function mintSetupToken(env) {
 			code === 0 ? resolveRun(stdout) : rejectRun(new Error(`app.enable exited ${code}`))
 		);
 	});
-	const match = output.match(/"token": "([^"]+)"/);
+	const match = output.match(/"token"\s*:\s*"([^"]+)"/);
 	assert.ok(match, 'app.enable printed a setup token');
 	return match[1];
 }
@@ -131,37 +138,66 @@ function waitForUnsafeRequest(page, url) {
 	});
 }
 
+async function stopApi(api) {
+	// An API that already exited is done; there is no 'exit' left to wait for.
+	if (!api || api.exitCode !== null) return;
+	api.kill('SIGTERM');
+	const exited = await Promise.race([
+		new Promise((resolveExit) => api.once('exit', () => resolveExit(true))),
+		pause(5000).then(() => false)
+	]);
+	if (!exited) api.kill('SIGKILL');
+}
+
 test('a real browser signs in on the built /login and the next unsafe request carries the CSRF header', async () => {
-	const databaseName = `potocolom_signin_${process.pid}`;
+	// A killed run may have left a database of the planned name behind, so drop
+	// it with FORCE before creating today's; the suffix keeps concurrent runs
+	// (one per self-hosted runner) from tripping over each other.
+	const databaseName = `potocolom_signin_${process.pid}_${randomBytes(4).toString('hex')}`;
 	const databaseUrl = new URL(adminUrl);
 	databaseUrl.pathname = `/${databaseName}`;
-	const port = await freePort();
-	const publicUrl = `http://127.0.0.1:${port}`;
-	const env = {
-		...process.env,
-		DATABASE_URL: databaseUrl.toString(),
-		AUTH_MODE: 'accounts',
-		ROOT_KEYS: `1:${randomBytes(32).toString('base64')}`,
-		PUBLIC_URL: publicUrl,
-		ALLOWED_ORIGINS: publicUrl,
-		FRONTEND_DIST: build,
-		FLEET_TOKEN_KEY: randomBytes(32).toString('hex'),
-		TELEMETRY: 'false',
-		EMAIL_BACKEND: 'none'
-	};
+	await runPython(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`, adminUrl);
 	await runPython(`CREATE DATABASE "${databaseName}"`, adminUrl);
 	let api;
+	let token;
+	let publicUrl;
+	const apiLog = [];
 	try {
-		const token = await mintSetupToken(env);
-		api = spawn(python, ['-m', 'uvicorn', 'app.main:app', '--port', String(port)], {
-			cwd: backend,
-			env,
-			stdio: ['ignore', 'pipe', 'pipe']
-		});
-		const apiLog = [];
-		api.stdout.on('data', (chunk) => apiLog.push(chunk));
-		api.stderr.on('data', (chunk) => apiLog.push(chunk));
-		await waitForConfig(publicUrl, api, apiLog);
+		// freePort() closes its probe socket before uvicorn binds, and on a
+		// shared runner another job can grab the port in between, which kills
+		// the API. Retry the pick/start/wait on a fresh port, at most 3 times.
+		for (let attempt = 1; ; attempt += 1) {
+			const port = await freePort();
+			publicUrl = `http://127.0.0.1:${port}`;
+			const env = {
+				...process.env,
+				DATABASE_URL: databaseUrl.toString(),
+				AUTH_MODE: 'accounts',
+				ROOT_KEYS: `1:${randomBytes(32).toString('base64')}`,
+				PUBLIC_URL: publicUrl,
+				ALLOWED_ORIGINS: publicUrl,
+				FRONTEND_DIST: build,
+				FLEET_TOKEN_KEY: randomBytes(32).toString('hex'),
+				TELEMETRY: 'false',
+				EMAIL_BACKEND: 'none'
+			};
+			token = await mintSetupToken(env);
+			api = spawn(python, ['-m', 'uvicorn', 'app.main:app', '--port', String(port)], {
+				cwd: backend,
+				env,
+				stdio: ['ignore', 'pipe', 'pipe']
+			});
+			api.stdout.on('data', (chunk) => apiLog.push(chunk));
+			api.stderr.on('data', (chunk) => apiLog.push(chunk));
+			try {
+				await waitForConfig(publicUrl, api, apiLog);
+				break;
+			} catch (error) {
+				if (attempt === 3)
+					throw new Error(`API would not start after 3 attempts\n${apiLog.join('')}`);
+				await stopApi(api);
+			}
+		}
 
 		const setup = await fetch(`${publicUrl}/api/v1/auth/setup`, {
 			method: 'POST',
@@ -216,14 +252,7 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 			await browser.close();
 		}
 	} finally {
-		if (api) {
-			api.kill('SIGTERM');
-			const exited = await Promise.race([
-				new Promise((resolveExit) => api.once('exit', () => resolveExit(true))),
-				pause(5000).then(() => false)
-			]);
-			if (!exited) api.kill('SIGKILL');
-		}
+		await stopApi(api);
 		await runPython(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`, adminUrl);
 	}
 });
