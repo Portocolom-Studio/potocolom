@@ -1,6 +1,7 @@
 // Hand-rolled i18n: two flat dictionaries behind a tiny reactive store
 // (docs/decisions.md, "Frontend foundation"). Every user-facing string goes
 // through t() from the first component onward.
+import { readStored, writeStored } from './safe-storage';
 import en from './i18n/en.json';
 import es from './i18n/es.json';
 
@@ -10,14 +11,8 @@ export type Locale = keyof typeof dictionaries;
 export const locales = Object.keys(dictionaries) as Locale[];
 
 function preferredLocale(): Locale {
-	if (typeof localStorage === 'undefined') return 'en';
-	try {
-		const saved = localStorage.getItem('locale');
-		if (saved && saved in dictionaries) return saved as Locale;
-	} catch {
-		// Storage access throws where the browser blocks it, so fall back to the
-		// browser language rather than the stored one (as studio.svelte.ts does).
-	}
+	const saved = readStored('locale');
+	if (saved && saved in dictionaries) return saved as Locale;
 	return navigator.language.startsWith('es') ? 'es' : 'en';
 }
 
@@ -37,7 +32,7 @@ export function getLocale(): Locale {
 
 export function setLocale(locale: Locale): void {
 	state.locale = locale;
-	localStorage.setItem('locale', locale);
+	writeStored('locale', locale);
 	document.documentElement.lang = locale;
 }
 
