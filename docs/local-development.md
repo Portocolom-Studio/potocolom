@@ -301,7 +301,7 @@ Everything below is a rung-1 test already, so the checklist is a reading rather 
 - `make verify` is green, which is the whole matrix.
 - The authentication rounds' own files pass in both modes: `test_endpoint_hardening.py` and `test_first_admin_setup.py` cover `AUTH_MODE=none`, everything under the `accounts` fixture covers the other.
 - `test_failure_matrix.py` passes, which is where the concurrency and outage cases live.
-- One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, sign in, invite somebody, sign in as them, and revoke that session from the first account. Nothing else in the ladder drives a real browser at a real cookie, so this is the only place the `__Host-` prefix and the CSRF header are exercised by something that implements them rather than by a test client.
+- One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, sign in, invite somebody, sign in as them, and revoke that session from the first account. `npm run test:signin` (part of `make verify-frontend`) now loads the built `/login` page in a real browser on every run and asserts the session and CSRF cookies and the CSRF header, so the hand pass still covers what the automated one does not: the `__Host-` names over HTTPS, invitations, and logout.
 - `make auth-rotate-keys CHECK=1` reports nothing left under an older key, if a rotation happened in this cycle.
 
 ## Testing ladder

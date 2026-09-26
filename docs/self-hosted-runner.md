@@ -10,7 +10,7 @@ The four path-filtered product workflows plus deploy, docs and toolchain:
 |---|---|
 | backend | Docker (postgres service container), Python 3.11 |
 | worker | Python 3.11 |
-| frontend | Node 24, Chrome or Chromium |
+| frontend | Node 24, Chrome or Chromium, Docker (postgres service container), Python 3.11 (backend venv) |
 | simulation | Python 3.11, host postgres database `potocolom_ci` |
 | deploy | Docker (`verify-compose` + compose-smoke) |
 | docs | mermaid-cli + Chrome (`verify-mermaid`) |
@@ -22,7 +22,8 @@ The frontend gate tests the built drawing canvas in headless Chrome, with
 GPU use disabled and test API and WebSocket adapters. Set
 `PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if the browser is not installed
 at a standard Linux path. A missing browser fails the gate; it does not skip
-the canvas checks.
+the canvas checks. Its sign-in gate boots the real API against a postgres
+service container and creates the backend venv the test drives.
 
 ## One-time setup
 

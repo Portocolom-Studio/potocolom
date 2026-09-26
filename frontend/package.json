@@ -16,6 +16,7 @@
 		"lint": "prettier --check .",
 		"test": "node --test \"src/**/*.test.ts\"",
 		"test:canvas": "node scripts/test-canvas-history.mjs",
+		"test:signin": "node scripts/test-signin-cookie.mjs",
 		"format": "prettier --write .",
 		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
 		"generate:gallery-images": "node scripts/generate-gallery-images.mjs",
