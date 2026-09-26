@@ -17,6 +17,10 @@
 		openPlayground,
 		filterTextToImageModels
 	} from '$lib/studio.svelte';
+	import { account } from '$lib/account.svelte';
+	import { sectionNeeds } from '$lib/account-display';
+
+	const workspaceNeeds = $derived(sectionNeeds('generate', account.current?.role ?? null));
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -74,6 +78,11 @@
 					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')}>
 						<SquareTerminalIcon />
 						<span>{t('app.shell.workspace')}</span>
+						{#if workspaceNeeds !== null}
+							<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+								{t('app.gen.members_only')}
+							</span>
+						{/if}
 					</Sidebar.MenuButton>
 					<Collapsible.Trigger>
 						{#snippet child({ props: triggerProps })}
@@ -129,6 +138,7 @@
 																	type="button"
 																	{...props}
 																	title={model.name}
+																	disabled={workspaceNeeds !== null}
 																	onclick={() => {
 																		openPlayground();
 																		studio.modelId = model.id;
@@ -188,6 +198,7 @@
 																		props.class as string | undefined
 																	)}
 																	title={prompt}
+																	disabled={workspaceNeeds !== null}
 																	onclick={() => {
 																		openPlayground();
 																		studio.prompt = prompt;
@@ -239,6 +250,10 @@
 													<button
 														type="button"
 														title={generation.params.prompt}
+														class={workspaceNeeds !== null
+															? 'pointer-events-none opacity-50'
+															: undefined}
+														disabled={workspaceNeeds !== null}
 														onclick={() => {
 															openPlayground();
 															studio.selectedId = generation.id;

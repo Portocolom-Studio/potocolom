@@ -89,6 +89,8 @@
 		type PackedLineageTree,
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
+	import { account } from '$lib/account.svelte';
+	import { sectionNeeds } from '$lib/account-display';
 	import { collapsePromptDiff, paramDeltas, promptWordDiff } from '$lib/prompt-diff';
 	import {
 		lineageSearchMatchPositions,
@@ -323,9 +325,13 @@
 	const selectedHasBytes = $derived(
 		selectedData !== null && !selectedData.entry.missing && selectedAsset !== null
 	);
-	const canGenerateFromPrompt = $derived(selectedPrompt !== '' && textToImageModels.length > 0);
-	const canEditSelected = $derived(selectedHasBytes && imageToImageModels.length > 0);
-	const canUpscaleSelected = $derived(selectedHasBytes && upscaleModels.length > 0);
+	// Every service a node opens creates a job, which a viewer cannot do.
+	const mayCreate = $derived(sectionNeeds('generate', account.current?.role ?? null) === null);
+	const canGenerateFromPrompt = $derived(
+		mayCreate && selectedPrompt !== '' && textToImageModels.length > 0
+	);
+	const canEditSelected = $derived(mayCreate && selectedHasBytes && imageToImageModels.length > 0);
+	const canUpscaleSelected = $derived(mayCreate && selectedHasBytes && upscaleModels.length > 0);
 	const selectedPathEdgeIds = $derived.by(() => {
 		if (studio.lineageSelectedAssetId === null) return new Set<string>();
 		const tree = packedTrees.find((item) =>
@@ -1434,6 +1440,7 @@
 	}
 
 	function branchFromNode(data: CanvasNodeData): void {
+		if (!mayCreate) return;
 		const generation =
 			data.generation ?? (data.entry.job_id ? (generationById(data.entry.job_id) ?? null) : null);
 		const asset =

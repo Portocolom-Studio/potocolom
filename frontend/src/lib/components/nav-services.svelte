@@ -7,6 +7,8 @@
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { openService, studio } from '$lib/studio.svelte';
+	import { account } from '$lib/account.svelte';
+	import { sectionNeeds } from '$lib/account-display';
 
 	const services = $derived([
 		{
@@ -52,19 +54,34 @@
 	<Sidebar.GroupLabel>{t('app.shell.services')}</Sidebar.GroupLabel>
 	<Sidebar.Menu>
 		{#each services as service (service.view)}
+			{@const needs = sectionNeeds(service.view, account.current?.role ?? null)}
 			<Sidebar.MenuItem>
 				<Sidebar.MenuButton
 					tooltipContent={service.label}
 					isActive={studio.shellView === service.view}
 				>
 					{#snippet child({ props })}
-						<button type="button" {...props} onclick={() => openService(service.view)}>
+						<button
+							type="button"
+							{...props}
+							disabled={needs !== null}
+							onclick={() => openService(service.view)}
+						>
 							<service.icon />
 							<span>{service.label}</span>
+							{#if needs !== null}
+								<span class="sr-only">
+									{needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only')}
+								</span>
+							{/if}
 						</button>
 					{/snippet}
 				</Sidebar.MenuButton>
-				{#if service.comingSoon}
+				{#if needs !== null}
+					<Sidebar.MenuBadge aria-hidden="true">
+						{needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only')}
+					</Sidebar.MenuBadge>
+				{:else if service.comingSoon}
 					<Sidebar.MenuBadge>{t('app.gen.coming_soon')}</Sidebar.MenuBadge>
 				{/if}
 			</Sidebar.MenuItem>
