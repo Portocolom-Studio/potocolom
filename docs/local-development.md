@@ -178,6 +178,10 @@ set and open descriptors. Scale the load with `--sessions`, `--workers`,
 `--slots`, `--churn` and `--jobs`. A hard-killed run can leave its generated
 database behind; `make test-db-clean` removes those names with stale test
 databases.
+`slow-consumer` gates the per-session mailboxes in
+[connection-handling.md](connection-handling.md): the neighbour's p95 and the
+API's resident set are the thresholds, and `oldest_frame_s` is reported without
+one, because it measures the kernel socket buffers rather than the API.
 
 ## Trying accounts mode locally
 
