@@ -302,6 +302,10 @@ GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
+                                        from and to must carry a timezone (an epoch millisecond
+                                        integer or an ISO timestamp with an offset or Z); a naive
+                                        timestamp answers 422. Raw mode caps the response at 5000
+                                        samples, keeping the newest in the window.
 GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
 GET  /api/v1/benchmark/gpu             admin only; live GPU status from a connected worker
 POST /api/v1/benchmark/gpu/load        admin only; load a model for scripts/benchmark.py

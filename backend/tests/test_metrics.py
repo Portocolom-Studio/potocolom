@@ -394,6 +394,163 @@ def test_heartbeat_persists_gpu_sample():
 
 
 @pytest.mark.db
+def test_gpu_history_raw_is_capped(monkeypatch):
+    # The raw select was unbounded; a many-worker install could ship the whole
+    # 48 h retention in one JSON body. The cap keeps the newest samples so a
+    # live chart still shows the recent edge of the window (issue #497).
+    monkeypatch.setattr(gpu_samples, "RAW_HISTORY_LIMIT", 3)
+    now = datetime.now(timezone.utc)
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        client.portal.call(_clear_gpu_metrics)
+
+        async def insert():
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add_all([
+                    GpuSample(worker_id="w-cap", sampled_at=now - timedelta(minutes=5),
+                              util_pct=10),
+                    GpuSample(worker_id="w-cap", sampled_at=now - timedelta(minutes=4),
+                              util_pct=20),
+                    GpuSample(worker_id="w-cap", sampled_at=now - timedelta(minutes=3),
+                              util_pct=30),
+                    GpuSample(worker_id="w-cap", sampled_at=now - timedelta(minutes=2),
+                              util_pct=40),
+                    GpuSample(worker_id="w-cap", sampled_at=now - timedelta(minutes=1),
+                              util_pct=50),
+                ])
+                await session.commit()
+
+        client.portal.call(insert)
+        response = client.get(
+            "/api/v1/metrics/gpu/history",
+            params={
+                "from": int((now - timedelta(minutes=10)).timestamp() * 1000),
+                "to": int(now.timestamp() * 1000),
+                "rollup": "raw",
+                "worker_id": "w-cap",
+            },
+        )
+        assert response.status_code == 200
+        samples = response.json()["samples"]
+        assert [point["util_pct"] for point in samples] == [30, 40, 50]
+
+
+@pytest.mark.db
+def test_gpu_rollups_rebuild_as_one_server_side_statement():
+    # _rebuild_rollups reloaded up to 48 h of raw samples into Python and
+    # upserted one row per worker per bucket inside the transaction that also
+    # prunes. The rewrite is one INSERT ... SELECT ... ON CONFLICT that must
+    # produce exactly the rows the Python loop did, including the dropped
+    # impossible VRAM ratio and the banker's-rounding of the pct (issue #497).
+    from_ts = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    to_ts = from_ts + timedelta(minutes=30)
+
+    def bucket(ts: datetime) -> datetime:
+        return ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
+
+    def vram_pct(used: int | None, total: int | None) -> int | None:
+        if used is None or total is None or total <= 0:
+            return None
+        value = round(used * 100 / total)
+        return value if -32768 <= value < 32768 else None
+
+    samples = [
+        GpuSample(worker_id="w-roll-a", sampled_at=from_ts + timedelta(minutes=1),
+                  util_pct=30, vram_used_bytes=500, vram_total_bytes=1000,
+                  temperature_c=60.0, power_w=100.0),
+        GpuSample(worker_id="w-roll-a", sampled_at=from_ts + timedelta(minutes=2),
+                  util_pct=40, vram_used_bytes=400, vram_total_bytes=1000,
+                  temperature_c=62.0, power_w=120.0),
+        GpuSample(worker_id="w-roll-a", sampled_at=from_ts + timedelta(minutes=3),
+                  util_pct=None, vram_used_bytes=300, vram_total_bytes=1000,
+                  temperature_c=None, power_w=110.0),
+        GpuSample(worker_id="w-roll-a", sampled_at=from_ts + timedelta(minutes=4),
+                  util_pct=50, vram_used_bytes=2**62, vram_total_bytes=1,
+                  temperature_c=61.0, power_w=105.0),
+        GpuSample(worker_id="w-roll-a", sampled_at=from_ts + timedelta(minutes=6),
+                  util_pct=10, vram_used_bytes=1000, vram_total_bytes=1000,
+                  temperature_c=70.0, power_w=90.0),
+        GpuSample(worker_id="w-roll-b", sampled_at=from_ts + timedelta(minutes=1),
+                  util_pct=80, vram_used_bytes=250, vram_total_bytes=500,
+                  temperature_c=55.0, power_w=80.0),
+        GpuSample(worker_id="w-roll-b", sampled_at=from_ts + timedelta(minutes=2),
+                  util_pct=90, vram_used_bytes=225, vram_total_bytes=500,
+                  temperature_c=57.0, power_w=85.0),
+    ]
+
+    def expected() -> list[tuple]:
+        grouped: dict[tuple[str, datetime], list[GpuSample]] = {}
+        for sample in samples:
+            grouped.setdefault((sample.worker_id, bucket(sample.sampled_at)), []).append(sample)
+        rows = []
+        for (worker_id, bucket_start), group in sorted(grouped.items()):
+            util = [s.util_pct for s in group if s.util_pct is not None]
+            vram = [p for p in (vram_pct(s.vram_used_bytes, s.vram_total_bytes)
+                                for s in group) if p is not None]
+            temp = [s.temperature_c for s in group if s.temperature_c is not None]
+            power = [s.power_w for s in group if s.power_w is not None]
+            rows.append((
+                worker_id, bucket_start, len(group),
+                (sum(util) / len(util)) if util else None,
+                min(util) if util else None,
+                max(util) if util else None,
+                (sum(vram) / len(vram)) if vram else None,
+                min(vram) if vram else None,
+                max(vram) if vram else None,
+                (sum(temp) / len(temp)) if temp else None,
+                (sum(power) / len(power)) if power else None,
+            ))
+        return rows
+
+    async def rollup_rows() -> list[tuple]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(GpuSampleRollup)
+                    .where(GpuSampleRollup.worker_id.in_(["w-roll-a", "w-roll-b"]))
+                    .order_by(GpuSampleRollup.worker_id, GpuSampleRollup.bucket_start)
+                )
+            ).scalars().all()
+            return [
+                (row.worker_id, row.bucket_start, row.sample_count, row.util_mean,
+                 row.util_min, row.util_max, row.vram_used_pct_mean,
+                 row.vram_used_pct_min, row.vram_used_pct_max, row.temperature_mean,
+                 row.power_mean)
+                for row in rows
+            ]
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        client.portal.call(_clear_gpu_metrics)
+
+        async def exercise() -> tuple[list[tuple], list[tuple]]:
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add_all(samples)
+                await session.commit()
+            async with db.session_factory() as session:
+                await gpu_samples._rebuild_rollups(session, from_ts, to_ts)
+                await session.commit()
+            first = await rollup_rows()
+            async with db.session_factory() as session:
+                await gpu_samples._rebuild_rollups(session, from_ts, to_ts)
+                await session.commit()
+            second = await rollup_rows()
+            return first, second
+
+        first, second = client.portal.call(exercise)
+
+        # Leave nothing behind: the next TestClient's startup maintenance pass
+        # prunes old rows, and racing it with a delete is a deadlock, while
+        # stale rollups would skew its range checks.
+        client.portal.call(_clear_gpu_metrics)
+
+    assert first == expected()
+    assert second == first, "the rebuild must be idempotent"
+
+
+@pytest.mark.db
 def test_gpu_history_round_trip():
     now = datetime.now(timezone.utc)
     sample = GpuSample(
@@ -527,13 +684,16 @@ def test_gpu_history_rejects_unusable_timestamps():
     # A superscript two passes isdigit() but int() rejects it; a far-future
     # epoch overflows
     # the year, and a 25-digit one overflows the float division. All three were
-    # 500s from an ordinary authenticated GET (issue #232).
+    # 500s from an ordinary authenticated GET (issue #232). A naive ISO wall
+    # clock was silently read as UTC; it is refused too, because without a
+    # timezone the caller's intent is unknown (issue #497).
     with TestClient(app, headers=FLEET_HEADERS) as client:
         good = "1700000000000"
         # The last two are the ISO branch: astimezone overflows at the edges
         # of the representable range, one line below the digit branch.
         for value in ("99999999999999999", "9" * 25, "\u00b2", "not-a-date",
-                      "0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00"):
+                      "0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00",
+                      "2020-01-01T00:00:00"):
             response = client.get("/api/v1/metrics/gpu/history",
                                   params={"from": value, "to": good})
             assert response.status_code == 422, f"{value!r} gave {response.status_code}"
