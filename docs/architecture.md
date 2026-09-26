@@ -188,7 +188,7 @@ GPU seconds are the scarce and expensive resource, so how work maps onto workers
 
 ### Capacity and the real time bar
 
-The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Workers admit from a measured batch curve when present; mixed classes that serialized p95 would admit are refused when their measured curve exceeds the 500 ms bar. Scalar slots are the minimum curve length, or floor(500 / p95) without a curve. On the reference RX 7600 XT, the fourth turbo session and heavier models are **refused** (close 4003) once the 40 ms window and WebP are included. They do not wait in an admission queue. Compatible frames now share one GPU cycle (issue #294), while the picker still shows the single-frame p95 from issue #288. Worker-internal batching remains below the slot abstraction, and the scheduler never sees batches.
+The real time target is 2 to 4 generated frames per second at 512 px, which an SD-Turbo or LCM class model delivers on an RTX 4090 class GPU. Workers admit from a measured batch curve when present; mixed classes that serialized p95 would admit are refused when their measured curve exceeds the 500 ms bar. Scalar slots are the minimum curve length, or floor(500 / p95) without a curve. On the reference RX 7600 XT, the fourth turbo session and heavier models do not fit once the 40 ms window and WebP are included, so they wait in the admission queue until a slot frees. Compatible frames now share one GPU cycle (issue #294), while the picker still shows the single-frame p95 from issue #288. Worker-internal batching remains below the slot abstraction, and the scheduler never sees batches.
 
 ### One pool, real time first
 

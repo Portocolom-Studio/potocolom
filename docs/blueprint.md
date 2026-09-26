@@ -490,7 +490,7 @@ Outage posture ([decisions.md](decisions.md), "Billing outage posture"): `reserv
 
 Realtime sessions meter through the same contract in chunks:
 
-> Shipped status (2026-09-26): **partially implemented.** The idle-release transition ships (PR #571): a live session with no canvas input for 60 s is released, which stops metering and settles the attempt, and the next frame resumes it, refused 4003 when no slot is free. The chunked quota client does not ship. The pseudocode below is the designed policy under "Quota contract: caller-supplied reservation ids with expiry" and issue #19, "Real-Time Generation Protocol".
+> Shipped status (2026-09-26): **partially implemented.** The idle-release transition ships (PR #571): a live session with no canvas input for 60 s is released, which stops metering and settles the attempt, and the next frame resumes it, through the admission queue when no slot is free (issue #19). The chunked quota client does not ship. The pseudocode below is the designed policy under "Quota contract: caller-supplied reservation ids with expiry" and issue #19, "Real-Time Generation Protocol".
 
 ```python
 CHUNK_GPU_MS = 60_000

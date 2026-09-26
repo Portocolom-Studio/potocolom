@@ -106,7 +106,7 @@ sequenceDiagram
     end
 ```
 
-The version gate implements the N-1 promise: with current protocol version N, versions N and N-1 register, anything older is rejected. That promise covers an API at or ahead of its workers. Extra hello fields from a worker one version ahead of its API are dropped with `extra="ignore"`. Narrowing fields such as `studio_capabilities` are the concrete case: an older API drops the field, honours `benchmark_only: false`, and offers a realtime-only model in queued generate, which the recorded narrowing refuses. Leave the field on the wire; do not gate it on protocol version. From protocol 4, a worker ahead of its API also ignores every `open_session` that lacks `control_generation`, so realtime never becomes ready (the browser sees 4003 after the ready timeout). Jobs are unaffected. Self-hosted upgrade order is therefore API first, then the worker. Compose brings both from one image, so operators who follow compose do not hit this. The browser side is symmetric but simpler: connect, `open`, then either `ready` or `error`.
+The version gate implements the N-1 promise: with current protocol version N, versions N and N-1 register, anything older is rejected. That promise covers an API at or ahead of its workers. Extra hello fields from a worker one version ahead of its API are dropped with `extra="ignore"`. Narrowing fields such as `studio_capabilities` are the concrete case: an older API drops the field, honours `benchmark_only: false`, and offers a realtime-only model in queued generate, which the recorded narrowing refuses. Leave the field on the wire; do not gate it on protocol version. From protocol 4, a worker ahead of its API also ignores every `open_session` that lacks `control_generation`, so realtime never becomes ready (after the ready timeout the session waits in the queue, retried on each session sweep). Jobs are unaffected. Self-hosted upgrade order is therefore API first, then the worker. Compose brings both from one image, so operators who follow compose do not hit this. The browser side is symmetric but simpler: connect, `open`, then either `ready` or `error`.
 
 ### Browser authentication and authorization
 
@@ -232,7 +232,7 @@ Both dialers reconnect with exponential backoff: 1 s doubling to a 30 s cap, wit
 
 Session recovery is asymmetric by design:
 
-- Worker lost, or this worker sends `session_refused`: the API keeps the browser connection, sends `interrupted` when the session was already live, picks another protocol 4 worker, sends it `open_session` with the next `control_generation`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost. A protocol 3 worker is never a reassignment candidate. If no candidate remains, the browser is closed 4003.
+- Worker lost, or this worker sends `session_refused`: the API keeps the browser connection, sends `interrupted` when the session was already live, picks another protocol 4 worker, sends it `open_session` with the next `control_generation`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost. A protocol 3 worker is never a reassignment candidate. If no candidate remains, the session is queued: the browser gets `queued` and, once admitted, `resumed`.
 - Browser lost: the API closes the worker side of the session (`close_session`) and releases the slot. The canvas lives in the browser, so there is nothing to recover server side; a returning browser opens a new session.
 
 > Shipped status (2026-07-30, corrected 2026-09-26): **partially implemented.** Worker reconnect backoff and process-local worker-loss reassignment ship; browser reconnect remains design. Recovery cannot cross replicas or survive loss of the owning API process. When no replacement slot is free the session is queued (the browser gets `interrupted`, then `queued`, then `resumed` on admission). "Redis-optional Queues and FrameBus contracts", issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern cross-owner recovery and resume priority. The diagram below shows the designed successful path.
@@ -310,7 +310,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | 1000 | normal close | either |
 | 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse) | either |
 | 4002 | unsupported protocol version | worker |
-| 4003 | no worker capacity for the requested model | browser |
+| 4003 | the account already holds its two realtime sessions (a full pool queues instead) | browser |
 | 4004 | unknown model | browser |
 | 4401 | authentication required or no longer valid | browser |
 | 4403 | authenticated, but not permitted to open a realtime session | browser |

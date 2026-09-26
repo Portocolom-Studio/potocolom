@@ -264,7 +264,7 @@ Useful runs this enables on one desktop:
 - Kill the leader API replica: scheduler failover within the lease window. **Designed.** One API process today; no Redis leader lease.
 - Stop Redis: degradation behavior, nobody logged out, queue rebuilt on return. **Designed.** Redis in cloud-sim is unused by the API.
 - Run the previous release's worker image against the current API: the N-1 promise. **Shipped.**
-- Open the drawing tool in two browsers against a one-slot worker: the second open is refused with 4003. Admission queue and position display are **designed** (issue #19).
+- Open the drawing tool in two browsers against a one-slot worker: the second open waits in the admission queue and shows its position, then becomes ready when the first closes (issue #19).
 
 ## What only real AWS can validate
 
