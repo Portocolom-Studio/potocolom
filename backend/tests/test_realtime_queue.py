@@ -1,4 +1,4 @@
-"""The realtime admission queue (issue #19, part 2).
+"""The realtime admission queue (issue #19).
 
 An open that finds no free worker is queued instead of refused 4003; a
 reassigned or idle session with no candidate queues too. Admission is first-fit
@@ -10,6 +10,7 @@ real queue helpers, not a replica.
 import asyncio
 import time
 import uuid
+from types import SimpleNamespace
 from contextlib import suppress
 
 import anyio
@@ -438,5 +439,35 @@ def test_a_requeued_session_keeps_its_place(monkeypatch):
             realtime.workers.pop(worker.id, None)
             realtime.sessions.pop(head.id, None)
             realtime.sessions.pop(tail.id, None)
+
+    run_on_test_loop(scenario())
+
+def test_an_admission_shed_during_its_frame_send_announces_nothing(monkeypatch):
+    """admit() forwards the pending canvas frame before telling the browser,
+    and that send awaits. A shed in that window has already posted interrupted
+    and requeued the session, so admit must not then post ready for an attempt
+    that is gone."""
+
+    async def scenario():
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                   browser=FakeSocket(), state="assigning",
+                                   queued_at=time.monotonic(),
+                                   pending_frame=b"canvas")
+
+        class ShedDuringSend:
+            async def send_bytes(self, _data):
+                assert realtime.transition(session, "live", "assigning")
+
+        async def placed(target, **_kwargs):
+            target.worker = SimpleNamespace(ws=ShedDuringSend())
+            return realtime.transition(target, "assigning", "live")
+
+        monkeypatch.setattr(realtime, "place_session", placed)
+        realtime.sessions[session.id] = session
+        try:
+            await realtime.admit(session)
+            assert list(session.out_controls) == []
+        finally:
+            realtime.sessions.pop(session.id, None)
 
     run_on_test_loop(scenario())

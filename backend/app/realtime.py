@@ -596,6 +596,11 @@ async def admit(session: Session) -> None:
     frame, session.pending_frame = session.pending_frame, None
     if frame is not None and session.worker is not None:
         await safe_send(session.worker.ws.send_bytes(frame))
+    # That send awaits, and a shed or a lost worker in the meantime has already
+    # told the browser interrupted and requeued the session: announcing this
+    # attempt now would contradict it.
+    if session.state != "live":
+        return
     if was_live:
         post(session, {"type": "resumed"})
     else:
