@@ -1,3 +1,5 @@
+import type { MetricsTab, ShellView } from './studio-view';
+
 export type Role = 'admin' | 'user' | 'viewer';
 
 const roleLabelKeys = {
@@ -49,4 +51,17 @@ export function sectionNeeds(section: GatedSection, role: Role | null): 'user' |
 	if (role === null) return null;
 	if (sectionNeededRoles[section] === 'user') return role === 'viewer' ? 'user' : null;
 	return role === 'admin' ? null : 'admin';
+}
+
+// A view the role may use stays; otherwise fall back to generate, the main
+// panel, and then images, which no role is locked out of.
+export function openViewFor(view: ShellView, tab: MetricsTab, role: Role | null): ShellView {
+	// models and images are open to every role; metrics picks its section by
+	// tab; every other view shares its section's name.
+	if (view === 'models' || view === 'images') return view;
+	const section: GatedSection =
+		view === 'metrics' ? (tab === 'usage' ? 'metrics_usage' : 'metrics_benchmarks') : view;
+	if (sectionNeeds(section, role) === null) return view;
+	if (sectionNeeds('generate', role) === null) return 'generate';
+	return 'images';
 }
