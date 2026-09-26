@@ -56,9 +56,10 @@ against the machine you are on, names the compose profile it can run, and
 prints the fix for anything missing. It starts no containers and installs
 nothing. When `deploy/compose/.env` is missing it writes one from the
 example with generated hex secrets. Empty `POSTGRES_PASSWORD` / `FLEET_SECRET`
-are filled; a non-empty value is left alone, except the example's
-`POSTGRES_PASSWORD=change-me`, which is rotated while no database volume exists
-yet and reported, with the command to change it, once one does. Run it first; everything below
+are filled; a non-empty value is left alone. The one exception is the
+example's `POSTGRES_PASSWORD=change-me`: it is rotated when Docker answers and
+shows no database volume for this install, and otherwise reported with the
+command to change it. Run it first; everything below
 is what it checks. `make selfhost` is preflight plus compose-up.
 
 ## GPU passthrough
@@ -119,10 +120,11 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 
 - Preflight writes `deploy/compose/.env` when that file is missing, with
   `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. Empty
-  values of those keys are filled; a non-empty value is left alone, except
-  the example's `change-me` database password, rotated before the database
-  volume is created and only warned about after, because Postgres reads that
-  password once, when it creates the volume. It
+  values of those keys are filled; a non-empty value is left alone. The
+  example's `change-me` database password is rotated only when Docker answers
+  and no database volume exists yet, because Postgres reads that password once,
+  when it creates the volume; otherwise preflight warns and prints the
+  `ALTER ROLE` command to change it. It
   prints `FLEET_SECRET` once. Copy that value to a worker on another
   machine. Non-empty keys in an existing `.env` are left alone.
 - The first generation per model downloads its weights from Hugging Face
