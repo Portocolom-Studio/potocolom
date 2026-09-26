@@ -64,7 +64,7 @@ class BenchmarkInput(BaseModel):
     created_at: datetime
     target_vram_gb: float | None = None
     prompt_count: int = Field(ge=0, lt=2**31)
-    models: list[str]
+    models: list[StorableStr]
     variants_per_prompt: int = Field(ge=0, lt=2**31)
     total_jobs: int = Field(ge=0, lt=2**31)
     succeeded: int = Field(ge=0, lt=2**31)
