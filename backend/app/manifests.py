@@ -167,8 +167,28 @@ def json_finite(value: object, depth: int = 0) -> bool:
     return True
 
 
+def json_non_finite(value: object, depth: int = 0) -> bool:
+    """Whether a decoded JSON value holds a NaN or Infinity anywhere.
+
+    The nesting refusal and the non-finite refusal are different defects with
+    different messages, so the callers detect the number first and keep
+    json_finite's depth bound on the walk.
+    """
+    if depth > JSON_MAX_DEPTH:
+        return False
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(json_non_finite(item, depth + 1) for item in value.values())
+    if isinstance(value, list):
+        return any(json_non_finite(item, depth + 1) for item in value)
+    return False
+
+
 def validate_params(manifest: Manifest, params: dict) -> str | None:
     """Return a validation error message, or None when params are acceptable."""
+    if json_non_finite(params):
+        return "params contain a number that is not finite (NaN or Infinity)"
     if not json_finite(params):
         return "params are too deeply nested or contain a value JSON storage cannot hold"
     try:
@@ -212,6 +232,8 @@ def validate_param_update(manifest: Manifest, params: dict) -> str | None:
     """
     if not params:
         return "params update is empty"
+    if json_non_finite(params):
+        return "params contain a number that is not finite (NaN or Infinity)"
     if not json_finite(params):
         return "params are too deeply nested or contain a value JSON storage cannot hold"
     try:

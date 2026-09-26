@@ -2278,6 +2278,65 @@ def test_job_failure_reason_persisted():
             assert bad.status_code == 422
 
 
+@pytest.mark.db
+def test_cancelled_state_filters_the_history():
+    # cancelled is a job state and the filter must really match cancelled rows,
+    # not merely stop 422ing (issue #508).
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            model_id = f"cancelled-filter-{uuid.uuid4()}"
+            cancelled_id, succeeded_id = uuid.uuid4(), uuid.uuid4()
+            async with db.session_factory() as session:
+                session.add(Model(
+                    id=model_id,
+                    name=model_id,
+                    capabilities=["text_to_image"],
+                    parameters_schema={},
+                    min_vram_gb=0,
+                ))
+                await session.flush()
+                session.add(Job(
+                    id=cancelled_id,
+                    user_id=db.local_user_id,
+                    model_id=model_id,
+                    params={"prompt": "called off"},
+                    state="cancelled",
+                    attempt=1,
+                ))
+                session.add(Job(
+                    id=succeeded_id,
+                    user_id=db.local_user_id,
+                    model_id=model_id,
+                    params={"prompt": "finished"},
+                    state="succeeded",
+                    attempt=1,
+                ))
+                await session.commit()
+            return cancelled_id, succeeded_id
+
+        cancelled_id, succeeded_id = client.portal.call(seed)
+        rows = client.get("/api/v1/generations", params={"state": "cancelled"})
+        assert rows.status_code == 200
+        body = rows.json()
+        assert {row["id"] for row in body} == {str(cancelled_id)}
+        assert all(row["state"] == "cancelled" for row in body)
+        assert str(succeeded_id) not in {row["id"] for row in body}
+
+
+@pytest.mark.db
+def test_generation_list_rejects_a_non_positive_limit():
+    # A non-positive limit is a caller bug, not a request to clamp to 1
+    # (issue #508); the upper clamp stays.
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        for limit in ("0", "-5"):
+            response = client.get("/api/v1/generations", params={"limit": limit})
+            assert response.status_code == 422
+        assert client.get("/api/v1/generations", params={"limit": 1}).status_code == 200
+        assert client.get("/api/v1/generations", params={"limit": 5000}).status_code == 200
+
+
 def _post_generation(client, prompt: str) -> str:
     created = client.post("/api/v1/generations",
                           json={"model_id": "sd-test", "params": {"prompt": prompt}})
