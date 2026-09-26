@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 from fastapi import HTTPException
@@ -116,6 +116,17 @@ def test_a_provider_without_credentials_is_never_offered():
     assert ready.auth_methods == ["password", "google"]
 
 
+def test_studio_search_rebuilds_only_a_same_origin_app_query():
+    """The twin of the frontend's studioReturnSearch: what a redirect may
+    carry, so a callback never lands anywhere but /app."""
+    assert oauth.studio_search("/app?view=models") == "?view=models"
+    for refused in (None, "", "/app", "//evil.example/app",
+                    "https://evil.example/app?x=1", "/app/../admin",
+                    "/apps?view=x", "/login?view=x", "/app\\evil",
+                    "/app?view=x\r\nSet-Cookie: a=b", "javascript:alert(1)"):
+        assert oauth.studio_search(refused) == ""
+
+
 @pytest.mark.db
 def test_the_redirect_carries_pkce_and_a_state_this_server_minted(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
@@ -147,13 +158,31 @@ def test_an_unconfigured_provider_has_no_redirect(accounts, monkeypatch):
                           follow_redirects=False).status_code == 404
 
 
+@pytest.mark.db
+def test_the_redirect_plants_the_return_cookie_only_for_a_valid_next(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        carried = client.get("/api/v1/auth/redirect/google?next="
+                             + quote("/app?view=models", safe=""),
+                             follow_redirects=False)
+        assert carried.status_code == 307
+        returned = [c.value for c in carried.cookies.jar
+                    if c.name.endswith("potocolom_oauth_return")]
+        assert returned == ["%3Fview%3Dmodels"]
+        plain = client.get("/api/v1/auth/redirect/google", follow_redirects=False)
+        assert not [c for c in plain.cookies.jar
+                    if c.name.endswith("potocolom_oauth_return")]
+
+
 def _callback(client, provider, state, code="provider-code"):
     return client.get(f"/api/v1/auth/callback/{provider}",
                       params={"state": state, "code": code}, follow_redirects=False)
 
 
-def _start(client, provider="google"):
-    response = client.get(f"/api/v1/auth/redirect/{provider}", follow_redirects=False)
+def _start(client, provider="google", next=None):
+    path = f"/api/v1/auth/redirect/{provider}"
+    if next is not None:
+        path += "?next=" + quote(next, safe="")
+    response = client.get(path, follow_redirects=False)
     return parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
 
 
@@ -241,6 +270,20 @@ def test_a_linked_identity_signs_in(accounts, monkeypatch):
 
 
 @pytest.mark.db
+def test_a_linked_identity_returns_to_the_studio_a_callback_promised(accounts, monkeypatch):
+    """The return cookie survives the round trip: the callback lands on the
+    /app address the redirect was asked to come back to."""
+    _fake_provider(monkeypatch, "google", subject="g-1", email="known@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "known@example.com")
+        client.portal.call(_link, user.id, "google", "g-1")
+        state = _start(client, next="/app?view=models")
+        signed_in = _callback(client, "google", state)
+        assert signed_in.status_code == 307
+        assert signed_in.headers["location"] == f"{ORIGIN}/app?view=models"
+
+
+@pytest.mark.db
 def test_a_linked_identity_with_a_factor_is_sent_to_the_challenge(accounts, monkeypatch):
     """A provider proving who somebody is does not answer for the factor they
     enrolled. The gate is read in the transaction that would have minted, so an
@@ -255,6 +298,51 @@ def test_a_linked_identity_with_a_factor_is_sent_to_the_challenge(accounts, monk
         assert gated.headers["location"] == f"{ORIGIN}/login?totp=required"
         # A capability to answer a challenge, and no session behind it.
         assert client.get("/api/v1/account").status_code == 401
+
+
+@pytest.mark.db
+def test_a_gated_identity_carries_the_search_into_the_challenge(accounts, monkeypatch):
+    """A factor stands in the way, so the promised /app address travels in the
+    challenge redirect, where the login page returns to it after the code."""
+    _fake_provider(monkeypatch, "google", subject="g-2", email="gated@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "gated@example.com")
+        client.portal.call(_link, user.id, "google", "g-2")
+        client.portal.call(_enrolled, user.id)
+        gated = _callback(client, "google", _start(client, next="/app?view=models"))
+        assert gated.status_code == 307
+        assert gated.headers["location"] == (
+            f"{ORIGIN}/login?totp=required&next=%2Fapp%3Fview%3Dmodels")
+
+
+@pytest.mark.db
+def test_a_tampered_return_cookie_is_ignored(accounts, monkeypatch):
+    """The cookie only carries the query half: it is re-validated on the
+    callback as a same-origin /app address, so one edited to point anywhere
+    else falls back to the default destination."""
+    _fake_provider(monkeypatch, "google", subject="g-1", email="known@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "known@example.com")
+        client.portal.call(_link, user.id, "google", "g-1")
+        state = _start(client, "google")
+        client.cookies.set("__Host-potocolom_oauth_return", quote("/../evil"))
+        signed_in = _callback(client, "google", state)
+        assert signed_in.status_code == 307
+        assert signed_in.headers["location"] == ORIGIN
+
+
+@pytest.mark.db
+def test_a_sign_in_without_next_does_not_inherit_an_abandoned_one(accounts, monkeypatch):
+    """A flow started with next and never finished leaves its cookie behind;
+    the next sign-in, started without next, must not return to that view."""
+    _fake_provider(monkeypatch, "google", subject="g-1", email="known@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "known@example.com")
+        client.portal.call(_link, user.id, "google", "g-1")
+        _start(client, next="/app?view=models")
+        signed_in = _callback(client, "google", _start(client, "google"))
+        assert signed_in.status_code == 307
+        assert signed_in.headers["location"] == ORIGIN
 
 
 @pytest.mark.db

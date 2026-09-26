@@ -47,6 +47,10 @@
 	const showGoogle = $derived(!landing && authMethods.includes('google'));
 	const showGithub = $derived(!landing && authMethods.includes('github'));
 	const resetDone = $derived(!landing && resetJustHappened(page.url.search));
+	const providerNext = $derived.by(() => {
+		const search = studioReturnSearch(page.url.searchParams.get('next'));
+		return search ? `?next=${encodeURIComponent('/app' + search)}` : '';
+	});
 
 	onMount(async () => {
 		if (landing) return;
@@ -282,12 +286,12 @@
 						<div class="flex flex-col gap-2">
 							<p class="text-muted-foreground text-center text-sm">{t('auth.login.or_oauth')}</p>
 							{#if showGoogle}
-								<Button variant="outline" href="/api/v1/auth/redirect/google">
+								<Button variant="outline" href={`/api/v1/auth/redirect/google${providerNext}`}>
 									{t('auth.login.google')}
 								</Button>
 							{/if}
 							{#if showGithub}
-								<Button variant="outline" href="/api/v1/auth/redirect/github">
+								<Button variant="outline" href={`/api/v1/auth/redirect/github${providerNext}`}>
 									{t('auth.login.github')}
 								</Button>
 							{/if}
