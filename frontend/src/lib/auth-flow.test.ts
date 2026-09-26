@@ -9,9 +9,11 @@ import {
 	challengeSearch,
 	createSubmitGuard,
 	initialAuthView,
+	loginSearchFor,
 	readInviteTokenFromHash,
 	resetJustHappened,
-	shouldShowChallenge
+	shouldShowChallenge,
+	studioReturnSearch
 } from './auth-flow.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +95,32 @@ test('account check forces login only on 401', () => {
 	assert.equal(accountCheckForcesLogin(null), false);
 });
 
+test('loginSearchFor carries the studio search to the sign-in page', () => {
+	assert.equal(loginSearchFor(''), '');
+	assert.equal(loginSearchFor('?'), '');
+	assert.equal(loginSearchFor('?view=models'), '?next=%2Fapp%3Fview%3Dmodels');
+});
+
+test('studioReturnSearch round-trips a deep link through the next param', () => {
+	const next = new URLSearchParams(loginSearchFor('?view=metrics&tab=benchmarks')).get('next');
+	assert.equal(studioReturnSearch(next), '?view=metrics&tab=benchmarks');
+	assert.equal(studioReturnSearch('/app?view=images'), '?view=images');
+});
+
+test('studioReturnSearch rejects anything but a same-origin /app address', () => {
+	assert.equal(studioReturnSearch(null), '');
+	assert.equal(studioReturnSearch(''), '');
+	assert.equal(studioReturnSearch('/app'), '');
+	assert.equal(studioReturnSearch('//evil.example/app'), '');
+	assert.equal(studioReturnSearch('https://evil.example/app?view=x'), '');
+	assert.equal(studioReturnSearch('/app/../admin'), '');
+	assert.equal(studioReturnSearch('/apps?view=x'), '');
+	assert.equal(studioReturnSearch('/login?view=x'), '');
+	assert.equal(studioReturnSearch('/app\\evil'), '');
+	assert.equal(studioReturnSearch('javascript:alert(1)'), '');
+	assert.equal(studioReturnSearch('/%2F%2Fevil.example'), '');
+});
+
 test('wiring: join route reads location.hash', () => {
 	assert.match(joinSource, /location\.hash/);
 	assert.match(joinSource, /joinGuard\.run/);
@@ -124,10 +152,14 @@ test('wiring: login submit uses the shared guard', () => {
 	assert.doesNotMatch(loginSource, /\$state<AuthView>\(initialAuthView\(page\.url\.search\)\)/);
 });
 
-test('wiring: both successful sign-ins replace the history entry so Back skips /app', () => {
+test('wiring: both successful sign-ins return to /app with the next search', () => {
 	const loginSource = readFileSync(join(here, '../routes/login/+page.svelte'), 'utf8');
 	assert.equal(
-		[...loginSource.matchAll(/goto\(resolve\('\/app'\), \{ replaceState: true \}\)/g)].length,
+		[
+			...loginSource.matchAll(
+				/goto\(`\$\{resolve\('\/app'\)\}\$\{studioReturnSearch\(page\.url\.searchParams\.get\('next'\)\)\}`[\s\S]*?replaceState: true/g
+			)
+		].length,
 		2
 	);
 });
@@ -136,7 +168,10 @@ test('wiring: the app route checks the account before opening the studio', () =>
 	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
 	assert.match(appSource, /apiFetch\('\/api\/v1\/account'\)/);
 	assert.match(appSource, /accountCheckForcesLogin\(/);
-	assert.match(appSource, /goto\(resolve\('\/login'\), \{ replaceState: true \}\)/);
+	assert.match(
+		appSource,
+		/goto\(`\$\{resolve\('\/login'\)\}\$\{loginSearchFor\(page\.url\.search\)\}`[\s\S]*?replaceState: true/
+	);
 	assert.match(appSource, /checkingAccount/);
 	assert.match(appSource, /app\.loading/);
 });
