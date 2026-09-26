@@ -173,9 +173,11 @@ durations fix the schedule, so two runs send the same messages in the same
 order; only timings, send stamps and server-minted ids differ. It prints one
 table and exits 1 if a threshold fails. `--api-pid` adds the API's resident set
 and open descriptors from `/proc`. Scale the load with `--sessions`,
-`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` fails until
-the per-session mailboxes in [connection-handling.md](connection-handling.md)
-ship: today the API buffers every frame for a browser that stopped reading.
+`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` gates the
+per-session mailboxes in [connection-handling.md](connection-handling.md): the
+neighbour's p95 and the API's resident set are the thresholds, and
+`oldest_frame_s` is reported without one, because it measures the kernel
+socket buffers rather than the API.
 
 ## Trying accounts mode locally
 

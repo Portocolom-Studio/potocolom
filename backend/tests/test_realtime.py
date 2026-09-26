@@ -3,6 +3,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 import anyio
@@ -188,6 +189,18 @@ def complete_attempt(session):
     """What a unit test uses in place of the fleet handler's session_ready."""
     session.attempt_ok = True
     session.ready.set()
+
+
+async def pump_writer(session):
+    """Let realtime.browser_writer deliver what was posted, to a fake socket.
+
+    The writer parks in one send only when the browser actually blocks; a
+    FakeSocket never does, so a handful of loop turns drains the mailbox.
+    """
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if session.writer.done():
+            return
 
 
 def test_version_gate_rejects_older_than_n_minus_1():
@@ -1398,8 +1411,10 @@ def test_reassign_retries_another_protocol_4_worker(monkeypatch):
         realtime.workers.update({first.id: first, spare.id: spare})
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
+        session.writer = asyncio.create_task(realtime.browser_writer(session))
         try:
             await realtime.reassign(session)
+            await pump_writer(session)
             assert [m["type"] for m in first_ws.sent] == [
                 "open_session", "close_session",
             ], first_ws.sent
@@ -1415,6 +1430,9 @@ def test_reassign_retries_another_protocol_4_worker(monkeypatch):
             assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
             assert browser.close_code == realtime.CLOSE_NO_CAPACITY
         finally:
+            session.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await session.writer
             realtime.workers.pop(first.id, None)
             realtime.workers.pop(spare.id, None)
             realtime.sessions.pop(session.id, None)
@@ -1436,18 +1454,23 @@ def test_reassign_moves_the_session_with_correct_accounting():
         realtime.workers[replacement.id] = replacement
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
+        session.writer = asyncio.create_task(realtime.browser_writer(session))
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
             assert replacement_ws.sent[0]["type"] == "open_session"
             assert replacement_ws.sent[0]["session_id"] == str(session.id)
             complete_attempt(session)
             await task
+            await pump_writer(session)
             assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
             assert session.worker is replacement
             assert replacement.slots_in_use == 1
             assert browser.close_code is None  # the session survived
         finally:
+            session.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await session.writer
             realtime.workers.pop(replacement.id, None)
             realtime.sessions.pop(session.id, None)
 
@@ -1471,7 +1494,7 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
             opened = replacement_ws.sent[0]
             assert opened["type"] == "open_session"
             assert opened["params"]["seed"] == 77
@@ -2225,6 +2248,7 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             realtime.sessions.clear()
             realtime.workers.update({worker.id: worker, spare.id: spare})
             realtime.sessions.update({older.id: older, newer.id: newer})
+            newer.writer = asyncio.create_task(realtime.browser_writer(newer))
             worker.admission_p95_ms["sd-sim"] = 300
             realtime.schedule_shed_over_capacity(worker)
             await asyncio.sleep(0.01)
@@ -2238,6 +2262,9 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             assert newer.worker is spare
             assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
         finally:
+            newer.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await newer.writer
             realtime.workers.clear()
             realtime.sessions.clear()
             realtime.workers.update(saved_workers)
@@ -2864,16 +2891,10 @@ def test_a_relayed_frame_clears_a_pending_frame():
             assert session.pending_frame is None
 
 
-def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
-    """A revocation can already own a session's end and be refusing its socket
+def test_resume_idle_does_not_double_close_an_ending_session(monkeypatch):
+    """A revocation can already own a session's end and be closing its socket
     4401 when an idle resume races it. With no room left the resume must not
-    stack a second refusal (4003) on the same socket."""
-    refused: list[tuple[int, str]] = []
-
-    async def spy(ws, code, message):
-        refused.append((code, message))
-
-    monkeypatch.setattr(realtime, "refuse", spy)
+    stack a second close (4003) on the same mailbox."""
     monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-resume-race"))
@@ -2889,12 +2910,15 @@ def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
             expect(worker_ws, "close_session")
             assert session.state == "idle"
             # The frame that would have started the resume task is pre-empted
-            # by a revocation that already owns the session's end.
+            # by a revocation that already owns the session's end: the mailbox
+            # carries the revocation's close, so no second one may land.
             assert realtime.transition(session, "idle", "assigning")
             assert realtime.transition(session, "assigning", "ending")
+            session.out_close = (realtime.CLOSE_UNAUTHORIZED, "session revoked")
 
             client.portal.call(realtime.resume_idle, session)
-            assert refused == []
+            assert session.out_close == (realtime.CLOSE_UNAUTHORIZED, "session revoked")
+            assert not session.out_controls, "a second close was queued"
 
 
 def test_a_third_session_for_one_account_is_refused():
