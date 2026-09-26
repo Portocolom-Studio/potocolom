@@ -27,6 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: npm ci
+      # The sign-in gate boots the real API against a throwaway database, so
+      # it needs the backend venv the test drives (scripts/test-signin-cookie.mjs).
+      - run: python3.11 -m venv backend/.venv && backend/.venv/bin/pip install -e ./backend
+        working-directory: .
       # The Makefile target is the single definition of what the job checks.
       - run: make verify-frontend
         working-directory: .
