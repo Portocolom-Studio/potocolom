@@ -146,11 +146,9 @@ export function updateParamsMessage(params: Record<string, string | number>): st
 }
 
 /**
- * The states issue #3 asks the panel to expose. Nothing sets `queued` yet:
- * the shipped 4003 is an immediate full-pool refusal, and the admission queue
- * that would report a queued state is issue #19's (see the shipped-status note
- * in docs/connection-handling.md). It stays named here so the wire source is
- * the only piece missing when that lands.
+ * The states issue #3 asks the panel to expose. The API's `queued` control
+ * sets `queued` while the session waits for a free worker slot; `ready` or
+ * `resumed` move it back out.
  */
 export type ConnectionState =
 	'idle' | 'connecting' | 'queued' | 'active' | 'resuming' | 'interrupted' | 'failed';
@@ -239,6 +237,7 @@ export interface RealtimeCanvasSessionOptions {
 	getOutputCanvas: () => HTMLCanvasElement | undefined;
 	isCanvasBlank: () => boolean;
 	onState: (state: ConnectionState) => void;
+	onQueuePosition: (position: number) => void;
 	onNotice: (notice: RealtimeCanvasNotice) => void;
 	onCounters: (sent: number, rendered: number) => void;
 	onAppliedParams: (
@@ -454,6 +453,7 @@ export function createRealtimeCanvasSession(
 		let control: {
 			type?: string;
 			session_id?: string;
+			position?: unknown;
 			code?: number;
 			params?: unknown;
 		};
@@ -478,6 +478,14 @@ export function createRealtimeCanvasSession(
 			setNotice('');
 			generation.changed = !options.isCanvasBlank();
 			armCapture(generation, FAST_INTERVAL_MS);
+			return;
+		}
+		if (control.type === 'queued') {
+			const position = control.position;
+			if (typeof position === 'number' && Number.isInteger(position) && position >= 1) {
+				setState(generation, 'queued');
+				options.onQueuePosition(position);
+			}
 			return;
 		}
 		if (control.type === 'interrupted') {
