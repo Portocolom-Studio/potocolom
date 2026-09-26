@@ -845,8 +845,8 @@ async def reassign(session: Session) -> None:
         return
     logger.warning("session %s lost its worker and no replacement was available",
                    session.id)
-    transition(session, "assigning", "ending")
-    post_close(session, CLOSE_NO_CAPACITY, "no worker capacity")
+    if transition(session, "assigning", "ending"):
+        post_close(session, CLOSE_NO_CAPACITY, "no worker capacity")
 
 
 _reassign_tasks: set[asyncio.Task] = set()
@@ -1561,13 +1561,15 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
     # The server side goes first and unconditionally: the slot is released even
     # if a browser never reads, because a revocation must not hang on the
     # socket it is taking away. Posting only sets the mailbox, so one close
-    # per session lands without waiting on a writer parked in a send.
+    # per session lands without waiting on a writer parked in a send. It is
+    # posted before release() awaits, so a handler tearing down meanwhile finds
+    # the close and delivers it instead of cancelling its writer.
     for session in doomed:
         sessions.pop(session.id, None)
         transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
         transition(session, "ending", "ended")
-        await release(session)
         post_close(session, CLOSE_UNAUTHORIZED, "session revoked")
+        await release(session)
 
 
 async def close_dead_sessions() -> None:
