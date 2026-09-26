@@ -7,7 +7,7 @@
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { apiFetch } from '$lib/api';
 	import { account } from '$lib/account.svelte';
-	import { parseAccount } from '$lib/account-display';
+	import { openViewFor, parseAccount } from '$lib/account-display';
 	import { accountCheckForcesLogin } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
@@ -39,9 +39,10 @@
 	const landing = PUBLIC_SITE_MODE === 'landing';
 	$effect(() => {
 		const { view, tab } = readStudioView(page.url);
-		studio.shellView = view;
-		// Only a metrics URL names the tab, so other views keep the last one open.
-		if (view === 'metrics') studio.metricsTab = tab;
+		studio.shellView = openViewFor(view, tab, account.current?.role ?? null);
+		// Only a metrics URL names the tab, and only when metrics was not
+		// refused, so other views keep the last tab open.
+		if (studio.shellView === 'metrics') studio.metricsTab = tab;
 	});
 	let updateDismissed = $state(false);
 	const updateAvailable = $derived(!landing && $updated && !updateDismissed);

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
 	accountInitial,
 	accountRoleLabelKey,
+	openViewFor,
 	parseAccount,
 	sectionNeeds,
 	type GatedSection
@@ -64,4 +65,48 @@ test('sectionNeeds marks admin-only sections for a viewer or a user', () => {
 test('sectionNeeds marks nothing when there is no account to gate', () => {
 	assert.equal(sectionNeeds('generate', null), null);
 	assert.equal(sectionNeeds('metrics_usage', null), null);
+});
+
+test('openViewFor sends a viewer from generate to images', () => {
+	assert.equal(openViewFor('generate', 'usage', 'viewer'), 'images');
+});
+
+test('openViewFor sends a viewer from metrics to images', () => {
+	assert.equal(openViewFor('metrics', 'usage', 'viewer'), 'images');
+	assert.equal(openViewFor('metrics', 'benchmarks', 'viewer'), 'images');
+});
+
+test('openViewFor sends a user from metrics to generate', () => {
+	assert.equal(openViewFor('metrics', 'usage', 'user'), 'generate');
+	assert.equal(openViewFor('metrics', 'benchmarks', 'user'), 'generate');
+});
+
+test('openViewFor keeps a user on upscale', () => {
+	assert.equal(openViewFor('upscale', 'usage', 'user'), 'upscale');
+});
+
+test('openViewFor keeps an admin on metrics', () => {
+	assert.equal(openViewFor('metrics', 'usage', 'admin'), 'metrics');
+	assert.equal(openViewFor('metrics', 'benchmarks', 'admin'), 'metrics');
+});
+
+test('openViewFor keeps models and images open to a viewer', () => {
+	assert.equal(openViewFor('models', 'usage', 'viewer'), 'models');
+	assert.equal(openViewFor('images', 'usage', 'viewer'), 'images');
+});
+
+test('openViewFor keeps every view when there is no role', () => {
+	for (const view of [
+		'generate',
+		'image_to_image',
+		'upscale',
+		'edit_image',
+		'image_to_text',
+		'realtime_canvas',
+		'images',
+		'models',
+		'metrics'
+	] as const) {
+		assert.equal(openViewFor(view, 'usage', null), view);
+	}
 });
