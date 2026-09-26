@@ -18,6 +18,7 @@ from starlette.responses import Response
 
 from app import audit, db, jobs
 from app.auth import require_accounts_mode, require_role
+from app.manifests import StorableStr
 from app.tables import Asset, Job, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
@@ -157,7 +158,7 @@ async def read_user_generations(
 async def read_audit(
     actor_user_id: uuid.UUID | None = None,
     target_user_id: uuid.UUID | None = None,
-    action: str | None = None,
+    action: StorableStr | None = None,
     limit: int = Query(default=audit.SEARCH_LIMIT),
     _admin: User = Depends(require_role("admin")),
 ) -> list[dict]:
@@ -185,7 +186,7 @@ async def read_anomalies(_admin: User = Depends(require_role("admin"))) -> list[
 async def export_audit(
     actor_user_id: uuid.UUID | None = None,
     target_user_id: uuid.UUID | None = None,
-    action: str | None = None,
+    action: StorableStr | None = None,
     limit: int = Query(default=audit.SEARCH_LIMIT),
     actor: User = Depends(require_role("admin")),
 ) -> Response:

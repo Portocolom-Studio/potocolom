@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth import require_role
+from app.manifests import StorableStr
 from app.realtime import gpu_command, pick_any_worker, pick_worker_for_model
 from app.tables import User
 
@@ -35,7 +36,7 @@ async def gpu_status(_user: User = Depends(require_role("admin"))) -> dict:
 
 
 class LoadRequest(BaseModel):
-    model_id: str
+    model_id: StorableStr
 
 
 @router.post("/api/v1/benchmark/gpu/load")
@@ -56,7 +57,7 @@ async def gpu_load(
 
 
 class UnloadRequest(BaseModel):
-    model_id: str | None = None
+    model_id: StorableStr | None = None
 
 
 @router.post("/api/v1/benchmark/gpu/unload")

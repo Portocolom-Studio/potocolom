@@ -10,6 +10,7 @@ from starlette.responses import Response
 
 from app import db, factors, rate_limit, sessions
 from app.auth import UNAUTHENTICATED, current_principal, require_accounts_mode
+from app.manifests import StorableStr
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, Session, User
@@ -28,8 +29,8 @@ async def _presented_session(http: Request) -> sessions.Resolved | None:
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: StorableStr
+    password: StorableStr
     remember_me: bool = False
 
 

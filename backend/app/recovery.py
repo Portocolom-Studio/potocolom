@@ -23,6 +23,7 @@ from starlette.responses import Response
 from app import db, mail, sessions
 from app.account_lock import hold_the_account
 from app.auth import require_accounts_mode
+from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, AuthToken, Session, User
@@ -118,7 +119,7 @@ async def _deliver_reset(email: str) -> None:
 
 
 class ResetRequest(BaseModel):
-    email: str
+    email: StorableStr
 
 
 _reset_delivery_tasks: set[asyncio.Task] = set()
@@ -144,8 +145,8 @@ async def ask(request: ResetRequest) -> dict:
 
 
 class CompleteRequest(BaseModel):
-    token: str
-    password: str
+    token: StorableStr
+    password: StorableStr
 
 
 @router.post("/api/v1/auth/reset/complete", status_code=204)

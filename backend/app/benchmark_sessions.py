@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db
 from app.auth import require_role
 from app.settings import get_settings
-from app.manifests import json_finite, json_non_finite
+from app.manifests import StorableStr, json_finite, json_non_finite
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
 
 router = APIRouter()
@@ -30,11 +30,11 @@ class MeasurementInput(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     prompt_id: int = Field(ge=-(2**31), lt=2**31)
-    title: str
-    category: str
-    model_id: str
-    variant: str
-    cell_key: str
+    title: StorableStr
+    category: StorableStr
+    model_id: StorableStr
+    variant: StorableStr
+    cell_key: StorableStr
     params: dict = Field(default_factory=dict)
 
     @field_validator("params")
@@ -55,16 +55,16 @@ class MeasurementInput(BaseModel):
     wall_s: float | None = None
     width: int | None = Int4
     height: int | None = Int4
-    job_id: str | None = None
-    file: str | None = None
-    error: str | None = None
+    job_id: StorableStr | None = None
+    file: StorableStr | None = None
+    error: StorableStr | None = None
 
 
 class BenchmarkInput(BaseModel):
     created_at: datetime
     target_vram_gb: float | None = None
     prompt_count: int = Field(ge=0, lt=2**31)
-    models: list[str]
+    models: list[StorableStr]
     variants_per_prompt: int = Field(ge=0, lt=2**31)
     total_jobs: int = Field(ge=0, lt=2**31)
     succeeded: int = Field(ge=0, lt=2**31)

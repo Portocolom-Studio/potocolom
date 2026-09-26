@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db
 from app.admin import _seen
 from app.auth import current_user
+from app.manifests import StorableStr
 from app.storage import (
     UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
 )
@@ -50,7 +51,7 @@ def local_storage() -> LocalStorage:
 
 
 @router.put("/api/v1/files/{key:path}")
-async def upload(key: str, request: Request) -> dict:
+async def upload(key: StorableStr, request: Request) -> dict:
     from app import jobs
 
     if not jobs.upload_authorized(key, request.headers.get(UPLOAD_TOKEN_HEADER)):
@@ -144,7 +145,7 @@ async def _serve(row: Asset, download_name: str | None = None, ttl: int | None =
 @router.get("/api/v1/assets/{asset_id}")
 async def asset(
     asset_id: uuid.UUID,
-    download: str | None = None,
+    download: StorableStr | None = None,
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ):
@@ -170,7 +171,7 @@ async def asset(
 async def shared_picture(
     share: uuid.UUID,
     expires: int,
-    signature: str,
+    signature: StorableStr,
     session: AsyncSession = Depends(db.get_session),
 ):
     """The bytes behind a share, addressed by a signature that lasts a minute.
@@ -188,7 +189,8 @@ async def shared_picture(
 
 
 @router.get("/api/v1/worker-input")
-async def worker_input(token: str | None = None, expires: int | None = None) -> FileResponse:
+async def worker_input(token: StorableStr | None = None,
+                       expires: int | None = None) -> FileResponse:
     from app import jobs
 
     key = jobs.resolve_input_capability(token, expires)

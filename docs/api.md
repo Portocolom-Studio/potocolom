@@ -13,6 +13,10 @@ Every call a customer's browser makes, from first page load to account deletion.
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
   answer 403 for a `viewer`. The code calls the `user` tier "member" in
   `require_role("member")`; the stored value is `user`.
+- A request string that PostgreSQL cannot store, one holding U+0000 or a lone surrogate,
+  answers 422 before any other check, in a body field, a query or a path parameter. That
+  comes ahead of every answer documented below, including login's 401 and reset's 202, and
+  it is the same for every account, so it says nothing about whether one exists.
 - In `AUTH_MODE=accounts` a request authenticates with a session: 32 random bytes, kept only as a SHA-256 hash. Over HTTPS the cookies are `__Host-potocolom_session` and `__Host-potocolom_csrf`; over plain HTTP, which is what LAN self-hosting uses, they are `potocolom_session` and `potocolom_csrf`, because the `__Host-` prefix requires `Secure` and a browser drops a `Secure` cookie on plain HTTP. The session cookie is `HttpOnly`, `SameSite=Lax`, host-only and `Path=/`. The CSRF cookie is readable, because the browser has to echo it back.
 - An unsafe request authenticated by cookie needs an exact `Origin` and an `X-CSRF-Token` header matching the CSRF cookie, or it answers 403. An absent `Origin` is refused. A request authenticated by `Authorization: Bearer` needs neither, because a bearer is presented deliberately rather than sent along by the browser. A bearer wins outright: an invalid one answers 401 and never falls back to the cookie.
 - Sessions last 12 hours. Remember-me lasts 30 days with a 7-day idle window. An administrator gets 12 hours with a 30-minute idle window and cannot be remembered. Recent authentication lasts 30 minutes, is granted by signing in, and is never granted by claiming the installation.

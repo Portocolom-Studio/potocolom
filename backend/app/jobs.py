@@ -40,7 +40,7 @@ from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
 from app.auth import current_user, require_role
-from app.manifests import validate_params
+from app.manifests import StorableStr, validate_params
 from app.settings import get_settings
 from app.storage import get_storage
 from app.tables import Asset, Job, PendingDelete, User
@@ -290,7 +290,7 @@ def publish(job_id: uuid.UUID, event: dict) -> None:
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    model_id: str
+    model_id: StorableStr
     params: dict = Field(default_factory=dict)
     source_asset_id: uuid.UUID | None = None
 
@@ -560,7 +560,7 @@ async def list_generations(
     state: Literal["queued", "running", "succeeded", "failed", "cancelled"] | None = Query(default=None),
     starred: bool | None = Query(default=None),
     roots_only: bool | None = Query(default=None),
-    q: str | None = Query(default=None),
+    q: StorableStr | None = Query(default=None),
     fields: Literal["ids"] | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),

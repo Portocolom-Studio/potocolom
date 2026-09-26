@@ -27,6 +27,7 @@ from starlette.responses import Response
 
 from app import db, keyring
 from app.auth import current_user, require_role
+from app.manifests import StorableStr
 from app.settings import get_settings
 from app.tables import Asset, AssetShare, Job, User
 
@@ -126,7 +127,7 @@ class ShareRequest(BaseModel):
 
 
 class ResolveRequest(BaseModel):
-    token: str
+    token: StorableStr
 
 
 @router.post("/api/v1/shares", status_code=201)
