@@ -6,6 +6,8 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { apiFetch } from '$lib/api';
+	import { account } from '$lib/account.svelte';
+	import { parseAccount } from '$lib/account-display';
 	import { accountCheckForcesLogin } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
@@ -58,9 +60,14 @@
 	});
 
 	async function guardStudioEntry() {
+		account.current = null;
 		let status: number | null = null;
 		try {
-			status = (await apiFetch('/api/v1/account')).status;
+			const response = await apiFetch('/api/v1/account');
+			status = response.status;
+			if (status === 200) {
+				account.current = parseAccount(await response.json());
+			}
 		} catch {
 			// No answer from the API: open the studio as before, and the panels
 			// show their empty states.
