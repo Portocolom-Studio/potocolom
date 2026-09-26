@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
@@ -12,6 +12,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { apiFetch } from '$lib/api';
 	import {
+		challengeSearch,
 		createSubmitGuard,
 		initialAuthView,
 		parseAuthError,
@@ -82,6 +83,7 @@
 						view = 'challenge';
 						code = '';
 						challengeAttempts = 0;
+						replaceState(page.url.pathname + challengeSearch(page.url.search, true), page.state);
 						return;
 					}
 				}
@@ -117,6 +119,7 @@
 						password = '';
 						challengeAttempts = 0;
 						error = t('auth.error.challenge_ended');
+						replaceState(page.url.pathname + challengeSearch(page.url.search, false), page.state);
 						return;
 					}
 					error = t('auth.challenge.invalid');
@@ -151,6 +154,7 @@
 		code = '';
 		challengeAttempts = 0;
 		error = '';
+		replaceState(page.url.pathname + challengeSearch(page.url.search, false), page.state);
 	}
 </script>
 

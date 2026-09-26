@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import {
 	accountCheckForcesLogin,
+	challengeSearch,
 	createSubmitGuard,
 	initialAuthView,
 	readInviteTokenFromHash,
@@ -40,6 +41,36 @@ test('challenge form is not shown on first paint of password mode', () => {
 test('challenge form is shown when totp is required in the query', () => {
 	assert.equal(initialAuthView('?totp=required'), 'challenge');
 	assert.equal(shouldShowChallenge('challenge'), true);
+});
+
+test('challengeSearch adds totp=required and keeps other params', () => {
+	assert.equal(challengeSearch('', true), '?totp=required');
+	assert.equal(challengeSearch('?reset=done', true), '?reset=done&totp=required');
+});
+
+test('challengeSearch removes totp=required and keeps other params', () => {
+	assert.equal(challengeSearch('?totp=required', false), '');
+	assert.equal(challengeSearch('?totp=required&reset=done', false), '?reset=done');
+	assert.equal(challengeSearch('?reset=done', false), '?reset=done');
+});
+
+test('wiring: login keeps ?totp=required in sync with the view via replaceState', () => {
+	const loginSource = readFileSync(join(here, '../routes/login/+page.svelte'), 'utf8');
+	// page.url.pathname is prefixed so an empty challengeSearch (no other
+	// params) still clears the query: replaceState('', ...) resolves to the
+	// current URL unchanged rather than to a query-less one.
+	assert.match(
+		loginSource,
+		/replaceState\(page\.url\.pathname \+ challengeSearch\(page\.url\.search, true\), page\.state\)/
+	);
+	assert.equal(
+		[
+			...loginSource.matchAll(
+				/replaceState\(page\.url\.pathname \+ challengeSearch\(page\.url\.search, false\), page\.state\)/g
+			)
+		].length,
+		2
+	);
 });
 
 test('join reads the invite token from the hash, not search params', () => {
