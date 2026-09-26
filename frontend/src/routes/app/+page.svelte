@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { updated } from '$app/stores';
 	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
@@ -26,6 +27,7 @@
 		stopGenerationUpdates,
 		studio
 	} from '$lib/studio.svelte';
+	import { readStudioView } from '$lib/studio-view';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 
@@ -33,6 +35,12 @@
 	// behind it: PUBLIC_SITE_MODE=landing shows the canvas preview instead
 	// of the studio. Product builds leave the variable empty.
 	const landing = PUBLIC_SITE_MODE === 'landing';
+	$effect(() => {
+		const { view, tab } = readStudioView(page.url);
+		studio.shellView = view;
+		// Only a metrics URL names the tab, so other views keep the last one open.
+		if (view === 'metrics') studio.metricsTab = tab;
+	});
 	let updateDismissed = $state(false);
 	const updateAvailable = $derived(!landing && $updated && !updateDismissed);
 
