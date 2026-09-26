@@ -14,6 +14,7 @@ import {
 	settleStarredListMutation,
 	starredListSnapshotIsCurrent
 } from '$lib/lineage-canvas-state';
+import { readStored, removeStored, writeStored } from '$lib/safe-storage';
 
 export type Model = {
 	id: string;
@@ -139,9 +140,8 @@ const LINEAGE_ROOT_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function loadStarredIds(): string[] {
-	if (typeof localStorage === 'undefined') return [];
 	try {
-		const raw = localStorage.getItem(STARRED_STORAGE_KEY);
+		const raw = readStored(STARRED_STORAGE_KEY);
 		const parsed = raw ? JSON.parse(raw) : [];
 		return Array.isArray(parsed)
 			? parsed.filter((value): value is string => typeof value === 'string')
@@ -152,9 +152,8 @@ function loadStarredIds(): string[] {
 }
 
 function loadRemovedModelIds(): string[] {
-	if (typeof localStorage === 'undefined') return [];
 	try {
-		const raw = localStorage.getItem(REMOVED_MODELS_STORAGE_KEY);
+		const raw = readStored(REMOVED_MODELS_STORAGE_KEY);
 		const parsed = raw ? JSON.parse(raw) : [];
 		return Array.isArray(parsed)
 			? parsed.filter((value): value is string => typeof value === 'string')
@@ -165,9 +164,8 @@ function loadRemovedModelIds(): string[] {
 }
 
 function loadLineageViewport(): LineageViewport | null {
-	if (typeof localStorage === 'undefined') return null;
 	try {
-		const raw = localStorage.getItem(LINEAGE_VIEWPORT_STORAGE_KEY);
+		const raw = readStored(LINEAGE_VIEWPORT_STORAGE_KEY);
 		const parsed = raw ? (JSON.parse(raw) as Partial<LineageViewport>) : null;
 		if (
 			parsed === null ||
@@ -201,9 +199,8 @@ function loadLineageViewport(): LineageViewport | null {
 }
 
 function loadLineageTreeOffsets(): Record<string, LineageTreeOffset> {
-	if (typeof localStorage === 'undefined') return {};
 	try {
-		const raw = localStorage.getItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY);
+		const raw = readStored(LINEAGE_TREE_OFFSETS_STORAGE_KEY);
 		const parsed = raw ? (JSON.parse(raw) as unknown) : {};
 		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
 		return Object.fromEntries(
@@ -292,12 +289,7 @@ export function saveLineageViewport(viewport: LineageViewport): void {
 		anchorY: viewport.anchorY === null ? null : clampLineageCoordinate(viewport.anchorY)
 	};
 	studio.lineageViewport = bounded;
-	if (typeof localStorage === 'undefined') return;
-	try {
-		localStorage.setItem(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(bounded));
-	} catch {
-		// The viewport remains active for this tab when storage is unavailable.
-	}
+	writeStored(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(bounded));
 }
 
 export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
@@ -313,12 +305,7 @@ export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset
 			])
 	);
 	studio.lineageTreeOffsets = bounded;
-	if (typeof localStorage === 'undefined') return;
-	try {
-		localStorage.setItem(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(bounded));
-	} catch {
-		// The positions remain active for this tab when storage is unavailable.
-	}
+	writeStored(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(bounded));
 }
 
 type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
@@ -441,12 +428,7 @@ function applyModelSelections(): void {
 }
 
 function saveRemovedModelIds(): void {
-	if (typeof localStorage === 'undefined') return;
-	try {
-		localStorage.setItem(REMOVED_MODELS_STORAGE_KEY, JSON.stringify(studio.removedModelIds));
-	} catch {
-		// The preference remains active for this tab when storage is unavailable.
-	}
+	writeStored(REMOVED_MODELS_STORAGE_KEY, JSON.stringify(studio.removedModelIds));
 }
 
 export function removeModel(modelId: string): void {
@@ -475,7 +457,7 @@ export async function loadModels(): Promise<void> {
 
 export async function migrateStoredFavorites(): Promise<void> {
 	const stored = loadStarredIds();
-	if (stored.length === 0 || typeof localStorage === 'undefined') return;
+	if (stored.length === 0) return;
 	const { retry, missing } = await runFavoriteMigration(stored, async (id) => {
 		try {
 			return (await apiFetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
@@ -483,8 +465,8 @@ export async function migrateStoredFavorites(): Promise<void> {
 			return null;
 		}
 	});
-	if (retry.length === 0) localStorage.removeItem(STARRED_STORAGE_KEY);
-	else localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(retry));
+	if (retry.length === 0) removeStored(STARRED_STORAGE_KEY);
+	else writeStored(STARRED_STORAGE_KEY, JSON.stringify(retry));
 	const notices: string[] = [];
 	if (retry.length > 0) {
 		notices.push(t('app.gen.favorite_unrestored').replace('{count}', String(retry.length)));
