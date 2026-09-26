@@ -75,7 +75,7 @@
 		<Collapsible.Root open class="group/collapsible">
 			{#snippet child({ props })}
 				<Sidebar.MenuItem {...props}>
-					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')} class="pr-14">
+					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')}>
 						<SquareTerminalIcon />
 						<span>{t('app.shell.workspace')}</span>
 						{#if workspaceNeeds !== null}

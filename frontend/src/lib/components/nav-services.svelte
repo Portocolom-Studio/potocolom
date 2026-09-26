@@ -69,11 +69,16 @@
 						>
 							<service.icon />
 							<span>{service.label}</span>
+							{#if needs !== null}
+								<span class="sr-only">
+									{needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only')}
+								</span>
+							{/if}
 						</button>
 					{/snippet}
 				</Sidebar.MenuButton>
 				{#if needs !== null}
-					<Sidebar.MenuBadge>
+					<Sidebar.MenuBadge aria-hidden="true">
 						{needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only')}
 					</Sidebar.MenuBadge>
 				{:else if service.comingSoon}

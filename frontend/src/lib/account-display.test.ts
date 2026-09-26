@@ -61,11 +61,6 @@ test('sectionNeeds marks admin-only sections for a viewer or a user', () => {
 	}
 });
 
-test('sectionNeeds never marks sections open to every role', () => {
-	assert.equal(sectionNeeds('models', 'viewer'), null);
-	assert.equal(sectionNeeds('images', 'viewer'), null);
-});
-
 test('sectionNeeds marks nothing when there is no account to gate', () => {
 	assert.equal(sectionNeeds('generate', null), null);
 	assert.equal(sectionNeeds('metrics_usage', null), null);

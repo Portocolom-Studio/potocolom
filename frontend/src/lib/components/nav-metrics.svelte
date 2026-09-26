@@ -22,7 +22,6 @@
 			<Sidebar.MenuButton
 				tooltipContent={t('app.shell.metrics')}
 				isActive={studio.shellView === 'metrics'}
-				class="pr-14"
 				aria-disabled={usageNeeds !== null && benchmarksNeeds !== null}
 				onclick={() => {
 					if (usageNeeds === null || benchmarksNeeds === null) openMetrics(studio.metricsTab);
