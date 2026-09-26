@@ -1501,6 +1501,80 @@ def test_an_undispatchable_job_does_not_end_the_dispatch_pass(monkeypatch):
 
 
 @pytest.mark.db
+def test_an_undispatchable_job_takes_no_row_lock(monkeypatch):
+    """A job whose model has no free worker is skipped on the unlocked model
+    id alone: locking its row every tick would cost one locked query per
+    queued job per tick for work nobody can take (issue #595)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            blocked_id = uuid.uuid4()
+            runnable_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "no-such-model") is None:
+                    session.add(Model(
+                        id="no-such-model", name="No Such Model",
+                        capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add_all([
+                    Job(id=blocked_id, user_id=db.local_user_id,
+                        model_id="no-such-model", params={"prompt": "blocked"},
+                        state="queued"),
+                    Job(id=runnable_id, user_id=db.local_user_id,
+                        model_id="sd-test", params={"prompt": "runs"}, state="queued"),
+                ])
+                await session.commit()
+            # The heap hands the older push out first, so the undispatchable
+            # job is ahead of the runnable one.
+            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(jobs.JOB_QUEUE, str(runnable_id), jobs.TIER_DEFAULT)
+            return blocked_id, runnable_id
+
+        real_dispatch_step = jobs.dispatch_step
+        real_locked_job = jobs.locked_job
+        locked_ids: list[uuid.UUID] = []
+
+        async def counted_locked_job(session, job_id):
+            locked_ids.append(job_id)
+            return await real_locked_job(session, job_id)
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        monkeypatch.setattr(jobs, "locked_job", counted_locked_job)
+        blocked_id, runnable_id = client.portal.call(seed)
+
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-no-lock")
+            client.portal.call(real_dispatch_step)
+            dispatch = worker.receive_json()
+
+        assert dispatch["type"] == "dispatch_job"
+        assert dispatch["job_id"] == str(runnable_id)
+        runnable = client.get(f"/api/v1/generations/{runnable_id}").json()
+        assert runnable["state"] == "running"
+        blocked = client.get(f"/api/v1/generations/{blocked_id}").json()
+        assert blocked["state"] == "queued"
+        queued_ids = {
+            entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+        }
+        assert str(blocked_id) in queued_ids, \
+            "the skipped job must be requeued at the end of the pass"
+        assert locked_ids == [runnable_id], \
+            "an undispatchable job must not be handed to locked_job"
+
+
+@pytest.mark.db
 def test_skipped_jobs_are_requeued_when_a_later_dispatch_raises(monkeypatch):
     """A dispatch that raises must not drop the ids parked ahead of it: the
     requeue used to sit after the loop's normal break, so the raise path left
