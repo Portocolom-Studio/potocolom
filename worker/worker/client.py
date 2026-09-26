@@ -203,8 +203,10 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     """
     if configured_slots <= 0 or not hasattr(engine, "torch_compile"):
         return
-    if getattr(engine, "_calibrated_slots", None) is not None:
+    if (getattr(engine, "_calibrated_slots", None) is not None
+            and not getattr(engine, "_calibration_failed", False)):
         return
+    setattr(engine, "_calibration_failed", False)
     wire = engine.measured_manifests(manifests)
     live_ids = {
         item["id"] for item in wire if "realtime" in item.get("capabilities", [])
@@ -801,18 +803,27 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
-            gpu = await asyncio.to_thread(sample_gpu, settings.device)
-            await ws.send(json.dumps({
-                "type": "heartbeat",
-                "slots_in_use": sessions.active_count,
-                "loaded_models": engine.loaded_models(),
-                "gpu": gpu,
-                # The API overwrites the calibration estimate with these,
-                # for every model the engine has measured; residency is
-                # irrelevant to a past measurement, so an evicted model
-                # keeps reporting its number.
-                "frame_p95_ms": frame_p95_payload(engine),
-            }))
+            try:
+                gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                await ws.send(json.dumps({
+                    "type": "heartbeat",
+                    "slots_in_use": sessions.active_count,
+                    "loaded_models": engine.loaded_models(),
+                    "gpu": gpu,
+                    # The API overwrites the calibration estimate with these,
+                    # for every model the engine has measured; residency is
+                    # irrelevant to a past measurement, so an evicted model
+                    # keeps reporting its number.
+                    "frame_p95_ms": frame_p95_payload(engine),
+                }))
+            except asyncio.CancelledError:
+                raise
+            except websockets.ConnectionClosed:
+                # The reader loop dies on a closed socket too and run()
+                # reconnects; this is the one failure that must end the task.
+                raise
+            except Exception:
+                logger.exception("heartbeat failed; the next one retries")
 
     heartbeat_task = asyncio.create_task(heartbeats())
     try:

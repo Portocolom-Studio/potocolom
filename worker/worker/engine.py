@@ -477,6 +477,7 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._calibration_failed = False
         self._calibration_cap: int = 0
         self._realtime_p95_ms: dict[str, int] = {}
         self._realtime_batch_ms: dict[str, list[int]] = {}
@@ -886,6 +887,11 @@ class DiffusersEngine:
             self._realtime_p95_ms.pop(manifest.id, None)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
+            # The slots stay at what was measured, 0 when nothing was, so the
+            # next hello advertises no capacity it never timed; the flag is
+            # what lets that reconnect try again (None would advertise the
+            # uncalibrated estimate instead).
+            self._calibration_failed = True
             return 0
         slots = self._recompute_calibrated_slots()
         if slots <= 0:

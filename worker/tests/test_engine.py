@@ -2183,7 +2183,10 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
 
     slots = asyncio.run(scenario())
     assert slots == 0
+    # Advertise nothing until a calibration succeeds, but say it failed, so
+    # the reconnect path tries again instead of reading 0 as a measurement.
     assert engine._calibrated_slots == 0
+    assert engine._calibration_failed is True
 
 
 def test_calibrate_realtime_skips_cpu_without_frames():

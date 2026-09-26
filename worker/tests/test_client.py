@@ -808,6 +808,100 @@ def test_heartbeat_carries_live_frame_p95():
     asyncio.run(scenario())
 
 
+def test_heartbeat_retries_after_a_failed_gpu_sample(caplog, monkeypatch):
+    # A one-off failure inside the heartbeat body must not end the task
+    # silently: the backend would see the worker as stale (issue #498).
+    import time
+
+    samples = 0
+
+    def flaky_gpu(device):
+        nonlocal samples
+        samples += 1
+        if samples == 1:
+            raise RuntimeError("collector exploded")
+        return {}
+
+    monkeypatch.setattr("worker.client.sample_gpu", flaky_gpu)
+
+    class SilentSocket(RecordingSocket):
+        # No API messages: the connection stays open until the test releases
+        # it, so every sample_gpu call belongs to a heartbeat.
+        def __init__(self):
+            super().__init__([])
+            self.release = asyncio.Event()
+
+        async def __anext__(self):
+            await self.release.wait()
+            raise StopAsyncIteration
+
+    socket = SilentSocket()
+
+    async def scenario():
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-hb-retry", heartbeat_seconds=0.01),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        heartbeats = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            for message in socket.sent:
+                if isinstance(message, str):
+                    payload = json.loads(message)
+                    if payload.get("type") == "heartbeat":
+                        heartbeats.append(payload)
+            if len(heartbeats) >= 2:
+                break
+            await asyncio.sleep(0.005)
+        assert len(heartbeats) >= 2, "no second heartbeat after the failed sample"
+        socket.release.set()
+        await task
+
+    asyncio.run(scenario())
+    assert "heartbeat failed; the next one retries" in caplog.text
+
+
+def test_heartbeat_ends_on_a_closed_socket(monkeypatch):
+    # A closed socket is not retryable: the reader loop dies with it and
+    # run() reconnects, so the heartbeat task must stop sampling (issue #498).
+    samples = 0
+
+    def counting_gpu(device):
+        nonlocal samples
+        samples += 1
+        return {}
+
+    monkeypatch.setattr("worker.client.sample_gpu", counting_gpu)
+
+    class ClosedSocket(RecordingSocket):
+        def __init__(self):
+            super().__init__([])
+            self.release = asyncio.Event()
+
+        async def send(self, data):
+            if isinstance(data, str) and json.loads(data).get("type") == "heartbeat":
+                raise websockets.ConnectionClosedError(rcvd=None, sent=None)
+            await super().send(data)
+
+        async def __anext__(self):
+            await self.release.wait()
+            raise StopAsyncIteration
+
+    socket = ClosedSocket()
+
+    async def scenario():
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-hb-close", heartbeat_seconds=0.01),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        # A live loop would sample roughly 100 times over one second; a task
+        # that ended on the closed socket sampled exactly once.
+        await asyncio.sleep(1)
+        assert samples == 1
+        socket.release.set()
+        await task
+
+    asyncio.run(scenario())
+
+
 def _realtime_manifest(model_id, steps_default):
     return Manifest(
         id=model_id, name=model_id,
@@ -1037,6 +1131,24 @@ def test_warmup_calibrates_the_manifest_declaring_default(order):
     asyncio.run(warmup_realtime(engine, manifests, 1))
     assert engine.calibrated[0] == "chosen"
     assert set(engine.calibrated) == {"chosen", "plain"}
+
+
+def test_warmup_retries_after_a_failed_calibration():
+    """A failed calibration leaves 0 slots, which alone would read as measured
+    and skip every later warmup; the failure flag makes the reconnect retry."""
+    engine = WarmupEngine()
+    engine._calibrated_slots = 0
+    engine._calibration_failed = True
+    asyncio.run(warmup_realtime(engine, [realtime_manifest("only", default=True)], 1))
+    assert engine.calibrated == ["only"]
+    assert engine._calibration_failed is False
+
+
+def test_warmup_skips_a_measured_engine():
+    engine = WarmupEngine()
+    engine._calibrated_slots = 0
+    asyncio.run(warmup_realtime(engine, [realtime_manifest("only", default=True)], 1))
+    assert engine.calibrated == []
 
 
 def test_warmup_without_a_declared_default_picks_the_first_candidate():
