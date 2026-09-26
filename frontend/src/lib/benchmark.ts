@@ -205,3 +205,21 @@ export function categoryLineSeries(
 	}));
 	return { categories, series };
 }
+
+// The sessions API is admin only. An empty auth_methods list is AUTH_MODE=none,
+// whose implicit local user is an admin; without a CSRF cookie nobody is signed
+// in, so asking could only answer 401.
+export function mayReadSessions({
+	authMethods,
+	hasCsrf,
+	role
+}: {
+	authMethods: string[] | null;
+	hasCsrf: boolean;
+	role: string | null;
+}): boolean {
+	if (authMethods === null) return false;
+	if (authMethods.length === 0) return true;
+	if (!hasCsrf) return false;
+	return role === 'admin';
+}

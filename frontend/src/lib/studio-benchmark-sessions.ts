@@ -25,8 +25,8 @@ function sessionLabel(createdAt: string): string {
 	});
 }
 
-export async function loadBenchmarkSessions(): Promise<BenchmarkSession[]> {
-	if (!landing) {
+export async function loadBenchmarkSessions(allowApi = true): Promise<BenchmarkSession[]> {
+	if (!landing && allowApi) {
 		try {
 			const response = await fetch('/api/v1/benchmark/sessions');
 			if (response.ok) {
