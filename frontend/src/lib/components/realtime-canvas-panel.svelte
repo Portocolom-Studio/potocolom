@@ -4,6 +4,7 @@
 	// protocol. The session lifecycle lives in $lib/realtime-canvas; this panel
 	// keeps the bitmap DOM and drawing controls.
 	import { t } from '$lib/i18n.svelte';
+	import { loginSearchFor } from '$lib/auth-flow';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -658,7 +659,9 @@
 							{t(notice)}
 							{#if notice === 'app.realtime_canvas.session_revoked'}
 								{' '}
-								<a class="text-foreground underline underline-offset-4" href={resolve('/login')}
+								<a
+									class="text-foreground underline underline-offset-4"
+									href={`${resolve('/login')}${loginSearchFor('?view=realtime_canvas')}`}
 									>{t('app.realtime_canvas.sign_in_again')}</a
 								>
 							{/if}

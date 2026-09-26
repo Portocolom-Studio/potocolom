@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from json import loads
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -241,10 +241,29 @@ async def exchange(provider: str, code: str, verifier: str, nonce: str,
 
 
 FLOW_COOKIE = "potocolom_oauth"
+RETURN_COOKIE = "potocolom_oauth_return"
 
 
 def _flow_cookie_name(settings: Settings) -> str:
     return f"__Host-{FLOW_COOKIE}" if sessions.is_secure(settings.public_url) else FLOW_COOKIE
+
+
+def _return_cookie_name(settings: Settings) -> str:
+    return (f"__Host-{RETURN_COOKIE}"
+            if sessions.is_secure(settings.public_url) else RETURN_COOKIE)
+
+
+def studio_search(next_: str | None) -> str:
+    # Strict on purpose: the value comes from the address bar and ends in a redirect Location.
+    if not next_ or not next_.startswith("/app"):
+        return ""
+    if "\\" in next_ or any(ord(ch) < 32 or ord(ch) == 127 for ch in next_):
+        return ""
+    parsed = urlsplit(next_)
+    if parsed.scheme or parsed.netloc or parsed.path != "/app":
+        return ""
+    rebuilt = urlencode(parse_qsl(parsed.query, keep_blank_values=True))
+    return f"?{rebuilt}" if rebuilt else ""
 
 
 def _bind_to_browser(response: Response, state: str, settings: Settings) -> None:
@@ -270,10 +289,24 @@ def _started_here(request: Request, state: str, settings: Settings) -> bool:
 
 
 @router.get("/api/v1/auth/redirect/{provider}")
-async def redirect(provider: str) -> Response:
+async def redirect(provider: str, next: str | None = None) -> Response:
     target, state = await _start(provider, None)
+    settings = get_settings()
     response = RedirectResponse(target, status_code=307)
-    _bind_to_browser(response, state, get_settings())
+    _bind_to_browser(response, state, settings)
+    search = studio_search(next)
+    if search:
+        response.set_cookie(
+            _return_cookie_name(settings), quote(search, safe=""), path="/",
+            samesite="lax", secure=sessions.is_secure(settings.public_url),
+            httponly=True, max_age=int(FLOW_TTL.total_seconds()),
+        )
+    else:
+        # An abandoned flow's cookie outlives it by up to FLOW_TTL, and this
+        # sign-in asked to return nowhere in particular.
+        response.delete_cookie(_return_cookie_name(settings), path="/",
+                               samesite="lax", secure=sessions.is_secure(settings.public_url),
+                               httponly=True)
     return response
 
 
@@ -304,17 +337,23 @@ async def callback(provider: str, state: str, code: str, request: Request) -> Re
     except ProviderRefused as refused:
         raise REFUSED from refused
     if flow.link_user_id is None:
-        response = await _sign_in(provider, identity, settings, request)
+        presented = request.cookies.get(_return_cookie_name(settings))
+        search = studio_search("/app" + unquote(presented)) if presented else ""
+        response = await _sign_in(provider, identity, settings, request, search=search)
     else:
         response = await _link(provider, identity, flow.link_user_id, settings, request)
     response.delete_cookie(_flow_cookie_name(settings), path="/",
+                           samesite="lax", secure=sessions.is_secure(settings.public_url),
+                           httponly=True)
+    response.delete_cookie(_return_cookie_name(settings), path="/",
                            samesite="lax", secure=sessions.is_secure(settings.public_url),
                            httponly=True)
     return response
 
 
 async def _sign_in(provider: str, identity: ProviderIdentity,
-                   settings: Settings, request: Request) -> Response:
+                   settings: Settings, request: Request,
+                   search: str = "") -> Response:
     """Matches a linked identity only. There is no lookup by address here."""
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -347,10 +386,16 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
         # sent back to a page that can ask for the code. Answering with
         # JSON would leave the person looking at raw JSON with nowhere to
         # type it.
+        redirect_to = f"{settings.public_url.rstrip('/')}/login?totp=required"
+        if search:
+            redirect_to += "&next=" + quote("/app" + search, safe="")
         return await factors.begin_challenge(
-            user, remember_me=False,
-            redirect_to=f"{settings.public_url.rstrip('/')}/login?totp=required")
-    response = RedirectResponse(settings.public_url, status_code=307)
+            user, remember_me=False, redirect_to=redirect_to)
+    if search:
+        response = RedirectResponse(
+            f"{settings.public_url.rstrip('/')}/app{search}", status_code=307)
+    else:
+        response = RedirectResponse(settings.public_url, status_code=307)
     issue_session(response, issued)
     return response
 
