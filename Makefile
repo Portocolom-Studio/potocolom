@@ -302,8 +302,11 @@ verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less 
 		fi; \
 	done; \
 	cp "$(CURDIR)/deploy/compose/.env.example" "$$tmp/.env"; \
+	mkdir -p "$$tmp/docker-bin"; \
+	printf '#!/bin/sh\n[ "$$1" = info ] && exit 0\nexit 1\n' > "$$tmp/docker-bin/docker"; \
+	chmod +x "$$tmp/docker-bin/docker"; \
+	PATH="$$tmp/docker-bin:$$PATH" \
 	ENV_FILE="$$tmp/.env" ENV_EXAMPLE="$(CURDIR)/deploy/compose/.env.example" \
-		PGDATA_VOLUME_OVERRIDE="potocolom-verify-guards-no-such-volume" \
 		bash "$(CURDIR)/scripts/ensure-env.sh" >/dev/null; \
 	if ! grep -q '^FLEET_SECRET=.\+' "$$tmp/.env"; then \
 		echo 'error: ensure-env.sh left FLEET_SECRET empty.' >&2; \

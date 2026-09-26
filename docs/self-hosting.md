@@ -124,9 +124,9 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   example's `change-me` database password is rotated only when Docker answers
   and no database volume exists yet, because Postgres reads that password once,
   when it creates the volume; otherwise preflight warns and prints the
-  `ALTER ROLE` command to change it. It
-  prints `FLEET_SECRET` once. Copy that value to a worker on another
-  machine. Non-empty keys in an existing `.env` are left alone.
+  `ALTER ROLE` command to change it. It prints `FLEET_SECRET` once. Copy
+  that value to a worker on another machine. Non-empty keys in an existing
+  `.env` are left alone.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with

@@ -2,7 +2,7 @@
 # Create deploy/compose/.env from the example when missing, and fill empty
 # POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty value, except
 # the example's own POSTGRES_PASSWORD placeholder before any database exists.
-# ENV_FILE / ENV_EXAMPLE / PGDATA_VOLUME_OVERRIDE override defaults (verify-guards).
+# ENV_FILE / ENV_EXAMPLE override paths (verify-guards).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -88,13 +88,9 @@ database_state() {
 	fi
 	local project candidates=() name
 	project="$(env_value COMPOSE_PROJECT_NAME)"
-	if [[ -n "${PGDATA_VOLUME_OVERRIDE:-}" ]]; then
-		candidates=("$PGDATA_VOLUME_OVERRIDE")
-	else
-		for name in "${COMPOSE_PROJECT_NAME:-}" "$project" compose potocolom-smoke; do
-			[[ -n "$name" ]] && candidates+=("${name}_pgdata")
-		done
-	fi
+	for name in "${COMPOSE_PROJECT_NAME:-}" "$project" compose potocolom-smoke; do
+		[[ -n "$name" ]] && candidates+=("${name}_pgdata")
+	done
 	for name in "${candidates[@]}"; do
 		if docker volume inspect "$name" >/dev/null 2>&1; then
 			echo "$name"
