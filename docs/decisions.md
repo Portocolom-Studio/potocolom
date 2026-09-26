@@ -1645,6 +1645,24 @@ The cap is a constant, `MAX_REALTIME_SESSIONS_PER_USER`, not a setting: nobody h
 
 Rejected alternatives: no cap, relying on idle release alone, which leaves the drawing-socket exhaustion open; a per-IP cap, which one NAT or one proxy turns into a cap for a whole office while an attacker with several addresses walks past it; a cap of one, which refuses the ordinary second tab; a new close code for the refusal, which every client would have to learn for no behaviour it can take beyond what 4003 with a reason already gives.
 
+## CI runs on the self-hosted runner, and the fork approval gate is the control
+
+Supersedes the self-hosted GPU runner rejection in "Worker testing without GPUs: tiny model on CPU in CI", which turned one down for its standing cost and for being a security-sensitive surface for PRs from forks. Every workflow now runs on the maintainer's desktop (`runs-on: [self-hosted, Linux, X64, potocolom]` in all seven files under `.github/workflows/`), because hosted minutes ran out. No job needs the GPU; the runner is the desktop, not the card.
+
+The surface that entry named is real. A `pull_request` run checks out the PR branch and executes its code, and the workflow file itself comes from the PR, so a fork can rewrite any `if:` or `runs-on:` guard the repository adds, and every job runs PR-controlled `make` targets or scripts anyway. The runner user is in the `docker` group, which is root on that machine, and `deploy.yml` builds and runs containers from the PR's Dockerfiles. The only control that acts before a fork's code runs is GitHub's fork pull request approval, set to require approval for all external contributors, and the maintainer reads the changes to `.github/`, `Makefile`, `scripts/`, `deploy/` and every Dockerfile before approving a run.
+
+Revisit when outside contributions become regular: then fork PRs move to hosted runners, which are free for a public repository, or the runner moves to a user without the `docker` group or into a VM.
+
+Rejected alternatives: routing fork PRs to `ubuntu-latest` or skipping them with an `if:` expression in the workflow files, both of which the fork's own copy of the file removes, and the skip shows a skipped check that reads as passing; the first-time-contributors approval policy, which lets anyone with one merged PR run on the desktop unreviewed from then on; a separate runner user or a VM now, which is real effort on a desktop with four runners and limits the damage of a run it does not prevent.
+
+## A fleet secret holder is a trusted fleet member until per-worker tokens exist
+
+Records the boundary that "Fleet token verification: static shared secret first, signed tokens with the cloud" implies, because one security audit read it as a defect (issue #527). `FLEET_SECRET` is the boundary. Every holder of it is a member of the fleet: a worker that registers with it is dispatched any queued job for a model it advertises, with the prompt and a source-image address that lives 900 seconds, and a realtime session for it receives canvas frames. It can also rewrite the history row of a model id it announces, which relabels usage events. What it cannot do is change the catalog the studio lists: that comes from the manifests of connected workers, not from the rows. Refusing a second worker under a connected id and auditing every registration with its peer address and model ids (PR #572) make a rogue registration visible; they do not stop one.
+
+Nothing the open repository can check separates a hostile holder of the secret from a real worker, because every worker holds the same value. Per-worker signed tokens are that check, and the entry above places them with the cloud autoscaler (#225). On a self-hosted install the secret belongs on machines the administrator would trust with every user's prompts, which `docs/self-hosting.md` says.
+
+Rejected alternatives: administrator approval of new model ids before they become listable and dispatchable, which blocks surprise model ids but not the exposure, since a hostile worker advertises a model already approved and wins jobs on load; approval of worker identities, which costs an approval per restart while ids are random per process and stops nothing once ids are stable, because an id is a claim everyone with the secret can make; keeping existing model rows immutable, which trades a low-severity relabelling for manifests whose upgrades never reach their row.
+
 Chosen as conventional defaults rather than debated decisions:
 
 - PostgreSQL with SQLAlchemy and Alembic migrations. One database engine in every mode; docker compose makes it trivial for self-hosters.

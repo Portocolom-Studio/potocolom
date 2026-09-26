@@ -135,6 +135,9 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
   The error names `scripts/preflight.sh`. An existing install that still has
   an empty `FLEET_SECRET` will fail to start until that file is filled.
 - Origin check stays. Signed cloud tokens remain issue #225.
+- Give `FLEET_SECRET` only to machines you would trust with every user's
+  prompts: any worker holding it is dispatched jobs for the models it
+  announces, with their prompts and source images.
 - Models are JSON manifests in the `models` volume, seeded from
   `worker/models/` on first boot. Add or edit manifests in the volume (or
   rebuild the image) and restart the worker; see
