@@ -198,6 +198,29 @@ def test_an_account_that_never_left_cannot_be_restored(library):
 
 
 @pytest.mark.db
+def test_a_restore_during_the_purge_is_refused(library):
+    """Once the purge claims the account it deletes it regardless, so a
+    restore then must not answer success."""
+    from app import deletion
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "purging@example.com")
+        _admin(client)
+
+        async def claimed_by_the_purge() -> None:
+            async with db.session_factory() as session:
+                await deletion.request(session, user.id)
+                await session.execute(
+                    text("UPDATE users SET state = 'purging' WHERE id = :id"), {"id": user.id})
+                await session.commit()
+
+        client.portal.call(claimed_by_the_purge)
+        answer = client.post(f"/api/v1/users/{user.id}/restore", headers=_csrf(client))
+        assert answer.status_code == 409
+        assert client.portal.call(_state_of, user.id) == "purging"
+
+
+@pytest.mark.db
 def test_the_sweep_waits_out_the_window_before_it_purges(library):
     from app import deletion
 

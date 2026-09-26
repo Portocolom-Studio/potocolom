@@ -195,6 +195,31 @@ def test_a_callback_without_a_flow_of_ours_is_refused(accounts):
 
 
 @pytest.mark.db
+def test_a_planted_non_ascii_flow_cookie_is_refused_not_a_500(accounts):
+    """Cookies decode as latin-1, and compare_digest raises on a non-ASCII
+    str, so the check itself must not be what fails."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        state = _start(client)
+        client.cookies.clear()
+        # Raw bytes, as a browser sends them: httpx refuses a non-ASCII str.
+        planted = ("__Host-potocolom_oauth=\u00e9" + state).encode("latin-1")
+        answer = client.get("/api/v1/auth/callback/google",
+                            params={"state": state, "code": "provider-code"},
+                            headers={"cookie": planted}, follow_redirects=False)
+        assert answer.status_code == 403
+
+
+@pytest.mark.db
+def test_a_non_ascii_state_is_refused_not_a_500(accounts):
+    """The query is the other operand of the same comparison."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        _start(client)
+        answer = client.get("/api/v1/auth/callback/google?state=%E9&code=provider-code",
+                            follow_redirects=False)
+        assert answer.status_code == 403
+
+
+@pytest.mark.db
 def test_a_state_from_one_provider_cannot_be_spent_at_another(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         state = _start(client, "google")

@@ -220,6 +220,11 @@ async def restore(
                 raise HTTPException(
                     status_code=409,
                     detail=f"that account passed its {RESTORE_WINDOW_DAYS} day restore window")
+            if target.state == "purging":
+                # The purge has claimed the account and deletes it whatever
+                # this answers, so success here would mean the opposite.
+                raise HTTPException(
+                    status_code=409, detail="that account is already being deleted")
             if target.state != "deletion_pending":
                 if target.deletion_requested_at is None:
                     raise HTTPException(
