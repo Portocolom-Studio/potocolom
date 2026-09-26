@@ -37,7 +37,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 | Method and path | Status | Purpose |
 |---|---|---|
-| GET `/api/v1/health` | implemented | process liveness for the load balancer |
+| GET, HEAD `/api/v1/health` | implemented | process liveness for the load balancer; HEAD answers the same with no body, for probes |
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
@@ -108,7 +108,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 ## Implemented endpoints
 
-### GET /api/v1/health
+### GET and HEAD /api/v1/health
 
 Answers from process state only, so a database incident cannot convince the load balancer to kill healthy tasks.
 
@@ -214,6 +214,8 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              "has_derivatives" for stable client layout; cursor paging.
                              ?limit defaults to 50 and is capped at 200 (5000 with
                              ?fields=ids); a limit below 1 answers 422.
+                             ?state=queued|running|succeeded|failed|cancelled keeps only jobs
+                             in that state.
                              ?starred=true uses starred_at newest-first; false excludes favorites.
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
