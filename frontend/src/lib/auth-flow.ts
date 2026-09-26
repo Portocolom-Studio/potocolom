@@ -40,6 +40,22 @@ export function accountCheckForcesLogin(status: number | null): boolean {
 	return status === 401;
 }
 
+export function loginSearchFor(appSearch: string): string {
+	if (appSearch === '' || appSearch === '?') return '';
+	return '?next=' + encodeURIComponent('/app' + appSearch);
+}
+
+// Strict on purpose: the value comes from the address bar and later travels
+// through a redirect, so only a same-origin /app address may be returned to.
+export function studioReturnSearch(next: string | null): string {
+	if (!next) return '';
+	if (!next.startsWith('/app')) return '';
+	if (next.includes('\\')) return '';
+	const url = new URL(next, 'http://origin.invalid');
+	if (url.origin !== 'http://origin.invalid' || url.pathname !== '/app') return '';
+	return url.search;
+}
+
 export function createSubmitGuard() {
 	let busy = false;
 

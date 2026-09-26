@@ -8,7 +8,7 @@
 	import { apiFetch } from '$lib/api';
 	import { account } from '$lib/account.svelte';
 	import { openViewFor, parseAccount } from '$lib/account-display';
-	import { accountCheckForcesLogin } from '$lib/auth-flow';
+	import { accountCheckForcesLogin, loginSearchFor } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import GeneratePanel from '$lib/components/generate-panel.svelte';
 	import LineageCanvas from '$lib/components/lineage-canvas.svelte';
@@ -79,7 +79,7 @@
 		if (cancelled) return;
 		if (accountCheckForcesLogin(status)) {
 			// replaceState so Back from the sign-in page does not bounce here.
-			await goto(resolve('/login'), { replaceState: true });
+			await goto(`${resolve('/login')}${loginSearchFor(page.url.search)}`, { replaceState: true });
 			return;
 		}
 		checkingAccount = false;

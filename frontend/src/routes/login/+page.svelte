@@ -18,6 +18,7 @@
 		parseAuthError,
 		resetJustHappened,
 		shouldShowChallenge,
+		studioReturnSearch,
 		type AuthView
 	} from '$lib/auth-flow';
 	import BrandMark from '$lib/components/brand-mark.svelte';
@@ -74,7 +75,9 @@
 					body: JSON.stringify({ email, password, remember_me: rememberMe })
 				});
 				if (response.status === 204) {
-					await goto(resolve('/app'), { replaceState: true });
+					await goto(`${resolve('/app')}${studioReturnSearch(page.url.searchParams.get('next'))}`, {
+						replaceState: true
+					});
 					return;
 				}
 				if (response.status === 200) {
@@ -107,7 +110,9 @@
 					body: JSON.stringify({ code })
 				});
 				if (response.status === 204) {
-					await goto(resolve('/app'), { replaceState: true });
+					await goto(`${resolve('/app')}${studioReturnSearch(page.url.searchParams.get('next'))}`, {
+						replaceState: true
+					});
 					return;
 				}
 				const parsed = await parseAuthError(response);
