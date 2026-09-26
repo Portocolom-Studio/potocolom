@@ -7,6 +7,13 @@
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
 	import { openMetrics, studio } from '$lib/studio.svelte';
+	import { account } from '$lib/account.svelte';
+	import { sectionNeeds } from '$lib/account-display';
+
+	const usageNeeds = $derived(sectionNeeds('metrics_usage', account.current?.role ?? null));
+	const benchmarksNeeds = $derived(
+		sectionNeeds('metrics_benchmarks', account.current?.role ?? null)
+	);
 </script>
 
 <Collapsible.Root open class="group/collapsible">
@@ -15,10 +22,19 @@
 			<Sidebar.MenuButton
 				tooltipContent={t('app.shell.metrics')}
 				isActive={studio.shellView === 'metrics'}
-				onclick={() => openMetrics(studio.metricsTab)}
+				class="pr-14"
+				aria-disabled={usageNeeds !== null && benchmarksNeeds !== null}
+				onclick={() => {
+					if (usageNeeds === null || benchmarksNeeds === null) openMetrics(studio.metricsTab);
+				}}
 			>
 				<BarChart3Icon />
 				<span>{t('app.shell.metrics')}</span>
+				{#if usageNeeds !== null && benchmarksNeeds !== null}
+					<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+						{t('app.gen.admins_only')}
+					</span>
+				{/if}
 			</Sidebar.MenuButton>
 			<Collapsible.Trigger>
 				{#snippet child({ props: triggerProps })}
@@ -37,9 +53,22 @@
 							isActive={studio.shellView === 'metrics' && studio.metricsTab === 'usage'}
 						>
 							{#snippet child({ props })}
-								<button type="button" {...props} onclick={() => openMetrics('usage')}>
+								<button
+									type="button"
+									{...props}
+									disabled={usageNeeds !== null}
+									aria-disabled={usageNeeds !== null}
+									onclick={() => {
+										if (usageNeeds === null) openMetrics('usage');
+									}}
+								>
 									<GaugeIcon />
 									<span>{t('app.metrics.tab_usage')}</span>
+									{#if usageNeeds !== null}
+										<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+											{t('app.gen.admins_only')}
+										</span>
+									{/if}
 								</button>
 							{/snippet}
 						</Sidebar.MenuSubButton>
@@ -49,9 +78,22 @@
 							isActive={studio.shellView === 'metrics' && studio.metricsTab === 'benchmarks'}
 						>
 							{#snippet child({ props })}
-								<button type="button" {...props} onclick={() => openMetrics('benchmarks')}>
+								<button
+									type="button"
+									{...props}
+									disabled={benchmarksNeeds !== null}
+									aria-disabled={benchmarksNeeds !== null}
+									onclick={() => {
+										if (benchmarksNeeds === null) openMetrics('benchmarks');
+									}}
+								>
 									<LineChartIcon />
 									<span>{t('app.metrics.tab_benchmarks')}</span>
+									{#if benchmarksNeeds !== null}
+										<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+											{t('app.gen.admins_only')}
+										</span>
+									{/if}
 								</button>
 							{/snippet}
 						</Sidebar.MenuSubButton>

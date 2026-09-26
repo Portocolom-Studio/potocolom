@@ -21,3 +21,38 @@ export function accountInitial(email: string): string {
 export function accountRoleLabelKey(role: Role): (typeof roleLabelKeys)[Role] {
 	return roleLabelKeys[role];
 }
+
+export type GatedSection =
+	| 'generate'
+	| 'image_to_image'
+	| 'upscale'
+	| 'edit_image'
+	| 'image_to_text'
+	| 'realtime_canvas'
+	| 'metrics_usage'
+	| 'metrics_benchmarks'
+	| 'models'
+	| 'images';
+
+const sectionNeededRoles = {
+	generate: 'user',
+	image_to_image: 'user',
+	upscale: 'user',
+	edit_image: 'user',
+	image_to_text: 'user',
+	realtime_canvas: 'user',
+	metrics_usage: 'admin',
+	metrics_benchmarks: 'admin',
+	models: null,
+	images: null
+} as const satisfies Record<GatedSection, 'user' | 'admin' | null>;
+
+// A null role (no account, or AUTH_MODE=none's implicit local admin) marks
+// nothing: there is nothing to be locked out of.
+export function sectionNeeds(section: GatedSection, role: Role | null): 'user' | 'admin' | null {
+	if (role === null) return null;
+	const needs = sectionNeededRoles[section];
+	if (needs === null) return null;
+	if (needs === 'user') return role === 'viewer' ? 'user' : null;
+	return role === 'admin' ? null : 'admin';
+}

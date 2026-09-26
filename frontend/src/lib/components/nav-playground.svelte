@@ -17,6 +17,10 @@
 		openPlayground,
 		filterTextToImageModels
 	} from '$lib/studio.svelte';
+	import { account } from '$lib/account.svelte';
+	import { sectionNeeds } from '$lib/account-display';
+
+	const workspaceNeeds = $derived(sectionNeeds('generate', account.current?.role ?? null));
 
 	// Most recent distinct prompts; clicking one refills the form.
 	const prompts = $derived.by(() => {
@@ -75,6 +79,9 @@
 						<SquareTerminalIcon />
 						<span>{t('app.shell.workspace')}</span>
 					</Sidebar.MenuButton>
+					{#if workspaceNeeds !== null}
+						<Sidebar.MenuBadge>{t('app.gen.members_only')}</Sidebar.MenuBadge>
+					{/if}
 					<Collapsible.Trigger>
 						{#snippet child({ props: triggerProps })}
 							<Sidebar.MenuAction {...triggerProps}>
@@ -129,7 +136,10 @@
 																	type="button"
 																	{...props}
 																	title={model.name}
+																	disabled={workspaceNeeds !== null}
+																	aria-disabled={workspaceNeeds !== null}
 																	onclick={() => {
+																		if (workspaceNeeds !== null) return;
 																		openPlayground();
 																		studio.modelId = model.id;
 																	}}
@@ -188,7 +198,10 @@
 																		props.class as string | undefined
 																	)}
 																	title={prompt}
+																	disabled={workspaceNeeds !== null}
+																	aria-disabled={workspaceNeeds !== null}
 																	onclick={() => {
+																		if (workspaceNeeds !== null) return;
 																		openPlayground();
 																		studio.prompt = prompt;
 																	}}
@@ -239,7 +252,13 @@
 													<button
 														type="button"
 														title={generation.params.prompt}
+														class={workspaceNeeds !== null
+															? 'pointer-events-none opacity-50'
+															: undefined}
+														disabled={workspaceNeeds !== null}
+														aria-disabled={workspaceNeeds !== null}
 														onclick={() => {
+															if (workspaceNeeds !== null) return;
 															openPlayground();
 															studio.selectedId = generation.id;
 														}}
