@@ -37,7 +37,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 | Method and path | Status | Purpose |
 |---|---|---|
-| GET `/api/v1/health` | implemented | process liveness for the load balancer |
+| GET, HEAD `/api/v1/health` | implemented | process liveness for the load balancer; HEAD answers the same with no body, for probes |
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA |
 | WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
@@ -52,7 +52,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/generations/{id}/subtree` | implemented (#130) | bounded descendants and render data for one Images canvas tree |
 | GET `/api/v1/benchmark/sessions/*` | implemented | list and read durable benchmark sessions; admin only |
 | POST `/api/v1/benchmark/sessions` | implemented, `BENCHMARK_API`-gated | ingest a completed benchmark session; admin only |
-| GET `/api/v1/studio/gpu` | implemented | live GPU snapshot (util, VRAM, temperature, power) for the studio metrics panel; admin only |
+| GET `/api/v1/studio/gpu` | implemented | live GPU snapshot (util, VRAM, temperature, power) and loaded models for the studio metrics panel; admin only |
 | GET `/api/v1/metrics/gpu/history` | implemented | GPU telemetry over a time range (raw, or 5-minute rollups); admin only |
 | GET `/api/v1/benchmark/models` | implemented, `BENCHMARK_API`-gated | list benchmarkable models; admin only |
 | GET `/api/v1/benchmark/gpu` | implemented, `BENCHMARK_API`-gated | live GPU status from a connected worker; admin only |
@@ -108,7 +108,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 ## Implemented endpoints
 
-### GET /api/v1/health
+### GET and HEAD /api/v1/health
 
 Answers from process state only, so a database incident cannot convince the load balancer to kill healthy tasks.
 
@@ -158,6 +158,11 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
     "capabilities": ["text_to_image", "image_to_image"],
     "min_vram_gb": 10,
     "prompt_token_limit": 77,
+    "license_id": "stability-ai-community",
+    "license_url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md",
+    "commercial_max_revenue_usd": 1000000,
+    "license_registration_url": "https://stability.ai/community-license",
+    "requires_attribution": "Powered by Stability AI",
     "default": true,
     "benchmark_only": false,
     "studio_capabilities": null,
@@ -176,6 +181,8 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 ```
 
 `parameters` is JSON Schema; the frontend renders generic controls from it, which is what makes a newly dropped model usable without a frontend release. `capabilities` is the routing key (a job is matched to a model that has the requested capability). Upscale models additionally carry an `estimated_gpu_ms_by_factor` map (per scale factor). `benchmark_only` models are hidden from normal selection and exist for the benchmark harness. `prompt_token_limit` is the text encoder window the studio warns against (issue #148); 0 or absent means the model declared no window and no warning is shown. `studio_capabilities` is the subset of `capabilities` the studio offers; null when every capability is offered. On this endpoint it is informational only: the narrowing has already been applied to `capabilities`, so the two are identical whenever it is non-null, and a client should not filter on it again. `realtime_p95_ms` is the measured single-frame p95 for the model on this fleet, which the realtime picker labels models with; null until some worker has measured it. It is the median across the workers that hold the model and have measured it, each contributing its live heartbeat measurement or, until a heartbeat carries one, the calibration it declared at hello. A worker that would serve the model but has measured nothing contributes nothing, and the worker that serves a given session is not necessarily one that contributed.
+
+The five licence fields say what may be done with the model's weights. `license_id` is the licence's name (`apache-2.0`, `stability-ai-community`, `openrail++`); `license_url` points at the licence text. `commercial_max_revenue_usd` is the annual revenue at which commercial use needs a separate enterprise licence; null or absent means the licence sets no cap. `license_registration_url` is where a commercial user registers when the licence requires it. `requires_attribution` is the attribution string the studio renders beneath the model picker, empty when the licence demands none. All five are informational today and cross the wire for future cloud-side gating (decisions.md).
 
 <!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
 
@@ -205,6 +212,10 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed|cancelle
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
                              carrying opaque asset-ID URLs and "thumbnail_url", plus
                              "has_derivatives" for stable client layout; cursor paging.
+                             ?limit defaults to 50 and is capped at 200 (5000 with
+                             ?fields=ids); a limit below 1 answers 422.
+                             ?state=queued|running|succeeded|failed|cancelled keeps only jobs
+                             in that state.
                              ?starred=true uses starred_at newest-first; false excludes favorites.
                              ?roots_only=true returns source_asset_id IS NULL; false returns only
                              derivatives. Omit it for the existing unfiltered history. Cursors must
@@ -283,8 +294,11 @@ issue #19. A failed job after its single automatic retry stays `failed`.
 ### Studio, metrics, benchmark and local files
 
 ```
-GET /api/v1/studio/gpu                 admin only; {"gpu": {device, util_pct, vram_used_pct, vram_used_bytes,
+GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu": {device,
+                                        util_pct, vram_used_pct, vram_used_bytes,
                                         vram_total_bytes, temperature_c, power_w, available}}
+                                        loaded_models lists the model ids currently resident
+                                        on the connected worker's GPU; [] when it has none
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
@@ -299,8 +313,9 @@ POST /api/v1/benchmark/sessions       admin only; BENCHMARK_API-gated completed
                                         201 {"id": "..."}; 404 when the benchmark API is disabled;
                                         malformed reports return 422
 GET  /api/v1/benchmark/sessions       admin only; 200 newest-first install-scoped session summaries;
-                                        ?limit defaults to 50 and is capped at 200; pass the last
-                                        session id as ?cursor to read the next page
+                                        ?limit defaults to 50 and is capped at 200; a limit below 1
+                                        answers 422; pass the last session id as ?cursor to read
+                                        the next page
 GET  /api/v1/benchmark/sessions/{id}  admin only; 200 full report in the existing results.json shape;
                                         404 for a missing session
 GET  /api/v1/telemetry/preview        admin only; 403 for viewer or user; 200 exact previous
@@ -421,6 +436,8 @@ POST   /api/v1/shared          {"token": "..."}
 - Creating a share needs the owner's session at the `user` role, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
 
 ### Account, export and deletion
+
+In `AUTH_MODE=none` every account route answers `404`: the routes are mounted in both modes and gated, which is what keeps a mode switch a configuration change rather than a different application.
 
 ```text
 GET    /api/v1/account            profile, plan (cloud), active sessions with created/last-used

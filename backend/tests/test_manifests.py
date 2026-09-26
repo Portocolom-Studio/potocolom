@@ -37,6 +37,26 @@ def test_validate_params_rejects_invalid_request():
     assert validate_params(manifest, {}) == "'prompt' is a required property"
 
 
+def test_validate_params_names_a_non_finite_number():
+    # NaN and Infinity are not a nesting problem, so the refusal has to say so
+    # rather than reuse the too-deeply-nested message (issue #508).
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters=SCHEMA)
+    for value in (float("nan"), float("inf"), float("-inf")):
+        message = validate_params(manifest, {"prompt": "x", "extra": value})
+        assert message is not None
+        assert "not finite" in message
+    assert validate_params(manifest, {"prompt": "x", "extra": {"nested": float("nan")}}) is not None
+
+
+def test_validate_param_update_names_a_non_finite_number():
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters=SUBSET_SCHEMA)
+    message = validate_param_update(manifest, {"steps": float("inf")})
+    assert message is not None
+    assert "not finite" in message
+
+
 def test_validate_param_update_accepts_a_subset_without_the_required_key():
     """An update carries a subset, so the open's required list must not bind."""
     manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],

@@ -604,8 +604,8 @@ def test_benchmark_input_bounds_its_int4_columns():
     # The params dict reaches JSONB unvalidated otherwise.
     try:
         MeasurementInput.model_validate({**measurement, "params": {"x": float("inf")}})
-    except pydantic.ValidationError:
-        pass
+    except pydantic.ValidationError as error:
+        assert "not finite" in str(error), "the refusal must say it is the number"
     else:
         raise AssertionError("a non-finite benchmark param was accepted")
 

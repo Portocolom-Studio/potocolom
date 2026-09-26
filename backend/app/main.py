@@ -180,9 +180,12 @@ async def validation_error(request: Request, error: RequestValidationError) -> R
 
 
 @app.get("/api/v1/health")
+@app.head("/api/v1/health")
 async def health() -> dict:
     # Answers from process state only: the load balancer must not be convinced
     # to kill healthy tasks during a database incident (docs/blueprint.md).
+    # The head decorator exists for the load-balancer probe; api_route with two
+    # methods would answer the same but registers one OpenAPI operation id.
     return {"status": "ok"}
 
 

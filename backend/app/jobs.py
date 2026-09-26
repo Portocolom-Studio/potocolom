@@ -555,9 +555,9 @@ def _filter_generations(
 
 @router.get("/api/v1/generations")
 async def list_generations(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1),
     cursor: uuid.UUID | None = None,
-    state: Literal["queued", "running", "succeeded", "failed"] | None = Query(default=None),
+    state: Literal["queued", "running", "succeeded", "failed", "cancelled"] | None = Query(default=None),
     starred: bool | None = Query(default=None),
     roots_only: bool | None = Query(default=None),
     q: str | None = Query(default=None),

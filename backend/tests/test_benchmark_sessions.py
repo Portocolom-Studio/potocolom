@@ -97,6 +97,23 @@ def test_benchmark_session_list_uses_cursor_paging(monkeypatch):
 
 
 @pytest.mark.db
+def test_benchmark_session_list_rejects_a_non_positive_limit():
+    # A non-positive limit is a caller bug, not a request to clamp to 1
+    # (issue #508); the upper clamp stays.
+    with TestClient(app) as client:
+        for limit in ("0", "-5"):
+            assert client.get(
+                "/api/v1/benchmark/sessions", params={"limit": limit}
+            ).status_code == 422
+        assert client.get(
+            "/api/v1/benchmark/sessions", params={"limit": 1}
+        ).status_code == 200
+        assert client.get(
+            "/api/v1/benchmark/sessions", params={"limit": 200}
+        ).status_code == 200
+
+
+@pytest.mark.db
 def test_benchmark_session_ingest_is_gated(monkeypatch):
     monkeypatch.delenv("BENCHMARK_API", raising=False)
     get_settings.cache_clear()

@@ -277,7 +277,7 @@ AUTH_MODE = "none"       # auth_methods == []; every request is the one implicit
 AUTH_MODE = "accounts"   # auth_methods == ["password", *configured_providers]
 ```
 
-The routes do not move between modes. Every account route is mounted in both and answers `404` in `none`, which is what keeps a mode switch a configuration change rather than a different application.
+The routes do not move between modes. Every account route is mounted in both and answers `404` in `none` once its body parses (a body that fails to parse is refused `422` before the route runs), which is what keeps a mode switch a configuration change rather than a different application.
 
 ## Scheduler
 

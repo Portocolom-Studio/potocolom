@@ -12,6 +12,17 @@ def test_health():
     assert response.json() == {"status": "ok"}
 
 
+def test_health_answers_head():
+    # The load-balancer probe is a HEAD, not a GET (docs/api.md).
+    response = client.head("/api/v1/health")
+    assert response.status_code == 200
+
+
+def test_head_is_not_every_get_route():
+    # Only the health route takes HEAD; the rest keep the framework's 405.
+    assert client.head("/api/v1/config").status_code == 405
+
+
 def test_config_defaults():
     response = client.get("/api/v1/config")
     assert response.status_code == 200

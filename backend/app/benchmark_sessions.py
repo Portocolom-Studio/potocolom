@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db
 from app.auth import require_role
 from app.settings import get_settings
-from app.manifests import json_finite
+from app.manifests import json_finite, json_non_finite
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
 
 router = APIRouter()
@@ -42,6 +42,8 @@ class MeasurementInput(BaseModel):
     def _params_are_storable(cls, value: dict) -> dict:
         # This dict goes to a JSONB column unvalidated otherwise, and jsonb
         # rejects the NaN and Infinity json.loads accepts.
+        if json_non_finite(value):
+            raise ValueError("params contain a number that is not finite (NaN or Infinity)")
         if not json_finite(value):
             raise ValueError(
                 "params are too deeply nested or contain a value JSON storage cannot hold"
@@ -187,7 +189,7 @@ async def create_benchmark_session(
 
 @router.get("/api/v1/benchmark/sessions")
 async def list_benchmark_sessions(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1),
     cursor: uuid.UUID | None = None,
     _user: User = Depends(require_role("admin")),
     session: AsyncSession = Depends(db.get_session),
