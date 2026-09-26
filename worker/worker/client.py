@@ -195,7 +195,8 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                           configured_slots: int) -> None:
     """Load and time every remaining realtime model before hello.
 
-    Reconnects reuse a warm engine, so calibration is a no-op once slots are set.
+    Reconnects reuse a warm engine, so calibration is a no-op once slots are set,
+    unless the last pass failed, when the reconnect measures again.
     DiffusersEngine only: the simulated engine has nothing to time. The default
     is warmed first so the studio's preselected model is not the extra cold
     load; the rest of the realtime set is still calibrated so admission cost
@@ -203,8 +204,10 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     """
     if configured_slots <= 0 or not hasattr(engine, "torch_compile"):
         return
-    if getattr(engine, "_calibrated_slots", None) is not None:
+    if (getattr(engine, "_calibrated_slots", None) is not None
+            and not getattr(engine, "_calibration_failed", False)):
         return
+    setattr(engine, "_calibration_failed", False)
     wire = engine.measured_manifests(manifests)
     live_ids = {
         item["id"] for item in wire if "realtime" in item.get("capabilities", [])
@@ -801,18 +804,31 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
-            gpu = await asyncio.to_thread(sample_gpu, settings.device)
-            await ws.send(json.dumps({
-                "type": "heartbeat",
-                "slots_in_use": sessions.active_count,
-                "loaded_models": engine.loaded_models(),
-                "gpu": gpu,
-                # The API overwrites the calibration estimate with these,
-                # for every model the engine has measured; residency is
-                # irrelevant to a past measurement, so an evicted model
-                # keeps reporting its number.
-                "frame_p95_ms": frame_p95_payload(engine),
-            }))
+            try:
+                gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                await ws.send(json.dumps({
+                    "type": "heartbeat",
+                    "slots_in_use": sessions.active_count,
+                    "loaded_models": engine.loaded_models(),
+                    "gpu": gpu,
+                    # The API overwrites the calibration estimate with these,
+                    # for every model the engine has measured; residency is
+                    # irrelevant to a past measurement, so an evicted model
+                    # keeps reporting its number.
+                    "frame_p95_ms": frame_p95_payload(engine),
+                }))
+            except asyncio.CancelledError:
+                raise
+            except websockets.ConnectionClosed:
+                # The reader loop dies on a closed socket too and run()
+                # reconnects; this is the one failure that must end the task.
+                raise
+            except Exception:
+                # websockets 16 raises a plain RuntimeError when sending on a
+                # socket that closed while this slept; the reader ends too.
+                if getattr(ws, "close_code", None) is not None:
+                    return
+                logger.exception("heartbeat failed; the next one retries")
 
     heartbeat_task = asyncio.create_task(heartbeats())
     try:

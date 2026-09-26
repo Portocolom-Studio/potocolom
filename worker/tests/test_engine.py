@@ -2183,7 +2183,10 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
 
     slots = asyncio.run(scenario())
     assert slots == 0
+    # Advertise nothing until a calibration succeeds, but say it failed, so
+    # the reconnect path tries again instead of reading 0 as a measurement.
     assert engine._calibrated_slots == 0
+    assert engine._calibration_failed is True
 
 
 def test_calibrate_realtime_skips_cpu_without_frames():
@@ -2763,6 +2766,30 @@ def test_calibrate_batch_curve_stops_at_the_bar():
     assert engine._calibrated_slots == 3
 
 
+def test_a_failed_batch_calibration_is_retried_on_reconnect():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine._calibration_cap = 4
+    engine._calibrated_slots = None
+    engine._calibration_failed = False
+    engine._realtime_p95_ms = {}
+    engine._realtime_batch_ms = {}
+    engine._gpu = asyncio.Lock()
+    manifest = _realtime_manifest()
+
+    async def single_frame_measured(calibrate, target, configured):
+        engine._realtime_p95_ms[target.id] = 139
+        return 3
+
+    engine._run_to_completion = single_frame_measured
+    engine._calibrate_batch_curve = AsyncMock(side_effect=RuntimeError("oom at 2"))
+
+    slots = asyncio.run(engine.calibrate_realtime(manifest, 4))
+
+    assert slots > 0
+    assert "vega-rt" not in engine._realtime_batch_ms
+    assert engine._calibration_failed is True
+
+
 def test_measure_batch_p95_uses_one_prompt_cache_per_session():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.frame = AsyncMock()
@@ -2804,6 +2831,9 @@ def test_calibrate_failure_does_not_zero_a_sibling():
     assert slots == 0
     assert engine._realtime_p95_ms == {"ok": 200}
     assert engine._calibrated_slots == 2
+    # A sibling's measurement stands, but the failed model is retried on the
+    # next reconnect.
+    assert engine._calibration_failed is True
 
 
 def test_frame_gpu_ms_includes_work_before_the_pipeline_call():
