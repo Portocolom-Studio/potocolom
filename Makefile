@@ -303,9 +303,14 @@ verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less 
 	done; \
 	cp "$(CURDIR)/deploy/compose/.env.example" "$$tmp/.env"; \
 	ENV_FILE="$$tmp/.env" ENV_EXAMPLE="$(CURDIR)/deploy/compose/.env.example" \
+		PGDATA_VOLUME="potocolom-verify-guards-no-such-volume" \
 		bash "$(CURDIR)/scripts/ensure-env.sh" >/dev/null; \
 	if ! grep -q '^FLEET_SECRET=.\+' "$$tmp/.env"; then \
 		echo 'error: ensure-env.sh left FLEET_SECRET empty.' >&2; \
+		exit 1; \
+	fi; \
+	if grep -qx 'POSTGRES_PASSWORD=change-me' "$$tmp/.env"; then \
+		echo 'error: ensure-env.sh kept the example POSTGRES_PASSWORD with no database volume.' >&2; \
 		exit 1; \
 	fi; \
 	exported=$$(awk '/: export DATABASE_URL/{print} /^[a-z].*\\$$/{line=line" "$$0}' "$(CURDIR)/Makefile" | tr -d '\\\\'); \
@@ -316,7 +321,7 @@ verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less 
 			exit 1; \
 		fi; \
 	done; \
-	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; every auth target shares the API database'
+	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; the example DB password is rotated; every auth target shares the API database'
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \
