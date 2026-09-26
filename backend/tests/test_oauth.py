@@ -210,6 +210,16 @@ def test_a_planted_non_ascii_flow_cookie_is_refused_not_a_500(accounts):
 
 
 @pytest.mark.db
+def test_a_non_ascii_state_is_refused_not_a_500(accounts):
+    """The query is the other operand of the same comparison."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        _start(client)
+        answer = client.get("/api/v1/auth/callback/google?state=%E9&code=provider-code",
+                            follow_redirects=False)
+        assert answer.status_code == 403
+
+
+@pytest.mark.db
 def test_a_state_from_one_provider_cannot_be_spent_at_another(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         state = _start(client, "google")

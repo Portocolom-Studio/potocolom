@@ -285,10 +285,10 @@ def _bind_to_browser(response: Response, state: str, settings: Settings) -> None
 
 def _started_here(request: Request, state: str, settings: Settings) -> bool:
     presented = request.cookies.get(_flow_cookie_name(settings), "")
-    # compare_digest raises TypeError on a non-ASCII str, and cookies decode
-    # as latin-1, so a planted value would 500 every callback. The state is
-    # token_urlsafe, so a non-ASCII cookie is simply not ours.
-    return (bool(presented) and presented.isascii()
+    # compare_digest raises TypeError on a non-ASCII str, and both the cookie
+    # and the state query arrive from the browser, so either could 500 every
+    # callback. The state is token_urlsafe, so a non-ASCII value is not ours.
+    return (bool(presented) and presented.isascii() and state.isascii()
             and secrets.compare_digest(presented, state))
 
 
