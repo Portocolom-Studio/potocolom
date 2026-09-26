@@ -265,7 +265,9 @@
 			{/snippet}
 		</Collapsible.Root>
 		<NavMetrics />
-		{#each placeholders as section (section.title)}
+		<!-- Keyed by position, not title: the locale restored after hydration renames
+		     every title, and a title key would then remount each collapsible mid-mount. -->
+		{#each placeholders as section, index (index)}
 			<Collapsible.Root class="group/collapsible">
 				{#snippet child({ props })}
 					<Sidebar.MenuItem {...props}>
