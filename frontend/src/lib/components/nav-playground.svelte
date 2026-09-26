@@ -75,13 +75,15 @@
 		<Collapsible.Root open class="group/collapsible">
 			{#snippet child({ props })}
 				<Sidebar.MenuItem {...props}>
-					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')}>
+					<Sidebar.MenuButton tooltipContent={t('app.shell.workspace')} class="pr-14">
 						<SquareTerminalIcon />
 						<span>{t('app.shell.workspace')}</span>
+						{#if workspaceNeeds !== null}
+							<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+								{t('app.gen.members_only')}
+							</span>
+						{/if}
 					</Sidebar.MenuButton>
-					{#if workspaceNeeds !== null}
-						<Sidebar.MenuBadge>{t('app.gen.members_only')}</Sidebar.MenuBadge>
-					{/if}
 					<Collapsible.Trigger>
 						{#snippet child({ props: triggerProps })}
 							<Sidebar.MenuAction {...triggerProps}>
@@ -137,9 +139,7 @@
 																	{...props}
 																	title={model.name}
 																	disabled={workspaceNeeds !== null}
-																	aria-disabled={workspaceNeeds !== null}
 																	onclick={() => {
-																		if (workspaceNeeds !== null) return;
 																		openPlayground();
 																		studio.modelId = model.id;
 																	}}
@@ -199,9 +199,7 @@
 																	)}
 																	title={prompt}
 																	disabled={workspaceNeeds !== null}
-																	aria-disabled={workspaceNeeds !== null}
 																	onclick={() => {
-																		if (workspaceNeeds !== null) return;
 																		openPlayground();
 																		studio.prompt = prompt;
 																	}}
@@ -256,9 +254,7 @@
 															? 'pointer-events-none opacity-50'
 															: undefined}
 														disabled={workspaceNeeds !== null}
-														aria-disabled={workspaceNeeds !== null}
 														onclick={() => {
-															if (workspaceNeeds !== null) return;
 															openPlayground();
 															studio.selectedId = generation.id;
 														}}

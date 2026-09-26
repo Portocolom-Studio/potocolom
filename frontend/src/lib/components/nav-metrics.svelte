@@ -57,10 +57,7 @@
 									type="button"
 									{...props}
 									disabled={usageNeeds !== null}
-									aria-disabled={usageNeeds !== null}
-									onclick={() => {
-										if (usageNeeds === null) openMetrics('usage');
-									}}
+									onclick={() => openMetrics('usage')}
 								>
 									<GaugeIcon />
 									<span>{t('app.metrics.tab_usage')}</span>
@@ -82,10 +79,7 @@
 									type="button"
 									{...props}
 									disabled={benchmarksNeeds !== null}
-									aria-disabled={benchmarksNeeds !== null}
-									onclick={() => {
-										if (benchmarksNeeds === null) openMetrics('benchmarks');
-									}}
+									onclick={() => openMetrics('benchmarks')}
 								>
 									<LineChartIcon />
 									<span>{t('app.metrics.tab_benchmarks')}</span>

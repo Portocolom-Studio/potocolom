@@ -65,10 +65,7 @@
 							type="button"
 							{...props}
 							disabled={needs !== null}
-							aria-disabled={needs !== null}
-							onclick={() => {
-								if (needs === null) openService(service.view);
-							}}
+							onclick={() => openService(service.view)}
 						>
 							<service.icon />
 							<span>{service.label}</span>
