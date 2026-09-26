@@ -1198,13 +1198,18 @@ async def generation_events(
     session: AsyncSession = Depends(db.get_session),
 ) -> StreamingResponse:
     job = await owned_job(session, job_id, user)
-    # Subscribe before snapshotting so nothing falls between the two.
-    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
-    subscribers.setdefault(job_id, []).append(queue)
-    snapshot = (await serialize_jobs(session, [job]))[0]
 
     async def stream() -> AsyncIterator[str]:
+        # Subscribe and snapshot inside the generator so every exit path,
+        # a serialize failure included, removes the subscriber (issue #497).
+        # The subscribe still comes before the snapshot so nothing falls
+        # between the two.
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        subscribers.setdefault(job_id, []).append(queue)
         try:
+            snapshot = (await serialize_jobs(session, [job]))[0]
+            # Roll back so the connection returns to the pool for the stream's life.
+            await session.rollback()
             yield f"data: {json.dumps({'job_id': str(job_id), 'state': snapshot['state']})}\n\n"
             if snapshot["state"] in TERMINAL_STATES:
                 return
@@ -1323,28 +1328,43 @@ async def _dispatch_step_body() -> None:
             logger.exception("could not recover lost job %s; retrying next tick", lost_id)
             lost_jobs.append(lost_id)
     await sweep_stalled_jobs()
-    while True:
-        job_id = await queues.pop(JOB_QUEUE)
-        if job_id is None:
-            return
-        job_uuid = uuid.UUID(job_id)
-        try:
-            dispatched = await dispatch(job_uuid)
-        except Exception:
-            if job_uuid in inflight:
-                # Worker may already be running; requeue would double-dispatch.
-                logger.exception(
-                    "dispatch failed after worker send for job %s; skipping requeue",
-                    job_id,
-                )
-                return
-            await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)  # never lose the entry
-            raise
-        if not dispatched:
-            # No capacity for this job's model right now; back in the queue
-            # and try again next step.
+    # A job no worker can take right now is left for a later tick rather than
+    # allowed to stop the pass. Skipped ids are parked here and requeued once
+    # the pass has tried everyone else, so one undispatchable job cannot starve
+    # the jobs behind it (issue #497).
+    skipped: list[str] = []
+    try:
+        while True:
+            # No free slot: popping would only lock a queued row for nothing.
+            if not any(w.jobs_in_flight < job_dispatch_depth(w)
+                       for w in realtime.workers.values()):
+                break
+            job_id = await queues.pop(JOB_QUEUE)
+            if job_id is None:
+                break
+            job_uuid = uuid.UUID(job_id)
+            try:
+                dispatched = await dispatch(job_uuid)
+            except Exception:
+                if job_uuid in inflight:
+                    # Worker may already be running; requeue would double-dispatch.
+                    logger.exception(
+                        "dispatch failed after worker send for job %s; skipping requeue",
+                        job_id,
+                    )
+                    return
+                await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)  # never lose the entry
+                raise
+            if not dispatched:
+                # No capacity for this job's model right now; try the next job
+                # instead of ending the pass.
+                skipped.append(job_id)
+                continue
+    finally:
+        # The return and raise paths above also park skipped ids: a dropped one
+        # stays `queued` in Postgres with no queue entry until a restart.
+        for job_id in skipped:
             await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)
-            return
 
 
 async def locked_job(session: AsyncSession, job_id: uuid.UUID) -> Job | None:

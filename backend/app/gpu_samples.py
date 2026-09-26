@@ -8,7 +8,7 @@ import math
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
 
-from sqlalchemy import Date, cast, delete, func, select, text
+from sqlalchemy import Date, Float, and_, case, cast, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,10 @@ WORKER_RETENTION = timedelta(days=30)
 USAGE_RAW_RETENTION = timedelta(days=90)
 ROLLUP_BUCKET = timedelta(minutes=5)
 MAINTAIN_INTERVAL = 300.0  # seconds
+# Bounds one raw history response: at the 30 s heartbeat cadence this is more
+# than a day of one worker, while keeping a many-worker install from shipping
+# the whole 48 h retention in one JSON body (issue #497).
+RAW_HISTORY_LIMIT = 5000
 
 
 def _utcnow() -> datetime:
@@ -215,9 +219,24 @@ def _choose_rollup(mode: RollupMode, span: timedelta) -> Literal["raw", "5m"]:
     return "raw"
 
 
-def _floor_bucket(ts: datetime) -> datetime:
-    minute = (ts.minute // 5) * 5
-    return ts.replace(minute=minute, second=0, microsecond=0)
+async def _raw_rows(
+    session: AsyncSession,
+    from_ts: datetime,
+    to_ts: datetime,
+    worker_id: str | None,
+) -> list[GpuSample]:
+    query = select(GpuSample).where(
+        GpuSample.sampled_at >= from_ts,
+        GpuSample.sampled_at <= to_ts,
+    )
+    if worker_id is not None:
+        query = query.where(GpuSample.worker_id == worker_id)
+    # Newest samples first, then reversed back into ascending order for the
+    # response: the cap keeps a bounded body, and the samples a live chart
+    # still shows are the recent ones, not the oldest of the window.
+    query = query.order_by(GpuSample.sampled_at.desc()).limit(RAW_HISTORY_LIMIT)
+    rows = (await session.execute(query)).scalars().all()
+    return list(reversed(rows))
 
 
 async def query_history(
@@ -230,14 +249,7 @@ async def query_history(
     span = to_ts - from_ts
     chosen = _choose_rollup(rollup, span)
     if chosen == "raw":
-        raw_query = select(GpuSample).where(
-            GpuSample.sampled_at >= from_ts,
-            GpuSample.sampled_at <= to_ts,
-        )
-        if worker_id is not None:
-            raw_query = raw_query.where(GpuSample.worker_id == worker_id)
-        raw_query = raw_query.order_by(GpuSample.sampled_at)
-        raw_rows = (await session.execute(raw_query)).scalars().all()
+        raw_rows = await _raw_rows(session, from_ts, to_ts, worker_id)
         return [_serialize_raw(row) for row in raw_rows], "raw"
 
     rollup_query = select(GpuSampleRollup).where(
@@ -251,14 +263,7 @@ async def query_history(
     if rollup_rows or rollup != "auto" or span > RAW_RETENTION:
         return [_serialize_rollup(row) for row in rollup_rows], "5m"
 
-    raw_query = select(GpuSample).where(
-        GpuSample.sampled_at >= from_ts,
-        GpuSample.sampled_at <= to_ts,
-    )
-    if worker_id is not None:
-        raw_query = raw_query.where(GpuSample.worker_id == worker_id)
-    raw_query = raw_query.order_by(GpuSample.sampled_at)
-    raw_rows = (await session.execute(raw_query)).scalars().all()
+    raw_rows = await _raw_rows(session, from_ts, to_ts, worker_id)
     return [_serialize_raw(row) for row in raw_rows], "raw"
 
 
@@ -326,60 +331,87 @@ async def maintain_once() -> None:
 
 
 async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: datetime) -> None:
-    rows = (
-        await session.execute(
-            select(GpuSample).where(
-                GpuSample.sampled_at >= from_ts,
-                GpuSample.sampled_at <= to_ts,
-            )
+    # One server-side statement, mirroring _rebuild_usage_rollups: the
+    # aggregate never lands in Python, and the first run after an upgrade does
+    # not become a round trip per rollup row nor a reload of up to 48 hours of
+    # raw samples (issue #497).
+    #
+    # vram_used_pct matches _vram_used_pct: a missing or impossible ratio is
+    # dropped, not clamped, so the retained mean and bounds stay honest.
+    # round(double precision) breaks ties to even like Python's round, and
+    # the epoch-anchored five-minute floor is the same grid _floor_bucket
+    # derives from the UTC wall clock, since 300 divides 3600.
+    used = cast(GpuSample.vram_used_bytes, Float)
+    total = cast(GpuSample.vram_total_bytes, Float)
+    pct = func.round((used * 100.0) / total)
+    vram_pct = case(
+        (
+            and_(
+                GpuSample.vram_used_bytes.is_not(None),
+                GpuSample.vram_total_bytes.is_not(None),
+                GpuSample.vram_total_bytes > 0,
+                pct >= -32768,
+                pct <= 32767,
+            ),
+            pct,
+        ),
+        else_=None,
+    ).label("vram_pct")
+    bucket_start = func.to_timestamp(
+        cast(func.floor(func.extract("epoch", GpuSample.sampled_at) / 300) * 300, Float)
+    ).label("bucket_start")
+    aggregate = (
+        select(
+            GpuSample.worker_id.label("worker_id"),
+            bucket_start,
+            func.count().label("sample_count"),
+            func.avg(cast(GpuSample.util_pct, Float)).label("util_mean"),
+            func.min(GpuSample.util_pct).label("util_min"),
+            func.max(GpuSample.util_pct).label("util_max"),
+            func.avg(vram_pct).label("vram_used_pct_mean"),
+            func.min(vram_pct).label("vram_used_pct_min"),
+            func.max(vram_pct).label("vram_used_pct_max"),
+            func.avg(cast(GpuSample.temperature_c, Float)).label("temperature_mean"),
+            func.avg(cast(GpuSample.power_w, Float)).label("power_mean"),
         )
-    ).scalars().all()
-    buckets: dict[tuple[str, datetime], list[GpuSample]] = {}
-    for row in rows:
-        key = (row.worker_id, _floor_bucket(row.sampled_at))
-        buckets.setdefault(key, []).append(row)
-
-    for (worker_id, bucket_start), samples in buckets.items():
-        util_values = [sample.util_pct for sample in samples if sample.util_pct is not None]
-        vram_values: list[int] = []
-        for sample in samples:
-            pct = _vram_used_pct(sample.vram_used_bytes, sample.vram_total_bytes)
-            if pct is not None:
-                vram_values.append(pct)
-        temp_values = [
-            sample.temperature_c for sample in samples if sample.temperature_c is not None
-        ]
-        power_values = [sample.power_w for sample in samples if sample.power_w is not None]
-        payload = {
-            "worker_id": worker_id,
-            "bucket_start": bucket_start,
-            "sample_count": len(samples),
-            "util_mean": (sum(util_values) / len(util_values)) if util_values else None,
-            "util_min": min(util_values) if util_values else None,
-            "util_max": max(util_values) if util_values else None,
-            "vram_used_pct_mean": (sum(vram_values) / len(vram_values)) if vram_values else None,
-            "vram_used_pct_min": min(vram_values) if vram_values else None,
-            "vram_used_pct_max": max(vram_values) if vram_values else None,
-            "temperature_mean": (sum(temp_values) / len(temp_values)) if temp_values else None,
-            "power_mean": (sum(power_values) / len(power_values)) if power_values else None,
-        }
-        stmt = insert(GpuSampleRollup).values(**payload)
-        excluded = stmt.excluded
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["worker_id", "bucket_start"],
-            set_={
-                "sample_count": excluded.sample_count,
-                "util_mean": excluded.util_mean,
-                "util_min": excluded.util_min,
-                "util_max": excluded.util_max,
-                "vram_used_pct_mean": excluded.vram_used_pct_mean,
-                "vram_used_pct_min": excluded.vram_used_pct_min,
-                "vram_used_pct_max": excluded.vram_used_pct_max,
-                "temperature_mean": excluded.temperature_mean,
-                "power_mean": excluded.power_mean,
-            },
+        .where(
+            GpuSample.sampled_at >= from_ts,
+            GpuSample.sampled_at <= to_ts,
         )
-        await session.execute(stmt)
+        .group_by(GpuSample.worker_id, bucket_start)
+    )
+    stmt = insert(GpuSampleRollup).from_select(
+        [
+            "worker_id",
+            "bucket_start",
+            "sample_count",
+            "util_mean",
+            "util_min",
+            "util_max",
+            "vram_used_pct_mean",
+            "vram_used_pct_min",
+            "vram_used_pct_max",
+            "temperature_mean",
+            "power_mean",
+        ],
+        aggregate,
+    )
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["worker_id", "bucket_start"],
+        set_={
+            "sample_count": excluded.sample_count,
+            "util_mean": excluded.util_mean,
+            "util_min": excluded.util_min,
+            "util_max": excluded.util_max,
+            "vram_used_pct_mean": excluded.vram_used_pct_mean,
+            "vram_used_pct_min": excluded.vram_used_pct_min,
+            "vram_used_pct_max": excluded.vram_used_pct_max,
+            "temperature_mean": excluded.temperature_mean,
+            "power_mean": excluded.power_mean,
+        },
+    )
+    await session.execute(stmt)
 
 
 def _usage_raw_cutoff(now: datetime) -> datetime:

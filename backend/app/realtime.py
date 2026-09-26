@@ -535,7 +535,14 @@ async def gpu_command(worker: Worker, command: dict, timeout: float = 120.0) -> 
     future: asyncio.Future = loop.create_future()
     gpu_requests[request_id] = future
     try:
-        await worker.ws.send_json({**command, "request_id": request_id})
+        # A socket that dies between pick and send is the same "no worker" as
+        # none connected: 503, not the 504 of a worker that heard the command
+        # and sat silent, and not a 500 for an ordinary disconnect (issue #497).
+        try:
+            await worker.ws.send_json({**command, "request_id": request_id})
+        except _SEND_FAILURES as error:
+            raise HTTPException(status_code=503,
+                                detail="worker disconnected") from error
         result = await asyncio.wait_for(future, timeout)
         return result
     except TimeoutError as error:

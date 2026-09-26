@@ -16,6 +16,27 @@ def test_studio_gpu_requires_worker():
     assert response.status_code == 503
 
 
+def test_studio_gpu_answers_503_when_the_worker_socket_is_dead(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    class DeadSocket:
+        async def send_json(self, *args, **kwargs):
+            raise WebSocketDisconnect()
+
+    dead = realtime.Worker(id="w-dead-send", ws=DeadSocket(), manifests=[], realtime_slots=1)
+    monkeypatch.setattr("app.studio.pick_any_worker", lambda: dead)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        current_user,
+        lambda: User(email="studio@example.test", role="admin"),
+    )
+    # A socket that dies between pick and send is the same "no worker" as
+    # none connected, so it is 503, not a 500 for an ordinary disconnect
+    # (issue #497).
+    response = client.get("/api/v1/studio/gpu")
+    assert response.status_code == 503
+
+
 def test_pick_any_worker_prunes_disconnected_sockets():
     from unittest.mock import MagicMock
 

@@ -1441,6 +1441,184 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
 
 
 @pytest.mark.db
+def test_an_undispatchable_job_does_not_end_the_dispatch_pass(monkeypatch):
+    """A queued job nobody can take must be left queued, not stop the tick: the
+    dispatchable job behind it still gets its dispatch in the same pass
+    (issue #497)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            blocked_id = uuid.uuid4()
+            runnable_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "no-such-model") is None:
+                    session.add(Model(
+                        id="no-such-model", name="No Such Model",
+                        capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add_all([
+                    Job(id=blocked_id, user_id=db.local_user_id,
+                        model_id="no-such-model", params={"prompt": "blocked"},
+                        state="queued"),
+                    Job(id=runnable_id, user_id=db.local_user_id,
+                        model_id="sd-test", params={"prompt": "runs"}, state="queued"),
+                ])
+                await session.commit()
+            # The heap hands the older push out first, so the undispatchable
+            # job is ahead of the runnable one.
+            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(jobs.JOB_QUEUE, str(runnable_id), jobs.TIER_DEFAULT)
+            return blocked_id, runnable_id
+
+        real_dispatch_step = jobs.dispatch_step
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        blocked_id, runnable_id = client.portal.call(seed)
+
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-skip")
+            client.portal.call(real_dispatch_step)
+            dispatch = worker.receive_json()
+
+        assert dispatch["type"] == "dispatch_job"
+        assert dispatch["job_id"] == str(runnable_id)
+        runnable = client.get(f"/api/v1/generations/{runnable_id}").json()
+        assert runnable["state"] == "running"
+        blocked = client.get(f"/api/v1/generations/{blocked_id}").json()
+        assert blocked["state"] == "queued"
+
+
+@pytest.mark.db
+def test_skipped_jobs_are_requeued_when_a_later_dispatch_raises(monkeypatch):
+    """A dispatch that raises must not drop the ids parked ahead of it: the
+    requeue used to sit after the loop's normal break, so the raise path left
+    them popped with no queue entry while their rows stayed queued until a
+    restart (issue #497)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            blocked_id = uuid.uuid4()
+            raising_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add_all([
+                    Job(id=blocked_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "blocked"}, state="queued", attempt=1),
+                    Job(id=raising_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "raises"}, state="queued", attempt=1),
+                ])
+                await session.commit()
+            # The heap hands the older push out first, so the undispatchable
+            # job is ahead of the raising one.
+            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(jobs.JOB_QUEUE, str(raising_id), jobs.TIER_DEFAULT)
+            return blocked_id, raising_id
+
+        real_dispatch_step = jobs.dispatch_step
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        # A connected worker with a free slot, or the pass would stop before
+        # popping anything: the whole point is what happens after some pops.
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-requeue-raise")
+            blocked_id, raising_id = client.portal.call(seed)
+
+            async def flaky_dispatch(job_id):
+                if job_id == blocked_id:
+                    return False  # no capacity; parked in skipped
+                raise RuntimeError("simulated dispatch failure")
+
+            monkeypatch.setattr(jobs, "dispatch", flaky_dispatch)
+            with pytest.raises(RuntimeError):
+                client.portal.call(real_dispatch_step)
+
+            queued_ids = {
+                entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+            }
+            assert str(blocked_id) in queued_ids, \
+                "a raise dropped the ids parked ahead of the failing dispatch"
+            assert str(raising_id) in queued_ids
+
+
+@pytest.mark.db
+def test_dispatch_pass_stops_when_no_worker_has_a_free_slot(monkeypatch):
+    """dispatch() locks the row before it looks for a worker, so a pass that
+    keeps popping with nobody to take the jobs costs one locked query per
+    queued job per tick. It must stop before the first pop when no connected
+    worker has a free dispatch slot (issue #497)."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> list[uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            ids = []
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                for prompt in ("one", "two", "three"):
+                    job_id = uuid.uuid4()
+                    session.add(Job(
+                        id=job_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": prompt}, state="queued", attempt=1,
+                    ))
+                    ids.append(job_id)
+                await session.commit()
+            for job_id in ids:
+                await jobs.queues.push(jobs.JOB_QUEUE, str(job_id), jobs.TIER_DEFAULT)
+            return ids
+
+        real_dispatch_step = jobs.dispatch_step
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        ids = client.portal.call(seed)
+        assert realtime.workers == {}  # no fleet socket: nobody can take a job
+
+        calls: list[uuid.UUID] = []
+
+        async def counted_dispatch(job_id):
+            calls.append(job_id)
+            return False
+
+        monkeypatch.setattr(jobs, "dispatch", counted_dispatch)
+        client.portal.call(real_dispatch_step)
+
+        assert calls == [], "dispatch() ran without any worker capacity"
+        queued_ids = {
+            entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+        }
+        assert queued_ids == {str(job_id) for job_id in ids}
+
+
+@pytest.mark.db
 def test_completed_event_uses_the_persisted_asset_url(monkeypatch):
     _stall_safe(monkeypatch)
     with TestClient(app, headers=FLEET_HEADERS) as client:
@@ -3578,6 +3756,86 @@ def test_publish_late_progress_does_not_evict_terminal(terminal_state):
         assert queue.empty()
     finally:
         jobs.subscribers.pop(job_id, None)
+
+
+@pytest.mark.db
+def test_generation_events_removes_its_subscriber_when_snapshot_fails(monkeypatch):
+    """A failure between subscribe and the first event must not leave the
+    queue in `subscribers`, or every failed stream parks a listener forever
+    (issue #497)."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            job_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add(Job(
+                    id=job_id, user_id=db.local_user_id, model_id="sd-test",
+                    params={"prompt": "events leak"}, state="queued",
+                ))
+                await session.commit()
+            return job_id
+
+        job_id = client.portal.call(seed)
+
+        async def boom(session, jobs):
+            raise RuntimeError("serialize failure")
+
+        monkeypatch.setattr(jobs, "serialize_jobs", boom)
+        with pytest.raises(RuntimeError):
+            client.get(f"/api/v1/generations/{job_id}/events")
+        assert job_id not in jobs.subscribers
+
+
+@pytest.mark.db
+def test_generation_events_releases_its_connection_after_the_snapshot():
+    """owned_job and serialize_jobs begin a transaction on the request's
+    session that otherwise stays open for the whole stream, pinning a pooled
+    connection for its life (pool 5 + 10 overflow; the studio opens up to four
+    streams per user). The snapshot is out, so the transaction must be gone
+    while the stream is still open (issue #497)."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> uuid.UUID:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            job_id = uuid.uuid4()
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add(Job(
+                    id=job_id, user_id=db.local_user_id, model_id="sd-test",
+                    params={"prompt": "stream"}, state="queued", attempt=1,
+                ))
+                await session.commit()
+            return job_id
+
+        job_id = client.portal.call(seed)
+
+        async def exercise() -> bool:
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                user = await session.get(User, db.local_user_id)
+                assert user is not None
+                response = await jobs.generation_events(job_id, user, session)
+                stream = response.body_iterator
+                first = await stream.__anext__()
+                assert "queued" in first
+                in_transaction = session.in_transaction()
+                await stream.aclose()
+                return in_transaction
+
+        assert client.portal.call(exercise) is False, \
+            "the open stream still holds its session in a transaction"
 
 
 def test_non_finite_progress_is_ignored():
