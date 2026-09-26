@@ -2,7 +2,8 @@
 # Check this machine against the self-hosting requirements and name the
 # compose profile it can actually run. Writes deploy/compose/.env from the
 # example when the file is missing (hex secrets), and fills empty
-# POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty secret.
+# POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty secret, except
+# the example's change-me database password before any database uses it.
 # Starts nothing and installs nothing.
 set -uo pipefail
 
