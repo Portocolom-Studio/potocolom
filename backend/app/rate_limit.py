@@ -1,4 +1,5 @@
-"""How often the sign-in path may be asked, per identifier and per caller.
+"""How often the sign-in path may be asked, per identifier and per caller, and
+how often the password reset path may be asked, per caller only.
 
 Both subjects are counted in a ten minute window, with a wait that starts after
 five attempts and doubles to eight seconds (docs/blueprint.md). Only the
@@ -132,6 +133,36 @@ async def _reserve(session: AsyncSession, address: str) -> float | None:
         .where(LoginAttempt.scope == "address", LoginAttempt.subject == _digest(address))
         .values(not_before=turn))
     return waiting
+
+
+async def charge_address(http: Request) -> None:
+    """Charge one password-reset ask against the caller's address.
+
+    The reset route returns the same answer whether it found an account or
+    not, so the address it was asked about cannot be charged without turning
+    the answer into an enumeration signal; an identifier ceiling on it would
+    also let anybody who knows an address lock its owner out of resetting by
+    asking ten times for it. The caller's address is all that is left.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    # The socket peer, which uvicorn has already rewritten from X-Forwarded-For
+    # for the peers FORWARDED_ALLOW_IPS trusts. Reading that header here
+    # instead would take a value any caller can set and let one choose which
+    # bucket it is counted in (app/realtime.py says the same of the fleet peer).
+    peer = http.client.host if http.client else None
+    if peer is None:
+        # uvicorn always sets the client; only a bare ASGI scope has none, and
+        # there is no caller to count.
+        return
+    async with db.session_factory() as session:
+        # Its own row, not the peer's login row: sharing one queue let a flood
+        # of either route shut the other for everyone behind the same address.
+        queued = await _reserve(session, f"reset:{peer}")
+        await session.commit()
+    if queued is None:
+        raise BUSY
+    await sleep(queued)
 
 
 async def charge_login(subject: str, http: Request) -> None:

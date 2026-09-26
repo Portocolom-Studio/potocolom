@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db, recovery, sessions
+from app import db, rate_limit, recovery, sessions
 from app.main import app
 from app.passwords import verify_password
 from app.settings import get_settings
@@ -68,6 +68,23 @@ def _reset_scope(email: str) -> tuple[dict, bytes]:
     }, body
 
 
+@pytest.fixture
+def waits(monkeypatch):
+    """Every delay the limiter computes, without any of them being served.
+
+    Sleeping the real turns would make this the slow part of the suite; the
+    stub is the one the login rate-limit tests use, and it lets a bucket be
+    driven to its cap in a burst (issue #429).
+    """
+    recorded: list[float] = []
+
+    async def record(seconds: float) -> None:
+        recorded.append(seconds)
+
+    monkeypatch.setattr(rate_limit, "sleep", record)
+    return recorded
+
+
 async def _wait_for_reset_deliveries() -> None:
     """The deliveries run detached from the request, so the mail may still be
     in flight when the response arrives; wait for them before reading the
@@ -86,6 +103,69 @@ def test_asking_answers_the_same_whoever_asked(accounts):
         unknown = _ask(client, "nobody@example.com")
     assert known.status_code == unknown.status_code == 202
     assert known.json() == unknown.json()
+
+
+@pytest.mark.db
+def test_reset_asks_are_charged_to_the_callers_address(accounts, waits, monkeypatch):
+    """A reset ask is not free: a burst from one caller is held in that
+    caller's address queue, and one ask past the cap is answered 503, the
+    way the sign-in route answers it."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "charged@example.com")
+        codes = [_ask(client, "charged@example.com").status_code for _ in range(12)]
+        refused = _ask(client, "charged@example.com")
+        client.portal.call(_wait_for_reset_deliveries)
+    assert codes == [202] * (rate_limit.FREE_ATTEMPTS + 6) + [503]
+    assert refused.status_code == 503
+    assert refused.headers.get("Retry-After") == str(int(rate_limit.MAX_QUEUE_S))
+    # The 503 is the sign-in busy answer, Retry-After included, and the turns
+    # are exactly the ones the login tests measure: free for five, then
+    # each ask stands behind the turns before it as they double to the cap.
+    assert waits == pytest.approx(
+        [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.5, 3.5, 7.5, 15.5, 23.5], abs=0.1)
+
+
+@pytest.mark.db
+def test_an_ask_costs_the_caller_whatever_address_it_names(accounts, waits, monkeypatch):
+    """Charging the named address instead would restart the queue whenever a
+    caller switched names, and would make the wait depend on which address it
+    named, which is the enumeration the uniform answer exists to prevent."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "known@example.com")
+        names = ["known@example.com", "nobody@example.com"] * 6
+        codes = [_ask(client, name).status_code for name in names]
+        client.portal.call(_wait_for_reset_deliveries)
+    assert codes == [202] * (rate_limit.FREE_ATTEMPTS + 6) + [503]
+    assert waits == pytest.approx(
+        [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.5, 3.5, 7.5, 15.5, 23.5], abs=0.1)
+
+
+@pytest.mark.db
+def test_reset_asks_do_not_queue_sign_in_from_the_same_caller(accounts, waits, monkeypatch):
+    """One queue for both routes let a flood of either shut the other for
+    everyone behind the same address."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "known@example.com")
+        codes = [_ask(client, "known@example.com").status_code for _ in range(12)]
+        client.portal.call(_wait_for_reset_deliveries)
+        waits.clear()
+        signed = client.post("/api/v1/auth/login",
+                             json={"email": "known@example.com", "password": "wrong password"})
+    assert codes[-1] == 503
+    assert signed.status_code == 401
+    assert list(waits) == pytest.approx([0.0], abs=0.1)
 
 
 def test_asking_does_not_take_the_account_gate():

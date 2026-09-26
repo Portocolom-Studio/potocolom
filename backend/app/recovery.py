@@ -14,13 +14,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from app import db, mail, sessions
+from app import db, mail, rate_limit, sessions
 from app.account_lock import hold_the_account
 from app.auth import require_accounts_mode
 from app.manifests import StorableStr
@@ -126,13 +126,18 @@ _reset_delivery_tasks: set[asyncio.Task] = set()
 
 
 @router.post("/api/v1/auth/reset", status_code=202)
-async def ask(request: ResetRequest) -> dict:
+async def ask(request: ResetRequest, http: Request) -> dict:
     """The same answer whoever asked, and it lands before the account work
     runs: a different answer, or a different wait, for an address nobody
     holds turns this route into a way to enumerate accounts.
+
+    The wait is charged to the caller's address only, never to the address
+    being asked about: an identifier ceiling here would let anyone lock a
+    person out of resetting by asking ten times for their address.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    await rate_limit.charge_address(http)
     # Detached rather than a BackgroundTask: Starlette runs those inside the
     # ASGI call, so the connection would wait for the account work and the
     # next request on the same keep-alive connection could measure whether
