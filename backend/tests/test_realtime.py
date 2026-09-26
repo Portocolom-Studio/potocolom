@@ -2915,10 +2915,16 @@ def test_resume_idle_does_not_double_close_an_ending_session(monkeypatch):
             assert realtime.transition(session, "idle", "assigning")
             assert realtime.transition(session, "assigning", "ending")
             session.out_close = (realtime.CLOSE_UNAUTHORIZED, "session revoked")
+            # The mailbox keeps the first close, so a second post_close would
+            # be invisible in it; count the calls instead.
+            closes = []
+            real_post_close = realtime.post_close
+            monkeypatch.setattr(realtime, "post_close", lambda *args: (
+                closes.append(args), real_post_close(*args)))
 
             client.portal.call(realtime.resume_idle, session)
+            assert closes == [], "a second close was posted"
             assert session.out_close == (realtime.CLOSE_UNAUTHORIZED, "session revoked")
-            assert not session.out_controls, "a second close was queued"
 
 
 def test_a_third_session_for_one_account_is_refused():
