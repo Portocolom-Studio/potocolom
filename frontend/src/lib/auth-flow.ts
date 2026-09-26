@@ -49,7 +49,7 @@ export function loginSearchFor(appSearch: string): string {
 // through a redirect, so only a same-origin /app address may be returned to.
 export function studioReturnSearch(next: string | null): string {
 	if (!next) return '';
-	if (!next.startsWith('/app') || next.startsWith('//')) return '';
+	if (!next.startsWith('/app')) return '';
 	if (next.includes('\\')) return '';
 	const url = new URL(next, 'http://origin.invalid');
 	if (url.origin !== 'http://origin.invalid' || url.pathname !== '/app') return '';
