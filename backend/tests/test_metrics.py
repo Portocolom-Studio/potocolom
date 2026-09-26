@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app import db, gpu_samples
 from app.main import app
@@ -447,7 +447,9 @@ def test_gpu_rollups_rebuild_as_one_server_side_statement():
     to_ts = from_ts + timedelta(minutes=30)
 
     def bucket(ts: datetime) -> datetime:
-        return ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).replace(
+            minute=(ts.minute // 5) * 5, second=0, microsecond=0
+        )
 
     def vram_pct(used: int | None, total: int | None) -> int | None:
         if used is None or total is None or total <= 0:
@@ -548,6 +550,51 @@ def test_gpu_rollups_rebuild_as_one_server_side_statement():
 
     assert first == expected()
     assert second == first, "the rebuild must be idempotent"
+
+
+@pytest.mark.db
+def test_gpu_rollups_are_utc_floors_regardless_of_the_session_timezone():
+    """bucket_start is timestamptz and to_timestamp is epoch-based, so the
+    session TimeZone must not move a bucket."""
+    from_ts = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    to_ts = from_ts + timedelta(minutes=30)
+    samples = [
+        GpuSample(worker_id="w-tz-a", sampled_at=from_ts + timedelta(minutes=1),
+                  util_pct=10),
+        GpuSample(worker_id="w-tz-a", sampled_at=from_ts + timedelta(minutes=7),
+                  util_pct=20),
+        GpuSample(worker_id="w-tz-b", sampled_at=from_ts + timedelta(minutes=13),
+                  util_pct=30),
+    ]
+
+    def utc_floor(ts: datetime) -> datetime:
+        epoch = int(ts.timestamp())
+        return datetime.fromtimestamp(
+            (epoch // 300) * 300, tz=timezone.utc
+        )
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        client.portal.call(_clear_gpu_metrics)
+
+        async def exercise() -> list[datetime]:
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add_all(samples)
+                await session.commit()
+            async with db.session_factory() as session:
+                # SET LOCAL reverts at commit, so the pooled connection returns
+                # with the default timezone for whatever test comes next.
+                await session.execute(text("SET LOCAL TIME ZONE 'Europe/Madrid'"))
+                await gpu_samples._rebuild_rollups(session, from_ts, to_ts)
+                await session.commit()
+            async with db.session_factory() as session:
+                rows = (await session.execute(select(GpuSampleRollup))).scalars().all()
+                return [row.bucket_start for row in rows]
+
+        buckets = client.portal.call(exercise)
+        client.portal.call(_clear_gpu_metrics)
+
+    assert sorted(buckets) == sorted(utc_floor(sample.sampled_at) for sample in samples)
 
 
 @pytest.mark.db
