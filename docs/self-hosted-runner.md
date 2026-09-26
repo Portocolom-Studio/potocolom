@@ -146,7 +146,10 @@ When hosted minutes are available again, change back to `ubuntu-latest` in all f
 ## Security notes
 
 - Self-hosted runners execute workflow code with access to the checkout and any repo secrets scoped to the environment.
-- For a solo org this is fine. If you accept outside contributions, enable **Settings → Actions → General → Fork pull request workflows → Require approval for all outside collaborators** so untrusted fork PRs cannot run on your runner before review.
+- A `pull_request` run executes the PR's own code, and the workflow file comes from the PR too, so a guard in the YAML protects nothing against a fork. The runner user is in the `docker` group, which is root on the reference desktop, and `deploy.yml` builds and runs the PR's Dockerfiles.
+- The control is GitHub's fork approval: **Settings > Actions > General > Approval for running fork pull request workflows from contributors > Require approval for all external contributors**. The first-time-contributors setting is not enough: after one merged PR a contributor runs unreviewed.
+- Before approving a fork run, read its changes to `.github/`, `Makefile`, `scripts/`, `deploy/` and every Dockerfile.
+- See the decision "CI runs on the self-hosted runner, and the fork approval gate is the control" for when this changes.
 
 ## Troubleshooting
 
