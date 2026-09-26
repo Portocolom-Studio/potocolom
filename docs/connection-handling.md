@@ -141,7 +141,7 @@ Authenticate and authorize a browser realtime connection before queueing, reserv
 > `4003` with "too many realtime sessions for this account".
 >
 > Issue #19 still owns the missing work.
-> That list is role and quota-subject binding, the admission queue, resume sequence numbers, codec negotiation, and writer isolation.
+> That list is role and quota-subject binding, resume sequence numbers, codec negotiation, and writer isolation.
 > The gateway ticket path is owned by "Gateway realtime tickets and revocation".
 > The governing decision is "Realtime authorization: bind once, invalidate explicitly".
 
@@ -188,7 +188,7 @@ It does not change the wire format or prove a GPU cost saving.
 
 ## Session states
 
-> Shipped status (2026-08-19, corrected 2026-09-25): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `idle` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). Idle release and transparent resume ship (issue #526): a live session with no input for about 60 seconds is released to `idle`, and its next canvas frame moves it to `assigning` and re-places it on a worker, with only the newest frame forwarded once it is live again. `queued` still waits on the admission queue. Per-session browser mailboxes ship (issue #19). Checkpoints and the durable outbox do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
+> Shipped status (2026-08-19, corrected 2026-09-26): **partially implemented.** Protocol 4 ships named states `assigning` / `live` / `idle` / `ending` / `ended`, `control_generation` fencing, and `session_refused` as an attempt failure (issue #270). Idle release and transparent resume ship (issue #526): a live session with no input for about 60 seconds is released to `idle`, and its next canvas frame moves it to `assigning` and re-places it on a worker, with only the newest frame forwarded once it is live again. `queued` ships with the in-process admission queue (issue #19): no free slot at open, at reassignment or at an idle resume moves the session to `queued`, and a freed slot, a registered worker or the session sweep moves it back to `assigning`. Per-session browser mailboxes ship (issue #19). Checkpoints and the durable outbox do not ship. The governing design is decisions.md, "The realtime session has states, a fencing generation, and one durable accounting owner".
 
 A realtime session is in exactly one state, and one place moves it between them, comparing the expected state and transitioning atomically. Four coroutines can otherwise end the same session: the browser's handler, the fleet handler, `reassign`, and the worker.
 
@@ -235,7 +235,7 @@ Session recovery is asymmetric by design:
 - Worker lost, or this worker sends `session_refused`: the API keeps the browser connection, sends `interrupted` when the session was already live, picks another protocol 4 worker, sends it `open_session` with the next `control_generation`, and on `session_ready` tells the browser `resumed`. The browser re-sends its current canvas; at most the frames in flight are lost. A protocol 3 worker is never a reassignment candidate. If no candidate remains, the browser is closed 4003.
 - Browser lost: the API closes the worker side of the session (`close_session`) and releases the slot. The canvas lives in the browser, so there is nothing to recover server side; a returning browser opens a new session.
 
-> Shipped status (2026-07-30): **partially implemented.** Worker reconnect backoff and process-local worker-loss reassignment ship; browser reconnect remains design. Recovery cannot cross replicas, survive loss of the owning API process, or queue when no replacement slot is free; that last case closes with 4003. "Redis-optional Queues and FrameBus contracts", issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern cross-owner recovery and resume priority. The diagram below shows the designed successful path.
+> Shipped status (2026-07-30, corrected 2026-09-26): **partially implemented.** Worker reconnect backoff and process-local worker-loss reassignment ship; browser reconnect remains design. Recovery cannot cross replicas or survive loss of the owning API process. When no replacement slot is free the session is queued (the browser gets `interrupted`, then `queued`, then `resumed` on admission). "Redis-optional Queues and FrameBus contracts", issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern cross-owner recovery and resume priority. The diagram below shows the designed successful path.
 
 ```mermaid
 sequenceDiagram
@@ -269,7 +269,7 @@ sequenceDiagram
     else cannot serve
         Worker-->>API: session_refused N reason
         API->>Worker: close_session N
-        API->>API: assign generation N+1 or close 4003
+        API->>API: assign generation N+1 or queue
     end
 ```
 
@@ -315,7 +315,7 @@ Signed short-lived tokens are the cloud shape and are not implemented here; thei
 | 4401 | authentication required or no longer valid | browser |
 | 4403 | authenticated, but not permitted to open a realtime session | browser |
 
-> Shipped status (2026-07-30, corrected 2026-09-25): code 4003 is currently an immediate full-pool rejection, and it also refuses a session when its account already holds the two-socket per-account cap. The accepted "Full pool: admission queue with paid tier priority" design instead reports a queued state for an otherwise valid request. Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
+> Shipped status (2026-07-30, corrected 2026-09-26): code 4003 refuses a session only when its account already holds the two-socket per-account cap. A full pool no longer closes anything: the session is queued (issue #19, "Full pool: admission queue with paid tier priority"). Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; codes 4005 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
 
 ## Delivery semantics
 

@@ -86,7 +86,7 @@ A session request with no free slot waits in a queue with live position and esti
 
 Rejected alternatives: hard rejection (worst experience, no demand signal); time slice sharing (everyone's frame rate collapses instead of anyone waiting).
 
-> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler hard-rejects a full pool with close code 4003. Queue admission remains the target under issue #19, "Real-Time Generation Protocol", and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-09-26): **implemented in process, without estimated wait or paid priority.** A session with no free slot waits as `queued` and is told its position (issue #19); see "The realtime queue counts against the account cap" for the admission order. Estimated wait needs session-duration data the API does not keep, and paid priority waits for billing. The Redis-backed queue remains under "Redis-optional Queues and FrameBus contracts".
 
 ## Idle realtime sessions: release after 60 seconds, transparent resume
 
@@ -94,7 +94,7 @@ An idle drawing session releases its slot and stops metering after about 60 seco
 
 Rejected alternative: pinning the slot while the tab is open. Zero resume friction, but forgotten tabs silently drain credits, which is a support complaint machine.
 
-> Shipped status (2026-09-25): **implemented without the queue.** The session sweep releases a `live` session with no canvas input for `IDLE_RELEASE_SECONDS` (60 s; the 30 s sweep interval bounds the delay) through `release()`, which stops metering and settles the attempt, and the next canvas frame re-places the session transparently. With no free slot the resume is refused 4003, because the admission queue (issue #19) does not ship; issue #20 still owns priority.
+> Shipped status (2026-09-26): **implemented.** The session sweep releases a `live` session with no canvas input for `IDLE_RELEASE_SECONDS` (60 s; the 30 s sweep interval bounds the delay) through `release()`, which stops metering and settles the attempt, and the next canvas frame re-places the session transparently. With no free slot the session joins the admission queue (issue #19) and gets `queued`, then `resumed` on admission; issue #20 still owns priority.
 
 ## Model placement: hot set plus on-demand loading
 
@@ -266,7 +266,7 @@ One replica holds a short Redis lease and runs the single threaded scheduling lo
 
 Rejected alternatives: a dedicated scheduler service (cleanest isolation, one more deployment before launch); lock based scheduling in every replica (distributed race bugs concentrated exactly where GPU money is spent).
 
-> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, realtime admission queue, preemption, idle release, or cross-replica recovery. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
+> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, preemption, or cross-replica recovery; idle release and an in-process realtime admission queue ship outside that loop. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
 
 ## Redis topology: one instance, split-ready namespaces
 
@@ -280,7 +280,7 @@ The job queue and the realtime admission queue are Redis sorted sets scored by t
 
 Rejected alternatives: Redis Streams (delivery tracking that duplicates what the PostgreSQL rows provide, and priority needs a stream per tier); Celery or RQ (assume queue consuming worker processes, but our workers hang off WebSocket connections).
 
-> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. Redis sorted sets, the realtime admission queue, cancellation, fairness, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. The realtime admission queue ships in process as the sessions in state `queued` (issue #19). Redis sorted sets, tiered priority, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
 
 ## Realtime wire format: binary frames, JSON control
 
@@ -1672,3 +1672,9 @@ Chosen as conventional defaults rather than debated decisions:
 - VRAM requirements are per model metadata (min_vram_gb in the manifest), applying across GPU vendors.
 - Monorepo: frontend, backend, worker, deploy and docs live in this repository.
 - Documentation diagrams are written in Mermaid, which GitHub renders as drawn diagrams; UI wireframes stay ASCII because they sketch screen layouts.
+
+## The realtime queue counts against the account cap
+
+Amends "Household fairness: only if bounded waiting is required". A queued realtime session counts against `MAX_REALTIME_SESSIONS_PER_USER` exactly as a live or idle one does, so an account holds at most two sessions active or waiting, not one. "Realtime sessions per account are capped at two" already rejected a limit of one because it refuses the ordinary second tab, and a waiting request that could not become active without that second slot is the same tab. Within the single priority class, admission is first-fit in arrival order, so a queued model with no capacity does not block another model that has room; a session sent back to the queue keeps its original place. The queue reports position only: estimated wait needs session-duration data the API does not keep, and paid priority waits for billing. There is no queue timeout; closing the socket cancels.
+
+Rejected alternatives: one active-or-waiting request per principal, which contradicts the shipped cap; strict head-of-line FIFO across models, which idles free capacity behind a model no worker can take; a queue timeout, which ends a wait the browser is still willing to make.
