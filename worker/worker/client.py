@@ -195,7 +195,8 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                           configured_slots: int) -> None:
     """Load and time every remaining realtime model before hello.
 
-    Reconnects reuse a warm engine, so calibration is a no-op once slots are set.
+    Reconnects reuse a warm engine, so calibration is a no-op once slots are set,
+    unless the last pass failed, when the reconnect measures again.
     DiffusersEngine only: the simulated engine has nothing to time. The default
     is warmed first so the studio's preselected model is not the extra cold
     load; the rest of the realtime set is still calibrated so admission cost
@@ -823,6 +824,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 # reconnects; this is the one failure that must end the task.
                 raise
             except Exception:
+                # websockets 16 raises a plain RuntimeError when sending on a
+                # socket that closed while this slept; the reader ends too.
+                if getattr(ws, "close_code", None) is not None:
+                    return
                 logger.exception("heartbeat failed; the next one retries")
 
     heartbeat_task = asyncio.create_task(heartbeats())

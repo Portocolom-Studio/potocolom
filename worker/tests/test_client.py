@@ -860,6 +860,51 @@ def test_heartbeat_retries_after_a_failed_gpu_sample(caplog, monkeypatch):
     assert "heartbeat failed; the next one retries" in caplog.text
 
 
+def test_heartbeat_ends_quietly_when_the_socket_closed_while_it_slept(monkeypatch, caplog):
+    # websockets 16 raises RuntimeError, not ConnectionClosed, when send() runs
+    # on a socket that already closed; that is not a heartbeat failure.
+    samples = 0
+
+    def counting_gpu(device):
+        nonlocal samples
+        samples += 1
+        return {}
+
+    monkeypatch.setattr("worker.client.sample_gpu", counting_gpu)
+
+    class AlreadyClosed(RecordingSocket):
+        close_code = None
+
+        def __init__(self):
+            super().__init__([])
+            self.release = asyncio.Event()
+
+        async def send(self, data):
+            if isinstance(data, str) and json.loads(data).get("type") == "heartbeat":
+                self.close_code = 1006
+                raise RuntimeError("cannot call send() once the connection is closed")
+            await super().send(data)
+
+        async def __anext__(self):
+            await self.release.wait()
+            raise StopAsyncIteration
+
+    socket = AlreadyClosed()
+
+    async def scenario():
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-hb-gone", heartbeat_seconds=0.01),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        await asyncio.sleep(0.5)
+        assert samples == 1
+        socket.release.set()
+        await task
+
+    with caplog.at_level("ERROR", logger="potocolom.worker"):
+        asyncio.run(scenario())
+    assert "heartbeat failed" not in caplog.text
+
+
 def test_heartbeat_ends_on_a_closed_socket(monkeypatch):
     # A closed socket is not retryable: the reader loop dies with it and
     # run() reconnects, so the heartbeat task must stop sampling (issue #498).

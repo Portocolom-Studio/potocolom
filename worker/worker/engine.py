@@ -903,6 +903,7 @@ class DiffusersEngine:
             logger.exception("realtime batch calibration failed for %s", manifest.id)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
+            self._calibration_failed = True
         return self._calibrated_slots or 0
 
     def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
