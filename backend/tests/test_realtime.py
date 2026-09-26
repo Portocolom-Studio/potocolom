@@ -3,6 +3,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 import anyio
@@ -47,8 +48,8 @@ def _one_event_loop():
     fleet handler and the browser handler ran on different loops while sharing
     realtime.py's module state. A session_ready then set the open's
     asyncio.Event from the wrong loop, and call_soon queues that wakeup without
-    waking a sleeping loop: the open sat until SESSION_READY_TIMEOUT and was
-    refused 4003 whenever the fleet loop lost the race the deadline then
+    waking a sleeping loop: the open sat until SESSION_READY_TIMEOUT and its
+    placement failed whenever the fleet loop lost the race the deadline then
     decided (issues #431, #440). Entering the client would share a portal too,
     but it would also run the app lifespan, which these tests do not want.
     """
@@ -188,6 +189,18 @@ def complete_attempt(session):
     """What a unit test uses in place of the fleet handler's session_ready."""
     session.attempt_ok = True
     session.ready.set()
+
+
+async def pump_writer(session):
+    """Let realtime.browser_writer deliver what was posted, to a fake socket.
+
+    The writer parks in one send only when the browser actually blocks; a
+    FakeSocket never does, so a handful of loop turns drains the mailbox.
+    """
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if session.writer.done():
+            return
 
 
 def test_version_gate_rejects_older_than_n_minus_1():
@@ -1112,13 +1125,15 @@ def test_heartbeat_does_not_free_committed_slots():
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
 
-            # A stale self-report must not undo the server-side accounting.
+            # A stale self-report must not undo the server-side accounting:
+            # the next open is queued, not admitted.
             worker_ws.send_json({"type": "heartbeat", "slots_in_use": 0})
 
             with client.websocket_connect("/api/v1/realtime") as second_ws:
                 second_ws.send_json({"type": "open", "model_id": "sd-sim"})
-                refusal = expect(second_ws, "error")
-                assert refusal["code"] == 4003
+                queued = expect(second_ws, "queued")
+                assert queued["position"] == 1
+                assert realtime.workers["w-heartbeat"].slots_in_use == 1
 
 
 def test_heartbeat_frame_p95_replaces_the_hello_measurement(monkeypatch):
@@ -1295,6 +1310,8 @@ def test_parse_frame_p95_drops_whole_non_dict_payloads(bad):
 
 
 def test_assign_timeout_releases_the_slot(monkeypatch):
+    """A worker that never answers costs the attempt its slot; the open then
+    joins the queue instead of being refused."""
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-silent", slots=1))
@@ -1303,8 +1320,8 @@ def test_assign_timeout_releases_the_slot(monkeypatch):
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             expect(worker_ws, "open_session")
             # The worker never answers session_ready.
-            refusal = expect(browser_ws, "error")
-            assert refusal["code"] == 4003
+            queued = expect(browser_ws, "queued")
+            assert queued["position"] == 1
         assert realtime.workers["w-silent"].slots_in_use == 0
 
 
@@ -1382,7 +1399,9 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
 def test_reassign_retries_another_protocol_4_worker(monkeypatch):
     """A failed attempt tries the next protocol 4 candidate; generation fences
     the two opens so a late ready from the first cannot complete the second.
-    """
+    With neither accepting, the session joins the queue instead of closing
+    4003, keeping its earlier place; the queue's own placement round then
+    retries the candidates once more."""
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.05)
 
     async def scenario():
@@ -1398,23 +1417,39 @@ def test_reassign_retries_another_protocol_4_worker(monkeypatch):
         realtime.workers.update({first.id: first, spare.id: spare})
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
+        session.writer = asyncio.create_task(realtime.browser_writer(session))
         try:
             await realtime.reassign(session)
-            assert [m["type"] for m in first_ws.sent] == [
+            await pump_writer(session)
+            # The placement round tried each candidate in generation order and
+            # told each to discard the runner. The queue's own placement round
+            # afterwards re-tries them, so only the round's first two messages
+            # are pinned here.
+            assert [m["type"] for m in first_ws.sent[:2]] == [
                 "open_session", "close_session",
             ], first_ws.sent
-            assert [m["type"] for m in spare_ws.sent] == [
+            assert [m["type"] for m in spare_ws.sent[:2]] == [
                 "open_session", "close_session",
             ], spare_ws.sent
             assert first_ws.sent[0]["control_generation"] == 2
             assert spare_ws.sent[0]["control_generation"] == 3
+            # The queue's own placement round is still in flight (it re-tries
+            # the candidates and holds a slot while waiting); let it finish so
+            # slots and the final state are settled.
+            deadline = time.monotonic() + 5
+            while realtime._admit_tasks and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert realtime._admit_tasks == set()
             assert first.slots_in_use == 0
             assert spare.slots_in_use == 0
-            assert session.worker is None
-            assert [m["type"] for m in browser.sent] == ["interrupted", "error"]
-            assert browser.sent[-1]["code"] == realtime.CLOSE_NO_CAPACITY
-            assert browser.close_code == realtime.CLOSE_NO_CAPACITY
+            assert [m["type"] for m in browser.sent] == ["interrupted", "queued"]
+            assert browser.sent[-1] == {"type": "queued", "position": 1}
+            assert session.state == "queued"
+            assert session.queued_position == 1
         finally:
+            session.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await session.writer
             realtime.workers.pop(first.id, None)
             realtime.workers.pop(spare.id, None)
             realtime.sessions.pop(session.id, None)
@@ -1436,18 +1471,23 @@ def test_reassign_moves_the_session_with_correct_accounting():
         realtime.workers[replacement.id] = replacement
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser)
         realtime.sessions[session.id] = session
+        session.writer = asyncio.create_task(realtime.browser_writer(session))
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
             assert replacement_ws.sent[0]["type"] == "open_session"
             assert replacement_ws.sent[0]["session_id"] == str(session.id)
             complete_attempt(session)
             await task
+            await pump_writer(session)
             assert [m["type"] for m in browser.sent] == ["interrupted", "resumed"]
             assert session.worker is replacement
             assert replacement.slots_in_use == 1
             assert browser.close_code is None  # the session survived
         finally:
+            session.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await session.writer
             realtime.workers.pop(replacement.id, None)
             realtime.sessions.pop(session.id, None)
 
@@ -1471,7 +1511,7 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted sent, open_session in flight
+            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
             opened = replacement_ws.sent[0]
             assert opened["type"] == "open_session"
             assert opened["params"]["seed"] == 77
@@ -1865,7 +1905,9 @@ def test_session_refused_reassigns_to_another_protocol_4_worker():
     run_on_test_loop(scenario())
 
 
-def test_session_refused_with_no_other_worker_closes_4003():
+def test_session_refused_with_no_other_worker_queues():
+    """An open whose only candidate refuses joins the queue instead of being
+    refused; the browser keeps its socket and is told its position."""
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-only-refuse"))
         expect(worker_ws, "registered")
@@ -1878,11 +1920,15 @@ def test_session_refused_with_no_other_worker_closes_4003():
                 "control_generation": opened["control_generation"],
                 "reason": "not_resident",
             })
-            refusal = expect(browser_ws, "error")
-            assert refusal["code"] == 4003
+            queued = expect(browser_ws, "queued")
+            assert queued["position"] == 1
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.state == "queued"
 
 
 def test_unfenced_protocol_4_ready_is_ignored(monkeypatch):
+    """A protocol 4 session_ready without control_generation does not
+    complete the open: the attempt times out and the session queues."""
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-unfenced"))
@@ -1894,11 +1940,13 @@ def test_unfenced_protocol_4_ready_is_ignored(monkeypatch):
                 "type": "session_ready",
                 "session_id": opened["session_id"],
             })
-            refusal = expect(browser_ws, "error")
-            assert refusal["code"] == 4003
+            queued = expect(browser_ws, "queued")
+            assert queued["position"] == 1
 
 
 def test_stale_session_ready_generation_is_ignored(monkeypatch):
+    """A session_ready at the wrong generation does not complete the open:
+    the attempt times out and the session queues."""
     monkeypatch.setattr(realtime, "SESSION_READY_TIMEOUT", 0.1)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-stale-ready"))
@@ -1911,8 +1959,8 @@ def test_stale_session_ready_generation_is_ignored(monkeypatch):
                 "session_id": opened["session_id"],
                 "control_generation": opened["control_generation"] + 1,
             })
-            refusal = expect(browser_ws, "error")
-            assert refusal["code"] == 4003
+            queued = expect(browser_ws, "queued")
+            assert queued["position"] == 1
 
 
 def test_stale_session_refused_generation_is_ignored():
@@ -2225,6 +2273,7 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             realtime.sessions.clear()
             realtime.workers.update({worker.id: worker, spare.id: spare})
             realtime.sessions.update({older.id: older, newer.id: newer})
+            newer.writer = asyncio.create_task(realtime.browser_writer(newer))
             worker.admission_p95_ms["sd-sim"] = 300
             realtime.schedule_shed_over_capacity(worker)
             await asyncio.sleep(0.01)
@@ -2238,6 +2287,9 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             assert newer.worker is spare
             assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
         finally:
+            newer.writer.cancel()
+            with suppress(asyncio.CancelledError):
+                await newer.writer
             realtime.workers.clear()
             realtime.sessions.clear()
             realtime.workers.update(saved_workers)
@@ -2599,10 +2651,10 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
                 assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
 
 
-def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
+def test_a_frame_on_an_idle_session_with_no_room_queues_it(monkeypatch):
     """If every slot is taken by the time an idle session draws again, its
-    frame is refused 4003 like any other admission; the admission queue is
-    issue #19 and does not ship."""
+    frame joins the queue; the browser keeps its socket and resumes when a
+    slot frees."""
     monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-idle-full", slots=1))
@@ -2624,9 +2676,9 @@ def test_a_frame_on_an_idle_session_with_no_room_refuses(monkeypatch):
                 expect(second_ws, "ready")
                 canvas = bytes([CANVAS_FRAME]) + first.id.bytes + b"nowhere"
                 first_ws.send_bytes(canvas)
-                refused = expect(first_ws, "error")
-                assert refused["code"] == realtime.CLOSE_NO_CAPACITY == 4003
-                assert refused["message"] == "no worker capacity"
+                queued = expect(first_ws, "queued")
+                assert queued["position"] == 1
+                assert first.state == "queued"
 
 
 @pytest.mark.db
@@ -2698,9 +2750,8 @@ def test_reassign_arms_the_old_generation_for_the_still_connected_worker(monkeyp
     connected, so reassign() must arm that attempt's session_closed like
     release() does, or the totals that worker reports find nobody to bill.
 
-    Driven with no spare worker so reassign() completes immediately (it
-    cannot place the session and refuses 4003) instead of waiting on an
-    open_session that needs answering on the same loop.
+    The session then queues; the queue's own placement re-tries the same
+    worker, and answering that open is what ends the test's placement.
     """
     calls: list[tuple[uuid.UUID, str, dict]] = []
     monkeypatch.setattr(
@@ -2727,6 +2778,11 @@ def test_reassign_arms_the_old_generation_for_the_still_connected_worker(monkeyp
             closed = expect(worker_ws, "close_session")
             assert closed["session_id"] == str(session.id)
             assert closed["control_generation"] == 1
+            # The queue re-admitted the session on the same worker.
+            reopened = expect(worker_ws, "open_session")
+            assert reopened["session_id"] == str(session.id)
+            assert reopened["control_generation"] == 2
+            answer_ready(worker_ws, reopened)
             worker_ws.send_json({
                 "type": "session_closed",
                 "session_id": str(session.id),
@@ -2864,16 +2920,11 @@ def test_a_relayed_frame_clears_a_pending_frame():
             assert session.pending_frame is None
 
 
-def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
-    """A revocation can already own a session's end and be refusing its socket
-    4401 when an idle resume races it. With no room left the resume must not
-    stack a second refusal (4003) on the same socket."""
-    refused: list[tuple[int, str]] = []
-
-    async def spy(ws, code, message):
-        refused.append((code, message))
-
-    monkeypatch.setattr(realtime, "refuse", spy)
+def test_resume_idle_does_not_double_close_an_ending_session(monkeypatch):
+    """A revocation can already own a session's end and be closing its socket
+    4401 when an idle resume races it. requeue's transition then fails on a
+    session a revocation already ended, so no second close lands on the same
+    mailbox."""
     monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0.05)
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-resume-race"))
@@ -2889,12 +2940,21 @@ def test_resume_idle_does_not_double_refuse_an_ending_session(monkeypatch):
             expect(worker_ws, "close_session")
             assert session.state == "idle"
             # The frame that would have started the resume task is pre-empted
-            # by a revocation that already owns the session's end.
+            # by a revocation that already owns the session's end: the mailbox
+            # carries the revocation's close, so no second one may land.
             assert realtime.transition(session, "idle", "assigning")
             assert realtime.transition(session, "assigning", "ending")
+            session.out_close = (realtime.CLOSE_UNAUTHORIZED, "session revoked")
+            # The mailbox keeps the first close, so a second post_close would
+            # be invisible in it; count the calls instead.
+            closes = []
+            real_post_close = realtime.post_close
+            monkeypatch.setattr(realtime, "post_close", lambda *args: (
+                closes.append(args), real_post_close(*args)))
 
             client.portal.call(realtime.resume_idle, session)
-            assert refused == []
+            assert closes == [], "a second close was posted"
+            assert session.out_close == (realtime.CLOSE_UNAUTHORIZED, "session revoked")
 
 
 def test_a_third_session_for_one_account_is_refused():

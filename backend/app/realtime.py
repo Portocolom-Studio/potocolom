@@ -17,6 +17,7 @@ import logging
 import random
 import time
 import uuid
+from collections import deque
 from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -425,19 +426,34 @@ class Session:
     auth_session_id: uuid.UUID | None = None
     worker: Worker | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
-    # queued stays in the enum so later work does not widen it; this protocol
-    # does not ship the admission queue. idle ships: the sweep releases an idle
-    # slot and the next canvas frame re-places the session.
+    # queued ships: a session with no free worker waits here for a slot,
+    # admitted first-fit in queued_at order. idle ships: the sweep releases an
+    # idle slot and the next canvas frame re-places the session.
     state: SessionState = "assigning"
     control_generation: int = 1
     attempt_ok: bool = False
     assigned_at: float = 0.0
+    # Monotonic time of joining the queue. Kept across requeues: resetting it
+    # would put a bumped session behind sessions that joined later.
+    queued_at: float | None = None
+    # Last queue position the browser was told, so an unchanged position is
+    # not reposted on every queue change.
+    queued_position: int | None = None
     # Monotonic time of the last canvas input (a relayed frame or an accepted
     # update_params); the sweep releases a live session past that age.
     last_input: float = field(default_factory=time.monotonic)
     # Newest canvas frame awaiting a worker while an idle session re-places
     # itself; the resume task forwards it once a worker is live again.
     pending_frame: bytes | None = None
+    # Browser outbox. The writer task is the only writer of the browser socket
+    # (docs/connection-handling.md: a shared reader never awaits delivery to
+    # one browser), so these posts never block: controls keep their order,
+    # frames keep only the newest, and a close goes after the queued controls.
+    out_controls: deque[dict] = field(default_factory=deque)
+    out_frame: bytes | None = None
+    out_wake: asyncio.Event = field(default_factory=asyncio.Event)
+    out_close: tuple[int, str | None] | None = None
+    writer: asyncio.Task | None = None
 
     @property
     def is_live(self) -> bool:
@@ -459,6 +475,136 @@ def transition(session: Session, expected: SessionState | set[SessionState],
         return False
     session.state = new
     return True
+
+
+def post(session: Session, control: dict) -> None:
+    """Queue a browser control ahead of any frame; ignored once a close is set."""
+    if session.out_close is not None:
+        return
+    session.out_controls.append(control)
+    session.out_wake.set()
+
+
+def post_frame(session: Session, data: bytes) -> None:
+    """Keep only the newest generated frame; an older unsent one is replaced."""
+    if session.out_close is not None:
+        return
+    session.out_frame = data
+    session.out_wake.set()
+
+
+def post_close(session: Session, code: int, message: str | None) -> None:
+    """End the session's browser after the queued controls; the first close wins."""
+    if session.out_close is not None:
+        return
+    session.out_close = (code, message)
+    session.out_frame = None
+    session.out_wake.set()
+
+
+async def browser_writer(session: Session) -> None:
+    browser = session.browser
+    # A browser that never reads parks this task in one send; it holds one
+    # frame and no slot.
+    while True:
+        await session.out_wake.wait()
+        session.out_wake.clear()
+        while session.out_controls:
+            control = session.out_controls.popleft()
+            await safe_send(browser.send_json(control))
+        if session.out_close is not None:
+            code, message = session.out_close
+            if message is not None:
+                await safe_send(browser.send_json({
+                    "type": "error", "code": code, "message": message,
+                }))
+            await safe_send(browser.close(code=code))
+            return
+        if session.out_frame is not None:
+            frame = session.out_frame
+            session.out_frame = None
+            await safe_send(browser.send_bytes(frame))
+
+
+def queued_sessions() -> list[Session]:
+    """The sessions waiting for a slot, in the order they joined."""
+    return sorted(
+        (session for session in sessions.values() if session.state == "queued"),
+        key=lambda session: session.queued_at or 0.0,
+    )
+
+
+def post_positions(*, force: bool = False) -> None:
+    """Tell each queued browser its 1-based position, when it changed."""
+    for position, session in enumerate(queued_sessions(), start=1):
+        if force or position != session.queued_position:
+            post(session, {"type": "queued", "position": position})
+        session.queued_position = position
+
+
+def requeue(session: Session) -> bool:
+    """Queue a session that could not be placed, keeping its earlier place.
+
+    The transition fails on a session a revocation already ended, so nothing
+    is queued under a close.
+    """
+    if not transition(session, "assigning", "queued"):
+        return False
+    if session.queued_at is None:
+        session.queued_at = time.monotonic()
+    post_positions()
+    return True
+
+
+_admit_tasks: set[asyncio.Task] = set()
+
+
+def admit_queued() -> None:
+    """Admit every queued session a worker can take, first-fit by position."""
+    for session in queued_sessions():
+        if pick_worker(session.model_id,
+                       generation=session.control_generation) is None:
+            continue
+        if not transition(session, "queued", "assigning"):
+            continue
+        task = asyncio.create_task(_admit_guarded(session))
+        _admit_tasks.add(task)
+        task.add_done_callback(_admit_tasks.discard)
+    post_positions()
+
+
+async def _admit_guarded(session: Session) -> None:
+    try:
+        await admit(session)
+    except asyncio.CancelledError:
+        raise
+    except BaseException:
+        logger.exception("admission failed for session %s", session.id)
+
+
+async def admit(session: Session) -> None:
+    """Place a queued session, telling the browser ready or resumed."""
+    was_live = session.assigned_at != 0.0
+    if not await place_session(session):
+        requeue(session)
+        return
+    if not session.is_live:
+        await release(session)
+        return
+    session.queued_at = None
+    session.queued_position = None
+    frame, session.pending_frame = session.pending_frame, None
+    if frame is not None and session.worker is not None:
+        await safe_send(session.worker.ws.send_bytes(frame))
+    # That send awaits, and a shed or a lost worker in the meantime has already
+    # told the browser interrupted and requeued the session: announcing this
+    # attempt now would contradict it.
+    if session.state != "live":
+        return
+    if was_live:
+        post(session, {"type": "resumed"})
+    else:
+        post(session, {"type": "ready", "session_id": str(session.id)})
 
 
 def speaks_generation(worker: Worker) -> bool:
@@ -734,6 +880,7 @@ def arm_settlement(session: Session, worker: Worker, generation: int) -> None:
 
 async def release(session: Session) -> None:
     if session.worker is None:
+        admit_queued()
         return
     worker, session.worker = session.worker, None
     worker.slots_in_use -= 1
@@ -750,10 +897,14 @@ async def release(session: Session) -> None:
                 {"type": "close_session", "session_id": str(session.id)},
                 worker, generation,
             ))), CLOSE_TIMEOUT)
+    # The slot is free, or the session was queued and left: either shifts
+    # positions, so the queue reposts itself on the way out.
+    admit_queued()
 
 
 async def reassign(session: Session) -> None:
-    """The session's worker vanished or refused: interrupted, new worker, resumed."""
+    """The session's worker vanished or refused: interrupted, then either a
+    new worker (resumed) or, with none free, the queue until one admits it."""
     if session.state == "ended":
         return
     if session.state == "live":
@@ -773,7 +924,7 @@ async def reassign(session: Session) -> None:
         await close_abandoned_session(worker, session, generation)
     if not session.is_live:
         return
-    await safe_send(session.browser.send_json({"type": "interrupted"}))
+    post(session, {"type": "interrupted"})
     session.control_generation += 1
     exclude_ids = {worker.id} if worker is not None else set()
     if await place_session(session, exclude_ids=exclude_ids):
@@ -782,12 +933,12 @@ async def reassign(session: Session) -> None:
             return
         logger.info("session %s resumed on worker %s", session.id,
                     session.worker.id if session.worker else "?")
-        await safe_send(session.browser.send_json({"type": "resumed"}))
+        post(session, {"type": "resumed"})
         return
     logger.warning("session %s lost its worker and no replacement was available",
                    session.id)
-    transition(session, "assigning", "ending")
-    await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+    if requeue(session):
+        admit_queued()
 
 
 _reassign_tasks: set[asyncio.Task] = set()
@@ -847,8 +998,8 @@ async def resume_idle(session: Session) -> None:
 
     Mirrors reassign()'s placement without its interrupted/resumed controls:
     the browser does not know the slot was released, so nothing is told. If no
-    worker has room the browser is refused 4003; the admission queue is issue
-    #19 and does not ship.
+    worker has room the session joins the queue and is admitted (resumed) when
+    a slot frees, with the newest pending frame forwarded on admission.
     """
     if not session.is_live:
         return
@@ -863,9 +1014,9 @@ async def resume_idle(session: Session) -> None:
         return
     logger.warning("session %s was idle and no worker had room to resume it",
                    session.id)
-    # A revocation may already own this session's end and be refusing it 4401.
-    if transition(session, "assigning", "ending"):
-        await refuse(session.browser, CLOSE_NO_CAPACITY, "no worker capacity")
+    # A revocation may already own the session's end; requeue's transition
+    # then fails and nothing joins the queue.
+    requeue(session)
 
 
 def over_capacity_sessions(worker: Worker) -> list[Session]:
@@ -1019,6 +1170,8 @@ async def fleet(ws: WebSocket) -> None:
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
     await ws.send_json({"type": "registered"})
+    # A new worker means a queued session may finally have room.
+    admit_queued()
     from app import gpu_samples, registry  # late import; registry reads this module's state
     gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
     peer = ws.client.host if ws.client is not None else "unknown"
@@ -1050,7 +1203,7 @@ async def fleet(ws: WebSocket) -> None:
                     if session is not None and session.worker is worker:
                         if data[0] != GENERATED_FRAME:
                             raise ProtocolError("worker frame is not a generated frame")
-                        await safe_send(session.browser.send_bytes(data))
+                        post_frame(session, data)
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
@@ -1330,9 +1483,6 @@ async def realtime(ws: WebSocket) -> None:
     if held >= MAX_REALTIME_SESSIONS_PER_USER:
         await refuse(ws, CLOSE_NO_CAPACITY, "too many realtime sessions for this account")
         return
-    if pick_worker(model_id) is None:
-        await refuse(ws, CLOSE_NO_CAPACITY, "no worker capacity")
-        return
     session = Session(
         id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
         user_id=handshake.user_id, auth_session_id=handshake.auth_session_id)
@@ -1345,12 +1495,11 @@ async def realtime(ws: WebSocket) -> None:
         await refuse(ws, CLOSE_UNAUTHORIZED, "session revoked")
         return
     try:
-        accepted = await place_session(session)
-        if not accepted:
-            transition(session, "assigning", "ending")
-            await refuse(ws, CLOSE_NO_CAPACITY, "worker did not become ready")
-            return
-        await safe_send(ws.send_json({"type": "ready", "session_id": str(session.id)}))
+        session.writer = asyncio.create_task(browser_writer(session))
+        if await place_session(session):
+            post(session, {"type": "ready", "session_id": str(session.id)})
+        else:
+            requeue(session)
         while True:
             message = await ws.receive()
             if message["type"] == "websocket.disconnect":
@@ -1371,8 +1520,9 @@ async def realtime(ws: WebSocket) -> None:
                         # newest frame once a worker is live again.
                         session.pending_frame = data
                         schedule_resume_idle(session)
-                    elif session.state == "assigning":
-                        # A resume in flight: keep only the newest frame.
+                    elif session.state in ("assigning", "queued"):
+                        # A resume or an admission in flight: keep only the
+                        # newest frame until a worker is live again.
                         session.pending_frame = data
                     elif session.worker is not None:  # a dead worker means reassign is in flight
                         # Newer than anything a resume still holds, so the
@@ -1382,7 +1532,7 @@ async def realtime(ws: WebSocket) -> None:
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     if control["type"] == "close":
-                        await safe_send(ws.close(code=1000))
+                        post_close(session, 1000, None)
                         break
                     if control["type"] == "update_params":
                         params = control.get("params")
@@ -1402,11 +1552,11 @@ async def realtime(ws: WebSocket) -> None:
                             # a silent parameter update; reject it like an
                             # out-of-range parameter and leave the session
                             # running.
-                            await safe_send(ws.send_json({
+                            post(session, {
                                 "type": "error",
                                 "code": CLOSE_PROTOCOL_VIOLATION,
                                 "message": "seed is fixed at session open and cannot be changed",
-                            }))
+                            })
                             continue
                         manifest = registry.available().get(session.model_id)
                         if manifest is not None:
@@ -1415,11 +1565,11 @@ async def realtime(ws: WebSocket) -> None:
                                 # A bad update is a recoverable client mistake,
                                 # unlike a bad open, which happens before a
                                 # session exists: report it and keep the socket.
-                                await safe_send(ws.send_json({
+                                post(session, {
                                     "type": "error",
                                     "code": CLOSE_PROTOCOL_VIOLATION,
                                     "message": invalid,
-                                }))
+                                })
                                 continue
                         if (session.worker is not None
                                 and session.worker.protocol_version
@@ -1433,12 +1583,12 @@ async def realtime(ws: WebSocket) -> None:
                             # it: the user cannot tell a silent no-op from a
                             # model that ignored their prompt. Refuse, and
                             # leave the session rendering what it renders.
-                            await safe_send(ws.send_json({
+                            post(session, {
                                 "type": "error",
                                 "code": CLOSE_PROTOCOL_VIOLATION,
                                 "message": "the assigned worker does not "
                                            "support live parameter updates",
-                            }))
+                            })
                             continue
                         # Later keys win, so a second update of the same
                         # parameter overwrites the first. The merged dict is
@@ -1456,18 +1606,30 @@ async def realtime(ws: WebSocket) -> None:
                                 "session_id": str(session.id),
                                 "params": session.params,
                             }, session.worker, session.control_generation)))
-                        await safe_send(ws.send_json({
+                        post(session, {
                             "type": "params_updated",
                             "params": session.params,
-                        }))
+                        })
             except ProtocolError as error:
-                await refuse(ws, CLOSE_PROTOCOL_VIOLATION, str(error))
+                post_close(session, CLOSE_PROTOCOL_VIOLATION, str(error))
                 break
     finally:
         sessions.pop(session.id, None)
         transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
         transition(session, "ending", "ended")
         await release(session)
+        # The writer is the only task that touches the browser socket, so it
+        # must not outlive the handler: a posted close gets a bounded moment
+        # to land, otherwise the socket is gone and the task is cancelled.
+        writer = session.writer
+        if writer is not None:
+            if session.out_close is not None:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(writer, CLOSE_TIMEOUT)
+            else:
+                writer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await writer
 
 
 async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = None,
@@ -1486,25 +1648,18 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
         # front of the person changing their password stays up.
         and (keep is None or session.auth_session_id != keep)
     ]
-    # Concurrently: refuse writes before it closes, and a browser that stopped
-    # reading blocks that write with no timeout. Sequentially, one such socket
-    # would keep every other socket on the account alive and hang the logout
-    # request that asked for them to go.
-    # The server side goes first and unconditionally. A wedged transport eats
-    # the write below and its close with it, and leaving the session
-    # registered would keep a revoked account holding a GPU slot for as long
-    # as it holds the connection.
+    # The server side goes first and unconditionally: the slot is released even
+    # if a browser never reads, because a revocation must not hang on the
+    # socket it is taking away. Posting only sets the mailbox, so one close
+    # per session lands without waiting on a writer parked in a send. It is
+    # posted before release() awaits, so a handler tearing down meanwhile finds
+    # the close and delivers it instead of cancelling its writer.
     for session in doomed:
         sessions.pop(session.id, None)
         transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
         transition(session, "ending", "ended")
+        post_close(session, CLOSE_UNAUTHORIZED, "session revoked")
         await release(session)
-    await asyncio.gather(
-        *(asyncio.wait_for(
-            refuse(session.browser, CLOSE_UNAUTHORIZED, "session revoked"), CLOSE_TIMEOUT)
-          for session in doomed),
-        return_exceptions=True,
-    )
 
 
 async def close_dead_sessions() -> None:
@@ -1579,3 +1734,13 @@ async def sweep_dead_sessions() -> None:
             # Independent of the database check: a blip there must not pause
             # the anti-exhaustion release too.
             logger.warning("realtime idle release failed")
+        try:
+            admit_queued()
+        except Exception:
+            logger.warning("realtime admission failed")
+        try:
+            # A forced repost is a keepalive for a silent queued socket behind
+            # a proxy idle timeout; the sweep is where a stalled queue wakes.
+            post_positions(force=True)
+        except Exception:
+            logger.warning("realtime position repost failed")

@@ -173,9 +173,11 @@ durations fix the schedule, so two runs send the same messages in the same
 order; only timings, send stamps and server-minted ids differ. It prints one
 table and exits 1 if a threshold fails. `--api-pid` adds the API's resident set
 and open descriptors from `/proc`. Scale the load with `--sessions`,
-`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` fails until
-the per-session mailboxes in [connection-handling.md](connection-handling.md)
-ship: today the API buffers every frame for a browser that stopped reading.
+`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` gates the
+per-session mailboxes in [connection-handling.md](connection-handling.md): the
+neighbour's p95 and the API's resident set are the thresholds, and
+`oldest_frame_s` is reported without one, because it measures the kernel
+socket buffers rather than the API.
 
 ## Trying accounts mode locally
 
@@ -262,7 +264,7 @@ Useful runs this enables on one desktop:
 - Kill the leader API replica: scheduler failover within the lease window. **Designed.** One API process today; no Redis leader lease.
 - Stop Redis: degradation behavior, nobody logged out, queue rebuilt on return. **Designed.** Redis in cloud-sim is unused by the API.
 - Run the previous release's worker image against the current API: the N-1 promise. **Shipped.**
-- Open the drawing tool in two browsers against a one-slot worker: the second open is refused with 4003. Admission queue and position display are **designed** (issue #19).
+- Open the drawing tool in two browsers against a one-slot worker: the second open waits in the admission queue and shows its position, then becomes ready when the first closes (issue #19).
 
 ## What only real AWS can validate
 

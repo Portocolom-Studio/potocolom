@@ -283,9 +283,9 @@ def test_demoting_an_account_closes_the_socket_it_is_drawing_on(accounts):
 
 @pytest.mark.db
 def test_one_unread_socket_does_not_keep_the_others_alive(accounts):
-    """refuse writes before it closes, and a browser that stopped reading
-    blocks that write with no timeout. Sequentially, the first such socket
-    would strand every other socket on the account."""
+    """A browser that stopped reading blocks any write to it with no timeout,
+    so a revocation that waited on one such socket would strand every other
+    socket on the account. It only posts each close to its socket's mailbox."""
     with TestClient(app, client=("127.0.0.1", 50000), headers=FLEET_HEADERS) as client:
         user, issued = _signed_in(client, "stalled@example.com")
         resolved = client.portal.call(sessions.resolve, issued.token)

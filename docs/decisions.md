@@ -86,7 +86,7 @@ A session request with no free slot waits in a queue with live position and esti
 
 Rejected alternatives: hard rejection (worst experience, no demand signal); time slice sharing (everyone's frame rate collapses instead of anyone waiting).
 
-> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler hard-rejects a full pool with close code 4003. Queue admission remains the target under issue #19, "Real-Time Generation Protocol", and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-09-26): **implemented in process, without estimated wait or paid priority.** A session with no free slot waits as `queued` and is told its position (issue #19); see "The realtime queue counts against the account cap" for the admission order. Estimated wait needs session-duration data the API does not keep, and paid priority waits for billing. The Redis-backed queue remains under "Redis-optional Queues and FrameBus contracts".
 
 ## Idle realtime sessions: release after 60 seconds, transparent resume
 
@@ -94,7 +94,7 @@ An idle drawing session releases its slot and stops metering after about 60 seco
 
 Rejected alternative: pinning the slot while the tab is open. Zero resume friction, but forgotten tabs silently drain credits, which is a support complaint machine.
 
-> Shipped status (2026-09-25): **implemented without the queue.** The session sweep releases a `live` session with no canvas input for `IDLE_RELEASE_SECONDS` (60 s; the 30 s sweep interval bounds the delay) through `release()`, which stops metering and settles the attempt, and the next canvas frame re-places the session transparently. With no free slot the resume is refused 4003, because the admission queue (issue #19) does not ship; issue #20 still owns priority.
+> Shipped status (2026-09-26): **implemented.** The session sweep releases a `live` session with no canvas input for `IDLE_RELEASE_SECONDS` (60 s; the 30 s sweep interval bounds the delay) through `release()`, which stops metering and settles the attempt, and the next canvas frame re-places the session transparently. With no free slot the session joins the admission queue (issue #19) and gets `queued`, then `resumed` on admission; issue #20 still owns priority.
 
 ## Model placement: hot set plus on-demand loading
 
@@ -266,7 +266,7 @@ One replica holds a short Redis lease and runs the single threaded scheduling lo
 
 Rejected alternatives: a dedicated scheduler service (cleanest isolation, one more deployment before launch); lock based scheduling in every replica (distributed race bugs concentrated exactly where GPU money is spent).
 
-> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, realtime admission queue, preemption, idle release, or cross-replica recovery. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
+> Shipped status (2026-07-30): **partially implemented.** An in-process loop dispatches queued generation jobs, but there is no Redis lease, preemption, or cross-replica recovery; idle release and an in-process realtime admission queue ship outside that loop. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern the remaining design.
 
 ## Redis topology: one instance, split-ready namespaces
 
@@ -280,7 +280,7 @@ The job queue and the realtime admission queue are Redis sorted sets scored by t
 
 Rejected alternatives: Redis Streams (delivery tracking that duplicates what the PostgreSQL rows provide, and priority needs a stream per tier); Celery or RQ (assume queue consuming worker processes, but our workers hang off WebSocket connections).
 
-> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. Redis sorted sets, the realtime admission queue, cancellation, fairness, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap rebuilt from PostgreSQL. The realtime admission queue ships in process as the sessions in state `queued` (issue #19). Redis sorted sets, tiered priority, and adapter parity are not implemented; the governing issue is "Redis-optional Queues and FrameBus contracts".
 
 ## Realtime wire format: binary frames, JSON control
 
@@ -1029,7 +1029,7 @@ ignore.
 
 ## The realtime session has states, a fencing generation, and one durable accounting owner
 
-> Shipped status (2026-08-19): **partially implemented.** Protocol 4, named states (`assigning` / `live` / `ending` / `ended`; `queued` and `idle` remain in the enum), `control_generation` fencing, and `session_refused` as an attempt failure all ship. Checkpoints, durable outbox, unique settlement keys, and per-session mailboxes do not. Accounting is still `session_closed` after browser teardown via `closing_sessions`.
+> Shipped status (2026-08-19): **partially implemented.** Protocol 4, named states (`assigning` / `live` / `ending` / `ended`; `queued` and `idle` remain in the enum), `control_generation` fencing, and `session_refused` as an attempt failure all ship. Per-session browser mailboxes ship (issue #19, corrected 2026-09-26). Checkpoints, durable outbox, and unique settlement keys do not. Accounting is still `session_closed` after browser teardown via `closing_sessions`.
 
 A realtime session is currently a dataclass with a worker, an event and a membership test, and its transitions are decided by whichever coroutine notices first. Four can: the browser's handler, the fleet handler, `reassign`, and the worker. Three attempts to add one feature on that footing each produced a defect, all found by review rather than by tests, so the design comes before the feature this time. The feature is ending a live session whose model stops being fully resident, which today renders nothing until the browser leaves (issue #270).
 
@@ -1047,7 +1047,7 @@ A counter rather than a UUID, because the ordering is the point. An opaque ident
 
 **Accounting has one owner, and the owner is durable.** One place deciding is necessary and is not sufficient: it settles competing writers on the normal path and does nothing about crashes. Today the arming map is process-local, persistence is a fire-and-forget task whose database failure is logged and dropped, and `usage_events` has no unique key, so a crash between decision and commit loses the event and adding a retry would duplicate it. So the API is the durable terminal owner: terminal state and an outbox record commit in one transaction, every settlement carries a stable unique key which is the source key the ledger already deduplicates on, so a redelivery after an unrecorded acknowledgement costs nothing, the session settles only once every attempt it created is reported or declared lost rather than at the first terminal transition, with a late arrival correcting the total through a supplementary event of its own, keyed by that settlement key and the generation it belongs to so it cannot collide with the aggregate it corrects, instead of being dropped, sessions left `ending` are reconciled at restart, and per-attempt segments aggregate into one event for the session. The rollup table already has the unique index this pattern needs and the quota contract already specifies the outbox, so this is applying a pattern the repository has rather than inventing one. One transaction means a PostgreSQL one: the Redis session hash carries the live scheduling state because the hot path cannot afford a database round trip per frame, and it is a cache that a restart may lose, while the session row and its per-attempt segments are the authority that settlement reads. Losing the cache costs a reassignment; losing the row would cost a charge, which is why they are not the same store. A worker that dies abruptly settles against its last fenced checkpoint the API acknowledged, because work that died with the process is not observable and pretending otherwise is how an estimate becomes a charge.
 
-**A slow browser is shown the newest frame, not every frame it missed.** The shared fleet reader awaits delivery to a browser inline and there are no per-session queues, so reading the code says one browser that stops reading should hold up every other session on that worker. Measured, it does not: `scripts/prototype-slow-consumer.py` stalls one of three sessions for 25 seconds with its receive window closed, and the other two render every frame with their p50 within 0.1 ms of before. That is worth knowing before building the mailboxes to fix a stall that is not there.
+**A slow browser is shown the newest frame, not every frame it missed.** The shared fleet reader awaits delivery to a browser inline and there are no per-session queues, so reading the code says one browser that stops reading should hold up every other session on that worker. Measured, it does not: `scripts/prototype-slow-consumer.py` stalls one of three sessions for 25 seconds with its receive window closed, and the other two render every frame with their p50 within 0.1 ms of before. That is worth knowing before building the mailboxes to fix a stall that is not there. Corrected 2026-09-26: with frames of the largest size the API relays (1 MB) and a fleet that renders faster than a browser reads, the stall is there. `scripts/stress.py --scenario slow-consumer` measured the neighbour's latency p95 at 6.7 seconds with the inline await and 125 ms once the mailboxes shipped, so isolation is a reason for them after all, not only freshness.
 
 What the same measurement does find is that nothing drops the stalled session's frames. It resumes to its whole backlog in order, the oldest 25 seconds old, so a browser that pauses shows a quarter minute of stale canvas before catching up to what the user is drawing now. So the mailboxes are per-session, bounded, and keep only the latest frame, with lifecycle controls and heartbeats ahead of frames and queue ages observable; the reason is freshness rather than isolation, and dedicated writers are worth having anyway because the inline await is one GPU speedup away from mattering.
 
@@ -1672,3 +1672,9 @@ Chosen as conventional defaults rather than debated decisions:
 - VRAM requirements are per model metadata (min_vram_gb in the manifest), applying across GPU vendors.
 - Monorepo: frontend, backend, worker, deploy and docs live in this repository.
 - Documentation diagrams are written in Mermaid, which GitHub renders as drawn diagrams; UI wireframes stay ASCII because they sketch screen layouts.
+
+## The realtime queue counts against the account cap
+
+Amends "Household fairness: only if bounded waiting is required". A queued realtime session counts against `MAX_REALTIME_SESSIONS_PER_USER` exactly as a live or idle one does, so an account holds at most two sessions active or waiting, not one. "Realtime sessions per account are capped at two" already rejected a limit of one because it refuses the ordinary second tab, and a waiting request that could not become active without that second slot is the same tab. Within the single priority class, admission is first-fit in arrival order, so a queued model with no capacity does not block another model that has room; a session sent back to the queue keeps its original place. The queue reports position only: estimated wait needs session-duration data the API does not keep, and paid priority waits for billing. There is no queue timeout; closing the socket cancels.
+
+Rejected alternatives: one active-or-waiting request per principal, which contradicts the shipped cap; strict head-of-line FIFO across models, which idles free capacity behind a model no worker can take; a queue timeout, which ends a wait the browser is still willing to make.
