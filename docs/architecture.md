@@ -194,7 +194,7 @@ The real time target is 2 to 4 generated frames per second at 512 px, which an S
 
 Queued jobs and real time sessions share the same workers. Jobs fill idle capacity; an arriving session request preempts queued work (the worker finishes or checkpoints the current job between denoising steps, then frees the slot), and queued work resumes when sessions end. When several workers can take a job, the scheduler prefers those serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. This is the right trade at launch scale, where the pool may be one or two GPUs and a dedicated real time pool would mean paying for an idle machine. The scheduler treats pool membership as configuration, so splitting into dedicated real time and batch pools later (scaling stage 2) is a config change, not a redesign.
 
-> Shipped status (2026-09-17): **preemption and checkpoint-between-steps are not implemented.** Jobs and sessions share the worker. A full realtime pool closes the new browser with 4003. Rung-aware placement across a fleet is designed. `JOB_DISPATCH_DEPTH` pipelining on one worker is shipped.
+> Shipped status (2026-09-17): **preemption and checkpoint-between-steps are not implemented.** Jobs and sessions share the worker. A full realtime pool queues the new session (issue #19). Rung-aware placement across a fleet is designed. `JOB_DISPATCH_DEPTH` pipelining on one worker is shipped.
 
 ### Model placement
 
@@ -242,7 +242,7 @@ An operator-selected `MEMORY_MODE` rung never descends.
 
 A session request that finds no free slot waits in an admission queue. The user sees their position and an estimated wait; the autoscaler treats queue length as a scale up signal, so waits shrink as new machines boot (one to two minutes on rented GPU providers). Once billing exists, paid tiers move ahead in the queue; nothing ever preempts an active session. There is no time slice sharing and no hard reject.
 
-> Shipped status (2026-07-30): **not yet implemented.** The current realtime handler closes a browser with code 4003 when no compatible slot is free. The queue described here remains the accepted design under "Full pool: admission queue with paid tier priority", issue #19, "Real-Time Generation Protocol", and "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-09-26): **partially implemented.** The queue ships in process (issue #19). It is the sessions in state `queued`, ordered by when each first joined; a session sent back keeps its place. A slot freeing, a worker registering and the 30 s session sweep admit first-fit in that order, so a session whose model has no room does not hold up one whose model has. The browser sees its position, not an estimated wait: the API keeps no session-duration data to estimate from. There are no paid tiers yet and no queue timeout; closing the socket leaves the queue. The Redis-backed queue and the autoscaler signal remain designed under "Redis-optional Queues and FrameBus contracts".
 
 ### Idle sessions
 
