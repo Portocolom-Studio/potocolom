@@ -520,6 +520,8 @@
 	"app.gen.upscale_quality": "Quality",
 	"app.gen.delete": "Delete",
 	"app.gen.coming_soon": "Coming soon",
+	"app.gen.cancel": "Cancel",
+	"app.gen.cancel_failed": "The job could not be cancelled.",
 	"app.gen.gpu_time": "GPU time",
 	"app.lineage.ancestors": "Ancestry",
 	"app.lineage.derivatives": "Derivatives",

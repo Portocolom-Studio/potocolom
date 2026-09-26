@@ -725,6 +725,17 @@ export function toggleStarred(id: string): Promise<boolean> {
 	return operation;
 }
 
+export async function cancelGeneration(id: string): Promise<boolean> {
+	try {
+		const response = await apiFetch(`/api/v1/generations/${id}/cancel`, { method: 'POST' });
+		if (!response.ok) return false;
+	} catch {
+		return false;
+	}
+	await refreshGeneration(id);
+	return true;
+}
+
 function closeGenerationStream(id: string): void {
 	generationStreams.get(id)?.close();
 	generationStreams.delete(id);
