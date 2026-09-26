@@ -30,6 +30,7 @@ from app import db, factors, sessions
 from app.account_lock import hold_the_account
 from app.accounts import issue_session
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
+from app.manifests import StorableStr
 from app.settings import Settings, get_settings
 from app.tables import AuthIdentity, OAuthFlow, User
 
@@ -293,7 +294,7 @@ def _started_here(request: Request, state: str, settings: Settings) -> bool:
 
 
 @router.get("/api/v1/auth/redirect/{provider}")
-async def redirect(provider: str, next: str | None = None) -> Response:
+async def redirect(provider: StorableStr, next: StorableStr | None = None) -> Response:
     target, state = await _start(provider, None)
     settings = get_settings()
     response = RedirectResponse(target, status_code=307)
@@ -315,7 +316,8 @@ async def redirect(provider: str, next: str | None = None) -> Response:
 
 
 @router.get("/api/v1/auth/callback/{provider}")
-async def callback(provider: str, state: str, code: str, request: Request) -> Response:
+async def callback(provider: StorableStr, state: StorableStr, code: StorableStr,
+                   request: Request) -> Response:
     settings = get_settings()
     if not _started_here(request, state, settings):
         raise REFUSED
@@ -470,7 +472,7 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
 
 @router.post("/api/v1/account/identities/{provider}")
 async def start_link(
-    provider: str,
+    provider: StorableStr,
     response: Response,
     principal: sessions.Resolved = Depends(current_principal),
 ) -> dict:

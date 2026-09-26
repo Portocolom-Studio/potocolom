@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import audit, db, sessions
 from app.accounts import issue_session
 from app.auth import require_accounts_mode
+from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, AuthToken, User
@@ -173,9 +174,9 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
 
 
 class SetupRequest(BaseModel):
-    token: str
-    email: str
-    password: str
+    token: StorableStr
+    email: StorableStr
+    password: StorableStr
 
 
 @router.post("/api/v1/auth/setup", status_code=204,

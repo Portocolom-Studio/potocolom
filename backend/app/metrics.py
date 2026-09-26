@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, gpu_samples
 from app.auth import require_role
+from app.manifests import StorableStr
 from app.tables import User
 
 router = APIRouter()
@@ -35,10 +36,10 @@ def _parse_ts(value: str, name: str) -> datetime:
 
 @router.get("/api/v1/metrics/gpu/history")
 async def gpu_history(
-    from_: str = Query(alias="from"),
-    to: str = Query(),
+    from_: StorableStr = Query(alias="from"),
+    to: StorableStr = Query(),
     rollup: gpu_samples.RollupMode = "auto",
-    worker_id: str | None = None,
+    worker_id: StorableStr | None = None,
     user: User = Depends(require_role("admin")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:

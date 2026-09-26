@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from app import db, keyring, sessions, totp
 from app.account_lock import hold_the_account as _hold_the_account
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
+from app.manifests import StorableStr
 from app.settings import Settings, get_settings
 from app.tables import AuthFactor, AuthToken, RecoveryCode, User
 
@@ -187,15 +188,15 @@ async def begin_challenge(user: User, remember_me: bool,
 
 
 class CodeRequest(BaseModel):
-    code: str
+    code: StorableStr
 
 
 class ConfirmRequest(BaseModel):
-    enrolment: str
-    code: str
+    enrolment: StorableStr
+    code: StorableStr
     # Only when there is a factor to replace, and then it is required: a code
     # from the authenticator being retired, or one of its recovery codes.
-    current_code: str | None = None
+    current_code: StorableStr | None = None
 
 
 @router.post("/api/v1/auth/totp", status_code=204)

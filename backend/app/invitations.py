@@ -20,6 +20,7 @@ from app import audit, db, mail, sessions
 from app.accounts import issue_session
 from app.enable import _checked_email
 from app.auth import current_principal, require_accounts_mode, require_role
+from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
 from app.tables import AuthIdentity, Invitation, User
@@ -55,7 +56,7 @@ def _minted(
 
 
 class InviteRequest(BaseModel):
-    email: str
+    email: StorableStr
     role: Literal["viewer", "user", "admin"]
 
 
@@ -182,8 +183,8 @@ async def reveal(invitation_id: uuid.UUID) -> dict:
 
 
 class RegisterRequest(BaseModel):
-    token: str
-    password: str
+    token: StorableStr
+    password: StorableStr
 
 
 @router.post("/api/v1/auth/register", status_code=204)

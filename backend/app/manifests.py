@@ -8,12 +8,13 @@ import json
 import logging
 import math
 from functools import lru_cache
+from typing import Annotated
 
 import jsonschema
 from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger("potocolom.manifests")
 
@@ -148,20 +149,43 @@ def _params_validator(schema_json: str) -> Draft202012Validator:
 JSON_MAX_DEPTH = 64
 
 
+def storable_text(value: str) -> bool:
+    """Whether PostgreSQL can store this string and strict UTF-8 can encode it."""
+    if "\x00" in value:
+        return False
+    for char in value:
+        if "\ud800" <= char <= "\udfff":
+            return False
+    return True
+
+
+def _storable(value: str) -> str:
+    if not storable_text(value):
+        raise ValueError("text contains a character that cannot be stored")
+    return value
+
+
+StorableStr = Annotated[str, AfterValidator(_storable)]
+
+
 def json_finite(value: object, depth: int = 0) -> bool:
     """Whether a decoded JSON value is storable in a JSONB column.
 
     jsonb has no NaN or Infinity and json.loads produces both by default, so
     this has to be checked at the edge: rejecting them in the engine's
     serializer only turns the DataError into a ValueError, and both are a 500.
+    NUL and lone surrogates are unstorable in jsonb in the same way.
     Over-deep structures are rejected here for the same reason.
     """
     if depth > JSON_MAX_DEPTH:
         return False
     if isinstance(value, float):
         return math.isfinite(value)
+    if isinstance(value, str):
+        return storable_text(value)
     if isinstance(value, dict):
-        return all(json_finite(item, depth + 1) for item in value.values())
+        return all(storable_text(key) for key in value) and all(
+            json_finite(item, depth + 1) for item in value.values())
     if isinstance(value, list):
         return all(json_finite(item, depth + 1) for item in value)
     return True

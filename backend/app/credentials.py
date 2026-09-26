@@ -19,6 +19,7 @@ from app.account_lock import hold_the_account
 from app.accounts import issue_session
 from app.auth import current_principal, require_accounts_mode
 from app.enable import _checked_email
+from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password, verify_password
 from app.tables import AuthIdentity, User
 
@@ -45,8 +46,8 @@ async def recent_principal(
 
 
 class PasswordChange(BaseModel):
-    password: str
-    current_password: str | None = None
+    password: StorableStr
+    current_password: StorableStr | None = None
 
 
 @router.post("/api/v1/account/password", status_code=204)
@@ -112,7 +113,7 @@ async def change_password(
 
 
 class AddressChange(BaseModel):
-    email: str
+    email: StorableStr
 
 
 @router.post("/api/v1/account/email", status_code=204)
@@ -156,7 +157,7 @@ async def change_email(
 
 @router.delete("/api/v1/account/identities/{provider}", status_code=204)
 async def unlink_identity(
-    provider: str,
+    provider: StorableStr,
     principal: sessions.Resolved = Depends(recent_principal),
 ) -> Response:
     """The last way in cannot go: an account with no credential at all can only
