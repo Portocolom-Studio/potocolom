@@ -134,6 +134,32 @@ async def _reserve(session: AsyncSession, address: str) -> float | None:
     return waiting
 
 
+async def charge_address(http: Request) -> None:
+    """Charge one password-reset ask against the caller's address.
+
+    The reset route returns the same answer whether it found an account or
+    not, so the address it was asked about cannot be charged without turning
+    the answer into an enumeration signal; an identifier ceiling on it would
+    also let anybody who knows an address lock its owner out of resetting by
+    asking ten times for it. The caller's address is all that is left.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    # The socket peer, which uvicorn has already rewritten from X-Forwarded-For
+    # for the peers FORWARDED_ALLOW_IPS trusts. Reading that header here
+    # instead would take a value any caller can set and let one choose which
+    # bucket it is counted in (app/realtime.py says the same of the fleet peer).
+    peer = http.client.host if http.client else None
+    if peer is None:
+        return
+    async with db.session_factory() as session:
+        queued = await _reserve(session, peer)
+        await session.commit()
+    if queued is None:
+        raise BUSY
+    await sleep(queued)
+
+
 async def charge_login(subject: str, http: Request) -> None:
     """Charge one sign-in attempt, then refuse it or hold it for its delay.
 

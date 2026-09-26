@@ -2457,6 +2457,26 @@ def test_job_failure_reason_persisted():
 
 
 @pytest.mark.db
+def test_an_unstorable_failure_reason_is_stored_as_the_default():
+    """A worker reason a text column cannot hold used to fail its write and
+    leave the job running until the stall sweep requeued it (issue #597);
+    now the job fails with the default reason, whatever the worker says."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-nul-reason")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "nul reason"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "boom\x00NUL",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            job = poll_until(client, job_id, "failed")
+    assert job["failure_reason"] == "worker reported failure"
+
+
+@pytest.mark.db
 def test_cancelled_state_filters_the_history():
     # cancelled is a job state and the filter must really match cancelled rows,
     # not merely stop 422ing (issue #508).

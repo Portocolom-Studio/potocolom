@@ -147,6 +147,24 @@ def test_parse_manifests_rejects_upscale_mixed_with_diffusion():
         raise AssertionError("expected ValueError")
 
 
+def test_parse_manifests_refuses_a_name_postgres_cannot_store():
+    # A worker manifest carrying a NUL used to parse and then die inside
+    # persist_manifests, leaving the socket without a close frame and a
+    # reconnect loop with no cause on either side (issue #597). Now it is
+    # refused at parse time like any other invalid manifest, and a hello of
+    # valid manifests parses exactly as before.
+    good = {"id": "m", "name": "m", "capabilities": ["text_to_image"],
+            "parameters": {}}
+    bad = {**good, "id": "bad", "name": "bad\x00name"}
+    assert parse_manifests([good])[0].id == "m"
+    try:
+        parse_manifests([bad])
+    except ValueError as error:
+        assert "cannot be stored" in str(error)
+    else:
+        raise AssertionError("a manifest with an unstorable name was accepted")
+
+
 def test_parse_manifests_rejects_remote_schema_reference():
     try:
         parse_manifests([{

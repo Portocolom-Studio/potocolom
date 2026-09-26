@@ -29,25 +29,44 @@ DIFFUSION_CAPABILITIES = frozenset({"text_to_image", "image_to_image"})
 FRAME_P95_MAX_MS = 60_000
 
 
+def storable_text(value: str) -> bool:
+    """Whether PostgreSQL can store this string and strict UTF-8 can encode it."""
+    if "\x00" in value:
+        return False
+    for char in value:
+        if "\ud800" <= char <= "\udfff":
+            return False
+    return True
+
+
+def _storable(value: str) -> str:
+    if not storable_text(value):
+        raise ValueError("text contains a character that cannot be stored")
+    return value
+
+
+StorableStr = Annotated[str, AfterValidator(_storable)]
+
+
 class Manifest(BaseModel):
     # Worker-side manifest files may carry extra fields (weight sources); only
     # this surface crosses the wire and reaches the frontend.
     model_config = ConfigDict(extra="ignore")
 
-    id: str
-    name: str
-    capabilities: list[str]
+    id: StorableStr
+    name: StorableStr
+    capabilities: list[StorableStr]
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     # int4 in the models table; a worker-supplied value past it fails the
     # upsert, and that runs before the fleet handler's cleanup can see it.
     min_vram_gb: int = Field(default=0, ge=0, lt=2**31)
     prompt_token_limit: int = 0  # text encoder window; 0 means the studio stays quiet
     default: bool = False  # preselected by clients when nothing is pinned
-    license_id: str = ""
-    license_url: str = ""
+    license_id: StorableStr = ""
+    license_url: StorableStr = ""
     commercial_max_revenue_usd: int | None = None
-    license_registration_url: str = ""
-    requires_attribution: str = ""
+    license_registration_url: StorableStr = ""
+    requires_attribution: StorableStr = ""
     benchmark_only: bool = False  # reference benchmarks; omitted from the studio UI
     # Studio-visible subset of capabilities; None means all of them. A model
     # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
@@ -147,25 +166,6 @@ def _params_validator(schema_json: str) -> Draft202012Validator:
 # levels and this predicate costs three frames per level, so without a cap it
 # would raise where json.loads succeeded: a guard failing inside the guard.
 JSON_MAX_DEPTH = 64
-
-
-def storable_text(value: str) -> bool:
-    """Whether PostgreSQL can store this string and strict UTF-8 can encode it."""
-    if "\x00" in value:
-        return False
-    for char in value:
-        if "\ud800" <= char <= "\udfff":
-            return False
-    return True
-
-
-def _storable(value: str) -> str:
-    if not storable_text(value):
-        raise ValueError("text contains a character that cannot be stored")
-    return value
-
-
-StorableStr = Annotated[str, AfterValidator(_storable)]
 
 
 def json_finite(value: object, depth: int = 0) -> bool:

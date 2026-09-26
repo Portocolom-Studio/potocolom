@@ -40,7 +40,7 @@ from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
 from app.auth import current_user, require_role
-from app.manifests import StorableStr, validate_params
+from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
 from app.storage import get_storage
 from app.tables import Asset, Job, PendingDelete, User
@@ -1738,6 +1738,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         usage_events.schedule_job(job_id, control)
     else:
         reason = str(control.get("reason", "worker reported failure"))
+        if not storable_text(reason):
+            logger.warning("worker %s sent an unstorable failure reason for job %s; "
+                           "storing the default", worker.id, job_id)
+            reason = "worker reported failure"
         try:
             committed = await mark_failed(job_id, reason,
                                           expected_attempt=current.attempt)
