@@ -1,4 +1,5 @@
-"""How often the sign-in path may be asked, per identifier and per caller.
+"""How often the sign-in path may be asked, per identifier and per caller, and
+how often the password reset path may be asked, per caller only.
 
 Both subjects are counted in a ten minute window, with a wait that starts after
 five attempts and doubles to eight seconds (docs/blueprint.md). Only the
@@ -151,9 +152,13 @@ async def charge_address(http: Request) -> None:
     # bucket it is counted in (app/realtime.py says the same of the fleet peer).
     peer = http.client.host if http.client else None
     if peer is None:
+        # uvicorn always sets the client; only a bare ASGI scope has none, and
+        # there is no caller to count.
         return
     async with db.session_factory() as session:
-        queued = await _reserve(session, peer)
+        # Its own row, not the peer's login row: sharing one queue let a flood
+        # of either route shut the other for everyone behind the same address.
+        queued = await _reserve(session, f"reset:{peer}")
         await session.commit()
     if queued is None:
         raise BUSY

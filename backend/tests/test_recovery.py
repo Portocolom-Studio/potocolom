@@ -11,7 +11,7 @@ from app import db, rate_limit, recovery, sessions
 from app.main import app
 from app.passwords import verify_password
 from app.settings import get_settings
-from app.tables import AuthIdentity, AuthToken, LoginAttempt, MailOutbox
+from app.tables import AuthIdentity, AuthToken, MailOutbox
 from tests.test_totp_flow import ORIGIN, PASSWORD, _login, _make, accounts
 
 __all__ = ["accounts"]
@@ -85,15 +85,6 @@ def waits(monkeypatch):
     return recorded
 
 
-async def _forget_address() -> None:
-    """Drop the caller address buckets, so the two halves of a comparison
-    each start from the same peer a stranger would meet."""
-    async with db.session_factory() as session:
-        await session.execute(
-            LoginAttempt.__table__.delete().where(LoginAttempt.scope == "address"))
-        await session.commit()
-
-
 async def _wait_for_reset_deliveries() -> None:
     """The deliveries run detached from the request, so the mail may still be
     in flight when the response arrives; wait for them before reading the
@@ -139,28 +130,42 @@ def test_reset_asks_are_charged_to_the_callers_address(accounts, waits, monkeypa
 
 
 @pytest.mark.db
-def test_an_ask_for_an_address_nobody_holds_is_charged_like_one_somebody_does(
-        accounts, waits, monkeypatch):
-    """The caller, not the account, is what an ask costs, so the answer
-    cannot betray whether the account exists: a peer that spends the whole
-    queue on a stranger's address leaves nobody able to ask about a real
-    one, and one that spends it on a real address leaves the stranger's
-    blocked too, with the same turns both ways."""
+def test_an_ask_costs_the_caller_whatever_address_it_names(accounts, waits, monkeypatch):
+    """Charging the named address instead would restart the queue whenever a
+    caller switched names, and would make the wait depend on which address it
+    named, which is the enumeration the uniform answer exists to prevent."""
     monkeypatch.setenv("EMAIL_BACKEND", "smtp")
     monkeypatch.setenv("SMTP_HOST", "mail.example.com")
     monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
     get_settings.cache_clear()
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "known@example.com")
-        stranger = [_ask(client, "nobody@example.com").status_code for _ in range(12)]
-        stranger_waits = list(waits)
-        waits.clear()
-        client.portal.call(_forget_address)
-        held = [_ask(client, "known@example.com").status_code for _ in range(12)]
+        names = ["known@example.com", "nobody@example.com"] * 6
+        codes = [_ask(client, name).status_code for name in names]
         client.portal.call(_wait_for_reset_deliveries)
-    assert stranger == [202] * (rate_limit.FREE_ATTEMPTS + 6) + [503]
-    assert held == stranger
-    assert list(waits) == pytest.approx(stranger_waits, abs=0.1)
+    assert codes == [202] * (rate_limit.FREE_ATTEMPTS + 6) + [503]
+    assert waits == pytest.approx(
+        [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.5, 3.5, 7.5, 15.5, 23.5], abs=0.1)
+
+
+@pytest.mark.db
+def test_reset_asks_do_not_queue_sign_in_from_the_same_caller(accounts, waits, monkeypatch):
+    """One queue for both routes let a flood of either shut the other for
+    everyone behind the same address."""
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "known@example.com")
+        codes = [_ask(client, "known@example.com").status_code for _ in range(12)]
+        client.portal.call(_wait_for_reset_deliveries)
+        waits.clear()
+        signed = client.post("/api/v1/auth/login",
+                             json={"email": "known@example.com", "password": "wrong password"})
+    assert codes[-1] == 503
+    assert signed.status_code == 401
+    assert list(waits) == pytest.approx([0.0], abs=0.1)
 
 
 def test_asking_does_not_take_the_account_gate():

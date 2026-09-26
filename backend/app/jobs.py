@@ -1740,7 +1740,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
         reason = str(control.get("reason", "worker reported failure"))
         if not storable_text(reason):
             logger.warning("worker %s sent an unstorable failure reason for job %s; "
-                           "storing the default", worker.id, job_id)
+                           "storing the default: %r", worker.id, job_id, reason)
             reason = "worker reported failure"
         try:
             committed = await mark_failed(job_id, reason,
