@@ -37,7 +37,9 @@
 	// behind it: PUBLIC_SITE_MODE=landing shows the canvas preview instead
 	// of the studio. Product builds leave the variable empty.
 	const landing = PUBLIC_SITE_MODE === 'landing';
-	$effect(() => {
+	// pre, so the role's answer changes the view before the studio renders: a
+	// plain effect lets a refused panel mount once and fire its requests.
+	$effect.pre(() => {
 		const { view, tab } = readStudioView(page.url);
 		studio.shellView = openViewFor(view, tab, account.current?.role ?? null);
 		// Only a metrics URL names the tab, and only when metrics was not
