@@ -20,9 +20,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-host-ports
-
 jobs:
   backend:
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
@@ -60,3 +57,10 @@ jobs:
         env:
           DATABASE_URL: >-
             postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/potocolom_test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: backend-test-reports
+          path: .local/reports/backend/
+          include-hidden-files: true
+          retention-days: 14

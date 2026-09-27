@@ -1,32 +1,4 @@
 <script module lang="ts">
-	import type { LineageTreeLayout } from '$lib/lineage-layout';
-	import type {
-		Generation as CanvasGeneration,
-		LineageEntry as CanvasLineageEntry
-	} from '$lib/studio.svelte';
-
-	type CanvasNodeData = {
-		output_asset_ids: string[];
-		entry: CanvasLineageEntry;
-		generation: CanvasGeneration | null;
-	};
-
-	type CachedTree = {
-		status: 'loading' | 'loaded' | 'error';
-		layout: LineageTreeLayout<CanvasNodeData> | null;
-		dirty: boolean;
-		truncated: boolean;
-		omittedHistoryJobIds: ReadonlySet<string>;
-		remainingCountLowerBound: number;
-		// One automatic retry per failure, tracked on the entry rather than per
-		// root: every load replaces the entry, so a later failure gets its own
-		// retry instead of inheriting an exhausted budget from an earlier one.
-		// Required, not optional: dropping it from a transition is what made the
-		// retry loop forever, so every entry has to state its budget out loud.
-		retried: boolean | undefined;
-	};
-
-	const sessionTreeCache = new Map<string, CachedTree>();
 	let canvasEpochSequence = 0;
 </script>
 
@@ -54,20 +26,15 @@
 		clampLineageCoordinate,
 		buildLineageRover,
 		decideInitialLineageViewportFollow,
-		decideLineageLiveArrival,
-		decideLineageTreeLoad,
 		decideViewportScheduleAfterRootPage,
 		lineageFocusActiveKind,
 		lineageMountedIds,
 		lineageRoverEntryId,
 		lineageTileTabIndex,
 		shouldRestoreLineageTileFocus,
-		lineageTreeOmittedHistoryJobIds,
-		lineageTreeNeedsHistoryRefresh,
 		nextLineageRoverId,
 		rebaseLineageViewport,
 		retainedLineageTreeOffsets,
-		retainedRetryBudget,
 		settleLineageRootStarReconciliation,
 		shouldPanToFocusedNode,
 		shouldSpendAnchorSearchPage,
@@ -75,6 +42,11 @@
 		type InitialLineageViewportAnchor,
 		type LineageRootStarReconciliation
 	} from '$lib/lineage-canvas-state';
+	import {
+		LineageForest,
+		type LineageNodeData as CanvasNodeData,
+		type LineageTree as CachedTree
+	} from '$lib/lineage-forest';
 	import {
 		LINEAGE_TILE_HEIGHT,
 		LINEAGE_TILE_WIDTH,
@@ -123,7 +95,6 @@
 	// so give up after this many and open on the newest instead.
 	const MAX_ANCHOR_SEARCH_PAGES = 4;
 	const MAX_MOUNTED_TILES = 600;
-	const MAX_CONCURRENT_TREE_LOADS = 4;
 	const MIN_SCALE = 0.12;
 	const MAX_SCALE = 1.6;
 	const PAN_STEP = 80;
@@ -173,7 +144,7 @@
 	let recenterAfterFilter = false;
 	let anchorSearchPages = 0;
 	let initializeFrame = 0;
-	let treeCache = $state(new Map(sessionTreeCache));
+	let treeCache = $state(new Map<string, CachedTree>());
 	let newNodeIds = $state(new Set<string>());
 	let failedImageIds = $state(new Set<string>());
 	let refreshingImageIds = $state(new Set<string>());
@@ -204,13 +175,17 @@
 	const canvasEpoch = ++canvasEpochSequence;
 	let canvasActive = true;
 	const requestControllers = new Set<AbortController>();
-	const treeLoadQueue = new Map<string, { root: Generation; force: boolean }>();
-	let treeLoadsInFlight = 0;
-	const knownFinishedIds = new Set(
-		studio.history
-			.filter((generation) => generation.assets.length > 0)
-			.map((generation) => generation.id)
-	);
+	const forest = new LineageForest({
+		fetchSubtree: fetchLineageSubtree,
+		initialHistory: studio.history,
+		history: () => studio.history,
+		onTreesChanged: (trees) => (treeCache = new Map(trees)),
+		onRootLoaded: (root) => {
+			roots = roots.map((item) => (item.id === root.id ? { ...root } : item));
+		},
+		onArrived: markArrived
+	});
+	treeCache = new Map(forest.trees);
 
 	const persistedRoots = $derived(roots.filter((root) => root.assets.length > 0));
 	const lod = $derived(lineageLod(scale));
@@ -365,20 +340,13 @@
 		};
 	}
 
-	function setCachedTree(rootId: string, tree: CachedTree): void {
-		if (!canvasActive || canvasEpoch !== canvasEpochSequence) return;
-		const next = new Map(treeCache);
-		next.set(rootId, tree);
-		treeCache = next;
-		if (tree.status === 'loaded') sessionTreeCache.set(rootId, tree);
-	}
-
-	function invalidateCachedTree(rootId: string): void {
-		treeLoadQueue.delete(rootId);
-		const next = new Map(treeCache);
-		next.delete(rootId);
-		treeCache = next;
-		sessionTreeCache.delete(rootId);
+	async function fetchLineageSubtree(
+		rootId: string,
+		signal: AbortSignal
+	): Promise<GenerationSubtree> {
+		const response = await fetch(`/api/v1/generations/${rootId}/subtree`, { signal });
+		if (!response.ok) throw new Error('root subtree request failed');
+		return response.json() as Promise<GenerationSubtree>;
 	}
 
 	async function fetchCanvasJson<T>(url: string, failure: string): Promise<T> {
@@ -575,120 +543,6 @@
 		}, 240);
 	}
 
-	async function loadTree(root: Generation, force = false): Promise<void> {
-		const existing = treeCache.get(root.id);
-		if (existing?.status === 'loading') {
-			if (force && !existing.dirty) setCachedTree(root.id, { ...existing, dirty: true });
-			return;
-		}
-		if (existing?.status === 'loaded' && !force) return;
-		const retained = retainedRetryBudget(force, existing);
-		setCachedTree(root.id, {
-			status: 'loading',
-			layout: existing?.layout ?? null,
-			dirty: false,
-			truncated: existing?.truncated ?? false,
-			omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
-			remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0,
-			retried: retained
-		});
-		try {
-			const subtree = await fetchCanvasJson<GenerationSubtree>(
-				`/api/v1/generations/${root.id}/subtree`,
-				'root subtree request failed'
-			);
-			const nodesByAsset = new Map<string, LineageLayoutNode<CanvasNodeData>>();
-			const nodesByJob = new Map<string, LineageLayoutNode<CanvasNodeData>>();
-			for (const node of subtree.nodes) {
-				const layoutNode = {
-					id: node.entry.asset_id,
-					createdAt: node.entry.created_at,
-					data: node,
-					children: []
-				};
-				nodesByAsset.set(node.entry.asset_id, layoutNode);
-				if (node.entry.job_id !== null) nodesByJob.set(node.entry.job_id, layoutNode);
-			}
-			for (const node of subtree.nodes) {
-				if (node.parent_job_id === null) continue;
-				const parent = nodesByJob.get(node.parent_job_id);
-				const child = nodesByAsset.get(node.entry.asset_id);
-				if (parent && child && parent !== child) parent.children.push(child);
-			}
-			const responseRoot = subtree.nodes.find((node) => node.entry.job_id === root.id);
-			if (!responseRoot) throw new Error('root missing from subtree');
-			const rootNode = nodesByAsset.get(responseRoot.entry.asset_id);
-			if (!rootNode) throw new Error('root missing from subtree');
-			const layout = layoutLineageTree(rootNode);
-			const previousIds = new Set(existing?.layout?.nodes.map((node) => node.id) ?? []);
-			const added = layout.nodes.map((node) => node.id).filter((id) => !previousIds.has(id));
-			const rerun = treeCache.get(root.id)?.dirty === true;
-			setCachedTree(root.id, {
-				status: 'loaded',
-				layout,
-				dirty: false,
-				truncated: subtree.truncated,
-				omittedHistoryJobIds: subtree.truncated
-					? lineageTreeOmittedHistoryJobIds(layout.nodes, studio.history)
-					: new Set(),
-				remainingCountLowerBound: subtree.remaining_count_lower_bound,
-				// A load that worked owes nothing, so the next failure starts fresh.
-				retried: undefined
-			});
-			// The response predates a coalesced force. Do not let it repopulate the
-			// session cache if the component unmounts before the rerun completes.
-			if (rerun) sessionTreeCache.delete(root.id);
-			roots = roots.map((item) => (item.id === root.id ? { ...responseRoot.generation } : item));
-			if (previousIds.size > 0) markArrived(added);
-			if (rerun) scheduleTreeLoad(responseRoot.generation, true);
-		} catch (error) {
-			if (error instanceof DOMException && error.name === 'AbortError') return;
-			const rerun = treeCache.get(root.id)?.dirty === true;
-			setCachedTree(root.id, {
-				status: 'error',
-				layout: existing?.layout ?? null,
-				dirty: false,
-				truncated: existing?.truncated ?? false,
-				omittedHistoryJobIds: existing?.omittedHistoryJobIds ?? new Set(),
-				remainingCountLowerBound: existing?.remainingCountLowerBound ?? 0,
-				retried: retained
-			});
-			// A coalesced force is a fresh request rather than this failure's
-			// automatic retry, so it starts with a budget of its own.
-			if (rerun) scheduleTreeLoad(root, true);
-		}
-	}
-
-	function scheduleTreeLoad(root: Generation, force = false): void {
-		const cached = treeCache.get(root.id);
-		if (cached?.status === 'loading') {
-			if (force && !cached.dirty) setCachedTree(root.id, { ...cached, dirty: true });
-			return;
-		}
-		const queued = treeLoadQueue.get(root.id);
-		if (queued) {
-			if (force && !queued.force) treeLoadQueue.set(root.id, { root, force: true });
-			return;
-		}
-		treeLoadQueue.set(root.id, { root, force });
-		drainTreeLoadQueue();
-	}
-
-	function drainTreeLoadQueue(): void {
-		while (canvasActive && treeLoadsInFlight < MAX_CONCURRENT_TREE_LOADS) {
-			const next = treeLoadQueue.entries().next().value as
-				[string, { root: Generation; force: boolean }] | undefined;
-			if (!next) return;
-			const [rootId, request] = next;
-			treeLoadQueue.delete(rootId);
-			treeLoadsInFlight += 1;
-			void loadTree(request.root, request.force).finally(() => {
-				treeLoadsInFlight -= 1;
-				drainTreeLoadQueue();
-			});
-		}
-	}
-
 	function treeIsVisible(tree: PackedLineageTree<CanvasNodeData>): boolean {
 		return rectsIntersect(worldRect, {
 			left: tree.x,
@@ -703,26 +557,7 @@
 			if (!treeIsVisible(tree)) continue;
 			const root = persistedRoots.find((item) => item.id === tree.rootId);
 			if (!root) continue;
-			const cached = treeCache.get(tree.rootId);
-			const decision = decideLineageTreeLoad(tree.hasDerivatives, cached);
-			if (decision === 'skip') continue;
-			if (decision === 'synthesize') {
-				setCachedTree(tree.rootId, {
-					status: 'loaded',
-					layout: tree.layout,
-					dirty: false,
-					truncated: false,
-					omittedHistoryJobIds: new Set(),
-					remainingCountLowerBound: 0,
-					// Nothing was fetched, so there is no failure to budget for.
-					retried: undefined
-				});
-				continue;
-			}
-			if (decision === 'retry' && cached) {
-				setCachedTree(tree.rootId, { ...cached, retried: true });
-			}
-			scheduleTreeLoad(root);
+			forest.ensureVisible(root, tree.layout);
 		}
 		const reachedRight =
 			worldRect.right >= forestRight - 320 && worldRect.right >= lastPageLoadWorld.right + 320;
@@ -736,65 +571,11 @@
 
 	$effect(() => {
 		const finished = studio.history.filter((generation) => generation.assets.length > 0);
-		for (const generation of finished) {
-			if (knownFinishedIds.has(generation.id)) continue;
-			knownFinishedIds.add(generation.id);
-			const arrival = decideLineageLiveArrival(
-				generation.source_asset_id === null,
-				starredOnly,
-				isStarred(generation.id)
-			);
-			if (arrival === 'ignore') continue;
-			if (arrival === 'insert-root') {
-				roots = [
-					{ ...generation, has_derivatives: generation.has_derivatives ?? false },
-					...roots.filter((root) => root.id !== generation.id)
-				];
-				markArrived([generation.assets[0].id]);
-				continue;
-			}
-			for (const [rootId, cached] of treeCache) {
-				if (!cached.layout?.nodes.some((node) => node.id === generation.source_asset_id)) continue;
-				roots = roots.map((root) =>
-					root.id === rootId ? { ...root, has_derivatives: true } : root
-				);
-				const root = roots.find((item) => item.id === rootId);
-				if (root) {
-					scheduleTreeLoad(root, true);
-				} else if (cached.status === 'loading') {
-					// This hidden tree already has a request in flight. Make that request
-					// rerun, and discard the older settled copy held across mounts.
-					sessionTreeCache.delete(rootId);
-					if (!cached.dirty) setCachedTree(rootId, { ...cached, dirty: true });
-				} else {
-					// A filter-hidden settled tree cannot reload now. Evict it so exposing
-					// the root later cannot reuse a permanently incomplete layout.
-					invalidateCachedTree(rootId);
-				}
-				break;
-			}
-		}
+		roots = forest.reconcileFinished(roots, finished, starredOnly, isStarred);
 	});
 
 	$effect(() => {
-		for (const root of persistedRoots) {
-			const cached = treeCache.get(root.id);
-			const cachedRoot = cached?.layout?.nodes.find((node) => node.data.entry.job_id === root.id);
-			const derivativeFlagChanged =
-				root.has_derivatives === true && cachedRoot?.data.generation?.has_derivatives !== true;
-			if (
-				cached?.status === 'loaded' &&
-				cached.layout &&
-				(derivativeFlagChanged ||
-					lineageTreeNeedsHistoryRefresh(
-						cached.layout.nodes,
-						studio.history,
-						cached.omittedHistoryJobIds
-					))
-			) {
-				scheduleTreeLoad(root, true);
-			}
-		}
+		forest.reconcileHistory(persistedRoots, studio.history);
 	});
 
 	$effect(() => {
@@ -1469,31 +1250,7 @@
 	}
 
 	function replaceGeneration(assetId: string, generation: Generation): void {
-		roots = roots.map((root) => (root.id === generation.id ? generation : root));
-		let changed = false;
-		const nextCache = new Map(treeCache);
-		for (const [rootId, cached] of nextCache) {
-			if (!cached.layout?.nodes.some((node) => node.id === assetId)) continue;
-			const nodes = cached.layout.nodes.map((node) =>
-				node.id === assetId
-					? {
-							...node,
-							data: {
-								...node.data,
-								entry: {
-									...node.data.entry,
-									thumbnail_url: generation.assets[0]?.thumbnail_url ?? null,
-									missing: generation.assets.length === 0
-								},
-								generation
-							}
-						}
-					: node
-			);
-			nextCache.set(rootId, { ...cached, layout: { ...cached.layout, nodes } });
-			changed = true;
-		}
-		if (changed) treeCache = nextCache;
+		roots = forest.replaceGeneration(roots, assetId, generation);
 	}
 
 	async function refreshImage(data: CanvasNodeData): Promise<void> {
@@ -1572,6 +1329,7 @@
 		canvasActive = false;
 		for (const controller of requestControllers) controller.abort();
 		requestControllers.clear();
+		forest.stop();
 		stopInertia();
 		if (initializeFrame) cancelAnimationFrame(initializeFrame);
 		if (recenterTimer) clearTimeout(recenterTimer);
@@ -1984,7 +1742,7 @@
 								onpointerdown={(event) => event.stopPropagation()}
 								onclick={(event) => {
 									event.stopPropagation();
-									scheduleTreeLoad(root, true);
+									forest.force(root);
 								}}
 							>
 								<RefreshCwIcon />
