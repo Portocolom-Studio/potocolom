@@ -241,9 +241,9 @@ verify-frontend:
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
 
-test-db-clean: ## drop per-checkout databases (test and worktree dev), keep the shared dev one
+test-db-clean: ## drop per-checkout databases (test, stress and worktree dev), keep shared dev
 	@docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \
-		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}(_[0-9]+_[0-9a-f]+)?$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
+		"SELECT datname FROM pg_database WHERE datname ~ '^potocolom_test_[0-9a-f]{8}(_[0-9]+_[0-9a-f]+)?$$' OR datname ~ '^potocolom_stress_[0-9a-f]{8}_[0-9]+_[0-9a-f]+$$' OR datname ~ '^potocolom_[0-9a-f]{8}$$'" \
 		| xargs -I{} docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres \
 			-c 'DROP DATABASE IF EXISTS "{}" WITH (FORCE)'
 
@@ -343,12 +343,9 @@ verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and C
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
 
-stress: ## deterministic socket stress test against a running API (docs/local-development.md)
-	@set -a; \
-	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
-	set +a; \
-	FLEET_TOKEN="$${FLEET_TOKEN:-$$FLEET_SECRET}" \
-		backend/.venv/bin/python scripts/stress.py --api http://localhost:$(API_PORT)
+stress: ## deterministic socket stress test with an isolated API (docs/local-development.md)
+	PYTHONPATH=$(CURDIR)/backend:$(CURDIR)/worker \
+		backend/.venv/bin/python scripts/stress.py
 
 # The local M2 stack. Each target runs in the foreground in its own terminal.
 # Or use dev-start / dev-stop / dev-restart for API + frontend + worker in the background.
