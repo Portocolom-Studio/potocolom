@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -26,8 +27,9 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
     # fix for shared names would let two runs of this test drop each other's
     # probe, which is the defect the branch exists to remove.
     supplied = f"potocolom_test_supplied_probe_{conftest._RUN}"
-    admin = "postgresql://potocolom:potocolom@localhost:5432/postgres"
-    url = f"postgresql://potocolom:potocolom@localhost:5432/{supplied}"
+    configured = urlsplit(conftest._DATABASE_URL)
+    admin = configured._replace(path="/postgres").geturl()
+    url = configured._replace(path=f"/{supplied}").geturl()
 
     async def sql(dsn, *statements, fetch=None):
         conn = await asyncpg.connect(dsn, timeout=3)

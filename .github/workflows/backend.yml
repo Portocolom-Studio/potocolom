@@ -20,9 +20,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-host-ports
-
 jobs:
   backend:
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.

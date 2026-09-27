@@ -60,7 +60,7 @@ Every target installs and controls `CI_RUNNERS` runner instances (default **4**)
 
 Change the count with `make ci-runner-install CI_RUNNERS=6`, and pass the same value to the start, stop, and status targets. The reference desktop has 32 CPUs and 61 GB of RAM, so 4 concurrent jobs are comfortable.
 
-Two workflows bind host resources (backend postgres via Docker on a free port, simulation on a free API port and the shared `potocolom_ci` database), so both declare a `concurrency` group. Runs of the same workflow still queue one at a time. Different workflows run in parallel. Add a `concurrency` group to any new workflow that binds a host port or the CI database.
+Backend PostgreSQL uses a Docker-selected host port, and each job reads that port into its own `DATABASE_URL`, so backend runs can execute in parallel. Simulation still declares a `concurrency` group because its runs share the host `potocolom_ci` database. Add a `concurrency` group to any new workflow that uses a shared mutable host resource.
 
 Simulation talks to the host PostgreSQL, not the backend job's Docker postgres. It uses the database `potocolom_ci`, created on first run, and never the developer database `potocolom`. A local `make auth-enable` therefore cannot redden `main`. The script refuses to start in CI if `DATABASE_URL` still names `potocolom`.
 
