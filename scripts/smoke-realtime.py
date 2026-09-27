@@ -15,7 +15,28 @@ async def main() -> None:
             ready = json.loads(await socket.recv())
             assert ready["type"] == "ready", ready
             session = uuid.UUID(ready["session_id"]).bytes
-            payload = b"release-frame-roundtrip"
+            payload = b"release-frame-before-failover"
+            await socket.send(b"\x01" + session + payload)
+            while True:
+                message = await socket.recv()
+                if isinstance(message, bytes):
+                    assert message == b"\x02" + session + payload, message
+                    break
+                control = json.loads(message)
+                assert control["type"] != "error", control
+            print(f"FIRST_FRAME {ready['session_id']}", flush=True)
+
+            controls = []
+            while controls != ["interrupted", "resumed"]:
+                message = await socket.recv()
+                assert not isinstance(message, bytes), message
+                control = json.loads(message)
+                assert control["type"] != "error", control
+                if control["type"] in {"interrupted", "resumed"}:
+                    controls.append(control["type"])
+                    assert controls in (["interrupted"], ["interrupted", "resumed"]), controls
+
+            payload = b"release-frame-after-failover"
             await socket.send(b"\x01" + session + payload)
             while True:
                 message = await socket.recv()
@@ -25,7 +46,7 @@ async def main() -> None:
                 control = json.loads(message)
                 assert control["type"] != "error", control
             await socket.send(json.dumps({"type": "close"}))
-    print("realtime frame roundtrip passed")
+    print(f"FAILOVER_PASSED {ready['session_id']}", flush=True)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ PROJECT="${COMPOSE_SMOKE_PROJECT:-potocolom-smoke}"
 COMPOSE=(docker compose -p "$PROJECT" -f compose.smoke.yml)
 BUILD=(--build)
 OVERRIDE=""
+REALTIME_PID=""
+REALTIME_LOG=""
 if [[ -n "${COMPOSE_SMOKE_API_IMAGE:-}${COMPOSE_SMOKE_WORKER_IMAGE:-}" ]]; then
   : "${COMPOSE_SMOKE_API_IMAGE:?both smoke images must be set}"
   : "${COMPOSE_SMOKE_WORKER_IMAGE:?both smoke images must be set}"
@@ -68,8 +70,13 @@ export COMPOSE_SMOKE_PORT="$PORT"
 base="http://localhost:${PORT}"
 
 cleanup() {
+  if [[ -n "$REALTIME_PID" ]] && kill -0 "$REALTIME_PID" 2>/dev/null; then
+    kill "$REALTIME_PID" || true
+    wait "$REALTIME_PID" || true
+  fi
   "${COMPOSE[@]}" down -v --remove-orphans || true
   if [[ -n "$OVERRIDE" ]]; then rm -f "$OVERRIDE"; fi
+  if [[ -n "$REALTIME_LOG" ]]; then rm -f "$REALTIME_LOG"; fi
 }
 trap cleanup EXIT
 
@@ -152,7 +159,54 @@ if [[ "$state" != "succeeded" ]]; then
   exit 1
 fi
 
-"${COMPOSE[@]}" exec -T api python - < "$ROOT/scripts/smoke-realtime.py"
+primary_worker=$("${COMPOSE[@]}" ps -q worker-sim)
+if [[ -z "$primary_worker" ]] || [[ "$primary_worker" == *$'\n'* ]]; then
+  echo "expected exactly one primary worker before failover smoke" >&2
+  exit 1
+fi
+
+REALTIME_LOG=$(mktemp)
+"${COMPOSE[@]}" exec -T api python - < "$ROOT/scripts/smoke-realtime.py" \
+  >"$REALTIME_LOG" 2>&1 &
+REALTIME_PID=$!
+
+first_frame_deadline=$((SECONDS + 30))
+until grep -q '^FIRST_FRAME ' "$REALTIME_LOG"; do
+  if ! kill -0 "$REALTIME_PID" 2>/dev/null; then
+    cat "$REALTIME_LOG" >&2
+    wait "$REALTIME_PID" || true
+    REALTIME_PID=""
+    exit 1
+  fi
+  if (( SECONDS >= first_frame_deadline )); then
+    echo "realtime smoke did not produce its first frame" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+"${COMPOSE[@]}" up -d --no-build --no-deps --no-recreate --scale worker-sim=2 worker-sim
+registered=0
+registration_deadline=$((SECONDS + 30))
+while (( SECONDS < registration_deadline )); do
+  registered=$("${COMPOSE[@]}" exec -T postgres psql -At -U potocolom -d potocolom \
+    -c "SELECT count(*) FROM audit_events WHERE action = 'fleet.worker_registered'")
+  if (( registered >= 2 )); then break; fi
+  sleep 0.1
+done
+if (( registered < 2 )); then
+  echo "replacement worker did not register" >&2
+  exit 1
+fi
+
+docker kill "$primary_worker" >/dev/null
+if ! wait "$REALTIME_PID"; then
+  cat "$REALTIME_LOG" >&2
+  exit 1
+fi
+REALTIME_PID=""
+cat "$REALTIME_LOG"
+grep -q '^FAILOVER_PASSED ' "$REALTIME_LOG"
 
 "${COMPOSE[@]}" exec -T postgres createdb -U potocolom upgrade_smoke
 "${COMPOSE[@]}" run --rm --no-deps -T api sh -c \

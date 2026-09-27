@@ -6,7 +6,9 @@ test gate and the real CPU inference gate, then builds the API, CUDA worker and
 ROCm worker images. It requires the CPU inference target from issue #510.
 
 Each exact worker image must import its inference libraries, run a simulated
-generation and return a realtime frame through the API. The same stack tests a
+generation and return realtime frames through the API before and after a
+worker is killed. The browser must see `interrupted`, then `resumed`, and keep
+the same session ID. The same stack tests a
 populated schema upgrade from revision 0023 to head, then a PostgreSQL dump and
 restore. These checks use temporary containers and volumes. They do not test
 GPU execution, asset-file backup, or a previous released worker image.
