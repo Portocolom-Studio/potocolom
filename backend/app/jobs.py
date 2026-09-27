@@ -1379,6 +1379,16 @@ async def dispatch(job_id: uuid.UUID) -> bool:
     epoch = _dispatch_epoch
     assert db.session_factory is not None
     async with db.session_factory() as session:
+        # The model id never changes after a job is created, so reading it
+        # unlocked is safe, and it keeps a job no worker can take from
+        # costing a row lock on every tick. It still costs one unlocked point
+        # select per tick.
+        model_id = (await session.execute(
+            select(Job.model_id).where(Job.id == job_id))).scalar_one_or_none()
+        if model_id is None:
+            return True  # stale queue entry; drop it
+        if pick_job_worker(model_id) is None:
+            return False
         job = await locked_job(session, job_id)
         if job is None or job.state != "queued":
             return True  # stale queue entry; drop it
