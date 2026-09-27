@@ -1,27 +1,36 @@
 """Deterministic stress test for the realtime and fleet WebSockets.
 
-Targets an API that is already running (AUTH_MODE=none, no worker needed).
-Fake workers speak the fleet protocol inside this process, so no GPU and no
-worker process are involved. The schedule is fixed by --seed and the counts:
+Starts an accounts-mode API against a fresh database that is deleted after the
+run. Fake workers speak the fleet protocol inside this process, so no GPU and
+no worker process are involved. The schedule is fixed by --seed and the counts:
 the same messages go out in the same order, and only timings, send stamps and
 server-minted ids vary between runs. Prints one table and exits 1 when
 any threshold fails.
 
-    FLEET_TOKEN=... backend/.venv/bin/python scripts/stress.py --api http://localhost:8427
+    backend/.venv/bin/python scripts/stress.py
 """
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
 import math
 import os
 import random
+import re
+import secrets
+import socket
 import struct
 import sys
+import tempfile
 import time
 import uuid
 import zlib
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import websockets
@@ -49,6 +58,213 @@ RSS_GROWTH_MB = 64
 FD_GROWTH = 10
 SCENARIOS = ["sessions", "throughput", "worker-churn", "conn-churn", "slow-consumer",
              "rest-burst"]
+ROOT = Path(__file__).resolve().parents[1]
+PASSWORD = "stress-harness-password-603"
+CONNECTION_CONCURRENCY = 20
+DATABASE_NAME = re.compile(r"^potocolom_stress_[0-9a-f]{8}_[0-9]+_[0-9a-f]+$")
+
+
+@dataclass(frozen=True)
+class Account:
+    cookies: dict[str, str]
+    csrf: str
+
+    @property
+    def cookie_header(self) -> str:
+        return "; ".join(f"{name}={value}" for name, value in self.cookies.items())
+
+
+def accounts_needed(args: argparse.Namespace) -> int:
+    return max(args.sessions, args.workers * args.slots,
+               min(args.churn, CONNECTION_CONCURRENCY), 2)
+
+
+def generated_database_url(base_url: str) -> tuple[str, str]:
+    parsed = urlsplit(base_url)
+    checkout = hashlib.sha256(str(ROOT).encode()).hexdigest()[:8]
+    name = f"potocolom_stress_{checkout}_{os.getpid()}_{secrets.token_hex(8)}"
+    return urlunsplit(parsed._replace(path=f"/{name}")), name
+
+
+async def database_connection(url: str, database: str):
+    import asyncpg
+
+    parsed = urlsplit(url)
+    return await asyncpg.connect(urlunsplit(parsed._replace(path=f"/{database}")), timeout=10)
+
+
+async def create_database(url: str, name: str) -> None:
+    if not DATABASE_NAME.fullmatch(name):
+        raise RuntimeError(f"refusing to create unexpected database name {name!r}")
+    connection = await database_connection(url, "postgres")
+    try:
+        await connection.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await connection.close()
+
+
+async def drop_database(url: str, name: str) -> None:
+    if not DATABASE_NAME.fullmatch(name):
+        raise RuntimeError(f"refusing to drop unexpected database name {name!r}")
+    connection = await database_connection(url, "postgres")
+    try:
+        await connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await connection.close()
+
+
+def session_account(response: httpx.Response) -> Account:
+    cookies = dict(response.cookies.items())
+    csrf = next((value for name, value in cookies.items()
+                 if name.endswith("potocolom_csrf")), "")
+    if not csrf or not any(name.endswith("potocolom_session") for name in cookies):
+        raise RuntimeError("account response did not set session and CSRF cookies")
+    return Account(cookies, csrf)
+
+
+async def provision_accounts(args: argparse.Namespace, setup_token: str) -> list[Account]:
+    origin = args.api
+    async with httpx.AsyncClient(base_url=args.api, timeout=30) as client:
+        claimed = await client.post(
+            "/api/v1/auth/setup",
+            headers={"Origin": origin},
+            json={"token": setup_token, "email": "stress-admin@example.invalid",
+                  "password": PASSWORD},
+        )
+        claimed.raise_for_status()
+        admin = session_account(claimed)
+        headers = {"Origin": origin, "X-CSRF-Token": admin.csrf}
+        invitations = []
+        for number in range(accounts_needed(args)):
+            invited = await client.post(
+                "/api/v1/invitations",
+                headers=headers,
+                cookies=admin.cookies,
+                json={"email": f"stress-{number}@example.invalid", "role": "user"},
+            )
+            invited.raise_for_status()
+            invitations.append(invited.json()["token"])
+
+    async def register(token: str) -> Account:
+        async with httpx.AsyncClient(base_url=args.api, timeout=30) as client:
+            response = await client.post(
+                "/api/v1/auth/register",
+                headers={"Origin": origin},
+                json={"token": token, "password": PASSWORD},
+            )
+            response.raise_for_status()
+            return session_account(response)
+
+    accounts: list[Account] = []
+    for start in range(0, len(invitations), 4):
+        accounts.extend(await asyncio.gather(*(register(token)
+                                               for token in invitations[start:start + 4])))
+    return accounts
+
+
+async def wait_until_ready(api: str, process: asyncio.subprocess.Process, log_path: Path) -> None:
+    deadline = time.monotonic() + 30
+    async with httpx.AsyncClient(timeout=1) as client:
+        while time.monotonic() < deadline:
+            if process.returncode is not None:
+                detail = log_path.read_text(errors="replace")[-4000:]
+                raise RuntimeError(f"stress API exited {process.returncode}: {detail}")
+            try:
+                response = await client.get(f"{api}/api/v1/health")
+                if response.status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.1)
+    detail = log_path.read_text(errors="replace")[-4000:]
+    raise RuntimeError(f"stress API did not become ready: {detail}")
+
+
+@asynccontextmanager
+async def managed_api(args: argparse.Namespace):
+    database_url, database_name = generated_database_url(args.database_url)
+    temporary = tempfile.TemporaryDirectory(prefix="potocolom-stress-")
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    args.api = f"http://127.0.0.1:{port}"
+    args.api_ws = f"ws://127.0.0.1:{port}"
+    args.fleet_token = secrets.token_urlsafe(32)
+    root_key = base64.b64encode(secrets.token_bytes(32)).decode()
+    environment = os.environ.copy()
+    environment.update({
+        "AUTH_MODE": "accounts",
+        "DATABASE_URL": database_url,
+        "BILLING_ENABLED": "false",
+        "BENCHMARK_API": "false",
+        "EMAIL_BACKEND": "none",
+        "FLEET_TOKEN_KEY": args.fleet_token,
+        "FRONTEND_DIST": "",
+        "INTERNAL_URL": args.api,
+        "OAUTH_PROVIDERS": "",
+        "PUBLIC_URL": args.api,
+        "ROOT_KEYS": f"1:{root_key}",
+        "STORAGE_BACKEND": "local",
+        "STORAGE_LOCAL_PATH": temporary.name,
+        "TELEMETRY": "false",
+        "PYTHONPATH": f"{ROOT / 'backend'}:{ROOT / 'worker'}",
+    })
+    process = None
+    database_created = False
+    log_path = Path(temporary.name) / "api.log"
+    try:
+        await create_database(database_url, database_name)
+        database_created = True
+        enabled = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import asyncio; from app.enable import _enable; print(asyncio.run(_enable()))",
+            cwd=ROOT / "backend",
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await enabled.communicate()
+        if enabled.returncode != 0:
+            raise RuntimeError(f"could not enable stress accounts: {stderr.decode().strip()}")
+        setup_token = stdout.decode().strip()
+        with log_path.open("wb") as log:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "app.main:app",
+                "--fd",
+                str(listener.fileno()),
+                "--ws-max-size",
+                "2097152",
+                cwd=ROOT / "backend",
+                env=environment,
+                stdout=log,
+                stderr=log,
+                pass_fds=(listener.fileno(),),
+            )
+        listener.close()
+        await wait_until_ready(args.api, process, log_path)
+        args.accounts = await provision_accounts(args, setup_token)
+        args.api_pid = process.pid
+        yield
+    finally:
+        listener.close()
+        if process is not None and process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), 10)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        try:
+            if database_created:
+                await drop_database(database_url, database_name)
+        finally:
+            temporary.cleanup()
 
 
 def tiny_png() -> bytes:
@@ -223,8 +439,9 @@ async def fleet(args: argparse.Namespace, count: int, slots: int):
 
 
 class Browser:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, account: Account) -> None:
         self.args = args
+        self.account = account
         self.session = b""
         self.sent = 0
         self.latencies: list[float] = []
@@ -234,8 +451,10 @@ class Browser:
         self.reader: asyncio.Task | None = None
 
     async def open(self, read: bool = True, **connect) -> bool:
+        headers = dict(connect.pop("additional_headers", {}))
+        headers["Cookie"] = self.account.cookie_header
         self.ws = await websockets.connect(self.args.api_ws + "/api/v1/realtime",
-                                           max_size=2**21, **connect)
+                                           max_size=2**21, additional_headers=headers, **connect)
         await self.ws.send(json.dumps({"type": "open", "model_id": MODEL_ID,
                                        "params": {"prompt": "stress"}}))
         try:
@@ -304,7 +523,9 @@ class Report:
 
 
 async def open_all(args: argparse.Namespace, count: int) -> tuple[list[Browser], list[Browser]]:
-    browsers = [Browser(args) for _ in range(count)]
+    if count > len(args.accounts):
+        raise RuntimeError(f"{count} concurrent browsers need {count} stress accounts")
+    browsers = [Browser(args, account) for account in args.accounts[:count]]
     opened = await asyncio.gather(*(browser.open() for browser in browsers))
     ready = [browser for browser, ok in zip(browsers, opened) if ok]
     return ready, [browser for browser, ok in zip(browsers, opened) if not ok]
@@ -386,11 +607,17 @@ async def conn_churn(args, rng, report: Report) -> None:
     kinds = ["silent", "garbage", "open-drop", "ready-close", "ready-abort"]
     plan = [rng.choice(kinds) for _ in range(args.churn)]
     codes: dict[str, list[int | None]] = {kind: [] for kind in kinds}
-    gate = asyncio.Semaphore(20)
+    accounts = asyncio.Queue()
+    for account in args.accounts[:CONNECTION_CONCURRENCY]:
+        accounts.put_nowait(account)
 
     async def one(kind: str) -> None:
-        async with gate:
-            ws = await websockets.connect(args.api_ws + "/api/v1/realtime")
+        account = await accounts.get()
+        try:
+            ws = await websockets.connect(
+                args.api_ws + "/api/v1/realtime",
+                additional_headers={"Cookie": account.cookie_header},
+            )
             opening = json.dumps({"type": "open", "model_id": MODEL_ID,
                                   "params": {"prompt": "churn"}})
             with suppress(websockets.ConnectionClosed):
@@ -411,6 +638,8 @@ async def conn_churn(args, rng, report: Report) -> None:
                     await ws.send(json.dumps({"type": "close"}))
             await ws.close()
             codes[kind].append(ws.close_code)
+        finally:
+            accounts.put_nowait(account)
 
     async with fleet(args, args.workers, args.slots) as workers:
         rss_before, fds_before = process(args.api_pid)
@@ -443,7 +672,7 @@ async def slow_consumer(args, rng, report: Report) -> None:
     megabyte compresses to almost nothing."""
     stall, fps, pad = 8.0, 10, rng.randbytes(MAX_CANVAS_PAYLOAD_BYTES - 8)
     async with fleet(args, 1, 2):
-        slow, neighbour = Browser(args), Browser(args)
+        slow, neighbour = Browser(args, args.accounts[0]), Browser(args, args.accounts[1])
         # max_queue=1: the client library stops reading after one message, so
         # everything beyond the kernel buffers has to sit in the API.
         await slow.open(read=False, max_queue=1)
@@ -467,8 +696,12 @@ async def slow_consumer(args, rng, report: Report) -> None:
 
 async def rest_burst(args, rng, report: Report) -> None:
     prompts = [f"stress {rng.randrange(10**6)}" for _ in range(args.jobs)]
+    account = args.accounts[0]
     async with fleet(args, args.workers, args.slots), \
-            httpx.AsyncClient(base_url=args.api, timeout=60) as client:
+            httpx.AsyncClient(base_url=args.api, timeout=60,
+                              cookies=account.cookies,
+                              headers={"Origin": args.api,
+                                       "X-CSRF-Token": account.csrf}) as client:
         started = time.monotonic()
 
         async def one(prompt: str) -> tuple[int, str, float]:
@@ -495,7 +728,7 @@ async def rest_burst(args, rng, report: Report) -> None:
     report.add("jobs_per_s", len(succeeded) / max(max(succeeded, default=1.0), 0.001))
 
 
-async def main(args: argparse.Namespace) -> int:
+async def run_scenarios(args: argparse.Namespace) -> int:
     rows: Rows = []
     for name in args.scenario or SCENARIOS:
         report = Report(name, rows)
@@ -514,11 +747,16 @@ async def main(args: argparse.Namespace) -> int:
     return 1 if any(ok is False for *_, ok in rows) else 0
 
 
+async def main(args: argparse.Namespace) -> int:
+    async with managed_api(args):
+        return await run_scenarios(args)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--api", default="http://localhost:8000")
-    parser.add_argument("--fleet-token", default=os.environ.get("FLEET_TOKEN"))
-    parser.add_argument("--api-pid", type=int, help="API process, for RSS and fd checks")
+    parser.add_argument("--database-url", default=os.environ.get(
+        "STRESS_DATABASE_URL", "postgresql://potocolom:potocolom@localhost:5432/postgres"),
+        help="PostgreSQL server used to create a fresh temporary database")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--scenario", action="append", choices=SCENARIOS,
                         help="repeatable; all when omitted")
@@ -531,8 +769,4 @@ if __name__ == "__main__":
     parser.add_argument("--infer-ms", type=int, default=20, help="fake frame time")
     parser.add_argument("--job-ms", type=int, default=50, help="fake job time")
     parsed = parser.parse_args()
-    if not parsed.fleet_token:
-        parser.error("--fleet-token or FLEET_TOKEN is required")
-    parsed.api = parsed.api.rstrip("/")
-    parsed.api_ws = "ws" + parsed.api.removeprefix("http")
     sys.exit(asyncio.run(main(parsed)))

@@ -151,17 +151,19 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 
 `make simulate` shows the connection story once
 ([connection-handling.md](connection-handling.md), The simulation).
-`make stress` loads it. It runs `scripts/stress.py` against an API that is
-already running in `AUTH_MODE=none`. It brings its own fake workers, which
-speak the fleet protocol in the same process, so no GPU and no worker process
-are needed:
+`make stress` loads it. It creates a database named `potocolom_stress_*`, starts
+an accounts-mode API on a private local port, and deletes the database when it
+finishes. It gives concurrent browsers separate test accounts, so the load
+does not weaken or trip the two-canvas account limit. It brings its own fake
+workers, which speak the fleet protocol in the same process, so no GPU and no
+worker process are needed:
 
 ```bash
-make api      # in another terminal
-make stress   # same FLEET_SECRET from deploy/compose/.env, same API_PORT
-# or by hand, for another API:
-FLEET_TOKEN=<the API's FLEET_TOKEN_KEY> backend/.venv/bin/python scripts/stress.py \
-    --api http://localhost:8000 --api-pid <API pid>
+make deps
+make stress
+# or use another PostgreSQL server; its URL only supplies the server and credentials
+STRESS_DATABASE_URL=postgresql://user:password@localhost:5432/postgres \
+    backend/.venv/bin/python scripts/stress.py
 ```
 
 It runs six scenarios, or the ones you name with `--scenario`: `sessions`
@@ -171,11 +173,11 @@ close fast), `slow-consumer` (a browser that stops reading) and `rest-burst`
 (concurrent `POST /api/v1/generations`). `--seed`, the counts and the
 durations fix the schedule, so two runs send the same messages in the same
 order; only timings, send stamps and server-minted ids differ. It prints one
-table and exits 1 if a threshold fails. `--api-pid` adds the API's resident set
-and open descriptors from `/proc`. Scale the load with `--sessions`,
-`--workers`, `--slots`, `--churn` and `--jobs`. `slow-consumer` fails until
-the per-session mailboxes in [connection-handling.md](connection-handling.md)
-ship: today the API buffers every frame for a browser that stopped reading.
+table and exits 1 if a threshold fails. It measures its API process's resident
+set and open descriptors. Scale the load with `--sessions`, `--workers`,
+`--slots`, `--churn` and `--jobs`. A hard-killed run can leave its generated
+database behind; `make test-db-clean` removes those names with stale test
+databases.
 
 ## Trying accounts mode locally
 
