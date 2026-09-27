@@ -261,7 +261,7 @@ Useful runs this enables on one desktop:
 - Kill a worker mid job and mid session: retry-once and session recovery paths. **Shipped.**
 - Kill the leader API replica: scheduler failover within the lease window. **Designed.** One API process today; no Redis leader lease.
 - Stop Redis: degradation behavior, nobody logged out, queue rebuilt on return. **Designed.** Redis in cloud-sim is unused by the API.
-- Run the previous release's worker image against the current API: the N-1 promise. **Shipped.**
+- Run the previous release's worker image against the current API: the N-1 promise. **Pending a prior release artifact.** Protocol N-1 fixtures run in unit tests.
 - Open the drawing tool in two browsers against a one-slot worker: the second open is refused with 4003. Admission queue and position display are **designed** (issue #19).
 
 ## What only real AWS can validate
@@ -279,7 +279,7 @@ Per component, no GPU:
 3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
 4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
 5. Backend integration tests against a postgres service container. There is no Redis in the backend job and no leader-election Lua in this repository.
-6. Image publish to GHCR on a tag is still open. `deploy.yml` builds smoke images locally and runs `scripts/compose-smoke.sh`; it does not push GHCR.
+6. A version tag runs `release.yml`: the full gate, real CPU inference, exact image smoke tests and vulnerability scans precede GHCR publication. The workflow creates a draft release with image digests and the static artifact. See [release checks](release-checklist.md). `deploy.yml` runs the same generation, realtime, populated-schema upgrade and PostgreSQL restore smoke checks on pull requests, using a simulated worker.
 
 ```mermaid
 flowchart LR

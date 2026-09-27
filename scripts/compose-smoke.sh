@@ -8,6 +8,25 @@ cd "$COMPOSE_DIR"
 
 PROJECT="${COMPOSE_SMOKE_PROJECT:-potocolom-smoke}"
 COMPOSE=(docker compose -p "$PROJECT" -f compose.smoke.yml)
+BUILD=(--build)
+OVERRIDE=""
+if [[ -n "${COMPOSE_SMOKE_API_IMAGE:-}${COMPOSE_SMOKE_WORKER_IMAGE:-}" ]]; then
+  : "${COMPOSE_SMOKE_API_IMAGE:?both smoke images must be set}"
+  : "${COMPOSE_SMOKE_WORKER_IMAGE:?both smoke images must be set}"
+  OVERRIDE=$(mktemp)
+  cat >"$OVERRIDE" <<'YAML'
+services:
+  api:
+    image: ${COMPOSE_SMOKE_API_IMAGE}
+  worker-sim:
+    image: ${COMPOSE_SMOKE_WORKER_IMAGE}
+    environment:
+      DEVICE: cpu
+      MODELS_DIR: ""
+YAML
+  COMPOSE+=(-f "$OVERRIDE")
+  BUILD=(--no-build --pull never)
+fi
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
@@ -50,6 +69,7 @@ base="http://localhost:${PORT}"
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans || true
+  if [[ -n "$OVERRIDE" ]]; then rm -f "$OVERRIDE"; fi
 }
 trap cleanup EXIT
 
@@ -58,7 +78,7 @@ trap cleanup EXIT
 # was a reservation. PUBLIC_URL has to be settled before the API starts,
 # because it reads it at boot, so the port cannot simply be left to Docker.
 for attempt in 1 2 3; do
-  if "${COMPOSE[@]}" up -d --build --remove-orphans; then
+  if "${COMPOSE[@]}" up -d "${BUILD[@]}" --remove-orphans; then
     break
   fi
   if [[ "$attempt" == 3 ]]; then
@@ -122,11 +142,31 @@ for _ in $(seq 1 60); do
   state=$(curl -sf "${base}/api/v1/generations/${job_id}" \
     | python3 -c "import sys, json; print(json.load(sys.stdin)['state'])")
   if [[ "$state" == "succeeded" ]]; then
-    echo "compose smoke test passed (job ${job_id} on :${PORT})"
-    exit 0
+    break
   fi
   sleep 1
 done
 
-echo "job ${job_id} did not reach succeeded" >&2
-exit 1
+if [[ "$state" != "succeeded" ]]; then
+  echo "job ${job_id} did not reach succeeded" >&2
+  exit 1
+fi
+
+"${COMPOSE[@]}" exec -T api python - < "$ROOT/scripts/smoke-realtime.py"
+
+"${COMPOSE[@]}" exec -T postgres createdb -U potocolom upgrade_smoke
+"${COMPOSE[@]}" run --rm --no-deps -T api sh -c \
+  'DATABASE_URL="${DATABASE_URL%/*}/upgrade_smoke" alembic upgrade 0023'
+"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U potocolom -d upgrade_smoke \
+  < "$ROOT/scripts/smoke-upgrade-seed.sql"
+"${COMPOSE[@]}" run --rm --no-deps -T api sh -c \
+  'DATABASE_URL="${DATABASE_URL%/*}/upgrade_smoke" alembic upgrade head'
+"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U potocolom -d upgrade_smoke \
+  < "$ROOT/scripts/smoke-upgrade-check.sql"
+"${COMPOSE[@]}" exec -T postgres createdb -U potocolom restore_smoke
+"${COMPOSE[@]}" exec -T postgres pg_dump -U potocolom -Fc upgrade_smoke \
+  | "${COMPOSE[@]}" exec -T postgres pg_restore -U potocolom --exit-on-error -d restore_smoke
+"${COMPOSE[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U potocolom -d restore_smoke \
+  < "$ROOT/scripts/smoke-upgrade-check.sql"
+
+echo "compose smoke passed: generation ${job_id}, realtime, schema upgrade and restore"

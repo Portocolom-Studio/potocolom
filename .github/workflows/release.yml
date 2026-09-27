@@ -1,0 +1,151 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: potocolom
+          POSTGRES_PASSWORD: potocolom
+          POSTGRES_DB: potocolom
+        ports: [5432]
+        options: >-
+          --health-cmd "pg_isready -U potocolom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git merge-base --is-ancestor HEAD origin/main
+      - run: make setup
+      - run: make verify
+        env:
+          DATABASE_URL: postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/potocolom_test
+      - run: |
+          python3.11 -m venv worker/.venv-inference
+          worker/.venv-inference/bin/pip install --upgrade pip
+          worker/.venv-inference/bin/pip install 'torch==2.9.0' 'torchvision==0.24.0' --index-url https://download.pytorch.org/whl/cpu
+          worker/.venv-inference/bin/pip install -e './worker[dev,inference]'
+          make verify-worker-inference
+
+  publish:
+    needs: verify
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: echo "DOCKER_CONFIG=$RUNNER_TEMP/potocolom-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - id: images
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          owner="${REPOSITORY%%/*}"
+          registry="ghcr.io/${owner,,}"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+          for image in api worker-cuda worker-rocm; do
+            if [[ "$image" == api ]]; then
+              tag="$registry/potocolom-api:$VERSION"
+            else
+              tag="$registry/potocolom-worker:$VERSION-${image#worker-}"
+            fi
+            docker build --pull --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.version=$VERSION" \
+              -f "deploy/docker/Dockerfile.$image" -t "$tag" .
+          done
+      - name: Check exact worker images and API
+        env:
+          REGISTRY: ${{ steps.images.outputs.registry }}
+        run: |
+          for image in worker-cuda worker-rocm; do
+            docker run --rm --entrypoint python "$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" \
+              -c 'import torch, diffusers, transformers, torchao; print(torch.__version__, diffusers.__version__)'
+            COMPOSE_SMOKE_PROJECT="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${image}" \
+              COMPOSE_SMOKE_API_IMAGE="$REGISTRY/potocolom-api:$VERSION" \
+              COMPOSE_SMOKE_WORKER_IMAGE="$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" scripts/compose-smoke.sh
+          done
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          version: v0.74.0
+          image-ref: ${{ steps.images.outputs.registry }}/potocolom-api:${{ env.VERSION }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          output: trivy-api.txt
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          version: v0.74.0
+          image-ref: ${{ steps.images.outputs.registry }}/potocolom-worker:${{ env.VERSION }}-cuda
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          output: trivy-worker-cuda.txt
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          version: v0.74.0
+          image-ref: ${{ steps.images.outputs.registry }}/potocolom-worker:${{ env.VERSION }}-rocm
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          output: trivy-worker-rocm.txt
+      - name: Publish the tested images and create a draft release
+        env:
+          REGISTRY: ${{ steps.images.outputs.registry }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          container=$(docker create "$REGISTRY/potocolom-api:$VERSION")
+          trap 'docker rm "$container"' EXIT
+          mkdir release-static
+          docker cp "$container:/app/static/." release-static/
+          tar -czf "potocolom-$VERSION-static.tar.gz" -C release-static .
+          gh release create "$VERSION" --verify-tag --draft --title "potocolom $VERSION" \
+            --notes-file docs/release-checklist.md
+          for image in "$REGISTRY/potocolom-api:$VERSION" \
+            "$REGISTRY/potocolom-worker:$VERSION-cuda" "$REGISTRY/potocolom-worker:$VERSION-rocm"; do
+            docker push "$image"
+            docker inspect --format '{{index .RepoDigests 0}}' "$image" >> images.txt
+          done
+          sha256sum "potocolom-$VERSION-static.tar.gz" > SHA256SUMS
+          gh release upload "$VERSION" \
+            "potocolom-$VERSION-static.tar.gz" images.txt SHA256SUMS trivy-*.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: release-scan-reports
+          path: trivy-*.txt
+          retention-days: 30
+      - name: Remove release credentials
+        if: always()
+        run: |
+          [[ -n "${DOCKER_CONFIG:-}" ]] || exit 0
+          docker logout ghcr.io || true
+          rm -rf "$DOCKER_CONFIG"
