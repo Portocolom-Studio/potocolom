@@ -18,6 +18,25 @@ permissions:
   contents: read
 
 jobs:
+  inference-cpu:
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: python3.11 -m venv .venv-inference
+      - run: .venv-inference/bin/pip install --upgrade pip
+      - run: >-
+          .venv-inference/bin/pip install
+          torch==2.9.0 torchvision==0.24.0
+          --index-url https://download.pytorch.org/whl/cpu
+          --retries 10 --resume-retries 20 --timeout 60
+      - run: .venv-inference/bin/pip install -e ".[dev,inference]"
+      - run: make verify-worker-inference
+        working-directory: .
+
   worker:
     # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
     runs-on: [self-hosted, Linux, X64, potocolom]

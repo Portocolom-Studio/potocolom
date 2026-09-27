@@ -17,7 +17,8 @@
 	setup setup-rocm setup-cuda setup-inference check-python check-node check-worker-venv \
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
-	verify-frontend verify-compose verify-guards verify-mermaid simulate stress test-db-clean dev-db \
+	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
+	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
 	stack-up stack-down stack-restart cleanup-failed generate \
@@ -36,6 +37,7 @@
 VENV_OK = -c 'import sys; sys.exit(sys.version_info < (3, 11))'
 PYTHON ?= $(shell for c in python3 python3.13 python3.12 python3.11; do \
 	$$c $(VENV_OK) 2>/dev/null && { echo $$c; break; }; done)
+WORKER_INFERENCE_PYTHON ?= $(CURDIR)/worker/.venv-inference/bin/python
 
 preflight: ## check this machine; write deploy/compose/.env when missing
 	@bash "$(CURDIR)/scripts/preflight.sh"
@@ -233,6 +235,10 @@ verify-backend:
 
 verify-worker:
 	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
+
+verify-worker-inference:
+	cd worker && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+		$(WORKER_INFERENCE_PYTHON) -m pytest tests_inference
 
 verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test && npm run build && npm run test:canvas && npm run test:signin

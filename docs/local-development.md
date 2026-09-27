@@ -274,10 +274,10 @@ GitHub Actions runs lint and tests on every pull request (issue #13). By default
 
 Per component, no GPU:
 
-1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
+1. Lint and unit tests per component (frontend, backend, worker), on every pull request. Each standard job runs the matching `make verify-<component>` target, so what CI checks and what `make verify` checks are the same lines.
 2. On changes to the `Makefile` or a dependency manifest: `make verify-guards` proves the setup guards still refuse a toolchain without Python 3.11+ and recreate a pip-less venv, then `make setup` runs the onboarding path end to end, so a broken `make setup` fails here instead of on a new contributor's machine.
 3. On changes under `deploy/`: `make verify-compose` validates every compose file and profile, then `scripts/compose-smoke.sh` builds the shipped stack and drives one generation through it with the simulated worker, no GPU needed.
-4. Worker integration test with `DEVICE=cpu` and the tiny model: manifest loading, dispatch, frame streaming, safety checker, end to end in minutes.
+4. `make verify-worker-inference` runs in its own inference virtual environment with the CPU-only torch 2.9.0 wheel. It builds and saves a tiny random model locally, then tests manifest loading, dispatch, safety checks and the session frame wire header through `DiffusersEngine`. Missing inference dependencies fail this gate; the normal worker suite stays lightweight.
 5. Backend integration tests against a postgres service container. There is no Redis in the backend job and no leader-election Lua in this repository.
 6. Image publish to GHCR on a tag is still open. `deploy.yml` builds smoke images locally and runs `scripts/compose-smoke.sh`; it does not push GHCR.
 
@@ -298,7 +298,7 @@ GPU inference is never in CI. The release checklist runs it manually twice: ROCm
 
 Everything below is a rung-1 test already, so the checklist is a reading rather than a run: it is here so that a release is not the moment somebody discovers a guarantee had no test behind it.
 
-- `make verify` is green, which is the whole matrix.
+- `make verify` and the worker workflow's separate `make verify-worker-inference` gate are green.
 - The authentication rounds' own files pass in both modes: `test_endpoint_hardening.py` and `test_first_admin_setup.py` cover `AUTH_MODE=none`, everything under the `accounts` fixture covers the other.
 - `test_failure_matrix.py` passes, which is where the concurrency and outage cases live.
 - One accounts-mode pass by hand on the compose stack: `make auth-enable`, claim the link, sign in, invite somebody, sign in as them, and revoke that session from the first account. `npm run test:signin` (part of `make verify-frontend`) now loads the built `/login` page in a real browser on every run and asserts the session and CSRF cookies and the CSRF header, so the hand pass still covers what the automated one does not: the `__Host-` names over HTTPS, invitations, and logout.
