@@ -224,7 +224,7 @@ async def _raw_rows(
     from_ts: datetime,
     to_ts: datetime,
     worker_id: str | None,
-) -> list[GpuSample]:
+) -> tuple[list[GpuSample], bool]:
     query = select(GpuSample).where(
         GpuSample.sampled_at >= from_ts,
         GpuSample.sampled_at <= to_ts,
@@ -234,9 +234,16 @@ async def _raw_rows(
     # Newest samples first, then reversed back into ascending order for the
     # response: the cap keeps a bounded body, and the samples a live chart
     # still shows are the recent ones, not the oldest of the window.
-    query = query.order_by(GpuSample.sampled_at.desc()).limit(RAW_HISTORY_LIMIT)
+    query = query.order_by(GpuSample.sampled_at.desc()).limit(RAW_HISTORY_LIMIT + 1)
     rows = (await session.execute(query)).scalars().all()
-    return list(reversed(rows))
+    # The row past the cap is fetched but never served: it only tells whether
+    # the window held more, and the oldest one of the newest-first result is
+    # dropped when it did, so a truncated window says so instead of silently
+    # losing its older edge (issue #593).
+    truncated = len(rows) > RAW_HISTORY_LIMIT
+    if truncated:
+        rows = rows[:-1]
+    return list(reversed(rows)), truncated
 
 
 async def query_history(
@@ -245,12 +252,12 @@ async def query_history(
     to_ts: datetime,
     rollup: RollupMode = "auto",
     worker_id: str | None = None,
-) -> tuple[list[dict], Literal["raw", "5m"]]:
+) -> tuple[list[dict], Literal["raw", "5m"], bool]:
     span = to_ts - from_ts
     chosen = _choose_rollup(rollup, span)
     if chosen == "raw":
-        raw_rows = await _raw_rows(session, from_ts, to_ts, worker_id)
-        return [_serialize_raw(row) for row in raw_rows], "raw"
+        raw_rows, truncated = await _raw_rows(session, from_ts, to_ts, worker_id)
+        return [_serialize_raw(row) for row in raw_rows], "raw", truncated
 
     rollup_query = select(GpuSampleRollup).where(
         GpuSampleRollup.bucket_start >= from_ts,
@@ -261,10 +268,11 @@ async def query_history(
     rollup_query = rollup_query.order_by(GpuSampleRollup.bucket_start)
     rollup_rows = (await session.execute(rollup_query)).scalars().all()
     if rollup_rows or rollup != "auto" or span > RAW_RETENTION:
-        return [_serialize_rollup(row) for row in rollup_rows], "5m"
+        # Rollups are aggregated, never capped, so the flag is always false.
+        return [_serialize_rollup(row) for row in rollup_rows], "5m", False
 
-    raw_rows = await _raw_rows(session, from_ts, to_ts, worker_id)
-    return [_serialize_raw(row) for row in raw_rows], "raw"
+    raw_rows, truncated = await _raw_rows(session, from_ts, to_ts, worker_id)
+    return [_serialize_raw(row) for row in raw_rows], "raw", truncated
 
 
 def _serialize_raw(row: GpuSample) -> dict:

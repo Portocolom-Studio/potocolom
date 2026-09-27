@@ -309,7 +309,9 @@ GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples
                                         from and to must carry a timezone (an epoch millisecond
                                         integer or an ISO timestamp with an offset or Z); a naive
                                         timestamp answers 422. Raw mode caps the response at 5000
-                                        samples, keeping the newest in the window.
+                                        samples, keeping the newest in the window, and sets
+                                        `truncated: true` when the window held more; the field is
+                                        always present and false otherwise.
 GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
 GET  /api/v1/benchmark/gpu             admin only; live GPU status from a connected worker
 POST /api/v1/benchmark/gpu/load        admin only; load a model for scripts/benchmark.py

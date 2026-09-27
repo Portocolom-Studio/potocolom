@@ -48,7 +48,7 @@ async def gpu_history(
     to_ts = _parse_ts(to, "to")
     if to_ts <= from_ts:
         raise HTTPException(status_code=422, detail="to must be after from")
-    samples, chosen = await gpu_samples.query_history(
+    samples, chosen, truncated = await gpu_samples.query_history(
         session, from_ts, to_ts, rollup=rollup, worker_id=worker_id
     )
     return {
@@ -56,4 +56,5 @@ async def gpu_history(
         "to": to_ts.isoformat(),
         "rollup": chosen,
         "samples": samples,
+        "truncated": truncated,
     }

@@ -432,8 +432,96 @@ def test_gpu_history_raw_is_capped(monkeypatch):
             },
         )
         assert response.status_code == 200
-        samples = response.json()["samples"]
+        body = response.json()
+        samples = body["samples"]
+        # The three newest come back, oldest to newest, and the window holding
+        # five against a cap of three is reported as truncated (issue #593).
         assert [point["util_pct"] for point in samples] == [30, 40, 50]
+        assert body["truncated"] is True
+
+
+@pytest.mark.db
+def test_gpu_history_raw_exactly_at_the_cap_is_not_truncated(monkeypatch):
+    # A window holding exactly RAW_HISTORY_LIMIT rows serves them all with
+    # truncated false: the boundary a >= instead of > check breaks, because
+    # the guard row fetched past the cap is indistinguishable in count from a
+    # real truncation (issue #593).
+    monkeypatch.setattr(gpu_samples, "RAW_HISTORY_LIMIT", 3)
+    now = datetime.now(timezone.utc)
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        client.portal.call(_clear_gpu_metrics)
+
+        async def insert():
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add_all([
+                    GpuSample(worker_id="w-cap-boundary",
+                              sampled_at=now - timedelta(minutes=3), util_pct=10),
+                    GpuSample(worker_id="w-cap-boundary",
+                              sampled_at=now - timedelta(minutes=2), util_pct=20),
+                    GpuSample(worker_id="w-cap-boundary",
+                              sampled_at=now - timedelta(minutes=1), util_pct=30),
+                ])
+                await session.commit()
+
+        client.portal.call(insert)
+        response = client.get(
+            "/api/v1/metrics/gpu/history",
+            params={
+                "from": int((now - timedelta(minutes=10)).timestamp() * 1000),
+                "to": int(now.timestamp() * 1000),
+                "rollup": "raw",
+                "worker_id": "w-cap-boundary",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert [point["util_pct"] for point in body["samples"]] == [10, 20, 30]
+        assert body["truncated"] is False
+
+
+@pytest.mark.db
+def test_gpu_history_rollup_is_never_truncated(monkeypatch):
+    # Rollups are not capped, so a 5m response carries truncated false even
+    # for a window that raw mode would have cut (issue #593).
+    monkeypatch.setattr(gpu_samples, "RAW_HISTORY_LIMIT", 3)
+    now = datetime.now(timezone.utc)
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        client.portal.call(_clear_gpu_metrics)
+
+        async def insert():
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                session.add_all([
+                    GpuSample(worker_id="w-rollup-cap",
+                              sampled_at=now - timedelta(minutes=5), util_pct=10),
+                    GpuSample(worker_id="w-rollup-cap",
+                              sampled_at=now - timedelta(minutes=4), util_pct=20),
+                    GpuSample(worker_id="w-rollup-cap",
+                              sampled_at=now - timedelta(minutes=3), util_pct=30),
+                    GpuSample(worker_id="w-rollup-cap",
+                              sampled_at=now - timedelta(minutes=2), util_pct=40),
+                    GpuSample(worker_id="w-rollup-cap",
+                              sampled_at=now - timedelta(minutes=1), util_pct=50),
+                ])
+                await session.commit()
+
+        client.portal.call(insert)
+        response = client.get(
+            "/api/v1/metrics/gpu/history",
+            params={
+                "from": int((now - timedelta(minutes=10)).timestamp() * 1000),
+                "to": int(now.timestamp() * 1000),
+                "rollup": "5m",
+                "worker_id": "w-rollup-cap",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["rollup"] == "5m"
+        assert body["truncated"] is False
 
 
 @pytest.mark.db
