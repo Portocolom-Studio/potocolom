@@ -5,7 +5,7 @@ import uuid
 
 from PIL import Image
 
-from worker.client import GENERATED_FRAME, SessionManager, build_runtime, run_job
+from worker.client import SessionManager, build_runtime, run_job
 from worker.settings import Settings
 
 
@@ -238,7 +238,7 @@ def test_real_diffusers_worker_dispatches_and_streams_on_cpu(tmp_path, monkeypat
         assert image.format == "PNG"
         assert image.mode == "RGB"
         assert image.getextrema() != ((0, 0), (0, 0), (0, 0))
-    assert frame_data[0] == GENERATED_FRAME
+    assert frame_data[0] == 0x02
     assert frame_data[1:17] == next(
         uuid.UUID(report["session_id"]).bytes
         for report in reports
