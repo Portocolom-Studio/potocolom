@@ -157,8 +157,8 @@ the API first, then the worker. Extra hello fields from a worker one version
 ahead of its API are dropped, so narrowing fields such as
 `studio_capabilities` fail open. From protocol 4, that mismatch also leaves
 realtime unready: a protocol 4 worker ignores `open_session` with no
-`control_generation`, so the session never becomes ready (close 4003 after
-the ready timeout). Jobs still run. Compose brings both from one image, so
+`control_generation`, so the session never becomes ready (after the ready
+timeout it waits in the admission queue). Jobs still run. Compose brings both from one image, so
 operators who follow compose do not hit this.
 
 ## Accounts

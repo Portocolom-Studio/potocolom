@@ -283,7 +283,7 @@ The routes do not move between modes. Every account route is mounted in both and
 
 One logical scheduler, leader elected among API replicas with a Redis lease. Self-hosted there is one process, so it is simply always the leader.
 
-> Shipped status (2026-09-26): **partially implemented.** The current in-process loop dispatches generation jobs. Realtime sessions bypass it, select a process-local worker directly, and close with 4003 when the pool is full. Idle release ships outside this loop: a session sweep releases a live session after `IDLE_RELEASE_SECONDS` (60 s) without canvas input, and the next frame re-places it (`backend/app/realtime.py` `release_idle_sessions`, `resume_idle`; PR #571). Redis leadership, admission, resume priority, preemption, and cross-replica recovery are not implemented. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern this designed loop.
+> Shipped status (2026-09-26): **partially implemented.** The current in-process loop dispatches generation jobs. Realtime sessions bypass it and select a process-local worker directly; when none has room, an in-process admission queue ships (issue #19): an open, a reassignment or an idle resume that finds no free slot waits as `queued`, and the browser is told `{"type": "queued", "position": N}`, 1-based, whenever that changes and again on every 30 s session sweep. Idle release ships outside this loop: a session sweep releases a live session after `IDLE_RELEASE_SECONDS` (60 s) without canvas input, and the next frame re-places it (`backend/app/realtime.py` `release_idle_sessions`, `resume_idle`; PR #571). Redis leadership, admission priority, resume priority, preemption, and cross-replica recovery are not implemented. Issue #20, "Multi-Worker Scheduling", and "Redis-optional Queues and FrameBus contracts" govern this designed loop.
 
 ```python
 async def scheduler_task():                    # runs in every replica
@@ -490,7 +490,7 @@ Outage posture ([decisions.md](decisions.md), "Billing outage posture"): `reserv
 
 Realtime sessions meter through the same contract in chunks:
 
-> Shipped status (2026-09-26): **partially implemented.** The idle-release transition ships (PR #571): a live session with no canvas input for 60 s is released, which stops metering and settles the attempt, and the next frame resumes it, refused 4003 when no slot is free. The chunked quota client does not ship. The pseudocode below is the designed policy under "Quota contract: caller-supplied reservation ids with expiry" and issue #19, "Real-Time Generation Protocol".
+> Shipped status (2026-09-26): **partially implemented.** The idle-release transition ships (PR #571): a live session with no canvas input for 60 s is released, which stops metering and settles the attempt, and the next frame resumes it, through the admission queue when no slot is free (issue #19). The chunked quota client does not ship. The pseudocode below is the designed policy under "Quota contract: caller-supplied reservation ids with expiry" and issue #19, "Real-Time Generation Protocol".
 
 ```python
 CHUNK_GPU_MS = 60_000

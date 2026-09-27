@@ -448,6 +448,7 @@ class Browser:
         self.interrupted = self.resumed = 0
         self.since_resume = 0
         self.close_code: int | None = None
+        self.queued = False
         self.reader: asyncio.Task | None = None
 
     async def open(self, read: bool = True, **connect) -> bool:
@@ -463,6 +464,8 @@ class Browser:
             self.close_code = self.ws.close_code
             return False
         if reply["type"] != "ready":
+            # A full pool queues the open; closing the socket leaves the queue.
+            self.queued = reply["type"] == "queued"
             self.close_code = reply.get("code")
             await self.ws.close()
             return False
@@ -545,9 +548,10 @@ async def realtime_load(args, rng, report: Report, count: int, fps: float) -> tu
         await asyncio.gather(*(browser.finish() for browser in ready))
         expected = min(count, capacity)
         report.add("ready", len(ready), len(ready) == expected, f"== {expected}")
+        queued = sum(b.queued for b in refused)
+        report.add("queued", queued, queued == count - expected, f"== {count - expected}")
         refused_4003 = sum(b.close_code == CLOSE_NO_CAPACITY for b in refused)
-        report.add("refused_4003", refused_4003, refused_4003 == count - expected,
-                   f"== {count - expected}")
+        report.add("refused_4003", refused_4003, refused_4003 == 0, "== 0")
         sent = sum(browser.sent for browser in ready)
         rendered = [len(browser.latencies) for browser in ready]
         report.add("frames_sent", sent)
