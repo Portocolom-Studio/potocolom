@@ -42,6 +42,7 @@ jobs:
       - run: make verify
         env:
           DATABASE_URL: postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/potocolom_test
+          POSTGRES_ADMIN_URL: postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
       - run: |
           python3.11 -m venv worker/.venv-inference
           worker/.venv-inference/bin/pip install --upgrade pip
