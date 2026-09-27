@@ -338,7 +338,15 @@ Chrome with GPU use disabled. They check drawing history, local file save/open
 and live frame updates, not model output quality. The save/open checks use
 real browser downloads and file selection, then compare canvas pixels and
 undo/redo after a reload. `make verify-frontend` builds the app and
-runs them after the unit tests. For a focused run after a build:
+runs them after the unit tests.
+
+The frontend gate builds both modes. It first builds with
+`PUBLIC_SITE_MODE=landing` and checks that the built `/app` contains the studio
+preview. It then builds with an empty `PUBLIC_SITE_MODE` and runs the canvas
+and sign-in checks. The final `frontend/build` artifact is always the product,
+even if the shell had `PUBLIC_SITE_MODE=landing` set.
+
+For a focused run after a build:
 
 ```bash
 cd frontend

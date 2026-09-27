@@ -235,7 +235,9 @@ verify-worker:
 	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
 
 verify-frontend:
-	cd frontend && npm run lint && npm run check && npm test && npm run build && npm run test:canvas && npm run test:signin
+	cd frontend && npm run lint && npm run check && npm test \
+		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing \
+		&& PUBLIC_SITE_MODE= npm run build && npm run test:canvas && npm run test:signin
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
 
