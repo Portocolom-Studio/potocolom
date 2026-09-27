@@ -352,3 +352,13 @@ geometry and reading old version 1 drawing files.
 Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH` or
 `CHROME_PATH` for a browser outside the standard Linux paths. The gate fails
 if no browser is found.
+
+### Test reports
+
+`make verify-backend` and `make verify-worker` write JUnit results and line and
+branch coverage to `.local/reports/backend/` and `.local/reports/worker/`.
+Their CI jobs retain these files for 14 days, including on a failed test run.
+Coverage measures Python code in the test process. Subprocesses and real GPU
+inference need their own checks. The reports establish a baseline; there is no
+percentage gate. Review uncovered branches in changed code and add tests for
+observable behavior, including failure paths.

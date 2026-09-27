@@ -229,10 +229,10 @@ deps-down:
 # targets, so local verify and CI cannot drift. Installing dependencies is the
 # caller's job: make setup locally, a fresh venv and npm ci in CI.
 verify-backend:
-	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest
+	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest --cov=app --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/backend/coverage.xml --junitxml=../.local/reports/backend/tests.xml
 
 verify-worker:
-	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest
+	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest --cov=worker --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/worker/coverage.xml --junitxml=../.local/reports/worker/tests.xml
 
 verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test && npm run build && npm run test:canvas && npm run test:signin

@@ -31,3 +31,10 @@ jobs:
       # The Makefile target is the single definition of what the job checks.
       - run: make verify-worker
         working-directory: .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: worker-test-reports
+          path: .local/reports/worker/
+          include-hidden-files: true
+          retention-days: 14
