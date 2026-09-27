@@ -30,7 +30,7 @@
 		"@internationalized/date": "^3.12.2",
 		"@lucide/svelte": "^1.24.0",
 		"@sveltejs/adapter-static": "^3.0.10",
-		"@sveltejs/kit": "^2.63.0",
+		"@sveltejs/kit": "^2.70.3",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.2",
 		"@types/d3-hierarchy": "^3.1.7",
@@ -41,9 +41,9 @@
 		"layerchart": "^2.0.0-next.48",
 		"prettier": "^3.6.2",
 		"prettier-plugin-svelte": "^4.0.3",
-		"puppeteer-core": "^24.36.1",
+		"puppeteer-core": "^25.12.0",
 		"shadcn-svelte": "^1.4.2",
-		"sharp": "^0.35.3",
+		"sharp": "^0.35.4",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"tailwind-merge": "^3.6.0",
@@ -54,6 +54,7 @@
 		"vite": "^8.0.16"
 	},
 	"overrides": {
+		"cookie": "^0.7.2",
 		"ip-address": "^10.3.1",
 		"postcss": "^8.5.24"
 	},
