@@ -25,6 +25,7 @@
 </script>
 
 <div
+	data-studio-preview
 	class="grid h-full min-h-0 flex-1 cursor-crosshair grid-cols-1 gap-4 md:grid-cols-2"
 	role="presentation"
 	onpointermove={syncPreviewCursor}
