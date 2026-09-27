@@ -6,7 +6,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
     ports:
-      - "${COMPOSE_SMOKE_PORT:-18080}:8080"
+      - "127.0.0.1:${COMPOSE_SMOKE_PORT:-18080}:8080"
     environment:
       AUTH_MODE: none
       DATABASE_URL: postgresql://potocolom:${POSTGRES_PASSWORD}@postgres/potocolom

@@ -11,6 +11,7 @@ on:
       - "frontend/**"
       - "deploy/**"
       - "scripts/compose-smoke.sh"
+      - "scripts/smoke-*"
       - "Makefile"
       - ".github/workflows/deploy.yml"
   push:
@@ -20,6 +21,7 @@ on:
       - "frontend/**"
       - "deploy/**"
       - "scripts/compose-smoke.sh"
+      - "scripts/smoke-*"
       - "Makefile"
       - ".github/workflows/deploy.yml"
 
