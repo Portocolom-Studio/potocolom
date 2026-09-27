@@ -245,6 +245,7 @@ function sessionHarness(
 	session: RealtimeCanvasSession;
 	sockets: TestSocket[];
 	states: ConnectionState[];
+	queuePositions: number[];
 	notices: string[];
 	applied: Array<Record<string, unknown>>;
 	counters: Array<[number, number]>;
@@ -267,6 +268,7 @@ function sessionHarness(
 		timers.delete(id as unknown as number);
 	}) as typeof globalThis.clearTimeout;
 	const states: ConnectionState[] = [];
+	const queuePositions: number[] = [];
 	const notices: string[] = [];
 	const applied: Array<Record<string, unknown>> = [];
 	const counters: Array<[number, number]> = [];
@@ -276,6 +278,7 @@ function sessionHarness(
 		getOutputCanvas: () => ({}) as HTMLCanvasElement,
 		isCanvasBlank: options.isCanvasBlank ?? (() => false),
 		onState: (state) => states.push(state),
+		onQueuePosition: (position) => queuePositions.push(position),
 		onNotice: (notice) => notices.push(notice),
 		onCounters: (sent, rendered) => counters.push([sent, rendered]),
 		onAppliedParams: (params) => applied.push(params),
@@ -294,6 +297,7 @@ function sessionHarness(
 		session,
 		sockets,
 		states,
+		queuePositions,
 		notices,
 		applied,
 		counters,
@@ -512,6 +516,74 @@ test('resume resend encodes and sends the complete current frame', async () => {
 		new Uint8Array(frames[0] as ArrayBuffer).subarray(FRAME_HEADER_BYTES),
 		new Uint8Array([1])
 	);
+});
+
+test('a queued session reports each position and becomes active on ready', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	socket.open();
+	socket.message(JSON.stringify({ type: 'queued', position: 2 }));
+	assert.deepEqual(harness.states, ['connecting', 'queued']);
+	assert.deepEqual(harness.queuePositions, [2]);
+	socket.message(JSON.stringify({ type: 'queued', position: 1 }));
+	assert.deepEqual(harness.queuePositions, [2, 1]);
+	socket.message(JSON.stringify({ type: 'ready', session_id: SESSION }));
+	assert.equal(harness.states.at(-1), 'active');
+});
+
+test('a live session queued after an idle release resumes and resends the whole canvas', async () => {
+	let encodes = 0;
+	const harness = sessionHarness({
+		encode: async () => {
+			encodes += 1;
+			return new Uint8Array([encodes]);
+		}
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	ready(socket);
+	assert.equal(harness.states.at(-1), 'active');
+	assert.deepEqual(harness.queuePositions, []);
+	socket.message(JSON.stringify({ type: 'queued', position: 4 }));
+	assert.equal(harness.states.at(-1), 'queued');
+	assert.deepEqual(harness.queuePositions, [4]);
+	socket.message(JSON.stringify({ type: 'resumed' }));
+	assert.equal(harness.states.at(-1), 'active');
+	harness.tick();
+	await Promise.resolve();
+	assert.equal(encodes, 1);
+	const frames = socket.sent.filter((data) => typeof data !== 'string');
+	assert.equal(frames.length, 1);
+	assert.deepEqual(
+		new Uint8Array(frames[0] as ArrayBuffer).subarray(FRAME_HEADER_BYTES),
+		new Uint8Array([1])
+	);
+});
+
+test('a queued control with an invalid position changes nothing', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	socket.open();
+	// JSON.stringify drops an undefined position, which is the missing case.
+	for (const position of [0, -1, 1.5, '2', undefined]) {
+		socket.message(JSON.stringify({ type: 'queued', position }));
+	}
+	assert.deepEqual(harness.states, ['connecting']);
+	assert.deepEqual(harness.queuePositions, []);
 });
 
 test('late socket, encode, and decode work cannot affect a replacement session', async () => {

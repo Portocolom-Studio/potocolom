@@ -68,6 +68,9 @@
 
 	let prompt = $state('');
 	let connection = $state<ConnectionState>('idle');
+	// The admission queue position the API last reported. Only meaningful while
+	// the connection is queued; onState clears it the moment that ends.
+	let queuePosition = $state<number | null>(null);
 	// The notice as the session reported it, kept beside its translated key
 	// because whether it is terminal decides canConnect.
 	let rawNotice = $state<RealtimeCanvasNotice>('');
@@ -127,7 +130,7 @@
 	const stepsValue = $derived(normToValue(stepsNorm, stepsRange));
 	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
-	const busy = $derived(connection === 'connecting' || connected);
+	const busy = $derived(connection === 'connecting' || connection === 'queued' || connected);
 	const canConnect = $derived(
 		!busy && !isTerminalNotice(rawNotice) && modelId !== '' && prompt.trim() !== ''
 	);
@@ -141,6 +144,10 @@
 		isCanvasBlank: () => drawingDocument?.isBlank ?? true,
 		onState: (state) => {
 			connection = state;
+			if (state !== 'queued') queuePosition = null;
+		},
+		onQueuePosition: (position) => {
+			queuePosition = position;
 		},
 		onNotice: (key: RealtimeCanvasNotice) => {
 			rawNotice = key;
@@ -165,7 +172,11 @@
 		interrupted: 'app.realtime_canvas.status_interrupted',
 		failed: 'app.realtime_canvas.status_failed'
 	} as const;
-	const statusLabel = $derived(t(STATUS_KEYS[connection]));
+	const statusLabel = $derived(
+		connection === 'queued' && queuePosition !== null
+			? t('app.realtime_canvas.status_queued_position').replace('{position}', String(queuePosition))
+			: t(STATUS_KEYS[connection])
+	);
 
 	$effect(() => {
 		// Fall back to the declared default, else the first realtime model, when
