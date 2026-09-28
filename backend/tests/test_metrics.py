@@ -866,6 +866,10 @@ def test_usage_event_floats_are_bounded_like_the_ints():
     assert _optional_int(1e30) is None
     assert _optional_float(1e30) is None
     assert _optional_float(float("nan")) is None
+    # A negative counter from a worker would subtract from the rollup sums.
+    assert _optional_int(-5) is None
+    assert _optional_float(-0.5) is None
+    assert _optional_int(0) == 0
 
 
 def test_benchmark_input_bounds_its_int4_columns():

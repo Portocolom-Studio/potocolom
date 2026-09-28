@@ -3975,6 +3975,10 @@ def test_job_done_survives_unusable_worker_numbers():
     assert _worker_int(10 ** 400) == 0
     assert _worker_int(3_000_000_000) == 0
     assert _worker_int(2 ** 31 - 1) == 2 ** 31 - 1
+    # A negative count would subtract from every SUM over the column.
+    assert _worker_int(-1) == 0
+    assert _worker_int(-(2 ** 31)) == 0
+    assert _worker_int(0) == 0
     assert _worker_int(None, default=7) == 7
 
 

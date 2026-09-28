@@ -258,7 +258,9 @@ def _worker_int(value: object, default: int = 0) -> int:
     # enough to overflow one. The terminal commits are inside a try now, so an
     # overflow would reach the recovery path rather than the handler, and the
     # clamp is what keeps a worker's unit mixup from failing the job at all.
-    return number if -2**31 <= number < 2**31 else default
+    # Every field read here is a count or a size, so a negative is as unusable
+    # as an overflow, and one would subtract from every SUM that reads it.
+    return number if 0 <= number < 2**31 else default
 
 
 def publish(job_id: uuid.UUID, event: dict) -> None:
