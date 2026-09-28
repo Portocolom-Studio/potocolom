@@ -94,9 +94,11 @@ def _numeric(value: Any) -> bool:
     if isinstance(value, int):
         # isfinite() would raise OverflowError on a big int, and this is a
         # predicate: callers do not expect it to raise.
-        return -2**31 <= value < 2**31
-    # The float branch feeds int4 columns too, so finite is not enough.
-    return math.isfinite(value) and -2**31 <= value < 2**31
+        return 0 <= value < 2**31
+    # The float branch feeds int4 columns too, so finite is not enough. Every
+    # field is a count, a duration or a score, and a negative one would
+    # subtract from the rollups that sum them.
+    return math.isfinite(value) and 0 <= value < 2**31
 
 
 def _optional_int(value: Any) -> int | None:
