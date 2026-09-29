@@ -39,12 +39,20 @@ function isFile(url) {
 	}
 }
 
-// The source imports its siblings without an extension the way SvelteKit's
-// resolver allows, which the default resolver does not.
+// The source imports its siblings without an extension, or as .js when the
+// file is .ts (the shadcn components import '$lib/utils.js'), both of which
+// SvelteKit's resolver allows and the default resolver does not.
 function extensionlessFile(base) {
 	for (const extension of EXTENSIONS) {
 		const url = new URL(base.href + extension);
 		if (isFile(url)) return url;
+	}
+	if (base.href.endsWith('.js')) {
+		const stem = base.href.slice(0, -'.js'.length);
+		for (const extension of ['.ts', '.svelte.ts']) {
+			const url = new URL(stem + extension);
+			if (isFile(url)) return url;
+		}
 	}
 	return null;
 }
