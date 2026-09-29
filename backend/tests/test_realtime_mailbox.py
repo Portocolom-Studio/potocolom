@@ -271,3 +271,23 @@ def test_a_slow_browser_does_not_stall_the_relay_to_its_neighbour():
             realtime.sessions.update(saved_sessions)
 
     run_on_test_loop(scenario())
+
+def test_informational_controls_do_not_pile_up_behind_a_stalled_writer():
+    """A keepalive or a 4005 refusal is skipped while any control still waits,
+    so a browser that stopped reading holds one of each at most, not one per
+    sweep or per second."""
+    session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                               browser=FakeBrowser())
+    session.state = "live"
+    realtime.sessions[session.id] = session
+    try:
+        for _ in range(5):
+            realtime.post_keepalives()
+        assert list(session.out_controls) == [{"type": "keepalive"}]
+        session.out_controls.clear()
+        for _ in range(5):
+            session.frame_error_after = 0.0
+            realtime.post_frame_too_large(session)
+        assert [c["code"] for c in session.out_controls] == [realtime.ERROR_FRAME_TOO_LARGE]
+    finally:
+        realtime.sessions.pop(session.id, None)

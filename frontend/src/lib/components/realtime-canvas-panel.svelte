@@ -57,6 +57,7 @@
 	const NOTICE_KEYS: Record<Exclude<RealtimeCanvasNotice, ''>, NoticeKey> = {
 		encode_failed: 'app.realtime_canvas.encode_failed',
 		decode_failed: 'app.realtime_canvas.decode_failed',
+		frame_too_large: 'app.realtime_canvas.frame_too_large',
 		socket_error: 'app.realtime_canvas.socket_error',
 		refused_protocol: 'app.realtime_canvas.refused_protocol',
 		refused_version: 'app.realtime_canvas.refused_version',

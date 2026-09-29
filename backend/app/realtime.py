@@ -59,10 +59,30 @@ FRAME_HEADER_BYTES = 17  # 1 byte kind + 16 byte session uuid
 # docs/connection-handling.md. The worker bounds pixels and format separately.
 MAX_CANVAS_PAYLOAD_BYTES = 1 * 1024 * 1024
 
+# What every ready tells the browser it may send, so a client that reads it
+# can refuse an over-cap frame before it reaches the wire. max_frame_bytes is
+# the cap above; the rest is the worker's half of the same contract, read from
+# worker/engine.py (PNG or WebP at 512 px) without importing it: the two
+# packages have no shared module, so this comment binds the two like the wire
+# constants above do.
+READY_LIMITS = {
+    "max_frame_bytes": MAX_CANVAS_PAYLOAD_BYTES,
+    "formats": ["webp", "png"],
+    "width": 512,
+    "height": 512,
+}
+
 CLOSE_PROTOCOL_VIOLATION = 4000
 CLOSE_UNSUPPORTED_VERSION = 4002
 CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
+# An over-cap canvas frame is dropped with the socket kept open, so this
+# travels as a non-terminal error message and never as a close
+# (docs/connection-handling.md).
+ERROR_FRAME_TOO_LARGE = 4005
+# One such error per session per second: a stuck oversize encoder must not
+# flood the mailbox with a refusal for every frame it produces.
+FRAME_TOO_LARGE_INTERVAL_SECONDS = 1.0
 # Authentication outcomes, from the authentication contract: a missing cookie
 # fails the handshake outright, a cookie that resolves to nothing closes 4401,
 # and a principal without permission to spend a realtime slot closes 4403.
@@ -445,6 +465,9 @@ class Session:
     # Newest canvas frame awaiting a worker while an idle session re-places
     # itself; the resume task forwards it once a worker is live again.
     pending_frame: bytes | None = None
+    # Earliest monotonic time another over-cap refusal may be posted, so the
+    # 4005 error is told once a second rather than once per dropped frame.
+    frame_error_after: float = 0.0
     # Browser outbox. The writer task is the only writer of the browser socket
     # (docs/connection-handling.md: a shared reader never awaits delivery to
     # one browser), so these posts never block: controls keep their order,
@@ -502,6 +525,26 @@ def post_close(session: Session, code: int, message: str | None) -> None:
     session.out_wake.set()
 
 
+def post_frame_too_large(session: Session) -> None:
+    """Tell a browser its canvas frame was dropped for its size, once a second.
+
+    The frame is dropped either way and the session keeps running; this only
+    says why, and the interval bounds it so a stuck oversize encoder cannot
+    fill its own mailbox with refusals.
+    """
+    now = time.monotonic()
+    # A browser that stopped reading parks its writer, and without the queue
+    # check each second would add one more refusal nobody drains.
+    if now < session.frame_error_after or session.out_controls:
+        return
+    session.frame_error_after = now + FRAME_TOO_LARGE_INTERVAL_SECONDS
+    post(session, {
+        "type": "error",
+        "code": ERROR_FRAME_TOO_LARGE,
+        "message": f"canvas frame exceeds {MAX_CANVAS_PAYLOAD_BYTES} bytes",
+    })
+
+
 async def browser_writer(session: Session) -> None:
     browser = session.browser
     # A browser that never reads parks this task in one send; it holds one
@@ -540,6 +583,21 @@ def post_positions(*, force: bool = False) -> None:
         if force or position != session.queued_position:
             post(session, {"type": "queued", "position": position})
         session.queued_position = position
+
+
+def post_keepalives() -> None:
+    """Tick every open browser socket that has nothing else to report.
+
+    The forced position repost is the keepalive for a queued socket; this is
+    the same trip past a proxy idle timeout for the sessions that are not
+    queued. post() never blocks and is a no-op once a close is queued, so a
+    browser that stopped reading cannot hold up the sweep.
+    """
+    for session in list(sessions.values()):
+        # A control already waiting is traffic enough, and a browser that
+        # stopped reading must not collect one keepalive per sweep.
+        if session.state != "queued" and not session.out_controls:
+            post(session, {"type": "keepalive"})
 
 
 def requeue(session: Session) -> bool:
@@ -604,7 +662,8 @@ async def admit(session: Session) -> None:
     if was_live:
         post(session, {"type": "resumed"})
     else:
-        post(session, {"type": "ready", "session_id": str(session.id)})
+        post(session, {"type": "ready", "session_id": str(session.id),
+                       "limits": READY_LIMITS})
 
 
 def speaks_generation(worker: Worker) -> bool:
@@ -1497,7 +1556,8 @@ async def realtime(ws: WebSocket) -> None:
     try:
         session.writer = asyncio.create_task(browser_writer(session))
         if await place_session(session):
-            post(session, {"type": "ready", "session_id": str(session.id)})
+            post(session, {"type": "ready", "session_id": str(session.id),
+                           "limits": READY_LIMITS})
         else:
             requeue(session)
         while True:
@@ -1512,6 +1572,7 @@ async def realtime(ws: WebSocket) -> None:
                     if frame_session_id(data) != session.id or data[0] != CANVAS_FRAME:
                         raise ProtocolError("frame does not belong to this session")
                     if len(data) > FRAME_HEADER_BYTES + MAX_CANVAS_PAYLOAD_BYTES:
+                        post_frame_too_large(session)
                         continue
                     session.last_input = time.monotonic()
                     if session.state == "idle":
@@ -1744,3 +1805,9 @@ async def sweep_dead_sessions() -> None:
             post_positions(force=True)
         except Exception:
             logger.warning("realtime position repost failed")
+        try:
+            # The queued are ticked above; every other open socket gets this,
+            # so a canvas left untouched still crosses that idle timeout.
+            post_keepalives()
+        except Exception:
+            logger.warning("realtime keepalive failed")

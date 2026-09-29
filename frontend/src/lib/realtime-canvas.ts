@@ -5,7 +5,8 @@
 // The wire is docs/connection-handling.md: a 17 byte header of one kind byte
 // and the 16 byte session UUID, then a complete WebP image. That header
 // carries no sequence number, so generated frames arrive in transport order
-// and monotonic revisions remain issue #19's to add.
+// and monotonic revisions remain issue #19's to add. ready also carries the
+// session's limits, and a canvas image above max_frame_bytes is never framed.
 
 /** Browser to worker. */
 export const CANVAS_FRAME = 0x01;
@@ -160,12 +161,52 @@ export type ConnectionState =
  * authentication no longer valid, and 4403 not permitted to open a realtime
  * session. A terminal close is failed because retrying the same open would
  * end the same way; anything else is interrupted, which keeps the canvas and
- * invites a reconnect.
+ * invites a reconnect. The whole 4000-4999 range fails, not only the codes
+ * listed: a refusal this client has not been told about is still a refusal,
+ * and a reconnect would meet the same close again.
  */
 export function stateForCloseCode(code: number): ConnectionState {
-	return (code >= 4000 && code <= 4004) || code === 4401 || code === 4403
-		? 'failed'
-		: 'interrupted';
+	return code >= 4000 && code <= 4999 ? 'failed' : 'interrupted';
+}
+
+/**
+ * What `ready` says this session may send. The API sends it from issue #617;
+ * an older API omits it and then nothing here is self-checked, exactly as
+ * before it shipped.
+ */
+export interface RealtimeCanvasLimits {
+	max_frame_bytes: number;
+	formats?: string[];
+	width?: number;
+	height?: number;
+}
+
+/**
+ * Whether one encoded canvas image fits the session's byte cap.
+ *
+ * The cap is on the payload, which is what the API measures against its own
+ * MAX_CANVAS_PAYLOAD_BYTES after the header this module adds. null means the
+ * API sent no limits, so the answer is yes: the API's own drop and its 4005
+ * refusal stay the only guard, as they were before limits existed.
+ */
+export function frameFitsLimits(
+	payloadBytes: number,
+	limits: RealtimeCanvasLimits | null
+): boolean {
+	return limits === null || payloadBytes <= limits.max_frame_bytes;
+}
+
+/**
+ * The limits a ready carried, or null when it carried none or something
+ * unusable. A missing or malformed value is an older API rather than a
+ * protocol error: the session still runs and falls back to sending every
+ * frame, which is what it did before limits existed.
+ */
+export function readyLimits(raw: unknown): RealtimeCanvasLimits | null {
+	if (typeof raw !== 'object' || raw === null) return null;
+	const max = (raw as { max_frame_bytes?: unknown }).max_frame_bytes;
+	if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0) return null;
+	return raw as RealtimeCanvasLimits;
 }
 
 const OPEN = 1;
@@ -191,6 +232,7 @@ interface SessionGeneration {
 	readonly prompt: string;
 	readonly params: RealtimeCanvasParams;
 	sessionId: string | null;
+	limits: RealtimeCanvasLimits | null;
 	state: ConnectionState;
 	changed: boolean;
 	encoding: boolean;
@@ -211,6 +253,7 @@ export type RealtimeCanvasNotice =
 	| ''
 	| 'encode_failed'
 	| 'decode_failed'
+	| 'frame_too_large'
 	| 'socket_error'
 	| 'refused_protocol'
 	| 'refused_version'
@@ -293,6 +336,9 @@ function refusalNotice(code: number): RealtimeCanvasNotice {
 	if (code === 4003) return 'refused_capacity';
 	if (code === 4002) return 'refused_version';
 	if (code === 4000) return 'refused_protocol';
+	// 4005 refuses a frame, not the session: the API keeps the socket and
+	// says only that this drawing will not fit on the wire.
+	if (code === 4005) return 'frame_too_large';
 	return 'socket_error';
 }
 
@@ -400,9 +446,17 @@ export function createRealtimeCanvasSession(
 			const image = await encode(canvas);
 			if (canContinue(generation) && generation.socket.readyState === OPEN) {
 				if (sending(generation)) {
-					generation.socket.send(canvasFrame(forSession, image));
-					sent += 1;
-					options.onCounters(sent, rendered);
+					if (frameFitsLimits(image.length, generation.limits)) {
+						generation.socket.send(canvasFrame(forSession, image));
+						if (notice === 'frame_too_large') setNotice('');
+						sent += 1;
+						options.onCounters(sent, rendered);
+					} else {
+						// The drawing did not change, so re-encoding it would
+						// hit the same cap; the notice stands until a frame
+						// fits, and the API would drop this one anyway (4005).
+						setNotice('frame_too_large');
+					}
 				} else {
 					generation.changed = true;
 				}
@@ -456,6 +510,7 @@ export function createRealtimeCanvasSession(
 			position?: unknown;
 			code?: number;
 			params?: unknown;
+			limits?: unknown;
 		};
 		try {
 			control = JSON.parse(text) as typeof control;
@@ -474,6 +529,7 @@ export function createRealtimeCanvasSession(
 				return;
 			}
 			generation.sessionId = control.session_id;
+			generation.limits = readyLimits(control.limits);
 			setState(generation, 'active');
 			setNotice('');
 			generation.changed = !options.isCanvasBlank();
@@ -576,6 +632,7 @@ export function createRealtimeCanvasSession(
 				prompt: input.prompt,
 				params: input.params,
 				sessionId: null,
+				limits: null,
 				state: 'connecting',
 				changed: false,
 				encoding: false,

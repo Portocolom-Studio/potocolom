@@ -14,10 +14,12 @@ import {
 	IDLE_TICKS_BEFORE_STOP,
 	SLOW_INTERVAL_MS,
 	canvasFrame,
+	frameFitsLimits,
 	nextDelayMs,
 	nextIntervalMs,
 	openMessage,
 	parseGeneratedFrame,
+	readyLimits,
 	shouldSendFrame,
 	stateForCloseCode,
 	updateParamsMessage,
@@ -25,6 +27,7 @@ import {
 	createRealtimeCanvasSession,
 	isTerminalNotice,
 	type ConnectionState,
+	type RealtimeCanvasLimits,
 	type RealtimeCanvasNotice,
 	type RealtimeCanvasSession
 } from './realtime-canvas.ts';
@@ -189,6 +192,43 @@ test('a terminal close fails the session and anything else invites a reconnect',
 	assert.equal(stateForCloseCode(1006), 'interrupted');
 });
 
+test('an unknown close code in the API range fails rather than invites the same close', () => {
+	// 4005 and up are unassigned to this client (docs/connection-handling.md),
+	// but they are the API's own range: a refusal it did not explain is still
+	// one a reconnect would meet again.
+	for (const code of [4005, 4006, 4010, 4400, 4402, 4500, 4999]) {
+		assert.equal(stateForCloseCode(code), 'failed', `code ${code}`);
+	}
+	// Outside that range nothing changed: still a transport close to recover from.
+	assert.equal(stateForCloseCode(3999), 'interrupted');
+	assert.equal(stateForCloseCode(5000), 'interrupted');
+});
+
+test('a frame is held back only when the session limits say it is too large', () => {
+	const limits: RealtimeCanvasLimits = { max_frame_bytes: 1_048_576 };
+	assert.ok(frameFitsLimits(1_048_576, limits), 'the cap itself fits');
+	assert.ok(!frameFitsLimits(1_048_577, limits));
+	// An older API sends a ready without limits: no self-check, as before.
+	assert.ok(frameFitsLimits(9_000_000, null));
+});
+
+test('limits come from the ready, and anything unusable means no self-check', () => {
+	assert.deepEqual(
+		readyLimits({
+			max_frame_bytes: 1_048_576,
+			formats: ['webp', 'png'],
+			width: 512,
+			height: 512
+		}),
+		{ max_frame_bytes: 1_048_576, formats: ['webp', 'png'], width: 512, height: 512 }
+	);
+	assert.equal(readyLimits(undefined), null);
+	assert.equal(readyLimits({}), null);
+	assert.equal(readyLimits({ max_frame_bytes: '1048576' }), null);
+	assert.equal(readyLimits({ max_frame_bytes: 0 }), null);
+	assert.equal(readyLimits('ready'), null);
+});
+
 test('a revoked session and a forbidden one are terminal, every other notice invites a retry', () => {
 	const terminal: RealtimeCanvasNotice[] = ['session_revoked', 'refused_forbidden'];
 	for (const notice of terminal) assert.ok(isTerminalNotice(notice), notice);
@@ -196,6 +236,7 @@ test('a revoked session and a forbidden one are terminal, every other notice inv
 		'',
 		'encode_failed',
 		'decode_failed',
+		'frame_too_large',
 		'socket_error',
 		'refused_protocol',
 		'refused_version',
@@ -661,6 +702,99 @@ test('encode and decode failures notify while preserving the session', async () 
 	await Promise.resolve();
 	assert.equal(harness.notices.at(-1), 'decode_failed');
 	assert.equal(harness.states.at(-1), 'active');
+});
+
+test('a keepalive is traffic the session never shows or acts on', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	ready(socket);
+	const states = [...harness.states];
+	const notices = [...harness.notices];
+	const timers = harness.timerCount();
+
+	socket.message(JSON.stringify({ type: 'keepalive' }));
+
+	assert.deepEqual(harness.states, states);
+	assert.deepEqual(harness.notices, notices);
+	assert.equal(harness.timerCount(), timers);
+	assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 0);
+	harness.session.destroy();
+});
+
+test('a canvas image over the ready limit is never sent and says so', async () => {
+	let payload = 4;
+	const harness = sessionHarness({
+		encode: async () => new Uint8Array(payload)
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	socket.open();
+	socket.message(
+		JSON.stringify({
+			type: 'ready',
+			session_id: SESSION,
+			limits: { max_frame_bytes: 3, formats: ['webp', 'png'], width: 512, height: 512 }
+		})
+	);
+	harness.tick();
+	await Promise.resolve();
+	assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 0);
+	assert.equal(harness.notices.at(-1), 'frame_too_large');
+	assert.equal(harness.states.at(-1), 'active');
+
+	// A drawing that fits again is sent, and the notice clears with it.
+	payload = 3;
+	harness.session.markChanged();
+	harness.tick();
+	await Promise.resolve();
+	assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 1);
+	assert.equal(harness.notices.at(-1), '');
+	harness.session.destroy();
+});
+
+test('an older API without limits sends every encoded image', async () => {
+	const harness = sessionHarness({
+		encode: async () => new Uint8Array(4_000_000)
+	});
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	ready(harness.sockets[0]);
+	harness.tick();
+	await Promise.resolve();
+	const frames = harness.sockets[0].sent.filter((data) => typeof data !== 'string');
+	assert.equal(frames.length, 1);
+	assert.equal(harness.notices.at(-1), '');
+	harness.session.destroy();
+});
+
+test('a 4005 refusal shows the frame_too_large notice without failing the session', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	ready(socket);
+	socket.message(
+		JSON.stringify({ type: 'error', code: 4005, message: 'canvas frame exceeds 1048576 bytes' })
+	);
+	assert.equal(harness.notices.at(-1), 'frame_too_large');
+	assert.equal(harness.states.at(-1), 'active');
+	assert.equal(harness.timerCount(), 1, 'the capture loop keeps running');
+	harness.session.destroy();
 });
 
 test('a revoked session and a forbidden one fail with their own notices', () => {
