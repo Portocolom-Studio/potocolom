@@ -352,10 +352,19 @@ preview. It then builds with an empty `PUBLIC_SITE_MODE` and runs the canvas
 and sign-in checks. The final `frontend/build` artifact is always the product,
 even if the shell had `PUBLIC_SITE_MODE=landing` set.
 
-For a focused run after a build:
+The landing waitlist form never leaves the machine in development: the dev
+and preview servers answer a submit locally, and an address ending in
+`@exists.test` gets the "already on the list" answer. Set
+`WAITLIST_PROXY_TARGET` to a URL to forward submits to a real waitlist
+instead.
+
+For a focused canvas run, build the product first: a landing build left in
+`frontend/build` makes `/app` the static preview, and every shape check then
+fails as if the canvas had regressed.
 
 ```bash
 cd frontend
+PUBLIC_SITE_MODE= npm run build
 npm run test:canvas
 ```
 
