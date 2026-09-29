@@ -8,7 +8,7 @@ import json
 import logging
 import math
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 import jsonschema
 from jsonschema import Draft202012Validator
@@ -56,6 +56,9 @@ class Manifest(BaseModel):
     id: StorableStr
     name: StorableStr
     capabilities: list[StorableStr]
+    # Routing tier. The default is the N-1 promise: a worker predating the
+    # field sends none and keeps routing as the standard tier it was.
+    tier: Literal["draft", "standard", "premium"] = "standard"
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     # int4 in the models table; a worker-supplied value past it fails the
     # upsert, and that runs before the fleet handler's cleanup can see it.

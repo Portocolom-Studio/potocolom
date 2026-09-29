@@ -5,6 +5,7 @@
     "text_to_image",
     "image_to_image"
   ],
+  "tier": "standard",
   "min_vram_gb": 10,
   "prompt_token_limit": 77,
   "default": true,

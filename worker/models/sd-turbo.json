@@ -2,6 +2,7 @@
   "id": "sd-turbo",
   "name": "SD Turbo",
   "capabilities": ["text_to_image", "image_to_image", "realtime"],
+  "tier": "draft",
   "min_vram_gb": 8,
   "prompt_token_limit": 77,
   "source": "stabilityai/sd-turbo",

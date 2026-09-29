@@ -2,6 +2,7 @@
   "id": "sdxl-turbo",
   "name": "SDXL Turbo",
   "capabilities": ["text_to_image", "image_to_image", "realtime"],
+  "tier": "draft",
   "min_vram_gb": 10,
   "prompt_token_limit": 77,
   "source": "stabilityai/sdxl-turbo",

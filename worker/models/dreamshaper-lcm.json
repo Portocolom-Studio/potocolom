@@ -2,6 +2,7 @@
   "id": "dreamshaper-lcm",
   "name": "DreamShaper 8 LCM",
   "capabilities": ["text_to_image"],
+  "tier": "draft",
   "min_vram_gb": 6,
   "prompt_token_limit": 77,
   "source": "Lykon/dreamshaper-8-lcm",

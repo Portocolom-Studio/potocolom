@@ -63,6 +63,25 @@ def test_studio_capabilities_round_trips_through_wire():
     assert manifest.wire()["studio_capabilities"] == ["realtime"]
 
 
+def test_tier_loads_and_defaults_to_standard(tmp_path):
+    (tmp_path / "tiered.json").write_text(
+        json.dumps({**SD_TURBO, "id": "tiered", "tier": "premium"})
+    )
+    (tmp_path / "plain.json").write_text(json.dumps({**SD_TURBO, "id": "plain"}))
+    loaded = {m.id: m for m in load_manifests(str(tmp_path))}
+    assert loaded["tiered"].tier == "premium"
+    assert loaded["tiered"].wire()["tier"] == "premium"
+    # The N-1 promise: a manifest written before the field existed still
+    # loads, and routes as the standard tier it always was.
+    assert loaded["plain"].tier == "standard"
+    assert loaded["plain"].wire()["tier"] == "standard"
+
+
+def test_unknown_tier_is_loud():
+    with pytest.raises(ValidationError):
+        Manifest(**{**SD_TURBO, "tier": "ultra"})
+
+
 def test_malformed_quantize_is_loud(tmp_path):
     (tmp_path / "bad.json").write_text(
         json.dumps({**SD_TURBO, "quantize": "text_encoder_3"})

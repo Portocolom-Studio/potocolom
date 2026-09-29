@@ -2,6 +2,7 @@
   "id": "realesrgan",
   "name": "Real-ESRGAN",
   "capabilities": ["upscale"],
+  "tier": "standard",
   "min_vram_gb": 4,
   "source": "https://github.com/xinntao/Real-ESRGAN/releases/download",
   "license_id": "bsd-3-clause",

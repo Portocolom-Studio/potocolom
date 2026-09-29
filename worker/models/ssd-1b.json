@@ -4,6 +4,7 @@
   "capabilities": [
     "text_to_image"
   ],
+  "tier": "standard",
   "min_vram_gb": 8,
   "prompt_token_limit": 77,
   "source": "segmind/SSD-1B",

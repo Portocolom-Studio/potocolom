@@ -5,6 +5,7 @@ repository or local path the pipeline loads from and never crosses the wire.
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +22,10 @@ class Manifest(BaseModel):
     id: str
     name: str
     capabilities: list[str]  # text_to_image, image_to_image, realtime, upscale
+    # Routing tier for the API's unpinned requests. The default is the N-1
+    # promise: a manifest written before the field existed still loads and
+    # routes as the standard tier it always was.
+    tier: Literal["draft", "standard", "premium"] = "standard"
     parameters: dict = Field(default_factory=dict)  # JSON Schema for the model's call parameters
     # Matches the API's bound, so a bad value fails here where the operator
     # can see it rather than silently at registration.

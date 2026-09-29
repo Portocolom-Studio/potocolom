@@ -2,6 +2,7 @@
   "id": "sdxl-fast",
   "name": "SDXL Fast",
   "capabilities": ["text_to_image"],
+  "tier": "draft",
   "min_vram_gb": 10,
   "prompt_token_limit": 77,
   "source": "stabilityai/stable-diffusion-xl-base-1.0",
