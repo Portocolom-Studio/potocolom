@@ -6,7 +6,9 @@ is currently offline.
 """
 
 import logging
+from collections.abc import Callable, Iterable
 from statistics import median_low
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.dialects.postgresql import insert
@@ -14,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app import db, realtime
 from app.auth import current_user
 from app.estimates import estimate_gpu_ms, schema_defaults
-from app.manifests import Manifest
+from app.manifests import Manifest, validate_params
 from app.tables import Model, User
 
 logger = logging.getLogger("potocolom.registry")
@@ -103,6 +105,37 @@ def for_jobs() -> dict[str, Manifest]:
     if get_settings().benchmark_api:
         return available()
     return public()
+
+
+def route(
+    manifests: Iterable[Manifest],
+    tier: Literal["draft", "standard", "premium"],
+    capability: str,
+    params: dict,
+    estimate: Callable[[str, dict], int | None],
+) -> Manifest | None:
+    """The cheapest model in this tier that can take this request (issue #511).
+
+    A candidate's parameter schema has to accept params, by the same
+    check create_generation runs, so a model that could not run the request
+    never wins it. An unestimated model sorts behind every estimated one, and
+    an equal estimate falls back to the model id, so one request always
+    resolves to one model. None means nobody matches.
+    """
+    candidates: list[tuple[tuple[bool, int, str], Manifest]] = []
+    for manifest in manifests:
+        if manifest.benchmark_only or manifest.tier != tier:
+            continue
+        if capability not in manifest.capabilities:
+            continue
+        if validate_params(manifest, params) is not None:
+            continue
+        cost = estimate(manifest.id, params)
+        key = (cost is None, cost if cost is not None else 0, manifest.id)
+        candidates.append((key, manifest))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda entry: entry[0])[1]
 
 
 @router.get("/api/v1/models")

@@ -2,6 +2,7 @@
   "id": "sd35-medium",
   "name": "Stable Diffusion 3.5 Medium",
   "capabilities": ["text_to_image"],
+  "tier": "premium",
   "min_vram_gb": 14,
   "prompt_token_limit": 256,
   "source": "stabilityai/stable-diffusion-3.5-medium",

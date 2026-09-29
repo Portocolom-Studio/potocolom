@@ -421,6 +421,92 @@ def test_for_jobs_narrows_outside_benchmark_mode(monkeypatch):
         realtime.workers.update(saved)
 
 
+def _route_manifest(model_id: str, *, tier: str = "standard",
+                    capabilities: tuple[str, ...] = ("text_to_image",),
+                    benchmark_only: bool = False,
+                    parameters: dict | None = None) -> Manifest:
+    return Manifest(
+        id=model_id,
+        name=model_id,
+        capabilities=list(capabilities),
+        tier=tier,
+        benchmark_only=benchmark_only,
+        parameters=parameters if parameters is not None else {"type": "object"},
+    )
+
+
+def _estimate(table: dict[str, int]):
+    """An estimate over a fixed table; a model left out has no estimate."""
+    def estimate(model_id: str, params: dict) -> int | None:
+        return table.get(model_id)
+    return estimate
+
+
+def test_route_keeps_a_request_in_its_tier():
+    fleet = [_route_manifest("cheap-draft", tier="draft"), _route_manifest("std")]
+    estimate = _estimate({"cheap-draft": 1, "std": 500})
+    picked = registry.route(fleet, "standard", "text_to_image", {}, estimate)
+    assert picked is not None and picked.id == "std"
+    picked = registry.route(fleet, "draft", "text_to_image", {}, estimate)
+    assert picked is not None and picked.id == "cheap-draft"
+
+
+def test_route_requires_the_capability():
+    fleet = [_route_manifest("t2i"), _route_manifest("up", capabilities=("upscale",))]
+    estimate = _estimate({"up": 1, "t2i": 900})
+    picked = registry.route(fleet, "standard", "text_to_image", {}, estimate)
+    assert picked is not None and picked.id == "t2i"
+    picked = registry.route(fleet, "standard", "upscale", {}, estimate)
+    assert picked is not None and picked.id == "up"
+
+
+def test_route_skips_benchmark_only_models():
+    bench = _route_manifest("bench", benchmark_only=True)
+    estimate = _estimate({"bench": 1, "studio": 900})
+    picked = registry.route([bench, _route_manifest("studio")],
+                            "standard", "text_to_image", {}, estimate)
+    assert picked is not None and picked.id == "studio"
+    assert registry.route([bench], "standard", "text_to_image", {}, estimate) is None
+
+
+def test_route_rejects_params_the_schema_refuses():
+    strict = _route_manifest("strict", parameters={"type": "object", "required": ["prompt"]})
+    estimate = _estimate({"strict": 1, "loose": 900})
+    # The cheaper model cannot run the request, so it cannot win it.
+    picked = registry.route([strict, _route_manifest("loose")],
+                            "standard", "text_to_image", {}, estimate)
+    assert picked is not None and picked.id == "loose"
+    assert registry.route([strict], "standard", "text_to_image", {}, estimate) is None
+
+
+def test_route_picks_the_cheapest_estimate():
+    fleet = [_route_manifest("a-pricey"), _route_manifest("z-cheap")]
+    picked = registry.route(fleet, "standard", "text_to_image", {},
+                            _estimate({"a-pricey": 900, "z-cheap": 10}))
+    assert picked is not None and picked.id == "z-cheap"
+
+
+def test_route_ranks_models_without_an_estimate_last():
+    fleet = [_route_manifest("aa-unestimated"), _route_manifest("zz-estimated")]
+    picked = registry.route(fleet, "standard", "text_to_image", {},
+                            _estimate({"zz-estimated": 900}))
+    assert picked is not None and picked.id == "zz-estimated"
+
+
+def test_route_breaks_equal_estimates_by_model_id():
+    fleet = [_route_manifest("b-model"), _route_manifest("a-model")]
+    picked = registry.route(fleet, "standard", "text_to_image", {},
+                            _estimate({"a-model": 100, "b-model": 100}))
+    assert picked is not None and picked.id == "a-model"
+
+
+def test_route_returns_none_when_nothing_matches():
+    estimate = _estimate({})
+    assert registry.route([], "standard", "text_to_image", {}, estimate) is None
+    only_draft = [_route_manifest("draft-only", tier="draft")]
+    assert registry.route(only_draft, "standard", "text_to_image", {}, estimate) is None
+
+
 def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model(models_client):
     # The shipped manifest is the contract the studio picker builds on:
     # studio-visible (benchmark_only false), sketch-conditioned like vega-rt,

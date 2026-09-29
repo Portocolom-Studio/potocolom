@@ -2,6 +2,7 @@
   "id": "z-image-turbo",
   "name": "Z-Image Turbo",
   "capabilities": ["text_to_image", "image_to_image"],
+  "tier": "draft",
   "min_vram_gb": 20,
   "prompt_token_limit": 512,
   "source": "Tongyi-MAI/Z-Image-Turbo",

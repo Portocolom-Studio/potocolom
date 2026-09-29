@@ -2,6 +2,7 @@
   "id": "realesrgan-fast",
   "name": "Real-ESRGAN Fast",
   "capabilities": ["upscale"],
+  "tier": "draft",
   "min_vram_gb": 1,
   "source": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
   "license_id": "bsd-3-clause",

@@ -415,7 +415,7 @@ Rejected alternatives: adopting airLLM itself (it targets transformer LLMs throu
 
 When a generation request does not pin a `model_id`, the API resolves the cheapest registered model whose tier, capabilities and parameters satisfy the request; manifests carry a `tier` field (`draft`, `standard`, `premium`). Our workloads announce their own difficulty through the interface: a drawing stroke is realtime and lands on a turbo-class model, a refine click is a queued job and routes to a heavier one. The router is a small selection policy inside the existing dispatch path.
 
-> Shipped status (2026-07-23): **not yet implemented.** The wire `Manifest` has no `tier` field, and `POST /api/v1/generations` requires an explicit `model_id`; there is no routing path. This entry describes a designed policy, not current behavior.
+> Shipped status (2026-09-29): **implemented.** `POST /api/v1/generations` takes a request with no `model_id` and routes it through `registry.route()` to the cheapest registered model whose tier, capability and parameter schema fit. Manifests carry `tier`, and a manifest without one (an older worker) is `standard`; the request's tier defaults to `standard`, its capability to `text_to_image` unless a `source_asset_id` is given, where a capability is required, and equal estimates are broken by model id.
 
 Rejected alternatives: an ML difficulty classifier in front of the models (burns GPU time to guess what the UI action already states, and misclassification is user-visible); a separate routing proxy service (a deployment and a failure mode for what is one function in the API).
 

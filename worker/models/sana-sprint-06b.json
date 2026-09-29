@@ -5,6 +5,7 @@
     "text_to_image",
     "image_to_image"
   ],
+  "tier": "draft",
   "min_vram_gb": 12,
   "prompt_token_limit": 300,
   "source": "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",

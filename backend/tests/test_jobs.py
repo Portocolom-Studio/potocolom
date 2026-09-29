@@ -61,6 +61,18 @@ MANIFEST_NARROWED_WITH_T2I = {
     "studio_capabilities": ["text_to_image", "realtime"],
 }
 
+# The routed request's params: steps/width/height rank the shipped timings
+# behind these ids. At these numbers the draft model below is cheaper than
+# every standard one, so only the tier keeps it out of a routed request.
+ROUTE_PARAMS = {"prompt": "route me", "steps": 15, "width": 1024, "height": 1024}
+
+ROUTE_MANIFESTS = [
+    {**MANIFEST, "id": "ssd-1b-lightning", "tier": "draft"},
+    {**MANIFEST, "id": "ssd-1b"},  # no tier on the wire: the N-1 default
+    {**MANIFEST, "id": "sdxl-base"},
+    {**MANIFEST, "id": "sd35-medium", "tier": "premium"},
+]
+
 HOSTILE_PROMPT = 'A "lighthouse"\n; ../../ caf\u00e9'
 
 
@@ -170,8 +182,12 @@ def test_generation_download_name_includes_batch_position():
 
 
 def fleet_hello(ws, worker_id, manifest=MANIFEST, version=PROTOCOL_VERSION):
+    fleet_hello_models(ws, worker_id, [manifest], version)
+
+
+def fleet_hello_models(ws, worker_id, models, version=PROTOCOL_VERSION):
     ws.send_json({"type": "hello", "protocol_version": version,
-                  "worker_id": worker_id, "models": [manifest], "realtime_slots": 1})
+                  "worker_id": worker_id, "models": list(models), "realtime_slots": 1})
     assert ws.receive_json()["type"] == "registered"
 
 
@@ -582,6 +598,65 @@ def test_unknown_model_and_invalid_params():
             invalid = client.post("/api/v1/generations",
                                   json={"model_id": "sd-test", "params": {}})
             assert invalid.status_code == 422  # prompt is required by the manifest schema
+
+
+@pytest.mark.db
+def test_unpinned_generation_routes_to_the_cheapest_standard_model():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello_models(worker, "w-route", ROUTE_MANIFESTS)
+            created = client.post("/api/v1/generations", json={"params": ROUTE_PARAMS})
+            assert created.status_code == 202
+            job = client.get(f"/api/v1/generations/{created.json()['job_id']}").json()
+    assert job["model_id"] == "ssd-1b"
+
+
+@pytest.mark.db
+def test_a_pinned_model_id_ignores_tier_and_capability():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello_models(worker, "w-pin", ROUTE_MANIFESTS)
+            created = client.post("/api/v1/generations",
+                                  json={"model_id": "sd35-medium", "tier": "draft",
+                                        "capability": "upscale", "params": ROUTE_PARAMS})
+            assert created.status_code == 202
+            job = client.get(f"/api/v1/generations/{created.json()['job_id']}").json()
+    assert job["model_id"] == "sd35-medium"
+
+
+@pytest.mark.db
+def test_a_tier_no_registered_model_offers_is_refused():
+    standard = [MANIFEST, {**MANIFEST, "id": "sdxl-base"}]
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello_models(worker, "w-tier", standard)
+            refused = client.post("/api/v1/generations",
+                                  json={"tier": "premium", "params": ROUTE_PARAMS})
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == "no model matches that tier and capability"
+
+
+@pytest.mark.db
+def test_a_source_image_without_a_capability_is_refused():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-source")
+            refused = client.post("/api/v1/generations", json={
+                "params": {"prompt": "x"},
+                "source_asset_id": str(uuid.uuid4()),
+            })
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == (
+                "capability is required when a source image is given"
+            )
+
+
+@pytest.mark.db
+def test_an_unknown_capability_value_is_refused():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        refused = client.post("/api/v1/generations",
+                              json={"capability": "sketch", "params": {"prompt": "x"}})
+        assert refused.status_code == 422
 
 
 @pytest.mark.db

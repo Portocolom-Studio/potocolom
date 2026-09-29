@@ -40,6 +40,7 @@ from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
 from app.auth import current_user, require_role
+from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
 from app.storage import get_storage
@@ -292,9 +293,11 @@ def publish(job_id: uuid.UUID, event: dict) -> None:
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    model_id: StorableStr
+    model_id: StorableStr | None = None
     params: dict = Field(default_factory=dict)
     source_asset_id: uuid.UUID | None = None
+    tier: Literal["draft", "standard", "premium"] | None = None
+    capability: Literal["text_to_image", "image_to_image", "upscale"] | None = None
 
 
 def generation_download_name(
@@ -347,7 +350,34 @@ async def create_generation(
     user: User = Depends(require_role("member")),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
-    manifest = registry.for_jobs().get(request.model_id)
+    models = registry.for_jobs()
+    model_id = request.model_id
+    if model_id is None:
+        # Routing (decisions.md, "Model routing"): a prompt implies
+        # text_to_image, a source image must say what it wants done with it,
+        # and a tier-less request rides the standard tier.
+        capability = request.capability
+        if capability is None:
+            if request.source_asset_id is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="capability is required when a source image is given",
+                )
+            capability = "text_to_image"
+        chosen = registry.route(
+            models.values(),
+            request.tier or "standard",
+            capability,
+            request.params,
+            estimate_gpu_ms,
+        )
+        if chosen is None:
+            raise HTTPException(
+                status_code=422,
+                detail="no model matches that tier and capability",
+            )
+        model_id = chosen.id
+    manifest = models.get(model_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail="unknown model")
     # The model row may be missing if the worker registered while the database
@@ -361,12 +391,12 @@ async def create_generation(
     # if the model is absent from available() entirely, which a model that
     # just passed the for_jobs() gate cannot be; the job cannot be dispatched
     # in that state anyway, so the row exists only to satisfy the foreign key.
-    persisted = registry.available().get(request.model_id)
+    persisted = registry.available().get(model_id)
     if persisted is None:
         logger.warning(
             "model %s left the registry while its job was being created; "
             "writing the models row from the narrowed copy",
-            request.model_id,
+            model_id,
         )
         persisted = manifest
     if error := validate_params(manifest, request.params):
@@ -401,7 +431,7 @@ async def create_generation(
     # In this request's own session: a second one per request lets a burst
     # fill the pool with requests that each wait for their second connection.
     await session.execute(registry.manifest_upsert([persisted]))
-    job = Job(user_id=user.id, model_id=request.model_id, params=request.params,
+    job = Job(user_id=user.id, model_id=model_id, params=request.params,
               source_asset_id=source_asset_id)
     session.add(job)
     await session.commit()

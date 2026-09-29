@@ -2,6 +2,7 @@
   "id": "flux2-klein-4b",
   "name": "FLUX.2 Klein 4B",
   "capabilities": ["text_to_image"],
+  "tier": "draft",
   "min_vram_gb": 13,
   "prompt_token_limit": 512,
   "source": "black-forest-labs/FLUX.2-klein-4B",
