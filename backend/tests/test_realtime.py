@@ -203,6 +203,23 @@ async def pump_writer(session):
             return
 
 
+def canvas_frame(session_id, payload, revision=1):
+    """A header 2 canvas frame: kind, session uuid, input revision, payload."""
+    return (bytes([CANVAS_FRAME]) + session_id.bytes
+            + revision.to_bytes(4, "big") + payload)
+
+
+def generated_frame(session_id, payload, revision=1):
+    """A header 2 generated frame, stamped with the input revision rendered."""
+    return (bytes([GENERATED_FRAME]) + session_id.bytes
+            + revision.to_bytes(4, "big") + payload)
+
+
+def legacy_frame(frame):
+    """The same frame as a header 1 or protocol 4 peer sees it: no revision."""
+    return frame[:realtime.LEGACY_FRAME_HEADER_BYTES] + frame[realtime.FRAME_HEADER_BYTES:]
+
+
 def test_version_gate_rejects_older_than_n_minus_1():
     with client.websocket_connect("/api/v1/fleet") as ws:
         ws.send_json(hello(version=MIN_SUPPORTED_VERSION - 1))
@@ -661,48 +678,39 @@ def test_update_params_reaches_the_worker_and_browser():
 
 @pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 1])
 def test_update_params_follows_the_workers_advertised_version(version):
-    """The version the worker advertised in hello is what decides, not the
-    API's own. Protocol 3 already speaks unfenced update_session; a worker
-    below that would silently drop it. Both N-1 (3) and a worker newer than
-    the API still take updates.
+    """The version the worker advertised in hello decides the frame width it
+    is sent, not the API's own: the N-1 floor worker still gets every update
+    and reads 17 byte frames, a worker newer than the API reads the 21 byte
+    ones. Neither dialect is refused.
     """
-    refused = version < realtime.UPDATE_SESSION_PROTOCOL_VERSION
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(version=version, worker_id=f"w-ver-{version}",
                                   parameters=REQUIRES_PROMPT))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim",
-                                  "params": {"prompt": "a red house"}})
+                                  "params": {"prompt": "a red house"},
+                                  "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
 
             browser_ws.send_json({"type": "update_params",
                                   "params": {"prompt": "a blue house"}})
-            if refused:
-                refused_msg = expect(browser_ws, "error")
-                assert refused_msg["code"] == 4000
-                assert "support" in refused_msg["message"]
-                session = realtime.sessions[uuid.UUID(opened["session_id"])]
-                assert session.params["prompt"] == "a red house"
-            else:
-                updated = expect(worker_ws, "update_session")
-                assert updated["session_id"] == opened["session_id"]
-                if version >= realtime.CONTROL_GENERATION_PROTOCOL_VERSION:
-                    assert updated["control_generation"] == 1
-                else:
-                    assert "control_generation" not in updated
-                expect(browser_ws, "params_updated")
-                session = realtime.sessions[uuid.UUID(opened["session_id"])]
-                assert session.params["prompt"] == "a blue house"
+            updated = expect(worker_ws, "update_session")
+            assert updated["session_id"] == opened["session_id"]
+            assert updated["control_generation"] == 1
+            expect(browser_ws, "params_updated")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            assert session.params["prompt"] == "a blue house"
 
-            # Either way the worker's next message is the canvas frame, not
-            # an update_session it would have dropped, and the session is
-            # still rendering.
-            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-live"
+            # The worker's next message is the canvas frame, in the width its
+            # own version reads.
+            canvas = canvas_frame(uuid.UUID(opened["session_id"]), b"still-live", 1)
             browser_ws.send_bytes(canvas)
-            assert worker_ws.receive_bytes() == canvas
+            assert worker_ws.receive_bytes() == (
+                canvas if version >= realtime.FRAME_HEADER_2_VERSION
+                else legacy_frame(canvas))
             browser_ws.send_json({"type": "close"})
             expect(worker_ws, "close_session")
 
@@ -755,7 +763,8 @@ def test_update_params_refuses_a_seed_change_and_keeps_the_session():
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim",
-                                  "params": {"prompt": "a red house"}})
+                                  "params": {"prompt": "a red house"},
+                                  "frame_header": 2})
             opened = worker_ws.receive_json()
             session_id = opened["session_id"]
             answer_ready(worker_ws, session_id)
@@ -774,7 +783,7 @@ def test_update_params_refuses_a_seed_change_and_keeps_the_session():
             params = realtime.sessions[uuid.UUID(session_id)].params
             assert params["seed"] == seed
             assert params["prompt"] == "a red house"
-            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(session_id).bytes + b"still-live"
+            canvas = canvas_frame(uuid.UUID(session_id), b"still-live", 1)
             browser_ws.send_bytes(canvas)
             assert worker_ws.receive_bytes() == canvas
             browser_ws.send_json({"type": "close"})
@@ -817,7 +826,8 @@ def test_invalid_update_params_keeps_the_session_open():
 
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim",
-                                  "params": {"prompt": "a red house"}})
+                                  "params": {"prompt": "a red house"},
+                                  "frame_header": 2})
             opened = worker_ws.receive_json()
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
@@ -831,7 +841,7 @@ def test_invalid_update_params_keeps_the_session_open():
 
             # The socket survived the rejection: a frame still flows, and the
             # session closes normally afterwards.
-            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"still-alive"
+            canvas = canvas_frame(uuid.UUID(opened["session_id"]), b"still-alive", 1)
             browser_ws.send_bytes(canvas)
             assert worker_ws.receive_bytes() == canvas
             browser_ws.send_json({"type": "close"})
@@ -864,7 +874,8 @@ def test_session_and_frame_relay_both_directions():
         expect(worker_ws, "registered")
 
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
 
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
@@ -872,13 +883,129 @@ def test_session_and_frame_relay_both_directions():
             ready = expect(browser_ws, "ready")
             session = uuid.UUID(ready["session_id"])
 
-            canvas = bytes([CANVAS_FRAME]) + session.bytes + b"canvas-payload"
+            canvas = canvas_frame(session, b"canvas-payload", 1)
             browser_ws.send_bytes(canvas)
             assert worker_ws.receive_bytes() == canvas
 
-            generated = bytes([GENERATED_FRAME]) + session.bytes + b"generated-payload"
+            generated = generated_frame(session, b"generated-payload", 1)
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
+
+
+def test_a_stale_revision_is_dropped_and_never_reaches_the_worker():
+    """A replayed or out-of-order canvas frame says nothing about the drawing,
+    so it is dropped where it lies: no error, no close, and the worker never
+    sees it. The next higher revision is forwarded intact, revision and all.
+    """
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-stale-revision"))
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+
+            first = canvas_frame(session.id, b"first", 1)
+            browser_ws.send_bytes(first)
+            assert worker_ws.receive_bytes() == first
+            assert session.input_revision == 1
+
+            # A stale frame posts no refusal, so the next thing the browser
+            # reads is the answer to the frame after it: a refusal queued here
+            # would fail the receive_bytes below.
+            browser_ws.send_bytes(canvas_frame(session.id, b"replayed", 1))
+            assert session.input_revision == 1
+            assert session.pending_frame is None
+
+            second = canvas_frame(session.id, b"second", 2)
+            browser_ws.send_bytes(second)
+            assert worker_ws.receive_bytes() == second
+            assert session.input_revision == 2
+
+
+def test_a_header_1_browser_is_stamped_by_the_api_and_read_back():
+    """A browser that did not ask for header 2 sends 17 byte frames carrying
+    no revision, so the API stamps the session's next one and the v5 worker
+    reads 1, 2, 3. Its generated frame comes back over the same header 1
+    socket with the revision stripped off again."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-header-1"))
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 1})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+
+            for revision in range(1, 4):
+                sent = bytes([CANVAS_FRAME]) + session.id.bytes + f"drawing-{revision}".encode()
+                browser_ws.send_bytes(sent)
+                assert worker_ws.receive_bytes() == (
+                    sent[:realtime.LEGACY_FRAME_HEADER_BYTES]
+                    + revision.to_bytes(4, "big")
+                    + sent[realtime.LEGACY_FRAME_HEADER_BYTES:])
+            assert session.input_revision == 3
+
+            generated = generated_frame(session.id, b"rendered", 3)
+            worker_ws.send_bytes(generated)
+            assert browser_ws.receive_bytes() == legacy_frame(generated)
+
+
+def test_a_protocol_4_worker_gets_17_byte_frames_and_stamped_back():
+    """N-1 reads the 17 byte dialect, so it is sent the canvas without its
+    revision and its own generated frame carries none either: the API stamps
+    that one with the revision of the canvas it last forwarded."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION, worker_id="w-v4"))
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            expect(browser_ws, "ready")
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+
+            first = canvas_frame(session.id, b"first", 1)
+            browser_ws.send_bytes(first)
+            assert worker_ws.receive_bytes() == legacy_frame(first)
+            assert session.forwarded_revision == 1
+            unrevisioned = legacy_frame(generated_frame(session.id, b"rendered", 1))
+            worker_ws.send_bytes(unrevisioned)
+            assert browser_ws.receive_bytes() == (
+                unrevisioned[:realtime.LEGACY_FRAME_HEADER_BYTES]
+                + (1).to_bytes(4, "big")
+                + unrevisioned[realtime.LEGACY_FRAME_HEADER_BYTES:])
+
+            second = canvas_frame(session.id, b"second", 2)
+            browser_ws.send_bytes(second)
+            assert worker_ws.receive_bytes() == legacy_frame(second)
+            assert session.forwarded_revision == 2
+            worker_ws.send_bytes(unrevisioned)
+            assert browser_ws.receive_bytes() == (
+                unrevisioned[:realtime.LEGACY_FRAME_HEADER_BYTES]
+                + (2).to_bytes(4, "big")
+                + unrevisioned[realtime.LEGACY_FRAME_HEADER_BYTES:])
+
+
+def test_open_with_an_unknown_frame_header_is_a_protocol_violation():
+    """A header the API cannot speak would leave the browser framing every
+    frame wrong, so it is refused like any other malformed open."""
+    for value in (3, 0, -1, "2", 2.0, True, None):
+        with client.websocket_connect("/api/v1/realtime") as ws:
+            ws.send_json({"type": "open", "model_id": "sd-sim",
+                          "frame_header": value})
+            refused = expect(ws, "error")
+            assert refused["code"] == 4000
+            assert refused["message"] == "frame_header must be 1 or 2"
 
 
 def test_canvas_frame_payload_cap():
@@ -887,24 +1014,30 @@ def test_canvas_frame_payload_cap():
         expect(worker_ws, "registered")
 
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
 
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
 
             ready = expect(browser_ws, "ready")
             session = uuid.UUID(ready["session_id"])
+            state = realtime.sessions[session]
 
             # The fixture is the documented 1 MiB, not the imported name, so a
             # raised cap still forwards the oversize frame and this fails.
             payload_cap = 1 * 1024 * 1024
             assert MAX_CANVAS_PAYLOAD_BYTES == payload_cap
-            at_cap = bytes([CANVAS_FRAME]) + session.bytes + (b"x" * payload_cap)
+            at_cap = canvas_frame(session, b"x" * payload_cap, 1)
             browser_ws.send_bytes(at_cap)
             assert worker_ws.receive_bytes() == at_cap
+            assert state.input_revision == 1
 
-            over_cap = bytes([CANVAS_FRAME]) + session.bytes + (b"x" * (payload_cap + 1))
+            # The size refusal does not consume the revision it carried, so
+            # the next in-range frame may still be that one.
+            over_cap = canvas_frame(session, b"x" * (payload_cap + 1), 2)
             browser_ws.send_bytes(over_cap)
+            assert state.input_revision == 1
 
             # Dropped and answered: the socket stays open, and the refusal
             # names the cap the frame broke (issue #617).
@@ -912,11 +1045,12 @@ def test_canvas_frame_payload_cap():
             assert refusal["code"] == 4005
             assert refusal["message"] == f"canvas frame exceeds {payload_cap} bytes"
 
-            after_drop = bytes([CANVAS_FRAME]) + session.bytes + b"after-drop"
+            after_drop = canvas_frame(session, b"after-drop", 2)
             browser_ws.send_bytes(after_drop)
             assert worker_ws.receive_bytes() == after_drop
+            assert state.input_revision == 2
 
-            generated = bytes([GENERATED_FRAME]) + session.bytes + b"still-open"
+            generated = generated_frame(session, b"still-open", 2)
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
 
@@ -954,14 +1088,15 @@ def test_an_oversize_frame_is_refused_once_a_second_and_the_session_stays_open()
         expect(worker_ws, "registered")
 
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             ready = expect(browser_ws, "ready")
             session = uuid.UUID(ready["session_id"])
 
             payload_cap = 1 * 1024 * 1024
-            over_cap = bytes([CANVAS_FRAME]) + session.bytes + b"x" * (payload_cap + 1)
+            over_cap = canvas_frame(session, b"x" * (payload_cap + 1), 1)
             browser_ws.send_bytes(over_cap)
             refusal = expect(browser_ws, "error")
             assert refusal["code"] == 4005
@@ -970,8 +1105,9 @@ def test_an_oversize_frame_is_refused_once_a_second_and_the_session_stays_open()
             browser_ws.send_bytes(over_cap)
 
             # An ordinary frame proves the session still runs and relays, and
-            # it is handled after the oversize one above.
-            accepted = bytes([CANVAS_FRAME]) + session.bytes + b"still-accepted"
+            # it is handled after the oversize one above. The revision the
+            # oversize frames carried was never consumed, so 1 is still new.
+            accepted = canvas_frame(session, b"still-accepted", 1)
             browser_ws.send_bytes(accepted)
             assert worker_ws.receive_bytes() == accepted
 
@@ -989,7 +1125,7 @@ def test_api_start_commands_cap_websocket_receive():
     # the receive cap without updating the start commands still fails.
     receive_cap = 2 * 1024 * 1024
     payload_cap = 1 * 1024 * 1024
-    assert receive_cap > 17 + payload_cap
+    assert receive_cap > 21 + payload_cap
     root = Path(__file__).resolve().parents[2]
     for rel in (
         "deploy/docker/Dockerfile.api",
@@ -1011,14 +1147,15 @@ def test_worker_relay_requires_its_session_and_generated_frames():
             other_worker_ws.send_json(hello(worker_id="w-session-other"))
             expect(other_worker_ws, "registered")
             with client.websocket_connect("/api/v1/realtime") as browser_ws:
-                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                      "frame_header": 2})
                 opened = worker_ws.receive_json()
                 session_id = opened["session_id"]
                 session = realtime.sessions[uuid.UUID(session_id)]
 
                 answer_ready(other_worker_ws, session_id)
                 other_worker_ws.send_bytes(
-                    bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"foreign"
+                    generated_frame(uuid.UUID(session_id), b"foreign", 1)
                 )
                 # Barrier on the stranger's own socket: a connection processes
                 # its messages in order, so once this violation has closed it
@@ -1032,7 +1169,7 @@ def test_worker_relay_requires_its_session_and_generated_frames():
 
                 answer_ready(worker_ws, session_id)
                 expect(browser_ws, "ready")
-                generated = bytes([GENERATED_FRAME]) + uuid.UUID(session_id).bytes + b"owned"
+                generated = generated_frame(uuid.UUID(session_id), b"owned", 1)
                 worker_ws.send_bytes(generated)
                 # Arrives after the foreign frame above was dropped, which is
                 # what proves the drop: a relayed foreign frame would be read
@@ -1885,45 +2022,34 @@ def test_heartbeat_p95_decrease_does_not_raise_admissions():
             realtime.sessions.pop(live.id, None)
 
 
-def test_protocol_3_open_has_no_generation_and_first_attempt_still_works():
+def test_a_floor_version_worker_gets_the_fenced_open():
+    """N-1 is still admitted, and every lifecycle message it must answer
+    carries the generation fence: an unfenced reply is the race fencing
+    exists to prevent, so the API ignores it and waits for a fenced one."""
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION,
-                                  worker_id="w-p3-first"))
+                                  worker_id="w-floor-open"))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             opened = expect(worker_ws, "open_session")
-            assert "control_generation" not in opened
+            assert opened["control_generation"] == 1
+            session = realtime.sessions[uuid.UUID(opened["session_id"])]
+
             worker_ws.send_json({"type": "session_ready",
                                  "session_id": opened["session_id"]})
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                assert not session.ready.is_set(), "an unfenced ready was read"
+                time.sleep(0.02)
+
+            worker_ws.send_json({"type": "session_ready",
+                                 "session_id": opened["session_id"],
+                                 "control_generation": 1})
             expect(browser_ws, "ready")
-
-
-def test_protocol_3_worker_is_skipped_on_reassignment():
-    saved_workers = dict(realtime.workers)
-    saved_sessions = dict(realtime.sessions)
-    try:
-        realtime.workers.clear()
-        realtime.sessions.clear()
-        old = realtime.Worker(
-            id="w-p3", ws=FakeSocket(),
-            manifests=[Manifest.model_validate(manifest())],
-            realtime_slots=4, protocol_version=MIN_SUPPORTED_VERSION,
-        )
-        new = realtime.Worker(
-            id="w-p4", ws=FakeSocket(),
-            manifests=[Manifest.model_validate(manifest())],
-            realtime_slots=1, protocol_version=PROTOCOL_VERSION,
-        )
-        realtime.workers[old.id] = old
-        realtime.workers[new.id] = new
-        assert realtime.pick_worker("sd-sim", generation=1) is old
-        assert realtime.pick_worker("sd-sim", generation=2) is new
-    finally:
-        realtime.workers.clear()
-        realtime.sessions.clear()
-        realtime.workers.update(saved_workers)
-        realtime.sessions.update(saved_sessions)
+            browser_ws.send_json({"type": "close"})
+            closed = expect(worker_ws, "close_session")
+            assert closed["control_generation"] == 1
 
 
 def test_session_refused_reassigns_to_another_protocol_4_worker():
@@ -2124,34 +2250,6 @@ def test_over_capacity_drops_newest_protocol_4_session():
         assert realtime.live_admission_cost(worker) == 600
         victims = realtime.over_capacity_sessions(worker)
         assert victims == [newer]
-    finally:
-        realtime.workers.clear()
-        realtime.sessions.clear()
-        realtime.workers.update(saved_workers)
-        realtime.sessions.update(saved_sessions)
-
-
-def test_over_capacity_leaves_protocol_3_sessions():
-    worker = realtime.Worker(
-        id="w-p3-shed", ws=FakeSocket(),
-        manifests=[Manifest.model_validate(manifest())],
-        realtime_slots=4, protocol_version=MIN_SUPPORTED_VERSION,
-        admission_p95_ms={"sd-sim": 300},
-    )
-    live = realtime.Session(
-        id=uuid.uuid4(), model_id="sd-sim", browser=FakeSocket(),
-        worker=worker, state="live", assigned_at=1.0,
-    )
-    saved_workers = dict(realtime.workers)
-    saved_sessions = dict(realtime.sessions)
-    try:
-        realtime.workers.clear()
-        realtime.sessions.clear()
-        realtime.workers[worker.id] = worker
-        realtime.sessions[live.id] = live
-        worker.admission_p95_ms["sd-sim"] = 600
-        assert realtime.live_admission_cost(worker) == 600
-        assert realtime.over_capacity_sessions(worker) == []
     finally:
         realtime.workers.clear()
         realtime.sessions.clear()
@@ -2664,13 +2762,14 @@ def test_a_live_session_with_recent_input_is_not_released(monkeypatch):
         worker_ws.send_json(hello(worker_id="w-idle-kept"))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
             session.last_input = time.monotonic() - 1
-            canvas = bytes([CANVAS_FRAME]) + uuid.UUID(opened["session_id"]).bytes + b"drawing"
+            canvas = canvas_frame(uuid.UUID(opened["session_id"]), b"drawing", 1)
             browser_ws.send_bytes(canvas)
             assert worker_ws.receive_bytes() == canvas
             client.portal.call(realtime.release_idle_sessions)
@@ -2689,7 +2788,8 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
             worker_ws.send_json(hello(worker_id="w-idle-resume", slots=2))
             expect(worker_ws, "registered")
             with db_client.websocket_connect("/api/v1/realtime") as browser_ws:
-                browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+                browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                      "frame_header": 2})
                 opened = expect(worker_ws, "open_session")
                 answer_ready(worker_ws, opened)
                 expect(browser_ws, "ready")
@@ -2706,8 +2806,9 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
                 assert realtime.closing_sessions[(session_id, 1)][0] == session.user_id
                 assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
 
-                canvas = bytes([CANVAS_FRAME]) + session_id.bytes + b"resume-me"
+                canvas = canvas_frame(session_id, b"resume-me", 1)
                 browser_ws.send_bytes(canvas)
+                assert session.input_revision == 1
                 reopened = expect(worker_ws, "open_session")
                 assert reopened["session_id"] == opened["session_id"]
                 assert reopened["control_generation"] == 2
@@ -2719,6 +2820,15 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
                 assert realtime.workers["w-idle-resume"].slots_in_use == 1
                 assert realtime.closing_sessions[(session_id, 1)][2] is realtime.workers["w-idle-resume"]
 
+                # The revision never restarts at a resume: the frame that
+                # crossed the release is still the newest, a replay of it is
+                # dropped where it lies, and only a higher one is forwarded.
+                browser_ws.send_bytes(canvas_frame(session_id, b"replayed", 1))
+                next_canvas = canvas_frame(session_id, b"after-resume", 2)
+                browser_ws.send_bytes(next_canvas)
+                assert worker_ws.receive_bytes() == next_canvas
+                assert session.input_revision == 2
+
 
 def test_a_frame_on_an_idle_session_with_no_room_queues_it(monkeypatch):
     """If every slot is taken by the time an idle session draws again, its
@@ -2729,7 +2839,8 @@ def test_a_frame_on_an_idle_session_with_no_room_queues_it(monkeypatch):
         worker_ws.send_json(hello(worker_id="w-idle-full", slots=1))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as first_ws:
-            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            first_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(first_ws, "ready")
@@ -2743,11 +2854,15 @@ def test_a_frame_on_an_idle_session_with_no_room_queues_it(monkeypatch):
                 second_opened = expect(worker_ws, "open_session")
                 answer_ready(worker_ws, second_opened)
                 expect(second_ws, "ready")
-                canvas = bytes([CANVAS_FRAME]) + first.id.bytes + b"nowhere"
+                canvas = canvas_frame(first.id, b"nowhere", 1)
                 first_ws.send_bytes(canvas)
                 queued = expect(first_ws, "queued")
                 assert queued["position"] == 1
                 assert first.state == "queued"
+                # The frame crossed into the queue in the internal 21 byte
+                # form, carrying the revision the worker will be given.
+                assert first.pending_frame == canvas
+                assert first.input_revision == 1
 
 
 @pytest.mark.db
@@ -2910,13 +3025,11 @@ def test_an_unfenced_protocol_4_session_closed_is_ignored(monkeypatch):
         assert (session_id, 1) in realtime.closing_sessions
 
 
-def test_a_protocol_3_worker_settles_its_only_attempt(monkeypatch):
-    """Protocol 3 has no generations, so its session_closed is the session's
-    first attempt: it settles (session_id, 1) with no control_generation on
-    the wire. A report that still carries the field (shared worker code) must
-    not be read by it either: the API reads a protocol 3 report as attempt 1
-    whatever the payload says, or a stale value looks up a generation that
-    does not exist and the attempt is never billed.
+def test_a_session_closed_naming_an_unarmed_generation_settles_nothing(monkeypatch):
+    """session_closed settles the attempt its control_generation names, and an
+    attempt that was never armed is not one: a value no entry holds would bill
+    the wrong session or nothing at all, so the report is ignored and the
+    armed entry waits for the report that does name it.
     """
     calls: list[tuple[uuid.UUID, str, dict]] = []
     monkeypatch.setattr(
@@ -2925,48 +3038,46 @@ def test_a_protocol_3_worker_settles_its_only_attempt(monkeypatch):
     )
     monkeypatch.setattr(db, "local_user_id", uuid.uuid4())
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
-        worker_ws.send_json(hello(version=MIN_SUPPORTED_VERSION,
-                                  worker_id="w-p3-settle"))
+        worker_ws.send_json(hello(worker_id="w-unarmed-settle"))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
             browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
             opened = expect(worker_ws, "open_session")
-            assert "control_generation" not in opened
-            worker_ws.send_json({"type": "session_ready",
-                                 "session_id": opened["session_id"]})
+            answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
             session_id = uuid.UUID(opened["session_id"])
             browser_ws.send_json({"type": "close"})
         closed = expect(worker_ws, "close_session")
-        assert "control_generation" not in closed
+        assert closed["control_generation"] == 1
         user_id, model_id, worker = realtime.closing_sessions[(session_id, 1)]
 
-        worker_ws.send_json({"type": "session_closed",
-                             "session_id": str(session_id),
-                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
-                             "category": "other"})
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and len(calls) < 1:
-            time.sleep(0.05)
-        assert calls, "the protocol 3 report was never settled"
-        assert calls[0][0] == user_id
-        assert calls[0][1] == model_id
-        assert (session_id, 1) not in realtime.closing_sessions
-
-        # A report carrying the field it does not understand: the armed entry
-        # is again (session_id, 1), so the stale value must not point the
-        # settlement at a generation that does not exist.
-        realtime.closing_sessions[(session_id, 1)] = (user_id, model_id, worker)
         worker_ws.send_json({"type": "session_closed",
                              "session_id": str(session_id),
                              "control_generation": 2,
                              "frames": 6, "gpu_ms": 60, "duration_ms": 600,
                              "category": "other"})
+        # The server gets a window in which an unarmed claim would have been
+        # written, then the armed entry must still be there.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            assert calls == [], "an unarmed generation settled usage"
+            time.sleep(0.02)
+        assert (session_id, 1) in realtime.closing_sessions
+
+        worker_ws.send_json({"type": "session_closed",
+                             "session_id": str(session_id),
+                             "control_generation": 1,
+                             "frames": 6, "gpu_ms": 60, "duration_ms": 600,
+                             "category": "other"})
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and len(calls) < 2:
+        while time.monotonic() < deadline and len(calls) < 1:
             time.sleep(0.05)
-        assert len(calls) == 2
+        assert calls, "the armed report was never settled"
+        assert calls[0][0] == user_id
+        assert calls[0][1] == model_id
+        assert calls[0][2]["control_generation"] == 1
         assert (session_id, 1) not in realtime.closing_sessions
+        assert worker is realtime.workers["w-unarmed-settle"]
 
 
 def test_a_relayed_frame_clears_a_pending_frame():
@@ -2977,16 +3088,18 @@ def test_a_relayed_frame_clears_a_pending_frame():
         worker_ws.send_json(hello(worker_id="w-frame-clear"))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as browser_ws:
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
-            session.pending_frame = b"older-than-anything-a-resume-holds"
-            canvas = bytes([CANVAS_FRAME]) + session.id.bytes + b"newer"
+            session.pending_frame = canvas_frame(session.id, b"older", 1)
+            canvas = canvas_frame(session.id, b"newer", 2)
             browser_ws.send_bytes(canvas)
             assert worker_ws.receive_bytes() == canvas
             assert session.pending_frame is None
+            assert session.input_revision == 2
 
 
 def test_resume_idle_does_not_double_close_an_ending_session(monkeypatch):

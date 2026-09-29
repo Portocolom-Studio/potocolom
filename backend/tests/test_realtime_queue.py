@@ -226,11 +226,17 @@ def test_reassign_with_no_candidate_queues_then_resumes():
         with client.websocket_connect("/api/v1/fleet") as worker_ws:
             worker_ws.send_json(hello(worker_id="w-queue-reassign", slots=1))
             expect(worker_ws, "registered")
-            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                  "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(browser_ws, "ready")
             session = realtime.sessions[uuid.UUID(opened["session_id"])]
+            canvas = (bytes([CANVAS_FRAME]) + session.id.bytes
+                      + (1).to_bytes(4, "big") + b"before-the-crash")
+            browser_ws.send_bytes(canvas)
+            assert worker_ws.receive_bytes() == canvas
+            assert session.input_revision == 1
         # The only worker went away: interrupted, then queued.
         expect(browser_ws, "interrupted")
         queued = expect(browser_ws, "queued")
@@ -245,6 +251,15 @@ def test_reassign_with_no_candidate_queues_then_resumes():
             expect(browser_ws, "resumed")
             assert session.state == "live"
             assert session.worker is realtime.workers["w-queue-reassign-b"]
+            # The revision belongs to the session, not to an attempt: it never
+            # restarts when the session lands on another worker, a replay of
+            # what came before is dropped there, and only a higher one flows.
+            browser_ws.send_bytes(canvas)
+            newer = (bytes([CANVAS_FRAME]) + session.id.bytes
+                     + (2).to_bytes(4, "big") + b"after-the-crash")
+            browser_ws.send_bytes(newer)
+            assert new_worker_ws.receive_bytes() == newer
+            assert session.input_revision == 2
 
 
 def test_idle_resume_with_no_room_queues_and_resumes(monkeypatch):
@@ -256,7 +271,8 @@ def test_idle_resume_with_no_room_queues_and_resumes(monkeypatch):
         worker_ws.send_json(hello(worker_id="w-queue-idle", slots=1))
         expect(worker_ws, "registered")
         with client.websocket_connect("/api/v1/realtime") as first_ws:
-            first_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            first_ws.send_json({"type": "open", "model_id": "sd-sim",
+                                "frame_header": 2})
             opened = expect(worker_ws, "open_session")
             answer_ready(worker_ws, opened)
             expect(first_ws, "ready")
@@ -270,11 +286,14 @@ def test_idle_resume_with_no_room_queues_and_resumes(monkeypatch):
                 second_opened = expect(worker_ws, "open_session")
                 answer_ready(worker_ws, second_opened)
                 expect(second_ws, "ready")
-                canvas = bytes([CANVAS_FRAME]) + first.id.bytes + b"resume-me"
+                canvas = (bytes([CANVAS_FRAME]) + first.id.bytes
+                          + (1).to_bytes(4, "big") + b"resume-me")
                 first_ws.send_bytes(canvas)
                 queued = expect(first_ws, "queued")
                 assert queued["position"] == 1
                 assert first.state == "queued"
+                assert first.input_revision == 1
+                assert first.pending_frame == canvas
             # The second session closed: the idle session resumes with its
             # newest pending frame.
             closed = expect(worker_ws, "close_session")
@@ -501,15 +520,18 @@ def test_an_admission_shed_during_its_frame_send_announces_nothing(monkeypatch):
     async def scenario():
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
                                    browser=FakeSocket(), state="assigning",
-                                   queued_at=time.monotonic(),
-                                   pending_frame=b"canvas")
+                                   queued_at=time.monotonic())
+        # The one internal form: a 21 byte frame, revision included.
+        session.pending_frame = (bytes([CANVAS_FRAME]) + session.id.bytes
+                                 + (1).to_bytes(4, "big") + b"canvas")
 
         class ShedDuringSend:
             async def send_bytes(self, _data):
                 assert realtime.transition(session, "live", "assigning")
 
         async def placed(target, **_kwargs):
-            target.worker = SimpleNamespace(ws=ShedDuringSend())
+            target.worker = SimpleNamespace(
+                ws=ShedDuringSend(), protocol_version=realtime.PROTOCOL_VERSION)
             return realtime.transition(target, "assigning", "live")
 
         monkeypatch.setattr(realtime, "place_session", placed)

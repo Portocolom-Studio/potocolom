@@ -228,18 +228,23 @@ def test_a_slow_browser_does_not_stall_the_relay_to_its_neighbour():
             session_a = realtime.Session(
                 id=uuid.uuid4(), model_id="sd-sim", browser=browser_a,
                 worker=worker, state="live", assigned_at=time.monotonic(),
+                frame_header=2,
             )
             session_b = realtime.Session(
                 id=uuid.uuid4(), model_id="sd-sim", browser=browser_b,
                 worker=worker, state="live", assigned_at=time.monotonic(),
+                frame_header=2,
             )
             realtime.sessions.update({session_a.id: session_a,
                                       session_b.id: session_b})
             session_a.writer = asyncio.create_task(realtime.browser_writer(session_a))
             session_b.writer = asyncio.create_task(realtime.browser_writer(session_b))
 
-            frame_a = bytes([GENERATED_FRAME]) + session_a.id.bytes + b"for-slow"
-            frame_b = bytes([GENERATED_FRAME]) + session_b.id.bytes + b"for-neighbour"
+            # Header 2 generated frames: kind, session uuid, revision, payload.
+            frame_a = (bytes([GENERATED_FRAME]) + session_a.id.bytes
+                       + (1).to_bytes(4, "big") + b"for-slow")
+            frame_b = (bytes([GENERATED_FRAME]) + session_b.id.bytes
+                       + (1).to_bytes(4, "big") + b"for-neighbour")
             worker_socket.send_frame(frame_a)
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and browser_a.in_flight != [frame_a]:

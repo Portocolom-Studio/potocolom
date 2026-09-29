@@ -2,17 +2,22 @@
 // Kept apart from the panel so node --test can exercise framing and the live
 // session lifecycle without loading Svelte. The panel owns the DOM and controls.
 //
-// The wire is docs/connection-handling.md: a 17 byte header of one kind byte
-// and the 16 byte session UUID, then a complete WebP image. That header
-// carries no sequence number, so generated frames arrive in transport order
-// and monotonic revisions remain issue #19's to add. ready also carries the
-// session's limits, and a canvas image above max_frame_bytes is never framed.
+// The wire is docs/connection-handling.md: a 21 byte header of one kind byte,
+// the 16 byte session UUID and a 4 byte big endian revision, then a complete
+// WebP image. A canvas frame carries the session's own input count and a
+// generated frame echoes the revision of the input that produced it, so an
+// output below the revision already shown is dropped instead of drawn. ready
+// also carries the session's limits, and a canvas image above
+// max_frame_bytes is never framed.
 
 /** Browser to worker. */
 export const CANVAS_FRAME = 0x01;
 /** Worker to browser. */
 export const GENERATED_FRAME = 0x02;
-export const FRAME_HEADER_BYTES = 17;
+/** One kind byte, the 16 byte session UUID, then a 4 byte big endian revision. */
+export const FRAME_HEADER_BYTES = 21;
+/** Where the revision sits in the header, after the kind byte and the UUID. */
+const REVISION_OFFSET = 17;
 
 /** Issue #3 asks for 2 to 4 fps. Finer adaptation is issue #42's. */
 export const FAST_INTERVAL_MS = 250;
@@ -37,33 +42,65 @@ export function uuidBytes(id: string): Uint8Array {
 /**
  * A complete canvas frame ready for socket.send.
  *
+ * `revision` is the session's input count, written big endian over four
+ * bytes: a 16 bit write would wrap long before a page reload, and a little
+ * endian one would read back as a different number on the API's side.
+ *
  * The buffer is named in the type because send and the Blob constructor both
  * reject the ArrayBufferLike a bare Uint8Array widens to.
  */
-export function canvasFrame(sessionId: string, image: Uint8Array): Uint8Array<ArrayBuffer> {
+export function canvasFrame(
+	sessionId: string,
+	revision: number,
+	image: Uint8Array
+): Uint8Array<ArrayBuffer> {
 	const frame = new Uint8Array(FRAME_HEADER_BYTES + image.length);
 	frame[0] = CANVAS_FRAME;
 	frame.set(uuidBytes(sessionId), 1);
+	new DataView(frame.buffer).setUint32(REVISION_OFFSET, revision, false);
 	frame.set(image, FRAME_HEADER_BYTES);
 	return frame;
 }
 
+/** The revision a generated frame was cut for, and its image bytes. */
+export interface GeneratedFrame {
+	revision: number;
+	image: Uint8Array<ArrayBuffer>;
+}
+
 /**
- * The image bytes of a generated frame, or null when the frame is not one:
- * too short, the wrong kind, or another session's. The whole UUID is compared
- * because a frame from a session that differs in one byte is still not ours.
+ * The revision and image bytes of a generated frame, or null when the frame
+ * is not one: too short, the wrong kind, or another session's. The whole UUID
+ * is compared because a frame from a session that differs in one byte is
+ * still not ours.
  */
 export function parseGeneratedFrame(
 	data: Uint8Array<ArrayBuffer>,
 	sessionId: string
-): Uint8Array<ArrayBuffer> | null {
+): GeneratedFrame | null {
 	if (data.length < FRAME_HEADER_BYTES) return null;
 	if (data[0] !== GENERATED_FRAME) return null;
 	const expected = uuidBytes(sessionId);
 	for (let index = 0; index < 16; index += 1) {
 		if (data[index + 1] !== expected[index]) return null;
 	}
-	return data.subarray(FRAME_HEADER_BYTES);
+	const revision = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(
+		REVISION_OFFSET,
+		false
+	);
+	return { revision, image: data.subarray(FRAME_HEADER_BYTES) };
+}
+
+/**
+ * Whether a generated frame is older than the one already on screen.
+ *
+ * Strictly below, so an equal revision is drawn: one input may be rendered
+ * more than once, and dropping it would leave the output stuck on a worker
+ * that repeats a revision. The comparison is a function because the arrival
+ * check and the drain loop have to agree on exactly this line.
+ */
+export function isStaleOutput(revision: number, shownRevision: number): boolean {
+	return revision < shownRevision;
 }
 
 /**
@@ -85,10 +122,9 @@ export function shouldSendFrame(state: {
 /**
  * The period to aim for between frame starts. Backs off to the slow end of the
  * band when encoding and queueing a frame already costs more than the fast
- * interval. This measures the browser's own cost, not the model's: the
- * generated frame is not correlated to the canvas frame that produced it on
- * this wire, so a true round trip is not observable until issue #19 adds
- * revisions.
+ * interval. This measures the browser's own cost, not the model's: revisions
+ * correlate a generated frame with the input that produced it, but this period
+ * is still fed only the browser's own encode and queue cost.
  */
 export function nextIntervalMs(lastFrameCostMs: number): number {
 	return lastFrameCostMs > FAST_INTERVAL_MS ? SLOW_INTERVAL_MS : FAST_INTERVAL_MS;
@@ -116,7 +152,9 @@ export function nextDelayMs(lastFrameCostMs: number): number {
  * declared by every shipped realtime manifest. The other strength the
  * manifest still declares belongs to queued image-to-image jobs, where the
  * drawing is fed back in; this path ignores it. The params open the session;
- * changes land through updateParamsMessage.
+ * changes land through updateParamsMessage. `frame_header` declares the 21
+ * byte header this client writes and reads back, and the API uses that header
+ * only for a socket whose open control declared it here.
  */
 export function openMessage(
 	modelId: string,
@@ -125,6 +163,7 @@ export function openMessage(
 ): string {
 	return JSON.stringify({
 		type: 'open',
+		frame_header: 2,
 		model_id: modelId,
 		params: {
 			prompt: prompt.trim(),
@@ -237,7 +276,11 @@ interface SessionGeneration {
 	changed: boolean;
 	encoding: boolean;
 	decoding: boolean;
-	pendingFrame: Uint8Array<ArrayBuffer> | null;
+	pendingFrame: GeneratedFrame | null;
+	/** Counts this session's canvas frames from the first one it sends. */
+	inputRevision: number;
+	/** The revision of the newest frame actually drawn to the output. */
+	shownRevision: number;
 	timer: ReturnType<typeof setTimeout> | null;
 	idleTicks: number;
 	lastFrameCostMs: number;
@@ -447,7 +490,10 @@ export function createRealtimeCanvasSession(
 			if (canContinue(generation) && generation.socket.readyState === OPEN) {
 				if (sending(generation)) {
 					if (frameFitsLimits(image.length, generation.limits)) {
-						generation.socket.send(canvasFrame(forSession, image));
+						// Counted only here: a frame the cap holds back never
+						// reaches the wire, so it must not take a revision.
+						generation.inputRevision += 1;
+						generation.socket.send(canvasFrame(forSession, generation.inputRevision, image));
 						if (notice === 'frame_too_large') setNotice('');
 						sent += 1;
 						options.onCounters(sent, rendered);
@@ -478,15 +524,21 @@ export function createRealtimeCanvasSession(
 		generation.decoding = true;
 		try {
 			while (canContinue(generation) && generation.pendingFrame !== null) {
-				const image = generation.pendingFrame;
+				const frame = generation.pendingFrame;
 				generation.pendingFrame = null;
+				// Arrival already dropped what was behind the shown revision,
+				// but a newer frame can have been drawn while this one waited
+				// its turn, so the guard runs again before the decode is paid.
+				if (isStaleOutput(frame.revision, generation.shownRevision)) continue;
 				try {
-					const bitmap = await decode(image);
+					const bitmap = await decode(frame.image);
 					try {
 						if (canContinue(generation)) {
 							const canvas = options.getOutputCanvas();
 							if (canvas) {
 								draw(bitmap, canvas);
+								// Only a drawn frame moves what is on screen.
+								generation.shownRevision = frame.revision;
 								rendered += 1;
 								options.onCounters(sent, rendered);
 							}
@@ -600,9 +652,12 @@ export function createRealtimeCanvasSession(
 				return;
 			}
 			if (!generation.sessionId || !(event.data instanceof ArrayBuffer)) return;
-			const image = parseGeneratedFrame(new Uint8Array(event.data), generation.sessionId);
-			if (image === null || image.length === 0) return;
-			generation.pendingFrame = image;
+			const frame = parseGeneratedFrame(new Uint8Array(event.data), generation.sessionId);
+			if (frame === null || frame.image.length === 0) return;
+			// Dropped on arrival, so an old frame neither costs a decode nor
+			// occupies the slot a newer frame should take.
+			if (isStaleOutput(frame.revision, generation.shownRevision)) return;
+			generation.pendingFrame = frame;
 			void drainGenerated(generation);
 		};
 		socket.onerror = () => {
@@ -638,6 +693,8 @@ export function createRealtimeCanvasSession(
 				encoding: false,
 				decoding: false,
 				pendingFrame: null,
+				inputRevision: 0,
+				shownRevision: 0,
 				timer: null,
 				idleTicks: 0,
 				lastFrameCostMs: 0,

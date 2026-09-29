@@ -214,7 +214,7 @@ def test_real_diffusers_worker_dispatches_and_streams_on_cpu(tmp_path, monkeypat
                 "control_generation": 1,
             })
             await asyncio.wait_for(socket.ready.wait(), timeout=30)
-            sessions.submit(session_id, encoded_canvas.getvalue())
+            sessions.submit(session_id, 1, encoded_canvas.getvalue())
             await asyncio.wait_for(socket.frame_sent.wait(), timeout=30)
             frame = next(message for message in socket.sent if isinstance(message, bytes))
         finally:
@@ -244,7 +244,8 @@ def test_real_diffusers_worker_dispatches_and_streams_on_cpu(tmp_path, monkeypat
         for report in reports
         if report["type"] == "session_ready"
     )
-    with Image.open(io.BytesIO(frame_data[17:])) as image:
+    assert int.from_bytes(frame_data[17:21], "big") == 1
+    with Image.open(io.BytesIO(frame_data[21:])) as image:
         image.load()
         assert image.format == "WEBP"
         assert image.size == (16, 16)

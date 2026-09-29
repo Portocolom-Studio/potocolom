@@ -41,6 +41,7 @@ from app.realtime import (
     CLOSE_PROTOCOL_VIOLATION,
     FRAME_HEADER_BYTES,
     GENERATED_FRAME,
+    LEGACY_FRAME_HEADER_BYTES,
     MAX_CANVAS_PAYLOAD_BYTES,
     PROTOCOL_VERSION,
 )
@@ -311,7 +312,7 @@ class Runner:
 
 
 class FakeWorker:
-    """A protocol 4 worker whose GPU is one lock and a sleep. Latest input wins
+    """A protocol 5 worker whose GPU is one lock and a sleep. Latest input wins
     per session, like worker/worker/client.py: one pending frame, overwritten."""
 
     def __init__(self, args: argparse.Namespace, number: int, slots: int) -> None:
@@ -356,7 +357,7 @@ class FakeWorker:
 
     async def handle(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
-            runner = self.runners.get(message[1:FRAME_HEADER_BYTES])
+            runner = self.runners.get(message[1:LEGACY_FRAME_HEADER_BYTES])
             if runner is not None:
                 self.dropped += runner.pending is not None
                 runner.pending = message
@@ -443,6 +444,9 @@ class Browser:
         self.args = args
         self.account = account
         self.session = b""
+        # Input revisions for this socket: 1 for the first canvas frame,
+        # strictly increasing and never restarting across a resume.
+        self.revision = 0
         self.sent = 0
         self.latencies: list[float] = []
         self.interrupted = self.resumed = 0
@@ -457,7 +461,8 @@ class Browser:
         self.ws = await websockets.connect(self.args.api_ws + "/api/v1/realtime",
                                            max_size=2**21, additional_headers=headers, **connect)
         await self.ws.send(json.dumps({"type": "open", "model_id": MODEL_ID,
-                                       "params": {"prompt": "stress"}}))
+                                       "params": {"prompt": "stress"},
+                                       "frame_header": 2}))
         try:
             reply = json.loads(await self.ws.recv())
         except websockets.ConnectionClosed:
@@ -494,7 +499,9 @@ class Browser:
         with suppress(websockets.ConnectionClosed):
             for index in range(frames):
                 await asyncio.sleep(max(0.0, start + index / fps - time.monotonic()))
+                self.revision += 1
                 await self.ws.send(bytes([CANVAS_FRAME]) + self.session
+                                   + self.revision.to_bytes(4, "big")
                                    + struct.pack("d", time.monotonic()) + pad)
                 self.sent += 1
 
@@ -623,7 +630,8 @@ async def conn_churn(args, rng, report: Report) -> None:
                 additional_headers={"Cookie": account.cookie_header},
             )
             opening = json.dumps({"type": "open", "model_id": MODEL_ID,
-                                  "params": {"prompt": "churn"}})
+                                  "params": {"prompt": "churn"},
+                                  "frame_header": 2})
             with suppress(websockets.ConnectionClosed):
                 if kind == "garbage":
                     await ws.send("not json")
@@ -635,8 +643,10 @@ async def conn_churn(args, rng, report: Report) -> None:
                     reply = json.loads(await ws.recv())
                     if kind == "ready-abort" and reply["type"] == "ready":
                         session = uuid.UUID(reply["session_id"]).bytes
-                        for _ in range(3):
-                            await ws.send(bytes([CANVAS_FRAME]) + session + bytes(8))
+                        for revision in range(1, 4):
+                            frame = (bytes([CANVAS_FRAME]) + session
+                                     + revision.to_bytes(4, "big") + bytes(8))
+                            await ws.send(frame)
                         ws.transport.abort()
                         return
                     await ws.send(json.dumps({"type": "close"}))

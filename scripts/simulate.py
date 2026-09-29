@@ -121,6 +121,9 @@ class BrowserSim:
     def __init__(self, ws):
         self.ws = ws
         self.session: uuid.UUID | None = None
+        # Input revisions: 1 for the first canvas frame, strictly increasing
+        # for the life of the session (they never restart after a resume).
+        self.revision = 0
         self.sent = 0
         self.rendered = 0
         self.latencies: list[float] = []
@@ -151,6 +154,7 @@ class BrowserSim:
             "type": "open",
             "model_id": model_id,
             "params": {"prompt": "a red house on a hill"},
+            "frame_header": 2,
         }))
         ready = json.loads(await self.ws.recv())
         assert ready["type"] == "ready", ready
@@ -160,7 +164,10 @@ class BrowserSim:
     async def stream(self, frames: int, fps: float) -> None:
         for _ in range(frames):
             payload = struct.pack("d", time.monotonic())
-            await self.ws.send(bytes([CANVAS_FRAME]) + self.session.bytes + payload)
+            self.revision += 1
+            frame = (bytes([CANVAS_FRAME]) + self.session.bytes
+                     + self.revision.to_bytes(4, "big") + payload)
+            await self.ws.send(frame)
             self.sent += 1
             await asyncio.sleep(1 / fps)
 

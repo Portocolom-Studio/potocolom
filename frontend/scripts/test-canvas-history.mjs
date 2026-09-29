@@ -10,6 +10,9 @@ import puppeteer from 'puppeteer-core';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const WAIT_MS = 5000;
+// The frame header this build writes on the canvas socket: one kind byte, the
+// 16 byte session id and a 4 byte big endian revision, then the image.
+const FRAME_HEADER_BYTES = 21;
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
 const MODEL = {
@@ -994,9 +997,11 @@ test('shape selection is silent and a connected shape publishes an opaque 512px 
 			{ timeout: WAIT_MS },
 			before
 		);
-		const decoded = await page.evaluate(async () => {
+		const decoded = await page.evaluate(async (header) => {
 			const frame = window.__historySockets[0].frames.at(-1);
-			const image = await createImageBitmap(new Blob([frame.slice(17)], { type: 'image/webp' }));
+			const image = await createImageBitmap(
+				new Blob([frame.slice(header)], { type: 'image/webp' })
+			);
 			const surface = document.createElement('canvas');
 			surface.width = image.width;
 			surface.height = image.height;
@@ -1016,7 +1021,7 @@ test('shape selection is silent and a connected shape publishes an opaque 512px 
 			};
 			image.close();
 			return result;
-		});
+		}, FRAME_HEADER_BYTES);
 		assert.deepEqual(decoded.kind, 1);
 		assert.deepEqual([decoded.width, decoded.height], [512, 512]);
 		assert.equal(decoded.alphaOpaque, true);
@@ -1493,9 +1498,11 @@ test('saving is silent and opening a blank drawing sends a complete white WebP',
 			before.frames
 		);
 		await expectOutput(page, [255, 255, 255]);
-		const decoded = await page.evaluate(async () => {
+		const decoded = await page.evaluate(async (header) => {
 			const frame = window.__historySockets[0].frames.at(-1);
-			const image = await createImageBitmap(new Blob([frame.slice(17)], { type: 'image/webp' }));
+			const image = await createImageBitmap(
+				new Blob([frame.slice(header)], { type: 'image/webp' })
+			);
 			const surface = document.createElement('canvas');
 			surface.width = image.width;
 			surface.height = image.height;
@@ -1511,7 +1518,7 @@ test('saving is silent and opening a blank drawing sends a complete white WebP',
 			};
 			image.close();
 			return result;
-		});
+		}, FRAME_HEADER_BYTES);
 		assert.deepEqual(decoded, { kind: 1, width: 512, height: 512, white: true });
 		await pause(700);
 		assert.equal((await counts()).frames, before.frames + 1);
@@ -1984,7 +1991,11 @@ test('paint controls are silent while drawing edits publish real WebP frames', a
 		);
 		const frame = await page.evaluate(() => [...window.__historySockets[0].frames.at(-1)]);
 		assert.equal(frame[0], 1, 'canvas frames retain the wire kind byte');
-		assert.deepEqual(frame.slice(17, 21), [82, 73, 70, 70], 'payload is a WebP RIFF image');
+		assert.deepEqual(
+			frame.slice(FRAME_HEADER_BYTES, FRAME_HEADER_BYTES + 4),
+			[82, 73, 70, 70],
+			'payload is a WebP RIFF image'
+		);
 		await expectOutput(page, [37, 99, 235]);
 		const afterDraw = await page.evaluate(() => window.__historySockets[0].frames.length);
 		await clickButton(page, 'Undo');

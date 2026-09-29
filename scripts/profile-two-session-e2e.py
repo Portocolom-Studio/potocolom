@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
-FRAME_HEADER_BYTES = 17
+FRAME_HEADER_BYTES = 21
 BAR_MS = 500
 CLOSE_NO_CAPACITY = 4003
 FLEET_TOKEN = "test-fleet-token"
@@ -65,8 +65,8 @@ def canvas_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def canvas_frame(session_id: uuid.UUID, image: bytes) -> bytes:
-    return bytes([CANVAS_FRAME]) + session_id.bytes + image
+def canvas_frame(session_id: uuid.UUID, image: bytes, revision: int) -> bytes:
+    return bytes([CANVAS_FRAME]) + session_id.bytes + revision.to_bytes(4, "big") + image
 
 
 def session_stats(latencies: list[float], sent: int, received: int) -> dict:
@@ -281,10 +281,10 @@ async def wait_frame(ws, timeout: float) -> bytes:
 
 
 async def ping_pong(
-    ws, session_id: uuid.UUID, image: bytes, timeout: float,
+    ws, session_id: uuid.UUID, image: bytes, timeout: float, revision: int,
 ) -> tuple[float, float]:
     started = time.monotonic()
-    await ws.send(canvas_frame(session_id, image))
+    await ws.send(canvas_frame(session_id, image, revision))
     await wait_frame(ws, timeout)
     finished = time.monotonic()
     return (finished - started) * 1000.0, finished
@@ -315,6 +315,7 @@ async def open_session(
                 "type": "open",
                 "model_id": model_id,
                 "params": {"prompt": prompt, "seed": seed, "guidance": 0.0},
+                "frame_header": 2,
             }))
             raw = await asyncio.wait_for(ws.recv(), 20)
             reply = json.loads(raw)
@@ -374,15 +375,23 @@ async def measure_case(
         recv_at: list[list[float]] = [[] for _ in clients]
         sent = [0] * len(clients)
         received = [0] * len(clients)
+        # Input revisions: one per client, strictly increasing for the case.
+        revisions = [0] * len(clients)
+
+        def next_revisions() -> list[int]:
+            for index in range(len(revisions)):
+                revisions[index] += 1
+            return list(revisions)
+
         if len(clients) == sessions:
             await asyncio.gather(*[
-                ping_pong(ws, session_id, image, frame_timeout)
-                for ws, session_id in clients
+                ping_pong(ws, session_id, image, frame_timeout, revision)
+                for (ws, session_id), revision in zip(clients, next_revisions())
             ])
             for _ in range(samples):
                 round_hits = await asyncio.gather(*[
-                    ping_pong(ws, session_id, image, frame_timeout)
-                    for ws, session_id in clients
+                    ping_pong(ws, session_id, image, frame_timeout, revision)
+                    for (ws, session_id), revision in zip(clients, next_revisions())
                 ])
                 for index, (rtt, arrived) in enumerate(round_hits):
                     latencies[index].append(rtt)
