@@ -652,6 +652,25 @@ def test_a_source_image_without_a_capability_is_refused():
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("capability, with_source, detail", [
+    ("text_to_image", True, "text_to_image takes no source image"),
+    ("image_to_image", False, "image_to_image needs a source image"),
+    ("upscale", False, "upscale needs a source image"),
+])
+def test_a_capability_that_contradicts_the_input_is_refused(capability, with_source, detail):
+    """Routed as asked, these would land on a model the source checks refuse."""
+    body: dict = {"capability": capability, "params": {"prompt": "x"}}
+    if with_source:
+        body["source_asset_id"] = str(uuid.uuid4())
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-contradicts")
+            refused = client.post("/api/v1/generations", json=body)
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == detail
+
+
+@pytest.mark.db
 def test_an_unknown_capability_value_is_refused():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         refused = client.post("/api/v1/generations",

@@ -364,6 +364,14 @@ async def create_generation(
                     detail="capability is required when a source image is given",
                 )
             capability = "text_to_image"
+        elif (capability == "text_to_image") != (request.source_asset_id is None):
+            # A capability that contradicts the request's own input would be
+            # routed to a model the checks below then refuse.
+            raise HTTPException(
+                status_code=422,
+                detail=("text_to_image takes no source image" if capability == "text_to_image"
+                        else f"{capability} needs a source image"),
+            )
         chosen = registry.route(
             models.values(),
             request.tier or "standard",

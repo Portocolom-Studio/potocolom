@@ -201,7 +201,9 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              model whose "tier" (draft|standard|premium, default standard) and
                              "capability" (text_to_image|image_to_image|upscale) fit the request;
                              without a source image the capability defaults to text_to_image,
-                             with one it is required, and a pinned model_id ignores both.
+                             with one it is required, a capability that contradicts the input
+                             (text_to_image with a source image, image_to_image or upscale
+                             without one) is 422, and a pinned model_id ignores both.
                              For image_to_image or upscale, also pass
                              "source_asset_id"; upscale requires a source and is mutually
                              exclusive with the diffusion capabilities. A thumbnail cannot be
