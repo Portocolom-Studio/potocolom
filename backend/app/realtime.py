@@ -39,24 +39,26 @@ from app import audit, db
 logger = logging.getLogger("potocolom.realtime")
 
 # Wire constants; keep in sync with worker/worker/client.py.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 MIN_SUPPORTED_VERSION = PROTOCOL_VERSION - 1
-# The protocol version that introduced the update_session message. An N-1
-# worker is deliberately welcome (MIN_SUPPORTED_VERSION). Protocol 3 already
-# speaks that message unfenced; protocol 4 adds control_generation on it.
-# The API still refuses an update whose assigned worker predates the
-# message entirely rather than acknowledge one the worker cannot apply.
-UPDATE_SESSION_PROTOCOL_VERSION = 3
-# Lifecycle fencing: control_generation on open/update/close and on
-# session_ready / session_refused. A protocol 3 worker has no generation
-# and may serve a session's first attempt only.
-CONTROL_GENERATION_PROTOCOL_VERSION = 4
+# The protocol version that introduced frame header 2 (the revision field).
+# An N-1 worker is deliberately welcome (MIN_SUPPORTED_VERSION), so a protocol
+# 4 worker still speaks the 17 byte header and is fed and read in that form by
+# the helpers below. A later API stays on 21 bytes for a worker at 5 or above,
+# whatever version it itself advertises.
+FRAME_HEADER_2_VERSION = 5
 
 CANVAS_FRAME = 0x01
 GENERATED_FRAME = 0x02
-FRAME_HEADER_BYTES = 17  # 1 byte kind + 16 byte session uuid
-# Same 1 MiB as the JSON body cap; the wire sentence is in
-# docs/connection-handling.md. The worker bounds pixels and format separately.
+# 1 byte kind + 16 byte session uuid: the whole header a protocol 4 worker and
+# a browser that did not ask for frame_header 2 speak.
+LEGACY_FRAME_HEADER_BYTES = 17
+# 1 byte kind + 16 byte session uuid + 4 byte big-endian input revision, the
+# header protocol 5 puts on both frame kinds.
+FRAME_HEADER_BYTES = 21
+# Same 1 MiB as the JSON body cap, counted after whichever header the peer
+# speaks; the wire sentence is in docs/connection-handling.md. The worker
+# bounds pixels and format separately.
 MAX_CANVAS_PAYLOAD_BYTES = 1 * 1024 * 1024
 
 # What every ready tells the browser it may send, so a client that reads it
@@ -329,9 +331,24 @@ def peer_uuid(value: object) -> uuid.UUID:
 
 
 def frame_session_id(data: bytes) -> uuid.UUID:
-    if len(data) < FRAME_HEADER_BYTES:
+    """The session a frame belongs to, from either header width.
+
+    Only the first 17 bytes are shared by both widths, so that is all this
+    reads; how many bytes the whole header occupies is the receiving side's
+    own (frame_header_bytes).
+    """
+    if len(data) < LEGACY_FRAME_HEADER_BYTES:
         raise ProtocolError("binary frame shorter than the header")
-    return uuid.UUID(bytes=data[1:FRAME_HEADER_BYTES])
+    return uuid.UUID(bytes=data[1:LEGACY_FRAME_HEADER_BYTES])
+
+
+def frame_header_bytes(frame_header: int) -> int:
+    """Bytes the header occupies for a peer that declared this width.
+
+    open accepts only 1 or 2, so the width is settled before any frame is
+    read; a Session built rather than opened keeps the default of 1.
+    """
+    return LEGACY_FRAME_HEADER_BYTES if frame_header == 1 else FRAME_HEADER_BYTES
 
 
 def parse_frame_p95(raw: object) -> dict[str, int] | None:
@@ -400,15 +417,13 @@ class Worker:
     realtime_slots: int
     device: str | None = None
     memory_mode: str | None = None
-    # Advertised in hello, and read by three gates: the update_params handler
-    # compares it against UPDATE_SESSION_PROTOCOL_VERSION to refuse an update
-    # an older worker would silently drop, the dispatch-token check in
-    # jobs.py requires the token from a worker at 3 or newer, and assign /
-    # reassign send control_generation only to protocol 4. A registration
-    # always sets it; the default covers a Worker built without one, and it is
-    # the current version rather than None so that gate fails closed rather
-    # than granting the leniency that exists only for an older worker
-    # (issue #282).
+    # Advertised in hello, and read by two gates: the frame conversion helpers
+    # compare it against FRAME_HEADER_2_VERSION to decide which header width
+    # this worker speaks, and the dispatch-token check in jobs.py requires the
+    # token from a worker at 3 or newer. A registration always sets it; the
+    # default covers a Worker built without one, and it is the current version
+    # rather than None so that gate fails closed rather than granting the
+    # leniency that exists only for an older worker (issue #282).
     protocol_version: int = PROTOCOL_VERSION
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
@@ -459,11 +474,27 @@ class Session:
     # Last queue position the browser was told, so an unchanged position is
     # not reposted on every queue change.
     queued_position: int | None = None
-    # Monotonic time of the last canvas input (a relayed frame or an accepted
-    # update_params); the sweep releases a live session past that age.
+    # Monotonic time of the last accepted canvas input (a relayed frame or an
+    # accepted update_params); the sweep releases a live session past that age.
     last_input: float = field(default_factory=time.monotonic)
+    # Header width the browser declared at open: 17 bytes (1) or 21 (2). The
+    # conversion helpers translate between this and the 21 byte form the
+    # internals hold, so nothing else in this module branches on it.
+    frame_header: int = 1
+    # Highest canvas revision this browser has sent, 0 before the first one.
+    # Header 2 carries the revision and this is the newest one accepted;
+    # header 1 carries none, so the API stamps the next one itself. It belongs
+    # to the socket rather than to an attempt: reassignment, an idle release
+    # and the queue all leave it where it is.
+    input_revision: int = 0
+    # Revision of the newest canvas forwarded to the worker holding this
+    # session. A protocol 4 worker cannot stamp its own generated frame, so
+    # this is what its answer is stamped with on the way to the browser.
+    forwarded_revision: int = 0
     # Newest canvas frame awaiting a worker while an idle session re-places
-    # itself; the resume task forwards it once a worker is live again.
+    # itself; the resume task forwards it once a worker is live again. Always
+    # the 21 byte form, whatever header the browser and the worker speak, and
+    # converted at the two edges that forward it.
     pending_frame: bytes | None = None
     # Earliest monotonic time another over-cap refusal may be posted, so the
     # 4005 error is told once a second rather than once per dropped frame.
@@ -545,6 +576,27 @@ def post_frame_too_large(session: Session) -> None:
     })
 
 
+def to_worker_frame(worker: Worker, session: Session, frame: bytes) -> bytes:
+    """The 21 byte internal frame in the form this worker's protocol speaks.
+
+    A protocol 4 worker predates the revision field, so it is sent the 17 byte
+    header and the revision is remembered to stamp its answer with (the same
+    input rendered, because that worker only echoes what it was given).
+    """
+    revision = int.from_bytes(frame[LEGACY_FRAME_HEADER_BYTES:FRAME_HEADER_BYTES], "big")
+    session.forwarded_revision = revision
+    if worker.protocol_version < FRAME_HEADER_2_VERSION:
+        return frame[:LEGACY_FRAME_HEADER_BYTES] + frame[FRAME_HEADER_BYTES:]
+    return frame
+
+
+def to_browser_frame(session: Session, frame: bytes) -> bytes:
+    """The 21 byte internal frame in the header width this browser declared."""
+    if session.frame_header == 1:
+        return frame[:LEGACY_FRAME_HEADER_BYTES] + frame[FRAME_HEADER_BYTES:]
+    return frame
+
+
 async def browser_writer(session: Session) -> None:
     browser = session.browser
     # A browser that never reads parks this task in one send; it holds one
@@ -620,8 +672,7 @@ _admit_tasks: set[asyncio.Task] = set()
 def admit_queued() -> None:
     """Admit every queued session a worker can take, first-fit by position."""
     for session in queued_sessions():
-        if pick_worker(session.model_id,
-                       generation=session.control_generation) is None:
+        if pick_worker(session.model_id) is None:
             continue
         if not transition(session, "queued", "assigning"):
             continue
@@ -653,7 +704,8 @@ async def admit(session: Session) -> None:
     session.queued_position = None
     frame, session.pending_frame = session.pending_frame, None
     if frame is not None and session.worker is not None:
-        await safe_send(session.worker.ws.send_bytes(frame))
+        await safe_send(session.worker.ws.send_bytes(
+            to_worker_frame(session.worker, session, frame)))
     # That send awaits, and a shed or a lost worker in the meantime has already
     # told the browser interrupted and requeued the session: announcing this
     # attempt now would contradict it.
@@ -666,30 +718,23 @@ async def admit(session: Session) -> None:
                        "limits": READY_LIMITS})
 
 
-def speaks_generation(worker: Worker) -> bool:
-    return worker.protocol_version >= CONTROL_GENERATION_PROTOCOL_VERSION
-
-
-def message_generation(control: dict, worker: Worker) -> int | None:
+def message_generation(control: dict) -> int | None:
     """Generation this lifecycle message answers, or None if it must be ignored.
 
-    Protocol 4 requires a positive int. An unfenced protocol 4 message is
-    not believed: that is the race fencing exists to prevent, and it is
-    deliberately not the jobs-path exception for a missing dispatch_token.
-    Protocol 3 has no generations; extra fields are ignored and the
-    message is generation 1 (first attempt only).
+    A positive int, and an unfenced message is not believed: that is the race
+    fencing exists to prevent, and it is deliberately not the jobs-path
+    exception for a missing dispatch_token. Every peer the version floor admits
+    is protocol 4 or newer, so there is no generation-less dialect left to
+    answer as.
     """
     raw = control.get("control_generation")
-    if speaks_generation(worker):
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
-            return None
-        return raw
-    return 1
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return None
+    return raw
 
 
-def with_generation(payload: dict, worker: Worker, generation: int) -> dict:
-    if speaks_generation(worker):
-        payload["control_generation"] = generation
+def with_generation(payload: dict, generation: int) -> dict:
+    payload["control_generation"] = generation
     return payload
 
 
@@ -795,18 +840,12 @@ def live_admission_cost(
     return class_admission_cost(worker, counts)
 
 
-def pick_worker(model_id: str, *, generation: int = 1,
-                exclude_ids: set[str] | None = None) -> Worker | None:
+def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker | None:
     ranked: list[tuple[int, Worker]] = []
     for worker in workers.values():
         if exclude_ids is not None and worker.id in exclude_ids:
             continue
         if model_id not in worker.models:
-            continue
-        # A protocol 3 worker may serve a session's first attempt only and
-        # is never a reassignment candidate: it has no generation with which
-        # to tell two attempts apart.
-        if generation > 1 and not speaks_generation(worker):
             continue
         if worker.admission_p95_ms is None:
             if worker.free_slots > 0:
@@ -841,7 +880,7 @@ async def close_abandoned_session(worker: Worker, session: Session,
     payload = {"type": "close_session", "session_id": str(session.id)}
     if generation is None:
         generation = session.control_generation
-    await safe_send(worker.ws.send_json(with_generation(payload, worker, generation)))
+    await safe_send(worker.ws.send_json(with_generation(payload, generation)))
 
 
 async def assign(session: Session, worker: Worker) -> bool:
@@ -867,7 +906,7 @@ async def assign(session: Session, worker: Worker) -> bool:
             "model_id": session.model_id,
             "params": session.params,
         }
-        await worker.ws.send_json(with_generation(payload, worker, sent_generation))
+        await worker.ws.send_json(with_generation(payload, sent_generation))
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
         if session.worker is worker:
@@ -902,15 +941,11 @@ async def place_session(session: Session, *, exclude_ids: set[str] | None = None
     """Try workers until one answers ready, or none remain.
 
     A failed attempt (timeout or session_refused) is not a failed session:
-    generation increases and the next protocol 4 candidate is tried.
+    generation increases and the next candidate is tried.
     """
     skipped: set[str] = set(exclude_ids or ())
     while session.is_live and session.state == "assigning":
-        worker = pick_worker(
-            session.model_id,
-            generation=session.control_generation,
-            exclude_ids=skipped,
-        )
+        worker = pick_worker(session.model_id, exclude_ids=skipped)
         if worker is None:
             return False
         started = session.control_generation
@@ -954,7 +989,7 @@ async def release(session: Session) -> None:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
                 {"type": "close_session", "session_id": str(session.id)},
-                worker, generation,
+                generation,
             ))), CLOSE_TIMEOUT)
     # The slot is free, or the session was queued and left: either shifts
     # positions, so the queue reposts itself on the way out.
@@ -1069,7 +1104,8 @@ async def resume_idle(session: Session) -> None:
             return
         frame, session.pending_frame = session.pending_frame, None
         if frame is not None and session.worker is not None:
-            await safe_send(session.worker.ws.send_bytes(frame))
+            await safe_send(session.worker.ws.send_bytes(
+                to_worker_frame(session.worker, session, frame)))
         return
     logger.warning("session %s was idle and no worker had room to resume it",
                    session.id)
@@ -1079,13 +1115,13 @@ async def resume_idle(session: Session) -> None:
 
 
 def over_capacity_sessions(worker: Worker) -> list[Session]:
-    """Newest live protocol-4 sessions on this worker until the live sum fits.
+    """Newest live sessions on this worker until the live sum fits.
 
-    Protocol 3 sessions stay: that worker cannot fence a replacement, and
-    new admissions are already blocked. Newest-first keeps the sessions that
-    were honest when admitted.
+    A worker that advertises no admission map has no cost model to be over, so
+    it sheds nothing. Newest-first keeps the sessions that were honest when
+    admitted.
     """
-    if worker.admission_p95_ms is None or not speaks_generation(worker):
+    if worker.admission_p95_ms is None:
         return []
     if live_admission_cost(worker) <= REALTIME_BAR_MS:
         return []
@@ -1262,13 +1298,22 @@ async def fleet(ws: WebSocket) -> None:
                     if session is not None and session.worker is worker:
                         if data[0] != GENERATED_FRAME:
                             raise ProtocolError("worker frame is not a generated frame")
-                        post_frame(session, data)
+                        if worker.protocol_version < FRAME_HEADER_2_VERSION:
+                            # A protocol 4 worker stamps nothing: it rendered
+                            # the canvas last forwarded to it, so that frame's
+                            # revision is this one's.
+                            data = (data[:LEGACY_FRAME_HEADER_BYTES]
+                                    + session.forwarded_revision.to_bytes(4, "big")
+                                    + data[LEGACY_FRAME_HEADER_BYTES:])
+                        elif len(data) < FRAME_HEADER_BYTES:
+                            raise ProtocolError("binary frame shorter than the header")
+                        post_frame(session, to_browser_frame(session, data))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     worker.last_seen = time.monotonic()
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
-                        generation = message_generation(control, worker)
+                        generation = message_generation(control)
                         if (session is not None and session.worker is worker
                                 and generation is not None
                                 and generation == session.control_generation
@@ -1278,7 +1323,7 @@ async def fleet(ws: WebSocket) -> None:
                             session.ready.set()
                     elif control["type"] == "session_refused":
                         session = sessions.get(peer_uuid(control["session_id"]))
-                        generation = message_generation(control, worker)
+                        generation = message_generation(control)
                         if (session is None or session.worker is not worker
                                 or generation is None
                                 or generation != session.control_generation):
@@ -1298,9 +1343,9 @@ async def fleet(ws: WebSocket) -> None:
                         # earlier still knows its id, and popping on its word
                         # would drop the current owner's entry and bill this
                         # user for a session it did not run.
-                        # message_generation refuses an unfenced protocol 4
-                        # report and reads protocol 3 as its only attempt, 1.
-                        generation = message_generation(control, worker)
+                        # message_generation refuses an unfenced report, so an
+                        # unfenced one settles nothing at all.
+                        generation = message_generation(control)
                         if generation is not None:
                             key = (session_id, generation)
                             owner = closing_sessions.get(key)
@@ -1502,6 +1547,12 @@ async def realtime(ws: WebSocket) -> None:
         params = opening.get("params") or {}
         if not isinstance(params, dict):
             raise ProtocolError("params must be an object")
+        # Which binary header this browser speaks, fixed for the session's
+        # life. Absent means the 17 byte header an older client already sends.
+        frame_header = opening.get("frame_header", 1)
+        if (isinstance(frame_header, bool) or not isinstance(frame_header, int)
+                or frame_header not in (1, 2)):
+            raise ProtocolError("frame_header must be 1 or 2")
     except TimeoutError:
         await refuse(ws, CLOSE_PROTOCOL_VIOLATION, "did not send open")
         return
@@ -1544,6 +1595,7 @@ async def realtime(ws: WebSocket) -> None:
         return
     session = Session(
         id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
+        frame_header=frame_header,
         user_id=handshake.user_id, auth_session_id=handshake.auth_session_id)
     sessions[session.id] = session
     # Registered first, then re-checked: a revocation that commits between the
@@ -1571,25 +1623,54 @@ async def realtime(ws: WebSocket) -> None:
                     # for this connection's own session, nothing else.
                     if frame_session_id(data) != session.id or data[0] != CANVAS_FRAME:
                         raise ProtocolError("frame does not belong to this session")
-                    if len(data) > FRAME_HEADER_BYTES + MAX_CANVAS_PAYLOAD_BYTES:
+                    header = frame_header_bytes(session.frame_header)
+                    if len(data) < header:
+                        raise ProtocolError("binary frame shorter than the header")
+                    if len(data) > header + MAX_CANVAS_PAYLOAD_BYTES:
+                        # A size refusal, not a revision: the frame is dropped
+                        # whole and its revision is not consumed, so the next
+                        # in-range frame may still be that one.
                         post_frame_too_large(session)
                         continue
+                    if session.frame_header == 2:
+                        revision = int.from_bytes(
+                            data[LEGACY_FRAME_HEADER_BYTES:FRAME_HEADER_BYTES], "big")
+                        if revision <= session.input_revision:
+                            # A replay or an out-of-order canvas: newer input
+                            # has already reached the worker, so this one is
+                            # dropped where it lies. Not an error, and it
+                            # touches neither last_input nor pending_frame:
+                            # a stale frame says nothing about whether the
+                            # browser is still drawing.
+                            continue
+                        session.input_revision = revision
+                        frame = data
+                    else:
+                        # A header 1 browser carries no revision, so the API
+                        # stamps the next one itself. The counter is the
+                        # session's either way, which is what keeps a header 1
+                        # and a header 2 browser comparable on the same wire.
+                        session.input_revision += 1
+                        frame = (data[:LEGACY_FRAME_HEADER_BYTES]
+                                 + session.input_revision.to_bytes(4, "big")
+                                 + data[LEGACY_FRAME_HEADER_BYTES:])
                     session.last_input = time.monotonic()
                     if session.state == "idle":
                         # The idle release was invisible to the browser, which
                         # kept sending: re-place the session and forward the
                         # newest frame once a worker is live again.
-                        session.pending_frame = data
+                        session.pending_frame = frame
                         schedule_resume_idle(session)
                     elif session.state in ("assigning", "queued"):
                         # A resume or an admission in flight: keep only the
                         # newest frame until a worker is live again.
-                        session.pending_frame = data
+                        session.pending_frame = frame
                     elif session.worker is not None:  # a dead worker means reassign is in flight
                         # Newer than anything a resume still holds, so the
                         # resume must not forward its older frame after this.
                         session.pending_frame = None
-                        await safe_send(session.worker.ws.send_bytes(data))
+                        await safe_send(session.worker.ws.send_bytes(
+                            to_worker_frame(session.worker, session, frame)))
                 elif message.get("text") is not None:
                     control = parse_control(message["text"])
                     if control["type"] == "close":
@@ -1632,25 +1713,6 @@ async def realtime(ws: WebSocket) -> None:
                                     "message": invalid,
                                 })
                                 continue
-                        if (session.worker is not None
-                                and session.worker.protocol_version
-                                < UPDATE_SESSION_PROTOCOL_VERSION):
-                            # The assigned worker predates update_session (an
-                            # N-1 worker is deliberately welcome) and would
-                            # silently drop it, leaving the browser told the
-                            # update applied while every later frame still
-                            # renders the old prompt. Acknowledging an update
-                            # the worker cannot apply is worse than refusing
-                            # it: the user cannot tell a silent no-op from a
-                            # model that ignored their prompt. Refuse, and
-                            # leave the session rendering what it renders.
-                            post(session, {
-                                "type": "error",
-                                "code": CLOSE_PROTOCOL_VIOLATION,
-                                "message": "the assigned worker does not "
-                                           "support live parameter updates",
-                            })
-                            continue
                         # Later keys win, so a second update of the same
                         # parameter overwrites the first. The merged dict is
                         # what the session holds from here on, what a worker
@@ -1666,7 +1728,7 @@ async def realtime(ws: WebSocket) -> None:
                                 "type": "update_session",
                                 "session_id": str(session.id),
                                 "params": session.params,
-                            }, session.worker, session.control_generation)))
+                            }, session.control_generation)))
                         post(session, {
                             "type": "params_updated",
                             "params": session.params,

@@ -4186,7 +4186,7 @@ def test_a_stale_dispatch_token_cannot_speak_for_the_current_attempt():
 
 @pytest.mark.db
 def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
-    """The floor is 3: a protocol 3 worker omitting the token is ignored,
+    """The floor is 4 now, so an N-1 worker omitting the token is ignored,
     same as a current worker (docs/connection-handling.md).
     """
     with TestClient(app, headers=FLEET_HEADERS) as client:
@@ -4218,9 +4218,9 @@ def test_an_n1_worker_that_omits_the_dispatch_token_is_ignored():
 
 @pytest.mark.db
 def test_a_current_worker_that_omits_the_dispatch_token_is_ignored():
-    """The token is required from a protocol 3 worker, not merely echoed: an
-    omission is as stale as a wrong token, so the job must neither succeed
-    nor record an asset (issue #247)."""
+    """The token is required from every worker the floor admits, not merely
+    echoed: an omission is as stale as a wrong token, so the job must neither
+    succeed nor record an asset (issue #247)."""
     with TestClient(app, headers=FLEET_HEADERS) as client:
         with client.websocket_connect("/api/v1/fleet") as worker:
             fleet_hello(worker, "w-missing-token")

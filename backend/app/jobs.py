@@ -1532,7 +1532,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     # The identity check alone cannot separate two attempts: a stall requeue
     # can hand the job back to the same Worker object, and then attempt one's
     # late job_done is indistinguishable from attempt two's. The token is per
-    # dispatch, so it can. The compatibility floor is 3, so a missing token
+    # dispatch, so it can. The compatibility floor is 4, so a missing token
     # is never believed.
     presented = control.get("dispatch_token")
     if presented is None and worker.protocol_version >= 3:

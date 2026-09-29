@@ -33,11 +33,16 @@ from worker.settings import Settings, get_settings
 logger = logging.getLogger("potocolom.worker")
 
 # Wire constants; keep in sync with backend/app/realtime.py.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 GENERATED_FRAME = 0x02
-FRAME_HEADER_BYTES = 17
+# 1 byte kind + 16 byte session uuid: the fixed prefix of the header, which is
+# also the whole header of a protocol 4 API.
+LEGACY_FRAME_HEADER_BYTES = 17
+# Protocol 5 adds the 4 byte big-endian input revision to both frame kinds, so
+# a frame shorter than this never reached the runner and closes 4000.
+FRAME_HEADER_BYTES = 21
 # The API's own receive limit (uvicorn --ws-max-size). It forwards canvas
-# frames of up to 17 + 1 MiB bytes, over the websockets default of exactly
+# frames of up to 21 + 1 MiB bytes, over the websockets default of exactly
 # 1 MiB, which would drop the fleet socket and every session on it.
 FLEET_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 CLOSE_PROTOCOL_VIOLATION = 4000
@@ -281,7 +286,11 @@ class SessionRunner:
         self._manifest = manifest
         self._params = params
         self._generation = generation
-        self._pending: bytes | None = None
+        self._pending: tuple[int, bytes] | None = None
+        # Highest input revision accepted, 0 before the first frame. The API
+        # stamps a per-session revision on every canvas frame, so a replay or
+        # an out-of-order one is dropped here rather than rendered.
+        self._accepted_revision = 0
         self._arrived = asyncio.Event()
         self.dropped = 0
         self._frames = 0
@@ -296,10 +305,18 @@ class SessionRunner:
         self._prompt_cache = PromptCache()
         self._task = asyncio.create_task(self._run())
 
-    def submit(self, payload: bytes) -> None:
+    def submit(self, revision: int, payload: bytes) -> None:
+        """Accept one canvas frame; a revision already seen is not new input.
+
+        dropped counts only what a newer frame overwrote: that is latest input
+        wins, and a stale frame is a replay rather than congestion.
+        """
+        if revision <= self._accepted_revision:
+            return
+        self._accepted_revision = revision
         if self._pending is not None:
             self.dropped += 1
-        self._pending = payload
+        self._pending = (revision, payload)
         self._arrived.set()
 
     def matches_generation(self, generation: int | None) -> bool:
@@ -384,9 +401,10 @@ class SessionRunner:
         while True:
             await self._arrived.wait()
             self._arrived.clear()
-            payload, self._pending = self._pending, None
-            if payload is None:  # unreachable today; narrows the Optional for mypy
+            pending, self._pending = self._pending, None
+            if pending is None:  # unreachable today; narrows the Optional for mypy
                 continue
+            revision, payload = pending
             try:
                 # The params are read per frame, so an update_session lands on
                 # the next frame while one in flight finishes on the old dict.
@@ -430,7 +448,8 @@ class SessionRunner:
                 return
             try:
                 await ws.send(
-                    bytes([GENERATED_FRAME]) + self._session_id.bytes + generated.data)
+                    bytes([GENERATED_FRAME]) + self._session_id.bytes
+                    + revision.to_bytes(4, "big") + generated.data)
             except websockets.WebSocketException:
                 logger.warning("session %s lost the connection while sending a frame",
                                self._session_id)
@@ -539,10 +558,10 @@ class SessionManager:
         self._retire(runner)
         await self._ws.send(json.dumps(runner.close_report()))
 
-    def submit(self, session_id: uuid.UUID, payload: bytes) -> None:
+    def submit(self, session_id: uuid.UUID, revision: int, payload: bytes) -> None:
         runner = self._runners.get(session_id)
         if runner is not None:
-            runner.submit(payload)
+            runner.submit(revision, payload)
 
     async def shutdown(self) -> None:
         runners = list(self._runners.values()) + list(self._retired)
@@ -837,8 +856,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                 if isinstance(message, bytes):
                     if len(message) < FRAME_HEADER_BYTES:
                         raise ValueError("binary frame shorter than the header")
-                    session_id = uuid.UUID(bytes=message[1:FRAME_HEADER_BYTES])
-                    sessions.submit(session_id, message[FRAME_HEADER_BYTES:])
+                    session_id = uuid.UUID(bytes=message[1:LEGACY_FRAME_HEADER_BYTES])
+                    revision = int.from_bytes(
+                        message[LEGACY_FRAME_HEADER_BYTES:FRAME_HEADER_BYTES], "big")
+                    sessions.submit(session_id, revision, message[FRAME_HEADER_BYTES:])
                 else:
                     control = json.loads(message)
                     if control["type"] == "open_session":

@@ -15,6 +15,7 @@ import {
 	SLOW_INTERVAL_MS,
 	canvasFrame,
 	frameFitsLimits,
+	isStaleOutput,
 	nextDelayMs,
 	nextIntervalMs,
 	openMessage,
@@ -61,25 +62,29 @@ test('a value that is not a uuid is refused rather than framed', () => {
 	assert.throws(() => uuidBytes('3f2504e0-4f89-11d3-9a0c-0305e82c330'));
 });
 
-test('a canvas frame carries the kind byte, the whole session id, then the image', () => {
+test('a canvas frame carries the kind byte, the whole session id, the revision and the image', () => {
 	const image = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x99]);
-	const frame = canvasFrame(SESSION, image);
+	const frame = canvasFrame(SESSION, 70000, image);
 
 	assert.equal(frame.length, FRAME_HEADER_BYTES + image.length);
 	assert.equal(frame[0], CANVAS_FRAME);
-	// Every header byte, so a partial write cannot pass.
-	assert.deepEqual(frame.subarray(1, FRAME_HEADER_BYTES), uuidBytes(SESSION));
+	// Every header byte up to the revision, so a partial write cannot pass.
+	assert.deepEqual(frame.subarray(1, 17), uuidBytes(SESSION));
+	// 70000 is 0x00011170: four bytes, big endian. A 16 bit write would have
+	// lost the 0x0001 and a little endian one reads 0x70110100.
+	assert.deepEqual([...frame.subarray(17, 21)], [0x00, 0x01, 0x11, 0x70]);
 	assert.deepEqual(frame.subarray(FRAME_HEADER_BYTES), image);
 });
 
-test('a generated frame yields the image bytes after the header', () => {
+test('a generated frame round trips its revision and image back to the caller', () => {
 	const image = new Uint8Array([1, 2, 3, 4]);
 	const frame = new Uint8Array(FRAME_HEADER_BYTES + image.length);
 	frame[0] = GENERATED_FRAME;
 	frame.set(uuidBytes(SESSION), 1);
+	new DataView(frame.buffer).setUint32(17, 70000, false);
 	frame.set(image, FRAME_HEADER_BYTES);
 
-	assert.deepEqual(parseGeneratedFrame(frame, SESSION), image);
+	assert.deepEqual(parseGeneratedFrame(frame, SESSION), { revision: 70000, image });
 });
 
 test('a frame for a session differing in one byte is not ours', () => {
@@ -93,16 +98,20 @@ test('a frame for a session differing in one byte is not ours', () => {
 });
 
 test('a canvas frame echoed back is not treated as generated output', () => {
-	const frame = canvasFrame(SESSION, new Uint8Array([7]));
+	const frame = canvasFrame(SESSION, 1, new Uint8Array([7]));
 	assert.equal(parseGeneratedFrame(frame, SESSION), null);
 });
 
 test('a frame shorter than the header is refused', () => {
-	const short = new Uint8Array(FRAME_HEADER_BYTES - 1);
-	short[0] = GENERATED_FRAME;
-	short.set(uuidBytes(SESSION).subarray(0, 15), 1);
+	// 17 bytes is a complete pre-revision header and 20 stops inside the
+	// revision, so neither can carry an image.
+	for (const length of [17, FRAME_HEADER_BYTES - 1]) {
+		const short = new Uint8Array(length);
+		short[0] = GENERATED_FRAME;
+		short.set(uuidBytes(SESSION), 1);
 
-	assert.equal(parseGeneratedFrame(short, SESSION), null);
+		assert.equal(parseGeneratedFrame(short, SESSION), null, `${length} bytes`);
+	}
 });
 
 test('a header with no image is empty rather than null', () => {
@@ -111,8 +120,21 @@ test('a header with no image is empty rather than null', () => {
 	const frame = new Uint8Array(FRAME_HEADER_BYTES);
 	frame[0] = GENERATED_FRAME;
 	frame.set(uuidBytes(SESSION), 1);
+	new DataView(frame.buffer).setUint32(17, 70000, false);
 
-	assert.deepEqual(parseGeneratedFrame(frame, SESSION), new Uint8Array(0));
+	assert.deepEqual(parseGeneratedFrame(frame, SESSION), {
+		revision: 70000,
+		image: new Uint8Array(0)
+	});
+});
+
+test('only a revision below the one already on screen is stale', () => {
+	assert.equal(isStaleOutput(4, 5), true);
+	assert.equal(isStaleOutput(0, 1), true);
+	// Equal is not stale: one input may render more than once.
+	assert.equal(isStaleOutput(5, 5), false);
+	assert.equal(isStaleOutput(0, 0), false);
+	assert.equal(isStaleOutput(6, 5), false);
 });
 
 test('a frame is sent only when there is a change, no encode, and an empty socket', () => {
@@ -169,6 +191,13 @@ test('the open message carries the structure strength and steps passed to it', (
 	);
 	assert.equal(message.params.structure_strength, 0.25);
 	assert.equal(message.params.steps, 30);
+});
+
+test('the open control declares the 21 byte frame header this client reads back', () => {
+	const message = JSON.parse(
+		openMessage('vega-rt', 'a cat', { structure_strength: 0.5, steps: 10 })
+	);
+	assert.equal(message.frame_header, 2);
 });
 
 test('the update message carries a subset of the session params', () => {
@@ -359,12 +388,29 @@ function ready(socket: TestSocket, id = SESSION): void {
 	socket.message(JSON.stringify({ type: 'ready', session_id: id }));
 }
 
-function generated(id = SESSION): ArrayBuffer {
-	const frame = new Uint8Array(FRAME_HEADER_BYTES + 2);
+/**
+ * A generated frame for a session at a revision. Its single image byte repeats
+ * the revision, so a test can tell which frame was decoded or drawn.
+ */
+function generated(id = SESSION, revision = 0): ArrayBuffer {
+	const frame = new Uint8Array(FRAME_HEADER_BYTES + 1);
 	frame[0] = GENERATED_FRAME;
 	frame.set(uuidBytes(id), 1);
-	frame.set([9, 8], FRAME_HEADER_BYTES);
+	new DataView(frame.buffer).setUint32(17, revision, false);
+	frame.set([revision & 0xff], FRAME_HEADER_BYTES);
 	return frame.buffer;
+}
+
+/** The revision out of a frame this session sent, read as the wire does. */
+function revisionOf(frame: Uint8Array): number {
+	return new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(17, false);
+}
+
+/** The frames (not the JSON controls) a socket was asked to send. */
+function sentFrames(socket: TestSocket): Uint8Array[] {
+	return socket.sent
+		.filter((data) => typeof data !== 'string')
+		.map((data) => new Uint8Array(data as ArrayBuffer));
 }
 
 function emptyGenerated(id = SESSION): ArrayBuffer {
@@ -421,7 +467,7 @@ test('a busy socket retries at a bounded rate after a slow encode and keeps the 
 		await Promise.resolve();
 		const frames = socket.sent.filter((data) => typeof data !== 'string');
 		assert.equal(frames.length, 2);
-		assert.deepEqual(frames.at(-1), canvasFrame(SESSION, new Uint8Array([3])));
+		assert.deepEqual(frames.at(-1), canvasFrame(SESSION, 2, new Uint8Array([3])));
 		assert.equal(harness.timerCount(), 1);
 	} finally {
 		harness.session.destroy();
@@ -501,7 +547,7 @@ test('an encode failure keeps the drawing pending for a successful retry', async
 		assert.equal(encodes, 2);
 		const frames = socket.sent.filter((data) => typeof data !== 'string');
 		assert.equal(frames.length, 1);
-		assert.deepEqual(frames[0], canvasFrame(SESSION, new Uint8Array([2])));
+		assert.deepEqual(frames[0], canvasFrame(SESSION, 1, new Uint8Array([2])));
 	} finally {
 		harness.session.destroy();
 	}
@@ -557,6 +603,50 @@ test('resume resend encodes and sends the complete current frame', async () => {
 		new Uint8Array(frames[0] as ArrayBuffer).subarray(FRAME_HEADER_BYTES),
 		new Uint8Array([1])
 	);
+});
+
+test('one session numbers its frames 1, 2, 3 and keeps counting across controls', async () => {
+	const harness = sessionHarness({
+		encode: async () => new Uint8Array([1])
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		for (let index = 0; index < 3; index += 1) {
+			if (index > 0) harness.session.markChanged();
+			harness.tick();
+			await Promise.resolve();
+		}
+		assert.deepEqual(sentFrames(socket).map(revisionOf), [1, 2, 3]);
+
+		socket.message(JSON.stringify({ type: 'interrupted' }));
+		socket.message(JSON.stringify({ type: 'resumed' }));
+		harness.tick();
+		await Promise.resolve();
+		assert.deepEqual(sentFrames(socket).map(revisionOf), [1, 2, 3, 4]);
+
+		// Queuing, a params change and the resume after them restart the loop,
+		// not the count.
+		socket.message(JSON.stringify({ type: 'queued', position: 1 }));
+		socket.message(
+			JSON.stringify({
+				type: 'params_updated',
+				params: { prompt: 'a dog', structure_strength: 0.7, steps: 12 }
+			})
+		);
+		socket.message(JSON.stringify({ type: 'resumed' }));
+		harness.tick();
+		await Promise.resolve();
+
+		assert.deepEqual(sentFrames(socket).map(revisionOf), [1, 2, 3, 4, 5]);
+	} finally {
+		harness.session.destroy();
+	}
 });
 
 test('a queued session reports each position and becomes active on ready', () => {
@@ -939,4 +1029,143 @@ test('binary frames before ready and empty generated frames are ignored', async 
 	await Promise.resolve();
 	assert.equal(harness.draws.length, 0);
 	assert.equal(harness.counters.at(-1)?.[1], 0);
+});
+
+test('a frame below the shown revision is not decoded, drawn or counted', async () => {
+	let decodes = 0;
+	const harness = sessionHarness({
+		decode: async () => {
+			decodes += 1;
+			return { close() {} };
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+
+		socket.message(generated(SESSION, 5));
+		await Promise.resolve();
+		assert.equal(harness.draws.length, 1);
+		assert.equal(harness.counters.at(-1)?.[1], 1);
+
+		// 4 arrived after 5 was on screen: an old worker response.
+		socket.message(generated(SESSION, 4));
+		await Promise.resolve();
+		assert.equal(decodes, 1, 'a stale frame must not be decoded');
+		assert.equal(harness.draws.length, 1, 'a stale frame must not be drawn');
+		assert.equal(harness.counters.at(-1)?.[1], 1, 'a stale frame must not be counted');
+
+		// Equal is not stale: the same input can render a second time.
+		socket.message(generated(SESSION, 5));
+		await Promise.resolve();
+		assert.equal(decodes, 2, 'an equal revision is not dropped');
+		assert.equal(harness.draws.length, 2, 'an equal revision draws again');
+		assert.equal(harness.counters.at(-1)?.[1], 2);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('a frame that goes stale while it waits its turn is dropped before the decode', async () => {
+	const decoded: number[] = [];
+	const harness = sessionHarness({
+		decode: async (image) => {
+			decoded.push(image[0]);
+			return { close() {} };
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+
+		// 4 arrives while 6 is decoding, so nothing is behind the screen for
+		// it yet; by the time the loop reaches it, 6 has been drawn over it.
+		socket.message(generated(SESSION, 6));
+		socket.message(generated(SESSION, 4));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(decoded, [6]);
+		assert.equal(harness.draws.length, 1);
+		assert.equal(harness.counters.at(-1)?.[1], 1);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('a stale frame cannot take the slot of a newer one still waiting', async () => {
+	const decoded: number[] = [];
+	const harness = sessionHarness({
+		decode: async (image) => {
+			decoded.push(image[0]);
+			return { close() {} };
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+
+		socket.message(generated(SESSION, 5));
+		socket.message(generated(SESSION, 6));
+		await Promise.resolve();
+		// 7 waits in the slot while 6 decodes; the late 4 must not push it out.
+		socket.message(generated(SESSION, 7));
+		socket.message(generated(SESSION, 4));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(decoded, [5, 6, 7]);
+		assert.equal(harness.draws.length, 3);
+		assert.equal(harness.counters.at(-1)?.[1], 3);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('a newer frame replaces the pending one while an older still decodes', async () => {
+	const decoded: number[] = [];
+	const harness = sessionHarness({
+		decode: async (image) => {
+			decoded.push(image[0]);
+			return { close() {} };
+		}
+	});
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+
+		// The first frame is in decode when the next two arrive, so 7 is
+		// replaced in the slot by 8 and only the newest waits behind the decode.
+		socket.message(generated(SESSION, 6));
+		socket.message(generated(SESSION, 7));
+		socket.message(generated(SESSION, 8));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(decoded, [6, 8]);
+		assert.equal(harness.draws.length, 2);
+		assert.equal(harness.counters.at(-1)?.[1], 2);
+	} finally {
+		harness.session.destroy();
+	}
 });

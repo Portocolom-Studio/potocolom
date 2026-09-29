@@ -10,6 +10,7 @@ from PIL import Image
 from worker.client import (
     FLEET_MAX_MESSAGE_BYTES,
     FRAME_HEADER_BYTES,
+    GENERATED_FRAME,
     PROTOCOL_VERSION,
     RegistrationRejected,
     SEED_BOUND,
@@ -84,9 +85,9 @@ def test_latest_input_wins():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, SimulatedEngine(0.01),
                                SIMULATED_MANIFEST, {})
-        runner.submit(b"first")
-        runner.submit(b"second")
-        runner.submit(b"third")
+        runner.submit(1, b"first")
+        runner.submit(2, b"second")
+        runner.submit(3, b"third")
         await asyncio.sleep(0.05)
         runner.close()
         return runner
@@ -97,6 +98,53 @@ def test_latest_input_wins():
     frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
     assert len(frames) == 1
     assert frames[0][FRAME_HEADER_BYTES:] == b"third"
+
+
+def test_a_stale_revision_is_dropped_before_it_reaches_the_engine():
+    """A revision already accepted is not new input: it never becomes pending,
+    so the frame the runner still holds is the newest one and the stale frame
+    is not counted as congestion either."""
+    socket = FakeSocket()
+
+    async def scenario():
+        runner = SessionRunner(uuid.uuid4(), socket, SimulatedEngine(0.01),
+                               SIMULATED_MANIFEST, {})
+        runner.submit(1, b"first")
+        await asyncio.sleep(0.05)  # rendered, so nothing is pending now
+        runner.submit(3, b"third")
+        runner.submit(2, b"second")
+        await asyncio.sleep(0.05)
+        runner.close()
+        return runner
+
+    runner = asyncio.run(scenario())
+    assert runner.dropped == 0
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert len(frames) == 2
+    assert frames[1][FRAME_HEADER_BYTES:] == b"third"
+
+
+def test_the_generated_frame_echoes_the_revision_it_rendered():
+    """What the API stamps on the way back to the browser is the revision of
+    the canvas this frame was rendered from, so the worker must send that one
+    and not a count of the frames it has sent."""
+    socket = FakeSocket()
+    session_id = uuid.uuid4()
+
+    async def scenario():
+        runner = SessionRunner(session_id, socket, SimulatedEngine(0.01),
+                               SIMULATED_MANIFEST, {})
+        runner.submit(4, b"canvas")
+        await asyncio.sleep(0.05)
+        runner.close()
+
+    asyncio.run(scenario())
+    frames = [m for m in socket.sent if isinstance(m, (bytes, bytearray))]
+    assert len(frames) == 1
+    assert frames[0][0] == GENERATED_FRAME
+    assert frames[0][1:17] == session_id.bytes
+    assert int.from_bytes(frames[0][17:21], "big") == 4
+    assert frames[0][FRAME_HEADER_BYTES:] == b"canvas"
 
 
 class RecordingSocket:
@@ -166,10 +214,16 @@ class InputRecordingEngine(SimulatedEngine):
         return GeneratedFrame(payload, 0)
 
 
+def canvas_frame(session_id, payload=b"canvas", revision=1):
+    """A protocol 5 canvas frame: kind, session uuid, revision, payload."""
+    return (bytes([0]) + uuid.UUID(session_id).bytes
+            + revision.to_bytes(4, "big") + payload)
+
+
 def drive_session_messages(messages, manifests=None):
     """Run the supplied controls, then one frame for the first session."""
     session_id = json.loads(messages[0])["session_id"]
-    socket = RecordingSocket([*messages, bytes([0]) + uuid.UUID(session_id).bytes + b"canvas"])
+    socket = RecordingSocket([*messages, canvas_frame(session_id)])
     engine = InputRecordingEngine()
     asyncio.run(serve_connection(socket, Settings(worker_id="w-update"),
                                  manifests or [SIMULATED_MANIFEST], engine))
@@ -463,7 +517,7 @@ def test_close_reports_snapshot_before_inflight_frame_drains():
     engine = NonInterruptibleFrameEngine()
     socket = CloseAfterFrameSocket([
         open_msg(session_id, {"prompt": "x"}),
-        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+        canvas_frame(session_id),
     ], engine, session_id)
 
     async def scenario():
@@ -507,7 +561,7 @@ def test_disconnect_waits_for_a_replaced_runner_to_drain():
     engine = NonInterruptibleFrameEngine()
     socket = ReplacementDisconnectSocket([
         open_msg(session_id, {"prompt": "original"}),
-        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+        canvas_frame(session_id),
     ], engine, session_id)
 
     async def scenario():
@@ -581,7 +635,7 @@ def test_disconnect_cancels_sessions_while_slow_jobs_drain():
     engine = ConcurrentShutdownEngine()
     socket = DisconnectWithRunningWorkSocket([
         open_msg(session_id, {"prompt": "x"}),
-        bytes([0]) + uuid.UUID(session_id).bytes + b"canvas",
+        canvas_frame(session_id),
         json.dumps(dispatch_control()),
     ], engine)
 
@@ -659,10 +713,10 @@ def test_hello_carries_manifests():
     assert "realtime_p95_ms" not in hello
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
-    # A version 4 API requires control_generation on lifecycle messages, so
-    # announcing the wrong version here would have this worker's answers
-    # silently dropped.
-    assert hello["protocol_version"] == PROTOCOL_VERSION == 4
+    # The API reads this to choose the frame width it sends: protocol 5
+    # carries the input revision, so announcing it is what gets this worker
+    # 21 byte frames rather than the 17 byte N-1 form.
+    assert hello["protocol_version"] == PROTOCOL_VERSION == 5
 
 
 def test_hello_carries_measured_realtime_p95_ms():
@@ -995,9 +1049,9 @@ def test_session_runner_observes_each_rendered_frame_for_its_model():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
+        runner.submit(2, b"second")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1029,9 +1083,9 @@ def test_session_runner_passes_the_same_prompt_cache_to_every_frame():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
+        runner.submit(2, b"second")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1057,7 +1111,7 @@ def test_session_runner_refuses_a_non_resident_model(caplog):
     async def scenario():
         runner = SessionRunner(session_id, socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1084,7 +1138,7 @@ def test_session_runner_renders_without_warning_when_resident(caplog):
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1109,8 +1163,8 @@ def test_heartbeat_advertises_only_frames_at_default_steps():
     async def run_session(manifest, params, frames):
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults(params)))
-        for _ in range(frames):
-            runner.submit(b"canvas")
+        for step in range(1, frames + 1):
+            runner.submit(step, b"canvas")
             await asyncio.sleep(0.03)
         runner.close()
         await asyncio.sleep(0.01)
@@ -1300,7 +1354,7 @@ def test_run_sends_the_fleet_token_as_a_handshake_header(monkeypatch):
 
 
 def test_the_fleet_socket_takes_the_largest_frame_the_api_forwards(monkeypatch):
-    """The API forwards a canvas frame of 17 header bytes plus 1 MiB. The
+    """The API forwards a canvas frame of 21 header bytes plus 1 MiB. The
     websockets default of exactly 1 MiB would close the fleet socket with 1009
     and end every session on this worker."""
     largest = FRAME_HEADER_BYTES + 1024 * 1024
@@ -1659,7 +1713,7 @@ def test_session_runner_refuses_a_residency_load_failure(caplog):
     async def scenario():
         runner = SessionRunner(session_id, socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1696,9 +1750,9 @@ def test_session_runner_keeps_going_after_one_residency_frame_failure():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
+        runner.submit(2, b"second")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1723,9 +1777,9 @@ def test_session_runner_refuses_repeated_residency_frame_failures():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
+        runner.submit(2, b"second")
         await asyncio.sleep(0.03)
         runner.close()
 
@@ -1752,9 +1806,9 @@ def test_session_runner_ignores_resident_wording_on_other_errors():
     async def scenario():
         runner = SessionRunner(uuid.uuid4(), socket, engine, manifest,
                                ensure_seed(manifest.with_defaults({"prompt": "x"})))
-        runner.submit(b"first")
+        runner.submit(1, b"first")
         await asyncio.sleep(0.03)
-        runner.submit(b"second")
+        runner.submit(2, b"second")
         await asyncio.sleep(0.03)
         runner.close()
 

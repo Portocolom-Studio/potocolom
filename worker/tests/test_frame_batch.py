@@ -283,8 +283,8 @@ def test_closed_session_does_not_receive_frame():
         runner_b = SessionRunner(
             uuid.uuid4(), socket, engine, SIMULATED_MANIFEST, {},
         )
-        runner_a.submit(b"mate")
-        runner_b.submit(b"victim")
+        runner_a.submit(1, b"mate")
+        runner_b.submit(1, b"victim")
         await asyncio.sleep(0)
         runner_b.close()
         deadline = time.monotonic() + 1.0

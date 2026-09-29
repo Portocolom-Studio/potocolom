@@ -88,7 +88,7 @@ The FrameBus contract is normative:
 - A payload is one complete protocol-versioned binary frame, including its header.
 - Payload bytes stay opaque to the bus and must pass the negotiated size limit before publish.
 - Delivery is at most once and not durable. Publish completion means the transport accepted the publication, not that a destination socket consumed it.
-- Reconnect does not replay frames. Handover may briefly drop or duplicate a frame; issue #19, "Real-Time Generation Protocol", owns sequence checks that reject stale or duplicate revisions.
+- Reconnect does not replay frames. Handover may briefly drop or duplicate a frame; the per-session input revision (issue #616) makes the API and the worker drop a stale or duplicate canvas frame, and the browser drop an older generated one.
 - A newer self-contained frame supersedes an older frame in the same session direction.
 - Subscription cancellation promptly removes the destination route.
 - Each subscription feeds one latest-value slot, never an unbounded application queue.
@@ -337,12 +337,12 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 | worker to api | `job_progress`, `job_done`, `job_failed` | each echoes dispatch_token; done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
 | worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
-| both | binary frame | 1 byte type, 16 byte session uuid, then WebP payload |
+| both | binary frame | 1 byte type, 16 byte session uuid, 4 byte big endian input revision, then WebP payload ([connection-handling.md](connection-handling.md) has the 17 byte form an older peer speaks) |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
 
-> Shipped status (2026-09-07): **partially implemented.** The current 17-byte frame header is exactly the binary row above and has no revision or sequence field. The worker's `SessionManager` now owns runner replacement, generation fencing, retired-task draining and connection shutdown. A `session_closed` report still snapshots the runner's counters before shutdown waits for in-flight work; it is not GPU-complete accounting. `pause_job`, `drain`, `queued`, `prompt_update`, `idle`, `resuming`, and `credits_tick` are not implemented. Issue #19, "Real-Time Generation Protocol", owns frame revisions, output correlation, queue and resume controls, keepalive, and limits; issue #20, "Multi-Worker Scheduling", owns worker drain and scheduling controls.
+> Shipped status (2026-09-07): **partially implemented.** The 21-byte frame header is the binary row above; its revision is per session, owned by the API, and echoed on generated frames (issue #616). The worker's `SessionManager` now owns runner replacement, generation fencing, retired-task draining and connection shutdown. A `session_closed` report still snapshots the runner's counters before shutdown waits for in-flight work; it is not GPU-complete accounting. `pause_job`, `drain`, `queued`, `prompt_update`, `idle`, `resuming`, and `credits_tick` are not implemented. Issue #19, "Real-Time Generation Protocol", owns the remaining queue and resume controls; issue #20, "Multi-Worker Scheduling", owns worker drain and scheduling controls.
 
-`dispatch_token` is minted per dispatch and is what separates one attempt of a job from the next, since a stall requeue can hand the job back to the same worker. A message carrying the wrong token is ignored, and so is one that omits it: the compatibility floor is 3, so a protocol 2 worker cannot register and there is no remaining N-1 exception. On the local storage backend the same token authorises the upload, because the key alone is derivable by any worker that ever held the job. [connection-handling.md](connection-handling.md) is normative for the field.
+`dispatch_token` is minted per dispatch and is what separates one attempt of a job from the next, since a stall requeue can hand the job back to the same worker. A message carrying the wrong token is ignored, and so is one that omits it: the compatibility floor is 4, so a protocol 3 worker cannot register and there is no remaining N-1 exception. On the local storage backend the same token authorises the upload, because the key alone is derivable by any worker that ever held the job. [connection-handling.md](connection-handling.md) is normative for the field.
 
 Version gate at registration, implementing the N-1 promise:
 

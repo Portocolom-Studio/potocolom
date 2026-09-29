@@ -76,6 +76,8 @@ class Browser:
     def __init__(self, name: str, ws):
         self.name, self.ws = name, ws
         self.session: uuid.UUID | None = None
+        # Input revisions: 1 for the first canvas frame, strictly increasing.
+        self.revision = 0
         self.reading = True
         self.sent = self.rendered = self.drained = 0
         self.controls: list[str] = []
@@ -106,6 +108,7 @@ class Browser:
         await self.ws.send(json.dumps({
             "type": "open", "model_id": model_id,
             "params": {"prompt": "a red house on a hill"},
+            "frame_header": 2,
         }))
         reply = json.loads(await self.ws.recv())
         assert reply["type"] == "ready", f"{self.name}: {reply}"
@@ -115,10 +118,11 @@ class Browser:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             payload = struct.pack("d", time.monotonic()) + PAD
+            self.revision += 1
+            frame = (bytes([CANVAS_FRAME]) + self.session.bytes
+                     + self.revision.to_bytes(4, "big") + payload)
             try:
-                await asyncio.wait_for(
-                    self.ws.send(bytes([CANVAS_FRAME]) + self.session.bytes + payload),
-                    timeout=5.0)
+                await asyncio.wait_for(self.ws.send(frame), timeout=5.0)
             except Exception:
                 return  # a send that cannot complete is itself the finding
             self.sent += 1

@@ -30,9 +30,12 @@ def test_canvas_bytes_is_a_512_png() -> None:
 def test_canvas_frame_keeps_image_openable() -> None:
     session_id = uuid.UUID("12345678-1234-1234-1234-123456789abc")
     image = SCRIPT.canvas_bytes()
-    frame = SCRIPT.canvas_frame(session_id, image)
+    frame = SCRIPT.canvas_frame(session_id, image, revision=7)
     assert frame[0] == SCRIPT.CANVAS_FRAME
-    assert frame[1:SCRIPT.FRAME_HEADER_BYTES] == session_id.bytes
+    # 1 byte kind, 16 byte session uuid, 4 byte revision: 21 before the image.
+    assert SCRIPT.FRAME_HEADER_BYTES == 21
+    assert frame[1:17] == session_id.bytes
+    assert int.from_bytes(frame[17:21], "big") == 7
     with Image.open(io.BytesIO(frame[SCRIPT.FRAME_HEADER_BYTES:])) as opened:
         assert opened.size == (512, 512)
 
