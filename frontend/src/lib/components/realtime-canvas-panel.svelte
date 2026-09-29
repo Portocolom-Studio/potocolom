@@ -473,7 +473,13 @@
 					<Button variant="outline" size="sm" disabled={openingDrawing} onclick={saveDrawing}>
 						{t('app.realtime_canvas.save')}
 					</Button>
-					<Button variant="outline" size="sm" disabled={openingDrawing} onclick={chooseDrawingFile}>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={openingDrawing}
+						aria-describedby="realtime-open-hint"
+						onclick={chooseDrawingFile}
+					>
 						{t('app.realtime_canvas.open')}
 					</Button>
 					<input
@@ -488,6 +494,9 @@
 					{sentFrames} / {renderedFrames}
 				</span>
 			</div>
+			<p id="realtime-open-hint" class="text-muted-foreground text-xs lg:col-span-2">
+				{t('app.realtime_canvas.open_hint')}
+			</p>
 			<Card.Root class="flex min-h-0 flex-col">
 				<Card.Header>
 					<Card.Title class="text-base">{t('app.realtime_canvas.input_title')}</Card.Title>
@@ -565,7 +574,6 @@
 						onpointercancel={onPointerUp}
 						onlostpointercapture={onPointerUp}
 					></canvas>
-					<p class="text-muted-foreground text-xs">{t('app.realtime_canvas.open_hint')}</p>
 					{#if drawingNotice}
 						<p class="text-destructive text-sm" role="status" aria-live="polite">
 							{t(drawingNotice)}
