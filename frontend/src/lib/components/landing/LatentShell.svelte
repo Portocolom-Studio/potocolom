@@ -90,8 +90,13 @@
 		background: oklch(0.97 0.004 255 / 78%);
 	}
 
+	/* Wrap on narrow screens: the trailing auto track cannot shrink below the
+	   nowrap pill, so the pill moves to its own row instead of running off the
+	   right edge. */
 	.chrome-actions {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		align-items: center;
 		gap: 0.75rem;
 	}

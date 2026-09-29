@@ -451,6 +451,13 @@
 		color: var(--k-ink);
 	}
 
+	/* The terminal stays dark navy in both themes, but the prompt path inherits
+	   the app primary token (dark navy, 1.52:1 there). Accent ink is the token
+	   built to read on dark navy, so pin the prompt path to it. */
+	:global(.terminal-prompt .text-primary) {
+		color: var(--k-accent-ink);
+	}
+
 	/* Stage ---------------------------------------------------------------- */
 	.stage {
 		--orbit-scale: 0.94;

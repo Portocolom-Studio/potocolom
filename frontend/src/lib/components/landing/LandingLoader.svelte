@@ -17,6 +17,11 @@
 
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
+	import {
+		LANDING_ENTRANCE_TIMEOUT_MS,
+		landingRevealPauseMs,
+		shouldRevealLandingEntrance
+	} from '$lib/landing-entrance';
 	import { onMount } from 'svelte';
 
 	let {
@@ -80,6 +85,7 @@
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		const minimumSpinMs = reduced ? 0 : 900;
 		const revealMs = reduced ? 120 : 1500;
+		const startedAtMs = Date.now();
 		const unique = [
 			...new Map(assets.map((asset) => [`${asset.srcset}|${asset.sizes}`, asset])).values()
 		];
@@ -111,17 +117,60 @@
 			Array.from({ length: Math.min(8, unique.length) }, () => loadNext())
 		);
 
-		void Promise.all([wait(minimumSpinMs), loading]).then(async () => {
-			if (cancelled) return;
+		// Three events can move the gate: the assets finishing, the minimum
+		// spin elapsing, and the absolute deadline passing (a hung asset must
+		// not hold header and main inert forever). Each calls advance(), which
+		// runs the reveal chain once shouldRevealLandingEntrance says so.
+		let assetsLoaded = false;
+		let spinElapsed = false;
+		let revealStarted = false;
+
+		const reveal = async () => {
 			phase = 'revealing';
 			onphase?.(phase);
-			await wait(revealMs);
+			await wait(
+				landingRevealPauseMs({
+					startedAtMs,
+					nowMs: Date.now(),
+					revealMs,
+					timeoutMs: LANDING_ENTRANCE_TIMEOUT_MS
+				})
+			);
 			if (cancelled) return;
 			phase = 'ready';
 			entranceCompleted = true;
 			onphase?.(phase);
 			visible = false;
+		};
+
+		const advance = () => {
+			if (cancelled || revealStarted) return;
+			if (
+				!shouldRevealLandingEntrance({
+					startedAtMs,
+					nowMs: Date.now(),
+					assetsLoaded,
+					minimumSpinMs,
+					timeoutMs: LANDING_ENTRANCE_TIMEOUT_MS
+				})
+			) {
+				return;
+			}
+			revealStarted = true;
+			void reveal();
+		};
+
+		void loading.then(() => {
+			if (cancelled) return;
+			assetsLoaded = true;
+			advance();
 		});
+		void wait(minimumSpinMs).then(() => {
+			if (cancelled) return;
+			spinElapsed = true;
+			advance();
+		});
+		void wait(LANDING_ENTRANCE_TIMEOUT_MS).then(advance);
 
 		return () => {
 			cancelled = true;
