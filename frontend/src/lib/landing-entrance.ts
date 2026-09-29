@@ -16,17 +16,3 @@ export function shouldRevealLandingEntrance(timing: {
 	if (elapsed >= timing.timeoutMs) return true;
 	return timing.assetsLoaded && elapsed >= timing.minimumSpinMs;
 }
-
-// The reveal pause between the 'revealing' and 'ready' phases. Normally the
-// full revealMs runs; when the absolute deadline is near, the pause is cut
-// short so the ready state still lands on the deadline.
-export function landingRevealPauseMs(timing: {
-	startedAtMs: number;
-	nowMs: number;
-	revealMs: number;
-	timeoutMs: number;
-}): number {
-	const remaining = timing.startedAtMs + timing.timeoutMs - timing.nowMs;
-	if (remaining <= 0) return 0;
-	return Math.min(timing.revealMs, remaining);
-}

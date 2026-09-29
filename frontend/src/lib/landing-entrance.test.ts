@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import {
-	LANDING_ENTRANCE_TIMEOUT_MS,
-	landingRevealPauseMs,
-	shouldRevealLandingEntrance
-} from './landing-entrance.ts';
+import { LANDING_ENTRANCE_TIMEOUT_MS, shouldRevealLandingEntrance } from './landing-entrance.ts';
 
 test('the landing gate waits for the minimum spin even when assets are ready', () => {
 	assert.equal(
@@ -81,22 +77,4 @@ test('the landing gate deadline is measured from the entrance start', () => {
 
 test('the deadline constant is the named eight-second bound', () => {
 	assert.equal(LANDING_ENTRANCE_TIMEOUT_MS, 8000);
-});
-
-test('the reveal pause is the full reveal while the deadline is far away', () => {
-	assert.equal(
-		landingRevealPauseMs({ startedAtMs: 0, nowMs: 1000, revealMs: 1500, timeoutMs: 8000 }),
-		1500
-	);
-});
-
-test('the reveal pause is cut short so the ready state lands on the deadline', () => {
-	assert.equal(
-		landingRevealPauseMs({ startedAtMs: 0, nowMs: 7999, revealMs: 1500, timeoutMs: 8000 }),
-		1
-	);
-	assert.equal(
-		landingRevealPauseMs({ startedAtMs: 0, nowMs: 8000, revealMs: 1500, timeoutMs: 8000 }),
-		0
-	);
 });

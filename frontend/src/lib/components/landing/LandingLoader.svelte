@@ -17,11 +17,7 @@
 
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
-	import {
-		LANDING_ENTRANCE_TIMEOUT_MS,
-		landingRevealPauseMs,
-		shouldRevealLandingEntrance
-	} from '$lib/landing-entrance';
+	import { LANDING_ENTRANCE_TIMEOUT_MS, shouldRevealLandingEntrance } from '$lib/landing-entrance';
 	import { onMount } from 'svelte';
 
 	let {
@@ -122,20 +118,14 @@
 		// not hold header and main inert forever). Each calls advance(), which
 		// runs the reveal chain once shouldRevealLandingEntrance says so.
 		let assetsLoaded = false;
-		let spinElapsed = false;
 		let revealStarted = false;
 
 		const reveal = async () => {
 			phase = 'revealing';
 			onphase?.(phase);
-			await wait(
-				landingRevealPauseMs({
-					startedAtMs,
-					nowMs: Date.now(),
-					revealMs,
-					timeoutMs: LANDING_ENTRANCE_TIMEOUT_MS
-				})
-			);
+			// The deadline bounds when the reveal starts, not the fade itself,
+			// so a late reveal still cross-fades instead of snapping to blank.
+			await wait(revealMs);
 			if (cancelled) return;
 			phase = 'ready';
 			entranceCompleted = true;
@@ -167,7 +157,6 @@
 		});
 		void wait(minimumSpinMs).then(() => {
 			if (cancelled) return;
-			spinElapsed = true;
 			advance();
 		});
 		void wait(LANDING_ENTRANCE_TIMEOUT_MS).then(advance);
