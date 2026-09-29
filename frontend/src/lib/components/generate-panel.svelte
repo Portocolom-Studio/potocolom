@@ -19,6 +19,7 @@
 		enumIndexToNorm,
 		formatParamValue,
 		guidanceSpec,
+		modelProperty,
 		normToEnumIndex,
 		normToValue,
 		sizeOptions as modelSizeOptions,
@@ -27,6 +28,7 @@
 		strengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
+	import { countError, seedError } from '$lib/generate-validation';
 	import { apiFetch } from '$lib/api';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
@@ -201,6 +203,10 @@
 					.replace('{limit}', String(promptWindow))
 			: null
 	);
+	// The generate form runs with novalidate, so these two are the only gate
+	// on Count and Seed; the submit clamp keeps 1..8 for the count.
+	const countProblem = $derived(countError(count, 1, 8));
+	const seedProblem = $derived(seedError(seed, modelProperty(selectedModel, 'seed') ?? {}));
 	const upscaleSourceAsset = $derived(sourceAsset ?? shown?.assets[0] ?? null);
 	const upscaleSource = $derived(
 		upscaleSourceAsset !== null
@@ -500,7 +506,7 @@
 						{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
 					</p>
 				{:else}
-					<form class="flex min-h-0 flex-1 flex-col gap-4" onsubmit={generate}>
+					<form class="flex min-h-0 flex-1 flex-col gap-4" novalidate onsubmit={generate}>
 						<div class="flex flex-col gap-2">
 							<Label for="gen-model">{t('app.gen.model')}</Label>
 							<Select.Root
@@ -600,8 +606,14 @@
 									type="number"
 									min="1"
 									max="8"
+									aria-describedby={countProblem ? 'gen-count-error' : undefined}
 									bind:value={count}
 								/>
+								{#if countProblem}
+									<p id="gen-count-error" class="text-destructive text-sm leading-relaxed">
+										{t(countProblem)}
+									</p>
+								{/if}
 							</div>
 							<div class="flex flex-col gap-2">
 								<Label for="gen-seed">{t('app.gen.seed')}</Label>
@@ -610,8 +622,14 @@
 									class="tabular-nums"
 									type="number"
 									placeholder={t('app.gen.seed_placeholder')}
+									aria-describedby={seedProblem ? 'gen-seed-error' : undefined}
 									bind:value={seed}
 								/>
+								{#if seedProblem}
+									<p id="gen-seed-error" class="text-destructive text-sm leading-relaxed">
+										{t(seedProblem)}
+									</p>
+								{/if}
 							</div>
 						</div>
 						<div class="flex flex-col gap-2">
@@ -622,7 +640,7 @@
 								spacing={0}
 								class="flex w-full"
 								value={sizeKey}
-								onValueChange={(value) => value && onSizeChange(value)}
+								onValueChange={onSizeChange}
 							>
 								{#each sizeOptions as option (option)}
 									<ToggleGroup.Item
@@ -672,6 +690,8 @@
 							class="tabular-nums"
 							disabled={submitLock.busy ||
 								studio.prompt.trim() === '' ||
+								countProblem !== null ||
+								seedProblem !== null ||
 								(mode === 'image_to_image' && sourceAssetId === null)}
 						>
 							{mode === 'image_to_image'
@@ -797,7 +817,7 @@
 							spacing={0}
 							class="flex w-full"
 							value={String(upscaleFactor)}
-							onValueChange={(value) => value && onUpscaleFactorChange(value)}
+							onValueChange={onUpscaleFactorChange}
 						>
 							<ToggleGroup.Item value="2" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
 								{t('app.gen.upscale_x2')}
