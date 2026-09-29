@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -138,25 +138,29 @@
 		return items;
 	});
 
+	const thumbCount = $derived(stripItems.filter((item) => item.thumbIndex >= 0).length);
+	// Clamped here rather than written back: a shorter strip (a reset to
+	// recent, a removed job) must still leave one thumbnail reachable.
+	const tabStop = $derived(Math.min(rovingIndex, Math.max(0, thumbCount - 1)));
+
+	// Only a change of selection moves the tab stop. Reacting to the list
+	// itself would undo every arrow key, and a running job rewrites the list
+	// on each progress event.
+	let syncedShownId: string | null = null;
 	$effect(() => {
-		// Selection from outside the strip (viewer clicks, prompt insertion)
-		// moves the tab stop to the selected thumbnail; without this an
-		// unselected thumbnail keeps tabindex 0.
-		const item = stripItems.find((candidate) => candidate.generation.id === shownId);
+		const id = shownId;
+		if (id === syncedShownId) return;
+		syncedShownId = id;
+		const item = untrack(() => stripItems).find((candidate) => candidate.generation.id === id);
 		if (item && item.thumbIndex >= 0) rovingIndex = item.thumbIndex;
-		// A shorter strip (a reset to recent, a removed job) must not leave the
-		// tab stop past the last thumbnail, or no thumbnail is reachable at all.
-		const count = stripItems.filter((candidate) => candidate.thumbIndex >= 0).length;
-		if (rovingIndex >= count) rovingIndex = Math.max(0, count - 1);
 	});
 
 	function onStripKeydown(event: KeyboardEvent): void {
 		if (!isStripNavKey(event.key)) return;
-		const count = stripItems.filter((item) => item.thumbIndex >= 0).length;
-		if (count === 0) return;
+		if (thumbCount === 0) return;
 		event.preventDefault();
-		const next = nextFocusIndex(rovingIndex, count, event.key);
-		if (next === rovingIndex) return;
+		const next = nextFocusIndex(tabStop, thumbCount, event.key);
+		if (next === tabStop) return;
 		rovingIndex = next;
 		const thumb = stripEl?.querySelector<HTMLButtonElement>(`[data-strip-thumb="${next}"]`);
 		thumb?.focus();
@@ -279,7 +283,8 @@
 						type="button"
 						class="relative shrink-0"
 						title={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
-						tabindex={item.thumbIndex === rovingIndex ? 0 : -1}
+						tabindex={item.thumbIndex === tabStop ? 0 : -1}
+						aria-current={shownId === item.generation.id ? 'true' : undefined}
 						data-strip-thumb={item.thumbIndex}
 						onkeydown={onStripKeydown}
 						onclick={(event) => onThumbClick(event, item.generation)}
