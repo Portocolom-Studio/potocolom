@@ -205,7 +205,9 @@
 	);
 	// The generate form runs with novalidate, so these two are the only gate
 	// on Count and Seed; the submit clamp keeps 1..8 for the count.
-	const countProblem = $derived(countError(count, 1, 8));
+	const COUNT_MIN = 1;
+	const COUNT_MAX = 8;
+	const countProblem = $derived(countError(count, COUNT_MIN, COUNT_MAX));
 	const seedProblem = $derived(seedError(seed, modelProperty(selectedModel, 'seed') ?? {}));
 	const upscaleSourceAsset = $derived(sourceAsset ?? shown?.assets[0] ?? null);
 	const upscaleSource = $derived(
@@ -611,7 +613,9 @@
 								/>
 								{#if countProblem}
 									<p id="gen-count-error" class="text-destructive text-sm leading-relaxed">
-										{t(countProblem)}
+										{t(countProblem)
+											.replace('{min}', String(COUNT_MIN))
+											.replace('{max}', String(COUNT_MAX))}
 									</p>
 								{/if}
 							</div>
