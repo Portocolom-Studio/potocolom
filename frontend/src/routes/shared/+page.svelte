@@ -107,12 +107,7 @@
 	});
 </script>
 
-<Seo
-	title="Shared picture | potocolom"
-	description="A picture shared from a potocolom studio."
-	path="/shared"
-	noindex
-/>
+<Seo titleKey="seo.shared_title" descriptionKey="seo.shared_description" path="/shared" noindex />
 
 <div class="bg-background flex min-h-dvh flex-col">
 	<header class="border-b">
@@ -128,7 +123,7 @@
 		{#if landing}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.landing.unavailable')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
@@ -137,7 +132,7 @@
 		{:else if status === 'ready' && info}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-4">
 					<div
@@ -177,14 +172,14 @@
 		{:else if status === 'invalid'}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.invalid')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
 		{:else}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.error')}</Card.Description>
 				</Card.Header>
 				<Card.Footer>

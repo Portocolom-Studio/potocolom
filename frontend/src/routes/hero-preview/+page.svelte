@@ -1,6 +1,7 @@
 <script lang="ts">
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import Seo from '$lib/components/Seo.svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
 	const width = Number(params?.get('w') ?? 1200);
@@ -13,13 +14,14 @@
 </script>
 
 <Seo
-	title="Hero Development Preview | potocolom"
-	description="Internal hero image preview for potocolom development."
+	titleKey="seo.hero_preview_title"
+	descriptionKey="seo.hero_preview_description"
 	path="/hero-preview"
 	noindex
 />
 
 <div class="frame" style:width="{width}px" style:height="{height}px">
+	<h1 class="sr-only">{t('seo.hero_preview_title')}</h1>
 	<LatentCanvas class="frame-canvas" {seed} warmupFrames={400} animate={false} onReady={setReady} />
 </div>
 

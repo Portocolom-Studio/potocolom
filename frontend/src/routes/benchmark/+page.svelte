@@ -101,11 +101,7 @@
 	});
 </script>
 
-<Seo
-	title="Generative AI Model Benchmarks on AMD ROCm | potocolom"
-	description="Compare measured generative image model speed, GPU time, VRAM, license, and studio status on the potocolom AMD ROCm reference hardware."
-	path="/benchmark"
-/>
+<Seo titleKey="seo.benchmark_title" descriptionKey="seo.benchmark_description" path="/benchmark" />
 
 <LatentShell current="benchmark">
 	<main>
@@ -169,7 +165,12 @@
 										{/if}
 									</summary>
 									<div class="model-body">
-										<div class="table-wrap">
+										<div
+											class="table-wrap"
+											tabindex="0"
+											role="region"
+											aria-label={t('bench.region_variants').replace('{model}', modelId)}
+										>
 											<table>
 												<thead>
 													<tr>
@@ -187,7 +188,12 @@
 												</tbody>
 											</table>
 										</div>
-										<div class="table-wrap">
+										<div
+											class="table-wrap"
+											tabindex="0"
+											role="region"
+											aria-label={t('bench.region_prompts').replace('{model}', modelId)}
+										>
 											<table>
 												<thead>
 													<tr>
@@ -220,7 +226,12 @@
 				<section id="bench-specs">
 					<h2>{t('bench.specs')}</h2>
 					<p>{t('bench.specs_note')}</p>
-					<div class="table-wrap wide">
+					<div
+						class="table-wrap wide"
+						tabindex="0"
+						role="region"
+						aria-label={t('bench.region_specs')}
+					>
 						<table>
 							<thead>
 								<tr>

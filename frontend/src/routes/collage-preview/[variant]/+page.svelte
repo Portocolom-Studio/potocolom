@@ -19,8 +19,9 @@
 </script>
 
 <Seo
-	title="{entry.title} Development Preview | potocolom"
-	description="Internal collage layout preview for potocolom development."
+	titleKey="seo.collage_variant_title"
+	titleArgs={{ 'entry.title': entry.title }}
+	descriptionKey="seo.collage_variant_description"
 	path="/collage-preview/{variantId}"
 	noindex
 />

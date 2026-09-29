@@ -41,8 +41,8 @@
 </script>
 
 <Seo
-	title="Collage Development Preview | potocolom"
-	description="Internal collage layout preview for potocolom development."
+	titleKey="seo.collage_preview_title"
+	descriptionKey="seo.collage_preview_description"
 	path="/collage-preview"
 	noindex
 />

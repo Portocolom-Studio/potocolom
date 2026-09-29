@@ -1,19 +1,37 @@
 <script lang="ts">
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
+	import { t } from '$lib/i18n.svelte';
+
+	// Title and description come in as i18n keys so the document head follows
+	// the active locale on the client. Prerendered HTML keeps the default
+	// locale (English). The collage variant page embeds a runtime value
+	// ({entry.title}) in its title; titleArgs fills that {name} pattern, the
+	// same interpolation style the pages use, and is empty elsewhere.
+	type TKey = Parameters<typeof t>[0];
 
 	let {
-		title,
-		description,
+		titleKey,
+		descriptionKey,
 		path,
 		noindex = false,
-		structuredData
+		structuredData,
+		titleArgs
 	}: {
-		title: string;
-		description: string;
+		titleKey: TKey;
+		descriptionKey: TKey;
 		path: string;
 		noindex?: boolean;
 		structuredData?: Record<string, unknown>;
+		titleArgs?: Record<string, string>;
 	} = $props();
+
+	const title = $derived(
+		Object.entries(titleArgs ?? {}).reduce(
+			(out, [name, value]) => out.replace(`{${name}}`, value),
+			t(titleKey)
+		)
+	);
+	const description = $derived(t(descriptionKey));
 
 	const siteUrl = 'https://potocolom.leonfuller.com';
 	const landing = PUBLIC_SITE_MODE === 'landing';

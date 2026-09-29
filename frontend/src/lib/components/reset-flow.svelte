@@ -121,21 +121,21 @@
 	{#if recovery}
 		<Card.Root>
 			<Card.Header>
-				<Card.Title>{t('auth.recover.title')}</Card.Title>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.recover.title')}</h1>
 				<Card.Description>{t('auth.recover.missing_token')}</Card.Description>
 			</Card.Header>
 		</Card.Root>
 	{:else if asked}
 		<Card.Root>
 			<Card.Header>
-				<Card.Title>{t('auth.reset.title')}</Card.Title>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.reset.title')}</h1>
 				<Card.Description role="status">{t('auth.reset.asked')}</Card.Description>
 			</Card.Header>
 		</Card.Root>
 	{:else}
 		<Card.Root>
 			<Card.Header>
-				<Card.Title>{t('auth.reset.title')}</Card.Title>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.reset.title')}</h1>
 				<Card.Description>{t('auth.reset.ask_sub')}</Card.Description>
 			</Card.Header>
 			<Card.Content>
@@ -165,7 +165,9 @@
 {:else}
 	<Card.Root>
 		<Card.Header>
-			<Card.Title>{recovery ? t('auth.recover.title') : t('auth.reset.title')}</Card.Title>
+			<h1 data-slot="card-title" class="text-base font-medium">
+				{recovery ? t('auth.recover.title') : t('auth.reset.title')}
+			</h1>
 			<Card.Description>
 				{recovery ? t('auth.recover.complete_sub') : t('auth.reset.complete_sub')}
 			</Card.Description>

@@ -83,12 +83,7 @@
 	}
 </script>
 
-<Seo
-	title="Join | potocolom"
-	description="Accept an invitation and join potocolom."
-	path="/join"
-	noindex
-/>
+<Seo titleKey="seo.join_title" descriptionKey="seo.join_description" path="/join" noindex />
 
 <div class="bg-background flex min-h-dvh flex-col">
 	<header class="border-b">
@@ -104,7 +99,7 @@
 		{#if landing}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.join.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
 					<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
@@ -113,14 +108,14 @@
 		{:else if !token}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.join.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
 					<Card.Description>{t('auth.join.missing_token')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
 		{:else}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.join.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
 					<Card.Description>{t('auth.join.sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content>

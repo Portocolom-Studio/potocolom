@@ -107,12 +107,8 @@
 </script>
 
 <Seo
-	title={landing
-		? 'potocolom Studio Preview | Realtime AI Canvas'
-		: `potocolom - ${t('app.title')}`}
-	description={landing
-		? 'Explore the static potocolom studio preview for its pre-alpha realtime generative image workflow. The managed cloud waitlist has not opened.'
-		: 'Open the potocolom studio on your connected self-hosted deployment.'}
+	titleKey={landing ? 'seo.app_landing_title' : 'seo.app_title'}
+	descriptionKey={landing ? 'seo.app_landing_description' : 'seo.app_description'}
 	path="/app"
 />
 

@@ -257,7 +257,7 @@
 			<h3>{t('bench.leaderboard')}</h3>
 			<p>{t('bench.leaderboard_note')}</p>
 		</header>
-		<div class="scroll">
+		<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_leaderboard')}>
 			<table class="lead">
 				<thead>
 					<tr>
@@ -454,7 +454,7 @@
 				<span>{t('bench.heatmap_slow')}</span>
 				<span class="mono num range">{formatMs(spreadMin)} - {formatMs(spreadMax)}</span>
 			</div>
-			<div class="scroll">
+			<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_spread')}>
 				<table class="grid-table">
 					<thead>
 						<tr>
