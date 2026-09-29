@@ -167,12 +167,7 @@
 	}
 </script>
 
-<Seo
-	title="Sign in | potocolom"
-	description="Sign in to the potocolom studio."
-	path="/login"
-	noindex
-/>
+<Seo titleKey="seo.login_title" descriptionKey="seo.login_description" path="/login" noindex />
 
 <div class="bg-background flex min-h-dvh flex-col">
 	<header class="border-b">
@@ -188,7 +183,7 @@
 		{#if landing}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.login.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
 					<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
@@ -197,7 +192,7 @@
 		{:else if showChallengeForm}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.challenge.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.challenge.title')}</h1>
 					<Card.Description>{t('auth.challenge.sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content>
@@ -230,7 +225,7 @@
 		{:else if showPasswordForm}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.login.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
 					<Card.Description>{t('auth.login.sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-4">
@@ -302,7 +297,7 @@
 		{:else}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.login.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
 					<Card.Description>{t('auth.login.no_methods')}</Card.Description>
 				</Card.Header>
 			</Card.Root>

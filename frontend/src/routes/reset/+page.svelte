@@ -11,12 +11,7 @@
 	const landing = PUBLIC_SITE_MODE === 'landing';
 </script>
 
-<Seo
-	title="Reset password | potocolom"
-	description="Set a new password for your potocolom account."
-	path="/reset"
-	noindex
-/>
+<Seo titleKey="seo.reset_title" descriptionKey="seo.reset_description" path="/reset" noindex />
 
 <div class="bg-background flex min-h-dvh flex-col">
 	<header class="border-b">

@@ -6,12 +6,7 @@
 	import { resolve } from '$app/paths';
 </script>
 
-<Seo
-	title="Legal Notice | potocolom"
-	description="Legal information for the potocolom pre-alpha marketing site."
-	path="/legal"
-	noindex
-/>
+<Seo titleKey="seo.legal_title" descriptionKey="seo.legal_description" path="/legal" noindex />
 
 <header class="border-b">
 	<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">

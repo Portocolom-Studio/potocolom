@@ -29,12 +29,7 @@
 	};
 </script>
 
-<Seo
-	title="potocolom | Open Source Realtime AI Image Generation"
-	description="Sketch on a canvas and watch a diffusion model render live. potocolom is a pre-alpha AGPL-3.0 platform you can self-host for free."
-	path="/"
-	{structuredData}
-/>
+<Seo titleKey="seo.home_title" descriptionKey="seo.home_description" path="/" {structuredData} />
 
 <SketchOrbit />
 

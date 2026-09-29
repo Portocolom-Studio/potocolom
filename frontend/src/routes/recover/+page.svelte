@@ -12,8 +12,8 @@
 </script>
 
 <Seo
-	title="Recover account | potocolom"
-	description="Set a new password for an administrator account from a recovery link."
+	titleKey="seo.recover_title"
+	descriptionKey="seo.recover_description"
 	path="/recover"
 	noindex
 />

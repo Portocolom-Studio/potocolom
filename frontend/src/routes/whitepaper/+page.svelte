@@ -112,8 +112,8 @@
 </script>
 
 <Seo
-	title="potocolom Architecture Whitepaper | Realtime AI Images"
-	description="Read how potocolom designs realtime canvas generation, GPU scheduling, self-hosting, privacy, and a shared AGPL-3.0 codebase."
+	titleKey="seo.whitepaper_title"
+	descriptionKey="seo.whitepaper_description"
 	path="/whitepaper"
 />
 

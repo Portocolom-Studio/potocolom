@@ -169,11 +169,7 @@
 	);
 </script>
 
-<Seo
-	title="Diffusion Illusions | One Sheet, Two Pictures | potocolom"
-	description="Print a prime image. Turn the sheet. A second subject appears. Research on the same worker stack as the studio. Not a product feature yet."
-	path="/illusions"
-/>
+<Seo titleKey="seo.illusions_title" descriptionKey="seo.illusions_description" path="/illusions" />
 
 <LatentShell current="illusions">
 	<main>

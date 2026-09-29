@@ -107,12 +107,7 @@
 	});
 </script>
 
-<Seo
-	title="Shared picture | potocolom"
-	description="A picture shared from a potocolom studio."
-	path="/shared"
-	noindex
-/>
+<Seo titleKey="seo.shared_title" descriptionKey="seo.shared_description" path="/shared" noindex />
 
 <div class="bg-background flex min-h-dvh flex-col">
 	<header class="border-b">

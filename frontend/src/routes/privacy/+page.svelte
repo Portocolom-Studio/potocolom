@@ -7,8 +7,8 @@
 </script>
 
 <Seo
-	title="Privacy Notice | potocolom"
-	description="Privacy information for the potocolom pre-alpha marketing site and future invite-only cloud waitlist."
+	titleKey="seo.privacy_title"
+	descriptionKey="seo.privacy_description"
 	path="/privacy"
 	noindex
 />
