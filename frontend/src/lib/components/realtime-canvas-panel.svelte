@@ -441,6 +441,53 @@
 		</div>
 
 		<div class="grid flex-none gap-4 lg:min-h-[32rem] lg:flex-1 lg:grid-cols-2">
+			<!-- The drawing toolbar spans both columns so its five actions and the
+			     frame counter stay on one row once the grid is two columns wide;
+			     below that it stacks into two lines instead of orphaning a button. -->
+			<div class="flex flex-col gap-2 lg:col-span-2 lg:flex-row lg:items-center lg:justify-between">
+				<div class="flex flex-wrap gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={openingDrawing || !canUndo}
+						onclick={undoCanvas}
+					>
+						{t('app.realtime_canvas.undo')}
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={openingDrawing || !canRedo}
+						onclick={redoCanvas}
+					>
+						{t('app.realtime_canvas.redo')}
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={openingDrawing || blank}
+						onclick={clearCanvas}
+					>
+						{t('app.realtime_canvas.clear')}
+					</Button>
+					<Button variant="outline" size="sm" disabled={openingDrawing} onclick={saveDrawing}>
+						{t('app.realtime_canvas.save')}
+					</Button>
+					<Button variant="outline" size="sm" disabled={openingDrawing} onclick={chooseDrawingFile}>
+						{t('app.realtime_canvas.open')}
+					</Button>
+					<input
+						bind:this={drawingFileInput}
+						type="file"
+						accept=".potocolom.json,application/json"
+						hidden
+						onchange={openDrawing}
+					/>
+				</div>
+				<span class="text-muted-foreground text-xs tabular-nums">
+					{sentFrames} / {renderedFrames}
+				</span>
+			</div>
 			<Card.Root class="flex min-h-0 flex-col">
 				<Card.Header>
 					<Card.Title class="text-base">{t('app.realtime_canvas.input_title')}</Card.Title>
@@ -518,55 +565,6 @@
 						onpointercancel={onPointerUp}
 						onlostpointercapture={onPointerUp}
 					></canvas>
-					<div class="flex items-center justify-between gap-2">
-						<div class="flex flex-wrap gap-2">
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={openingDrawing || !canUndo}
-								onclick={undoCanvas}
-							>
-								{t('app.realtime_canvas.undo')}
-							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={openingDrawing || !canRedo}
-								onclick={redoCanvas}
-							>
-								{t('app.realtime_canvas.redo')}
-							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={openingDrawing || blank}
-								onclick={clearCanvas}
-							>
-								{t('app.realtime_canvas.clear')}
-							</Button>
-							<Button variant="outline" size="sm" disabled={openingDrawing} onclick={saveDrawing}>
-								{t('app.realtime_canvas.save')}
-							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={openingDrawing}
-								onclick={chooseDrawingFile}
-							>
-								{t('app.realtime_canvas.open')}
-							</Button>
-							<input
-								bind:this={drawingFileInput}
-								type="file"
-								accept=".potocolom.json,application/json"
-								hidden
-								onchange={openDrawing}
-							/>
-						</div>
-						<span class="text-muted-foreground text-xs tabular-nums">
-							{sentFrames} / {renderedFrames}
-						</span>
-					</div>
 					<p class="text-muted-foreground text-xs">{t('app.realtime_canvas.open_hint')}</p>
 					{#if drawingNotice}
 						<p class="text-destructive text-sm" role="status" aria-live="polite">

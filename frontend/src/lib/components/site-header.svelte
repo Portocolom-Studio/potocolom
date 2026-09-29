@@ -31,7 +31,7 @@
 		<Breadcrumb.Root class="hidden sm:block">
 			<Breadcrumb.List class="text-foreground/70">
 				<Breadcrumb.Item>
-					<Breadcrumb.Link href="#">{t('app.title')}</Breadcrumb.Link>
+					<span>{t('app.title')}</span>
 				</Breadcrumb.Item>
 				<Breadcrumb.Separator />
 				<Breadcrumb.Item>

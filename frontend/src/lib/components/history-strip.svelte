@@ -17,12 +17,17 @@
 		studio,
 		type Generation
 	} from '$lib/studio.svelte';
+	import { isStripNavKey, nextFocusIndex, thumbnailLabel } from '$lib/history-strip-nav';
 
 	let stripEl = $state<HTMLDivElement | null>(null);
 	let loadingOlder = $state(false);
 	let loadError = $state('');
 	let cancellingIds = $state<Set<string>>(new Set());
 	let cancelError = $state('');
+	// The roving focus index: the one thumbnail that is a tab stop. The others
+	// carry tabindex -1 so tabbing lands in the strip once and the arrow keys
+	// move focus inside it.
+	let rovingIndex = $state(0);
 
 	async function cancelJob(id: string): Promise<void> {
 		if (cancellingIds.has(id)) return;
@@ -108,21 +113,55 @@
 	onDestroy(stopInertia);
 
 	// Starred jobs outside the loaded history pages still appear at the front.
-	const stripGenerations = $derived.by(() => {
+	// Each entry carries its thumbnail index: only entries with assets render
+	// a thumbnail, so the roving focus counts those, not the working cards.
+	type StripItem = { generation: Generation; thumbIndex: number };
+	const stripItems = $derived.by(() => {
 		const seen = new Set<string>();
-		const items: Generation[] = [];
-		for (const generation of starredGenerations()) {
-			if (seen.has(generation.id)) continue;
+		const items: StripItem[] = [];
+		let thumbIndex = 0;
+		const push = (generation: Generation) => {
+			if (seen.has(generation.id)) return;
 			seen.add(generation.id);
-			items.push(generation);
+			items.push({
+				generation,
+				thumbIndex: generation.assets.length > 0 ? thumbIndex++ : -1
+			});
+		};
+		for (const generation of starredGenerations()) {
+			push(generation);
 		}
 		for (const generation of studio.history) {
-			if (generation.state === 'failed' || seen.has(generation.id)) continue;
-			seen.add(generation.id);
-			items.push(generation);
+			if (generation.state === 'failed') continue;
+			push(generation);
 		}
 		return items;
 	});
+
+	$effect(() => {
+		// Selection from outside the strip (viewer clicks, prompt insertion)
+		// moves the tab stop to the selected thumbnail; without this an
+		// unselected thumbnail keeps tabindex 0.
+		const item = stripItems.find((candidate) => candidate.generation.id === shownId);
+		if (item && item.thumbIndex >= 0) rovingIndex = item.thumbIndex;
+		// A shorter strip (a reset to recent, a removed job) must not leave the
+		// tab stop past the last thumbnail, or no thumbnail is reachable at all.
+		const count = stripItems.filter((candidate) => candidate.thumbIndex >= 0).length;
+		if (rovingIndex >= count) rovingIndex = Math.max(0, count - 1);
+	});
+
+	function onStripKeydown(event: KeyboardEvent): void {
+		if (!isStripNavKey(event.key)) return;
+		const count = stripItems.filter((item) => item.thumbIndex >= 0).length;
+		if (count === 0) return;
+		event.preventDefault();
+		const next = nextFocusIndex(rovingIndex, count, event.key);
+		if (next === rovingIndex) return;
+		rovingIndex = next;
+		const thumb = stripEl?.querySelector<HTMLButtonElement>(`[data-strip-thumb="${next}"]`);
+		thumb?.focus();
+		thumb?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	}
 
 	async function loadOlder(): Promise<void> {
 		if (!stripEl || loadingOlder) return;
@@ -210,7 +249,7 @@
 	}
 </script>
 
-{#if stripGenerations.length > 0}
+{#if stripItems.length > 0}
 	<div class="flex min-w-0 w-full items-stretch gap-2">
 		{#if studio.historyExtended}
 			<button
@@ -232,23 +271,27 @@
 			onpointerup={endStripDrag}
 			onpointercancel={endStripDrag}
 			role="list"
+			aria-label={t('app.gen.history_strip')}
 		>
-			{#each stripGenerations as generation (generation.id)}
-				{#if generation.assets.length > 0}
+			{#each stripItems as item (item.generation.id)}
+				{#if item.generation.assets.length > 0}
 					<button
 						type="button"
 						class="relative shrink-0"
-						title={generation.params.prompt}
-						onclick={(event) => onThumbClick(event, generation)}
+						title={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
+						tabindex={item.thumbIndex === rovingIndex ? 0 : -1}
+						data-strip-thumb={item.thumbIndex}
+						onkeydown={onStripKeydown}
+						onclick={(event) => onThumbClick(event, item.generation)}
 					>
 						<img
-							src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
-							alt={generation.params.prompt ?? generation.id}
+							src={item.generation.assets[0].thumbnail_url ?? item.generation.assets[0].url}
+							alt={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
 							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
-								(shownId === generation.id ? 'border-primary' : 'border-border')}
+								(shownId === item.generation.id ? 'border-primary' : 'border-border')}
 							draggable="false"
 						/>
-						{#if isStarred(generation.id)}
+						{#if isStarred(item.generation.id)}
 							<span
 								class="bg-background/80 pointer-events-none absolute end-1 top-1 rounded-full p-0.5"
 								aria-hidden="true"
@@ -257,7 +300,7 @@
 							</span>
 						{/if}
 					</button>
-				{:else if isCancellable(generation.state)}
+				{:else if isCancellable(item.generation.state)}
 					<div
 						class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
 					>
@@ -271,16 +314,16 @@
 							class="bg-background/80 absolute end-1 top-1"
 							title={t('app.gen.cancel')}
 							aria-label={t('app.gen.cancel')}
-							disabled={cancellingIds.has(generation.id)}
-							onclick={() => cancelJob(generation.id)}
+							disabled={cancellingIds.has(item.generation.id)}
+							onclick={() => cancelJob(item.generation.id)}
 						>
 							<CircleXIcon />
 						</Button>
-						{#if generation.state === 'running' && generation.progress !== null}
+						{#if item.generation.state === 'running' && item.generation.progress !== null}
 							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
 								<div
 									class="bg-primary h-1 rounded-full transition-[width]"
-									style={`width: ${Math.round(generation.progress * 100)}%`}
+									style={`width: ${Math.round(item.generation.progress * 100)}%`}
 								></div>
 							</div>
 						{/if}
