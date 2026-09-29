@@ -352,10 +352,13 @@ preview. It then builds with an empty `PUBLIC_SITE_MODE` and runs the canvas
 and sign-in checks. The final `frontend/build` artifact is always the product,
 even if the shell had `PUBLIC_SITE_MODE=landing` set.
 
-For a focused run after a build:
+For a focused run, build the product first: a landing build left in
+`frontend/build` makes `/app` the static preview, and every shape check then
+fails as if the canvas had regressed.
 
 ```bash
 cd frontend
+PUBLIC_SITE_MODE= npm run build
 npm run test:canvas
 ```
 

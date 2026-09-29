@@ -5,14 +5,14 @@
 	let { class: className }: { class?: string } = $props();
 
 	const nodes = [
-		{ x: 50, y: 30, size: 'lg', image: collageImage('squirrel.jpg') },
-		{ x: 38, y: 50, size: 'md', image: collageImage('fox.png') },
-		{ x: 62, y: 48, size: 'md', image: collageImage('cat.jpg') },
-		{ x: 44, y: 66, size: 'sm', image: collageImage('abstract_cat.png') },
-		{ x: 56, y: 64, size: 'sm', image: collageImage('output.png') },
-		{ x: 50, y: 52, size: 'md', image: collageImage('jqbLhzV7.jpeg') },
+		{ x: 50, y: 30, size: 'lg', image: collageImage('squirrel.webp') },
+		{ x: 38, y: 50, size: 'md', image: collageImage('fox.webp') },
+		{ x: 62, y: 48, size: 'md', image: collageImage('cat.webp') },
+		{ x: 44, y: 66, size: 'sm', image: collageImage('abstract_cat.webp') },
+		{ x: 56, y: 64, size: 'sm', image: collageImage('output.webp') },
+		{ x: 50, y: 52, size: 'md', image: collageImage('jqbLhzV7.webp') },
 		{ x: 40, y: 36, size: 'sm', image: collageImage('flow.jpg') },
-		{ x: 60, y: 38, size: 'sm', image: collageImage('mountain_chibbi.png') },
+		{ x: 60, y: 38, size: 'sm', image: collageImage('mountain_chibbi.webp') },
 		{ x: 48, y: 42, size: 'sm', image: collageImage('abstract_man.jpg') },
 		{ x: 54, y: 58, size: 'sm', image: collageImage('41UpghU7P1L-3126336320.jpg') }
 	] as const;
