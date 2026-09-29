@@ -124,6 +124,7 @@ class BrowserSim:
         self.sent = 0
         self.rendered = 0
         self.latencies: list[float] = []
+        self.controls: list[str] = []
         self.resumed = asyncio.Event()
 
     async def receiver(self) -> None:
@@ -137,6 +138,7 @@ class BrowserSim:
                     log("browser", f"frame {self.rendered} rendered, {latency * 1000:.0f} ms")
             else:
                 control = json.loads(message)
+                self.controls.append(control["type"])
                 log("browser", f"control: {control['type']}")
                 if control["type"] == "resumed":
                     self.resumed.set()
@@ -199,10 +201,19 @@ async def main() -> None:
         worker_1.kill()
 
         await asyncio.wait_for(browser.resumed.wait(), timeout=10)
+        # The whole reassignment story, not only its last step: the browser
+        # was told the session was interrupted, then that it resumed.
+        assert "interrupted" in browser.controls, browser.controls
+        assert browser.controls.index("interrupted") < browser.controls.index("resumed"), (
+            browser.controls)
+        rendered_before_resume = browser.rendered
         log("browser", "re-sending current canvas, drawing continues")
         await browser.stream(frames=20, fps=10)
 
         await asyncio.sleep(0.5)  # let the last frames render
+        # A resumed session that renders nothing would pass every check above.
+        assert browser.rendered > rendered_before_resume, (
+            f"no frames rendered after the resume ({browser.rendered})")
         await ws.send(json.dumps({"type": "close"}))
         receiver.cancel()
 
