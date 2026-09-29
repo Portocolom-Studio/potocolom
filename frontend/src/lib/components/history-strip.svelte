@@ -24,10 +24,11 @@
 	let loadError = $state('');
 	let cancellingIds = $state<Set<string>>(new Set());
 	let cancelError = $state('');
-	// The roving focus index: the one thumbnail that is a tab stop. The others
-	// carry tabindex -1 so tabbing lands in the strip once and the arrow keys
-	// move focus inside it.
-	let rovingIndex = $state(0);
+	// The roving tab stop, kept as the thumbnail's generation id rather than
+	// its index: starred items and new results arrive at the front and would
+	// otherwise move the stop onto another thumbnail. The others carry
+	// tabindex -1, so tabbing lands in the strip once.
+	let rovingId = $state<string | null>(null);
 
 	async function cancelJob(id: string): Promise<void> {
 		if (cancellingIds.has(id)) return;
@@ -138,30 +139,28 @@
 		return items;
 	});
 
-	const thumbCount = $derived(stripItems.filter((item) => item.thumbIndex >= 0).length);
-	// Clamped here rather than written back: a shorter strip (a reset to
-	// recent, a removed job) must still leave one thumbnail reachable.
-	const tabStop = $derived(Math.min(rovingIndex, Math.max(0, thumbCount - 1)));
+	const thumbIds = $derived(
+		stripItems.filter((item) => item.thumbIndex >= 0).map((item) => item.generation.id)
+	);
+	// A stop whose thumbnail left the strip (a reset to recent, a removed job)
+	// falls back to the first one, so a thumbnail is always reachable.
+	const tabStop = $derived(Math.max(0, rovingId === null ? 0 : thumbIds.indexOf(rovingId)));
 
-	// Only a change of selection moves the tab stop. Reacting to the list
-	// itself would undo every arrow key, and a running job rewrites the list
-	// on each progress event.
-	let syncedShownId: string | null = null;
+	// A new selection moves the stop to the selected thumbnail. Only a change of
+	// selection does: reacting to the list would undo every arrow key, and a
+	// running job rewrites the list on each progress event.
 	$effect(() => {
 		const id = shownId;
-		if (id === syncedShownId) return;
-		syncedShownId = id;
-		const item = untrack(() => stripItems).find((candidate) => candidate.generation.id === id);
-		if (item && item.thumbIndex >= 0) rovingIndex = item.thumbIndex;
+		if (id !== null && untrack(() => thumbIds).includes(id)) rovingId = id;
 	});
 
 	function onStripKeydown(event: KeyboardEvent): void {
 		if (!isStripNavKey(event.key)) return;
-		if (thumbCount === 0) return;
+		if (thumbIds.length === 0) return;
 		event.preventDefault();
-		const next = nextFocusIndex(tabStop, thumbCount, event.key);
+		const next = nextFocusIndex(tabStop, thumbIds.length, event.key);
 		if (next === tabStop) return;
-		rovingIndex = next;
+		rovingId = thumbIds[next];
 		const thumb = stripEl?.querySelector<HTMLButtonElement>(`[data-strip-thumb="${next}"]`);
 		thumb?.focus();
 		thumb?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
