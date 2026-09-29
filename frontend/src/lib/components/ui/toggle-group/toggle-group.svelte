@@ -22,6 +22,7 @@
 <script lang="ts">
 	import { ToggleGroup as ToggleGroupPrimitive } from 'bits-ui';
 	import { cn } from '$lib/utils.js';
+	import { acceptsToggleValue } from '$lib/toggle-group-value';
 
 	let {
 		ref = $bindable(null),
@@ -31,6 +32,8 @@
 		spacing = 0,
 		orientation = 'horizontal',
 		variant = 'default',
+		onValueChange,
+		children,
 		...restProps
 	}: ToggleGroupPrimitive.RootProps &
 		ToggleVariants & {
@@ -59,7 +62,15 @@ Discriminated Unions + Destructing (required for bindable) do not
 get along, so we shut typescript up by casting `value` to `never`.
 -->
 <ToggleGroupPrimitive.Root
-	bind:value={value as never}
+	bind:value={
+		() => value as never,
+		(next: never) => {
+			if (acceptsToggleValue(restProps.type, next)) value = next;
+		}
+	}
+	onValueChange={((next: never) => {
+		if (acceptsToggleValue(restProps.type, next)) onValueChange?.(next);
+	}) as never}
 	bind:ref
 	{orientation}
 	data-slot="toggle-group"
@@ -72,4 +83,12 @@ get along, so we shut typescript up by casting `value` to `never`.
 		className
 	)}
 	{...restProps}
-/>
+>
+	{#snippet child({ props })}
+		<!-- bits-ui gives the root role="group" whatever it holds, but single
+		mode renders role="radio" items, which only a radiogroup owns. -->
+		<div {...props} role={restProps.type === 'single' ? 'radiogroup' : 'group'}>
+			{@render children?.()}
+		</div>
+	{/snippet}
+</ToggleGroupPrimitive.Root>

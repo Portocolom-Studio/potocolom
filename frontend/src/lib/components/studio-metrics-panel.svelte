@@ -477,7 +477,12 @@
 
 			<StudioBenchmarkRunTimeline report={selectedSession.report} />
 
-			<div class="border-border overflow-x-auto rounded-lg border">
+			<div
+				class="border-border overflow-x-auto rounded-lg border"
+				tabindex="0"
+				role="region"
+				aria-label={t('studio.bench_table_region')}
+			>
 				<table class="w-full min-w-[32rem] text-sm">
 					<thead class="bg-muted/40 text-muted-foreground text-left text-xs uppercase">
 						<tr>

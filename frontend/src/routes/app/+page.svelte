@@ -17,7 +17,6 @@
 	import Seo from '$lib/components/Seo.svelte';
 	import ServiceSketchPanel from '$lib/components/service-sketch-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
-	import StudioMetricsDashboard from '$lib/components/studio-metrics-dashboard.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -146,7 +145,15 @@
 						{#if landing}
 							<StudioPreview />
 						{:else if studio.shellView === 'metrics'}
-							<StudioMetricsDashboard />
+							<!-- The chart stack (layerchart, d3) is the largest JS in the studio;
+							loading it with the view keeps it out of every visitor's first paint. -->
+							{#await import('$lib/components/studio-metrics-dashboard.svelte')}
+								<p class="text-muted-foreground text-sm">{t('app.metrics.loading')}</p>
+							{:then { default: MetricsDashboard }}
+								<MetricsDashboard />
+							{:catch}
+								<p class="text-muted-foreground text-sm">{t('app.metrics.load_failed')}</p>
+							{/await}
 						{:else if studio.shellView === 'models'}
 							<ModelPanel />
 						{:else if studio.shellView === 'images'}
