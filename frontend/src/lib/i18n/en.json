@@ -842,5 +842,9 @@
 	"seo.app_landing_description": "Explore the static potocolom studio preview for its pre-alpha realtime generative image workflow. The managed cloud waitlist has not opened.",
 	"seo.app_title": "potocolom - Studio",
 	"seo.app_description": "Open the potocolom studio on your connected self-hosted deployment.",
-	"bench.table_region": "Benchmark results table"
+	"bench.region_leaderboard": "Model leaderboard",
+	"bench.region_spread": "Per-prompt spread",
+	"bench.region_variants": "{model}: results by variant",
+	"bench.region_prompts": "{model}: results by prompt",
+	"bench.region_specs": "Model specifications"
 }

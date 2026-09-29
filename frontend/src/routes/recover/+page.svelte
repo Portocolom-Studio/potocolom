@@ -32,7 +32,7 @@
 		{#if landing}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('auth.recover.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.recover.title')}</h1>
 					<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
 				</Card.Header>
 			</Card.Root>

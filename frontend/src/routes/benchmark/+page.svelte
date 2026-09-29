@@ -169,7 +169,7 @@
 											class="table-wrap"
 											tabindex="0"
 											role="region"
-											aria-label={t('bench.table_region')}
+											aria-label={t('bench.region_variants').replace('{model}', modelId)}
 										>
 											<table>
 												<thead>
@@ -192,7 +192,7 @@
 											class="table-wrap"
 											tabindex="0"
 											role="region"
-											aria-label={t('bench.table_region')}
+											aria-label={t('bench.region_prompts').replace('{model}', modelId)}
 										>
 											<table>
 												<thead>
@@ -230,7 +230,7 @@
 						class="table-wrap wide"
 						tabindex="0"
 						role="region"
-						aria-label={t('bench.table_region')}
+						aria-label={t('bench.region_specs')}
 					>
 						<table>
 							<thead>

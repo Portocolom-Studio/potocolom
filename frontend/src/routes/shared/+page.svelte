@@ -123,7 +123,7 @@
 		{#if landing}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.landing.unavailable')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
@@ -132,7 +132,7 @@
 		{:else if status === 'ready' && info}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-4">
 					<div
@@ -172,14 +172,14 @@
 		{:else if status === 'invalid'}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.invalid')}</Card.Description>
 				</Card.Header>
 			</Card.Root>
 		{:else}
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>{t('shared.title')}</Card.Title>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('shared.title')}</h1>
 					<Card.Description>{t('shared.error')}</Card.Description>
 				</Card.Header>
 				<Card.Footer>

@@ -842,5 +842,9 @@
 	"seo.app_landing_description": "Explora la vista previa estática del estudio de potocolom para su flujo de trabajo pre-alfa de imágenes generativas en tiempo real. La lista de espera de la nube gestionada aún no ha abierto.",
 	"seo.app_title": "potocolom - Estudio",
 	"seo.app_description": "Abre el estudio de potocolom en tu despliegue autoalojado conectado.",
-	"bench.table_region": "Tabla de resultados del benchmark"
+	"bench.region_leaderboard": "Clasificación de modelos",
+	"bench.region_spread": "Dispersión por prompt",
+	"bench.region_variants": "{model}: resultados por variante",
+	"bench.region_prompts": "{model}: resultados por prompt",
+	"bench.region_specs": "Especificaciones de los modelos"
 }
