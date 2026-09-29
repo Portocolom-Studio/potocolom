@@ -906,6 +906,12 @@ def test_canvas_frame_payload_cap():
             over_cap = bytes([CANVAS_FRAME]) + session.bytes + (b"x" * (payload_cap + 1))
             browser_ws.send_bytes(over_cap)
 
+            # Dropped and answered: the socket stays open, and the refusal
+            # names the cap the frame broke (issue #617).
+            refusal = expect(browser_ws, "error")
+            assert refusal["code"] == 4005
+            assert refusal["message"] == f"canvas frame exceeds {payload_cap} bytes"
+
             after_drop = bytes([CANVAS_FRAME]) + session.bytes + b"after-drop"
             browser_ws.send_bytes(after_drop)
             assert worker_ws.receive_bytes() == after_drop
@@ -913,6 +919,69 @@ def test_canvas_frame_payload_cap():
             generated = bytes([GENERATED_FRAME]) + session.bytes + b"still-open"
             worker_ws.send_bytes(generated)
             assert browser_ws.receive_bytes() == generated
+
+
+def test_ready_carries_the_session_limits():
+    """The browser's own send guard reads these, so they must be exact: the
+    cap it self-checks against is the API's payload cap, and the formats and
+    size are what the worker accepts."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-ready-limits"))
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+
+            ready = expect(browser_ws, "ready")
+            # Documented wire values, not imported names: a raised cap or a
+            # resized canvas that changes what the browser is told fails here.
+            assert ready["limits"] == {
+                "max_frame_bytes": 1 * 1024 * 1024,
+                "formats": ["webp", "png"],
+                "width": 512,
+                "height": 512,
+            }
+
+
+def test_an_oversize_frame_is_refused_once_a_second_and_the_session_stays_open():
+    """A stuck oversize encoder sends one over-cap frame per tick; without the
+    rate every one would queue its own refusal into the mailbox that is
+    carrying the warning."""
+    with client.websocket_connect("/api/v1/fleet") as worker_ws:
+        worker_ws.send_json(hello(worker_id="w-oversize-rate"))
+        expect(worker_ws, "registered")
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-sim"})
+            opened = expect(worker_ws, "open_session")
+            answer_ready(worker_ws, opened)
+            ready = expect(browser_ws, "ready")
+            session = uuid.UUID(ready["session_id"])
+
+            payload_cap = 1 * 1024 * 1024
+            over_cap = bytes([CANVAS_FRAME]) + session.bytes + b"x" * (payload_cap + 1)
+            browser_ws.send_bytes(over_cap)
+            refusal = expect(browser_ws, "error")
+            assert refusal["code"] == 4005
+
+            # Same frame again well within the second: no second refusal.
+            browser_ws.send_bytes(over_cap)
+
+            # An ordinary frame proves the session still runs and relays, and
+            # it is handled after the oversize one above.
+            accepted = bytes([CANVAS_FRAME]) + session.bytes + b"still-accepted"
+            browser_ws.send_bytes(accepted)
+            assert worker_ws.receive_bytes() == accepted
+
+            # A refusal posted for the second frame would be delivered before
+            # this close, so the close arriving is what proves none was.
+            browser_ws.send_json({"type": "close"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 1000
+            expect(worker_ws, "close_session")
 
 
 def test_api_start_commands_cap_websocket_receive():

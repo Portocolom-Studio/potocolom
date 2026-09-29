@@ -332,6 +332,9 @@ def test_first_fit_skips_a_head_without_room():
                         answer_ready(worker_b_ws, tail_open)
                         ready = expect(tail_ws, "ready")
                         assert ready["session_id"] == str(tail.id)
+                        # The admit path's ready carries limits too: this is
+                        # where a browser rejoining a queue reads them.
+                        assert ready["limits"]["max_frame_bytes"] == 1 * 1024 * 1024
                         assert tail.state == "live"
                         assert head.state == "queued"
                         assert realtime.queued_sessions()[0] is head
@@ -388,6 +391,53 @@ def test_force_repost_repeats_unchanged_positions():
             with suppress(asyncio.CancelledError):
                 await session.writer
             realtime.sessions.pop(session.id, None)
+
+    run_on_test_loop(scenario())
+
+
+def test_the_sweep_ticks_a_live_session_and_reposts_a_queued_one(monkeypatch):
+    """The sweep is what carries traffic for a canvas left untouched behind a
+    proxy idle timeout: a queued browser hears its position, every other open
+    one hears a keepalive, and neither hears the other's message."""
+    monkeypatch.setattr(realtime, "SESSION_SWEEP_SECONDS", 0.05)
+
+    async def scenario():
+        live_browser = FakeSocket()
+        queued_browser = FakeSocket()
+        live = realtime.Session(id=uuid.uuid4(), model_id="sd-sim",
+                                browser=live_browser, state="live",
+                                assigned_at=time.monotonic())
+        # A model no worker serves, so the sweep's own admit_queued() leaves
+        # this session queued instead of admitting it out from under the test.
+        queued = realtime.Session(id=uuid.uuid4(), model_id="model-nobody-serves",
+                                  browser=queued_browser, state="queued",
+                                  queued_at=time.monotonic())
+        realtime.sessions.update({live.id: live, queued.id: queued})
+        live.writer = asyncio.create_task(realtime.browser_writer(live))
+        queued.writer = asyncio.create_task(realtime.browser_writer(queued))
+        sweeper = asyncio.create_task(realtime.sweep_dead_sessions())
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not (
+                any(m.get("type") == "keepalive" for m in live_browser.sent)
+                and any(m.get("type") == "queued" for m in queued_browser.sent)
+            ):
+                await asyncio.sleep(0.01)
+            assert any(m.get("type") == "keepalive" for m in live_browser.sent), \
+                "the sweep never ticked the live socket"
+            assert any(m.get("type") == "queued" for m in queued_browser.sent), \
+                "the sweep never reposted the queued position"
+            assert not any(m.get("type") == "queued" for m in live_browser.sent)
+            assert not any(m.get("type") == "keepalive" for m in queued_browser.sent)
+        finally:
+            sweeper.cancel()
+            with suppress(asyncio.CancelledError):
+                await sweeper
+            for session in (live, queued):
+                session.writer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await session.writer
+                realtime.sessions.pop(session.id, None)
 
     run_on_test_loop(scenario())
 
