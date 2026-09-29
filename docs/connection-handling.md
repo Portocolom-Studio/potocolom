@@ -20,7 +20,7 @@ bytes 1-16   session id, UUID big endian
 bytes 17-    image payload (WebP in production; the simulation carries opaque bytes)
 ```
 
-Canvas payloads larger than 1 MiB after the 17-byte header are dropped by the API and the realtime socket stays open. The drop is answered with a non-terminal `error` carrying code 4005 and the same 1 MiB in its `message`, posted at most once per session per second so a stuck oversize encoder cannot flood its own mailbox; a browser that reads `ready.limits` frames nothing that large in the first place. Uvicorn receives at most 2 MiB (`--ws-max-size`). A larger message closes the socket with 1009. The worker takes the same 2 MiB on its fleet socket, so the largest canvas frame the API forwards (17 bytes plus 1 MiB) reaches it.
+Canvas payloads larger than 1 MiB after the 17-byte header are dropped by the API and the realtime socket stays open. The drop is answered with a non-terminal `error` carrying code 4005 and the same 1 MiB in its `message`, posted at most once per session per second and never while another control still waits, so a stuck oversize encoder cannot flood its own mailbox; a browser that reads `ready.limits` frames nothing that large in the first place. Uvicorn receives at most 2 MiB (`--ws-max-size`). A larger message closes the socket with 1009. The worker takes the same 2 MiB on its fleet socket, so the largest canvas frame the API forwards (17 bytes plus 1 MiB) reaches it.
 
 Frames never contain JSON and control messages never contain image bytes; the two kinds are routable without parsing payloads.
 
@@ -85,7 +85,7 @@ Realtime connection, API to browser:
 | `params_updated` | `params` | the merged parameters the API holds for the session: the browser's keys merged over the session's, the seed riding along. That is what later frames are rendered with once a worker has them; the worker may fill in the manifest's declared defaults for keys nobody has set, so what it applies can be a superset. Sent even when no worker holds the session at that moment (a reassignment in flight); the worker picks the update up when it arrives. The browser re-sends the current canvas when this arrives, because a param change is not a pixel change and capture may have stopped |
 | `interrupted` | | worker lost; hold frames, reassignment in progress |
 | `resumed` | | new worker ready; re-send the current canvas |
-| `keepalive` | | no-op traffic. The session sweep posts it every 30 seconds to each open socket that is not queued (a queued one is reposted its position instead), so a canvas left untouched still crosses a proxy idle timeout. The browser must not change state or show anything for it |
+| `keepalive` | | no-op traffic. The session sweep posts it every 30 seconds to each open socket that is not queued (a queued one is reposted its position instead) and has no control already waiting, so a canvas left untouched still crosses a proxy idle timeout and a browser that stopped reading holds one at most. The browser must not change state or show anything for it |
 | `error` | `code`, `message` | terminal; the API closes after sending. The exceptions are a rejected `update_params` (invalid params, a `seed` change, or an assigned worker that predates `update_session`) and a `4005` canvas frame over the payload cap: both are refusals that leave the session running, and the 4005 is posted at most once per session per second |
 
 Messages later issues add to this catalogue (queued position, credits ticks, drain) extend these tables; nothing here is expected to change shape.

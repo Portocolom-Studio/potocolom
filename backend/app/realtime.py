@@ -533,7 +533,9 @@ def post_frame_too_large(session: Session) -> None:
     fill its own mailbox with refusals.
     """
     now = time.monotonic()
-    if now < session.frame_error_after:
+    # A browser that stopped reading parks its writer, and without the queue
+    # check each second would add one more refusal nobody drains.
+    if now < session.frame_error_after or session.out_controls:
         return
     session.frame_error_after = now + FRAME_TOO_LARGE_INTERVAL_SECONDS
     post(session, {
@@ -592,7 +594,9 @@ def post_keepalives() -> None:
     browser that stopped reading cannot hold up the sweep.
     """
     for session in list(sessions.values()):
-        if session.state != "queued":
+        # A control already waiting is traffic enough, and a browser that
+        # stopped reading must not collect one keepalive per sweep.
+        if session.state != "queued" and not session.out_controls:
             post(session, {"type": "keepalive"})
 
 
