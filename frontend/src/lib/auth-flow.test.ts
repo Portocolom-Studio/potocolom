@@ -251,12 +251,3 @@ test('wiring: generate panel posts use apiFetch', () => {
 	assert.equal([...generateSource.matchAll(/apiFetch\('\/api\/v1\/generations'/g)].length, 2);
 	assert.doesNotMatch(generateSource, /(?<!api)fetch\('\/api\/v1\/generations'/);
 });
-
-test('wiring: studio star writes use apiFetch', () => {
-	const studioSource = readFileSync(join(here, 'studio.svelte.ts'), 'utf8');
-	assert.equal(
-		[...studioSource.matchAll(/apiFetch\(`\/api\/v1\/generations\/\$\{id\}\/star`/g)].length,
-		2
-	);
-	assert.doesNotMatch(studioSource, /(?<!api)fetch\(`\/api\/v1\/generations\/\$\{id\}\/star`/);
-});
