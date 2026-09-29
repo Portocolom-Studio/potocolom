@@ -14,7 +14,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check .",
-		"test": "node --test \"src/**/*.test.ts\"",
+		"test": "node --import ./scripts/node-test-loader.mjs --test \"src/**/*.test.ts\"",
 		"test:canvas": "node scripts/test-canvas-history.mjs",
 		"test:signin": "node scripts/test-signin-cookie.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",

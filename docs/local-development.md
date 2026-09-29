@@ -113,6 +113,9 @@ npm run dev                                      # http://localhost:5173
 npm run lint && npm run check                    # format check and type check
 ```
 
+`npm test` from `frontend/` loads `.svelte.ts` modules through
+`scripts/node-test-loader.mjs`, so the unit tests import the real store modules.
+
 Those ports are what this checkout gets. A linked git worktree derives its own
 from its path, so two checkouts can run the dev loop at once without either
 knowing about the other: `scripts/checkout-ports.sh` prints what yours will use,
