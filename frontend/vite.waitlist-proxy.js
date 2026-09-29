@@ -27,7 +27,7 @@ function waitlistProxyMiddleware() {
 		try {
 			const body = await readRequestBody(req);
 			if (!WAITLIST_TARGET) {
-				const status = body.includes(EXISTS_SUFFIX) ? 'exists' : 'ok';
+				const status = body.toLowerCase().includes(EXISTS_SUFFIX) ? 'exists' : 'ok';
 				console.info(
 					`waitlist: answered "${status}" locally; set WAITLIST_PROXY_TARGET to forward`
 				);
