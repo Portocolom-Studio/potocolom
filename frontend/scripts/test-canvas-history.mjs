@@ -43,19 +43,35 @@ const CONTENT_TYPES = {
 	'.ico': 'image/x-icon'
 };
 
-async function serveBuild() {
+// The answers a caller did not override, so every existing caller keeps them.
+function defaultApiBody(path) {
+	if (path === '/api/v1/models') return [MODEL];
+	if (path === '/api/v1/config')
+		return { auth_methods: [], billing_enabled: false, languages: ['en', 'es'] };
+	return [];
+}
+
+// Per-path API fixtures: `{ body, delayMs? }`. A key is the full
+// `pathname + search`, a `pathname + '?' + ...` prefix such as
+// `/api/v1/generations?starred=true`, or the plain pathname; the more specific
+// key wins, so the starred list can answer differently from the history list.
+// `delayMs` holds the response back, which is how a test loads history before
+// starred items arrive. Paths without an answer keep today's default answers.
+async function serveBuild(apiAnswers = {}) {
 	const server = createServer(async (request, response) => {
 		try {
-			const path = new URL(request.url, 'http://localhost').pathname;
+			const url = new URL(request.url, 'http://localhost');
+			const path = url.pathname;
 			if (path.startsWith('/api/')) {
-				const body =
-					path === '/api/v1/models'
-						? [MODEL]
-						: path === '/api/v1/config'
-							? { auth_methods: [], billing_enabled: false, languages: ['en', 'es'] }
-							: [];
+				const key = `${path}${url.search}`;
+				const answer = apiAnswers[key] ??
+					Object.entries(apiAnswers).find(
+						([queryKey]) => queryKey.includes('?') && key.startsWith(queryKey)
+					)?.[1] ??
+					apiAnswers[path] ?? { body: defaultApiBody(path) };
+				if (answer.delayMs) await pause(answer.delayMs);
 				response.writeHead(200, { 'Content-Type': 'application/json' });
-				response.end(JSON.stringify(body));
+				response.end(JSON.stringify(answer.body));
 				return;
 			}
 			const clean = resolve(build, '.' + decodeURIComponent(path));
@@ -194,8 +210,13 @@ function installSocketAdapter(page) {
 	});
 }
 
-async function openCanvas(locale = 'en', setup) {
-	const server = await serveBuild();
+// The shared browser setup behind openCanvas and openStudio: a static server
+// over the build, a fresh Chrome, and one page on /app with the locale, the
+// socket stub and the caller's setup installed before the document loads.
+// `verifyErrors` stays on for the tests and is switched off only where a failed
+// open would report the page error instead of its own cause.
+async function launchStudio(locale, setup, apiAnswers, waitUntil) {
+	const server = await serveBuild(apiAnswers);
 	let browser;
 	try {
 		browser = await puppeteer.launch({
@@ -217,7 +238,28 @@ async function openCanvas(locale = 'en', setup) {
 		}, locale);
 		await installSocketAdapter(page);
 		if (setup) await page.evaluateOnNewDocument(setup);
-		await page.goto(`http://127.0.0.1:${server.address().port}/app`, { waitUntil: 'networkidle0' });
+		await page.goto(`http://127.0.0.1:${server.address().port}/app`, { waitUntil });
+		return {
+			page,
+			browser,
+			server,
+			async close(verifyErrors = true) {
+				await browser.close();
+				await new Promise((resolveServer) => server.close(resolveServer));
+				if (verifyErrors) assert.deepEqual(errors, [], 'no uncaught browser errors');
+			}
+		};
+	} catch (error) {
+		if (browser) await browser.close();
+		await new Promise((resolveServer) => server.close(resolveServer));
+		throw error;
+	}
+}
+
+async function openCanvas(locale = 'en', setup) {
+	const harness = await launchStudio(locale, setup, {}, 'networkidle0');
+	try {
+		const { page } = harness;
 		const tab = locale === 'es' ? 'Lienzo en tiempo real' : 'Realtime canvas';
 		await page.waitForFunction(
 			(name) =>
@@ -244,19 +286,25 @@ async function openCanvas(locale = 'en', setup) {
 			},
 			{ timeout: WAIT_MS }
 		);
-		return {
-			page,
-			browser,
-			server,
-			async close() {
-				await browser.close();
-				await new Promise((resolveServer) => server.close(resolveServer));
-				assert.deepEqual(errors, [], 'no uncaught browser errors');
-			}
-		};
+		return harness;
 	} catch (error) {
-		if (browser) await browser.close();
-		await new Promise((resolveServer) => server.close(resolveServer));
+		await harness.close(false);
+		throw error;
+	}
+}
+
+// Opens /app on the generate view with per-path API fixtures and waits for the
+// history strip thumbnails, so a keyboard test never has to visit the canvas.
+async function openStudio(apiAnswers = {}) {
+	const harness = await launchStudio('en', undefined, apiAnswers, 'domcontentloaded');
+	try {
+		await harness.page.waitForFunction(
+			() => document.querySelectorAll('button[data-strip-thumb]').length > 0,
+			{ timeout: WAIT_MS }
+		);
+		return harness;
+	} catch (error) {
+		await harness.close(false);
 		throw error;
 	}
 }
@@ -2461,6 +2509,197 @@ test('finishing a checkpoint does not publish an extra live frame', async () => 
 			})),
 			before
 		);
+	} finally {
+		await harness.close();
+	}
+});
+
+// Six succeeded history generations, each with its own prompt and an inline
+// SVG data: URI thumbnail, plus two starred ones a test can load late.
+const STRIP_COLORS = ['dc2626', 'ea580c', 'ca8a04', '16a34a', '2563eb', '9333ea'];
+
+function stripThumbnail(label, color) {
+	const svg =
+		`<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96">` +
+		`<rect width="96" height="96" fill="#${color}"/>` +
+		`<rect x="6" y="6" width="84" height="84" fill="none" stroke="#ffffff" stroke-width="4"/>` +
+		`<text x="48" y="58" font-family="sans-serif" font-size="28" fill="#ffffff" ` +
+		`text-anchor="middle">${label}</text></svg>`;
+	return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
+
+function stripGeneration(id, prompt, label, color) {
+	const thumbnail = stripThumbnail(label, color);
+	return {
+		id,
+		model_id: MODEL.id,
+		source_asset_id: null,
+		params: { prompt },
+		state: 'succeeded',
+		progress: null,
+		gpu_ms: 42,
+		input_fetch_ms: null,
+		load_ms: null,
+		postprocess_ms: null,
+		failure_reason: null,
+		created_at: '2026-09-29T08:00:00Z',
+		dispatched_at: '2026-09-29T08:00:00Z',
+		finished_at: '2026-09-29T08:00:02Z',
+		starred_at: null,
+		expired_favorite: false,
+		assets: [
+			{
+				id: `${id}-asset`,
+				url: thumbnail,
+				thumbnail_url: thumbnail,
+				download_url: thumbnail,
+				width: 96,
+				height: 96
+			}
+		]
+	};
+}
+
+const STRIP_HISTORY = Array.from({ length: 6 }, (_, index) =>
+	stripGeneration(
+		`strip-history-${index}`,
+		`History strip prompt ${index + 1}`,
+		String(index + 1),
+		STRIP_COLORS[index]
+	)
+);
+
+const STRIP_STARRED = Array.from({ length: 2 }, (_, index) =>
+	stripGeneration(
+		`strip-starred-${index}`,
+		`Starred strip prompt ${index + 1}`,
+		`S${index + 1}`,
+		STRIP_COLORS[index]
+	)
+);
+
+// The history list, the starred list (empty unless the test says otherwise)
+// and the lineage answer a selection asks for, so the generate view can show
+// the selected result without a render error.
+function stripFixtures(starred = { body: [] }) {
+	const emptyLineage = {
+		ancestors: [],
+		children: [],
+		descendant_count: 0,
+		descendants_truncated: false
+	};
+	return {
+		'/api/v1/generations': { body: STRIP_HISTORY },
+		'/api/v1/generations?starred=true': starred,
+		...Object.fromEntries(
+			STRIP_HISTORY.map((generation) => [
+				`/api/v1/generations/${generation.id}/lineage`,
+				{ body: emptyLineage }
+			])
+		)
+	};
+}
+
+async function waitForStrip(page, thumbs) {
+	await page.waitForFunction(
+		(expected) => document.querySelectorAll('button[data-strip-thumb]').length === expected,
+		{ timeout: WAIT_MS },
+		thumbs
+	);
+}
+
+async function stripState(page) {
+	return page.evaluate(() => {
+		const thumbs = [...document.querySelectorAll('button[data-strip-thumb]')];
+		const stops = thumbs.filter((thumb) => thumb.getAttribute('tabindex') === '0');
+		return {
+			stops: stops.length,
+			stop: thumbs.indexOf(stops[0]),
+			focus: thumbs.indexOf(document.activeElement),
+			focusTabIndex: document.activeElement?.getAttribute('tabindex') ?? null,
+			current: thumbs.findIndex((thumb) => thumb.getAttribute('aria-current') === 'true')
+		};
+	});
+}
+
+async function clickStripThumb(page, index) {
+	const thumbs = await page.$$('button[data-strip-thumb]');
+	assert.equal(thumbs.length, 6, 'six thumbnails before clicking');
+	assert.ok(thumbs[index], `thumbnail ${index} must exist`);
+	await thumbs[index].click();
+}
+
+async function assertStripStop(page, expected, label) {
+	const state = await stripState(page);
+	assert.equal(state.stops, 1, `${label}: exactly one thumbnail carries tabindex 0`);
+	assert.equal(state.stop, expected, `${label}: the tab stop is at index ${expected}`);
+	assert.equal(state.focus, expected, `${label}: focus is at index ${expected}`);
+	assert.equal(state.focusTabIndex, '0', `${label}: the focused thumbnail carries the stop`);
+}
+
+test('the history strip gives six thumbnails exactly one tab stop', async () => {
+	const harness = await openStudio(stripFixtures());
+	try {
+		const { page } = harness;
+		await waitForStrip(page, 6);
+		const state = await stripState(page);
+		assert.equal(state.stops, 1, 'exactly one thumbnail carries tabindex 0');
+		assert.equal(state.stop, state.current, 'the stop sits on the thumbnail marked aria-current');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('arrow, Home and End keys move the strip tab stop together with focus', async () => {
+	const harness = await openStudio(stripFixtures());
+	try {
+		const { page } = harness;
+		await waitForStrip(page, 6);
+		await clickStripThumb(page, 2);
+		await assertStripStop(page, 2, 'clicking the third thumbnail');
+		for (const expected of [3, 4, 5]) {
+			await page.keyboard.press('ArrowRight');
+			await assertStripStop(page, expected, `ArrowRight to index ${expected}`);
+		}
+		await page.keyboard.press('Home');
+		await assertStripStop(page, 0, 'Home');
+		await page.keyboard.press('End');
+		await assertStripStop(page, 5, 'End');
+		await page.keyboard.press('ArrowLeft');
+		await assertStripStop(page, 4, 'ArrowLeft');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('the strip tab stop stays on the shown thumbnail when starred items arrive in front', async () => {
+	const harness = await openStudio(stripFixtures({ body: STRIP_STARRED, delayMs: 1200 }));
+	try {
+		const { page } = harness;
+		await waitForStrip(page, 6);
+		await clickStripThumb(page, 2);
+		await assertStripStop(page, 2, 'before the starred items arrive');
+		await waitForStrip(page, 8);
+		const state = await stripState(page);
+		assert.equal(state.stops, 1, 'exactly one thumbnail carries tabindex 0');
+		assert.equal(state.stop, state.current, 'the tab stop is the thumbnail marked aria-current');
+		assert.equal(state.stop, 4, 'the shown thumbnail moved behind the two starred ones');
+		assert.notEqual(state.stop, 0, 'the first starred thumbnail must not take the tab stop');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('the history strip has an aria-label', async () => {
+	const harness = await openStudio(stripFixtures());
+	try {
+		const { page } = harness;
+		await waitForStrip(page, 6);
+		const label = await page.$eval(
+			'button[data-strip-thumb]',
+			(thumb) => thumb.closest('[role="list"]')?.getAttribute('aria-label') ?? ''
+		);
+		assert.notEqual(label.trim(), '', 'the strip list must be named');
 	} finally {
 		await harness.close();
 	}
