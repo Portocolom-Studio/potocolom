@@ -26,36 +26,36 @@
 
 <div
 	data-studio-preview
-	class="grid h-full min-h-0 flex-1 cursor-crosshair grid-cols-1 gap-4 md:grid-cols-2"
+	class="flex min-h-0 flex-1 cursor-crosshair flex-col gap-4"
 	role="presentation"
 	onpointermove={syncPreviewCursor}
 	onpointerleave={clearPreviewCursor}
 >
-	<div
-		bind:this={leftPanelEl}
-		class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
-	>
-		<LatentCanvas animate followCursor seed={42} onAttach={(api) => (leftCanvasApi = api)} />
-		<span
-			class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+	<div class="grid min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-2">
+		<div
+			bind:this={leftPanelEl}
+			class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
 		>
-			{t('app.canvas_hint')}
-		</span>
-	</div>
-	<div
-		bind:this={rightPanelEl}
-		class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
-	>
-		<LatentCanvas animate followCursor seed={137} onAttach={(api) => (rightCanvasApi = api)} />
-		<span
-			class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+			<LatentCanvas animate followCursor seed={42} onAttach={(api) => (leftCanvasApi = api)} />
+			<span
+				class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+			>
+				{t('app.canvas_hint')}
+			</span>
+		</div>
+		<div
+			bind:this={rightPanelEl}
+			class="border-border/60 relative min-h-0 overflow-hidden rounded-xl border bg-[#070b14]"
 		>
-			{t('app.result_hint')}
-		</span>
+			<LatentCanvas animate followCursor seed={137} onAttach={(api) => (rightCanvasApi = api)} />
+			<span
+				class="text-foreground/60 bg-background/55 pointer-events-none absolute inset-x-3 bottom-3 rounded-full px-3 py-1 text-center text-[0.65rem] tracking-[0.14em] uppercase backdrop-blur-sm"
+			>
+				{t('app.result_hint')}
+			</span>
+		</div>
 	</div>
+	<p class="text-foreground/70 text-center text-sm leading-relaxed">
+		{t('app.draw_placeholder')}
+	</p>
 </div>
-<p
-	class="text-foreground/70 pointer-events-none absolute inset-x-6 bottom-5 text-center text-sm leading-relaxed"
->
-	{t('app.draw_placeholder')}
-</p>

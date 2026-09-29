@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -17,12 +17,18 @@
 		studio,
 		type Generation
 	} from '$lib/studio.svelte';
+	import { isStripNavKey, nextFocusIndex, thumbnailLabel } from '$lib/history-strip-nav';
 
 	let stripEl = $state<HTMLDivElement | null>(null);
 	let loadingOlder = $state(false);
 	let loadError = $state('');
 	let cancellingIds = $state<Set<string>>(new Set());
 	let cancelError = $state('');
+	// The roving tab stop, kept as the thumbnail's generation id rather than
+	// its index: starred items and new results arrive at the front and would
+	// otherwise move the stop onto another thumbnail. The others carry
+	// tabindex -1, so tabbing lands in the strip once.
+	let rovingId = $state<string | null>(null);
 
 	async function cancelJob(id: string): Promise<void> {
 		if (cancellingIds.has(id)) return;
@@ -108,21 +114,57 @@
 	onDestroy(stopInertia);
 
 	// Starred jobs outside the loaded history pages still appear at the front.
-	const stripGenerations = $derived.by(() => {
+	// Each entry carries its thumbnail index: only entries with assets render
+	// a thumbnail, so the roving focus counts those, not the working cards.
+	type StripItem = { generation: Generation; thumbIndex: number };
+	const stripItems = $derived.by(() => {
 		const seen = new Set<string>();
-		const items: Generation[] = [];
-		for (const generation of starredGenerations()) {
-			if (seen.has(generation.id)) continue;
+		const items: StripItem[] = [];
+		let thumbIndex = 0;
+		const push = (generation: Generation) => {
+			if (seen.has(generation.id)) return;
 			seen.add(generation.id);
-			items.push(generation);
+			items.push({
+				generation,
+				thumbIndex: generation.assets.length > 0 ? thumbIndex++ : -1
+			});
+		};
+		for (const generation of starredGenerations()) {
+			push(generation);
 		}
 		for (const generation of studio.history) {
-			if (generation.state === 'failed' || seen.has(generation.id)) continue;
-			seen.add(generation.id);
-			items.push(generation);
+			if (generation.state === 'failed') continue;
+			push(generation);
 		}
 		return items;
 	});
+
+	const thumbIds = $derived(
+		stripItems.filter((item) => item.thumbIndex >= 0).map((item) => item.generation.id)
+	);
+	// A stop whose thumbnail left the strip (a reset to recent, a removed job)
+	// falls back to the first one, so a thumbnail is always reachable.
+	const tabStop = $derived(Math.max(0, rovingId === null ? 0 : thumbIds.indexOf(rovingId)));
+
+	// A new selection moves the stop to the selected thumbnail. Only a change of
+	// selection does: reacting to the list would undo every arrow key, and a
+	// running job rewrites the list on each progress event.
+	$effect(() => {
+		const id = shownId;
+		if (id !== null && untrack(() => thumbIds).includes(id)) rovingId = id;
+	});
+
+	function onStripKeydown(event: KeyboardEvent): void {
+		if (!isStripNavKey(event.key)) return;
+		if (thumbIds.length === 0) return;
+		event.preventDefault();
+		const next = nextFocusIndex(tabStop, thumbIds.length, event.key);
+		if (next === tabStop) return;
+		rovingId = thumbIds[next];
+		const thumb = stripEl?.querySelector<HTMLButtonElement>(`[data-strip-thumb="${next}"]`);
+		thumb?.focus();
+		thumb?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	}
 
 	async function loadOlder(): Promise<void> {
 		if (!stripEl || loadingOlder) return;
@@ -210,7 +252,7 @@
 	}
 </script>
 
-{#if stripGenerations.length > 0}
+{#if stripItems.length > 0}
 	<div class="flex min-w-0 w-full items-stretch gap-2">
 		{#if studio.historyExtended}
 			<button
@@ -232,23 +274,28 @@
 			onpointerup={endStripDrag}
 			onpointercancel={endStripDrag}
 			role="list"
+			aria-label={t('app.gen.history_strip')}
 		>
-			{#each stripGenerations as generation (generation.id)}
-				{#if generation.assets.length > 0}
+			{#each stripItems as item (item.generation.id)}
+				{#if item.generation.assets.length > 0}
 					<button
 						type="button"
 						class="relative shrink-0"
-						title={generation.params.prompt}
-						onclick={(event) => onThumbClick(event, generation)}
+						title={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
+						tabindex={item.thumbIndex === tabStop ? 0 : -1}
+						aria-current={shownId === item.generation.id ? 'true' : undefined}
+						data-strip-thumb={item.thumbIndex}
+						onkeydown={onStripKeydown}
+						onclick={(event) => onThumbClick(event, item.generation)}
 					>
 						<img
-							src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
-							alt={generation.params.prompt ?? generation.id}
+							src={item.generation.assets[0].thumbnail_url ?? item.generation.assets[0].url}
+							alt={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
 							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
-								(shownId === generation.id ? 'border-primary' : 'border-border')}
+								(shownId === item.generation.id ? 'border-primary' : 'border-border')}
 							draggable="false"
 						/>
-						{#if isStarred(generation.id)}
+						{#if isStarred(item.generation.id)}
 							<span
 								class="bg-background/80 pointer-events-none absolute end-1 top-1 rounded-full p-0.5"
 								aria-hidden="true"
@@ -257,7 +304,7 @@
 							</span>
 						{/if}
 					</button>
-				{:else if isCancellable(generation.state)}
+				{:else if isCancellable(item.generation.state)}
 					<div
 						class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
 					>
@@ -271,16 +318,16 @@
 							class="bg-background/80 absolute end-1 top-1"
 							title={t('app.gen.cancel')}
 							aria-label={t('app.gen.cancel')}
-							disabled={cancellingIds.has(generation.id)}
-							onclick={() => cancelJob(generation.id)}
+							disabled={cancellingIds.has(item.generation.id)}
+							onclick={() => cancelJob(item.generation.id)}
 						>
 							<CircleXIcon />
 						</Button>
-						{#if generation.state === 'running' && generation.progress !== null}
+						{#if item.generation.state === 'running' && item.generation.progress !== null}
 							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
 								<div
 									class="bg-primary h-1 rounded-full transition-[width]"
-									style={`width: ${Math.round(generation.progress * 100)}%`}
+									style={`width: ${Math.round(item.generation.progress * 100)}%`}
 								></div>
 							</div>
 						{/if}
