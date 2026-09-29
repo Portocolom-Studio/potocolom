@@ -448,12 +448,13 @@ export function createRealtimeCanvasSession(
 				if (sending(generation)) {
 					if (frameFitsLimits(image.length, generation.limits)) {
 						generation.socket.send(canvasFrame(forSession, image));
+						if (notice === 'frame_too_large') setNotice('');
 						sent += 1;
 						options.onCounters(sent, rendered);
 					} else {
 						// The drawing did not change, so re-encoding it would
-						// hit the same cap; the notice stands until it does,
-						// and the API would drop the frame anyway (4005).
+						// hit the same cap; the notice stands until a frame
+						// fits, and the API would drop this one anyway (4005).
 						setNotice('frame_too_large');
 					}
 				} else {

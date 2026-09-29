@@ -751,14 +751,13 @@ test('a canvas image over the ready limit is never sent and says so', async () =
 	assert.equal(harness.notices.at(-1), 'frame_too_large');
 	assert.equal(harness.states.at(-1), 'active');
 
-	// Under the same cap the same session sends, and nothing clears the
-	// standing notice until the next ready.
+	// A drawing that fits again is sent, and the notice clears with it.
 	payload = 3;
 	harness.session.markChanged();
 	harness.tick();
 	await Promise.resolve();
 	assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 1);
-	assert.equal(harness.notices.at(-1), 'frame_too_large');
+	assert.equal(harness.notices.at(-1), '');
 	harness.session.destroy();
 });
 
