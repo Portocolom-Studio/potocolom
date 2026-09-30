@@ -26,6 +26,7 @@ from worker.engine import (
     encode_webp,
     reject_degenerate_output,
 )
+from worker.frame_batch import FrameRequest, compat_key
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 from worker.memory_ladder import slots_from_frame_ms
 
@@ -323,6 +324,74 @@ def _realtime_manifest() -> Manifest:
     )
 
 
+def _adapter_manifest() -> Manifest:
+    return Manifest(
+        id="vega-rt",
+        name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        prompt_token_limit=77,
+        t2i_adapter="org/vega-sketch",
+    )
+
+
+# A change box whose dilated mask stays under MAX_COMPOSITE_FRACTION: a small
+# edit on an otherwise untouched canvas, the case issue #376 keeps pixels for.
+_SMALL_CHANGE_BOX = (232, 232, 280, 280)
+
+
+def _sketch_canvas(change: tuple[int, int, int, int] | None = None) -> Image.Image:
+    canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), "white")
+    if change is not None:
+        canvas.paste((0, 0, 0), change)
+    return canvas
+
+
+def _sketch_png(change: tuple[int, int, int, int] | None = None) -> bytes:
+    source = io.BytesIO()
+    _sketch_canvas(change).save(source, "PNG")
+    return source.getvalue()
+
+
+class _SolidFramePipeline:
+    """A pipeline rendering one solid colour per call.
+
+    A delivered frame then says which render it came from, which is what a
+    composite mixes: the previous colour outside the change, the new one in it.
+    """
+
+    def __init__(self, colors: list[tuple[int, int, int]]):
+        self.colors = colors
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        color = self.colors[min(self.calls, len(self.colors) - 1)]
+        self.calls += 1
+        return SimpleNamespace(
+            images=[Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), color)],
+        )
+
+
+def _recording_frame_engine(
+    colors: list[tuple[int, int, int]],
+) -> tuple[DiffusersEngine, PromptCache]:
+    engine = _frame_engine(_SolidFramePipeline(colors))
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "p"})
+    return engine, PromptCache()
+
+
+def _record_encoded(scenario) -> list[Image.Image]:
+    """Run one session's frames and return the images given to the encoder."""
+    delivered: list[Image.Image] = []
+
+    def record(image: Image.Image) -> bytes:
+        delivered.append(image.copy())
+        return b"encoded"
+
+    with patch("worker.engine.encode_webp", record):
+        asyncio.run(scenario())
+    return delivered
+
+
 def _canvas_payload() -> bytes:
     source = io.BytesIO()
     Image.new("RGB", (24, 16), (1, 2, 3)).save(source, "PNG")
@@ -609,6 +678,103 @@ def test_two_sessions_with_different_prompts_do_not_evict_each_other():
     # frame is a cache hit, so only two encodes (four encoder calls) happen.
     assert pipeline.text_encoder.calls == 4
     assert len(pipeline.render_kwargs) == 4
+
+
+def test_a_small_sketch_change_delivers_a_composited_second_frame():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(_SMALL_CHANGE_BOX),
+            prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    assert delivered[0].getpixel((32, 32)) == (10, 20, 30)
+    # Far from the change the pixels are the previous frame's, still.
+    assert delivered[1].getpixel((32, 32)) == (10, 20, 30)
+    assert delivered[1].getpixel((500, 500)) == (10, 20, 30)
+    # At the change they are the new render.
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_a_params_change_delivers_the_full_second_frame():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "two"}, _sketch_png(_SMALL_CHANGE_BOX),
+            prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # An unchanged sketch with a new prompt must not freeze the old picture,
+    # so the whole second frame is the new render.
+    assert delivered[1].getpixel((32, 32)) == (200, 100, 50)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_a_non_adapter_manifest_is_never_composited():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _realtime_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(_SMALL_CHANGE_BOX),
+            prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    assert cache.last_frame is None
+    assert delivered[1].getpixel((32, 32)) == (200, 100, 50)
+
+
+def test_a_cancelled_frame_does_not_update_last_frame():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+    stored: list = []
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        stored.append(cache.last_frame)
+        request = FrameRequest(
+            session_key=1,
+            compat=compat_key(manifest, {"prompt": "one"}, REALTIME_SIZE),
+            manifest=manifest,
+            params={"prompt": "one"},
+            strength=0.7,
+            prompt_cache=cache,
+            payload=_canvas_to_sketch_map(_sketch_canvas(_SMALL_CHANGE_BOX)),
+            future=asyncio.get_running_loop().create_future(),
+            cancelled=True,
+        )
+        await engine._encode_frame_result(
+            request,
+            Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), (200, 100, 50)),
+            5,
+        )
+
+    _record_encoded(scenario)
+
+    # Nothing was delivered, so the session still remembers frame one.
+    assert cache.last_frame is stored[0]
+    assert cache.last_frame[1].getpixel((32, 32)) == (10, 20, 30)
 
 
 def test_realtime_sd3_frames_keep_the_string_prompt_path():

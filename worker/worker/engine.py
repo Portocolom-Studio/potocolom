@@ -42,6 +42,7 @@ from worker.memory_ladder import (
     slots_from_batch_curve,
     slots_from_frame_ms,
 )
+from worker.region_composite import keep_unchanged_pixels
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -159,7 +160,7 @@ class Cancelled(Exception):
 
 @dataclass
 class PromptCache:
-    """One cached prompt encoding, owned by the realtime session (issue #301).
+    """The session's engine-side memory, owned by the realtime session (issue #301).
 
     The session creates the holder and passes it to every frame; the engine
     never retains it, so there is no release path to forget and the entry is
@@ -167,9 +168,14 @@ class PromptCache:
     misses and re-encodes once, which is exactly what update_session carrying
     a new prompt is; seed, canvas and structure strength never reach the text
     encoders, so nothing else invalidates the entry.
+
+    `last_frame` is the last frame this session delivered, as (sketch map,
+    delivered image, params), and is what a later frame's composite blends
+    over (issue #376).
     """
 
     entry: tuple[tuple[Any, Any, Any], dict[str, Any]] | None = None
+    last_frame: tuple[Image.Image, Image.Image, dict] | None = None
 
 
 class Engine(Protocol):
@@ -1395,10 +1401,47 @@ class DiffusersEngine:
         image: Image.Image,
         gpu_ms: int,
     ) -> None:
+        memory = self._session_memory(request)
         async with self._codec:
+            if memory is not None:
+                image = await self._run_to_completion(
+                    self._frame_for_delivery, memory, request, image,
+                )
             data = await self._run_to_completion(encode_webp, image)
         if not request.cancelled and not request.future.done():
             request.future.set_result(GeneratedFrame(data, gpu_ms, request.stages))
+
+    @staticmethod
+    def _session_memory(request: FrameRequest) -> PromptCache | None:
+        """The holder whose last frame this request may blend over, or None.
+
+        A cancelled or already-resolved request delivers nothing, so it must
+        leave the session's memory where it is: only a delivered frame of an
+        adapter model that has a holder counts (issue #376).
+        """
+        if request.cancelled or request.future.done():
+            return None
+        if not request.manifest.t2i_adapter or request.prompt_cache is None:
+            return None
+        return request.prompt_cache
+
+    def _frame_for_delivery(
+        self, memory: PromptCache, request: FrameRequest, image: Image.Image,
+    ) -> Image.Image:
+        """Blend a small sketch change over the session's last frame.
+
+        The UNet rendered the whole frame either way; only these pixels leave
+        the worker. Params are compared because an unchanged sketch with a new
+        prompt must not freeze the old picture, so any params change sends the
+        full frame.
+        """
+        previous = memory.last_frame
+        if previous is not None and previous[2] == request.params:
+            image = keep_unchanged_pixels(
+                previous[0], previous[1], request.payload, image,
+            )
+        memory.last_frame = (request.payload, image, dict(request.params))
+        return image
 
     def _frame_batch(
         self, requests: list[FrameRequest],
