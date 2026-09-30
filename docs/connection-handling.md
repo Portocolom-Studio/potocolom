@@ -279,7 +279,7 @@ sequenceDiagram
 
 ## Latest input wins
 
-The worker never queues canvas frames. Per session it holds exactly one pending frame; a newer arrival overwrites an unprocessed older one, which is then counted as dropped. The processing loop takes the pending frame, runs inference, sends the generated frame, and looks again. A frame whose input revision is at or below the highest this runner accepted is not newer input at all: it is dropped before it becomes pending and is not counted as dropped, because a replay is not congestion. Under load the user sees fewer, fresher frames instead of a growing delay, which is the correct failure mode for drawing.
+The worker never queues canvas frames. Per session it holds exactly one pending frame; a newer arrival overwrites an unprocessed older one, which is then counted as dropped. The processing loop takes the pending frame, runs inference, sends the generated frame, and looks again. A frame whose input revision is at or below the highest this runner accepted is not newer input at all: it is dropped before it becomes pending and is not counted as dropped, because a replay is not congestion. Under load the user sees fewer, fresher frames instead of a growing delay, which is the correct failure mode for drawing. A frame's pixels outside a small sketch change may be the previous frame's; see [decisions.md](decisions.md), "Realtime frames keep unchanged pixels when the sketch change is small".
 
 ```mermaid
 stateDiagram-v2

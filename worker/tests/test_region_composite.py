@@ -1,9 +1,13 @@
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 
 from worker.region_composite import (
+    COMPOSITE_DILATION_PX,
+    COMPOSITE_FEATHER_PX,
+    MAX_COMPOSITE_FRACTION,
     composite_rgb,
     feather_change_mask,
+    keep_unchanged_pixels,
     max_channel_difference,
     sketch_change_mask,
 )
@@ -126,3 +130,85 @@ def test_composite_rgb_rejects_size_mismatch():
 def test_feather_change_mask_rejects_negative_parameters(dilation_px, feather_px):
     with pytest.raises(ValueError):
         feather_change_mask(Image.new("L", (2, 2)), dilation_px, feather_px)
+
+
+@pytest.mark.parametrize("dilation_px", [8, 16])
+@pytest.mark.parametrize("position", [(32, 32), (0, 0), (0, 32), (63, 63)])
+def test_feather_change_mask_box_dilation_matches_max_filter(dilation_px, position):
+    """The reference is the MaxFilter the box blur replaced, computed here
+    rather than restated: the dilation must be the same square, including at
+    the image edge, where a clipped box and a rank filter could disagree."""
+    mask = Image.new("L", (64, 64), 0)
+    mask.putpixel(position, 255)
+    reference = mask.filter(ImageFilter.MaxFilter(dilation_px * 2 + 1))
+
+    result = feather_change_mask(mask, dilation_px=dilation_px, feather_px=0)
+
+    assert result.tobytes() == reference.tobytes()
+
+
+def _square_change_sketch(size, side):
+    sketch = Image.new("RGB", size, (0, 0, 0))
+    start = (size[0] - side) // 2
+    ImageDraw.Draw(sketch).rectangle(
+        [start, start, start + side - 1, start + side - 1],
+        fill=(255, 255, 255),
+    )
+    return sketch
+
+
+def test_keep_unchanged_pixels_keeps_far_pixels_and_takes_the_change():
+    size = (512, 512)
+    previous_sketch = Image.new("RGB", size, (0, 0, 0))
+    sketch = _square_change_sketch(size, 48)
+    previous_image = Image.new("RGB", size, (10, 20, 30))
+    image = Image.new("RGB", size, (200, 100, 50))
+
+    result = keep_unchanged_pixels(previous_sketch, previous_image, sketch, image)
+
+    outside = 4 * COMPOSITE_FEATHER_PX
+    assert result.getpixel((outside, outside)) == (10, 20, 30)
+    assert result.getpixel((500, 500)) == (10, 20, 30)
+    assert result.getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_keep_unchanged_pixels_sends_the_frame_above_the_fraction():
+    size = (512, 512)
+    previous_sketch = Image.new("RGB", size, (0, 0, 0))
+    sketch = _square_change_sketch(size, 120)
+    previous_image = Image.new("RGB", size, (10, 20, 30))
+    image = Image.new("RGB", size, (200, 100, 50))
+    dilated_side = 120 + 2 * COMPOSITE_DILATION_PX
+    assert dilated_side * dilated_side / (size[0] * size[1]) > MAX_COMPOSITE_FRACTION
+
+    result = keep_unchanged_pixels(previous_sketch, previous_image, sketch, image)
+
+    assert result is image
+
+
+def test_keep_unchanged_pixels_identical_sketches_return_the_previous_frame():
+    size = (512, 512)
+    sketch = _square_change_sketch(size, 48)
+    previous_image = Image.new("RGB", size, (10, 20, 30))
+    image = Image.new("RGB", size, (200, 100, 50))
+
+    result = keep_unchanged_pixels(sketch, previous_image, sketch.copy(), image)
+
+    assert result.tobytes() == previous_image.tobytes()
+
+
+def test_keep_unchanged_pixels_returns_the_frame_on_a_size_mismatch():
+    size = (512, 512)
+    previous_sketch = Image.new("RGB", size, (0, 0, 0))
+    sketch = _square_change_sketch(size, 48)
+    previous_image = Image.new("RGB", size, (10, 20, 30))
+    image = Image.new("RGB", size, (200, 100, 50))
+
+    result = keep_unchanged_pixels(
+        previous_sketch, previous_image, Image.new("RGB", (256, 256)), image,
+    )
+
+    assert result is image
+    assert keep_unchanged_pixels(
+        previous_sketch, Image.new("RGB", (256, 256)), sketch, image,
+    ) is image
