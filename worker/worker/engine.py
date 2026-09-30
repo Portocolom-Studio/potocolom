@@ -42,7 +42,7 @@ from worker.memory_ladder import (
     slots_from_batch_curve,
     slots_from_frame_ms,
 )
-from worker.region_composite import keep_unchanged_pixels
+from worker.region_composite import composite_rgb, keep_unchanged_pixels, selection_alpha
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -171,7 +171,8 @@ class PromptCache:
 
     `last_frame` is the last frame this session delivered, as (sketch map,
     delivered image, params), and is what a later frame's composite blends
-    over (issue #376).
+    over (issue #376). The sketch map is that frame's own except inside a
+    selection, where the previous frame's is kept outside the selected region.
     """
 
     entry: tuple[tuple[Any, Any, Any], dict[str, Any]] | None = None
@@ -1402,9 +1403,10 @@ class DiffusersEngine:
         gpu_ms: int,
     ) -> None:
         memory = self._session_memory(request)
+        sketch = request.payload
         async with self._codec:
             if memory is not None:
-                image = await self._run_to_completion(
+                image, sketch = await self._run_to_completion(
                     self._frame_for_delivery, memory, request, image,
                 )
             data = await self._run_to_completion(encode_webp, image)
@@ -1413,7 +1415,7 @@ class DiffusersEngine:
                 # Written only here, next to delivery: a frame whose encode
                 # raised, or whose request was cancelled meanwhile, never
                 # reached the person, so no later frame may blend over it.
-                memory.last_frame = (request.payload, image, dict(request.params))
+                memory.last_frame = (sketch, image, dict(request.params))
             request.future.set_result(GeneratedFrame(data, gpu_ms, request.stages))
 
     @staticmethod
@@ -1432,19 +1434,47 @@ class DiffusersEngine:
     @staticmethod
     def _frame_for_delivery(
         memory: PromptCache, request: FrameRequest, image: Image.Image,
-    ) -> Image.Image:
-        """Blend a small sketch change over the session's last frame.
+    ) -> tuple[Image.Image, Image.Image]:
+        """Decide what to deliver and what the next frame may blend over.
 
-        The UNet rendered the whole frame either way; only these pixels leave
-        the worker. Params are compared because an unchanged sketch with a new
+        The result is (image to deliver, sketch map to remember): the UNet
+        rendered the whole frame either way, and only these pixels leave the
+        worker. Params are compared because an unchanged sketch with a new
         prompt must not freeze the old picture, so any params change sends the
-        full frame. It reads the memory and never writes it: that happens once
+        full frame; the mask key is excluded from that comparison, because a
+        selection is what gets rendered rather than a render setting. An active
+        selection replaces the coverage gate: it wins over the 2 percent gate,
+        so what it covers is the new render and the rest the previous frame.
+        The function reads the memory and never writes it: that happens once
         the frame is delivered.
         """
         previous = memory.last_frame
-        if previous is None or previous[2] != request.params:
-            return image
-        return keep_unchanged_pixels(previous[0], previous[1], request.payload, image)
+        if previous is None:
+            return image, request.payload
+        previous_sketch, previous_image, previous_params = previous
+        previous_rest = {
+            key: value for key, value in previous_params.items() if key != "mask"
+        }
+        current_rest = {
+            key: value for key, value in request.params.items() if key != "mask"
+        }
+        if previous_rest != current_rest:
+            return image, request.payload
+        mask = request.params.get("mask")
+        sizes = {previous_sketch.size, previous_image.size, image.size,
+                 request.payload.size}
+        if isinstance(mask, dict) and len(sizes) == 1:
+            alpha = selection_alpha(mask, image.size)
+            binary = alpha.point(lambda value: 255 if value else 0)
+            # Outside the selection the frame did not change, so the remembered
+            # sketch must not either, or clearing the selection would hide the
+            # strokes drawn there until the next full frame.
+            remembered = Image.composite(request.payload, previous_sketch, binary)
+            return composite_rgb(previous_image, image, alpha), remembered
+        delivered = keep_unchanged_pixels(
+            previous_sketch, previous_image, request.payload, image,
+        )
+        return delivered, request.payload
 
     def _frame_batch(
         self, requests: list[FrameRequest],

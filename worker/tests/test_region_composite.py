@@ -9,6 +9,7 @@ from worker.region_composite import (
     feather_change_mask,
     keep_unchanged_pixels,
     max_channel_difference,
+    selection_alpha,
     sketch_change_mask,
 )
 
@@ -212,3 +213,50 @@ def test_keep_unchanged_pixels_returns_the_frame_on_a_size_mismatch():
     assert keep_unchanged_pixels(
         previous_sketch, Image.new("RGB", (256, 256)), sketch, image,
     ) is image
+
+
+def test_selection_alpha_marks_the_inside_of_a_polygon_and_nothing_outside():
+    mask = {"polygons": [[
+        [0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75],
+    ]]}
+
+    alpha = selection_alpha(mask, (200, 200))
+
+    assert alpha.mode == "L"
+    assert alpha.size == (200, 200)
+    # The inward feather cannot put a value outside the polygon: darker()
+    # clamps every pixel it never filled to zero.
+    assert alpha.getpixel((5, 5)) == 0
+    assert alpha.getpixel((195, 195)) == 0
+    assert alpha.getpixel((100, 30)) == 0
+    assert alpha.getpixel((100, 100)) == 255
+
+
+def test_selection_alpha_unions_the_polygons():
+    mask = {"polygons": [
+        [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]],
+        [[0.6, 0.6], [0.9, 0.6], [0.9, 0.9], [0.6, 0.9]],
+    ]}
+
+    alpha = selection_alpha(mask, (200, 200))
+
+    assert alpha.getpixel((50, 50)) == 255
+    assert alpha.getpixel((150, 150)) == 255
+    # Between the two polygons nothing is selected.
+    assert alpha.getpixel((100, 100)) == 0
+
+
+def test_selection_alpha_scales_the_normalized_coordinates_with_the_size():
+    mask = {"polygons": [[
+        [0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75],
+    ]]}
+
+    square = selection_alpha(mask, (200, 200))
+    wide = selection_alpha(mask, (400, 200))
+
+    assert square.getpixel((100, 100)) == 255
+    assert wide.getpixel((200, 100)) == 255
+    # The same pixel is inside the selection on the square frame and outside
+    # it on the wide one, because x is scaled by the width.
+    assert square.getpixel((55, 100)) > 0
+    assert wide.getpixel((55, 100)) == 0
