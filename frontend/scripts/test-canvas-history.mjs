@@ -29,7 +29,10 @@ const MODEL = {
 		properties: {
 			prompt: { type: 'string' },
 			steps: { type: 'integer', minimum: 1, maximum: 4, default: 1 },
-			structure_strength: { type: 'number', minimum: 0, maximum: 1, default: 0.7 }
+			structure_strength: { type: 'number', minimum: 0, maximum: 1, default: 0.7 },
+			// The panel mounts its selection controls only for a model whose
+			// manifest declares this, so the lasso tests need it declared.
+			mask: { type: 'string' }
 		}
 	}
 };
@@ -366,6 +369,34 @@ async function stroke(page, from, to, steps = 4) {
 	await page.mouse.up();
 }
 
+// A lasso drag through fractional canvas points, the way Select area records
+// it: several segments, each well past the 3 pixel spacing the mask keeps.
+async function lasso(page, points) {
+	const rect = await canvasRect(page);
+	await page.mouse.move(rect.x + rect.width * points[0][0], rect.y + rect.height * points[0][1]);
+	await page.mouse.down();
+	for (const point of points.slice(1)) {
+		await page.mouse.move(rect.x + rect.width * point[0], rect.y + rect.height * point[1], {
+			steps: 4
+		});
+	}
+	await page.mouse.up();
+}
+
+// Arm Select area and drag the polygon. Erase selection only mounts once the
+// released drag was accepted as a mask, so its appearance is the wait.
+async function selectRegion(page, points) {
+	await clickButton(page, 'Select area');
+	await lasso(page, points);
+	await page.waitForFunction(
+		() =>
+			[...document.querySelectorAll('button')].some(
+				(candidate) => candidate.textContent?.trim() === 'Erase selection'
+			),
+		{ timeout: WAIT_MS }
+	);
+}
+
 async function connect(page) {
 	await page.type('#realtime-prompt', 'Canvas history test');
 	await page.evaluate(() =>
@@ -376,6 +407,23 @@ async function connect(page) {
 	await page.waitForFunction(() => document.body.innerText.includes('Active'), {
 		timeout: WAIT_MS
 	});
+}
+
+// The picture the region-erase tests share: a red stroke inside the coming
+// selection, a blue one outside it, and a lasso around the left half only.
+async function drawAndSelect(page) {
+	await connect(page);
+	await setBrushSize(page, 12);
+	await selectColor(page, 'Red');
+	await stroke(page, [0.05, 0.5], [0.45, 0.5], 6);
+	await selectColor(page, 'Blue');
+	await stroke(page, [0.55, 0.5], [0.95, 0.5], 6);
+	await selectRegion(page, [
+		[0.02, 0.25],
+		[0.5, 0.25],
+		[0.5, 0.75],
+		[0.02, 0.75]
+	]);
 }
 
 async function expectOutput(page, rgb) {
@@ -762,7 +810,7 @@ test('saving a shape uses v2 geometry and round-trips its exact bitmap and redo'
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
-		assert.equal(saved.version, 2);
+		assert.equal(saved.version, 3);
 		assert.deepEqual([saved.width, saved.height], [512, 512]);
 		assert.equal(saved.operations.length, 1);
 		assert.equal(saved.operations[0].kind, 'shape');
@@ -804,7 +852,7 @@ test('a zero-length shape gesture saves, reopens and undoes safely', async () =>
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
-		assert.equal(saved.version, 2);
+		assert.equal(saved.version, 3);
 		assert.equal(saved.operations.length, 1);
 		assert.equal(saved.operations[0].points.length, 2);
 		await clickButton(page, 'Clear canvas');
@@ -981,6 +1029,276 @@ test('a valid v1 stroke imports with its expected color and remains undoable', a
 	}
 });
 
+test('erase selection paints paper inside the lasso and leaves the stroke outside it', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await drawAndSelect(page);
+		assert.deepEqual(await surfacePixel(page, 128, 256), [220, 38, 38, 255]);
+		assert.deepEqual(await surfacePixel(page, 384, 256), [37, 99, 235, 255]);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Erase selection');
+		const erased = await bitmap(page);
+		assert.notEqual(erased.hash, drawn.hash);
+		assert.deepEqual(
+			await surfacePixel(page, 128, 256),
+			[255, 255, 255, 255],
+			'the selection interior must be paper'
+		);
+		assert.deepEqual(
+			await surfacePixel(page, 384, 256),
+			[37, 99, 235, 255],
+			'the stroke outside the selection must survive'
+		);
+		assert.equal(
+			await page.evaluate(() =>
+				[...document.querySelectorAll('button')].some(
+					(candidate) => candidate.textContent?.trim() === 'Erase selection'
+				)
+			),
+			true,
+			'the selection stays after erasing inside it'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('undo brings back the stroke a region erase covered and redo erases it again', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await drawAndSelect(page);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Erase selection');
+		const erased = await bitmap(page);
+		assert.notEqual(erased.hash, drawn.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, drawn.hash);
+		assert.deepEqual(await surfacePixel(page, 128, 256), [220, 38, 38, 255]);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, erased.hash);
+		assert.deepEqual(await surfacePixel(page, 128, 256), [255, 255, 255, 255]);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a saved version 3 file round-trips its erase-region and exact bitmap', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-erase-save-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: directory
+		});
+		await drawAndSelect(page);
+		const drawn = await bitmap(page);
+		await clickButton(page, 'Erase selection');
+		const erased = await bitmap(page);
+		await clickButton(page, 'Save drawing');
+		const savedPath = await waitForDrawingDownload(directory);
+		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
+		assert.equal(saved.version, 3);
+		assert.deepEqual([saved.width, saved.height], [512, 512]);
+		assert.deepEqual(
+			saved.operations.map((operation) => operation.kind),
+			['stroke', 'stroke', 'erase-region']
+		);
+		const region = saved.operations[2];
+		assert.deepEqual(Object.keys(region).sort(), ['id', 'kind', 'points']);
+		assert.ok(region.points.length >= 3 && region.points.length <= 512);
+		await clickButton(page, 'Clear canvas');
+		await waitForBitmap(page, blank.hash);
+		await openDrawingFile(page, savedPath);
+		await waitForBitmap(page, erased.hash);
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, drawn.hash);
+		await clickButton(page, 'Redo');
+		await waitForBitmap(page, erased.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('version 1 and version 2 drawing files still open', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-older-versions-'));
+	const redDot = {
+		kind: 'stroke',
+		id: 'operation-1',
+		mode: 'draw',
+		color: '#dc2626',
+		size: 12,
+		points: [{ x: 128, y: 128 }]
+	};
+	const cases = [
+		{
+			name: 'v1-stroke',
+			file: { version: 1, width: 512, height: 512, operations: [redDot], cursor: 1 },
+			pixels: [
+				[
+					[128, 128],
+					[220, 38, 38, 255]
+				]
+			],
+			steps: 1
+		},
+		{
+			name: 'v2-shape',
+			file: {
+				version: 2,
+				width: 512,
+				height: 512,
+				operations: [
+					redDot,
+					{
+						kind: 'shape',
+						id: 'operation-2',
+						shape: 'line',
+						color: '#111827',
+						size: 8,
+						points: [
+							{ x: 256, y: 64 },
+							{ x: 256, y: 448 }
+						]
+					}
+				],
+				cursor: 2
+			},
+			pixels: [
+				[
+					[128, 128],
+					[220, 38, 38, 255]
+				],
+				[
+					[256, 128],
+					[17, 24, 39, 255]
+				]
+			],
+			steps: 2
+		}
+	];
+	try {
+		for (const entry of cases) {
+			const path = join(directory, `${entry.name}.potocolom.json`);
+			await writeFile(path, JSON.stringify(entry.file));
+			const caseHarness = await openCanvas();
+			try {
+				const { page } = caseHarness;
+				const blank = await bitmap(page);
+				await openDrawingFile(page, path);
+				for (const [[x, y], expected] of entry.pixels) {
+					await page.waitForFunction(
+						([pixelX, pixelY, red, green, blue]) => {
+							const pixel = document
+								.querySelector('canvas[aria-label="Drawing surface"]')
+								?.getContext('2d')
+								.getImageData(pixelX, pixelY, 1, 1).data;
+							return (
+								pixel?.[0] === red && pixel[1] === green && pixel[2] === blue && pixel[3] === 255
+							);
+						},
+						{ timeout: WAIT_MS },
+						[x, y, ...expected]
+					);
+					assert.deepEqual(await surfacePixel(page, x, y), expected, `${entry.name} pixel`);
+				}
+				const opened = await bitmap(page);
+				for (let index = 0; index < entry.steps; index += 1) await clickButton(page, 'Undo');
+				await waitForBitmap(page, blank.hash);
+				for (let index = 0; index < entry.steps; index += 1) await clickButton(page, 'Redo');
+				await waitForBitmap(page, opened.hash);
+			} finally {
+				await caseHarness.close();
+			}
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('erase-region files gate on version and on their own three keys', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-erase-invalid-'));
+	const validStroke = {
+		kind: 'stroke',
+		id: 'operation-1',
+		mode: 'draw',
+		color: '#111827',
+		size: 6,
+		points: [{ x: 128, y: 128 }]
+	};
+	const validRegion = {
+		kind: 'erase-region',
+		id: 'operation-2',
+		points: [
+			{ x: 64, y: 64 },
+			{ x: 448, y: 64 },
+			{ x: 448, y: 448 },
+			{ x: 64, y: 448 }
+		]
+	};
+	const invalid = [
+		['version-2-with-erase-region', { version: 2 }],
+		[
+			'erase-region-with-two-points',
+			{ operations: [validStroke, { ...validRegion, points: validRegion.points.slice(0, 2) }] }
+		],
+		[
+			'erase-region-with-513-points',
+			{
+				operations: [
+					validStroke,
+					{
+						...validRegion,
+						points: Array.from({ length: 513 }, (_, index) => ({ x: index, y: index }))
+					}
+				]
+			}
+		],
+		['erase-region-with-extra-key', { operations: [validStroke, { ...validRegion, mode: 'draw' }] }]
+	];
+	try {
+		for (const [name, overrides] of invalid) {
+			const path = join(directory, `${name}.potocolom.json`);
+			await writeFile(
+				path,
+				JSON.stringify({
+					version: 3,
+					width: 512,
+					height: 512,
+					operations: [validStroke, validRegion],
+					cursor: 2,
+					...overrides
+				})
+			);
+			const harness = await openCanvas();
+			try {
+				const { page } = harness;
+				await tap(page, 0.25, 0.25);
+				const first = await bitmap(page);
+				await tap(page, 0.75, 0.75);
+				const second = await bitmap(page);
+				await clickButton(page, 'Undo');
+				await waitForBitmap(page, first.hash);
+				await expectInvalidDrawingFile(page, path);
+				assert.deepEqual(await bitmap(page), first, `${name} replaced the current bitmap`);
+				assert.equal((await button(page, 'Undo')).disabled, false, `${name} changed undo state`);
+				assert.equal((await button(page, 'Redo')).disabled, false, `${name} changed redo state`);
+				await clickButton(page, 'Redo');
+				await waitForBitmap(page, second.hash);
+			} finally {
+				await harness.close();
+			}
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test('shape selection is silent and a connected shape publishes an opaque 512px WebP', async () => {
 	const harness = await openCanvas();
 	try {
@@ -1082,7 +1400,7 @@ test('saved drawing reopens with exact pixels and undo redo history', async () =
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		assert.equal(basename(savedPath), 'drawing.potocolom.json');
-		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*2/);
+		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*3/);
 
 		await page.reload({ waitUntil: 'networkidle0' });
 		await page.waitForFunction(

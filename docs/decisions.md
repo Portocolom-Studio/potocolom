@@ -391,6 +391,10 @@ The local file writer uses version 2 for shape operations; the reader still
 opens version 1 stroke/clear files. No SVG scene, selection model, fill tool
 or wire change is needed for these three drawing tools.
 
+Status (2026-09-30): the writer now uses version 3, which adds the
+erase-region operation behind Erase selection (issue #376); the reader opens
+versions 1, 2 and 3. The file contract is in [drawing-files.md](drawing-files.md).
+
 ## First public release: after the walking skeleton, API level
 
 v0.1 tags when the M2 acceptance demo passes: a generation POSTed against the real worker completes end to end and CI's tiny-model CPU path is green. Self-hosters get the compose file and a working generation API, clearly marked pre-alpha. The point is early outside installs exercising the risky part, GPU setup on CUDA and ROCm, months before the UI is impressive.

@@ -17,6 +17,12 @@ type StrokeOperation = {
 	points: DrawingPoint[];
 };
 
+type EraseRegionOperation = {
+	kind: 'erase-region';
+	id: string;
+	points: DrawingPoint[];
+};
+
 type ClearOperation = {
 	kind: 'clear';
 	id: string;
@@ -31,10 +37,10 @@ type ShapeOperation = {
 	points: [DrawingPoint, DrawingPoint];
 };
 
-type Operation = StrokeOperation | ShapeOperation | ClearOperation;
+type Operation = StrokeOperation | ShapeOperation | EraseRegionOperation | ClearOperation;
 
 export type DrawingFile = {
-	version: 2;
+	version: 3;
 	width: 512;
 	height: 512;
 	operations: Operation[];
@@ -102,7 +108,7 @@ export class DrawingDocument {
 
 	public serialize(): DrawingFile {
 		const snapshot: DrawingFile = {
-			version: 2,
+			version: 3,
 			width: 512,
 			height: 512,
 			operations: this.operations.map((operation) =>
@@ -117,14 +123,20 @@ export class DrawingDocument {
 								size: operation.size,
 								points: [{ ...operation.points[0] }, { ...operation.points[1] }]
 							}
-						: {
-								kind: 'stroke',
-								id: operation.id,
-								mode: operation.mode,
-								color: operation.color,
-								size: operation.size,
-								points: operation.points.map((point) => ({ ...point }))
-							}
+						: operation.kind === 'erase-region'
+							? {
+									kind: 'erase-region',
+									id: operation.id,
+									points: operation.points.map((point) => ({ ...point }))
+								}
+							: {
+									kind: 'stroke',
+									id: operation.id,
+									mode: operation.mode,
+									color: operation.color,
+									size: operation.size,
+									points: operation.points.map((point) => ({ ...point }))
+								}
 			),
 			cursor: this.cursor
 		};
@@ -242,6 +254,24 @@ export class DrawingDocument {
 		return true;
 	}
 
+	/** Paint paper over a closed polygon, as one undoable operation. Unlike
+	 * clear it finishes no gesture: a stroke in flight owns the canvas, so the
+	 * erase refuses until that gesture ends rather than committing under it. */
+	public eraseRegion(points: DrawingPoint[]): boolean {
+		if (this.destroyed || this.active !== null) return false;
+		if (points.length < 3 || points.length > 512) return false;
+		const operation: EraseRegionOperation = {
+			kind: 'erase-region',
+			id: this.newOperationId(),
+			points: points.map((point) => ({ ...point }))
+		};
+		this.append(operation);
+		this.paintEraseRegion(operation);
+		this.updateBlank();
+		this.scheduleCheckpoint();
+		return true;
+	}
+
 	private render(): void {
 		if (this.destroyed) return;
 		this.paintPaper();
@@ -292,6 +322,10 @@ export class DrawingDocument {
 		}
 		if (operation.kind === 'shape') {
 			this.paintShape(operation);
+			return;
+		}
+		if (operation.kind === 'erase-region') {
+			this.paintEraseRegion(operation);
 			return;
 		}
 		this.paintDot(operation, operation.points[0]);
@@ -347,6 +381,21 @@ export class DrawingDocument {
 			this.context.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
 		}
 		this.context.stroke();
+		this.context.restore();
+	}
+
+	/** The closed outline filled with paper, default nonzero rule: the lasso is
+	 * one simple polygon, so its interior is simply everything it encloses. */
+	private paintEraseRegion(operation: EraseRegionOperation): void {
+		this.context.save();
+		this.context.fillStyle = PAPER;
+		this.context.beginPath();
+		this.context.moveTo(operation.points[0].x, operation.points[0].y);
+		for (let index = 1; index < operation.points.length; index += 1) {
+			this.context.lineTo(operation.points[index].x, operation.points[index].y);
+		}
+		this.context.closePath();
+		this.context.fill();
 		this.context.restore();
 	}
 
@@ -455,7 +504,11 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 	}
 	if (encodedBytes > DRAWING_FILE_MAX_BYTES) throw new Error('drawing file is too large');
 	if (!isRecord(input)) throw new Error('invalid drawing file');
-	if ((input.version !== 1 && input.version !== 2) || input.width !== 512 || input.height !== 512)
+	if (
+		(input.version !== 1 && input.version !== 2 && input.version !== 3) ||
+		input.width !== 512 ||
+		input.height !== 512
+	)
 		throw new Error('unsupported drawing file');
 	if (!Array.isArray(input.operations) || input.operations.length > MAX_OPERATIONS)
 		throw new Error('drawing file has too many operations');
@@ -481,7 +534,7 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 			continue;
 		}
 		if (rawOperation.kind === 'shape') {
-			if (input.version !== 2 || Object.keys(rawOperation).length !== 6)
+			if (input.version < 2 || Object.keys(rawOperation).length !== 6)
 				throw new Error('invalid shape operation');
 			if (
 				rawOperation.shape !== 'line' &&
@@ -507,6 +560,17 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 				size,
 				points: [validatePoint(points[0]), validatePoint(points[1])]
 			});
+			continue;
+		}
+		if (rawOperation.kind === 'erase-region') {
+			if (input.version !== 3 || Object.keys(rawOperation).length !== 3)
+				throw new Error('invalid erase region operation');
+			const region = rawOperation.points;
+			if (!Array.isArray(region) || region.length < 3 || region.length > 512)
+				throw new Error('erase region must have 3 to 512 points');
+			totalPoints += region.length;
+			if (totalPoints > MAX_POINTS) throw new Error('drawing file has too many points');
+			operations.push({ kind: 'erase-region', id, points: region.map(validatePoint) });
 			continue;
 		}
 		if (rawOperation.kind !== 'stroke' || Object.keys(rawOperation).length !== 6)
