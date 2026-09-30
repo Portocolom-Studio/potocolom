@@ -1463,12 +1463,23 @@ class DiffusersEngine:
         mask = request.params.get("mask")
         sizes = {previous_sketch.size, previous_image.size, image.size,
                  request.payload.size}
+        alpha = None
         if isinstance(mask, dict) and len(sizes) == 1:
-            alpha = selection_alpha(mask, image.size)
-            binary = alpha.point(lambda value: 255 if value else 0)
-            # Outside the selection the frame did not change, so the remembered
-            # sketch must not either, or clearing the selection would hide the
-            # strokes drawn there until the next full frame.
+            try:
+                alpha = selection_alpha(mask, image.size)
+            except (TypeError, ValueError):
+                # The API validates a mask against whichever manifest its
+                # registry holds, which in a mixed fleet can be one without the
+                # field, so a malformed mask can arrive here. It must not fail
+                # every frame of the session: it is treated as no selection.
+                alpha = None
+        if alpha is not None:
+            binary = alpha.point(lambda value: 255 if value == 255 else 0)
+            # Only where the new render fully landed does the memory take the
+            # new sketch. Outside the selection the frame did not change, and in
+            # the feather band it is still a blend; remembering the new sketch
+            # there would hide those strokes from the gate once the selection
+            # clears, leaving them faded or missing until the next full frame.
             remembered = Image.composite(request.payload, previous_sketch, binary)
             return composite_rgb(previous_image, image, alpha), remembered
         delivered = keep_unchanged_pixels(

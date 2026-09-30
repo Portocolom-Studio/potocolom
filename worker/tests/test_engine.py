@@ -850,6 +850,62 @@ def test_clearing_the_selection_delivers_the_strokes_outside_it():
     assert delivered[2].getpixel((256, 256)) == (200, 100, 50)
 
 
+def test_a_stroke_in_the_feather_band_refreshes_once_the_selection_clears():
+    """The feather band delivers a blend, so it must be remembered as the
+    previous sketch: then the gate sees the band stroke again after the
+    selection clears, instead of keeping the faded blend for good."""
+    engine, cache = _recording_frame_engine(
+        [(10, 20, 30), (200, 100, 50), (70, 60, 40)],
+    )
+    manifest = _adapter_manifest()
+    band_box = (184, 248, 196, 264)
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _SELECTION},
+            _sketch_png(band_box), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": None},
+            _sketch_png(band_box), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    band = delivered[1].getpixel((190, 256))
+    assert band not in {(10, 20, 30), (200, 100, 50)}, "the stroke sits in the feather band"
+    assert delivered[2].getpixel((190, 256)) != band
+
+
+@pytest.mark.parametrize("mask", [
+    {"polygons": [[["a"]]]},
+    {"polygons": [[1, 2, 3]]},
+    {"polygons": 7},
+])
+def test_a_malformed_mask_falls_back_to_the_automatic_gate(mask):
+    """A mask the worker cannot rasterize is no selection, not a failed frame."""
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": mask},
+            _sketch_png(_SMALL_CHANGE_BOX), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # The small change composites through the gate exactly as with no mask.
+    assert delivered[1].getpixel((32, 32)) == (10, 20, 30)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
 def test_a_cancelled_frame_does_not_update_last_frame():
     engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
     manifest = _adapter_manifest()
