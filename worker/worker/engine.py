@@ -158,6 +158,21 @@ class Cancelled(Exception):
     """
 
 
+@dataclass(frozen=True)
+class LastFrame:
+    """The last frame one session delivered: sketch map, image, params, latent.
+
+    The latent is what a later selection frame blends the outside against, and
+    is None when the frame arrived from the batched route, which renders every
+    request in one pass and so has no per-request latent to keep.
+    """
+
+    sketch: Image.Image
+    image: Image.Image
+    params: dict
+    latent: Any = None
+
+
 @dataclass
 class PromptCache:
     """The session's engine-side memory, owned by the realtime session (issue #301).
@@ -169,14 +184,49 @@ class PromptCache:
     a new prompt is; seed, canvas and structure strength never reach the text
     encoders, so nothing else invalidates the entry.
 
-    `last_frame` is the last frame this session delivered, as (sketch map,
-    delivered image, params), and is what a later frame's composite blends
-    over (issue #376). The sketch map is that frame's own except inside a
-    selection, where the previous frame's is kept outside the selected region.
+    `last_frame` is the last frame this session delivered, as a LastFrame, and
+    is what a later frame's composite blends over (issue #376). The sketch map
+    is that frame's own except inside a selection, where the previous frame's
+    is kept outside the selected region.
     """
 
     entry: tuple[tuple[Any, Any, Any], dict[str, Any]] | None = None
-    last_frame: tuple[Image.Image, Image.Image, dict] | None = None
+    last_frame: LastFrame | None = None
+
+
+def _selection_alpha(
+    memory: PromptCache | None, params: dict, size: tuple[int, int],
+) -> Image.Image | None:
+    """The selection this frame composites through at `size`, or None.
+
+    The one answer to "does this frame go through a selection", asked before
+    the render, at delivery and for a whole batch: the params beside the mask
+    must be the stored ones (a params change sends the full frame), the mask
+    must be a dict the polygons rasterize at `size`, and the stored sketch and
+    image must have `size`. Anything else is no selection.
+    """
+    if memory is None:
+        return None
+    previous = memory.last_frame
+    if previous is None:
+        return None
+    previous_rest = {key: value for key, value in previous.params.items() if key != "mask"}
+    current_rest = {key: value for key, value in params.items() if key != "mask"}
+    if previous_rest != current_rest:
+        return None
+    mask = params.get("mask")
+    if not isinstance(mask, dict):
+        return None
+    if previous.sketch.size != size or previous.image.size != size:
+        return None
+    try:
+        return selection_alpha(mask, size)
+    except (TypeError, ValueError):
+        # The API validates a mask against whichever manifest its registry
+        # holds, which in a mixed fleet can be one without the field, so a
+        # malformed mask can arrive here. It must not fail every frame of the
+        # session: it is treated as no selection.
+        return None
 
 
 class Engine(Protocol):
@@ -1218,12 +1268,18 @@ class DiffusersEngine:
         *,
         preview_decoder: Any | None = None,
         stages: dict[str, int] | None = None,
-    ) -> Image.Image:
+    ) -> tuple[Image.Image, Any]:
+        """Render one frame and hand back the latent it denoised to.
+
+        The latent is None when the full VAE produced the image: that call
+        returns pixels, so the latent behind them is not in hand to remember.
+        """
         if preview_decoder is None:
             preview_decoder = self._preview_decoder(pipeline, manifest)
         image = None
+        latents = None
         if preview_decoder is not None:
-            latents = pipeline(**pipeline_kwargs, output_type="latent").images
+            decoded_latents = pipeline(**pipeline_kwargs, output_type="latent").images
             try:
                 decode_started = 0.0
                 if stages is not None:
@@ -1233,13 +1289,14 @@ class DiffusersEngine:
                 # directly. Unlike the full VAE path, dividing by
                 # pipeline.vae.config.scaling_factor here produces clipped noise.
                 with self.torch.inference_mode():
-                    decoded = preview_decoder.decode(latents, return_dict=False)[0]
+                    decoded = preview_decoder.decode(decoded_latents, return_dict=False)[0]
                 if stages is not None:
                     self._sync_cuda()
                     stages["taesd_ms"] += int(
                         (time.perf_counter() - decode_started) * 1000
                     )
                 image = pipeline.image_processor.postprocess(decoded, output_type="pil")[0]
+                latents = decoded_latents
             except Exception as error:
                 # A bad decoder is not a poisoned pipeline. Letting this reach
                 # frame()'s handler would evict and reload the whole model on every
@@ -1250,7 +1307,7 @@ class DiffusersEngine:
             # which already advanced it, so this image is not what a clean
             # full-VAE render at this seed would be; the next frame re-seeds.
             image = pipeline(**pipeline_kwargs).images[0]
-        return image
+        return image, latents
 
     def _render_with_preview_decoder_batch(
         self,
@@ -1325,10 +1382,11 @@ class DiffusersEngine:
         for request in requests:
             started = time.monotonic()
             stages = _empty_frame_stages() if request.profile else None
-            image, _ = self._frame(
+            image, _, latents = self._frame(
                 request.manifest, request.params, request.payload, request.strength,
                 prompt_cache=request.prompt_cache, stages=stages,
             )
+            request.latent = latents
             gpu_ms = int((time.monotonic() - started) * 1000)
             if stages is not None:
                 _finish_stage_overhead(stages, gpu_ms)
@@ -1415,7 +1473,9 @@ class DiffusersEngine:
                 # Written only here, next to delivery: a frame whose encode
                 # raised, or whose request was cancelled meanwhile, never
                 # reached the person, so no later frame may blend over it.
-                memory.last_frame = (sketch, image, dict(request.params))
+                memory.last_frame = LastFrame(
+                    sketch, image, dict(request.params), request.latent,
+                )
             request.future.set_result(GeneratedFrame(data, gpu_ms, request.stages))
 
     @staticmethod
@@ -1451,28 +1511,19 @@ class DiffusersEngine:
         previous = memory.last_frame
         if previous is None:
             return image, request.payload
-        previous_sketch, previous_image, previous_params = previous
         previous_rest = {
-            key: value for key, value in previous_params.items() if key != "mask"
+            key: value for key, value in previous.params.items() if key != "mask"
         }
         current_rest = {
             key: value for key, value in request.params.items() if key != "mask"
         }
         if previous_rest != current_rest:
             return image, request.payload
-        mask = request.params.get("mask")
-        sizes = {previous_sketch.size, previous_image.size, image.size,
-                 request.payload.size}
-        alpha = None
-        if isinstance(mask, dict) and len(sizes) == 1:
-            try:
-                alpha = selection_alpha(mask, image.size)
-            except (TypeError, ValueError):
-                # The API validates a mask against whichever manifest its
-                # registry holds, which in a mixed fleet can be one without the
-                # field, so a malformed mask can arrive here. It must not fail
-                # every frame of the session: it is treated as no selection.
-                alpha = None
+        alpha = (
+            _selection_alpha(memory, request.params, image.size)
+            if request.payload.size == image.size
+            else None
+        )
         if alpha is not None:
             binary = alpha.point(lambda value: 255 if value == 255 else 0)
             # Only where the new render fully landed does the memory take the
@@ -1480,10 +1531,10 @@ class DiffusersEngine:
             # the feather band it is still a blend; remembering the new sketch
             # there would hide those strokes from the gate once the selection
             # clears, leaving them faded or missing until the next full frame.
-            remembered = Image.composite(request.payload, previous_sketch, binary)
-            return composite_rgb(previous_image, image, alpha), remembered
+            remembered = Image.composite(request.payload, previous.sketch, binary)
+            return composite_rgb(previous.image, image, alpha), remembered
         delivered = keep_unchanged_pixels(
-            previous_sketch, previous_image, request.payload, image,
+            previous.sketch, previous.image, request.payload, image,
         )
         return delivered, request.payload
 
@@ -1497,15 +1548,23 @@ class DiffusersEngine:
                 return self._frame_batch_sequential(requests)
             request = requests[0]
             stages = _empty_frame_stages() if request.profile else None
-            image, _ = self._frame(
+            image, _, latents = self._frame(
                 manifest, request.params, request.payload, request.strength,
                 prompt_cache=request.prompt_cache, stages=stages,
             )
+            request.latent = latents
             gpu_ms = int((time.monotonic() - started) * 1000)
             if stages is not None:
                 _finish_stage_overhead(stages, gpu_ms)
                 request.stages = stages
             return [(image, gpu_ms)]
+        if any(
+            _selection_alpha(request.prompt_cache, request.params, request.payload.size)
+            is not None
+            for request in requests
+        ):
+            # ponytail: a batch holding a selection runs sequentially; per-item blending in the batch callback if selections become common.
+            return self._frame_batch_sequential(requests)
         if manifest.t2i_adapter:
             pipeline = self._pipeline(
                 manifest, "realtime", allow_demotion=False,
@@ -2289,6 +2348,47 @@ class DiffusersEngine:
             profile=profile,
         )
 
+    def _blend_callback(
+        self,
+        pipeline: Any,
+        alpha: Image.Image,
+        previous_latent: Any,
+        seed: int,
+    ) -> Callable[[int, Any, Any], None]:
+        """Build the per-step callback resetting the latent outside a selection.
+
+        The pipeline reuses the latents tensor it passes the legacy callback,
+        so blending in place is what carries the reset into the next step. The
+        noise gets its own generator off the session seed plus one, so the
+        reset is the same wherever it runs and never touches the render's
+        generator.
+        """
+        height, width = previous_latent.shape[-2:]
+        resized = alpha.resize((width, height), Image.Resampling.BILINEAR)
+        mask = self.torch.tensor(
+            [value / 255.0 for value in resized.tobytes()],
+            device=self.device,
+            dtype=previous_latent.dtype,
+        ).reshape(1, 1, height, width)
+        noise = self.torch.randn(
+            previous_latent.shape,
+            generator=self.torch.Generator(self.device).manual_seed(seed + 1),
+            device=self.device,
+            dtype=previous_latent.dtype,
+        )
+
+        def keep_outside(step: int, timestep: Any, latents: Any) -> None:
+            timesteps = pipeline.scheduler.timesteps
+            if step + 1 < len(timesteps):
+                known = pipeline.scheduler.add_noise(
+                    previous_latent, noise, timesteps[step + 1:step + 2],
+                )
+            else:
+                known = previous_latent
+            latents.copy_(mask * latents + (1 - mask) * known)
+
+        return keep_outside
+
     def _frame(
         self,
         manifest: Manifest,
@@ -2298,7 +2398,7 @@ class DiffusersEngine:
         *,
         prompt_cache: PromptCache | None = None,
         stages: dict[str, int] | None = None,
-    ) -> tuple[Image.Image, int]:
+    ) -> tuple[Image.Image, int, Any]:
         # The GPU lock already surrounds this call. Start the clock here so
         # GeneratedFrame.gpu_ms and calibration measure the same occupancy
         # (pipeline lookup, prompt encode, preview-decoder load, diffusion).
@@ -2312,8 +2412,30 @@ class DiffusersEngine:
             pipeline = self._pipeline(
                 manifest, "realtime", allow_demotion=False,
             )
+            alpha = _selection_alpha(prompt_cache, params, canvas.size)
+            previous = prompt_cache.last_frame if prompt_cache is not None else None
+            frame_params = params
+            callback_kwargs: dict[str, Any] = {}
+            if alpha is not None:
+                # The edit prompt follows the composite alone: a frame without
+                # a stored latent still composites, so it must render the edit.
+                mask = params.get("mask")
+                if isinstance(mask, dict) and mask.get("prompt"):
+                    frame_params = {**params, "prompt": mask["prompt"]}
+            seed = params.get("seed")
+            if alpha is not None and previous is not None and previous.latent is not None:
+                if isinstance(seed, int):
+                    # The inside is denoised against the frozen outside so the
+                    # seam at the lasso edge continues the picture instead of
+                    # cutting it (issue #376, the reviewed panels).
+                    callback_kwargs = {
+                        "callback": self._blend_callback(
+                            pipeline, alpha, previous.latent, seed,
+                        ),
+                        "callback_steps": 1,
+                    }
             prompt_kwargs = self._timed_prompt_kwargs(
-                pipeline, manifest, params, prompt_cache, stages,
+                pipeline, manifest, frame_params, prompt_cache, stages,
             )
             properties = manifest.parameters.get("properties", {})
             structure_strength = float(params.get(
@@ -2342,6 +2464,7 @@ class DiffusersEngine:
                 "adapter_conditioning_scale": structure_strength,
                 "guidance_scale": 0.0,
                 "generator": generator,
+                **callback_kwargs,
             }
         else:
             pipeline = self._pipeline(
@@ -2364,7 +2487,7 @@ class DiffusersEngine:
             self._attach_stage_hooks(pipeline, stages) if stages is not None else []
         )
         try:
-            image = self._render_with_preview_decoder(
+            image, latents = self._render_with_preview_decoder(
                 pipeline, manifest, pipeline_kwargs,
                 preview_decoder=preview_decoder,
                 stages=stages,
@@ -2375,4 +2498,4 @@ class DiffusersEngine:
                 if callable(remove):
                     remove()
         gpu_ms = int((time.monotonic() - started) * 1000)
-        return image, gpu_ms
+        return image, gpu_ms, latents

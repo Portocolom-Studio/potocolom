@@ -53,6 +53,9 @@ class FrameRequest:
     cancelled: bool = False
     profile: bool = False
     stages: dict[str, int] | None = None
+    # The render's final latent when the single-request route produced one;
+    # None after the batched route, which has no per-request latent.
+    latent: Any = None
 
 
 class BatchExecutor(Protocol):
