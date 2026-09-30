@@ -59,6 +59,40 @@ export function modelProperty(
 	return model?.parameters.properties?.[key] as ModelParamProperty | undefined;
 }
 
+/**
+ * The object schema of a parameter, taken directly from `type: object` or
+ * from the `anyOf` branch that carries one beside a null branch: sdxl-turbo
+ * and vega-rt declare the mask as `anyOf: [null, object]`, because the param
+ * may also be cleared with null.
+ */
+function objectSchema(raw: unknown): Record<string, unknown> | undefined {
+	if (typeof raw !== 'object' || raw === null) return undefined;
+	const schema = raw as Record<string, unknown>;
+	if (schema.type === 'object') return schema;
+	if (!Array.isArray(schema.anyOf)) return undefined;
+	for (const branch of schema.anyOf) {
+		if (typeof branch !== 'object' || branch === null) continue;
+		const candidate = branch as Record<string, unknown>;
+		if (candidate.type === 'object') return candidate;
+	}
+	return undefined;
+}
+
+/**
+ * Whether the model accepts an edit prompt on the selection: its manifest has
+ * to declare the mask as an object whose properties carry `prompt`. A model
+ * whose mask is absent, is not an object, or has no prompt under it would be
+ * sent a field its worker never reads, the same rule `supportsSelection`
+ * applies to the mask itself.
+ */
+export function modelAcceptsEditPrompt(model: Model | undefined): boolean {
+	const schema = objectSchema(model?.parameters.properties?.['mask']);
+	if (!schema) return false;
+	const properties = schema.properties;
+	if (typeof properties !== 'object' || properties === null) return false;
+	return 'prompt' in properties;
+}
+
 export function stepsSpec(model: Model | undefined): ParamRange {
 	return numberSpec(modelProperty(model, 'steps'), {
 		min: 1,

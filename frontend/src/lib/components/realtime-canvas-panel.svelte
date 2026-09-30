@@ -13,10 +13,11 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Slider } from '$lib/components/ui/slider';
 	import { DrawingDocument, DRAWING_FILE_MAX_BYTES, type DrawingTool } from '$lib/drawing-document';
-	import { lassoToMask, maskOutline, type LassoPoint } from '$lib/canvas-selection';
+	import { lassoToMask, maskOutline, maskWithPrompt, type LassoPoint } from '$lib/canvas-selection';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		formatParamValue,
+		modelAcceptsEditPrompt,
 		modelProperty,
 		normToValue,
 		stepsSpec,
@@ -122,6 +123,10 @@
 	let selection = $state<RealtimeCanvasMask | null>(null);
 	let lassoPoints = $state<LassoPoint[]>([]);
 	let lassoPointer: number | null = null;
+	// The edit prompt field's own text: what the user last typed. What was
+	// actually applied lives on `selection` as `mask.prompt`, so a new lasso
+	// can carry an applied prompt over without inventing one.
+	let editPrompt = $state('');
 
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
@@ -163,6 +168,10 @@
 	// which is also what keeps the draw canvas first and the output canvas
 	// second in the document's canvas order.
 	const supportsSelection = $derived(modelProperty(selectedModel, 'mask') !== undefined);
+	// The edit prompt field mounts one step further in: the same manifest read,
+	// but for a mask that is an object carrying a `prompt` of its own, so the
+	// panel never offers a field the worker would drop.
+	const supportsEditPrompt = $derived(modelAcceptsEditPrompt(selectedModel));
 	const showOutline = $derived(selection !== null || lassoPoints.length > 0);
 
 	const realtimeSession = createRealtimeCanvasSession({
@@ -272,9 +281,13 @@
 	$effect(() => {
 		// A selection lives in the session's params, so it cannot outlive the
 		// session: once nothing is connecting, queued or live, drop it, which
-		// also covers a model change (the picker only unlocks then).
+		// also covers a model change (the picker only unlocks then). The edit
+		// prompt goes with it: with no selection there is nothing to apply it
+		// to, and leftover text would sit in the field while the next lasso
+		// applied none of it.
 		if (!busy) {
 			selection = null;
+			editPrompt = '';
 			selecting = false;
 			dropLasso();
 		}
@@ -435,9 +448,12 @@
 		dropLasso();
 		const mask = lassoToMask(points, CANVAS_SIZE, CANVAS_SIZE);
 		if (!mask || !connected) return;
-		selection = mask;
+		// An edit prompt applied to the previous selection keeps riding along:
+		// the field still holds it, and re-selecting another area is the same
+		// edit somewhere else, not a request to drop it.
+		selection = maskWithPrompt(mask, selection?.prompt);
 		selecting = false;
-		realtimeSession.updateParams({ mask });
+		realtimeSession.updateParams({ mask: selection });
 	}
 
 	function toggleSelecting(): void {
@@ -446,11 +462,30 @@
 	}
 
 	/** Drop the selection here and in the session's params, so the next frames
-	 * are generated whole again. */
+	 * are generated whole again. The edit prompt goes with it: it described
+	 * that area only. */
 	function clearSelection(): void {
 		if (!connected) return;
 		selection = null;
+		editPrompt = '';
 		realtimeSession.updateParams({ mask: null });
+	}
+
+	/** Send the field's text as the selection's own prompt, trimmed. An empty
+	 * field sends the mask without `prompt`, which puts the selection back on
+	 * the session prompt for the frames inside it. */
+	function applyEditPrompt(): void {
+		if (!connected || selection === null) return;
+		selection = maskWithPrompt(selection, editPrompt);
+		realtimeSession.updateParams({ mask: selection });
+	}
+
+	/** Enter applies the prompt from within the field. Escape is handled
+	 * nowhere here on purpose: the window handler's text-field guard already
+	 * leaves it to the field, so it never clears the selection. */
+	function onEditPromptKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter') return;
+		applyEditPrompt();
 	}
 
 	/** Paint paper over the sketch inside the selection, as one undoable edit.
@@ -523,9 +558,11 @@
 		}
 		// A new session opens with the params above, which carry no mask: an
 		// outline left over from the previous one would describe a selection
-		// the worker never received. Model changes land here too, because the
+		// the worker never received, and an edit prompt left over would
+		// describe that same selection. Model changes land here too, because the
 		// picker only allows them while no session is running.
 		selection = null;
+		editPrompt = '';
 		lassoPoints = [];
 		realtimeSession.connect({
 			modelId,
@@ -710,6 +747,25 @@
 							{/if}
 						</div>
 					</div>
+					{#if selection && supportsEditPrompt}
+						<div class="flex flex-col gap-2">
+							<Label for="realtime-edit-prompt">{t('app.realtime_canvas.edit_prompt')}</Label>
+							<div class="flex gap-2">
+								<Input
+									id="realtime-edit-prompt"
+									bind:value={editPrompt}
+									class="min-w-0"
+									onkeydown={onEditPromptKeydown}
+								/>
+								<Button variant="outline" size="sm" disabled={!connected} onclick={applyEditPrompt}>
+									{t('app.realtime_canvas.edit_prompt_apply')}
+								</Button>
+							</div>
+							<p class="text-muted-foreground text-xs">
+								{t('app.realtime_canvas.edit_prompt_hint')}
+							</p>
+						</div>
+					{/if}
 					<Field.Group class="gap-3">
 						<Field.Field>
 							<div class="flex items-center justify-between gap-2">
