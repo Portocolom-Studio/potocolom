@@ -3382,3 +3382,35 @@ def test_closing_an_engine_that_never_ran_a_frame_does_not_raise():
 
 def test_closing_a_diffusers_engine_built_without_init_does_not_raise():
     asyncio.run(DiffusersEngine.__new__(DiffusersEngine).close())
+
+
+def test_a_frame_whose_encode_fails_does_not_update_last_frame():
+    """The session keeps running after a failed frame, so the next small
+    stroke must blend over frame one, which the person saw, not over the
+    frame that never left the worker."""
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+    stored: list = []
+    calls = {"n": 0}
+
+    def fail_second(image: Image.Image) -> bytes:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("encoder failed")
+        return b"encoded"
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        stored.append(cache.last_frame)
+        with pytest.raises(OSError):
+            await engine.frame(
+                manifest, {"prompt": "one"}, _sketch_png(_SMALL_CHANGE_BOX),
+                prompt_cache=cache,
+            )
+
+    with patch("worker.engine.encode_webp", fail_second):
+        asyncio.run(scenario())
+
+    assert cache.last_frame is stored[0]

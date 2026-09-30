@@ -1409,15 +1409,19 @@ class DiffusersEngine:
                 )
             data = await self._run_to_completion(encode_webp, image)
         if not request.cancelled and not request.future.done():
+            if memory is not None:
+                # Written only here, next to delivery: a frame whose encode
+                # raised, or whose request was cancelled meanwhile, never
+                # reached the person, so no later frame may blend over it.
+                memory.last_frame = (request.payload, image, dict(request.params))
             request.future.set_result(GeneratedFrame(data, gpu_ms, request.stages))
 
     @staticmethod
     def _session_memory(request: FrameRequest) -> PromptCache | None:
         """The holder whose last frame this request may blend over, or None.
 
-        A cancelled or already-resolved request delivers nothing, so it must
-        leave the session's memory where it is: only a delivered frame of an
-        adapter model that has a holder counts (issue #376).
+        Only an adapter model with a holder composites (issue #376); a request
+        already cancelled or resolved skips the work, since it delivers nothing.
         """
         if request.cancelled or request.future.done():
             return None
@@ -1425,23 +1429,22 @@ class DiffusersEngine:
             return None
         return request.prompt_cache
 
+    @staticmethod
     def _frame_for_delivery(
-        self, memory: PromptCache, request: FrameRequest, image: Image.Image,
+        memory: PromptCache, request: FrameRequest, image: Image.Image,
     ) -> Image.Image:
         """Blend a small sketch change over the session's last frame.
 
         The UNet rendered the whole frame either way; only these pixels leave
         the worker. Params are compared because an unchanged sketch with a new
         prompt must not freeze the old picture, so any params change sends the
-        full frame.
+        full frame. It reads the memory and never writes it: that happens once
+        the frame is delivered.
         """
         previous = memory.last_frame
-        if previous is not None and previous[2] == request.params:
-            image = keep_unchanged_pixels(
-                previous[0], previous[1], request.payload, image,
-            )
-        memory.last_frame = (request.payload, image, dict(request.params))
-        return image
+        if previous is None or previous[2] != request.params:
+            return image
+        return keep_unchanged_pixels(previous[0], previous[1], request.payload, image)
 
     def _frame_batch(
         self, requests: list[FrameRequest],
