@@ -13,9 +13,11 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Slider } from '$lib/components/ui/slider';
 	import { DrawingDocument, DRAWING_FILE_MAX_BYTES, type DrawingTool } from '$lib/drawing-document';
+	import { lassoToMask, maskOutline, type LassoPoint } from '$lib/canvas-selection';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		formatParamValue,
+		modelProperty,
 		normToValue,
 		stepsSpec,
 		trackSteps,
@@ -27,6 +29,7 @@
 		createRealtimeCanvasSession,
 		isTerminalNotice,
 		type ConnectionState,
+		type RealtimeCanvasMask,
 		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
 	import { resolve } from '$app/paths';
@@ -48,6 +51,13 @@
 
 	let drawCanvas = $state<HTMLCanvasElement | undefined>();
 	let outputCanvas = $state<HTMLCanvasElement | undefined>();
+	// The transparent overlays the selection outline is drawn on. Never the
+	// canvases themselves: the drawing document owns the first one and the
+	// worker's frames paint over the second.
+	let drawOutline = $state<HTMLCanvasElement | undefined>();
+	let outputOutline = $state<HTMLCanvasElement | undefined>();
+	// The panel's own element: Escape is the panel's while focus is inside it.
+	let panelRoot = $state<HTMLDivElement | undefined>();
 	let drawingDocument = $state<DrawingDocument | null>(null);
 	let drawingFileInput = $state<HTMLInputElement | undefined>();
 
@@ -104,6 +114,14 @@
 	let tool = $state<DrawingTool>('draw');
 	let openingDrawing = $state(false);
 	let fileRequest = 0;
+	// The lasso: `selecting` arms the next drag to record a selection instead
+	// of a stroke, `selection` is the mask last accepted (and last sent to the
+	// session), and `lassoPoints` holds the drag in flight so it can be
+	// previewed as it is drawn.
+	let selecting = $state(false);
+	let selection = $state<RealtimeCanvasMask | null>(null);
+	let lassoPoints = $state<LassoPoint[]>([]);
+	let lassoPointer: number | null = null;
 
 	// Only a model advertising the realtime capability can take canvas frames,
 	// and only one the user has not removed in Models: that screen promises a
@@ -138,6 +156,14 @@
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
+	// The selection controls belong to a model whose manifest declares the mask
+	// param, read the way the sliders read theirs: only sdxl-turbo and vega-rt
+	// declare it, and for any other realtime model a mask would be a param no
+	// worker understands. The outline mounts only while one can be outlined,
+	// which is also what keeps the draw canvas first and the output canvas
+	// second in the document's canvas order.
+	const supportsSelection = $derived(modelProperty(selectedModel, 'mask') !== undefined);
+	const showOutline = $derived(selection !== null || lassoPoints.length > 0);
 
 	const realtimeSession = createRealtimeCanvasSession({
 		getDrawCanvas: () => drawCanvas,
@@ -243,6 +269,53 @@
 		};
 	});
 
+	$effect(() => {
+		// A selection lives in the session's params, so it cannot outlive the
+		// session: once nothing is connecting, queued or live, drop it, which
+		// also covers a model change (the picker only unlocks then).
+		if (!busy) {
+			selection = null;
+			selecting = false;
+			dropLasso();
+		}
+	});
+
+	$effect(() => {
+		// The outline itself: the mask last accepted, or the lasso being drawn
+		// right now. It is painted on the overlays, never on the canvases, so
+		// the drawing document and the worker's frames stay untouched. It sits
+		// on a picture, not on the page, so no theme colour is safe: a white
+		// line under a dark dash reads on any image, light or dark.
+		const points =
+			lassoPoints.length > 0
+				? lassoPoints
+				: selection
+					? maskOutline(selection, CANVAS_SIZE, CANVAS_SIZE)
+					: [];
+		for (const overlay of [drawOutline, outputOutline]) {
+			if (!overlay) continue;
+			const context = overlay.getContext('2d');
+			if (!context) continue;
+			context.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+			if (points.length < 2) continue;
+			context.save();
+			context.lineWidth = 2;
+			context.lineJoin = 'round';
+			context.beginPath();
+			context.moveTo(points[0].x, points[0].y);
+			for (const point of points) context.lineTo(point.x, point.y);
+			// A held selection is a closed polygon; the drag in flight is not
+			// closed until the release accepts it.
+			if (lassoPoints.length === 0) context.closePath();
+			context.strokeStyle = '#ffffff';
+			context.stroke();
+			context.setLineDash([6, 4]);
+			context.strokeStyle = '#111827';
+			context.stroke();
+			context.restore();
+		}
+	});
+
 	// Tear the socket and the timer down with the panel, so leaving the view
 	// does not leave a session open on a worker.
 	$effect(() => () => {
@@ -274,14 +347,15 @@
 	}
 
 	function onPointerDown(event: PointerEvent): void {
-		if (
-			openingDrawing ||
-			!event.isPrimary ||
-			event.button !== 0 ||
-			strokePointer !== null ||
-			!drawingDocument
-		)
+		if (openingDrawing || !event.isPrimary || event.button !== 0) return;
+		if (selecting) {
+			if (lassoPointer !== null || strokePointer !== null) return;
+			lassoPointer = event.pointerId;
+			lassoPoints = [canvasPoint(event)];
+			(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
 			return;
+		}
+		if (strokePointer !== null || !drawingDocument) return;
 		const point = canvasPoint(event);
 		if (
 			!drawingDocument.beginStroke(
@@ -301,22 +375,100 @@
 		syncHistory();
 	}
 
+	// The output canvas takes a lasso and nothing else: drawing belongs to the
+	// sketch, and a drag on the picture must not add strokes to it.
+	function onOutputPointerDown(event: PointerEvent): void {
+		if (selecting) onPointerDown(event);
+	}
+
 	function onPointerMove(event: PointerEvent): void {
 		// isPrimary and the stroke's own pointer id: without both, a plain hover
 		// after a keyboard-driven pen down would draw, and a second finger would
-		// append its moves to the first finger's stroke.
-		if (openingDrawing || !event.isPrimary || event.pointerId !== strokePointer) return;
+		// append its moves to the first finger's stroke. The lasso answers to
+		// its own pointer id for the same reason, and adds nothing to the
+		// drawing document: a selection changes what renders, not what is drawn.
+		if (openingDrawing || !event.isPrimary) return;
+		if (event.pointerId === lassoPointer) {
+			lassoPoints = [...lassoPoints, canvasPoint(event)];
+			return;
+		}
+		if (event.pointerId !== strokePointer) return;
 		const point = canvasPoint(event);
 		if (drawingDocument?.extendStroke(event.pointerId, point)) {
 			realtimeSession.markChanged();
 		}
 	}
 
+	// A cancel or a lost capture drops a lasso rather than sending it: a stroke
+	// cut short stays local, but a mask changes what the worker renders.
+	function onPointerCancel(event: PointerEvent): void {
+		if (event.pointerId === lassoPointer) {
+			dropLasso();
+			return;
+		}
+		onPointerUp(event);
+	}
+
+	function dropLasso(): void {
+		lassoPointer = null;
+		lassoPoints = [];
+	}
+
 	function onPointerUp(event: PointerEvent): void {
+		// The lasso's own pointer id first: releasing it accepts or drops the
+		// selection, and must not reach the stroke below.
+		if (event.pointerId === lassoPointer) {
+			finishLasso();
+			return;
+		}
 		// The stroke's own pointer id only: another pointer's release must not
 		// end this stroke.
 		if (event.pointerId !== strokePointer) return;
 		finishStroke();
+	}
+
+	/** Close the drag in flight. A click or a scribble yields no mask: the
+	 * toggle stays armed so the next drag can select, and the selection the
+	 * panel already had is left alone. */
+	function finishLasso(): void {
+		const points = lassoPoints;
+		dropLasso();
+		const mask = lassoToMask(points, CANVAS_SIZE, CANVAS_SIZE);
+		if (!mask || !connected) return;
+		selection = mask;
+		selecting = false;
+		realtimeSession.updateParams({ mask });
+	}
+
+	function toggleSelecting(): void {
+		selecting = !selecting;
+		if (!selecting) dropLasso();
+	}
+
+	/** Drop the selection here and in the session's params, so the next frames
+	 * are generated whole again. */
+	function clearSelection(): void {
+		if (!connected) return;
+		selection = null;
+		realtimeSession.updateParams({ mask: null });
+	}
+
+	/** A modal surface owns Escape while it is open, and the panel's own
+	 * controls are not modal surfaces. */
+	function modalIsOpen(): boolean {
+		return document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]') !== null;
+	}
+
+	function onWindowKeydown(event: KeyboardEvent): void {
+		// Escape is the panel's only when focus is inside it: anywhere else on
+		// the page the key belongs to whatever holds focus.
+		if (event.key !== 'Escape' || selection === null || modalIsOpen()) return;
+		if (!panelRoot?.contains(document.activeElement)) return;
+		// In a text field Escape belongs to the field (abandoning an edit), not
+		// to the selection.
+		const target = event.target as HTMLElement | null;
+		if (event.defaultPrevented || target?.closest('input, textarea, select')) return;
+		clearSelection();
 	}
 
 	function clearCanvas(): void {
@@ -359,6 +511,12 @@
 			output.fillStyle = PAPER;
 			output.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 		}
+		// A new session opens with the params above, which carry no mask: an
+		// outline left over from the previous one would describe a selection
+		// the worker never received. Model changes land here too, because the
+		// picker only allows them while no session is running.
+		selection = null;
+		lassoPoints = [];
 		realtimeSession.connect({
 			modelId,
 			prompt,
@@ -429,7 +587,11 @@
 	}
 </script>
 
-<div class="no-scrollbar h-full overflow-y-auto">
+<!-- Escape clears the selection while focus is inside the panel, so the window
+     handler asks the panel's own root before acting. -->
+<svelte:window onkeydown={onWindowKeydown} />
+
+<div class="no-scrollbar h-full overflow-y-auto" bind:this={panelRoot}>
 	<div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-4">
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<div>
@@ -506,17 +668,34 @@
 				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 					<div class="flex flex-col gap-2">
 						<Label for="realtime-tool">{t('app.realtime_canvas.tool')}</Label>
-						<select
-							id="realtime-tool"
-							bind:value={tool}
-							class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full rounded-lg border px-3 font-sans text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
-							<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
-							<option value="line">{t('app.realtime_canvas.tool_line')}</option>
-							<option value="rectangle">{t('app.realtime_canvas.tool_rectangle')}</option>
-							<option value="ellipse">{t('app.realtime_canvas.tool_ellipse')}</option>
-						</select>
+						<div class="flex flex-wrap items-center gap-2">
+							<select
+								id="realtime-tool"
+								bind:value={tool}
+								class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 min-w-0 flex-1 rounded-lg border px-3 font-sans text-sm outline-none transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<option value="draw">{t('app.realtime_canvas.tool_draw')}</option>
+								<option value="erase">{t('app.realtime_canvas.tool_erase')}</option>
+								<option value="line">{t('app.realtime_canvas.tool_line')}</option>
+								<option value="rectangle">{t('app.realtime_canvas.tool_rectangle')}</option>
+								<option value="ellipse">{t('app.realtime_canvas.tool_ellipse')}</option>
+							</select>
+							{#if supportsSelection}
+								<Button
+									variant={selecting ? 'default' : 'outline'}
+									aria-pressed={selecting}
+									disabled={!connected}
+									onclick={toggleSelecting}
+								>
+									{t('app.realtime_canvas.select_area')}
+								</Button>
+								{#if selection}
+									<Button variant="outline" disabled={!connected} onclick={clearSelection}>
+										{t('app.realtime_canvas.clear_selection')}
+									</Button>
+								{/if}
+							{/if}
+						</div>
 					</div>
 					<Field.Group class="gap-3">
 						<Field.Field>
@@ -563,18 +742,34 @@
 							</div>
 						</Field.Field>
 					</Field.Group>
-					<canvas
-						bind:this={drawCanvas}
-						width={CANVAS_SIZE}
-						height={CANVAS_SIZE}
-						aria-label={t('app.realtime_canvas.draw_surface')}
-						class="border-border mx-auto h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border bg-white object-contain touch-none"
-						onpointerdown={onPointerDown}
-						onpointermove={onPointerMove}
-						onpointerup={onPointerUp}
-						onpointercancel={onPointerUp}
-						onlostpointercapture={onPointerUp}
-					></canvas>
+					<div class="relative mx-auto w-fit max-w-full">
+						<canvas
+							bind:this={drawCanvas}
+							width={CANVAS_SIZE}
+							height={CANVAS_SIZE}
+							aria-label={t('app.realtime_canvas.draw_surface')}
+							class="border-border block h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border bg-white object-contain touch-none"
+							onpointerdown={onPointerDown}
+							onpointermove={onPointerMove}
+							onpointerup={onPointerUp}
+							onpointercancel={onPointerCancel}
+							onlostpointercapture={onPointerCancel}
+						></canvas>
+						{#if showOutline}
+							<canvas
+								bind:this={drawOutline}
+								width={CANVAS_SIZE}
+								height={CANVAS_SIZE}
+								aria-hidden="true"
+								class="pointer-events-none absolute inset-0 h-full w-full rounded-lg"
+							></canvas>
+						{/if}
+					</div>
+					{#if supportsSelection && selection}
+						<p class="text-muted-foreground text-xs">
+							{t('app.realtime_canvas.selection_hint')}
+						</p>
+					{/if}
 					{#if drawingNotice}
 						<p class="text-destructive text-sm" role="status" aria-live="polite">
 							{t(drawingNotice)}
@@ -590,12 +785,29 @@
 				</Card.Header>
 				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 					<div class="relative">
-						<canvas
-							bind:this={outputCanvas}
-							width={CANVAS_SIZE}
-							height={CANVAS_SIZE}
-							class="border-border bg-muted/20 mx-auto h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border object-contain"
-						></canvas>
+						<div class="relative mx-auto w-fit max-w-full">
+							<canvas
+								bind:this={outputCanvas}
+								width={CANVAS_SIZE}
+								height={CANVAS_SIZE}
+								class="border-border bg-muted/20 block h-auto w-auto max-h-[min(38vh,calc(100vh-34rem))] max-w-full rounded-lg border object-contain"
+								class:touch-none={selecting}
+								onpointerdown={onOutputPointerDown}
+								onpointermove={onPointerMove}
+								onpointerup={onPointerUp}
+								onpointercancel={onPointerCancel}
+								onlostpointercapture={onPointerCancel}
+							></canvas>
+							{#if showOutline}
+								<canvas
+									bind:this={outputOutline}
+									width={CANVAS_SIZE}
+									height={CANVAS_SIZE}
+									aria-hidden="true"
+									class="pointer-events-none absolute inset-0 h-full w-full rounded-lg"
+								></canvas>
+							{/if}
+						</div>
 						{#if renderedFrames === 0}
 							<p
 								class="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-sm"

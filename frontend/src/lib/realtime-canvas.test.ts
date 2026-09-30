@@ -29,6 +29,7 @@ import {
 	isTerminalNotice,
 	type ConnectionState,
 	type RealtimeCanvasLimits,
+	type RealtimeCanvasMask,
 	type RealtimeCanvasNotice,
 	type RealtimeCanvasSession
 } from './realtime-canvas.ts';
@@ -210,6 +211,60 @@ test('the update message trims the prompt exactly like the open message', () => 
 	const message = JSON.parse(updateParamsMessage({ prompt: '  a blue house  ', steps: 6 }));
 	assert.equal(message.params.prompt, 'a blue house');
 	assert.equal(message.params.steps, 6);
+});
+
+test('the update message carries a selection mask as it arrived, and null as null', () => {
+	const mask: RealtimeCanvasMask = {
+		polygons: [
+			[
+				[0.1, 0.2],
+				[0.9, 0.2],
+				[0.9, 0.8]
+			]
+		]
+	};
+	const message = JSON.parse(updateParamsMessage({ mask }));
+	assert.equal(message.type, 'update_params');
+	assert.deepEqual(message.params, { mask }, 'normalised numbers travel unrounded');
+	assert.deepEqual(JSON.parse(updateParamsMessage({ mask: null })).params, { mask: null });
+	// A mask rides beside the other params rather than replacing them.
+	assert.deepEqual(JSON.parse(updateParamsMessage({ steps: 3, mask })).params, { steps: 3, mask });
+});
+
+test('a selection mask goes out on update_params and its echo moves no control', () => {
+	const harness = sessionHarness();
+	harness.session.connect({
+		modelId: 'vega-rt',
+		prompt: 'a cat',
+		params: { structure_strength: 0.5, steps: 10 }
+	});
+	const socket = harness.sockets[0];
+	ready(socket);
+	const mask: RealtimeCanvasMask = {
+		polygons: [
+			[
+				[0, 0],
+				[1, 0],
+				[1, 1]
+			]
+		]
+	};
+
+	harness.session.updateParams({ mask });
+	const sent = socket.sent.filter((data) => typeof data === 'string');
+	const update = JSON.parse(sent[sent.length - 1] as string);
+	assert.equal(update.type, 'update_params');
+	assert.deepEqual(update.params, { mask });
+
+	// The API echoes what it applied. The handler still reads only the keys it
+	// read before masks existed, so a mask moves no slider in the panel.
+	socket.message(JSON.stringify({ type: 'params_updated', params: { mask, steps: 12 } }));
+	assert.deepEqual(harness.applied.at(-1), { steps: 12 });
+
+	harness.session.updateParams({ mask: null });
+	const cleared = JSON.parse(socket.sent[socket.sent.length - 1] as string);
+	assert.deepEqual(cleared.params, { mask: null });
+	harness.session.destroy();
 });
 
 test('a terminal close fails the session and anything else invites a reconnect', () => {

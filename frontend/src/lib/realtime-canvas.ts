@@ -174,12 +174,26 @@ export function openMessage(
 }
 
 /**
+ * A lasso selection, as the `mask` param carries it: one or more polygons of
+ * x and y normalised to 0..1 of the frame. The worker renders the new frame
+ * inside the polygons and keeps the previous frame outside them; `mask: null`
+ * clears the selection. Only a manifest declaring `parameters.properties.mask`
+ * (sdxl-turbo, vega-rt) understands it, which is why the panel sends it only
+ * for a model that declares it.
+ */
+export type RealtimeCanvasMask = { polygons: [number, number][][] };
+
+/** Every value the update control may carry, mask included. */
+export type RealtimeCanvasParamValue = string | number | RealtimeCanvasMask | null;
+
+/**
  * The update control message carrying a subset of the session's params.
  * Lives here beside openMessage for the same reason: the params are a
  * contract with the model's manifest. The prompt is trimmed exactly as
- * openMessage trims it, so the two cannot disagree about whitespace.
+ * openMessage trims it, so the two cannot disagree about whitespace, and a
+ * mask passes through as it arrived: it is already normalised by the caller.
  */
-export function updateParamsMessage(params: Record<string, string | number>): string {
+export function updateParamsMessage(params: Record<string, RealtimeCanvasParamValue>): string {
 	const update = { ...params };
 	if (typeof update.prompt === 'string') update.prompt = update.prompt.trim();
 	return JSON.stringify({ type: 'update_params', params: update });
@@ -340,7 +354,7 @@ export interface RealtimeCanvasSessionOptions {
 export interface RealtimeCanvasSession {
 	connect(input: { modelId: string; prompt: string; params: RealtimeCanvasParams }): void;
 	disconnect(): void;
-	updateParams(params: Record<string, string | number>): void;
+	updateParams(params: Record<string, RealtimeCanvasParamValue>): void;
 	markChanged(): void;
 	destroy(): void;
 }
@@ -442,7 +456,7 @@ export function createRealtimeCanvasSession(
 
 	function sendUpdate(
 		generation: SessionGeneration,
-		params: Record<string, string | number>
+		params: Record<string, RealtimeCanvasParamValue>
 	): void {
 		if (
 			!isCurrent(generation) ||
