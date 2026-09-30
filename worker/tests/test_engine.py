@@ -1128,6 +1128,26 @@ def test_a_composite_frame_with_a_stored_latent_hands_the_pipeline_a_callback():
     assert callable(kwargs["callback"])
 
 
+def test_a_multistep_scheduler_gets_no_blend_callback():
+    """The reset noises to the next timestep, which only a first-order
+    scheduler lands on after a step; any other falls back to the composite."""
+    engine, pipeline = _blend_frame_engine()
+    pipeline.scheduler = SimpleNamespace(order=2)
+    manifest = _adapter_manifest()
+    cache = PromptCache(
+        last_frame=_stored_frame(
+            {"prompt": "one", "seed": 7}, _FakeTensor((1, 4, 64, 64)),
+        ),
+    )
+
+    engine._frame(
+        manifest, {"prompt": "one", "seed": 7, "mask": _SELECTION},
+        Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE)), 0.7, prompt_cache=cache,
+    )
+
+    assert "callback" not in pipeline.render_kwargs[-1]
+
+
 def test_a_composite_frame_without_a_stored_latent_passes_no_callback():
     engine, pipeline = _blend_frame_engine()
     manifest = _adapter_manifest()

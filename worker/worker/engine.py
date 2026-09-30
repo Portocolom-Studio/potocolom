@@ -221,7 +221,7 @@ def _selection_alpha(
         return None
     try:
         return selection_alpha(mask, size)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # The API validates a mask against whichever manifest its registry
         # holds, which in a mixed fleet can be one without the field, so a
         # malformed mask can arrive here. It must not fail every frame of the
@@ -2423,7 +2423,10 @@ class DiffusersEngine:
                 if isinstance(mask, dict) and mask.get("prompt"):
                     frame_params = {**params, "prompt": mask["prompt"]}
             seed = params.get("seed")
-            if alpha is not None and previous is not None and previous.latent is not None:
+            if (alpha is not None and previous is not None and previous.latent is not None
+                    and getattr(getattr(pipeline, "scheduler", None), "order", 1) == 1):
+                # The reset noises to timesteps[i + 1], which is where a
+                # first-order scheduler leaves the latent after step i.
                 if isinstance(seed, int):
                     # The inside is denoised against the frozen outside so the
                     # seam at the lasso edge continues the picture instead of
