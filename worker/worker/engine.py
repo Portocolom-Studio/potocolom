@@ -2420,8 +2420,12 @@ class DiffusersEngine:
                 # The edit prompt follows the composite alone: a frame without
                 # a stored latent still composites, so it must render the edit.
                 mask = params.get("mask")
-                if isinstance(mask, dict) and mask.get("prompt"):
-                    frame_params = {**params, "prompt": mask["prompt"]}
+                edit_prompt = mask.get("prompt") if isinstance(mask, dict) else None
+                # A mixed fleet can deliver a mask the API validated against a
+                # manifest without the field, so only a real string replaces
+                # the session prompt.
+                if isinstance(edit_prompt, str) and edit_prompt:
+                    frame_params = {**params, "prompt": edit_prompt}
             seed = params.get("seed")
             if (alpha is not None and previous is not None and previous.latent is not None
                     and getattr(getattr(pipeline, "scheduler", None), "order", 1) == 1):

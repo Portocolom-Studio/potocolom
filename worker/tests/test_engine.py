@@ -1084,6 +1084,12 @@ def test_the_edit_prompt_applies_on_a_composite_frame_without_a_stored_latent():
         "one",
         id="malformed mask",
     ),
+    pytest.param(
+        {"prompt": "one"},
+        {"prompt": "one", "mask": {**_SELECTION, "prompt": 42}},
+        "one",
+        id="non-string edit prompt",
+    ),
 ])
 def test_the_session_prompt_is_encoded_without_a_composite_frame(
     stored, frame_params, expected,
