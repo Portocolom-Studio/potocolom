@@ -453,6 +453,16 @@
 		realtimeSession.updateParams({ mask: null });
 	}
 
+	/** Paint paper over the sketch inside the selection, as one undoable edit.
+	 * The selection itself stays: the usual next step is drawing inside it. */
+	function eraseSelection(): void {
+		if (openingDrawing || selection === null) return;
+		finishStroke();
+		if (!drawingDocument?.eraseRegion(maskOutline(selection, CANVAS_SIZE, CANVAS_SIZE))) return;
+		syncHistory();
+		realtimeSession.markChanged();
+	}
+
 	/** A modal surface owns Escape while it is open, and the panel's own
 	 * controls are not modal surfaces. */
 	function modalIsOpen(): boolean {
@@ -692,6 +702,9 @@
 								{#if selection}
 									<Button variant="outline" disabled={!connected} onclick={clearSelection}>
 										{t('app.realtime_canvas.clear_selection')}
+									</Button>
+									<Button variant="outline" disabled={openingDrawing} onclick={eraseSelection}>
+										{t('app.realtime_canvas.erase_selection')}
 									</Button>
 								{/if}
 							{/if}

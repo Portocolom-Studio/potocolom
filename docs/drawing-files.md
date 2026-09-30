@@ -17,21 +17,23 @@ the existing complete-WebP path, including when the opened drawing is blank.
 
 ## Versions
 
-Save writes version 2. Open accepts version 1 and version 2. Version 1 has
-stroke and clear operations only; version 2 also accepts shape operations.
-A version 1 file containing a shape is invalid. Older readers reject version
-2 rather than opening an incomplete drawing.
+Save writes version 3. Open accepts version 1, version 2 and version 3, so a
+file saved by an earlier release still opens. Version 1 has stroke and clear
+operations only; version 2 also accepts shape operations; version 3 also
+accepts erase-region operations. A version 1 file containing a shape is
+invalid, and a version 2 file containing an erase-region is invalid. Older
+readers reject version 3 rather than opening an incomplete drawing.
 
 The document uses a 512 by 512 coordinate space. It records draw and erase
-strokes with stable IDs, colors, widths and ordered points, plus shapes and
-clear operations. The undo position selects the visible prefix of the operation
-list; later operations form the redo branch.
+strokes with stable IDs, colors, widths and ordered points, plus shapes,
+region erases and clear operations. The undo position selects the visible
+prefix of the operation list; later operations form the redo branch.
 
 | Field | Value |
 |---|---|
-| `version` | `2` when saved; `1` or `2` when opened |
+| `version` | `3` when saved; `1`, `2` or `3` when opened |
 | `width`, `height` | `512` |
-| `operations` | Ordered stroke, shape and clear operations, including redo history |
+| `operations` | Ordered stroke, shape, erase-region and clear operations, including redo history |
 | `cursor` | Integer from zero through the operation count |
 
 A stroke has `kind: "stroke"`, a unique `id` starting with `operation-`,
@@ -56,6 +58,16 @@ One shape drag is one undo step. While the pointer moves, the preview uses
 one temporary copy of the canvas from the start of that drag. Old preview
 edges do not enter the journal or remain on the canvas. Save, pointer release
 and lost pointer capture finish the visible shape, as they finish a stroke.
+
+A region erase has `kind: "erase-region"`, a unique `id` and a `points` array
+with 3 through 512 points, and no other keys. The points are the corners of a
+closed polygon in the same coordinate space as stroke points, and each one is
+checked by the same coordinate limits. Opening paints the polygon's interior
+white (`#ffffff`), over whatever the earlier operations drew there, and leaves
+everything outside it untouched; the fill closes the outline itself, so the
+last point need not repeat the first. It is one undo step like any other, and
+its points count toward the point limit. An erase-region is valid only in a
+version 3 file.
 
 Limits apply to both saving and opening: 8 MiB of UTF-8 JSON, 10,000
 operations and 200,000 points in the full journal, including the redo branch.

@@ -447,6 +447,7 @@
 	"app.realtime_canvas.tool_ellipse": "Ellipse",
 	"app.realtime_canvas.select_area": "Select area",
 	"app.realtime_canvas.clear_selection": "Clear selection",
+	"app.realtime_canvas.erase_selection": "Erase selection",
 	"app.realtime_canvas.selection_hint": "Drawing now changes only the selected area.",
 	"app.realtime_canvas.brush_size": "Brush size",
 	"app.realtime_canvas.color": "Color",
