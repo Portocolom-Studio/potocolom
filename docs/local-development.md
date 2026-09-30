@@ -373,7 +373,9 @@ npm run test:canvas
 
 Shape checks use pointer drags and pixel samples for line, rectangle and
 ellipse outlines. They also cover preview cleanup, one-step undo, saved
-geometry and reading old version 1 drawing files.
+geometry and reading old version 1 and 2 drawing files. Region-erase checks
+cover paper inside the polygon and an untouched stroke outside it, undo and
+redo, a version 3 round trip, and rejection of malformed erase-regions.
 
 Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH` or
 `CHROME_PATH` for a browser outside the standard Linux paths. The gate fails

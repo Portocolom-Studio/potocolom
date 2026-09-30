@@ -259,7 +259,7 @@ export class DrawingDocument {
 	 * erase refuses until that gesture ends rather than committing under it. */
 	public eraseRegion(points: DrawingPoint[]): boolean {
 		if (this.destroyed || this.active !== null) return false;
-		if (points.length < 3) return false;
+		if (points.length < 3 || points.length > 512) return false;
 		const operation: EraseRegionOperation = {
 			kind: 'erase-region',
 			id: this.newOperationId(),

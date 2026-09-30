@@ -65,9 +65,10 @@ closed polygon in the same coordinate space as stroke points, and each one is
 checked by the same coordinate limits. Opening paints the polygon's interior
 white (`#ffffff`), over whatever the earlier operations drew there, and leaves
 everything outside it untouched; the fill closes the outline itself, so the
-last point need not repeat the first. It is one undo step like any other, and
-its points count toward the point limit. An erase-region is valid only in a
-version 3 file.
+last point need not repeat the first. A self-intersecting outline fills by
+the nonzero winding rule, so a loop wound against the outer one stays
+unfilled. It is one undo step like any other, and its points count toward the
+point limit. An erase-region is valid only in a version 3 file.
 
 Limits apply to both saving and opening: 8 MiB of UTF-8 JSON, 10,000
 operations and 200,000 points in the full journal, including the redo branch.
