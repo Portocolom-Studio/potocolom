@@ -338,17 +338,25 @@ def _adapter_manifest() -> Manifest:
 # edit on an otherwise untouched canvas, the case issue #376 keeps pixels for.
 _SMALL_CHANGE_BOX = (232, 232, 280, 280)
 
+# A lasso over the middle of the frame, in the normalized x, y the person's
+# selection travels as (issue #376): 179 to 332 px on a 512 px frame.
+_SELECTION = {
+    "polygons": [[
+        [0.35, 0.35], [0.65, 0.35], [0.65, 0.65], [0.35, 0.65],
+    ]],
+}
 
-def _sketch_canvas(change: tuple[int, int, int, int] | None = None) -> Image.Image:
+
+def _sketch_canvas(*changes: tuple[int, int, int, int]) -> Image.Image:
     canvas = Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE), "white")
-    if change is not None:
+    for change in changes:
         canvas.paste((0, 0, 0), change)
     return canvas
 
 
-def _sketch_png(change: tuple[int, int, int, int] | None = None) -> bytes:
+def _sketch_png(*changes: tuple[int, int, int, int]) -> bytes:
     source = io.BytesIO()
-    _sketch_canvas(change).save(source, "PNG")
+    _sketch_canvas(*changes).save(source, "PNG")
     return source.getvalue()
 
 
@@ -741,6 +749,161 @@ def test_a_non_adapter_manifest_is_never_composited():
 
     assert cache.last_frame is None
     assert delivered[1].getpixel((32, 32)) == (200, 100, 50)
+
+
+def test_a_selection_composites_a_change_larger_than_the_gate():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+    # Far more than MAX_COMPOSITE_FRACTION of the frame changes here.
+    assert 400 * 400 / (REALTIME_SIZE * REALTIME_SIZE) > 0.02
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _SELECTION},
+            _sketch_png((0, 0, 400, 400)), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # The selection, not the gate, decides: outside it the previous frame
+    # pixel for pixel, inside it the new render.
+    assert delivered[1].getpixel((32, 32)) == (10, 20, 30)
+    assert delivered[1].getpixel((500, 500)) == (10, 20, 30)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_a_mask_alone_is_not_a_params_change():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _SELECTION}, _sketch_png(),
+            prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # Only the selection appeared between the two frames, so this is not the
+    # params change that sends the full frame: the frame composites through it.
+    assert delivered[1].getpixel((32, 32)) == (10, 20, 30)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_a_null_mask_falls_back_to_the_automatic_gate():
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": None},
+            _sketch_png((0, 0, 400, 400)), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # No selection, so the 2 percent gate decides and this change sends the
+    # whole frame.
+    assert delivered[1].getpixel((32, 32)) == (200, 100, 50)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_clearing_the_selection_delivers_the_strokes_outside_it():
+    engine, cache = _recording_frame_engine(
+        [(10, 20, 30), (200, 100, 50), (70, 60, 40)],
+    )
+    manifest = _adapter_manifest()
+    inside_box = (240, 240, 280, 280)
+    outside_box = (40, 40, 88, 88)
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _SELECTION},
+            _sketch_png(inside_box, outside_box), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": None},
+            _sketch_png(inside_box, outside_box), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # While the selection was active the outside stroke stayed the previous
+    # frame, but the memory outside it is still the sketch it was drawn on.
+    assert delivered[1].getpixel((64, 64)) == (10, 20, 30)
+    # With the selection cleared the same sketch differs from that memory only
+    # where the outside stroke is, so the gate lets the frame through there.
+    assert delivered[2].getpixel((64, 64)) == (70, 60, 40)
+    # Inside the selection nothing changed since frame two delivered it.
+    assert delivered[2].getpixel((256, 256)) == (200, 100, 50)
+
+
+def test_a_stroke_in_the_feather_band_refreshes_once_the_selection_clears():
+    """The feather band delivers a blend, so it must be remembered as the
+    previous sketch: then the gate sees the band stroke again after the
+    selection clears, instead of keeping the faded blend for good."""
+    engine, cache = _recording_frame_engine(
+        [(10, 20, 30), (200, 100, 50), (70, 60, 40)],
+    )
+    manifest = _adapter_manifest()
+    band_box = (184, 248, 196, 264)
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _SELECTION},
+            _sketch_png(band_box), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": None},
+            _sketch_png(band_box), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    band = delivered[1].getpixel((190, 256))
+    assert band not in {(10, 20, 30), (200, 100, 50)}, "the stroke sits in the feather band"
+    assert delivered[2].getpixel((190, 256)) != band
+
+
+@pytest.mark.parametrize("mask", [
+    {"polygons": [[["a"]]]},
+    {"polygons": [[1, 2, 3]]},
+    {"polygons": 7},
+])
+def test_a_malformed_mask_falls_back_to_the_automatic_gate(mask):
+    """A mask the worker cannot rasterize is no selection, not a failed frame."""
+    engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
+    manifest = _adapter_manifest()
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one"}, _sketch_png(), prompt_cache=cache,
+        )
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": mask},
+            _sketch_png(_SMALL_CHANGE_BOX), prompt_cache=cache,
+        )
+
+    delivered = _record_encoded(scenario)
+
+    # The small change composites through the gate exactly as with no mask.
+    assert delivered[1].getpixel((32, 32)) == (10, 20, 30)
+    assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
 
 
 def test_a_cancelled_frame_does_not_update_last_frame():

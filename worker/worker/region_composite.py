@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PIL import Image, ImageChops, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 COMPOSITE_DILATION_PX = 8
 COMPOSITE_FEATHER_PX = 8
@@ -49,6 +49,20 @@ def feather_change_mask(
     if feather_px:
         return binary.filter(ImageFilter.GaussianBlur(feather_px))
     return binary
+
+
+def selection_alpha(mask: dict, size: tuple[int, int]) -> Image.Image:
+    """Rasterize the selected polygons (normalized x, y) at `size`."""
+    binary = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(binary)
+    width, height = size
+    for polygon in mask.get("polygons") or []:
+        draw.polygon([(x * width, y * height) for x, y in polygon], fill=255)
+    # darker() throws away the blur's outward spill, so the feather only eats
+    # into the polygons: no pixel outside them gets any of the new frame.
+    return ImageChops.darker(
+        binary.filter(ImageFilter.GaussianBlur(COMPOSITE_FEATHER_PX)), binary,
+    )
 
 
 def composite_rgb(
