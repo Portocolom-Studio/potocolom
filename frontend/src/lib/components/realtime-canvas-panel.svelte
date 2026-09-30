@@ -270,6 +270,17 @@
 	});
 
 	$effect(() => {
+		// A selection lives in the session's params, so it cannot outlive the
+		// session: once nothing is connecting, queued or live, drop it, which
+		// also covers a model change (the picker only unlocks then).
+		if (!busy) {
+			selection = null;
+			selecting = false;
+			dropLasso();
+		}
+	});
+
+	$effect(() => {
 		// The outline itself: the mask last accepted, or the lasso being drawn
 		// right now. It is painted on the overlays, never on the canvases, so
 		// the drawing document and the worker's frames stay untouched. It sits
@@ -338,7 +349,7 @@
 	function onPointerDown(event: PointerEvent): void {
 		if (openingDrawing || !event.isPrimary || event.button !== 0) return;
 		if (selecting) {
-			if (lassoPointer !== null) return;
+			if (lassoPointer !== null || strokePointer !== null) return;
 			lassoPointer = event.pointerId;
 			lassoPoints = [canvasPoint(event)];
 			(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
@@ -377,8 +388,7 @@
 		// its own pointer id for the same reason, and adds nothing to the
 		// drawing document: a selection changes what renders, not what is drawn.
 		if (openingDrawing || !event.isPrimary) return;
-		if (lassoPointer !== null) {
-			if (event.pointerId !== lassoPointer) return;
+		if (event.pointerId === lassoPointer) {
 			lassoPoints = [...lassoPoints, canvasPoint(event)];
 			return;
 		}
@@ -387,6 +397,21 @@
 		if (drawingDocument?.extendStroke(event.pointerId, point)) {
 			realtimeSession.markChanged();
 		}
+	}
+
+	// A cancel or a lost capture drops a lasso rather than sending it: a stroke
+	// cut short stays local, but a mask changes what the worker renders.
+	function onPointerCancel(event: PointerEvent): void {
+		if (event.pointerId === lassoPointer) {
+			dropLasso();
+			return;
+		}
+		onPointerUp(event);
+	}
+
+	function dropLasso(): void {
+		lassoPointer = null;
+		lassoPoints = [];
 	}
 
 	function onPointerUp(event: PointerEvent): void {
@@ -407,10 +432,9 @@
 	 * panel already had is left alone. */
 	function finishLasso(): void {
 		const points = lassoPoints;
-		lassoPointer = null;
-		lassoPoints = [];
+		dropLasso();
 		const mask = lassoToMask(points, CANVAS_SIZE, CANVAS_SIZE);
-		if (!mask) return;
+		if (!mask || !connected) return;
 		selection = mask;
 		selecting = false;
 		realtimeSession.updateParams({ mask });
@@ -418,11 +442,13 @@
 
 	function toggleSelecting(): void {
 		selecting = !selecting;
+		if (!selecting) dropLasso();
 	}
 
 	/** Drop the selection here and in the session's params, so the next frames
 	 * are generated whole again. */
 	function clearSelection(): void {
+		if (!connected) return;
 		selection = null;
 		realtimeSession.updateParams({ mask: null });
 	}
@@ -438,6 +464,10 @@
 		// the page the key belongs to whatever holds focus.
 		if (event.key !== 'Escape' || selection === null || modalIsOpen()) return;
 		if (!panelRoot?.contains(document.activeElement)) return;
+		// In a text field Escape belongs to the field (abandoning an edit), not
+		// to the selection.
+		const target = event.target as HTMLElement | null;
+		if (event.defaultPrevented || target?.closest('input, textarea, select')) return;
 		clearSelection();
 	}
 
@@ -654,12 +684,13 @@
 								<Button
 									variant={selecting ? 'default' : 'outline'}
 									aria-pressed={selecting}
+									disabled={!connected}
 									onclick={toggleSelecting}
 								>
 									{t('app.realtime_canvas.select_area')}
 								</Button>
 								{#if selection}
-									<Button variant="outline" onclick={clearSelection}>
+									<Button variant="outline" disabled={!connected} onclick={clearSelection}>
 										{t('app.realtime_canvas.clear_selection')}
 									</Button>
 								{/if}
@@ -721,8 +752,8 @@
 							onpointerdown={onPointerDown}
 							onpointermove={onPointerMove}
 							onpointerup={onPointerUp}
-							onpointercancel={onPointerUp}
-							onlostpointercapture={onPointerUp}
+							onpointercancel={onPointerCancel}
+							onlostpointercapture={onPointerCancel}
 						></canvas>
 						{#if showOutline}
 							<canvas
@@ -764,8 +795,8 @@
 								onpointerdown={onOutputPointerDown}
 								onpointermove={onPointerMove}
 								onpointerup={onPointerUp}
-								onpointercancel={onPointerUp}
-								onlostpointercapture={onPointerUp}
+								onpointercancel={onPointerCancel}
+								onlostpointercapture={onPointerCancel}
 							></canvas>
 							{#if showOutline}
 								<canvas
