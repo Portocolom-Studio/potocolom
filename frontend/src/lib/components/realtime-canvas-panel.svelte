@@ -172,6 +172,8 @@
 	// but for a mask that is an object carrying a `prompt` of its own, so the
 	// panel never offers a field the worker would drop.
 	const supportsEditPrompt = $derived(modelAcceptsEditPrompt(selectedModel));
+	// Whether the field differs from the prompt the selection last sent.
+	const editPromptDirty = $derived(editPrompt.trim() !== (selection?.prompt ?? ''));
 	const showOutline = $derived(selection !== null || lassoPoints.length > 0);
 
 	const realtimeSession = createRealtimeCanvasSession({
@@ -448,10 +450,9 @@
 		dropLasso();
 		const mask = lassoToMask(points, CANVAS_SIZE, CANVAS_SIZE);
 		if (!mask || !connected) return;
-		// An edit prompt applied to the previous selection keeps riding along:
-		// the field still holds it, and re-selecting another area is the same
-		// edit somewhere else, not a request to drop it.
-		selection = maskWithPrompt(mask, selection?.prompt);
+		// The field is what the edit prompt is: a new lasso takes its current
+		// text, so what the person sees in the field is what the worker gets.
+		selection = maskWithPrompt(mask, supportsEditPrompt ? editPrompt : undefined);
 		selecting = false;
 		realtimeSession.updateParams({ mask: selection });
 	}
@@ -484,7 +485,8 @@
 	 * nowhere here on purpose: the window handler's text-field guard already
 	 * leaves it to the field, so it never clears the selection. */
 	function onEditPromptKeydown(event: KeyboardEvent): void {
-		if (event.key !== 'Enter') return;
+		// Enter that commits an IME composition is not a request to apply.
+		if (event.key !== 'Enter' || event.isComposing || !editPromptDirty) return;
 		applyEditPrompt();
 	}
 
@@ -757,7 +759,12 @@
 									class="min-w-0"
 									onkeydown={onEditPromptKeydown}
 								/>
-								<Button variant="outline" size="sm" disabled={!connected} onclick={applyEditPrompt}>
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={!connected || !editPromptDirty}
+									onclick={applyEditPrompt}
+								>
 									{t('app.realtime_canvas.edit_prompt_apply')}
 								</Button>
 							</div>
