@@ -65,7 +65,7 @@ The scaled self-hosted column deserves a note: it is not a separately designed p
 | Storage | the interface, storage keys, asset rows | filesystem vs S3; plain paths vs signed URLs |
 | Quota | the reserve/commit/refund interface, metering events | unlimited vs the billing service |
 | Auth | session mechanics, cookie, revocation | which methods exist |
-| Metrics | `usage_events` schema, stub categorizer, studio metrics panel ([metrics.md](metrics.md)) | CLIP labels, admin fleet console, and the analytics warehouse are designed / cloud-only |
+| Metrics | `usage_events` schema, output categorizer, studio metrics panel ([metrics.md](metrics.md)) | Admin fleet console, and the analytics warehouse are designed / cloud-only |
 | Not shared at all | | AWS infrastructure; the private billing, autoscaler and analytics services |
 
 ## Side by side: the same request through both profiles

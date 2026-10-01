@@ -21,6 +21,7 @@ siblings would put two revisions of one repository in one worker.
 | `ByteDance/Hyper-SD` | `bc08d970a87c74c71209491d64e3525845698863` | sdxl-hypersd |
 | `ByteDance/SDXL-Lightning` | `c9a24f48e1c025556787b0c58dd67a091ece2e44` | sdxl-fast, ssd-1b-lightning |
 | `Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers` | `aa76e7f4f4928f378716b6716a2130fba3caf5b1` | sana-sprint-06b |
+| `google/siglip2-base-patch16-224` | `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2` | output categorizer (worker/worker/categorize.py) |
 | `Lykon/dreamshaper-8-lcm` | `4645d8bc6a8e6b106d21606d63e8460cdad4f1a6` | dreamshaper-lcm |
 | `madebyollin/sdxl-vae-fp16-fix` | `207b116dae70ace3637169f1ddd2434b91b3a8cd` | sdxl-base, sdxl-fast, sdxl-hypersd, sdxl-turbo, ssd-1b, ssd-1b-lightning, vega-rt |
 | `madebyollin/taesdxl` | `b20258aaef75ef61e659c1e0f14f251cf0ad153e` | sdxl-turbo, vega-rt |
@@ -35,7 +36,9 @@ siblings would put two revisions of one repository in one worker.
 | `Tongyi-MAI/Z-Image-Turbo` | `f332072aa78be7aecdf3ee76d5c247082da564a6` | z-image-turbo |
 
 `realesrgan` and `realesrgan-fast` are absent because they fetch a release URL,
-which already names its own version and has no commit to pin.
+which already names its own version and has no commit to pin. The last row is
+not a manifest either: the worker's output categorizer names its weights and
+pins them in code (worker/worker/categorize.py), under the same full-sha rule.
 
 Moving a model means editing the sha and committing that, which is the point:
 see "A model is pinned to a commit, and moving it costs a commit" in
@@ -135,3 +138,20 @@ weights can be downloaded at all; see
 
 Open RAIL licenses impose use restrictions (no illegal or harmful outputs) but
 no annual revenue cap.
+
+## Output categorizer license (SigLIP 2 base)
+
+| Model | License |
+| --- | --- |
+| output categorizer (`google/siglip2-base-patch16-224`) | Apache 2.0 |
+
+The worker's output categorizer loads its weights through transformers
+directly, not through a manifest (see the pin table above). Apache-2.0 is
+declared in the weight repository's card, the card carries no restriction
+sentence, and there is no revenue cap and no attribution requirement. The
+repository ships no LICENSE file, so the card front matter is the licence
+evidence, the same convention `license_url` follows for `vega-rt` and
+`flux2-klein-4b`.
+
+Training data is separate from the weights: the card states no licence for
+the WebLI corpus the model was trained on.
