@@ -9,6 +9,7 @@ import pytest
 from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
+from tests.test_auth import _set_local_role
 
 from app import db, gpu_samples
 from app.main import app
@@ -24,6 +25,8 @@ from app.tables import (
 )
 
 FLEET_HEADERS = {"x-fleet-token": "test-fleet-token"}
+
+USAGE_ME = "/api/v1/usage/me"
 
 MANIFEST = {
     "id": "sd-metrics",
@@ -311,6 +314,210 @@ def test_a_blank_tier_and_no_tier_roll_up_as_one_row():
 
     # One row holding both, rather than a statement that wrote nothing at all.
     assert rolled == [(None, 2)]
+
+
+def _usage_event(
+    user_id: uuid.UUID,
+    at: datetime,
+    model_id: str,
+    category: str,
+    gpu_ms: int | None,
+    duration_ms: int | None,
+    frames: int | None = 1,
+) -> UsageEvent:
+    return UsageEvent(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        kind="job",
+        action="generate",
+        model_id=model_id,
+        tier=None,
+        category=category,
+        category_score=None,
+        gpu_ms=gpu_ms,
+        duration_ms=duration_ms,
+        frames=frames,
+        created_at=at,
+    )
+
+
+# One spec is (model_id, category, gpu_ms, duration_ms, frames); the caller is
+# resolved inside the portal, where the live engine has set db.local_user_id.
+UsageSpec = tuple[str, str, int | None, int | None, int | None]
+
+
+async def _seed_usage(
+    mine: list[UsageSpec],
+    at: datetime,
+    theirs: list[UsageSpec] = (),
+    stranger: uuid.UUID | None = None,
+) -> list[uuid.UUID]:
+    assert db.session_factory is not None
+    assert db.local_user_id is not None
+    events = [_usage_event(db.local_user_id, at, *spec) for spec in mine]
+    if stranger is not None:
+        events += [_usage_event(stranger, at, *spec) for spec in theirs]
+    ids = [event.id for event in events]
+    async with db.session_factory() as session:
+        if stranger is not None:
+            session.add(User(id=stranger, email=f"{stranger}@example.test"))
+            # Before the events that reference it: without a relationship
+            # between the mappers the flush has no dependency to order by.
+            await session.flush()
+        session.add_all(events)
+        await session.commit()
+    return ids
+
+
+async def _purge_usage(ids: list[uuid.UUID], stranger: uuid.UUID | None = None) -> None:
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        await session.execute(delete(UsageEvent).where(UsageEvent.id.in_(ids)))
+        if stranger is not None:
+            await session.execute(delete(User).where(User.id == stranger))
+        await session.commit()
+
+
+@pytest.mark.db
+def test_usage_me_answers_only_with_the_callers_own_rows():
+    # The window sits a fixed two days back so the job rows other tests leave
+    # at "now" for the same local account stay outside it.
+    at = datetime.now(timezone.utc) - timedelta(days=2)
+    stranger = uuid.uuid4()
+    mine = [
+        ("sd-usage-a", "art", 100, 1000, 1),
+        ("sd-usage-a", "art", 300, 3000, 1),
+        ("sd-usage-b", "design", 50, 500, 1),
+    ]
+    theirs = [
+        ("sd-usage-x", "nsfw", 999, 999, 1),
+        ("sd-usage-x", "nsfw", 999, 999, 1),
+    ]
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        ids = client.portal.call(_seed_usage, mine, at, theirs, stranger)
+        try:
+            response = client.get(USAGE_ME, params={
+                "from": (at - timedelta(hours=1)).isoformat(),
+                "to": (at + timedelta(hours=1)).isoformat(),
+            })
+        finally:
+            client.portal.call(_purge_usage, ids, stranger)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["totals"] == {"events": 3, "gpu_ms": 450, "frames": 3}
+    assert body["by_category"] == [
+        {"category": "art", "events": 2},
+        {"category": "design", "events": 1},
+    ]
+    assert [row["model_id"] for row in body["by_model"]] == ["sd-usage-a", "sd-usage-b"]
+    assert body["by_model_category"] == [
+        {"model_id": "sd-usage-a", "category": "art", "events": 2, "avg_duration_ms": 2000.0},
+        {"model_id": "sd-usage-b", "category": "design", "events": 1, "avg_duration_ms": 500.0},
+    ]
+
+
+@pytest.mark.db
+def test_usage_me_window_defaults_to_thirty_days_and_refuses_bad_ones():
+    now = datetime.now(timezone.utc)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        default = client.get(USAGE_ME)
+        assert default.status_code == 200
+        opened = datetime.fromisoformat(default.json()["from"])
+        closed = datetime.fromisoformat(default.json()["to"])
+        assert closed - opened == timedelta(days=30)
+
+        same = client.get(USAGE_ME, params={"from": now.isoformat(), "to": now.isoformat()})
+        inverted = client.get(USAGE_ME, params={
+            "from": now.isoformat(),
+            "to": (now - timedelta(days=1)).isoformat(),
+        })
+        # 366 days is the widest window, 367 the first refused one.
+        widest = client.get(USAGE_ME, params={
+            "from": (now - timedelta(days=366)).isoformat(),
+            "to": now.isoformat(),
+        })
+        wider = client.get(USAGE_ME, params={
+            "from": (now - timedelta(days=367)).isoformat(),
+            "to": now.isoformat(),
+        })
+        naive = client.get(USAGE_ME, params={
+            "from": "2020-01-01T00:00:00",
+            "to": "2020-01-02T00:00:00",
+        })
+
+    assert same.status_code == 422
+    assert inverted.status_code == 422
+    assert widest.status_code == 200
+    assert wider.status_code == 422
+    assert naive.status_code == 422
+
+
+@pytest.mark.db
+def test_usage_me_is_refused_to_a_viewer_and_served_to_a_member():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        try:
+            client.portal.call(_set_local_role, "viewer")
+            assert client.get(USAGE_ME).status_code == 403
+            client.portal.call(_set_local_role, "user")
+            assert client.get(USAGE_ME).status_code == 200
+        finally:
+            client.portal.call(_set_local_role, "admin")
+
+
+@pytest.mark.db
+def test_usage_me_leaves_null_metrics_out_of_the_averages():
+    at = datetime.now(timezone.utc) - timedelta(days=2)
+    events = [
+        ("sd-null", "art", 100, 1000, 1),
+        ("sd-null", "art", 300, 3000, 1),
+        # A row with no measurements still counts as one event.
+        ("sd-null", "art", None, None, None),
+        ("sd-void", "other", None, None, 1),
+    ]
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        ids = client.portal.call(_seed_usage, events, at)
+        try:
+            response = client.get(USAGE_ME, params={
+                "from": (at - timedelta(hours=1)).isoformat(),
+                "to": (at + timedelta(hours=1)).isoformat(),
+            })
+        finally:
+            client.portal.call(_purge_usage, ids)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["totals"] == {"events": 4, "gpu_ms": 400, "frames": 3}
+    assert body["by_model"] == [
+        {"model_id": "sd-null", "events": 3, "avg_gpu_ms": 200.0, "p50_duration_ms": 2000.0},
+        # No row carries a measurement, so both averages are null, not zero.
+        {"model_id": "sd-void", "events": 1, "avg_gpu_ms": None, "p50_duration_ms": None},
+    ]
+    assert body["by_model_category"] == [
+        {"model_id": "sd-null", "category": "art", "events": 3, "avg_duration_ms": 2000.0},
+        {"model_id": "sd-void", "category": "other", "events": 1, "avg_duration_ms": None},
+    ]
+
+
+@pytest.mark.db
+def test_usage_me_over_an_empty_window_is_zeros_and_empty_lists():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        response = client.get(USAGE_ME, params={
+            "from": "2000-01-01T00:00:00Z",
+            "to": "2000-01-02T00:00:00Z",
+        })
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "from": "2000-01-01T00:00:00+00:00",
+        "to": "2000-01-02T00:00:00+00:00",
+        "totals": {"events": 0, "gpu_ms": 0, "frames": 0},
+        "by_category": [],
+        "by_model": [],
+        "by_model_category": [],
+    }
 
 
 @pytest.mark.db

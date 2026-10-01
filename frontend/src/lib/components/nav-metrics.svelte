@@ -3,6 +3,7 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import GaugeIcon from '@lucide/svelte/icons/gauge';
 	import LineChartIcon from '@lucide/svelte/icons/line-chart';
+	import UserIcon from '@lucide/svelte/icons/user';
 	import { t } from '$lib/i18n.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
@@ -14,6 +15,13 @@
 	const benchmarksNeeds = $derived(
 		sectionNeeds('metrics_benchmarks', account.current?.role ?? null)
 	);
+	const mineNeeds = $derived(sectionNeeds('metrics_mine', account.current?.role ?? null));
+	// Only a viewer is refused every tab, and the member gate is the one that
+	// stops them first, so that is the badge a locked entry shows.
+	const locked = $derived(usageNeeds !== null && benchmarksNeeds !== null && mineNeeds !== null);
+	// A member opens on My usage: the other two tabs would be refused by the
+	// URL the group entry is about to build, and land them on generate.
+	const entryTab = $derived(mineNeeds === null && usageNeeds !== null ? 'mine' : studio.metricsTab);
 </script>
 
 <Collapsible.Root open class="group/collapsible">
@@ -22,16 +30,16 @@
 			<Sidebar.MenuButton
 				tooltipContent={t('app.shell.metrics')}
 				isActive={studio.shellView === 'metrics'}
-				aria-disabled={usageNeeds !== null && benchmarksNeeds !== null}
+				aria-disabled={locked}
 				onclick={() => {
-					if (usageNeeds === null || benchmarksNeeds === null) openMetrics(studio.metricsTab);
+					if (!locked) openMetrics(entryTab);
 				}}
 			>
 				<BarChart3Icon />
 				<span>{t('app.shell.metrics')}</span>
-				{#if usageNeeds !== null && benchmarksNeeds !== null}
+				{#if locked}
 					<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
-						{t('app.gen.admins_only')}
+						{t('app.gen.members_only')}
 					</span>
 				{/if}
 			</Sidebar.MenuButton>
@@ -85,6 +93,28 @@
 									{#if benchmarksNeeds !== null}
 										<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
 											{t('app.gen.admins_only')}
+										</span>
+									{/if}
+								</button>
+							{/snippet}
+						</Sidebar.MenuSubButton>
+					</Sidebar.MenuSubItem>
+					<Sidebar.MenuSubItem>
+						<Sidebar.MenuSubButton
+							isActive={studio.shellView === 'metrics' && studio.metricsTab === 'mine'}
+						>
+							{#snippet child({ props })}
+								<button
+									type="button"
+									{...props}
+									disabled={mineNeeds !== null}
+									onclick={() => openMetrics('mine')}
+								>
+									<UserIcon />
+									<span>{t('app.metrics.mine_tab')}</span>
+									{#if mineNeeds !== null}
+										<span class="text-sidebar-foreground/60 ml-auto truncate text-xs">
+											{t('app.gen.members_only')}
 										</span>
 									{/if}
 								</button>

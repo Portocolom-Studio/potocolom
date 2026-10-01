@@ -44,7 +44,8 @@ test('sectionNeeds marks user-only sections for a viewer only', () => {
 		'upscale',
 		'edit_image',
 		'image_to_text',
-		'realtime_canvas'
+		'realtime_canvas',
+		'metrics_mine'
 	];
 	for (const section of userSections) {
 		assert.equal(sectionNeeds(section, 'viewer'), 'user');
@@ -74,11 +75,16 @@ test('openViewFor sends a viewer from generate to images', () => {
 test('openViewFor sends a viewer from metrics to images', () => {
 	assert.equal(openViewFor('metrics', 'usage', 'viewer'), 'images');
 	assert.equal(openViewFor('metrics', 'benchmarks', 'viewer'), 'images');
+	assert.equal(openViewFor('metrics', 'mine', 'viewer'), 'images');
 });
 
 test('openViewFor sends a user from metrics to generate', () => {
 	assert.equal(openViewFor('metrics', 'usage', 'user'), 'generate');
 	assert.equal(openViewFor('metrics', 'benchmarks', 'user'), 'generate');
+});
+
+test('openViewFor keeps a user on My usage, the one metrics tab they own', () => {
+	assert.equal(openViewFor('metrics', 'mine', 'user'), 'metrics');
 });
 
 test('openViewFor keeps a user on upscale', () => {
@@ -88,6 +94,7 @@ test('openViewFor keeps a user on upscale', () => {
 test('openViewFor keeps an admin on metrics', () => {
 	assert.equal(openViewFor('metrics', 'usage', 'admin'), 'metrics');
 	assert.equal(openViewFor('metrics', 'benchmarks', 'admin'), 'metrics');
+	assert.equal(openViewFor('metrics', 'mine', 'admin'), 'metrics');
 });
 
 test('openViewFor sends a viewer or member away from every admin tab', () => {
@@ -122,5 +129,7 @@ test('openViewFor keeps every view but admin when there is no role', () => {
 test('AUTH_MODE=none shows every section but admin, whose API needs accounts mode', () => {
 	assert.equal(sectionNeeds('admin', null), 'admin');
 	assert.equal(sectionNeeds('metrics_usage', null), null);
+	assert.equal(sectionNeeds('metrics_mine', null), null);
+	assert.equal(openViewFor('metrics', 'mine', null), 'metrics');
 	assert.equal(openViewFor('admin', 'users', null), 'generate');
 });

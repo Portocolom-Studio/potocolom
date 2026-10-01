@@ -52,7 +52,6 @@ flowchart TB
     UE --> ADMIN
     UR --> ADMIN
     UE --> OWN
-    UR --> OWN
     UE -->|"counts by action, category, tier<br>joinable to no person"| AGG
     AGG -->|"one POST per day"| ING
 ```
@@ -110,6 +109,33 @@ cohort and funnel analysis need. The obligations apply to both tables: the
 foreign keys use `ON DELETE CASCADE`, so both are hard deleted with the account's
 30 day purge, and issue #10's GDPR export must include both
 ([architecture.md](architecture.md), content safety and privacy).
+
+## The studio's own usage view
+
+Shipped: the Metrics area of the studio has a third tab, My usage, for members
+and administrators (issue #95). A viewer creates nothing, so the tab and the
+route behind it are refused. It reads the caller's own rows from
+`usage_events` through `GET /api/v1/usage/me` - never another account's - for
+the range picked with the existing Metrics range picker (5m to 30d). The route
+itself defaults to the last 30 days when it is given no range, and refuses a
+window wider than 366 days.
+
+What the tab shows, for one account and one window:
+
+- The totals: events, GPU milliseconds and frames.
+- The category mix as a horizontal bar list, each label with its event count
+  and its share of the window.
+- Per model: events, average GPU milliseconds, median duration.
+- Category by model: the same events split across model and category, with the
+  average duration of each cell.
+
+A row with a null `gpu_ms` or `duration_ms` still counts as one event and is
+left out of the averages, so an unmeasured job cannot drag a model's numbers
+down; the median is `percentile_cont(0.5)` over the rows that do have a
+duration. The tab reads raw events only - the daily `usage_event_rollups`
+below are the cohort and retention history, not this view's source - so it
+answers for the 90 days the raw table holds, not for the whole window it can
+be given.
 
 ## Content categorization
 

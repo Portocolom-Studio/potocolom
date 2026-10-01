@@ -30,6 +30,16 @@ test('the URL names the view and the benchmarks tab', () => {
 	assert.deepEqual(readStudioView(at('?view=models')), { view: 'models', tab: 'usage' });
 });
 
+test('the My usage tab round-trips through the URL', () => {
+	assert.deepEqual(readStudioView(at('?view=metrics&tab=mine')), {
+		view: 'metrics',
+		tab: 'mine'
+	});
+	assert.equal(studioViewSearch('', 'metrics', 'mine'), '?view=metrics&tab=mine');
+	// A near miss falls back to usage, so mine only opens when it is named.
+	assert.equal(readStudioView(at('?view=metrics&tab=mines')).tab, 'usage');
+});
+
 test('the admin view has users, audit, and fleet tabs that round-trip', () => {
 	assert.deepEqual(ADMIN_TABS, ['users', 'audit', 'fleet']);
 	assert.deepEqual(readStudioView(at('?view=admin')), { view: 'admin', tab: 'users' });
@@ -87,7 +97,11 @@ test('every view and tab round trips through the URL', () => {
 	];
 	for (const view of views) {
 		const tabs: StudioTab[] =
-			view === 'admin' ? [...ADMIN_TABS] : view === 'metrics' ? ['usage', 'benchmarks'] : ['usage'];
+			view === 'admin'
+				? [...ADMIN_TABS]
+				: view === 'metrics'
+					? ['usage', 'benchmarks', 'mine']
+					: ['usage'];
 		for (const tab of tabs) {
 			const read = readStudioView(at(studioViewSearch('', view, tab)));
 			assert.equal(read.view, view);

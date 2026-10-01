@@ -43,7 +43,10 @@
 		studio.shellView = openViewFor(view, tab, account.current?.role ?? null);
 		// Only the active tabbed view applies its URL tab, and only when it was
 		// not refused, so other views keep their last tab open.
-		if (studio.shellView === 'metrics' && (tab === 'usage' || tab === 'benchmarks')) {
+		if (
+			studio.shellView === 'metrics' &&
+			(tab === 'usage' || tab === 'benchmarks' || tab === 'mine')
+		) {
 			studio.metricsTab = tab;
 		}
 		if (studio.shellView === 'admin' && (tab === 'users' || tab === 'audit' || tab === 'fleet')) {
