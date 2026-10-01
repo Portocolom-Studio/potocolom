@@ -279,7 +279,8 @@ GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#13
                                       revalidation match derivatives of any output. The walk is user-owned, cycle safe, excludes
                                       thumbnail assets, and stops at both limits. When truncated, the lower
                                       bound counts known omitted branches, not every unseen descendant.
-                                      404 for another user's, missing, or assetless anchor job.
+                                      404 for another user's or missing anchor job, or one that never had an
+                                      asset row; an expired anchor answers 200 with `missing: true`.
 ```
 
 Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or admin role. A missing
