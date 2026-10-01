@@ -69,6 +69,10 @@
 	// palmRejected reads it to tell a resting palm's touch pointer from a real
 	// drawing gesture while a pen owns the stroke.
 	let strokePointerType: string | null = null;
+	// A pen with no pressure sensor reports a constant 0.5, so a stroke whose
+	// first sample is exactly 0.5 is taken as unsensed and paints at full size;
+	// a sensing pen lands lighter than that.
+	let strokeSensesPressure = false;
 	let drawingFileInput = $state<HTMLInputElement | undefined>();
 
 	/** A message is held as its key, not its text, so switching language
@@ -356,8 +360,8 @@
 			y: ((event.clientY - rect.top) / rect.height) * CANVAS_SIZE
 		};
 		// Mouse reports 0.5 while a button is held and touch reports its own
-		// contact pressure, so only a pen's nonzero reading is real pressure.
-		if (event.pointerType === 'pen' && event.pressure > 0) {
+		// contact pressure, so only a sensing pen's nonzero reading is real.
+		if (strokeSensesPressure && event.pointerType === 'pen' && event.pressure > 0) {
 			// Three decimals is finer than a pen resolves and keeps a long stroke
 			// well inside the drawing file's byte limit.
 			return { ...point, pressure: Math.round(event.pressure * 1000) / 1000 };
@@ -390,6 +394,7 @@
 			return;
 		}
 		if (strokePointer !== null || !drawingDocument) return;
+		strokeSensesPressure = event.pointerType === 'pen' && event.pressure !== 0.5;
 		const point = canvasPoint(event);
 		if (
 			!drawingDocument.beginStroke(

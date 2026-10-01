@@ -3444,6 +3444,26 @@ test('a mouse stroke paints at a fixed width regardless of pointer pressure', as
 	}
 });
 
+test('a pen without a pressure sensor paints at the full brush size', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await setBrushSize(page, 20);
+		await pointerStroke(page, 'pen', 1, [
+			{ x: 0.1, y: 0.5, pressure: 0.5 },
+			{ x: 0.3, y: 0.5, pressure: 0.5 },
+			{ x: 0.5, y: 0.5, pressure: 0.5 }
+		]);
+		assert.deepEqual(
+			await surfacePixel(page, 200, 249),
+			[17, 24, 39, 255],
+			'a constant 0.5 is an unsensed pen, so the stroke keeps the full width'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
 test('a touch pointer is ignored while a pen stroke is active, and the pen stroke still completes', async () => {
 	const harness = await openCanvas();
 	try {
