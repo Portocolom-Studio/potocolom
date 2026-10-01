@@ -5,6 +5,7 @@ import {
 	adminBannerPutBody,
 	bannerDefaultMessageKey,
 	bannerDismissKey,
+	bannerText,
 	bannerTone,
 	bannerVisible,
 	type BannerConfig
@@ -67,4 +68,26 @@ test('the custom message choice sends trimmed text and no key', () => {
 		message_key: null,
 		custom_text: 'Slower than usual.'
 	});
+});
+
+test('banner text is the custom text, else the translation, and empty for an unknown key', () => {
+	const known: Record<string, string> = { 'app.banner.degraded': 'Slower than usual.' };
+	const translate = (key: string) => known[key] ?? key;
+	assert.equal(bannerText(null, translate), '');
+	assert.equal(
+		bannerText({ kind: 'degraded', message_key: null, custom_text: 'Custom.' }, translate),
+		'Custom.'
+	);
+	assert.equal(
+		bannerText(
+			{ kind: 'degraded', message_key: 'app.banner.degraded', custom_text: '' },
+			translate
+		),
+		'Slower than usual.'
+	);
+	assert.equal(
+		bannerText({ kind: 'maintenance', message_key: null, custom_text: null }, translate),
+		'',
+		'a key with no translation must not reach the page'
+	);
 });

@@ -155,3 +155,49 @@ def test_setting_the_banner_invalidates_the_cache_immediately(accounts):
         assert client.get("/api/v1/config").json()["banner"] is not None
         assert _clear(client).status_code == 204
         assert client.get("/api/v1/config").json()["banner"] is None
+
+
+@pytest.mark.db
+def test_config_still_answers_when_the_banner_cannot_be_read(accounts, monkeypatch):
+    from app import banner
+
+    async def broken() -> dict | None:
+        raise RuntimeError("database restarting")
+
+    banner._invalidate()
+    monkeypatch.setattr(banner, "_load", broken)
+    with TestClient(app, base_url=ORIGIN) as client:
+        response = client.get("/api/v1/config")
+    banner._invalidate()
+    assert response.status_code == 200
+    assert response.json()["banner"] is None
+
+
+@pytest.mark.db
+def test_custom_text_is_trimmed_and_must_be_plain_text(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        assert _set(client, kind="degraded", custom_text="   ").status_code == 422
+        assert _set(client, kind="degraded", custom_text="a\u0000b").status_code == 422
+        assert _set(client, kind="degraded", custom_text="two\nlines").status_code == 422
+        assert _set(client, kind="degraded", custom_text="  " + "x" * 280 + "  ").status_code == 204
+        assert _set(client, kind="degraded", message_key="app.banner.degraded",
+                    custom_text="").status_code == 204
+        body = client.get("/api/v1/config").json()["banner"]
+        assert body == {"kind": "degraded", "message_key": "app.banner.degraded",
+                        "custom_text": None}
+        client.portal.call(_clear_row)
+
+
+def test_a_read_that_raced_a_write_is_not_cached(monkeypatch):
+    from app import banner
+
+    async def raced() -> dict | None:
+        banner._invalidate()
+        return {"kind": "degraded", "message_key": None, "custom_text": "old"}
+
+    banner._invalidate()
+    monkeypatch.setattr(banner, "_load", raced)
+    import asyncio
+    asyncio.run(banner.current_banner())
+    assert banner._cache is None

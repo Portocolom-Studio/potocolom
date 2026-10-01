@@ -10,12 +10,15 @@ tells (docs/blueprint.md defers cross-replica coordination to the cloud
 profile).
 """
 
+import logging
 import time
+import unicodedata
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator
+from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import Response
 
 from app import db
@@ -25,8 +28,12 @@ from app.tables import StatusBanner, User
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
 CACHE_TTL = 5.0
+CUSTOM_TEXT_MAX = 280
+
+logger = logging.getLogger("potocolom.banner")
 
 _cache: tuple[float, dict | None] | None = None
+_generation = 0
 
 
 def _default_message_key(kind: str) -> str:
@@ -34,17 +41,29 @@ def _default_message_key(kind: str) -> str:
 
 
 def _invalidate() -> None:
-    global _cache
+    global _cache, _generation
     _cache = None
+    _generation += 1
 
 
 async def current_banner() -> dict | None:
+    """GET /api/v1/config drives sign-in, so a banner that cannot be read is
+    no banner rather than a failed config: the outage is logged and cached for
+    the TTL so every page load does not hit the failing database again."""
     global _cache
     now = time.monotonic()
     if _cache is not None and now - _cache[0] < CACHE_TTL:
         return _cache[1]
-    value = await _load()
-    _cache = (now, value)
+    # A write that lands while this read is in flight bumps the generation;
+    # storing the older read would undo that write's invalidation.
+    generation = _generation
+    try:
+        value = await _load()
+    except Exception as error:
+        logger.warning("status banner unavailable (%s); serving none", error)
+        value = None
+    if generation == _generation:
+        _cache = (now, value)
     return value
 
 
@@ -61,7 +80,21 @@ async def _load() -> dict | None:
 class BannerSet(BaseModel):
     kind: Literal["high_demand", "degraded", "maintenance"]
     message_key: str | None = None
-    custom_text: str | None = Field(default=None, max_length=280)
+    custom_text: str | None = None
+
+    @field_validator("custom_text")
+    @classmethod
+    def _plain_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if any(unicodedata.category(char) in ("Cc", "Cf") for char in value):
+            raise ValueError("custom_text must be plain text on one line")
+        if len(value) > CUSTOM_TEXT_MAX:
+            raise ValueError(f"custom_text must be at most {CUSTOM_TEXT_MAX} characters")
+        return value
 
 
 @router.put("/api/v1/admin/banner", status_code=204)
@@ -77,17 +110,21 @@ async def set_banner(
         raise HTTPException(status_code=422, detail="a banner needs a message_key or custom_text")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    values = {
+        "kind": change.kind,
+        "message_key": change.message_key,
+        "custom_text": change.custom_text,
+        "updated_by": actor.id,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    # One statement, so two first-time PUTs, or a PUT racing a DELETE, cannot
+    # trip over a row the other one inserted or removed.
     async with db.session_factory() as session:
         async with session.begin():
-            row = await session.get(StatusBanner, True)
-            if row is None:
-                row = StatusBanner(id=True)
-                session.add(row)
-            row.kind = change.kind
-            row.message_key = change.message_key
-            row.custom_text = change.custom_text
-            row.updated_by = actor.id
-            row.updated_at = datetime.now(timezone.utc)
+            await session.execute(
+                insert(StatusBanner).values(id=True, **values)
+                .on_conflict_do_update(index_elements=[StatusBanner.id], set_=values)
+            )
     _invalidate()
     return Response(status_code=204)
 

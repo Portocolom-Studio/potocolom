@@ -3,8 +3,8 @@
 	import { apiFetch } from '$lib/api';
 	import { t } from '$lib/i18n.svelte';
 	import {
-		bannerDefaultMessageKey,
 		bannerDismissKey,
+		bannerText,
 		bannerTone,
 		bannerVisible,
 		type BannerConfig
@@ -45,16 +45,9 @@
 		}
 	});
 
-	const visible = $derived(bannerVisible(banner, dismissed));
 	const tone = $derived(banner ? bannerTone(banner.kind) : 'muted');
-	const text = $derived(
-		banner
-			? (banner.custom_text ??
-					t(
-						(banner.message_key ?? bannerDefaultMessageKey(banner.kind)) as Parameters<typeof t>[0]
-					))
-			: ''
-	);
+	const text = $derived(bannerText(banner, (key) => t(key as Parameters<typeof t>[0])));
+	const visible = $derived(text !== '' && bannerVisible(banner, dismissed));
 
 	function dismiss(): void {
 		if (banner === null) return;
@@ -66,13 +59,11 @@
 
 {#if visible}
 	<div
-		role="status"
-		aria-live="polite"
 		class="mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm {tone === 'destructive'
 			? 'bg-destructive/10 text-destructive border-destructive/30 border'
 			: 'bg-muted'}"
 	>
-		<span class="flex-1">{text}</span>
+		<span role="status" aria-live="polite" class="flex-1">{text}</span>
 		<button type="button" class="shrink-0 underline-offset-2 hover:underline" onclick={dismiss}>
 			{t('app.banner.dismiss')}
 		</button>

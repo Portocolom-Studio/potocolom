@@ -24,6 +24,18 @@ export function bannerDefaultMessageKey(kind: BannerKind): string {
 	return `app.banner.${kind}`;
 }
 
+// The text a banner shows: its custom text, else its key's translation. The
+// i18n lookup returns the key itself when it has no entry, so a kind or key
+// this build does not know (a newer backend) yields no text, and no banner,
+// rather than a raw key on every page.
+export function bannerText(banner: BannerConfig, translate: (key: string) => string): string {
+	if (banner === null) return '';
+	if (banner.custom_text) return banner.custom_text;
+	const key = banner.message_key ?? bannerDefaultMessageKey(banner.kind);
+	const text = translate(key);
+	return text === key ? '' : text;
+}
+
 // Only destructive and muted exist in the theme today; high_demand is
 // informational (the install still works, just busier), degraded and
 // maintenance both mean something is actually wrong.

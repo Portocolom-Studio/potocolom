@@ -434,7 +434,7 @@ DELETE /api/v1/admin/banner           204; admin only; clears the banner
   there, and GET /api/v1/config carries it to every client (see above). `kind`
   is `high_demand`, `degraded` or `maintenance`. `message_key`, if given, must
   be the one default key for that kind (`app.banner.<kind>`); `custom_text` is
-  capped at 280 characters and wins over the key when both are present. A
+  trimmed, plain one-line text capped at 280 characters, and wins over the key when both are present. A
   request with neither is refused `422`. It is set from the admin area, or
   cleared with `DELETE`; both are audited by the admin role check, under the route as the action name.
   Setting it automatically when the fleet autoscaler reports its ceiling, and
