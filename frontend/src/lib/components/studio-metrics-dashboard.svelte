@@ -4,7 +4,11 @@
 	import { studio } from '$lib/studio.svelte';
 
 	const title = $derived(
-		studio.metricsTab === 'usage' ? t('app.metrics.tab_usage') : t('app.metrics.tab_benchmarks')
+		studio.metricsTab === 'usage'
+			? t('app.metrics.tab_usage')
+			: studio.metricsTab === 'mine'
+				? t('app.metrics.mine_tab')
+				: t('app.metrics.tab_benchmarks')
 	);
 </script>
 

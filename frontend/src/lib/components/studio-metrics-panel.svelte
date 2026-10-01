@@ -33,6 +33,7 @@
 	import StudioBenchmarkRunTimeline from '$lib/components/studio-benchmark-run-timeline.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import StudioJobStatusChart from '$lib/components/studio-job-status-chart.svelte';
+	import StudioMetricsMine from '$lib/components/studio-metrics-mine.svelte';
 	import StudioSessionModelChart from '$lib/components/studio-session-model-chart.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -426,6 +427,8 @@
 				</div>
 			{/if}
 		</section>
+	{:else if studio.metricsTab === 'mine'}
+		<StudioMetricsMine />
 	{:else if sessionsLoading}
 		<p class="text-muted-foreground text-sm">{t('app.metrics.benchmark_loading')}</p>
 	{:else if sessionsError || sessions.length === 0}

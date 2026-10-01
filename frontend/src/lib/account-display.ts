@@ -33,6 +33,7 @@ export type GatedSection =
 	| 'realtime_canvas'
 	| 'metrics_usage'
 	| 'metrics_benchmarks'
+	| 'metrics_mine'
 	| 'admin';
 
 const sectionNeededRoles = {
@@ -44,6 +45,7 @@ const sectionNeededRoles = {
 	realtime_canvas: 'user',
 	metrics_usage: 'admin',
 	metrics_benchmarks: 'admin',
+	metrics_mine: 'user',
 	admin: 'admin'
 } as const satisfies Record<GatedSection, 'user' | 'admin'>;
 
@@ -56,14 +58,19 @@ export function sectionNeeds(section: GatedSection, role: Role | null): 'user' |
 	return role === 'admin' ? null : 'admin';
 }
 
+function metricsSection(tab: StudioTab): GatedSection {
+	if (tab === 'benchmarks') return 'metrics_benchmarks';
+	if (tab === 'mine') return 'metrics_mine';
+	return 'metrics_usage';
+}
+
 // A view the role may use stays; otherwise fall back to generate, the main
 // panel, and then images, which no role is locked out of.
 export function openViewFor(view: ShellView, tab: StudioTab, role: Role | null): ShellView {
 	// models and images are open to every role; metrics picks its section by
 	// tab; admin and every other view share their section's name.
 	if (view === 'models' || view === 'images') return view;
-	const section: GatedSection =
-		view === 'metrics' ? (tab === 'benchmarks' ? 'metrics_benchmarks' : 'metrics_usage') : view;
+	const section: GatedSection = view === 'metrics' ? metricsSection(tab) : view;
 	if (sectionNeeds(section, role) === null) return view;
 	if (sectionNeeds('generate', role) === null) return 'generate';
 	return 'images';

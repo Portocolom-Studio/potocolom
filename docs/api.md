@@ -58,6 +58,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/benchmark/sessions` | implemented, `BENCHMARK_API`-gated | ingest a completed benchmark session; admin only |
 | GET `/api/v1/studio/gpu` | implemented | live GPU snapshot (util, VRAM, temperature, power) and loaded models for the studio metrics panel; admin only |
 | GET `/api/v1/metrics/gpu/history` | implemented | GPU telemetry over a time range (raw, or 5-minute rollups); admin only |
+| GET `/api/v1/usage/me` | implemented (#95) | the caller's own usage events over a time range: totals, category mix, per model and category x model; member and admin, 403 for viewer |
 | GET `/api/v1/benchmark/models` | implemented, `BENCHMARK_API`-gated | list benchmarkable models; admin only |
 | GET `/api/v1/benchmark/gpu` | implemented, `BENCHMARK_API`-gated | live GPU status from a connected worker; admin only |
 | POST `/api/v1/benchmark/gpu/load` | implemented, `BENCHMARK_API`-gated | load a model for a benchmark run; admin only |
@@ -322,6 +323,19 @@ GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples
                                         samples, keeping the newest in the window, and sets
                                         `truncated: true` when the window held more; the field is
                                         always present and false otherwise.
+GET /api/v1/usage/me                member and admin only, 403 for a viewer; ?from&to - the caller's
+                                        own usage_events rows in [from, to), never another
+                                        account's: totals {events, gpu_ms, frames}, by_category
+                                        [{category, events}], by_model [{model_id, events,
+                                        avg_gpu_ms, p50_duration_ms}], by_model_category
+                                        [{model_id, category, events, avg_duration_ms}]. from and
+                                        to take the same timestamps as the GPU history route and
+                                        are optional: with neither, the window is the last 30
+                                        days. to must be after from, and a window wider than 366
+                                        days answers 422. A row with a null gpu_ms or duration_ms
+                                        counts as an event and is left out of the averages; the
+                                        median is percentile_cont(0.5). Sorted by events
+                                        descending, then by name.
 GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
 GET  /api/v1/benchmark/gpu             admin only; live GPU status from a connected worker
 POST /api/v1/benchmark/gpu/load        admin only; load a model for scripts/benchmark.py
