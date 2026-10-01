@@ -3521,6 +3521,33 @@ test('a touch pointer is ignored while a pen stroke is active, and the pen strok
 	}
 });
 
+test('a shape drawn with a pen saves without pressure on its points', async () => {
+	const downloadDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-pen-shape-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: downloadDirectory
+		});
+		await page.select('#realtime-tool', 'rectangle');
+		await pointerStroke(page, 'pen', 1, [
+			{ x: 0.2, y: 0.2, pressure: 0.4 },
+			{ x: 0.8, y: 0.8, pressure: 0.9 }
+		]);
+		await clickButton(page, 'Save drawing');
+		const saved = JSON.parse(
+			await readFile(await waitForDrawingDownload(downloadDirectory), 'utf8')
+		);
+		assert.equal(saved.operations[0].kind, 'shape');
+		for (const point of saved.operations[0].points) assert.equal('pressure' in point, false);
+	} finally {
+		await harness.close();
+		await rm(downloadDirectory, { recursive: true, force: true });
+	}
+});
+
 test('a version 3 drawing file without pressure still opens', async () => {
 	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-v3-still-opens-'));
 	const path = join(directory, 'v3-no-pressure.potocolom.json');

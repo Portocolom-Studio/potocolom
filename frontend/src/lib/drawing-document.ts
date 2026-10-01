@@ -65,6 +65,12 @@ export function palmRejected(
 	return activeStrokePointerType === 'pen' && incomingPointerType === 'touch';
 }
 
+// A shape's points are its corners, never brush samples, so a pen's pressure
+// is dropped here; the file format rejects pressure on a shape point.
+function shapePoint(point: DrawingPoint): DrawingPoint {
+	return { x: point.x, y: point.y };
+}
+
 type Checkpoint = {
 	prefix: number;
 	lastId: string;
@@ -191,7 +197,7 @@ export class DrawingDocument {
 				shape: tool,
 				color: style.color,
 				size: style.size,
-				points: [{ ...point }, { ...point }]
+				points: [shapePoint(point), shapePoint(point)]
 			};
 			this.active = { pointerId, operation, snapshot };
 			this.paintShape(operation);
@@ -216,7 +222,7 @@ export class DrawingDocument {
 		if (operation.kind === 'shape') {
 			if (!snapshot) return false;
 			this.context.drawImage(snapshot, 0, 0);
-			operation.points[1] = { ...point };
+			operation.points[1] = shapePoint(point);
 			this.paintShape(operation);
 			return true;
 		}

@@ -358,7 +358,9 @@
 		// Mouse reports 0.5 while a button is held and touch reports its own
 		// contact pressure, so only a pen's nonzero reading is real pressure.
 		if (event.pointerType === 'pen' && event.pressure > 0) {
-			return { ...point, pressure: event.pressure };
+			// Three decimals is finer than a pen resolves and keeps a long stroke
+			// well inside the drawing file's byte limit.
+			return { ...point, pressure: Math.round(event.pressure * 1000) / 1000 };
 		}
 		return point;
 	}
