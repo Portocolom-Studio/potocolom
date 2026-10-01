@@ -17,12 +17,14 @@ the existing complete-WebP path, including when the opened drawing is blank.
 
 ## Versions
 
-Save writes version 3. Open accepts version 1, version 2 and version 3, so a
-file saved by an earlier release still opens. Version 1 has stroke and clear
+Save writes version 4. Open accepts version 1 through version 4, so a file
+saved by an earlier release still opens. Version 1 has stroke and clear
 operations only; version 2 also accepts shape operations; version 3 also
-accepts erase-region operations. A version 1 file containing a shape is
-invalid, and a version 2 file containing an erase-region is invalid. Older
-readers reject version 3 rather than opening an incomplete drawing.
+accepts erase-region operations; version 4 also accepts a `pressure` field on
+stroke points. A version 1 file containing a shape is invalid, a version 2
+file containing an erase-region is invalid, and a version 1, 2 or 3 file
+containing `pressure` on a point is invalid. Older readers reject a newer
+version rather than opening an incomplete drawing.
 
 The document uses a 512 by 512 coordinate space. It records draw and erase
 strokes with stable IDs, colors, widths and ordered points, plus shapes,
@@ -31,15 +33,22 @@ prefix of the operation list; later operations form the redo branch.
 
 | Field | Value |
 |---|---|
-| `version` | `3` when saved; `1`, `2` or `3` when opened |
+| `version` | `4` when saved; `1`, `2`, `3` or `4` when opened |
 | `width`, `height` | `512` |
 | `operations` | Ordered stroke, shape, erase-region and clear operations, including redo history |
 | `cursor` | Integer from zero through the operation count |
 
 A stroke has `kind: "stroke"`, a unique `id` starting with `operation-`,
 `mode: "draw"` or `"erase"`, a six-digit hex `color`, integer `size` from
-1 through 32, and nonempty `points` with numeric `x` and `y` coordinates.
-Eraser color is white (`#ffffff`). A clear has only `kind: "clear"` and `id`.
+1 through 32, and nonempty `points` with numeric `x` and `y` coordinates. In
+a version 4 file, a stroke point may also carry `pressure`, a finite number
+from 0 through 1; a point without it paints at `size`, and a point with it
+paints at `size * (0.25 + 0.75 * pressure)`, so a light touch narrows to a
+quarter width and a full press reaches the brush's full size. The painted
+width of a segment between two points uses the width at the segment's
+starting point. `pressure` on a point in a version 1, 2 or 3 file, or on a
+shape or erase-region point in any version, is invalid. Eraser color is
+white (`#ffffff`). A clear has only `kind: "clear"` and `id`.
 IDs contain digit groups separated by single hyphens after the prefix, with
 at most 64 characters in total. They are opaque labels, not sequence numbers.
 New IDs use random values, so imported IDs cannot exhaust an edit counter.
@@ -68,7 +77,7 @@ everything outside it untouched; the fill closes the outline itself, so the
 last point need not repeat the first. A self-intersecting outline fills by
 the nonzero winding rule, so a loop wound against the outer one stays
 unfilled. It is one undo step like any other, and its points count toward the
-point limit. An erase-region is valid only in a version 3 file.
+point limit. An erase-region is valid only in a version 3 or later file.
 
 Limits apply to both saving and opening: 8 MiB of UTF-8 JSON, 10,000
 operations and 200,000 points in the full journal, including the redo branch.

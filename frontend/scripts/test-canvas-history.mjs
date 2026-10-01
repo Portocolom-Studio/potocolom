@@ -383,6 +383,45 @@ async function lasso(page, points) {
 	await page.mouse.up();
 }
 
+// A synthetic pointer event dispatched straight on the canvas, for pointer
+// types and pressures puppeteer's mouse/touchscreen cannot produce (pen,
+// pressure, a second concurrent touch). Untrusted events still reach plain
+// addEventListener handlers and setPointerCapture, so the component's own
+// logic runs exactly as it would for a real pen or finger.
+async function dispatchPointer(page, type, { pointerId, pointerType, pressure = 0, x, y }) {
+	await page.evaluate(
+		(args) => {
+			const canvas = document.querySelector('canvas[aria-label="Drawing surface"]');
+			const rect = canvas.getBoundingClientRect();
+			canvas.dispatchEvent(
+				new PointerEvent(args.type, {
+					bubbles: true,
+					cancelable: true,
+					pointerId: args.pointerId,
+					pointerType: args.pointerType,
+					pressure: args.pressure,
+					isPrimary: true,
+					button: 0,
+					buttons: 1,
+					clientX: rect.left + rect.width * args.x,
+					clientY: rect.top + rect.height * args.y
+				})
+			);
+		},
+		{ type, pointerId, pointerType, pressure, x, y }
+	);
+}
+
+// A full pen or touch gesture through canvas-fraction points, each with its
+// own pressure (ignored for a touch pointer).
+async function pointerStroke(page, pointerType, pointerId, points) {
+	await dispatchPointer(page, 'pointerdown', { pointerId, pointerType, ...points[0] });
+	for (const point of points.slice(1)) {
+		await dispatchPointer(page, 'pointermove', { pointerId, pointerType, ...point });
+	}
+	await dispatchPointer(page, 'pointerup', { pointerId, pointerType, ...points.at(-1) });
+}
+
 // Arm Select area and drag the polygon. Erase selection only mounts once the
 // released drag was accepted as a mask, so its appearance is the wait.
 async function selectRegion(page, points) {
@@ -810,7 +849,7 @@ test('saving a shape uses v2 geometry and round-trips its exact bitmap and redo'
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
-		assert.equal(saved.version, 3);
+		assert.equal(saved.version, 4);
 		assert.deepEqual([saved.width, saved.height], [512, 512]);
 		assert.equal(saved.operations.length, 1);
 		assert.equal(saved.operations[0].kind, 'shape');
@@ -852,7 +891,7 @@ test('a zero-length shape gesture saves, reopens and undoes safely', async () =>
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
-		assert.equal(saved.version, 3);
+		assert.equal(saved.version, 4);
 		assert.equal(saved.operations.length, 1);
 		assert.equal(saved.operations[0].points.length, 2);
 		await clickButton(page, 'Clear canvas');
@@ -1084,7 +1123,7 @@ test('undo brings back the stroke a region erase covered and redo erases it agai
 	}
 });
 
-test('a saved version 3 file round-trips its erase-region and exact bitmap', async () => {
+test('a saved file round-trips its erase-region and exact bitmap', async () => {
 	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-erase-save-'));
 	const harness = await openCanvas();
 	try {
@@ -1102,7 +1141,7 @@ test('a saved version 3 file round-trips its erase-region and exact bitmap', asy
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		const saved = JSON.parse(await readFile(savedPath, 'utf8'));
-		assert.equal(saved.version, 3);
+		assert.equal(saved.version, 4);
 		assert.deepEqual([saved.width, saved.height], [512, 512]);
 		assert.deepEqual(
 			saved.operations.map((operation) => operation.kind),
@@ -1400,7 +1439,7 @@ test('saved drawing reopens with exact pixels and undo redo history', async () =
 		await clickButton(page, 'Save drawing');
 		const savedPath = await waitForDrawingDownload(directory);
 		assert.equal(basename(savedPath), 'drawing.potocolom.json');
-		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*3/);
+		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*4/);
 
 		await page.reload({ waitUntil: 'networkidle0' });
 		await page.waitForFunction(
@@ -3348,5 +3387,225 @@ test('the history strip has an aria-label', async () => {
 		assert.notEqual(label.trim(), '', 'the strip list must be named');
 	} finally {
 		await harness.close();
+	}
+});
+
+test('a pen stroke with varying pressure paints a thick segment and a thin segment', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await setBrushSize(page, 20);
+		await pointerStroke(page, 'pen', 1, [
+			{ x: 0.1, y: 0.5, pressure: 1.0 },
+			{ x: 0.3, y: 0.5, pressure: 1.0 },
+			{ x: 0.5, y: 0.5, pressure: 0.1 },
+			{ x: 0.7, y: 0.5, pressure: 0.1 },
+			{ x: 0.9, y: 0.5, pressure: 0.1 }
+		]);
+		assert.deepEqual(
+			await surfacePixel(page, 200, 249),
+			[17, 24, 39, 255],
+			'a full pressure segment paints at full width, reaching 7px off center'
+		);
+		assert.deepEqual(
+			await surfacePixel(page, 400, 249),
+			[255, 255, 255, 255],
+			'a low pressure segment narrows, leaving 7px off center as paper'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a mouse stroke paints at a fixed width regardless of pointer pressure', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await setBrushSize(page, 20);
+		await pointerStroke(page, 'mouse', 1, [
+			{ x: 0.1, y: 0.5, pressure: 0.1 },
+			{ x: 0.3, y: 0.5, pressure: 0.1 },
+			{ x: 0.5, y: 0.5, pressure: 1.0 },
+			{ x: 0.7, y: 0.5, pressure: 1.0 },
+			{ x: 0.9, y: 0.5, pressure: 1.0 }
+		]);
+		assert.deepEqual(
+			await surfacePixel(page, 200, 249),
+			[17, 24, 39, 255],
+			'mouse pressure must not narrow the stroke'
+		);
+		assert.deepEqual(
+			await surfacePixel(page, 400, 249),
+			[17, 24, 39, 255],
+			'mouse pressure must not widen the stroke either, width stays fixed'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a pen without a pressure sensor paints at the full brush size', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await setBrushSize(page, 20);
+		await pointerStroke(page, 'pen', 1, [
+			{ x: 0.1, y: 0.5, pressure: 0.5 },
+			{ x: 0.3, y: 0.5, pressure: 0.5 },
+			{ x: 0.5, y: 0.5, pressure: 0.5 }
+		]);
+		assert.deepEqual(
+			await surfacePixel(page, 200, 249),
+			[17, 24, 39, 255],
+			'a constant 0.5 is an unsensed pen, so the stroke keeps the full width'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a touch pointer is ignored while a pen stroke is active, and the pen stroke still completes', async () => {
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		await setBrushSize(page, 20);
+		await dispatchPointer(page, 'pointerdown', {
+			pointerId: 1,
+			pointerType: 'pen',
+			pressure: 0.8,
+			x: 0.2,
+			y: 0.5
+		});
+		await dispatchPointer(page, 'pointermove', {
+			pointerId: 1,
+			pointerType: 'pen',
+			pressure: 0.8,
+			x: 0.3,
+			y: 0.5
+		});
+		// A palm (or a second finger) lands on the glass while the pen is still
+		// drawing: it must start nothing, not even a lasso.
+		await dispatchPointer(page, 'pointerdown', {
+			pointerId: 2,
+			pointerType: 'touch',
+			x: 0.8,
+			y: 0.8
+		});
+		await dispatchPointer(page, 'pointermove', {
+			pointerId: 2,
+			pointerType: 'touch',
+			x: 0.85,
+			y: 0.85
+		});
+		await dispatchPointer(page, 'pointerup', {
+			pointerId: 2,
+			pointerType: 'touch',
+			x: 0.85,
+			y: 0.85
+		});
+		assert.deepEqual(
+			await surfacePixel(page, 410, 410),
+			[255, 255, 255, 255],
+			'the touch pointer must not have drawn anything'
+		);
+		await dispatchPointer(page, 'pointermove', {
+			pointerId: 1,
+			pointerType: 'pen',
+			pressure: 0.8,
+			x: 0.4,
+			y: 0.5
+		});
+		await dispatchPointer(page, 'pointerup', {
+			pointerId: 1,
+			pointerType: 'pen',
+			pressure: 0.8,
+			x: 0.4,
+			y: 0.5
+		});
+		assert.deepEqual(
+			await surfacePixel(page, 180, 256),
+			[17, 24, 39, 255],
+			'the pen stroke itself must still have painted'
+		);
+		assert.equal((await button(page, 'Undo')).disabled, false);
+		await clickButton(page, 'Undo');
+		const blank = await bitmap(page);
+		assert.equal(blank.hash !== undefined, true);
+		assert.equal(
+			(await button(page, 'Undo')).disabled,
+			true,
+			'the touch pointer added no extra undo step'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a shape drawn with a pen saves without pressure on its points', async () => {
+	const downloadDirectory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-pen-shape-'));
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const client = await page.createCDPSession();
+		await client.send('Browser.setDownloadBehavior', {
+			behavior: 'allow',
+			downloadPath: downloadDirectory
+		});
+		await page.select('#realtime-tool', 'rectangle');
+		await pointerStroke(page, 'pen', 1, [
+			{ x: 0.2, y: 0.2, pressure: 0.4 },
+			{ x: 0.8, y: 0.8, pressure: 0.9 }
+		]);
+		await clickButton(page, 'Save drawing');
+		const saved = JSON.parse(
+			await readFile(await waitForDrawingDownload(downloadDirectory), 'utf8')
+		);
+		assert.equal(saved.operations[0].kind, 'shape');
+		for (const point of saved.operations[0].points) assert.equal('pressure' in point, false);
+	} finally {
+		await harness.close();
+		await rm(downloadDirectory, { recursive: true, force: true });
+	}
+});
+
+test('a version 3 drawing file without pressure still opens', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'potocolom-canvas-v3-still-opens-'));
+	const path = join(directory, 'v3-no-pressure.potocolom.json');
+	await writeFile(
+		path,
+		JSON.stringify({
+			version: 3,
+			width: 512,
+			height: 512,
+			operations: [
+				{
+					kind: 'stroke',
+					id: 'operation-1',
+					mode: 'draw',
+					color: '#dc2626',
+					size: 12,
+					points: [{ x: 128, y: 128 }]
+				}
+			],
+			cursor: 1
+		})
+	);
+	const harness = await openCanvas();
+	try {
+		const { page } = harness;
+		const blank = await bitmap(page);
+		await openDrawingFile(page, path);
+		await page.waitForFunction(() => {
+			const pixel = document
+				.querySelector('canvas[aria-label="Drawing surface"]')
+				.getContext('2d')
+				.getImageData(128, 128, 1, 1).data;
+			return pixel[0] === 220 && pixel[1] === 38 && pixel[2] === 38 && pixel[3] === 255;
+		});
+		await clickButton(page, 'Undo');
+		await waitForBitmap(page, blank.hash);
+	} finally {
+		await harness.close();
+		await rm(directory, { recursive: true, force: true });
 	}
 });

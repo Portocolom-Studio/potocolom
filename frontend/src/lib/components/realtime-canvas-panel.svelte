@@ -12,7 +12,12 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Slider } from '$lib/components/ui/slider';
-	import { DrawingDocument, DRAWING_FILE_MAX_BYTES, type DrawingTool } from '$lib/drawing-document';
+	import {
+		DrawingDocument,
+		DRAWING_FILE_MAX_BYTES,
+		palmRejected,
+		type DrawingTool
+	} from '$lib/drawing-document';
 	import { lassoToMask, maskOutline, maskWithPrompt, type LassoPoint } from '$lib/canvas-selection';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
@@ -60,6 +65,14 @@
 	// The panel's own element: Escape is the panel's while focus is inside it.
 	let panelRoot = $state<HTMLDivElement | undefined>();
 	let drawingDocument = $state<DrawingDocument | null>(null);
+	// The pointer type behind the in-progress stroke, kept beside strokePointer:
+	// palmRejected reads it to tell a resting palm's touch pointer from a real
+	// drawing gesture while a pen owns the stroke.
+	let strokePointerType: string | null = null;
+	// A pen with no pressure sensor reports a constant 0.5, so a stroke whose
+	// first sample is exactly 0.5 is taken as unsensed and paints at full size;
+	// a sensing pen lands lighter than that.
+	let strokeSensesPressure = false;
 	let drawingFileInput = $state<HTMLInputElement | undefined>();
 
 	/** A message is held as its key, not its text, so switching language
@@ -339,13 +352,21 @@
 		if (stepsTimer !== null) clearTimeout(stepsTimer);
 	});
 
-	function canvasPoint(event: PointerEvent): { x: number; y: number } {
+	function canvasPoint(event: PointerEvent): { x: number; y: number; pressure?: number } {
 		const canvas = event.currentTarget as HTMLCanvasElement;
 		const rect = canvas.getBoundingClientRect();
-		return {
+		const point = {
 			x: ((event.clientX - rect.left) / rect.width) * CANVAS_SIZE,
 			y: ((event.clientY - rect.top) / rect.height) * CANVAS_SIZE
 		};
+		// Mouse reports 0.5 while a button is held and touch reports its own
+		// contact pressure, so only a sensing pen's nonzero reading is real.
+		if (strokeSensesPressure && event.pointerType === 'pen' && event.pressure > 0) {
+			// Three decimals is finer than a pen resolves and keeps a long stroke
+			// well inside the drawing file's byte limit.
+			return { ...point, pressure: Math.round(event.pressure * 1000) / 1000 };
+		}
+		return point;
 	}
 
 	function syncHistory(): void {
@@ -358,11 +379,13 @@
 		if (strokePointer === null) return;
 		drawingDocument?.finishStroke(strokePointer);
 		strokePointer = null;
+		strokePointerType = null;
 		syncHistory();
 	}
 
 	function onPointerDown(event: PointerEvent): void {
 		if (openingDrawing || !event.isPrimary || event.button !== 0) return;
+		if (palmRejected(strokePointerType, event.pointerType)) return;
 		if (selecting) {
 			if (lassoPointer !== null || strokePointer !== null) return;
 			lassoPointer = event.pointerId;
@@ -371,6 +394,7 @@
 			return;
 		}
 		if (strokePointer !== null || !drawingDocument) return;
+		strokeSensesPressure = event.pointerType === 'pen' && event.pressure !== 0.5;
 		const point = canvasPoint(event);
 		if (
 			!drawingDocument.beginStroke(
@@ -385,6 +409,7 @@
 		)
 			return;
 		strokePointer = event.pointerId;
+		strokePointerType = event.pointerType;
 		(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
 		realtimeSession.markChanged();
 		syncHistory();
@@ -403,6 +428,7 @@
 		// its own pointer id for the same reason, and adds nothing to the
 		// drawing document: a selection changes what renders, not what is drawn.
 		if (openingDrawing || !event.isPrimary) return;
+		if (palmRejected(strokePointerType, event.pointerType)) return;
 		if (event.pointerId === lassoPointer) {
 			lassoPoints = [...lassoPoints, canvasPoint(event)];
 			return;
@@ -625,6 +651,7 @@
 			if (request !== fileRequest || drawingDocument !== owner) return;
 			owner.restore(JSON.parse(text));
 			strokePointer = null;
+			strokePointerType = null;
 			syncHistory();
 			realtimeSession.markChanged();
 		} catch {
