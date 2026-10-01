@@ -18,12 +18,20 @@
 		timeline,
 		vramAvailable = false,
 		range = $bindable<MetricsRange>('5m'),
-		live = false
+		live = false,
+		showModelActivity = true,
+		metricEmptyHint,
+		modelActivityEmptyHint,
+		hintText
 	}: {
 		timeline: GpuTimeline;
 		vramAvailable?: boolean;
 		range?: MetricsRange;
 		live?: boolean;
+		showModelActivity?: boolean;
+		metricEmptyHint?: string;
+		modelActivityEmptyHint?: string;
+		hintText?: string;
 	} = $props();
 
 	const metricLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'metric'));
@@ -88,15 +96,14 @@
 					windowEndMs={timeline.windowEndMs}
 					{range}
 					{live}
-					emptyHint={lane.id === 'vram' && !vramAvailable
-						? t('app.metrics.vram_unavailable')
-						: undefined}
+					emptyHint={metricEmptyHint ??
+						(lane.id === 'vram' && !vramAvailable ? t('app.metrics.vram_unavailable') : undefined)}
 				/>
 			{/each}
 		</Card.Content>
 	</Card.Root>
 
-	{#if modelLanes.length > 0}
+	{#if showModelActivity && modelLanes.length > 0}
 		<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
 			<Card.Header class="border-border border-b px-5 py-4">
 				<Card.Title class="text-base">{t('app.metrics.model_activity')}</Card.Title>
@@ -176,15 +183,18 @@
 				</div>
 			</Card.Content>
 		</Card.Root>
-	{:else}
+	{:else if showModelActivity}
 		<Card.Root class="p-5">
-			<p class="text-muted-foreground text-sm">{t('app.metrics.gpu_timeline_empty')}</p>
+			<p class="text-muted-foreground text-sm">
+				{modelActivityEmptyHint ?? t('app.metrics.gpu_timeline_empty')}
+			</p>
 		</Card.Root>
 	{/if}
 
 	<p class="text-muted-foreground px-1 text-xs leading-relaxed">
-		{timeline.hardwareAvailable
-			? t('app.metrics.gpu_timeline_hint_hw')
-			: t('app.metrics.gpu_timeline_hint')}
+		{hintText ??
+			(timeline.hardwareAvailable
+				? t('app.metrics.gpu_timeline_hint_hw')
+				: t('app.metrics.gpu_timeline_hint'))}
 	</p>
 </div>

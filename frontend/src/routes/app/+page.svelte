@@ -41,9 +41,14 @@
 	$effect.pre(() => {
 		const { view, tab } = readStudioView(page.url);
 		studio.shellView = openViewFor(view, tab, account.current?.role ?? null);
-		// Only a metrics URL names the tab, and only when metrics was not
-		// refused, so other views keep the last tab open.
-		if (studio.shellView === 'metrics') studio.metricsTab = tab;
+		// Only the active tabbed view applies its URL tab, and only when it was
+		// not refused, so other views keep their last tab open.
+		if (studio.shellView === 'metrics' && (tab === 'usage' || tab === 'benchmarks')) {
+			studio.metricsTab = tab;
+		}
+		if (studio.shellView === 'admin' && (tab === 'users' || tab === 'audit' || tab === 'fleet')) {
+			studio.adminTab = tab;
+		}
 	});
 	let updateDismissed = $state(false);
 	const updateAvailable = $derived(!landing && $updated && !updateDismissed);
@@ -153,6 +158,14 @@
 								<MetricsDashboard />
 							{:catch}
 								<p class="text-muted-foreground text-sm">{t('app.metrics.load_failed')}</p>
+							{/await}
+						{:else if studio.shellView === 'admin'}
+							{#await import('$lib/components/studio-admin-dashboard.svelte')}
+								<p class="text-muted-foreground text-sm">{t('app.admin.loading')}</p>
+							{:then { default: AdminDashboard }}
+								<AdminDashboard />
+							{:catch}
+								<p class="text-muted-foreground text-sm">{t('app.admin.load_failed')}</p>
 							{/await}
 						{:else if studio.shellView === 'models'}
 							<ModelPanel />

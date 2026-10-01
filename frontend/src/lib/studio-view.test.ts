@@ -4,8 +4,9 @@ import { test } from 'node:test';
 import {
 	readStudioView,
 	studioViewSearch,
-	type MetricsTab,
-	type ShellView
+	ADMIN_TABS,
+	type ShellView,
+	type StudioTab
 } from './studio-view.ts';
 
 const at = (search: string) => new URL(`https://studio.test/app${search}`);
@@ -15,7 +16,7 @@ test('a bare /app is Generate on the usage tab', () => {
 });
 
 test('an unknown view falls back to Generate and an unknown tab to usage', () => {
-	assert.deepEqual(readStudioView(at('?view=admin&tab=secrets')), {
+	assert.deepEqual(readStudioView(at('?view=unknown&tab=secrets')), {
 		view: 'generate',
 		tab: 'usage'
 	});
@@ -29,6 +30,15 @@ test('the URL names the view and the benchmarks tab', () => {
 	assert.deepEqual(readStudioView(at('?view=models')), { view: 'models', tab: 'usage' });
 });
 
+test('the admin view has users, audit, and fleet tabs that round-trip', () => {
+	assert.deepEqual(ADMIN_TABS, ['users', 'audit', 'fleet']);
+	assert.deepEqual(readStudioView(at('?view=admin')), { view: 'admin', tab: 'users' });
+	assert.deepEqual(readStudioView(at('?view=admin&tab=audit')), { view: 'admin', tab: 'audit' });
+	assert.equal(studioViewSearch('', 'admin', 'audit'), '?view=admin&tab=audit');
+	assert.equal(studioViewSearch('', 'admin', 'fleet'), '?view=admin&tab=fleet');
+	assert.equal(studioViewSearch('', 'admin', 'users'), '?view=admin');
+});
+
 test('Generate and the usage tab leave the URL bare', () => {
 	assert.equal(studioViewSearch('?view=images', 'generate', 'usage'), '');
 	assert.equal(studioViewSearch('', 'metrics', 'usage'), '?view=metrics');
@@ -40,6 +50,11 @@ test('a tab is dropped on views that are not metrics', () => {
 		studioViewSearch('?view=metrics&tab=benchmarks', 'upscale', 'benchmarks'),
 		'?view=upscale'
 	);
+});
+
+test('tabs that do not belong to a view are removed from the URL', () => {
+	assert.equal(studioViewSearch('?tab=audit', 'metrics', 'audit'), '?view=metrics');
+	assert.equal(studioViewSearch('?tab=benchmarks', 'admin', 'benchmarks'), '?view=admin');
 });
 
 test('other query parameters are kept', () => {
@@ -67,14 +82,16 @@ test('every view and tab round trips through the URL', () => {
 		'realtime_canvas',
 		'images',
 		'models',
-		'metrics'
+		'metrics',
+		'admin'
 	];
-	const tabs: MetricsTab[] = ['usage', 'benchmarks'];
 	for (const view of views) {
+		const tabs: StudioTab[] =
+			view === 'admin' ? [...ADMIN_TABS] : view === 'metrics' ? ['usage', 'benchmarks'] : ['usage'];
 		for (const tab of tabs) {
 			const read = readStudioView(at(studioViewSearch('', view, tab)));
 			assert.equal(read.view, view);
-			if (view === 'metrics') assert.equal(read.tab, tab);
+			if (view === 'metrics' || view === 'admin') assert.equal(read.tab, tab);
 		}
 	}
 });

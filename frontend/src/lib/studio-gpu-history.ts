@@ -2,6 +2,7 @@ import type { MetricsRange } from '$lib/studio-metrics-range';
 
 export type GpuHistoryPoint = {
 	ts: number;
+	worker_id?: string;
 	util_pct: number | null;
 	util_min?: number | null;
 	util_max?: number | null;
@@ -12,12 +13,13 @@ export type GpuHistoryPoint = {
 	power_w?: number | null;
 };
 
-type GpuHistoryResponse = {
+export type GpuHistoryResponse = {
 	from: string;
 	to: string;
 	rollup: 'raw' | '5m';
 	samples: Array<{
 		ts: string;
+		worker_id?: string;
 		util_pct: number | null;
 		util_min?: number | null;
 		util_max?: number | null;
@@ -32,21 +34,34 @@ type GpuHistoryResponse = {
 export async function fetchGpuHistory(
 	fromMs: number,
 	toMs: number,
-	rollup: 'auto' | 'raw' | '5m' = 'auto'
+	rollup: 'auto' | 'raw' | '5m' = 'auto',
+	workerId?: string
 ): Promise<GpuHistoryPoint[]> {
-	const params = new URLSearchParams({
-		from: String(fromMs),
-		to: String(toMs),
-		rollup
-	});
-	const response = await fetch(`/api/v1/metrics/gpu/history?${params}`);
+	const response = await fetch(
+		`/api/v1/metrics/gpu/history${gpuHistorySearch(fromMs, toMs, rollup, workerId)}`
+	);
 	if (!response.ok) {
 		return [];
 	}
-	const body = (await response.json()) as GpuHistoryResponse;
+	return gpuHistoryPoints((await response.json()) as GpuHistoryResponse);
+}
+
+export function gpuHistorySearch(
+	fromMs: number,
+	toMs: number,
+	rollup: 'auto' | 'raw' | '5m' = 'auto',
+	workerId?: string
+): string {
+	const params = new URLSearchParams({ from: String(fromMs), to: String(toMs), rollup });
+	if (workerId) params.set('worker_id', workerId);
+	return `?${params}`;
+}
+
+export function gpuHistoryPoints(body: GpuHistoryResponse): GpuHistoryPoint[] {
 	return body.samples
 		.map((sample) => ({
 			ts: Date.parse(sample.ts),
+			worker_id: sample.worker_id,
 			util_pct: sample.util_pct,
 			util_min: sample.util_min,
 			util_max: sample.util_max,

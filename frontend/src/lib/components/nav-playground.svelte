@@ -11,6 +11,7 @@
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Collapsible from '$lib/components/ui/collapsible/index.js';
 	import NavMetrics from '$lib/components/nav-metrics.svelte';
+	import NavAdmin from '$lib/components/nav-admin.svelte';
 	import {
 		studio,
 		starredGenerations,
@@ -280,6 +281,7 @@
 			{/snippet}
 		</Collapsible.Root>
 		<NavMetrics />
+		<NavAdmin />
 		<!-- Keyed by position, not title: the locale restored after hydration renames
 		     every title, and a title key would then remount each collapsible mid-mount. -->
 		{#each placeholders as section, index (index)}

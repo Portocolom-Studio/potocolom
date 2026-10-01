@@ -54,7 +54,7 @@ test('sectionNeeds marks user-only sections for a viewer only', () => {
 });
 
 test('sectionNeeds marks admin-only sections for a viewer or a user', () => {
-	const adminSections: GatedSection[] = ['metrics_usage', 'metrics_benchmarks'];
+	const adminSections: GatedSection[] = ['metrics_usage', 'metrics_benchmarks', 'admin'];
 	for (const section of adminSections) {
 		assert.equal(sectionNeeds(section, 'viewer'), 'admin');
 		assert.equal(sectionNeeds(section, 'user'), 'admin');
@@ -90,6 +90,14 @@ test('openViewFor keeps an admin on metrics', () => {
 	assert.equal(openViewFor('metrics', 'benchmarks', 'admin'), 'metrics');
 });
 
+test('openViewFor sends a viewer or member away from every admin tab', () => {
+	for (const tab of ['users', 'audit', 'fleet'] as const) {
+		assert.equal(openViewFor('admin', tab, 'viewer'), 'images');
+		assert.equal(openViewFor('admin', tab, 'user'), 'generate');
+		assert.equal(openViewFor('admin', tab, 'admin'), 'admin');
+	}
+});
+
 test('openViewFor keeps models and images open to a viewer', () => {
 	assert.equal(openViewFor('models', 'usage', 'viewer'), 'models');
 	assert.equal(openViewFor('images', 'usage', 'viewer'), 'images');
@@ -105,7 +113,8 @@ test('openViewFor keeps every view when there is no role', () => {
 		'realtime_canvas',
 		'images',
 		'models',
-		'metrics'
+		'metrics',
+		'admin'
 	] as const) {
 		assert.equal(openViewFor(view, 'usage', null), view);
 	}
