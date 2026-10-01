@@ -461,6 +461,7 @@ Rejected alternative: public Terraform under `deploy/terraform/` (as earlier dra
 
 ## Usage metrics: per-event user-linked rows plus a CLIP output categorizer
 
+<!-- corrected 2026-10-01: the per-event rows stand; the categorizer is SigLIP 2 base, not a CLIP pass reusing the SD encoders, see "Outputs are categorized by SigLIP 2 base on the CPU" below -->
 Every completed job and closed realtime session writes one user-linked row (action, model, tier, output category, gpu_ms, duration) to a `usage_events` table in the deployment's own PostgreSQL, in both modes; the worker attaches a category from a CLIP zero-shot pass over the output image at generation time. Per-event user-linked rows are what retention, cohort and funnel analysis need, which is what investors ask; the CLIP pass is nearly free because SD-class pipelines already hold a CLIP encoder and the image is already in memory. No prompts, images, IPs or user agents are stored; rows die with the account purge and appear in the GDPR export. Specified in [metrics.md](metrics.md).
 
 Rejected alternatives: a third party analytics product (PostHog, Amplitude: client side trackers and data sharing contradict the no-cookies posture and add a dependency); daily aggregates only (privacy-trivial but cannot answer retention or cohort questions); classifying the prompt text instead of the output (prompts are short, misleading or absent in drawing and enhance flows); pseudonymous ids (loses the join to plan and cohort, which is the point of the exercise).
