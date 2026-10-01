@@ -2,14 +2,14 @@
 
 What the platform measures about its own use, where those measurements live, and what leaves a self-hosted install. The goal is to answer product and investor questions - what are people creating, with which models, how often do they come back - without cookies, third party trackers or any client side beacon. Everything here is server side rows derived from requests the API already handles.
 
-Self-hosted and local: GPU samples land in PostgreSQL (`gpu_samples`). Redis worker hashes and CloudWatch aggregates are cloud-profile destinations. They are not wired in this repository yet. `usage_events` and the TELEMETRY opt-out path are shipped. CLIP categories and QuotaService metering are not.
+Self-hosted and local: GPU samples land in PostgreSQL (`gpu_samples`). Redis worker hashes and CloudWatch aggregates are cloud-profile destinations. They are not wired in this repository yet. `usage_events`, its output categories, and the TELEMETRY opt-out path are shipped. QuotaService metering is not.
 
 ## The questions this answers
 
 Designed product questions. Shipped today: GPU samples, usage_events without prompt/image/IP,
-and TELEMETRY aggregates. CLIP categories stay stub `other`. Tier routing is not shipped.
+output categories, and TELEMETRY aggregates. Tier routing is not shipped.
 
-- What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan. (needs CLIP; stub today)
+- What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan.
 - Which models they choose. Optional `model_id` routing by tier is designed, not shipped.
 - How much time they spend: realtime drawing minutes, queued generations per session, days active per week.
 - Retention and cohorts: DAU/WAU, how usage changes after the first week, which categories retain.
@@ -23,7 +23,7 @@ What flows where, and what never leaves the deployment:
 
 ```mermaid
 flowchart TB
-    W["Worker<br>GPU sample rides every 30 s heartbeat<br>category stub other until CLIP ships"]
+    W["Worker<br>GPU sample rides every 30 s heartbeat<br>output category on job_done and session_closed"]
     A["API"]
     subgraph FLEET["Fleet plane: per heartbeat, hardware detail"]
         RH[("Redis worker hash<br>live fleet view, autoscaler")]
@@ -113,9 +113,9 @@ foreign keys use `ON DELETE CASCADE`, so both are hard deleted with the account'
 
 ## Content categorization
 
-Designed: the worker would categorize each output with a CLIP zero-shot pass against a fixed label set - `art`, `photo_edit`, `design`, `character`, `nsfw`, `other` - and attach the top label and score to `job_done` (queued) and `session_closed` (realtime, last frame).
+Designed: the worker categorizes each output with a zero-shot pass against a fixed label set - `art`, `photo_edit`, `design`, `character`, `nsfw`, `other` - and attaches the top label and score to `job_done` (queued) and `session_closed` (realtime, last frame).
 
-Shipped: `worker/worker/categorize.py` returns stub `other` with no score. SD-class pipelines already ship a CLIP encoder, so the extra comparison is still the planned path. Categorization is metrics, not moderation: it would run regardless of `SAFETY_CHECKS`. A self-hosted install does not yet label NSFW correctly in its own statistics.
+Shipped: `worker/worker/categorize.py` scores the output with SigLIP 2 base (`google/siglip2-base-patch16-224`, pinned to a commit) on the CPU in float32, and reports the highest-scoring label once its sigmoid score clears the threshold; below the threshold the answer is `other` with that score, and a missing or undecodable image answers `other` with no score. Categorization runs only with the real engine (`DiffusersEngine`), so the simulated engine keeps the scoreless `other` answer and never downloads the model. It is metrics, not moderation: it runs regardless of `SAFETY_CHECKS`. A self-hosted install does not yet label NSFW correctly in its own statistics.
 
 ## Telemetry from self-hosted installs
 

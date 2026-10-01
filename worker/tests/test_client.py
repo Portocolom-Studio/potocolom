@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import threading
 import uuid
 
 import pytest
@@ -473,6 +474,10 @@ def test_close_session_after_the_runner_exists_closes_it():
     assert closed["gpu_ms"] == 0
     assert closed["control_generation"] == 1
     assert "duration_ms" in closed
+    # No frame was ever delivered, so there is nothing to categorize: the
+    # score stays absent exactly as it was before categorization was real.
+    assert closed["category"] == "other"
+    assert "category_score" not in closed
     assert socket.close_code is None
 
 
@@ -535,6 +540,60 @@ def test_close_reports_snapshot_before_inflight_frame_drains():
     assert closed["frames"] == 0
     assert closed["gpu_ms"] == 0
     assert not any(isinstance(m, bytes) for m in socket.sent)
+
+
+class FrameThenCloseSocket(RecordingSocket):
+    """Hands the close to the loop only after the runner delivered a frame."""
+
+    def __init__(self, messages, session_id):
+        super().__init__(messages)
+        self.session_id = session_id
+        self.frame_sent = asyncio.Event()
+        self.close_sent = False
+
+    async def send(self, data):
+        await super().send(data)
+        if isinstance(data, (bytes, bytearray)):
+            self.frame_sent.set()
+
+    async def __anext__(self):
+        if self.messages:
+            return self.messages.pop(0)
+        if not self.close_sent:
+            await asyncio.wait_for(self.frame_sent.wait(), timeout=5)
+            self.close_sent = True
+            return close_msg(self.session_id)
+        await asyncio.sleep(0.05)
+        raise StopAsyncIteration
+
+
+def test_session_closed_categorizes_the_last_frame_off_the_event_loop(monkeypatch):
+    session_id = str(uuid.uuid4())
+    socket = FrameThenCloseSocket([
+        open_msg(session_id, {"prompt": "x"}),
+        canvas_frame(session_id),
+    ], session_id)
+    seen = []
+    threads = []
+
+    def categorize(image):
+        seen.append(image)
+        threads.append(threading.get_ident())
+        return "design", 0.7301
+
+    monkeypatch.setattr("worker.client.categorize_output", categorize)
+
+    asyncio.run(serve_connection(socket, Settings(worker_id="w-categorize"),
+                                 [SIMULATED_MANIFEST], InputRecordingEngine()))
+
+    sent = [json.loads(m) for m in socket.sent if isinstance(m, str)]
+    closed = next(m for m in sent if m["type"] == "session_closed")
+    assert closed["category"] == "design"
+    assert closed["category_score"] == 0.7301
+    frame = next(m for m in socket.sent if isinstance(m, bytes))
+    # The category describes what the person saw: the WebP the runner sent.
+    assert seen == [frame[FRAME_HEADER_BYTES:]]
+    assert threads and threads[0] != threading.get_ident()
 
 
 class ReplacementDisconnectSocket(RecordingSocket):
@@ -1487,6 +1546,30 @@ def test_run_job_generates_uploads_and_reports(monkeypatch):
     # Every message about this job carries the token back, or a version 3 API
     # treats it as a report from a superseded attempt and ignores it.
     assert all(r["dispatch_token"] == "dispatch-token" for r in reports)
+
+
+def test_run_job_carries_the_category_off_the_event_loop(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    FakeUpload.puts = []
+    FakeUpload.fail = False
+    socket = FakeSocket()
+    threads = []
+
+    def categorize(_image):
+        threads.append(threading.get_ident())
+        return "art", 0.6189
+
+    monkeypatch.setattr("worker.client.categorize_output", categorize)
+
+    asyncio.run(run_job(socket, SimulatedEngine(0.01), SIMULATED_MANIFEST, dispatch_control()))
+
+    reports = [json.loads(m) for m in socket.sent]
+    done = next(r for r in reports if r["type"] == "job_done")
+    assert done["category"] == "art"
+    assert done["category_score"] == 0.6189
+    # Categorization is tens to hundreds of ms of CPU: on the loop it would
+    # stall frame relaying and control handling for the duration.
+    assert threads and threads[0] != threading.get_ident()
 
 
 def test_run_job_delivers_without_thumbnail_when_thumb_upload_fails(monkeypatch):

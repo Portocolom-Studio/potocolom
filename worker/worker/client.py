@@ -25,7 +25,7 @@ from worker.engine import (
     SimulatedEngine,
     make_thumbnail_webp,
 )
-from worker.categorize import categorize_output
+from worker.categorize import categorize_output, enable_categorizer
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
@@ -186,6 +186,9 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
     if settings.models_dir:
         from worker.engine import DiffusersEngine
 
+        # Only the real engine categorizes: the model download is a real-model
+        # cost, so `make simulate` and the simulated tests stay on the stub.
+        enable_categorizer()
         return load_manifests(settings.models_dir), DiffusersEngine(
             settings.device,
             memory_mode=settings.memory_mode,
@@ -295,6 +298,9 @@ class SessionRunner:
         self.dropped = 0
         self._frames = 0
         self._gpu_ms = 0
+        # The WebP this runner last sent, so close_report can categorize what
+        # the person actually saw; None while no frame has been delivered.
+        self._last_frame: bytes | None = None
         self._started_at = time.monotonic()
         self._ready_sent = False
         self._ended = False
@@ -454,6 +460,7 @@ class SessionRunner:
                 logger.warning("session %s lost the connection while sending a frame",
                                self._session_id)
                 return
+            self._last_frame = generated.data
 
     def close(self) -> None:
         self._ended = True
@@ -470,8 +477,10 @@ class SessionRunner:
     def add_done_callback(self, callback) -> None:
         self._task.add_done_callback(lambda _: callback(self))
 
-    def close_report(self) -> dict:
-        category, score = categorize_output(None)
+    async def close_report(self) -> dict:
+        # Categorization is tens to hundreds of ms of CPU beside the loop that
+        # relays frames and controls, so it runs in a worker thread.
+        category, score = await asyncio.to_thread(categorize_output, self._last_frame)
         report = {
             "type": "session_closed",
             "session_id": str(self._session_id),
@@ -556,7 +565,7 @@ class SessionManager:
             return
         self._runners.pop(session_id, None)
         self._retire(runner)
-        await self._ws.send(json.dumps(runner.close_report()))
+        await self._ws.send(json.dumps(await runner.close_report()))
 
     def submit(self, session_id: uuid.UUID, revision: int, payload: bytes) -> None:
         runner = self._runners.get(session_id)
@@ -689,14 +698,15 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
                           "load_ms": result.load_ms,
                           "postprocess_ms": postprocess_ms,
                           "width": result.width, "height": result.height}
-        category, score = categorize_output(result.data)
+        # Off the event loop like the close report: categorization is CPU work.
+        category, score = await asyncio.to_thread(categorize_output, result.data)
         done_msg["category"] = category
         if score is not None:
             done_msg["category_score"] = score
         if has_thumbnail:
             done_msg["has_thumbnail"] = True
-        # Stamped last so it covers every step the user waits through, including
-        # categorization once that stops being a stub.
+        # Stamped last so it covers every step the user waits through,
+        # including categorization.
         done_msg["duration_ms"] = int((time.monotonic() - job_started) * 1000)
         await ws.send(json.dumps(done_msg))
         logger.info("job %s done in %d gpu_ms", job_id, result.gpu_ms)
