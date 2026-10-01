@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import CpuIcon from '@lucide/svelte/icons/cpu';
+	import MegaphoneIcon from '@lucide/svelte/icons/megaphone';
 	import ScrollTextIcon from '@lucide/svelte/icons/scroll-text';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import { t } from '$lib/i18n.svelte';
@@ -15,7 +16,8 @@
 	const tabs = $derived([
 		{ value: ADMIN_TABS[0], label: t('app.admin.users'), icon: UsersIcon },
 		{ value: ADMIN_TABS[1], label: t('app.admin.audit'), icon: ScrollTextIcon },
-		{ value: ADMIN_TABS[2], label: t('app.admin.fleet'), icon: CpuIcon }
+		{ value: ADMIN_TABS[2], label: t('app.admin.fleet'), icon: CpuIcon },
+		{ value: ADMIN_TABS[3], label: t('app.admin.banner'), icon: MegaphoneIcon }
 	]);
 </script>
 

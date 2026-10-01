@@ -17,6 +17,7 @@
 	import Seo from '$lib/components/Seo.svelte';
 	import ServiceSketchPanel from '$lib/components/service-sketch-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
+	import StatusBanner from '$lib/components/status-banner.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -49,7 +50,10 @@
 		) {
 			studio.metricsTab = tab;
 		}
-		if (studio.shellView === 'admin' && (tab === 'users' || tab === 'audit' || tab === 'fleet')) {
+		if (
+			studio.shellView === 'admin' &&
+			(tab === 'users' || tab === 'audit' || tab === 'fleet' || tab === 'banner')
+		) {
 			studio.adminTab = tab;
 		}
 	});
@@ -130,6 +134,9 @@
 				<AppSidebar />
 				<Sidebar.Inset class="min-h-0 overflow-hidden">
 					<div class="relative flex h-full min-h-0 flex-col p-4">
+						{#if !landing}
+							<StatusBanner />
+						{/if}
 						{#if studio.favoriteNotice || updateAvailable}
 							<div class="bg-muted mb-3 flex items-center gap-2 rounded-md px-3 py-2 text-sm">
 								<!-- The live region is the text only: a region containing focusable

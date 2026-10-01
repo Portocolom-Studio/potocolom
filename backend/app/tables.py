@@ -26,6 +26,7 @@ AUTH_TOKEN_PURPOSES = ("setup", "reset", "recovery", "challenge")
 LOGIN_ATTEMPT_SCOPES = ("identifier", "address")
 OUTBOX_STATES = ("pending", "sent", "failed")
 AUDIT_SEVERITIES = ("info", "high")
+BANNER_KINDS = ("high_demand", "degraded", "maintenance")
 NORMALIZED_EMAIL = text("lower(btrim(email))")
 
 
@@ -521,6 +522,31 @@ class SuppressedAddress(Base):
     email: Mapped[str] = mapped_column(Text, primary_key=True)
     reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class StatusBanner(Base):
+    """The one banner the SPA may show, or none.
+
+    A single row rather than a settings column: an empty table means no
+    banner, so "cleared" needs no null-vs-unset distinction on every field.
+    The id is pinned true by the check constraint, which is what keeps the
+    table to one row without a separate uniqueness scheme for a table this
+    small.
+    """
+
+    __tablename__ = "status_banner"
+    __table_args__ = (
+        CheckConstraint("id", name="status_banner_singleton"),
+        CheckConstraint(_one_of("kind", BANNER_KINDS), name="status_banner_kind"),
+        CheckConstraint("char_length(custom_text) <= 280", name="status_banner_custom_text_length"),
+    )
+
+    id: Mapped[bool] = mapped_column(primary_key=True, default=True)
+    kind: Mapped[str] = mapped_column(Text)
+    message_key: Mapped[str | None] = mapped_column(Text)
+    custom_text: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_by: Mapped[uuid.UUID | None]
 
 
 class AuditEvent(Base):

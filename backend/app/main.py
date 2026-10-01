@@ -28,6 +28,7 @@ from app.realtime import router as realtime_router
 from app.realtime import sweep_dead_sessions
 from app.accounts import router as accounts_router
 from app.admin import router as admin_router
+from app.banner import current_banner, router as banner_router
 from app.credentials import router as credentials_router
 from app.deletion import purge_loop
 from app.deletion import router as deletion_router
@@ -145,6 +146,7 @@ if get_settings().benchmark_api:
 app.include_router(benchmark_sessions_router)
 app.include_router(accounts_router)
 app.include_router(admin_router)
+app.include_router(banner_router)
 app.include_router(credentials_router)
 app.include_router(deletion_router)
 app.include_router(enable_router)
@@ -210,6 +212,7 @@ async def config() -> dict:
         "auth_methods": settings.auth_methods,
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
+        "banner": await current_banner(),
     }
 
 

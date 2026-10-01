@@ -135,11 +135,14 @@ The SPA's first call. One build artifact serves every deployment; this response 
 {
   "auth_methods": [],
   "billing_enabled": false,
-  "languages": ["en", "es"]
+  "languages": ["en", "es"],
+  "banner": null
 }
 ```
 
 `auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests. The studio login and join routes read this field to decide which sign-in controls to render.
+
+`banner` is `null` when no banner is set, otherwise `{"kind": "high_demand" | "degraded" | "maintenance", "message_key": "..." | null, "custom_text": "..." | null}`. The SPA shows `custom_text` when it is set, otherwise the text behind `message_key` (an i18n key, `app.banner.<kind>` by default). See [Administration](#administration) for how it is set.
 
 ### WS /api/v1/realtime
 
@@ -423,8 +426,21 @@ GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= 
 GET /api/v1/audit/summary             {"actions": {...}, "gaps": [...]} over seven days
 GET /api/v1/audit/anomalies           administrators who opened unusually many accounts
 GET /api/v1/audit/export              the same filters, as a JSON download
+PUT /api/v1/admin/banner              {"kind", "message_key"?, "custom_text"?}; 204; admin only
+DELETE /api/v1/admin/banner           204; admin only; clears the banner
 ```
 
+- The status banner (issue #46) is one row: setting it replaces whatever was
+  there, and GET /api/v1/config carries it to every client (see above). `kind`
+  is `high_demand`, `degraded` or `maintenance`. `message_key`, if given, must
+  be the one default key for that kind (`app.banner.<kind>`); `custom_text` is
+  capped at 280 characters and wins over the key when both are present. A
+  request with neither is refused `422`. It is set from the admin area, or
+  cleared with `DELETE`; both are audited by the admin role check, under the route as the action name.
+  Setting it automatically when the fleet autoscaler reports its ceiling, and
+  clearing it when the fleet recovers, is designed but not shipped: the
+  autoscaler this would read lives in the private cloud repository, not here
+  (docs/repository-boundary.md).
 - A privileged read records itself with the account it reached. The role check that guards these routes cannot know which account a read touched, so the route says so, and `GET /api/v1/audit?action=user.read` is the list of who looked at whom.
 - Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. The twentieth account is not the anomaly; the twenty-first is. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
