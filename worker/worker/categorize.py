@@ -46,6 +46,7 @@ _enabled = False
 _loaded: tuple[Any, Any, Any] | None = None
 _load_failure_logged = False
 _retry_after = 0.0
+_inference_logged_at: float | None = None
 # Two jobs can finish together, each in its own to_thread call; one load.
 _load_lock = threading.Lock()
 
@@ -88,6 +89,7 @@ def _load_model() -> tuple[Any, Any, Any]:
         text_inputs = processor(
             text=list(PROMPTS.values()),
             padding="max_length",
+            truncation=True,
             return_tensors="pt",
         )
         text_embeds = model.text_model(**text_inputs).pooler_output
@@ -118,7 +120,7 @@ def categorize_output(image: bytes | None) -> tuple[str, float | None]:
     optional rather than None so callers testing `score is not None` describe
     the protocol seam instead of a branch that cannot be taken.
     """
-    global _load_failure_logged
+    global _load_failure_logged, _inference_logged_at
     if not _enabled or image is None:
         return "other", None
     try:
@@ -139,7 +141,12 @@ def categorize_output(image: bytes | None) -> tuple[str, float | None]:
         scores = _score(state, picture)
         label = max(scores, key=lambda name: scores[name])
     except Exception:
-        logger.exception("categorizer inference failed; answering other")
+        # A deterministic failure repeats on every output, so it is logged at
+        # most once per retry window rather than once per job.
+        now = time.monotonic()
+        if _inference_logged_at is None or now - _inference_logged_at >= LOAD_RETRY_SECONDS:
+            _inference_logged_at = now
+            logger.exception("categorizer inference failed; answering other")
         return "other", None
     score = round(scores[label], 4)
     if score < CATEGORY_MIN_SCORE:
