@@ -33,10 +33,14 @@ PROMPTS: dict[str, str] = {
     "nsfw": "explicit sexual or nude content",
 }
 
-# Calibration knob: the top sigmoid score must reach this to become a label,
-# so an output that resembles none of the prompts falls to "other" instead of
-# being forced into the nearest one.
-CATEGORY_MIN_SCORE = 0.1
+# Calibration knob: the top label's share of the softmax over the five label
+# logits must reach this to become a label, so an output that resembles none
+# of the prompts falls to "other" instead of being forced into the nearest one.
+# SigLIP's own sigmoid gives these broad prompts absolute scores near zero
+# (0.0002 to 0.01 on real outputs), so it cannot be thresholded; the softmax
+# measured 0.77 to 0.99 on paintings, photos and cartoons and at most 0.51 on a
+# flat grey frame and on noise.
+CATEGORY_MIN_SCORE = 0.6
 
 # A failed load is retried no sooner than this, so an offline install does not
 # pay a failing download on every job.
@@ -98,7 +102,7 @@ def _load_model() -> tuple[Any, Any, Any]:
 
 
 def _score(state: tuple[Any, Any, Any], picture: Image.Image) -> dict[str, float]:
-    """Sigmoid probability per label: SigLIP scores each label on its own."""
+    """Each label's share of a softmax over the label logits."""
     import torch
 
     model, processor, text_embeds = state
@@ -108,7 +112,7 @@ def _score(state: tuple[Any, Any, Any], picture: Image.Image) -> dict[str, float
         image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
         logits = (image_embeds @ text_embeds.T) * model.logit_scale.exp()
         logits = logits + model.logit_bias
-        scores = torch.sigmoid(logits).squeeze(0)
+        scores = torch.softmax(logits, dim=-1).squeeze(0)
     return {label: float(score) for label, score in zip(PROMPTS, scores)}
 
 
