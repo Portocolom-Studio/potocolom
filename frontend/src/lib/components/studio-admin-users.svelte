@@ -1,10 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
-	import { buildAdminConfirmation, needsAdminAttestation } from '$lib/studio-admin-logic';
+	import {
+		adminErrorMessage,
+		buildAdminConfirmation,
+		buildUsersQuery,
+		needsAdminAttestation,
+		recheckAdminAccess
+	} from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import { Input } from '$lib/components/ui/input';
 	import { Dialog } from 'bits-ui';
 	import type { Role } from '$lib/account-display';
 	import type { Generation } from '$lib/studio.svelte';
@@ -31,6 +38,12 @@
 	};
 
 	let users = $state<AdminUser[]>([]);
+	let nextCursor = $state<string | null>(null);
+	let searchQuery = $state('');
+	let loadingMore = $state(false);
+	let loadMoreError = $state('');
+	let searchReady = false;
+	let usersLoadEpoch = 0;
 	let selectedId = $state<string | null>(null);
 	let detail = $state<AdminUser | null>(null);
 	let generations = $state<Generation[]>([]);
@@ -94,8 +107,9 @@
 	}
 
 	async function apiError(response: Response): Promise<string> {
+		if (response.status === 403) void recheckAdminAccess();
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return typeof body?.detail === 'string' ? body.detail : response.statusText;
+		return adminErrorMessage(body?.detail, response.statusText);
 	}
 
 	function displayDate(value: string | null): string {
@@ -104,22 +118,55 @@
 		return Number.isFinite(date) ? new Date(date).toLocaleString() : value;
 	}
 
-	async function loadUsers(): Promise<void> {
-		usersLoading = true;
-		usersError = '';
+	async function loadUsers(
+		options: { cursor?: string | null; append?: boolean } = {}
+	): Promise<void> {
+		const { cursor = null, append = false } = options;
+		const epoch = ++usersLoadEpoch;
+		loadMoreError = '';
+		if (append) loadingMore = true;
+		else {
+			usersLoading = true;
+			usersError = '';
+		}
 		try {
-			const response = await apiFetch('/api/v1/users');
+			const response = await apiFetch(`/api/v1/users${buildUsersQuery(searchQuery, cursor)}`);
+			if (epoch !== usersLoadEpoch) return;
 			if (!response.ok) {
-				usersError = await apiError(response);
-				users = [];
+				// The cursor is the last loaded account, and a purge can delete it:
+				// start the list over rather than strand the rows already shown.
+				if (append && response.status === 404) {
+					void loadUsers();
+					return;
+				}
+				const message = await apiError(response);
+				if (epoch !== usersLoadEpoch) return;
+				if (append) loadMoreError = message;
+				else {
+					usersError = message;
+					users = [];
+				}
 				return;
 			}
-			users = (await response.json()) as AdminUser[];
+			const body = (await response.json()) as { users: AdminUser[]; next_cursor: string | null };
+			if (epoch !== usersLoadEpoch) return;
+			users = append ? [...users, ...body.users] : body.users;
+			nextCursor = body.next_cursor;
 		} catch {
-			usersError = t('app.admin.request_failed');
+			if (epoch !== usersLoadEpoch) return;
+			if (append) loadMoreError = t('app.admin.request_failed');
+			else usersError = t('app.admin.request_failed');
 		} finally {
-			usersLoading = false;
+			if (epoch === usersLoadEpoch) {
+				usersLoading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	function loadMoreUsers(): void {
+		if (nextCursor === null || loadingMore) return;
+		void loadUsers({ cursor: nextCursor, append: true });
 	}
 
 	async function selectUser(userId: string): Promise<void> {
@@ -236,6 +283,20 @@
 	}
 
 	onMount(() => void loadUsers());
+
+	// Debounced 300ms: a search firing on every keystroke would race itself
+	// and spam the backend. searchReady skips the run the effect fires on
+	// mount, which onMount's own load already covers.
+	$effect(() => {
+		const query = searchQuery;
+		if (!searchReady) {
+			searchReady = true;
+			return;
+		}
+		void query;
+		const timer = setTimeout(() => void loadUsers(), 300);
+		return () => clearTimeout(timer);
+	});
 </script>
 
 <div class="grid min-h-0 gap-4 xl:grid-cols-[minmax(18rem,0.85fr)_minmax(0,1.65fr)]">
@@ -250,6 +311,14 @@
 					{t('app.admin.users_count').replace('{count}', String(users.length))}
 				</span>
 			</div>
+			<Input
+				type="search"
+				data-testid="admin-user-search"
+				class="mt-3"
+				aria-label={t('app.admin.search_users')}
+				placeholder={t('app.admin.search_users')}
+				bind:value={searchQuery}
+			/>
 		</Card.Header>
 		<Card.Content class="max-h-[55svh] overflow-auto p-0 xl:max-h-none xl:h-full">
 			{#if usersLoading}
@@ -277,6 +346,22 @@
 						</button>
 					{/each}
 				</div>
+				{#if nextCursor !== null}
+					<div class="p-3">
+						<Button
+							variant="outline"
+							size="sm"
+							data-testid="admin-users-load-more"
+							disabled={loadingMore}
+							onclick={loadMoreUsers}
+						>
+							{loadingMore ? t('app.admin.loading_users') : t('app.admin.load_more')}
+						</Button>
+						{#if loadMoreError}
+							<p role="alert" class="text-destructive mt-2 text-sm">{loadMoreError}</p>
+						{/if}
+					</div>
+				{/if}
 			{/if}
 		</Card.Content>
 	</Card.Root>

@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
-	import { buildAuditQuery, type AuditFilters } from '$lib/studio-admin-logic';
+	import {
+		adminErrorMessage,
+		buildAuditQuery,
+		recheckAdminAccess,
+		type AuditFilters
+	} from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -43,8 +48,9 @@
 	let summaryError = $state('');
 	let anomaliesError = $state('');
 	let eventsError = $state('');
+	let exportError = $state('');
+	let exporting = $state(false);
 
-	const exportHref = $derived(`/api/v1/audit/export${activeQuery === '' ? '' : `?${activeQuery}`}`);
 	const privilegedActionCount = $derived(
 		summary === null ? 0 : Object.values(summary.actions).reduce((total, count) => total + count, 0)
 	);
@@ -53,8 +59,9 @@
 	);
 
 	async function apiError(response: Response): Promise<string> {
+		if (response.status === 403) void recheckAdminAccess();
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return typeof body?.detail === 'string' ? body.detail : response.statusText;
+		return adminErrorMessage(body?.detail, response.statusText);
 	}
 
 	function displayDate(value: string): string {
@@ -117,6 +124,34 @@
 			eventsError = t('app.admin.request_failed');
 		} finally {
 			eventsLoading = false;
+		}
+	}
+
+	async function exportAudit(): Promise<void> {
+		exportError = '';
+		exporting = true;
+		try {
+			const response = await apiFetch(
+				`/api/v1/audit/export${activeQuery === '' ? '' : `?${activeQuery}`}`
+			);
+			if (!response.ok) {
+				exportError = await apiError(response);
+				return;
+			}
+			const blob = await response.blob();
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = 'audit.json';
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			// Some browsers cancel a download whose URL is revoked in the same tick.
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+		} catch {
+			exportError = t('app.admin.request_failed');
+		} finally {
+			exporting = false;
 		}
 	}
 
@@ -202,12 +237,23 @@
 					<Card.Title class="text-base">{t('app.admin.audit_search')}</Card.Title>
 					<Card.Description>{t('app.admin.audit_search_sub')}</Card.Description>
 				</div>
-				<Button href={exportHref} variant="outline" size="sm" data-testid="admin-audit-export">
+				<Button
+					variant="outline"
+					size="sm"
+					data-testid="admin-audit-export"
+					disabled={exporting}
+					onclick={exportAudit}
+				>
 					{t('app.admin.export')}
 				</Button>
 			</div>
 		</Card.Header>
 		<Card.Content class="flex min-h-0 flex-col gap-4 p-4">
+			{#if exportError}
+				<p role="alert" data-testid="admin-audit-export-error" class="text-destructive text-sm">
+					{exportError}
+				</p>
+			{/if}
 			<form
 				class="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_8rem_auto]"
 				onsubmit={searchAudit}

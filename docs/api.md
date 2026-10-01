@@ -413,8 +413,10 @@ A provider-verified address raises this account's `mail_verified` only when it n
 An administrator reads any one account completely and mutates none of them, except to call off a job (see the cancel route above). There is no view that crosses accounts: the way in is always a named user.
 
 ```text
-GET /api/v1/users                     every account, with role and state, no work and no credential;
-                                      recorded, because it reaches every account at once
+GET /api/v1/users                     ?limit= (default 50, max 200) &cursor= &q= (email substring, case-
+                                      insensitive, max 200 chars); {"users": [...], "next_cursor": ...},
+                                      role and state, no work and no credential; recorded for the page
+                                      read, not the whole install; an unknown cursor answers 404
 GET /api/v1/users/{id}                one account, plus how much work it holds
 GET /api/v1/users/{id}/generations    that account's generations, read only
 GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
@@ -426,7 +428,7 @@ GET /api/v1/audit/export              the same filters, as a JSON download
 - A privileged read records itself with the account it reached. The role check that guards these routes cannot know which account a read touched, so the route says so, and `GET /api/v1/audit?action=user.read` is the list of who looked at whom.
 - Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. The twentieth account is not the anomaly; the twenty-first is. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
-- There is no global gallery and no cross-user search. An administrator answering a complaint names the account.
+- There is no global gallery and no cross-user search of generations or assets. An administrator answering a complaint names the account; the user list's `q` only narrows which accounts show up, by email.
 
 ## Account states
 

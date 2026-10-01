@@ -9,6 +9,7 @@
 	} from '$lib/studio-gpu-history';
 	import { buildGpuTimeline } from '$lib/studio-gpu-timeline';
 	import { type MetricsRange, METRICS_RANGE_MS } from '$lib/studio-metrics-range';
+	import { adminErrorMessage, recheckAdminAccess } from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import * as Card from '$lib/components/ui/card';
@@ -27,8 +28,9 @@
 	const vramAvailable = $derived(samples.some((sample) => sample.vram_used_pct !== null));
 
 	async function apiError(response: Response): Promise<string> {
+		if (response.status === 403) void recheckAdminAccess();
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return typeof body?.detail === 'string' ? body.detail : response.statusText;
+		return adminErrorMessage(body?.detail, response.statusText);
 	}
 
 	async function requestHistory(workerId?: string): Promise<Response> {
