@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { lassoToMask, maskOutline, type LassoPoint } from './canvas-selection.ts';
+import { lassoToMask, maskOutline, maskWithPrompt, type LassoPoint } from './canvas-selection.ts';
 
 test('a lasso is clamped to the frame and normalised to 0..1', () => {
 	// One square overshooting the 512 frame on every side.
@@ -212,4 +212,39 @@ test('maskOutline puts the lasso back on the canvas it came from', () => {
 		{ x: 192, y: 690 }
 	]);
 	assert.deepEqual(maskOutline({ polygons: [] }, 512, 512), [], 'no polygon, no outline');
+});
+
+test('an edit prompt rides on the mask only while there is text to apply', () => {
+	const polygons: [number, number][][] = [
+		[
+			[0, 0],
+			[1, 0],
+			[1, 1]
+		]
+	];
+	// Applied text is trimmed, exactly as the prompt fields are trimmed.
+	assert.deepEqual(maskWithPrompt({ polygons }, '  a calm pond  '), {
+		polygons,
+		prompt: 'a calm pond'
+	});
+	// No text means no prompt on the wire, which is what sends the worker back
+	// to the session prompt inside the selection...
+	assert.deepEqual(maskWithPrompt({ polygons }, ''), { polygons });
+	assert.deepEqual(maskWithPrompt({ polygons }, '   '), { polygons });
+	// ...and a prompt the mask carried before does not survive an empty field.
+	assert.deepEqual(maskWithPrompt({ polygons, prompt: 'old' }, ' '), { polygons });
+	// A freshly drawn selection carries an applied prompt onto its polygons,
+	// and one that was never applied does not come along.
+	const next: [number, number][][] = [
+		[
+			[0.2, 0.2],
+			[0.8, 0.2],
+			[0.8, 0.8]
+		]
+	];
+	assert.deepEqual(maskWithPrompt({ polygons: next }, 'a calm pond'), {
+		polygons: next,
+		prompt: 'a calm pond'
+	});
+	assert.deepEqual(maskWithPrompt({ polygons: next }, undefined), { polygons: next });
 });

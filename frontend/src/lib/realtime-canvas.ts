@@ -180,8 +180,13 @@ export function openMessage(
  * clears the selection. Only a manifest declaring `parameters.properties.mask`
  * (sdxl-turbo, vega-rt) understands it, which is why the panel sends it only
  * for a model that declares it.
+ *
+ * `prompt` is the selection's own edit prompt: the text the worker conditions
+ * with on the frames that composite through the polygons, in place of the
+ * session prompt. It is absent when no edit prompt applies, and a worker
+ * without it in the manifest never receives one.
  */
-export type RealtimeCanvasMask = { polygons: [number, number][][] };
+export type RealtimeCanvasMask = { polygons: [number, number][][]; prompt?: string };
 
 /** Every value the update control may carry, mask included. */
 export type RealtimeCanvasParamValue = string | number | RealtimeCanvasMask | null;

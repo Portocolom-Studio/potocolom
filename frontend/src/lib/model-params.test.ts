@@ -1,19 +1,37 @@
 // node --test with the built in type stripping, the same as the other tests
 // here (see Makefile verify-frontend). These pin how far one arrow key press
-// moves a parameter, which is what issue #250 was about.
+// moves a parameter, which is what issue #250 was about, and how a manifest is
+// read for the realtime canvas edit prompt (issue #376).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
 	MAX_TRACK_NOTCHES,
+	modelAcceptsEditPrompt,
 	normToValue,
 	trackSteps,
 	valueToNorm,
+	type ModelParamProperty,
 	type ParamRange
 } from './model-params.ts';
+import type { Model } from './studio.svelte.ts';
 
 const steps: ParamRange = { min: 2, max: 8, default: 4, step: 1, integer: true };
 const guidance: ParamRange = { min: 1, max: 20, default: 7, step: 0.5, integer: false };
+
+/** A realtime model whose manifest declares `properties` and nothing else,
+ * because the manifest is the whole subject of the tests below. */
+function modelDeclaring(properties: Record<string, unknown>): Model {
+	return {
+		id: 'fixture',
+		name: 'Fixture',
+		capabilities: ['realtime'],
+		min_vram_gb: 8,
+		default: true,
+		estimated_gpu_ms_default: null,
+		parameters: { properties: properties as Record<string, ModelParamProperty> }
+	};
+}
 
 test('a narrow integer parameter gets one notch per step', () => {
 	// steps spans 2 to 8, so six presses cross it. On the old fixed 0-100 track
@@ -70,4 +88,63 @@ test('a value sits on the notch that reproduces it', () => {
 	const notches = trackSteps(steps);
 	assert.equal(Math.round(valueToNorm(5, steps) * notches), 3);
 	assert.equal(normToValue(3 / notches, steps), 5);
+});
+
+// The edit prompt field of the realtime canvas (issue #376) mounts only for a
+// manifest whose mask takes a prompt of its own, so the shapes a manifest can
+// plausibly take each get their own answer.
+const MASK_WITH_PROMPT = {
+	type: 'object',
+	properties: {
+		polygons: { type: 'array' },
+		prompt: { type: 'string' }
+	}
+};
+
+test('a model whose mask declares a prompt accepts an edit prompt', () => {
+	assert.equal(modelAcceptsEditPrompt(modelDeclaring({ mask: MASK_WITH_PROMPT })), true);
+});
+
+test('a model with no mask declared accepts no edit prompt', () => {
+	assert.equal(modelAcceptsEditPrompt(modelDeclaring({ prompt: { type: 'string' } })), false);
+	assert.equal(modelAcceptsEditPrompt(undefined), false);
+});
+
+test('a mask without a prompt under it accepts no edit prompt', () => {
+	// The shipped manifest before this field existed: polygons and nothing else.
+	assert.equal(
+		modelAcceptsEditPrompt(
+			modelDeclaring({ mask: { type: 'object', properties: { polygons: { type: 'array' } } } })
+		),
+		false
+	);
+	// A mask that is not an object at all, as the canvas smoke model declares.
+	assert.equal(modelAcceptsEditPrompt(modelDeclaring({ mask: { type: 'string' } })), false);
+});
+
+test('the anyOf form of a mask is read through its object branch', () => {
+	// sdxl-turbo and vega-rt declare the mask anyOf-nullable, because
+	// mask: null clears the selection.
+	const nullable = (object: unknown): Record<string, unknown> => ({
+		anyOf: [{ type: 'null' }, object]
+	});
+	assert.equal(
+		modelAcceptsEditPrompt(modelDeclaring({ mask: nullable(MASK_WITH_PROMPT) })),
+		true,
+		'the object branch carries the prompt'
+	);
+	assert.equal(
+		modelAcceptsEditPrompt(
+			modelDeclaring({
+				mask: nullable({ type: 'object', properties: { polygons: { type: 'array' } } })
+			})
+		),
+		false,
+		'the object branch has no prompt'
+	);
+	assert.equal(
+		modelAcceptsEditPrompt(modelDeclaring({ mask: { anyOf: [{ type: 'null' }] } })),
+		false,
+		'there is no object branch at all'
+	);
 });

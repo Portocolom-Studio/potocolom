@@ -1,7 +1,8 @@
 // The lasso behind the realtime canvas selection (issue #376). Pure geometry
 // on plain points, so node --test can hold the rules the panel applies without
-// a DOM: what counts as a selection, how coarse it is sent, and how it comes
-// back for the outline. The panel owns the pointers and the session.
+// a DOM: what counts as a selection, how coarse it is sent, how it comes back
+// for the outline, and how an edit prompt rides on it. The panel owns the
+// pointers and the session.
 
 import type { RealtimeCanvasMask } from './realtime-canvas';
 
@@ -86,4 +87,23 @@ export function maskOutline(mask: RealtimeCanvasMask, width: number, height: num
 	const polygon = mask.polygons[0];
 	if (!polygon) return [];
 	return polygon.map(([x, y]) => ({ x: x * width, y: y * height }));
+}
+
+/**
+ * The mask to send for a selection with an edit prompt: the polygons with the
+ * text trimmed onto them, or the polygons alone when there is no text. An
+ * empty field therefore sends a mask with no `prompt`, which is what sends the
+ * worker back to the session prompt inside the selection, and a mask that
+ * carried a prompt before does not keep it. The same call carries an applied
+ * prompt onto a freshly drawn selection, so the lasso does not silently drop
+ * it.
+ */
+export function maskWithPrompt(
+	mask: RealtimeCanvasMask,
+	prompt: string | undefined
+): RealtimeCanvasMask {
+	const trimmed = (prompt ?? '').trim();
+	return trimmed === ''
+		? { polygons: mask.polygons }
+		: { polygons: mask.polygons, prompt: trimmed };
 }
