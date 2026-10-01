@@ -13,11 +13,13 @@
 	const sectionTitle = $derived(
 		studio.shellView === 'metrics'
 			? t('app.metrics.title')
-			: studio.shellView === 'images'
-				? t('app.images.title')
-				: studio.shellView === 'models'
-					? t('app.models.title')
-					: t(`app.service.${studio.shellView}`)
+			: studio.shellView === 'admin'
+				? t('app.admin.title')
+				: studio.shellView === 'images'
+					? t('app.images.title')
+					: studio.shellView === 'models'
+						? t('app.models.title')
+						: t(`app.service.${studio.shellView}`)
 	);
 </script>
 

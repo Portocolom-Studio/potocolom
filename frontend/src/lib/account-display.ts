@@ -1,4 +1,4 @@
-import type { MetricsTab, ShellView } from './studio-view';
+import type { StudioTab, ShellView } from './studio-view';
 
 export type Role = 'admin' | 'user' | 'viewer';
 
@@ -32,7 +32,8 @@ export type GatedSection =
 	| 'image_to_text'
 	| 'realtime_canvas'
 	| 'metrics_usage'
-	| 'metrics_benchmarks';
+	| 'metrics_benchmarks'
+	| 'admin';
 
 const sectionNeededRoles = {
 	generate: 'user',
@@ -42,25 +43,27 @@ const sectionNeededRoles = {
 	image_to_text: 'user',
 	realtime_canvas: 'user',
 	metrics_usage: 'admin',
-	metrics_benchmarks: 'admin'
+	metrics_benchmarks: 'admin',
+	admin: 'admin'
 } as const satisfies Record<GatedSection, 'user' | 'admin'>;
 
 // A null role (no account, or AUTH_MODE=none's implicit local admin) marks
-// nothing: there is nothing to be locked out of.
+// nothing: there is nothing to be locked out of. The one exception is the
+// admin view, whose user and audit API exists only in accounts mode.
 export function sectionNeeds(section: GatedSection, role: Role | null): 'user' | 'admin' | null {
-	if (role === null) return null;
+	if (role === null) return section === 'admin' ? 'admin' : null;
 	if (sectionNeededRoles[section] === 'user') return role === 'viewer' ? 'user' : null;
 	return role === 'admin' ? null : 'admin';
 }
 
 // A view the role may use stays; otherwise fall back to generate, the main
 // panel, and then images, which no role is locked out of.
-export function openViewFor(view: ShellView, tab: MetricsTab, role: Role | null): ShellView {
+export function openViewFor(view: ShellView, tab: StudioTab, role: Role | null): ShellView {
 	// models and images are open to every role; metrics picks its section by
-	// tab; every other view shares its section's name.
+	// tab; admin and every other view share their section's name.
 	if (view === 'models' || view === 'images') return view;
 	const section: GatedSection =
-		view === 'metrics' ? (tab === 'usage' ? 'metrics_usage' : 'metrics_benchmarks') : view;
+		view === 'metrics' ? (tab === 'benchmarks' ? 'metrics_benchmarks' : 'metrics_usage') : view;
 	if (sectionNeeds(section, role) === null) return view;
 	if (sectionNeeds('generate', role) === null) return 'generate';
 	return 'images';

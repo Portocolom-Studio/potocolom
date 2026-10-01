@@ -6,7 +6,13 @@ import { resolve } from '$app/paths';
 import { apiFetch } from '$lib/api';
 import { runFavoriteMigration } from '$lib/favorites-migration';
 import { t } from '$lib/i18n.svelte';
-import { studioViewSearch, type MetricsTab, type ShellView } from '$lib/studio-view';
+import {
+	studioViewSearch,
+	type AdminTab,
+	type MetricsTab,
+	type ShellView,
+	type StudioTab
+} from '$lib/studio-view';
 import {
 	beginOptimisticStarMutation,
 	clampLineageCoordinate,
@@ -278,7 +284,8 @@ export const studio = $state({
 	// Mirrors the /app URL, which +page.svelte applies; change it through the
 	// open* functions below so the view survives reload, Back and deep links.
 	shellView: 'generate' as ShellView,
-	metricsTab: 'usage' as MetricsTab
+	metricsTab: 'usage' as MetricsTab,
+	adminTab: 'users' as AdminTab
 });
 
 export function saveLineageViewport(viewport: LineageViewport): void {
@@ -330,7 +337,7 @@ function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): vo
 	studio.favoriteNotice = [...favoriteNotices.values()].join(' ');
 }
 
-function openView(view: ShellView, tab: MetricsTab = 'usage'): void {
+function openView(view: ShellView, tab: StudioTab = 'usage'): void {
 	const search = studioViewSearch(location.search, view, tab);
 	// Clicking the view already open must not stack a duplicate history entry.
 	if (search === location.search) return;
@@ -341,12 +348,16 @@ export function openPlayground(): void {
 	openView('generate');
 }
 
-export function openService(view: Exclude<ShellView, 'metrics'>): void {
+export function openService(view: Exclude<ShellView, 'metrics' | 'admin'>): void {
 	openView(view);
 }
 
 export function openMetrics(tab: MetricsTab = 'usage'): void {
 	openView('metrics', tab);
+}
+
+export function openAdmin(tab: AdminTab = 'users'): void {
+	openView('admin', tab);
 }
 
 let polling = false;
