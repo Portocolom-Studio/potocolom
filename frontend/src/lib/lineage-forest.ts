@@ -368,7 +368,7 @@ export class LineageForest {
 		const rootNode = nodesByAsset.get(responseRoot.entry.asset_id);
 		if (!rootNode) throw new Error('root missing from subtree');
 		return {
-			root: responseRoot.generation,
+			root: { ...responseRoot.generation, expired: responseRoot.entry.missing },
 			layout: layoutLineageTree(rootNode)
 		};
 	}

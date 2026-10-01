@@ -72,6 +72,7 @@ export type Generation = {
 	dispatched_at: string | null;
 	finished_at: string | null;
 	starred_at: string | null;
+	expired?: boolean;
 	expired_favorite: boolean;
 	assets: Asset[];
 };

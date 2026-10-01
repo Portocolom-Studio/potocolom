@@ -542,6 +542,7 @@ async def serialize_jobs(session: AsyncSession, jobs: list[Job]) -> list[dict]:
                 }
                 for position, asset in enumerate(visible_masters[job.id], start=1)
             ],
+            "expired": bool(all_masters[job.id] and not visible_masters[job.id]),
             "expired_favorite": bool(
                 job.starred_at
                 and all_masters[job.id]

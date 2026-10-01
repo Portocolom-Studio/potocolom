@@ -221,8 +221,9 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed|cancelle
                               "dispatched_at"/"finished_at", "failure_reason" on failure}
 
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
-                             carrying opaque asset-ID URLs and "thumbnail_url", plus
-                             "has_derivatives" for stable client layout; cursor paging.
+                              carrying opaque asset-ID URLs and "thumbnail_url", plus
+                              "has_derivatives" for stable client layout; cursor paging.
+                              Detail and list responses include "expired" when all master assets expired.
                              ?limit defaults to 50 and is capped at 200 (5000 with
                              ?fields=ids); a limit below 1 answers 422.
                              ?state=queued|running|succeeded|failed|cancelled keeps only jobs
