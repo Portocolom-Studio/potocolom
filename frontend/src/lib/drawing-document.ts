@@ -1,4 +1,4 @@
-type DrawingPoint = { x: number; y: number };
+type DrawingPoint = { x: number; y: number; pressure?: number };
 
 export type DrawingTool = 'draw' | 'erase' | 'line' | 'rectangle' | 'ellipse';
 
@@ -40,12 +40,30 @@ type ShapeOperation = {
 type Operation = StrokeOperation | ShapeOperation | EraseRegionOperation | ClearOperation;
 
 export type DrawingFile = {
-	version: 3;
+	version: 4;
 	width: 512;
 	height: 512;
 	operations: Operation[];
 	cursor: number;
 };
+
+/** The painted width at one stroke point. Pressure scales it between a
+ * quarter and full size; a point with no pressure (mouse, touch, or an
+ * older file) paints at full size. Exported pure so the rule is tested
+ * without a canvas. */
+export function strokePointWidth(size: number, pressure: number | undefined): number {
+	return pressure === undefined ? size : size * (0.25 + 0.75 * pressure);
+}
+
+/** While a pen pointer owns a stroke in progress, a touch pointer is a palm
+ * resting on the glass, not a drawing gesture: it starts nothing and moves
+ * nothing. Exported pure so the guard is tested without a DOM. */
+export function palmRejected(
+	activeStrokePointerType: string | null,
+	incomingPointerType: string
+): boolean {
+	return activeStrokePointerType === 'pen' && incomingPointerType === 'touch';
+}
 
 type Checkpoint = {
 	prefix: number;
@@ -108,7 +126,7 @@ export class DrawingDocument {
 
 	public serialize(): DrawingFile {
 		const snapshot: DrawingFile = {
-			version: 3,
+			version: 4,
 			width: 512,
 			height: 512,
 			operations: this.operations.map((operation) =>
@@ -338,15 +356,20 @@ export class DrawingDocument {
 		this.context.save();
 		this.context.fillStyle = operation.color;
 		this.context.beginPath();
-		this.context.arc(point.x, point.y, operation.size / 2, 0, Math.PI * 2);
+		const width = strokePointWidth(operation.size, point.pressure);
+		this.context.arc(point.x, point.y, width / 2, 0, Math.PI * 2);
 		this.context.fill();
 		this.context.restore();
 	}
 
+	/** Width comes from the segment's start point: interpolating it smoothly
+	 * along the segment needs sub-segment strokes, which is not worth it for
+	 * a single-pixel-level cosmetic. A fast pen move already yields many
+	 * points, so the step between them is small on screen. */
 	private paintSegment(operation: StrokeOperation, from: DrawingPoint, to: DrawingPoint): void {
 		this.context.save();
 		this.context.strokeStyle = operation.color;
-		this.context.lineWidth = operation.size;
+		this.context.lineWidth = strokePointWidth(operation.size, from.pressure);
 		this.context.lineCap = 'round';
 		this.context.lineJoin = 'round';
 		this.context.beginPath();
@@ -514,7 +537,7 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 	if (encodedBytes > DRAWING_FILE_MAX_BYTES) throw new Error('drawing file is too large');
 	if (!isRecord(input)) throw new Error('invalid drawing file');
 	if (
-		(input.version !== 1 && input.version !== 2 && input.version !== 3) ||
+		(input.version !== 1 && input.version !== 2 && input.version !== 3 && input.version !== 4) ||
 		input.width !== 512 ||
 		input.height !== 512
 	)
@@ -567,19 +590,23 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 				shape: rawOperation.shape,
 				color: rawOperation.color.toLowerCase(),
 				size,
-				points: [validatePoint(points[0]), validatePoint(points[1])]
+				points: [validatePoint(points[0], false), validatePoint(points[1], false)]
 			});
 			continue;
 		}
 		if (rawOperation.kind === 'erase-region') {
-			if (input.version !== 3 || Object.keys(rawOperation).length !== 3)
+			if (input.version < 3 || Object.keys(rawOperation).length !== 3)
 				throw new Error('invalid erase region operation');
 			const region = rawOperation.points;
 			if (!Array.isArray(region) || region.length < 3 || region.length > 512)
 				throw new Error('erase region must have 3 to 512 points');
 			totalPoints += region.length;
 			if (totalPoints > MAX_POINTS) throw new Error('drawing file has too many points');
-			operations.push({ kind: 'erase-region', id, points: region.map(validatePoint) });
+			operations.push({
+				kind: 'erase-region',
+				id,
+				points: region.map((point) => validatePoint(point, false))
+			});
 			continue;
 		}
 		if (rawOperation.kind !== 'stroke' || Object.keys(rawOperation).length !== 6)
@@ -597,7 +624,8 @@ function validateDrawingFile(input: unknown): ValidatedDrawing {
 			throw new Error('stroke must have points');
 		totalPoints += rawOperation.points.length;
 		if (totalPoints > MAX_POINTS) throw new Error('drawing file has too many points');
-		const points = rawOperation.points.map(validatePoint);
+		const allowPressure = input.version === 4;
+		const points = rawOperation.points.map((point) => validatePoint(point, allowPressure));
 		operations.push({
 			kind: 'stroke',
 			id,
@@ -617,8 +645,11 @@ function validateOperationId(input: unknown, ids: Set<string>): string {
 	return input;
 }
 
-function validatePoint(input: unknown): DrawingPoint {
-	if (!isRecord(input) || Object.keys(input).length !== 2) throw new Error('invalid drawing point');
+function validatePoint(input: unknown, allowPressure: boolean): DrawingPoint {
+	if (!isRecord(input)) throw new Error('invalid drawing point');
+	const hasPressure = 'pressure' in input;
+	if (hasPressure && !allowPressure) throw new Error('invalid drawing point');
+	if (Object.keys(input).length !== (hasPressure ? 3 : 2)) throw new Error('invalid drawing point');
 	if (
 		typeof input.x !== 'number' ||
 		typeof input.y !== 'number' ||
@@ -630,7 +661,11 @@ function validatePoint(input: unknown): DrawingPoint {
 		input.y > COORDINATE_MAX
 	)
 		throw new Error('invalid drawing point');
-	return { x: input.x, y: input.y };
+	if (!hasPressure) return { x: input.x, y: input.y };
+	const pressure = input.pressure;
+	if (typeof pressure !== 'number' || !Number.isFinite(pressure) || pressure < 0 || pressure > 1)
+		throw new Error('invalid drawing point');
+	return { x: input.x, y: input.y, pressure };
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {
