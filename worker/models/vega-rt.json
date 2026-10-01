@@ -102,6 +102,10 @@
                     }
                   }
                 }
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

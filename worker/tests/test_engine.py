@@ -16,6 +16,7 @@ from worker.engine import (
     Cancelled,
     CODEC_CONCURRENCY_LIMIT,
     DiffusersEngine,
+    LastFrame,
     NotResidentError,
     OBSERVED_FRAME_SAMPLES,
     OBSERVED_FRAME_WINDOW,
@@ -23,12 +24,14 @@ from worker.engine import (
     REALTIME_SIZE,
     SimulatedEngine,
     _canvas_to_sketch_map,
+    _selection_alpha,
     encode_webp,
     reject_degenerate_output,
 )
 from worker.frame_batch import FrameRequest, compat_key
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 from worker.memory_ladder import slots_from_frame_ms
+from worker.region_composite import selection_alpha
 
 
 def _fake_oom() -> type[BaseException]:
@@ -40,10 +43,11 @@ def _fake_oom() -> type[BaseException]:
 
 
 class _FakeTensor:
-    def __init__(self, shape, *, values=None, marker=None):
+    def __init__(self, shape, *, values=None, marker=None, dtype=None):
         self.shape = tuple(shape)
         self.values = values
         self.marker = marker
+        self.dtype = dtype
 
     @property
     def ndim(self):
@@ -56,9 +60,22 @@ class _FakeTensor:
             raise IndexError("fake tensor index out of range")
         return _FakeTensor(self.shape[1:], marker=self.marker)
 
+    def reshape(self, *shape):
+        return _FakeTensor(shape, values=self.values, marker=self.marker,
+                           dtype=self.dtype)
+
 
 class _FakeTorch:
     OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
+
+    class Generator:
+        def __init__(self, device):
+            self.device = device
+            self.seed = None
+
+        def manual_seed(self, seed):
+            self.seed = seed
+            return self
 
     class _NoGrad:
         def __enter__(self):
@@ -72,9 +89,18 @@ class _FakeTorch:
         return _FakeTorch._NoGrad()
 
     @staticmethod
-    def tensor(values, *, device):
+    def tensor(values, *, device, dtype=None):
         assert device == "cpu"
-        return _FakeTensor((len(values), len(values[0])), values=values)
+        if values and isinstance(values[0], (list, tuple)):
+            return _FakeTensor((len(values), len(values[0])), values=values,
+                               dtype=dtype)
+        return _FakeTensor((len(values),), values=values, dtype=dtype)
+
+    @staticmethod
+    def randn(shape, *, generator=None, device=None, dtype=None):
+        assert device == "cpu"
+        assert isinstance(generator, _FakeTorch.Generator)
+        return _FakeTensor(shape, marker="noise", dtype=dtype)
 
     @staticmethod
     def cat(tensors, dim):
@@ -906,6 +932,71 @@ def test_a_malformed_mask_falls_back_to_the_automatic_gate(mask):
     assert delivered[1].getpixel((256, 256)) == (200, 100, 50)
 
 
+def _stored_frame(params, latent=None, size=(REALTIME_SIZE, REALTIME_SIZE)):
+    return LastFrame(
+        Image.new("RGB", size, (10, 20, 30)),
+        Image.new("RGB", size, (200, 100, 50)),
+        params,
+        latent,
+    )
+
+
+def test_selection_alpha_is_none_without_a_last_frame():
+    params = {"prompt": "one", "mask": _SELECTION}
+    size = (REALTIME_SIZE, REALTIME_SIZE)
+
+    assert _selection_alpha(None, params, size) is None
+    assert _selection_alpha(PromptCache(), params, size) is None
+
+
+def test_selection_alpha_is_none_when_a_param_beside_the_mask_changed():
+    cache = PromptCache(last_frame=_stored_frame({"prompt": "one"}))
+
+    alpha = _selection_alpha(
+        cache, {"prompt": "two", "mask": _SELECTION}, (REALTIME_SIZE, REALTIME_SIZE),
+    )
+
+    assert alpha is None
+
+
+def test_selection_alpha_is_none_without_a_rasterizable_dict_mask():
+    size = (REALTIME_SIZE, REALTIME_SIZE)
+    cache = PromptCache(last_frame=_stored_frame({"prompt": "one"}))
+
+    assert _selection_alpha(cache, {"prompt": "one"}, size) is None
+    assert _selection_alpha(cache, {"prompt": "one", "mask": None}, size) is None
+    assert _selection_alpha(cache, {"prompt": "one", "mask": 7}, size) is None
+    malformed = {"polygons": [[["a"]]]}
+    assert _selection_alpha(cache, {"prompt": "one", "mask": malformed}, size) is None
+
+
+def test_selection_alpha_is_none_when_the_stored_sizes_disagree():
+    size = (REALTIME_SIZE, REALTIME_SIZE)
+    small = _stored_frame({"prompt": "one"}, size=(256, 256))
+    split = LastFrame(
+        Image.new("RGB", size), Image.new("RGB", (256, 256)), {"prompt": "one"},
+    )
+
+    assert _selection_alpha(
+        PromptCache(last_frame=small), {"prompt": "one", "mask": _SELECTION}, size,
+    ) is None
+    assert _selection_alpha(
+        PromptCache(last_frame=split), {"prompt": "one", "mask": _SELECTION}, size,
+    ) is None
+
+
+def test_selection_alpha_returns_the_rasterized_selection_on_a_composite_frame():
+    size = (REALTIME_SIZE, REALTIME_SIZE)
+    cache = PromptCache(last_frame=_stored_frame({"prompt": "one"}))
+
+    alpha = _selection_alpha(cache, {"prompt": "one", "mask": _SELECTION}, size)
+
+    assert alpha is not None
+    expected = selection_alpha(_SELECTION, size)
+    assert alpha.size == expected.size
+    assert alpha.tobytes() == expected.tobytes()
+
+
 def test_a_cancelled_frame_does_not_update_last_frame():
     engine, cache = _recording_frame_engine([(10, 20, 30), (200, 100, 50)])
     manifest = _adapter_manifest()
@@ -937,7 +1028,203 @@ def test_a_cancelled_frame_does_not_update_last_frame():
 
     # Nothing was delivered, so the session still remembers frame one.
     assert cache.last_frame is stored[0]
-    assert cache.last_frame[1].getpixel((32, 32)) == (10, 20, 30)
+    assert cache.last_frame.image.getpixel((32, 32)) == (10, 20, 30)
+
+
+_EDIT_MASK = {**_SELECTION, "prompt": "an edit"}
+
+
+def test_the_edit_prompt_is_encoded_on_a_composite_frame():
+    engine, cache = _recording_frame_engine([(200, 100, 50)])
+    manifest = _adapter_manifest()
+    cache.last_frame = _stored_frame({"prompt": "one"}, object())
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _EDIT_MASK}, _sketch_png(),
+            prompt_cache=cache,
+        )
+
+    asyncio.run(scenario())
+
+    assert engine._prompt_kwargs.call_count == 1
+    assert engine._prompt_kwargs.call_args.args[2] == "an edit"
+
+
+def test_the_edit_prompt_applies_on_a_composite_frame_without_a_stored_latent():
+    """A frame after a batched one has no latent to blend against but still
+    composites through the selection, so it must render the edit too, or the
+    edit would vanish from the selection for that frame."""
+    engine, cache = _recording_frame_engine([(200, 100, 50)])
+    manifest = _adapter_manifest()
+    cache.last_frame = _stored_frame({"prompt": "one"})
+
+    async def scenario():
+        await engine.frame(
+            manifest, {"prompt": "one", "mask": _EDIT_MASK}, _sketch_png(),
+            prompt_cache=cache,
+        )
+
+    asyncio.run(scenario())
+
+    assert engine._prompt_kwargs.call_args.args[2] == "an edit"
+
+
+@pytest.mark.parametrize("stored, frame_params, expected", [
+    pytest.param(
+        None, {"prompt": "one", "mask": _EDIT_MASK}, "one", id="first frame",
+    ),
+    pytest.param(
+        {"prompt": "one"}, {"prompt": "two", "mask": _EDIT_MASK}, "two",
+        id="params change",
+    ),
+    pytest.param(
+        {"prompt": "one"},
+        {"prompt": "one", "mask": {"polygons": [[["a"]]], "prompt": "an edit"}},
+        "one",
+        id="malformed mask",
+    ),
+    pytest.param(
+        {"prompt": "one"},
+        {"prompt": "one", "mask": {**_SELECTION, "prompt": 42}},
+        "one",
+        id="non-string edit prompt",
+    ),
+])
+def test_the_session_prompt_is_encoded_without_a_composite_frame(
+    stored, frame_params, expected,
+):
+    engine, cache = _recording_frame_engine([(200, 100, 50)])
+    manifest = _adapter_manifest()
+    if stored is not None:
+        cache.last_frame = _stored_frame(stored, object())
+
+    async def scenario():
+        await engine.frame(manifest, frame_params, _sketch_png(), prompt_cache=cache)
+
+    asyncio.run(scenario())
+
+    assert engine._prompt_kwargs.call_count == 1
+    assert engine._prompt_kwargs.call_args.args[2] == expected
+
+
+def _blend_frame_engine():
+    pipeline = _RenderPipeline()
+    engine = _frame_engine(pipeline)
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "p"})
+    return engine, pipeline
+
+
+def test_a_composite_frame_with_a_stored_latent_hands_the_pipeline_a_callback():
+    engine, pipeline = _blend_frame_engine()
+    manifest = _adapter_manifest()
+    cache = PromptCache(
+        last_frame=_stored_frame(
+            {"prompt": "one", "seed": 7}, _FakeTensor((1, 4, 64, 64)),
+        ),
+    )
+
+    engine._frame(
+        manifest, {"prompt": "one", "seed": 7, "mask": _SELECTION},
+        Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE)), 0.7, prompt_cache=cache,
+    )
+
+    kwargs = pipeline.render_kwargs[-1]
+    assert kwargs["callback_steps"] == 1
+    assert callable(kwargs["callback"])
+
+
+def test_a_multistep_scheduler_gets_no_blend_callback():
+    """The reset noises to the next timestep, which only a first-order
+    scheduler lands on after a step; any other falls back to the composite."""
+    engine, pipeline = _blend_frame_engine()
+    pipeline.scheduler = SimpleNamespace(order=2)
+    manifest = _adapter_manifest()
+    cache = PromptCache(
+        last_frame=_stored_frame(
+            {"prompt": "one", "seed": 7}, _FakeTensor((1, 4, 64, 64)),
+        ),
+    )
+
+    engine._frame(
+        manifest, {"prompt": "one", "seed": 7, "mask": _SELECTION},
+        Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE)), 0.7, prompt_cache=cache,
+    )
+
+    assert "callback" not in pipeline.render_kwargs[-1]
+
+
+def test_a_composite_frame_without_a_stored_latent_passes_no_callback():
+    engine, pipeline = _blend_frame_engine()
+    manifest = _adapter_manifest()
+    cache = PromptCache(last_frame=_stored_frame({"prompt": "one", "seed": 7}))
+
+    engine._frame(
+        manifest, {"prompt": "one", "seed": 7, "mask": _SELECTION},
+        Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE)), 0.7, prompt_cache=cache,
+    )
+
+    assert "callback" not in pipeline.render_kwargs[-1]
+
+
+@pytest.mark.parametrize("seed", [None, "abc"])
+def test_a_composite_frame_without_an_int_seed_passes_no_callback(seed):
+    engine, pipeline = _blend_frame_engine()
+    manifest = _adapter_manifest()
+    stored = {"prompt": "one"}
+    params = {"prompt": "one", "mask": _SELECTION}
+    if seed is not None:
+        stored["seed"] = seed
+        params["seed"] = seed
+    cache = PromptCache(last_frame=_stored_frame(stored, _FakeTensor((1, 4, 64, 64))))
+
+    engine._frame(
+        manifest, params, Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE)), 0.7,
+        prompt_cache=cache,
+    )
+
+    assert "callback" not in pipeline.render_kwargs[-1]
+
+
+def test_a_batch_holding_a_selection_runs_sequentially():
+    engine = _frame_engine(_SolidFramePipeline([(10, 20, 30), (200, 100, 50)]))
+    engine.dtype = None
+    engine._prompt_kwargs = MagicMock(return_value={"prompt": "p"})
+    manifest = _adapter_manifest()
+    engine._frame_batch_sequential = MagicMock(return_value=[("first", 1), ("second", 2)])
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        shared = {"manifest": manifest, "strength": 0.7,
+                  "payload": Image.new("RGB", (REALTIME_SIZE, REALTIME_SIZE))}
+        ordinary = FrameRequest(
+            session_key=1,
+            compat=compat_key(manifest, {"prompt": "one", "seed": 7}, REALTIME_SIZE),
+            params={"prompt": "one", "seed": 7},
+            prompt_cache=PromptCache(),
+            future=loop.create_future(),
+            **shared,
+        )
+        selecting = FrameRequest(
+            session_key=2,
+            compat=compat_key(manifest, {"prompt": "one", "seed": 7}, REALTIME_SIZE),
+            params={"prompt": "one", "seed": 7, "mask": _SELECTION},
+            prompt_cache=PromptCache(
+                last_frame=_stored_frame({"prompt": "one", "seed": 7}),
+            ),
+            future=loop.create_future(),
+            **shared,
+        )
+        requests = [ordinary, selecting]
+        results = engine._frame_batch(requests)
+        return requests, results
+
+    requests, results = asyncio.run(scenario())
+
+    engine._frame_batch_sequential.assert_called_once_with(requests)
+    # The batched route builds the pipeline; a selection must never reach it.
+    engine._pipeline.assert_not_called()
+    assert results == [("first", 1), ("second", 2)]
 
 
 def test_realtime_sd3_frames_keep_the_string_prompt_path():
@@ -1768,7 +2055,7 @@ def test_adapter_frame_uses_preview_decoder():
     setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
 
     with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
-        image, _ = setup.engine._frame(
+        image, _, _ = setup.engine._frame(
             setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
         )
 
@@ -1784,6 +2071,39 @@ def test_adapter_frame_uses_preview_decoder():
     assert image is setup.preview_image
     assert setup.inference_state == {"active": False, "entries": 1}
     assert setup.decode_inference_states == [True]
+
+
+def test_last_frame_carries_the_latent_from_the_single_request_route():
+    setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
+    engine = setup.engine
+    engine._gpu = asyncio.Lock()
+    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
+    engine._pick_rung = MagicMock(return_value="full")
+    manifest = setup.manifest
+    cache = PromptCache()
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        request = FrameRequest(
+            session_key=1,
+            compat=compat_key(manifest, {"prompt": "frame"}, REALTIME_SIZE),
+            manifest=manifest,
+            params={"prompt": "frame"},
+            strength=0.7,
+            prompt_cache=cache,
+            payload=_canvas_to_sketch_map(_sketch_canvas()),
+            future=loop.create_future(),
+        )
+        with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
+            await engine.execute_frame_batch([request])
+        request.future.result()
+        return request
+
+    request = asyncio.run(scenario())
+
+    assert request.latent is setup.latents
+    assert cache.last_frame is not None
+    assert cache.last_frame.latent is setup.latents
 
 
 def test_adapter_second_frame_after_decode_failure_makes_one_full_vae_call():
@@ -1813,7 +2133,7 @@ def test_adapter_frame_preview_decode_failure_falls_back():
     setup.decoder.decode.side_effect = RuntimeError("decode broke")
 
     with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
-        image, _ = setup.engine._frame(
+        image, _, _ = setup.engine._frame(
             setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
         )
 
@@ -1830,7 +2150,7 @@ def test_i2i_frame_uses_preview_decoder():
     setup = _preview_decoder_frame_setup()
 
     with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
-        image, _ = setup.engine._frame(
+        image, _, _ = setup.engine._frame(
             setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
         )
 
@@ -1871,11 +2191,11 @@ def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
     )
 
     with patch.dict(sys.modules, {"diffusers": diffusers}):
-        first, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+        first, _, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
         assert engine._calibrated_slots is None
         # A later full-VAE calibration is valid and must survive cached fallback.
         engine._calibrated_slots = 1
-        second, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
+        second, _, _ = engine._frame(manifest, {}, Image.new("RGB", (512, 512)), 0.7)
 
     assert first is rendered
     assert second is rendered
@@ -2197,7 +2517,7 @@ def test_frame_bounds_codec_concurrency():
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
     rendered = Image.new("RGB", (32, 32), (12, 34, 56))
-    engine._frame = MagicMock(return_value=(rendered, 17))
+    engine._frame = MagicMock(return_value=(rendered, 17, None))
     manifest = Manifest(
         id="vega-rt",
         name="VegaRT",
@@ -2289,7 +2609,7 @@ def test_frame_oom_retries_once_without_decoding_twice():
         canvases.append(canvas)
         if len(canvases) == 1:
             raise torch_stub.OutOfMemoryError
-        return rendered, 17
+        return rendered, 17, None
 
     engine._frame = MagicMock(side_effect=run_frame)
     source = io.BytesIO()
@@ -3175,7 +3495,7 @@ def test_frame_gpu_ms_includes_work_before_the_pipeline_call():
 
     setup.engine._pipeline = slow_pipeline
     with patch.dict(sys.modules, {"diffusers": setup.diffusers}):
-        _image, gpu_ms = setup.engine._frame(
+        _image, gpu_ms, _latents = setup.engine._frame(
             setup.manifest, {"prompt": "frame"}, Image.new("RGB", (512, 512)), 0.7,
         )
     assert gpu_ms >= 50
@@ -3198,7 +3518,7 @@ def test_calibrate_elapsed_includes_the_frame_call():
 
     def slow_frame(*_args, **_kwargs):
         time.sleep(0.05)
-        return Image.new("RGB", (32, 32)), 1
+        return Image.new("RGB", (32, 32)), 1, None
 
     engine._frame = slow_frame
     manifest = Manifest(
