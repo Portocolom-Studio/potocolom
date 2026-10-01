@@ -48,9 +48,10 @@ const sectionNeededRoles = {
 } as const satisfies Record<GatedSection, 'user' | 'admin'>;
 
 // A null role (no account, or AUTH_MODE=none's implicit local admin) marks
-// nothing: there is nothing to be locked out of.
+// nothing: there is nothing to be locked out of. The one exception is the
+// admin view, whose user and audit API exists only in accounts mode.
 export function sectionNeeds(section: GatedSection, role: Role | null): 'user' | 'admin' | null {
-	if (role === null) return null;
+	if (role === null) return section === 'admin' ? 'admin' : null;
 	if (sectionNeededRoles[section] === 'user') return role === 'viewer' ? 'user' : null;
 	return role === 'admin' ? null : 'admin';
 }

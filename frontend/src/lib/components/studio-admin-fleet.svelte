@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import {
 		gpuHistoryPoints,
@@ -10,7 +9,6 @@
 	} from '$lib/studio-gpu-history';
 	import { buildGpuTimeline } from '$lib/studio-gpu-timeline';
 	import { type MetricsRange, METRICS_RANGE_MS } from '$lib/studio-metrics-range';
-	import { modelWorkerAssignments, type ModelWorkerAssignment } from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import * as Card from '$lib/components/ui/card';
@@ -22,9 +20,6 @@
 	let workerLoading = $state(true);
 	let historyLoading = $state(false);
 	let historyError = $state('');
-	let modelsLoading = $state(true);
-	let modelsError = $state('');
-	let assignments = $state<ModelWorkerAssignment[]>([]);
 	let workerLoadEpoch = 0;
 	let discoveryEpoch = 0;
 
@@ -99,24 +94,6 @@
 		}
 	}
 
-	async function loadModels(): Promise<void> {
-		modelsLoading = true;
-		modelsError = '';
-		try {
-			const response = await apiFetch('/api/v1/models');
-			if (!response.ok) {
-				modelsError = await apiError(response);
-				assignments = [];
-				return;
-			}
-			assignments = modelWorkerAssignments(await response.json());
-		} catch {
-			modelsError = t('app.admin.request_failed');
-		} finally {
-			modelsLoading = false;
-		}
-	}
-
 	$effect(() => {
 		const activeRange = range;
 		let cancelled = false;
@@ -133,8 +110,6 @@
 		void activeRange;
 		void loadSelectedWorker(workerId);
 	});
-
-	onMount(() => void loadModels());
 </script>
 
 <div class="flex min-h-0 flex-col gap-4 overflow-auto pb-2">
@@ -188,29 +163,4 @@
 			{/if}
 		</Card.Content>
 	</Card.Root>
-
-	{#if modelsLoading}
-		<p class="text-muted-foreground text-sm">{t('app.admin.loading_models')}</p>
-	{:else if modelsError}
-		<p role="alert" class="text-destructive text-sm">{modelsError}</p>
-	{:else if assignments.length > 0}
-		<Card.Root class="p-0 [--card-spacing:0]">
-			<Card.Header class="border-border border-b px-4 py-3">
-				<Card.Title class="text-base">{t('app.admin.model_workers')}</Card.Title>
-				<Card.Description>{t('app.admin.model_workers_sub')}</Card.Description>
-			</Card.Header>
-			<Card.Content class="p-0">
-				<div class="divide-border divide-y">
-					{#each assignments as assignment (assignment.id)}
-						<div class="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm">
-							<span class="font-medium">{assignment.name}</span>
-							<span class="text-muted-foreground font-mono text-xs">
-								{assignment.workerIds.join(', ')}
-							</span>
-						</div>
-					{/each}
-				</div>
-			</Card.Content>
-		</Card.Root>
-	{/if}
 </div>

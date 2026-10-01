@@ -4,7 +4,6 @@ import { test } from 'node:test';
 import {
 	buildAdminConfirmation,
 	buildAuditQuery,
-	modelWorkerAssignments,
 	needsAdminAttestation
 } from './studio-admin-logic.ts';
 
@@ -42,17 +41,4 @@ test('admin promotion requires attestation only for an unverified address', () =
 	assert.equal(needsAdminAttestation('user', true), false);
 	assert.equal(needsAdminAttestation('viewer', false), false);
 	assert.equal(needsAdminAttestation('viewer', true), false);
-});
-
-test('model catalog stays hidden when the API lists manifests without worker assignments', () => {
-	assert.deepEqual(
-		modelWorkerAssignments([{ id: 'model-a', name: 'Model A', capabilities: ['text_to_image'] }]),
-		[]
-	);
-	assert.deepEqual(
-		modelWorkerAssignments([
-			{ id: 'model-a', name: 'Model A', worker_ids: ['worker-a', 'worker-b'] }
-		]),
-		[{ id: 'model-a', name: 'Model A', workerIds: ['worker-a', 'worker-b'] }]
-	);
 });

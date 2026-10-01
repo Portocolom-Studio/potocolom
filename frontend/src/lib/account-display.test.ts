@@ -103,7 +103,7 @@ test('openViewFor keeps models and images open to a viewer', () => {
 	assert.equal(openViewFor('images', 'usage', 'viewer'), 'images');
 });
 
-test('openViewFor keeps every view when there is no role', () => {
+test('openViewFor keeps every view but admin when there is no role', () => {
 	for (const view of [
 		'generate',
 		'image_to_image',
@@ -113,9 +113,14 @@ test('openViewFor keeps every view when there is no role', () => {
 		'realtime_canvas',
 		'images',
 		'models',
-		'metrics',
-		'admin'
+		'metrics'
 	] as const) {
 		assert.equal(openViewFor(view, 'usage', null), view);
 	}
+});
+
+test('AUTH_MODE=none shows every section but admin, whose API needs accounts mode', () => {
+	assert.equal(sectionNeeds('admin', null), 'admin');
+	assert.equal(sectionNeeds('metrics_usage', null), null);
+	assert.equal(openViewFor('admin', 'users', null), 'generate');
 });
