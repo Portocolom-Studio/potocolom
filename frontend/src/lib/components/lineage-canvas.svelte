@@ -187,7 +187,9 @@
 	});
 	treeCache = new Map(forest.trees);
 
-	const persistedRoots = $derived(roots.filter((root) => root.assets.length > 0));
+	const persistedRoots = $derived(
+		roots.filter((root) => root.assets.length > 0 || root.expired === true)
+	);
 	const lod = $derived(lineageLod(scale));
 	const worldRect = $derived(
 		viewportWorldRect(viewportWidth, viewportHeight, translateX, translateY, scale)
@@ -273,6 +275,11 @@
 		for (const tree of packedTrees) {
 			const node = tree.layout.nodes.find((item) => item.id === studio.lineageSelectedAssetId);
 			if (node) return node;
+			const missingRoot = tree.layout.nodes.find(
+				(item) =>
+					item.data.entry.job_id === studio.lineageSelectedAssetId && item.data.entry.missing
+			);
+			if (missingRoot) return missingRoot;
 		}
 		return null;
 	});
@@ -319,20 +326,21 @@
 
 	function rootLayoutNode(root: Generation): LineageLayoutNode<CanvasNodeData> {
 		const asset = root.assets[0];
+		const assetId = asset?.id ?? root.id;
 		return {
-			id: asset.id,
+			id: assetId,
 			createdAt: root.created_at,
 			data: {
 				output_asset_ids: root.assets.map((item) => item.id),
 				entry: {
 					job_id: root.id,
-					asset_id: asset.id,
+					asset_id: assetId,
 					action: 'generate',
 					model_id: root.model_id,
 					created_at: root.created_at,
 					state: root.state,
-					thumbnail_url: asset.thumbnail_url,
-					missing: false
+					thumbnail_url: asset?.thumbnail_url ?? null,
+					missing: root.expired === true || asset === undefined
 				},
 				generation: root
 			},
@@ -1593,7 +1601,8 @@
 						class="lineage-tile"
 						class:is-root={item.isRoot}
 						class:is-dragging={draggedRootId === item.rootId}
-						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id}
+						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id ||
+							(data.entry.missing && studio.lineageSelectedAssetId === data.entry.job_id)}
 						class:is-missing={data.entry.missing || shownImage === null}
 						class:is-starred={starred}
 						class:is-search-match={searchTone === 'match'}

@@ -221,7 +221,7 @@ function installSocketAdapter(page) {
 // socket stub and the caller's setup installed before the document loads.
 // `verifyErrors` stays on for the tests and is switched off only where a failed
 // open would report the page error instead of its own cause.
-async function launchStudio(locale, setup, apiAnswers, waitUntil) {
+async function launchStudio(locale, setup, apiAnswers, waitUntil, appPath = '/app') {
 	const server = await serveBuild(apiAnswers);
 	let browser;
 	try {
@@ -244,7 +244,7 @@ async function launchStudio(locale, setup, apiAnswers, waitUntil) {
 		}, locale);
 		await installSocketAdapter(page);
 		if (setup) await page.evaluateOnNewDocument(setup);
-		await page.goto(`http://127.0.0.1:${server.address().port}/app`, { waitUntil });
+		await page.goto(`http://127.0.0.1:${server.address().port}${appPath}`, { waitUntil });
 		return {
 			page,
 			browser,
@@ -2929,6 +2929,171 @@ function stripFixtures(starred = { body: [] }) {
 	};
 }
 
+const LINEAGE_PIXEL = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#dc2626"/></svg>')}`;
+const LINEAGE_ROOT_JOB = '13000000-0000-4000-8000-000000000001';
+const LINEAGE_FANOUT_JOB = '13000000-0000-4000-8000-000000000002';
+
+function lineageJobId(index) {
+	return `13000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function lineageAssetId(index) {
+	return `23000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function lineageGeneration(
+	id,
+	assetId,
+	prompt,
+	createdAt,
+	sourceAssetId = null,
+	{ expired = false, hasDerivatives = false } = {}
+) {
+	return {
+		id,
+		model_id: MODEL.id,
+		source_asset_id: sourceAssetId,
+		has_derivatives: hasDerivatives,
+		params: { prompt },
+		state: 'succeeded',
+		progress: null,
+		gpu_ms: 42,
+		input_fetch_ms: null,
+		load_ms: null,
+		postprocess_ms: null,
+		failure_reason: null,
+		created_at: createdAt,
+		dispatched_at: createdAt,
+		finished_at: createdAt,
+		starred_at: null,
+		expired,
+		expired_favorite: false,
+		assets:
+			assetId === null || expired
+				? []
+				: [
+						{
+							id: assetId,
+							url: LINEAGE_PIXEL,
+							thumbnail_url: LINEAGE_PIXEL,
+							download_url: LINEAGE_PIXEL,
+							width: 8,
+							height: 8
+						}
+					]
+	};
+}
+
+function lineageSubtreeNode(generation, assetId, parentJobId, missing = false) {
+	return {
+		parent_job_id: parentJobId,
+		output_asset_ids: [assetId],
+		entry: {
+			job_id: generation.id,
+			asset_id: assetId,
+			action: parentJobId === null ? 'generate' : 'image_to_image',
+			model_id: MODEL.id,
+			created_at: generation.created_at,
+			state: generation.state,
+			thumbnail_url: missing ? null : LINEAGE_PIXEL,
+			missing
+		},
+		generation
+	};
+}
+
+function lineageSubtree(nodes) {
+	return {
+		nodes,
+		truncated: false,
+		remaining_count_lower_bound: 0,
+		max_depth: 100,
+		max_nodes: 600
+	};
+}
+
+function lineageCanvasFixtures() {
+	const createdAt = (seconds) => new Date(Date.UTC(2026, 8, 29, 0, 0, seconds)).toISOString();
+	const expiredAssetId = lineageAssetId(1);
+	const expiredRoot = lineageGeneration(
+		LINEAGE_ROOT_JOB,
+		expiredAssetId,
+		'Expired ancestor prompt',
+		createdAt(100),
+		null,
+		{ expired: true, hasDerivatives: true }
+	);
+	const chainChild = lineageGeneration(
+		lineageJobId(3),
+		lineageAssetId(3),
+		'First live descendant',
+		createdAt(101),
+		expiredAssetId
+	);
+	const chainGrandchild = lineageGeneration(
+		lineageJobId(4),
+		lineageAssetId(4),
+		'Second live descendant',
+		createdAt(102),
+		lineageAssetId(3)
+	);
+	const fanoutAssetId = lineageAssetId(20);
+	const fanoutRoot = lineageGeneration(
+		LINEAGE_FANOUT_JOB,
+		fanoutAssetId,
+		'Fan-out prompt',
+		createdAt(90),
+		null,
+		{ hasDerivatives: true }
+	);
+	const fanoutChildren = Array.from({ length: 5 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(21 + index),
+			lineageAssetId(21 + index),
+			`Fan-out child ${index + 1}`,
+			createdAt(91 + index),
+			fanoutAssetId
+		)
+	);
+	const looseRoots = Array.from({ length: 6 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(101 + index),
+			lineageAssetId(101 + index),
+			`Loose root ${index + 1}`,
+			createdAt(80 - index)
+		)
+	);
+	const roots = [expiredRoot, fanoutRoot, ...looseRoots];
+	const rootNode = lineageSubtreeNode(expiredRoot, expiredAssetId, null, true);
+	const chainChildNode = lineageSubtreeNode(chainChild, lineageAssetId(3), LINEAGE_ROOT_JOB);
+	const chainGrandchildNode = lineageSubtreeNode(
+		chainGrandchild,
+		lineageAssetId(4),
+		lineageJobId(3)
+	);
+	const fanoutNodes = [lineageSubtreeNode(fanoutRoot, fanoutAssetId, null)];
+	for (const child of fanoutChildren) {
+		fanoutNodes.push(lineageSubtreeNode(child, child.assets[0].id, LINEAGE_FANOUT_JOB));
+	}
+	const answers = {
+		'/api/v1/generations?roots_only=true&limit=50': { body: roots },
+		[`/api/v1/generations/${LINEAGE_ROOT_JOB}/subtree`]: {
+			body: lineageSubtree([rootNode, chainChildNode, chainGrandchildNode]),
+			delayMs: 300
+		},
+		[`/api/v1/generations/${LINEAGE_FANOUT_JOB}/subtree`]: {
+			body: lineageSubtree(fanoutNodes)
+		}
+	};
+	return {
+		answers,
+		expiredAssetId,
+		chainAssetIds: [lineageAssetId(3), lineageAssetId(4)],
+		fanoutAssetIds: [fanoutAssetId, ...fanoutChildren.map((child) => child.assets[0].id)],
+		looseAssetIds: looseRoots.map((root) => root.assets[0].id)
+	};
+}
+
 async function waitForStrip(page, thumbs) {
 	await page.waitForFunction(
 		(expected) => document.querySelectorAll('button[data-strip-thumb]').length === expected,
@@ -2965,6 +3130,158 @@ async function assertStripStop(page, expected, label) {
 	assert.equal(state.focus, expected, `${label}: focus is at index ${expected}`);
 	assert.equal(state.focusTabIndex, '0', `${label}: the focused thumbnail carries the stop`);
 }
+
+test('expired lineage roots stay visible beside their descendants and the root grid', async () => {
+	const fixtures = lineageCanvasFixtures();
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem(
+				'potocolom-lineage-viewport',
+				JSON.stringify({
+					translateX: 300,
+					translateY: 0,
+					scale: 0.3,
+					rootId: null,
+					anchorX: null,
+					anchorY: null
+				})
+			);
+			window.__lineageImageRequests = [];
+			new PerformanceObserver((list) => {
+				for (const entry of list.getEntries()) {
+					if (entry.initiatorType === 'img' && entry.name.includes('/api/v1/assets/'))
+						window.__lineageImageRequests.push(entry.name);
+				}
+			}).observe({ type: 'resource', buffered: true });
+		},
+		fixtures.answers,
+		'domcontentloaded',
+		'/app?view=images'
+	);
+	try {
+		const { page } = harness;
+		const fallbackRootSelector = `[data-lineage-node="${LINEAGE_ROOT_JOB}"]`;
+		const expiredRootSelector = `[data-lineage-node="${fixtures.expiredAssetId}"]`;
+		const expectedAssets = [
+			fixtures.expiredAssetId,
+			...fixtures.chainAssetIds,
+			...fixtures.fanoutAssetIds,
+			...fixtures.looseAssetIds
+		];
+		await page.waitForSelector(fallbackRootSelector, { timeout: WAIT_MS });
+		await page.$eval(fallbackRootSelector, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/Image unavailable/
+		);
+		await page.waitForFunction(
+			(ids) => ids.every((id) => document.querySelector(`[data-lineage-node="${id}"]`)),
+			{ timeout: WAIT_MS },
+			expectedAssets
+		);
+
+		const ghost = await page.$eval(expiredRootSelector, (tile) => ({
+			missing: tile.classList.contains('is-missing'),
+			label: tile.getAttribute('title'),
+			images: tile.querySelectorAll('img').length
+		}));
+		assert.deepEqual(ghost, {
+			missing: true,
+			label: 'Expired ancestor prompt',
+			images: 0
+		});
+		assert.deepEqual(await page.evaluate(() => window.__lineageImageRequests), []);
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.equal(
+			await page.$eval(expiredRootSelector, (tile) => tile.classList.contains('is-selected')),
+			true,
+			'selection follows the ghost onto its missing subtree node'
+		);
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/Image unavailable/
+		);
+		await clickButton(page, 'Close selected image');
+
+		const gridPositions = await page.evaluate((ids) => {
+			return ids.map((id) => {
+				const tile = document.querySelector(`[data-lineage-node="${id}"]`);
+				const transform = tile?.closest('.tile-shell')?.style.transform ?? '';
+				const match = transform.match(/translate3d\((-?[\d.]+)px, (-?[\d.]+)px/);
+				if (!match) throw new Error(`grid tile ${id} has no layout position`);
+				return { id, x: Number(match[1]), y: Number(match[2]) };
+			});
+		}, fixtures.looseAssetIds);
+		assert.equal(gridPositions.length, 6);
+		assert.equal(new Set(gridPositions.map((position) => position.x)).size, 1);
+		assert.deepEqual(
+			gridPositions.map((position) => position.y),
+			gridPositions.map((_, index) => index * 224),
+			'the six loose roots occupy consecutive grid rows'
+		);
+
+		const before = await page.evaluate(() => {
+			const viewport = document.querySelector('.lineage-viewport');
+			const world = document.querySelector('.lineage-world');
+			const rect = viewport.getBoundingClientRect();
+			const x = Math.round(rect.left + rect.width * 0.45);
+			const y = Math.round(rect.top + rect.height * 0.55);
+			const transform = new DOMMatrixReadOnly(getComputedStyle(world).transform);
+			const point = transform.inverse().transformPoint(new DOMPoint(x - rect.left, y - rect.top));
+			const positions = Object.fromEntries(
+				[...document.querySelectorAll('.lineage-tile[data-lineage-node]')].map((tile) => [
+					tile.dataset.lineageNode,
+					tile.closest('.tile-shell').style.transform
+				])
+			);
+			return {
+				lod: [...world.classList].find((name) => name.startsWith('lod-')),
+				point: [point.x, point.y],
+				positions,
+				x,
+				y
+			};
+		});
+		await page.mouse.move(before.x, before.y);
+		await page.mouse.wheel({ deltaY: 250 });
+		await page.waitForFunction(
+			(previous) =>
+				document.querySelector('.lineage-world')?.classList.contains('lod-constellation') &&
+				!document.querySelector('.lineage-world')?.classList.contains(previous),
+			{ timeout: WAIT_MS },
+			before.lod
+		);
+		const after = await page.evaluate(
+			(cursor) => {
+				const viewport = document.querySelector('.lineage-viewport');
+				const world = document.querySelector('.lineage-world');
+				const rect = viewport.getBoundingClientRect();
+				const transform = new DOMMatrixReadOnly(getComputedStyle(world).transform);
+				const point = transform
+					.inverse()
+					.transformPoint(new DOMPoint(cursor.x - rect.left, cursor.y - rect.top));
+				const positions = Object.fromEntries(
+					[...document.querySelectorAll('.lineage-tile[data-lineage-node]')].map((tile) => [
+						tile.dataset.lineageNode,
+						tile.closest('.tile-shell').style.transform
+					])
+				);
+				return {
+					point: [point.x, point.y],
+					positions
+				};
+			},
+			{ x: before.x, y: before.y }
+		);
+		assert.ok(Math.abs(before.point[0] - after.point[0]) < 0.01);
+		assert.ok(Math.abs(before.point[1] - after.point[1]) < 0.01);
+		assert.deepEqual(after.positions, before.positions);
+	} finally {
+		await harness.close();
+	}
+});
 
 test('the history strip gives six thumbnails exactly one tab stop', async () => {
 	const harness = await openStudio(stripFixtures());

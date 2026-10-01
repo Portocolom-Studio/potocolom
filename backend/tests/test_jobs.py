@@ -3091,6 +3091,80 @@ def test_generation_history_roots_only_filter_pages_roots():
 
 
 @pytest.mark.db
+def test_expired_generations_are_serialized_and_remain_in_subtrees():
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            now = datetime.now(timezone.utc)
+            async with db.session_factory() as session:
+                expired_root_id, expired_asset_id = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="expired-serialize-root",
+                    capabilities=["text_to_image"],
+                    prompt="expired root",
+                    created_at=now,
+                    expires_at=now - timedelta(seconds=1),
+                )
+                child_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="expired-serialize-child",
+                    capabilities=["image_to_image"],
+                    prompt="live child",
+                    created_at=now + timedelta(seconds=1),
+                    source_asset_id=expired_asset_id,
+                )
+                live_id, _ = await _seed_lineage_generation(
+                    session,
+                    user_id=db.local_user_id,
+                    model_id="expired-serialize-live",
+                    capabilities=["text_to_image"],
+                    prompt="live root",
+                    created_at=now + timedelta(seconds=2),
+                )
+                queued = Job(
+                    user_id=db.local_user_id,
+                    model_id="expired-serialize-live",
+                    params={"prompt": "queued"},
+                    state="queued",
+                    attempt=1,
+                    created_at=now + timedelta(seconds=3),
+                )
+                session.add(queued)
+                await session.flush()
+                await session.commit()
+            return expired_root_id, child_id, live_id, queued.id
+
+        expired_root_id, child_id, live_id, queued_id = client.portal.call(seed)
+
+        expired = client.get(f"/api/v1/generations/{expired_root_id}").json()
+        assert expired["expired"] is True
+        assert expired["assets"] == []
+        assert expired["expired_favorite"] is False
+
+        live = client.get(f"/api/v1/generations/{live_id}").json()
+        assert live["expired"] is False
+        assert live["assets"]
+
+        queued = client.get(f"/api/v1/generations/{queued_id}").json()
+        assert queued["expired"] is False
+        assert queued["assets"] == []
+
+        subtree_response = client.get(
+            f"/api/v1/generations/{expired_root_id}/subtree"
+        )
+        assert subtree_response.status_code == 200
+        nodes = subtree_response.json()["nodes"]
+        root = next(node for node in nodes if node["generation"]["id"] == str(expired_root_id))
+        child = next(node for node in nodes if node["generation"]["id"] != str(expired_root_id))
+        assert child["generation"]["id"] == str(child_id)
+        assert root["entry"]["missing"] is True
+        assert child["entry"]["missing"] is False
+
+
+@pytest.mark.db
 def test_generation_lineage_chain_orders_ancestors_and_children():
     with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:

@@ -221,8 +221,10 @@ GET /api/v1/generations/{id} {"state": "queued|running|succeeded|failed|cancelle
                               "dispatched_at"/"finished_at", "failure_reason" on failure}
 
 GET /api/v1/generations      generation history: a list of jobs, each with its nested assets
-                             carrying opaque asset-ID URLs and "thumbnail_url", plus
-                             "has_derivatives" for stable client layout; cursor paging.
+                              carrying opaque asset-ID URLs and "thumbnail_url", plus
+                              "has_derivatives" for stable client layout; cursor paging.
+                              Detail and list responses always carry "expired": true when the job has master
+                              assets and all of them expired, else false.
                              ?limit defaults to 50 and is capped at 200 (5000 with
                              ?fields=ids); a limit below 1 answers 422.
                              ?state=queued|running|succeeded|failed|cancelled keeps only jobs
@@ -278,7 +280,8 @@ GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#13
                                       revalidation match derivatives of any output. The walk is user-owned, cycle safe, excludes
                                       thumbnail assets, and stops at both limits. When truncated, the lower
                                       bound counts known omitted branches, not every unseen descendant.
-                                      404 for another user's, missing, or assetless anchor job.
+                                      404 for another user's or missing anchor job, or one that never had an
+                                      asset row; an expired anchor answers 200 with `missing: true`.
 ```
 
 Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or admin role. A missing
