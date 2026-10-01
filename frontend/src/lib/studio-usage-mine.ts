@@ -79,10 +79,16 @@ export function usageMeSearch(fromMs: number, toMs: number): string {
 	return `?${new URLSearchParams({ from: String(fromMs), to: String(toMs) })}`;
 }
 
+// null for every failure, a dropped connection or a body that is not JSON as
+// well as an error status, so the tab always leaves its loading state.
 export async function fetchUsageMe(fromMs: number, toMs: number): Promise<UsageMe | null> {
-	const response = await fetch(`/api/v1/usage/me${usageMeSearch(fromMs, toMs)}`);
-	if (!response.ok) return null;
-	return parseUsageMe(await response.json());
+	try {
+		const response = await fetch(`/api/v1/usage/me${usageMeSearch(fromMs, toMs)}`);
+		if (!response.ok) return null;
+		return parseUsageMe(await response.json());
+	} catch {
+		return null;
+	}
 }
 
 // Most events first, then the given names in order, so a tie never depends on

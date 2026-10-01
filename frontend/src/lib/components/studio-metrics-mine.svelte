@@ -133,7 +133,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each modelCategories as row (row.model_id + row.category)}
+						{#each modelCategories as row (`${row.model_id}\u0000${row.category}`)}
 							<tr class="border-border/60 border-t">
 								<td class="px-4 py-2.5 text-xs">{row.model_id}</td>
 								<td class="px-4 py-2.5 text-xs">{row.category}</td>

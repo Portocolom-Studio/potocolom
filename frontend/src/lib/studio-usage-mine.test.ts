@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+	fetchUsageMe,
 	byEventsThen,
 	categoryShares,
 	parseUsageMe,
@@ -114,4 +115,18 @@ test('the category mix pairs each count with its share, most used first', () => 
 		{ category: 'design', events: 3, pct: 0 },
 		{ category: 'other', events: 3, pct: 0 }
 	]);
+});
+
+test('fetchUsageMe answers null when the request or the body fails', async () => {
+	const original = globalThis.fetch;
+	try {
+		globalThis.fetch = (async () => {
+			throw new TypeError('network down');
+		}) as typeof fetch;
+		assert.equal(await fetchUsageMe(0, 1), null);
+		globalThis.fetch = (async () => new Response('not json', { status: 200 })) as typeof fetch;
+		assert.equal(await fetchUsageMe(0, 1), null);
+	} finally {
+		globalThis.fetch = original;
+	}
 });
