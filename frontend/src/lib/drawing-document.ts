@@ -364,6 +364,15 @@ export class DrawingDocument {
 		this.context.lineJoin = 'round';
 		this.context.beginPath();
 		const [start, end] = operation.points;
+		if (start.x === end.x && start.y === end.y) {
+			// Chrome 154 strokes nothing for a zero-size path, where a round cap
+			// used to leave a dot; a click with a shape tool keeps that dot.
+			this.context.fillStyle = operation.color;
+			this.context.arc(start.x, start.y, operation.size / 2, 0, Math.PI * 2);
+			this.context.fill();
+			this.context.restore();
+			return;
+		}
 		if (operation.shape === 'line') {
 			this.context.moveTo(start.x, start.y);
 			this.context.lineTo(end.x, end.y);
