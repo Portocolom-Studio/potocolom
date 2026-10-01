@@ -12,7 +12,7 @@ import uuid
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
@@ -94,21 +94,54 @@ async def _seen(actor: User, target_id: uuid.UUID) -> None:
         _flagged.discard(actor.id)
 
 
+def _filter_users(query, q: str | None):
+    trimmed = (q or "").strip()
+    if trimmed:
+        query = query.where(User.email.ilike(f"%{_escape_like(trimmed)}%", escape="\\"))
+    return query
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get("/api/v1/users")
 async def list_users(
+    limit: int = Query(default=50, ge=1),
+    cursor: uuid.UUID | None = None,
+    q: StorableStr | None = Query(default=None, max_length=200),
     actor: User = Depends(require_role("admin")),
     session: AsyncSession = Depends(db.get_session),
-) -> list[dict]:
+) -> dict:
     """Who is on this install, and what state they are in. Not a gallery: it
     carries no work and no credential, only what user management needs.
 
-    Recorded like every other privileged read. It reaches every account at
-    once, which is more than a selected-user page reaches, not less.
+    One page at a time, keyset on (created_at, id) the way
+    jobs.list_generations pages, so a long account list costs a page per
+    read and not the whole install.
+
+    Recorded like every other privileged read, but only for the page
+    actually read: that is what the route reached, not what it could have.
     """
-    rows = list((await session.execute(select(User).order_by(User.created_at))).scalars().all())
+    query = _filter_users(select(User), q)
+    if cursor is not None:
+        anchor = await session.get(User, cursor)
+        if anchor is None:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        # A row comparison, unlike the equivalent OR, is a range scan on the
+        # users_created_id index.
+        query = query.where(
+            tuple_(User.created_at, User.id) < tuple_(anchor.created_at, anchor.id)
+        )
+    cap = min(limit, 200)
+    fetched: list[User] = list((await session.execute(
+        query.order_by(User.created_at.desc(), User.id.desc()).limit(cap + 1)
+    )).scalars().all())
+    rows = fetched[:cap]
     await audit.record(USER_LIST, actor=actor, object_ids=[str(row.id) for row in rows],
                        object_count=len(rows))
-    return [_account_row(row) for row in rows]
+    next_cursor = str(rows[-1].id) if len(fetched) > cap else None
+    return {"users": [_account_row(row) for row in rows], "next_cursor": next_cursor}
 
 
 @router.get("/api/v1/users/{user_id}")

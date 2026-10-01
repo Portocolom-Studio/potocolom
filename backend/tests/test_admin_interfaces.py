@@ -13,7 +13,7 @@ from sqlalchemy import select, text, update
 
 from app import db
 from app.main import app
-from app.tables import Asset, AuditEvent, Job
+from app.tables import Asset, AuditEvent, Job, User
 from tests.test_account_states import _admin, _set_state
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 
@@ -328,7 +328,7 @@ def test_the_audit_belongs_to_administrators_alone(library):
         subject = client.portal.call(_make, "nosy@example.com")
         assert _login(client, "nosy@example.com").status_code == 204
         for path in ("/api/v1/audit", "/api/v1/audit/summary", "/api/v1/audit/export",
-                     "/api/v1/audit/anomalies", f"/api/v1/users/{subject.id}",
+                     "/api/v1/audit/anomalies", "/api/v1/users", f"/api/v1/users/{subject.id}",
                      f"/api/v1/users/{subject.id}/generations"):
             assert client.get(path).status_code == 403, path
 
@@ -348,9 +348,11 @@ def test_the_administrator_list_shows_who_is_here_and_what_state_they_are_in(lib
         assert _set_state(client, subject.id, "suspended").status_code == 204
         listed = client.get("/api/v1/users")
         assert listed.status_code == 200
-        rows = {row["email"]: row for row in listed.json()}
+        body = listed.json()
+        rows = {row["email"]: row for row in body["users"]}
     assert rows["listed@example.com"]["state"] == "suspended"
     assert "password_hash" not in str(rows)
+    assert body["next_cursor"] is None
 
 
 @pytest.mark.db
@@ -398,4 +400,86 @@ def test_listing_every_account_is_recorded_as_reaching_every_account(library):
         listed = client.get("/api/v1/users")
         assert listed.status_code == 200
         recorded = _wait_for_audit(client, "user.list")
-    assert recorded[0].object_count == len(listed.json())
+    assert recorded[0].object_count == len(listed.json()["users"])
+
+
+async def _bulk_users(n: int, prefix: str = "page") -> None:
+    """Rows only, no password: the list route never reads AuthIdentity, and
+    hashing one for every row would make a 200-row page slow for nothing."""
+    async with db.session_factory() as session:
+        session.add_all([
+            User(id=uuid.uuid4(), email=f"{prefix}{i}@example.com", role="user")
+            for i in range(n)
+        ])
+        await session.commit()
+
+
+@pytest.mark.db
+def test_listing_users_pages_by_cursor(library):
+    """Keyset paging the way jobs.list_generations pages: a page at a time,
+    a next_cursor until the rows run out, and the last page's is null."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        client.portal.call(_bulk_users, 4)
+
+        assert client.get("/api/v1/users", params={"limit": 0}).status_code == 422
+
+        whole = client.get("/api/v1/users", params={"limit": 200}).json()
+        all_ids = {row["id"] for row in whole["users"]}
+
+        first = client.get("/api/v1/users", params={"limit": 2}).json()
+        assert len(first["users"]) == 2
+        assert first["next_cursor"] is not None
+
+        second = client.get(
+            "/api/v1/users", params={"limit": 2, "cursor": first["next_cursor"]}
+        ).json()
+        seen_first = {row["id"] for row in first["users"]}
+        seen_second = {row["id"] for row in second["users"]}
+        assert seen_first.isdisjoint(seen_second)
+
+        # Keep paging until next_cursor runs out, the way a client would.
+        seen = seen_first | seen_second
+        page = second
+        while page["next_cursor"] is not None:
+            page = client.get(
+                "/api/v1/users", params={"limit": 2, "cursor": page["next_cursor"]}
+            ).json()
+            fresh = {row["id"] for row in page["users"]}
+            assert fresh.isdisjoint(seen)
+            seen |= fresh
+        assert seen == all_ids
+
+        unknown = client.get("/api/v1/users", params={"cursor": str(uuid.uuid4())})
+        assert unknown.status_code == 404
+
+
+@pytest.mark.db
+def test_listing_users_caps_the_limit_at_two_hundred(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        client.portal.call(_bulk_users, 205, "cap")
+        page = client.get("/api/v1/users", params={"limit": 1000}).json()
+    assert len(page["users"]) == 200
+    assert page["next_cursor"] is not None
+
+
+@pytest.mark.db
+def test_listing_users_filters_by_email_substring(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        client.portal.call(_make, "zzmatch@example.com")
+        client.portal.call(_make, "other@example.com")
+        page = client.get("/api/v1/users", params={"q": "ZZMatch"}).json()
+    emails = {row["email"] for row in page["users"]}
+    assert emails == {"zzmatch@example.com"}
+
+
+def test_a_page_that_ends_the_list_exactly_has_no_next_cursor(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        _admin(client)
+        client.portal.call(_make, "exactpage-a@example.com")
+        client.portal.call(_make, "exactpage-b@example.com")
+        page = client.get("/api/v1/users", params={"q": "exactpage", "limit": 2}).json()
+    assert len(page["users"]) == 2
+    assert page["next_cursor"] is None
