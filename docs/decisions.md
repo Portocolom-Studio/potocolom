@@ -1466,6 +1466,13 @@ Local `make auth-enable` and `make simulate` still use `potocolom` or `potocolom
 Rejected alternatives: a second PostgreSQL container for the runner (a clean boundary and one more service to keep running); exporting `DATABASE_URL` only in the runner environment (every workflow must honour it, and a missed one is silent).
 
 
+## Simulation CI owns a PostgreSQL service
+
+Each simulation job starts its own PostgreSQL 16 service with a dedicated `potocolom_ci` database. The service publishes container port 5432 on a Docker-selected loopback port, which the workflow reads into `DATABASE_URL`. Its `/var/lib/postgresql/data` path uses a 512 MiB tmpfs, replacing the image's anonymous data volume; Actions removes the service container when the job ends. This replaces the same-server deployment choice above: the actual Actions job failed before the simulation started because no PostgreSQL listener accepted connections on localhost:5432. The runner needs Docker but no preinstalled host PostgreSQL. The CI guard against the developer database remains in place (issue #459).
+
+Rejected alternatives: keep PostgreSQL on the runner host, which depends on a host listener that the failed job could not reach; use the image's anonymous data volume, which can outlive service-container removal on the self-hosted runner.
+
+
 ## A second Generate click while a request is in flight does nothing
 
 Clicking Generate twice quickly queued two identical jobs. Nothing broke, and two unseeded clicks get different seeds, so they are not the same picture. In the cloud profile each click is still a quota reservation and a metering event, so a slip of the mouse is billable (issue #455).

@@ -54,8 +54,16 @@ def test_simulate_calls_the_developer_database_guard():
 
 def test_simulation_workflow_sets_the_ci_database():
     source = (ROOT / ".github" / "workflows" / "simulation.yml").read_text()
-    assert "DATABASE_URL" in source
-    assert CI_URL in source
+    database_url = next(
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith("DATABASE_URL:")
+    )
+    service_port = "${{ job.services.postgres.ports['5432'] }}"
+    assert f"@127.0.0.1:{service_port}/{CI_DATABASE}" in database_url
+    assert f"POSTGRES_DB: {CI_DATABASE}" in source
+    assert '- "127.0.0.1::5432"' in source
+    assert "--tmpfs /var/lib/postgresql/data:rw,nosuid,noexec,size=512m" in source
 
 
 class _Catalog:

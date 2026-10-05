@@ -279,7 +279,7 @@ Kept honest and short, this is the list staging exists for: Terraform itself, IA
 
 ## Continuous integration
 
-GitHub Actions runs lint and tests on every pull request (issue #13). By default workflows target a **self-hosted runner** on the reference desktop so CI keeps working when hosted minutes are exhausted; see [self-hosted-runner.md](self-hosted-runner.md). Switch workflows back to `ubuntu-latest` when hosted quota is available. The simulation job talks to host database `potocolom_ci`. When `CI` is set it refuses the developer name `potocolom` (issue #459).
+GitHub Actions runs lint and tests on every pull request (issue #13). By default workflows target a **self-hosted runner** on the reference desktop so CI keeps working when hosted minutes are exhausted; see [self-hosted-runner.md](self-hosted-runner.md). Switch workflows back to `ubuntu-latest` when hosted quota is available. The simulation job uses its own PostgreSQL service and the dedicated database `potocolom_ci`; it binds the service to loopback and stores its data in a 512 MiB tmpfs at `/var/lib/postgresql/data`. Actions removes the service container when the job ends. When `CI` is set, the script refuses the developer name `potocolom` (issue #459).
 
 Per component, no GPU:
 
