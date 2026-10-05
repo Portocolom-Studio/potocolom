@@ -5,7 +5,7 @@ This document describes the architecture of potocolom: an open source, real time
 ## Goals
 
 - One codebase, two deployment modes. A self-hosted install and the cloud service run the same frontend, API server and inference worker. All differences are configuration, not forks or separate builds.
-- Self-hosting stays simple. One machine with an NVIDIA GPU and Docker is enough. No accounts required, no external services.
+- Self-hosting stays simple. One machine with an NVIDIA or AMD GPU and Docker is enough. No accounts required, no external services.
 - The cloud mode adds accounts, subscriptions with credits and a managed pool of GPU workers. Its commercial components (billing, fleet orchestration) live in a separate private repository and integrate over service boundaries.
 - New image models can be added without frontend releases (issue #11).
 - Real time interaction: drawing on a canvas produces generated frames continuously (issue #3).
@@ -31,9 +31,9 @@ FastAPI API server. It provides:
 
 - REST endpoints for authentication, accounts, the model registry, generation jobs and generation history.
 - A WebSocket endpoint for real time generation sessions.
-- Admin endpoints behind an admin role flag: worker fleet status, user lookup and disable, job and session debugging. The same views serve a self-hoster inspecting their own install and the cloud operator running the service.
+- Admin endpoints behind an admin role flag: connected worker status, user lookup and disable, job and session debugging. A managed fleet console is part of the cloud target.
 
-It is stateless: any replica can serve any request, which is what allows horizontal scaling in the cloud.
+Generation queues and realtime socket ownership are process-local. In `accounts` mode, a PostgreSQL advisory lock allows only one API process per installation. Stateless multi-replica serving is a cloud target, not the current runtime.
 
 ### worker/
 
@@ -48,13 +48,13 @@ The worker supports three device targets behind one `DEVICE` setting: `cuda` (NV
 
 The worker accepts no inbound connections. It dials out to the API server's fleet endpoint and holds one persistent connection; registration, job dispatch, real time frames and heartbeats are all multiplexed over it. The direction is identical in both modes, which is what lets the same worker image run on a home GPU and on rented cloud machines.
 
-The connection protocol carries a version, and each API release keeps supporting workers from the previous release (N-1). Cloud deploys therefore never require draining the whole fleet at once, and a self-hosted install that upgrades the API before the worker keeps working for one release, with an outdated worker warning in the logs and admin view.
+The connection protocol carries a version, and each API release keeps supporting workers from the previous release (N-1). The current API and worker use protocol 5; the API accepts protocol 4 as its compatibility floor. This allows adjacent worker and API versions to communicate during an upgrade, with an outdated worker warning in the logs and admin view. A hosted fleet deployment is not shipped.
 
 ### Infrastructure
 
 - PostgreSQL stores users, sessions, the model registry, jobs and generation history.
 - Object storage sits behind a storage adapter: local disk by default when self-hosted, any S3 compatible service in the cloud.
-- Redis exists only in the cloud profile, for the job queue, session scheduling and rate limiting.
+- Redis is part of the cloud target for queues, session scheduling and rate limiting. The backend does not use Redis today; queues and realtime ownership stay in process.
 
 ## Deployment profiles
 
@@ -75,7 +75,7 @@ flowchart LR
     W -->|"dials the fleet endpoint<br>one persistent connection"| A
 ```
 
-Cloud: the same three container images, plus orchestration and the private repository services. The worker pool runs on rented GPU machines.
+Cloud target: the same three container images, plus orchestration and the private repository services. The worker pool runs on rented GPU machines.
 
 ```mermaid
 flowchart TB
@@ -169,17 +169,17 @@ flowchart TB
     INST["Self-hosted installs elsewhere"] -.->|"one anonymous daily aggregate;<br>this deployment sends nothing"| TEL
 ```
 
-Reading the boxes against the seams: `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. The realtime path is the only one that never touches PostgreSQL per frame: browser to relay to Redis pub/sub to worker and back.
+In this cloud target, `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. Its realtime path avoids PostgreSQL per frame by relaying browser frames to workers through Redis pub/sub.
 
-> Shipped status (2026-07-30): **partially implemented.** Generation jobs use an in-process heap, while the realtime relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, realtime admission queue, FrameBus, or cross-replica control state. The target boxes are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-10-05): **partially implemented.** Generation jobs use an in-process heap. Realtime admission is also in process; the relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, shared queue, FrameBus, or cross-replica control state. In `accounts` mode, a PostgreSQL advisory lock limits an installation to one API process. Protocol 5 is current and protocol 4 is the compatibility floor. The Redis-backed queue, shared realtime state, and multi-process cloud target are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
 
 ## Pluggable seams
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
 - Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud (the Redis cache is still designed). The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available.
-- Dispatch: work is handed to workers over their persistent connections. Self-hosted, that means the single connected worker; in the cloud, a Redis queue plus a session scheduler pick among the connected pool (see GPU scheduling below). Same interface, two implementations.
-- Quota: a QuotaService interface with reserve, commit and refund operations. The default implementation allows everything (self-hosted behavior). The cloud implementation calls the private billing service over HTTP using metering events (GPU milliseconds, images) reported by workers. This service boundary is also the license boundary.
+- Dispatch: work is handed to workers over their persistent connections. Generation jobs and realtime admission use process-local queues today. A Redis queue and shared session scheduler for a worker pool are designed for cloud scale (see GPU scheduling below).
+- Quota: the current backend allows generation without a quota service. A QuotaService interface with reserve, commit and refund operations, and its private billing-service HTTP implementation, are designed but not shipped. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
 
 ## GPU scheduling

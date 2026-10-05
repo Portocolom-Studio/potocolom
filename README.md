@@ -68,6 +68,9 @@ Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthroug
 The design is documentation-first: every load-bearing decision is recorded with its rejected alternatives before the code lands.
 
 - [Architecture](docs/architecture.md)
+- [Session handoff and saved work](docs/session-handoff.md)
+- [Current state audit](docs/audit_report.md)
+- [Implementation roadmap and verification gates](docs/implementation_spec.md)
 - [Deployment profiles and migration](docs/deployment-profiles.md)
 - [Implementation blueprint](docs/blueprint.md)
 - [API reference and user journeys](docs/api.md)
