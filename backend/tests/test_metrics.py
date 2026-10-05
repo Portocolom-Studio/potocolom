@@ -3,7 +3,9 @@
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta, timezone
+from typing import TypeVar
 
 import pytest
 from conftest import run_on_test_loop
@@ -35,6 +37,16 @@ MANIFEST = {
     "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
     "min_vram_gb": 0,
 }
+
+T = TypeVar("T")
+
+
+async def _run_database_check(check: Callable[[], Awaitable[T]]) -> T:
+    try:
+        assert await db.connect(serving=False)
+        return await check()
+    finally:
+        await db.dispose()
 
 
 def fleet_hello(ws, worker_id="w-metrics"):
@@ -256,8 +268,9 @@ def test_usage_event_maintenance_rolls_up_prunes_and_is_idempotent(monkeypatch):
             await session.commit()
         return first_rebuild, second_rebuild, first, second
 
-    with TestClient(app, headers=FLEET_HEADERS) as client:
-        first_rebuild, second_rebuild, first, second = client.portal.call(exercise)
+    first_rebuild, second_rebuild, first, second = run_on_test_loop(
+        _run_database_check(exercise)
+    )
 
     assert first_rebuild == second_rebuild
     assert first == second
@@ -309,8 +322,7 @@ def test_a_blank_tier_and_no_tier_roll_up_as_one_row():
             await session.commit()
         return counted
 
-    with TestClient(app, headers=FLEET_HEADERS) as client:
-        rolled = client.portal.call(exercise)
+    rolled = run_on_test_loop(_run_database_check(exercise))
 
     # One row holding both, rather than a statement that wrote nothing at all.
     assert rolled == [(None, 2)]

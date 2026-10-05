@@ -131,7 +131,7 @@ async def list_users(
         # A row comparison, unlike the equivalent OR, is a range scan on the
         # users_created_id index.
         query = query.where(
-            tuple_(User.created_at, User.id) < tuple_(anchor.created_at, anchor.id)
+            tuple_(User.created_at, User.id) < (anchor.created_at, anchor.id)
         )
     cap = min(limit, 200)
     fetched: list[User] = list((await session.execute(

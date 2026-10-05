@@ -6,6 +6,7 @@ naming one is itself recorded.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -408,7 +409,8 @@ async def _bulk_users(n: int, prefix: str = "page") -> None:
     hashing one for every row would make a 200-row page slow for nothing."""
     async with db.session_factory() as session:
         session.add_all([
-            User(id=uuid.uuid4(), email=f"{prefix}{i}@example.com", role="user")
+            User(id=uuid.uuid4(), email=f"{prefix}{i}@example.com", role="user",
+                 created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
             for i in range(n)
         ])
         await session.commit()
