@@ -40,14 +40,19 @@ test('the My usage tab round-trips through the URL', () => {
 	assert.equal(readStudioView(at('?view=metrics&tab=mines')).tab, 'usage');
 });
 
-test('the admin view has users, audit, fleet, and banner tabs that round-trip', () => {
-	assert.deepEqual(ADMIN_TABS, ['users', 'audit', 'fleet', 'banner']);
+test('the admin view has users, audit, fleet, banner, and invitations tabs that round-trip', () => {
+	assert.deepEqual(ADMIN_TABS, ['users', 'audit', 'fleet', 'banner', 'invitations']);
 	assert.deepEqual(readStudioView(at('?view=admin')), { view: 'admin', tab: 'users' });
 	assert.deepEqual(readStudioView(at('?view=admin&tab=audit')), { view: 'admin', tab: 'audit' });
 	assert.deepEqual(readStudioView(at('?view=admin&tab=banner')), { view: 'admin', tab: 'banner' });
+	assert.deepEqual(readStudioView(at('?view=admin&tab=invitations')), {
+		view: 'admin',
+		tab: 'invitations'
+	});
 	assert.equal(studioViewSearch('', 'admin', 'audit'), '?view=admin&tab=audit');
 	assert.equal(studioViewSearch('', 'admin', 'fleet'), '?view=admin&tab=fleet');
 	assert.equal(studioViewSearch('', 'admin', 'banner'), '?view=admin&tab=banner');
+	assert.equal(studioViewSearch('', 'admin', 'invitations'), '?view=admin&tab=invitations');
 	assert.equal(studioViewSearch('', 'admin', 'users'), '?view=admin');
 });
 

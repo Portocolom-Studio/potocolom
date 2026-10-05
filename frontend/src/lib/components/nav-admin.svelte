@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import CpuIcon from '@lucide/svelte/icons/cpu';
+	import MailPlusIcon from '@lucide/svelte/icons/mail-plus';
 	import MegaphoneIcon from '@lucide/svelte/icons/megaphone';
 	import ScrollTextIcon from '@lucide/svelte/icons/scroll-text';
 	import UsersIcon from '@lucide/svelte/icons/users';
@@ -17,7 +18,8 @@
 		{ value: ADMIN_TABS[0], label: t('app.admin.users'), icon: UsersIcon },
 		{ value: ADMIN_TABS[1], label: t('app.admin.audit'), icon: ScrollTextIcon },
 		{ value: ADMIN_TABS[2], label: t('app.admin.fleet'), icon: CpuIcon },
-		{ value: ADMIN_TABS[3], label: t('app.admin.banner'), icon: MegaphoneIcon }
+		{ value: ADMIN_TABS[3], label: t('app.admin.banner'), icon: MegaphoneIcon },
+		{ value: ADMIN_TABS[4], label: t('app.admin.invitations'), icon: MailPlusIcon }
 	]);
 </script>
 

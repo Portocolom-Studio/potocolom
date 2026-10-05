@@ -75,10 +75,10 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials; accepts an optional `next`, a same-origin `/app` address whose query a successful callback returns to (a factor challenge carries it to `/login`), and anything else is ignored |
 | GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account; a link ends the account's other sessions and re-issues this one's cookies |
-| POST `/api/v1/invitations` | implemented | invite an address to a role; returns the link once, admin only |
+| POST `/api/v1/invitations` | implemented | invite an address to a role; returns `{id, email, role, token, link, expires_at}`, `link` being `_invitation_link(token)`, admin only |
 | GET `/api/v1/invitations` | implemented | the open invitations, without their links; admin only |
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
-| POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; admin only |
+| POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; returns the same shape as create, `link` included; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
 | POST `/api/v1/users/{id}/state` | implemented | suspend, disable, or mark an account for deletion; admin only |
 | POST `/api/v1/generations/{id}/cancel` | implemented | stop a queued or running job |

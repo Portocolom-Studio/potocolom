@@ -256,7 +256,7 @@ def main() -> None:
     print()
     print("The link is one use and nothing durable holds it, only its hash.")
     print("Running this again replaces it. After you claim it, sign in at")
-    print("/api/v1/auth/login and invite everybody else from Settings.")
+    print("/api/v1/auth/login and invite everybody else from Admin > Invitations.")
 
 
 if __name__ == "__main__":
