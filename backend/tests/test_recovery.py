@@ -77,11 +77,13 @@ def waits(monkeypatch):
     driven to its cap in a burst (issue #429).
     """
     recorded: list[float] = []
+    now = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
     async def record(seconds: float) -> None:
         recorded.append(seconds)
 
     monkeypatch.setattr(rate_limit, "sleep", record)
+    monkeypatch.setattr(rate_limit, "_now", lambda: now)
     return recorded
 
 
@@ -146,6 +148,25 @@ def test_an_ask_costs_the_caller_whatever_address_it_names(accounts, waits, monk
     assert codes == [202] * (rate_limit.FREE_ATTEMPTS + 6) + [503]
     assert waits == pytest.approx(
         [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.5, 3.5, 7.5, 15.5, 23.5], abs=0.1)
+
+
+@pytest.mark.db
+def test_reset_queue_uses_elapsed_time_between_http_asks(accounts, waits, monkeypatch):
+    monkeypatch.setenv("EMAIL_BACKEND", "smtp")
+    monkeypatch.setenv("SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("MAIL_FROM", "potocolom@example.com")
+    get_settings.cache_clear()
+    now = [datetime(2025, 1, 1, tzinfo=timezone.utc)]
+    monkeypatch.setattr(rate_limit, "_now", lambda: now[0])
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "elapsed@example.com")
+        first_six = [_ask(client, "elapsed@example.com").status_code for _ in range(6)]
+        now[0] += timedelta(seconds=0.25)
+        seventh = _ask(client, "elapsed@example.com")
+        client.portal.call(_wait_for_reset_deliveries)
+    assert first_six == [202] * 6
+    assert seventh.status_code == 202
+    assert waits == [0.0] * rate_limit.FREE_ATTEMPTS + [0.5, 1.25]
 
 
 @pytest.mark.db

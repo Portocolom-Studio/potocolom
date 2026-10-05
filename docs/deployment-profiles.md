@@ -12,7 +12,7 @@ The self-hosted version is the base and the cloud is a configuration of it, neve
 
 The proof mechanism is the cloud-sim compose in [local-development.md](local-development.md): Redis, MinIO and Mailpit. MinIO vs S3 is the storage seam. nginx vs ALB, two API replicas, and a fake QuotaService are designed and are not in that compose file.
 
-> Shipped status (2026-07-30): **partially implemented.** Storage and the generation-job in-process queue have concrete seams. The Redis queue adapter, realtime admission queue, FrameBus implementations, shared invalidation, and multi-owner scheduler do not exist yet. "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts" govern those designed profile differences.
+> Shipped status (2026-10-05): **partially implemented.** Storage, the generation-job in-process heap, and the in-process realtime admission queue are shipped. Realtime workers and sessions live in process-local dictionaries. There is no Redis dependency, Redis queue adapter, FrameBus, shared invalidation, or multi-owner scheduler. After successful database initialization, `accounts` mode takes the PostgreSQL startup lock and refuses another accounts startup; database probe, version check or migration failure starts degraded without the lock. Protocol 5 is current and protocol 4 is the compatibility floor. The cloud profile, including HTTP quota service, fleet autoscaling, and gateway, remains a target. "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts" govern the queue and relay target.
 
 ## The profile spectrum
 
@@ -61,9 +61,9 @@ The scaled self-hosted column deserves a note: it is not a separately designed p
 | Frontend | one static build; behavior driven by `GET /api/v1/config` | the values that endpoint returns |
 | Worker | the whole worker, protocol, manifests, `DEVICE=cuda/rocm/cpu`, the low VRAM memory ladder (`MEMORY_MODE`, [architecture.md](architecture.md)) | the hostname it dials, where weights come from (HF or R2); the ladder matters on consumer GPUs, the cloud fleet runs fully resident |
 | Database schema | identical, one migration history | instance it runs on |
-| Dispatch and relay | the interfaces and the scheduler logic | in-process vs Redis implementation |
+| Dispatch and relay | the current in-process job and admission queues, plus process-local socket ownership | a shared Redis queue, scheduler and FrameBus are designed for multi-process scale |
 | Storage | the interface, storage keys, asset rows | filesystem vs S3; plain paths vs signed URLs |
-| Quota | the reserve/commit/refund interface, metering events | unlimited vs the billing service |
+| Quota | generation currently runs without a quota service | unlimited behavior vs a designed HTTP billing service and metering path |
 | Auth | session mechanics, cookie, revocation | which methods exist |
 | Metrics | `usage_events` schema, output categorizer, studio metrics panel ([metrics.md](metrics.md)) | Admin fleet console, and the analytics warehouse are designed / cloud-only |
 | Not shared at all | | AWS infrastructure; the private billing, autoscaler and analytics services |
@@ -102,7 +102,7 @@ scaling trigger. It is a status ledger, not a roadmap or a new decision record.
 | Local choice | Why it is safe today | Trigger that forces the change |
 |---|---|---|
 | **Database connection pooling.** `backend/app/db.py` keeps a bounded pool (`pool_size=5, max_overflow=10`), and the tests drive requests and WebSockets on one event loop. | Fifteen connections per API process, plus one more in accounts mode for the connection that holds the startup advisory lock. | Tune the pool per profile once more than one replica runs against a shared instance. |
-| **In-process queue and relay.** Generation jobs use an in-process heap. Realtime workers and sessions live in process-local dictionaries and frames are forwarded by direct awaited socket sends; there is no FrameBus, and the realtime admission queue is in process. | Exactly one process owns every worker and browser socket, and a full realtime pool queues new sessions in that process. | Before adding another socket-owning process, implement "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling", then configure the Redis-backed queue and FrameBus. |
+| **In-process queue and relay.** Generation jobs use an in-process heap. Realtime workers and sessions live in process-local dictionaries and frames are forwarded by direct awaited socket sends; there is no FrameBus, and the realtime admission queue is in process. After successful database initialization, `accounts` mode holds a PostgreSQL startup lock and refuses another accounts startup. | One process owns every worker and browser socket, and a full realtime pool queues new sessions in that process. | Before adding another socket-owning process, implement "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling", then configure the Redis-backed queue and FrameBus. |
 | **Container log rotation.** Compose uses Docker's bounded `json-file` driver. | The self-hosted stack runs as Docker containers on one host. | The cloud deployment. ECS must use `awslogs`; the compose logging block does not apply there. |
 | **In-memory observed model timings.** Each API process learns per-model GPU speed from recent succeeded jobs, seeded by committed reference-card timings. | The existing maintenance loop refreshes the derived cache every five minutes, and a database failure safely restores the shipped seed. | More than one materially different GPU profile serving the same install. Record worker identity or memory mode on each job, then key observations by that hardware profile. |
 | **Usage rollup scale.** Worker identities are pruned after 30 days. Raw `usage_events` are retained for 90 days; older complete UTC days become daily per-user and per-dimension `usage_event_rollups`. | Per-event growth is bounded while daily user presence and additive measures remain available for cohorts and retention. | `usage_event_rollups` period scans slowing at measured fleet volume. Partition by `bucket_date` without changing the rollup contract. |
@@ -126,7 +126,7 @@ The switch is one way. An install that has enabled accounts refuses to start in 
 
 ### Adding Redis and more workers (self-hosted scale-out)
 
-> Shipped status (2026-07-30): **not yet implemented.** These are target migration steps, not an available switch today. They depend on "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
+> Shipped status (2026-10-05): **not yet implemented.** These are target migration steps, not an available switch today. After successful database initialization, the `accounts` startup lock refuses another accounts startup; degraded startup after a database probe, version check or migration failure skips the lock. They depend on "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
 
 1. Add a Redis container and set `REDIS_URL`.
 2. Restart the API: queues rebuild from PostgreSQL job rows (Redis is never the source of truth, so there is nothing to migrate into it), the session cache warms lazily, and the frame relay switches to pub/sub.
