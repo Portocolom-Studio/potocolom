@@ -6,6 +6,7 @@ import {
 	buildAdminConfirmation,
 	buildAuditQuery,
 	buildUsersQuery,
+	invitationExpired,
 	inviteRequestBody,
 	isRecentAuthenticationRequired,
 	needsAdminAttestation
@@ -87,4 +88,11 @@ test('only the recent-authentication detail triggers the hint', () => {
 	assert.equal(isRecentAuthenticationRequired('recent authentication required'), true);
 	assert.equal(isRecentAuthenticationRequired('that address already has an account'), false);
 	assert.equal(isRecentAuthenticationRequired(undefined), false);
+});
+
+test('an invitation is expired at or after its expiry, and an unreadable date is not', () => {
+	const at = Date.parse('2026-10-05T12:00:00Z');
+	assert.equal(invitationExpired('2026-10-05T12:00:00Z', at - 1), false);
+	assert.equal(invitationExpired('2026-10-05T12:00:00Z', at), true);
+	assert.equal(invitationExpired('not a date', at), false);
 });

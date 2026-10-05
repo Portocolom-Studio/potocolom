@@ -698,6 +698,7 @@
 	"app.admin.invite_recent_auth_hint": "Sign out and sign in again, then invite an administrator.",
 	"app.admin.invite_link_title": "Invitation link",
 	"app.admin.invite_link_note": "This link is shown only now. Copy it before leaving this page.",
+	"app.admin.invite_expired": "Expired",
 	"app.admin.invite_link_expires": "Expires",
 	"app.admin.copy_link": "Copy link",
 	"app.admin.copy_link_copied": "Copied.",

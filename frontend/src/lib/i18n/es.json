@@ -698,6 +698,7 @@
 	"app.admin.invite_recent_auth_hint": "Cierra sesión y vuelve a iniciarla, luego invita a un administrador.",
 	"app.admin.invite_link_title": "Enlace de invitación",
 	"app.admin.invite_link_note": "Este enlace solo se muestra ahora. Cópialo antes de salir de esta página.",
+	"app.admin.invite_expired": "Caducada",
 	"app.admin.invite_link_expires": "Caduca",
 	"app.admin.copy_link": "Copiar enlace",
 	"app.admin.copy_link_copied": "Copiado.",

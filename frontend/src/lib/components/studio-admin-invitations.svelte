@@ -3,6 +3,7 @@
 	import { apiFetch } from '$lib/api';
 	import {
 		adminErrorMessage,
+		invitationExpired,
 		inviteRequestBody,
 		isRecentAuthenticationRequired,
 		recheckAdminAccess
@@ -167,11 +168,19 @@
 							method: 'DELETE'
 						});
 			if (!response.ok) {
+				// Another administrator revoked it, or it was accepted: the row is
+				// stale, and retrying would only 404 again.
+				if (response.status === 404) {
+					cancelConfirmation();
+					await loadInvitations();
+					return;
+				}
 				confirmationError = await apiError(response);
 				return;
 			}
 			confirmationOpen = false;
 			pendingAction = null;
+			if (action.kind === 'revoke' && minted?.id === action.id) clearMinted();
 			if (action.kind === 'reveal') {
 				clearMinted();
 				minted = (await response.json()) as Minted;
@@ -207,15 +216,20 @@
 				? t('app.admin.new_link_confirm_title')
 				: t('app.admin.revoke_confirm_title')
 	);
-	const confirmationText = $derived(
-		pendingAction?.kind === 'invite'
-			? t('app.admin.invite_confirm_text').replace('{email}', email)
-			: pendingAction?.kind === 'reveal'
-				? t('app.admin.new_link_confirm_text').replace('{email}', pendingAction.email)
-				: pendingAction?.kind === 'revoke'
-					? t('app.admin.revoke_confirm_text').replace('{email}', pendingAction.email)
-					: ''
-	);
+	const confirmationText = $derived.by(() => {
+		const action = pendingAction;
+		if (action === null) return '';
+		// A function replacement: an email may contain $, which a string
+		// replacement would read as a substitution pattern.
+		const subject = action.kind === 'invite' ? email : action.email;
+		const key =
+			action.kind === 'invite'
+				? 'app.admin.invite_confirm_text'
+				: action.kind === 'reveal'
+					? 'app.admin.new_link_confirm_text'
+					: 'app.admin.revoke_confirm_text';
+		return t(key).replace('{email}', () => subject);
+	});
 </script>
 
 <div class="flex min-h-0 flex-col gap-4 overflow-auto pb-2">
@@ -277,6 +291,7 @@
 						<input
 							bind:this={linkField}
 							data-testid="admin-invite-link"
+							aria-label={t('app.admin.invite_link_title')}
 							readonly
 							class="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
 							value={minted.link}
@@ -290,9 +305,7 @@
 							{t('app.admin.copy_link')}
 						</Button>
 					</div>
-					{#if linkCopyHint}
-						<p class="text-muted-foreground text-xs">{linkCopyHint}</p>
-					{/if}
+					<p class="text-muted-foreground text-xs" aria-live="polite">{linkCopyHint}</p>
 					<p class="text-muted-foreground text-xs">
 						{t('app.admin.invite_link_expires')}: {displayDate(minted.expires_at)}
 					</p>
@@ -334,22 +347,30 @@
 								<span class="text-sm font-medium">{invitation.email}</span>
 								<span class="text-muted-foreground flex flex-wrap gap-x-2 text-xs">
 									<span>{t(roleLabelKey(invitation.role))}</span>
-									<span
-										>{t('app.admin.invite_link_expires')}: {displayDate(
-											invitation.expires_at
-										)}</span
-									>
+									{#if invitationExpired(invitation.expires_at, Date.now())}
+										<span class="text-destructive">{t('app.admin.invite_expired')}</span>
+									{:else}
+										<span
+											>{t('app.admin.invite_link_expires')}: {displayDate(
+												invitation.expires_at
+											)}</span
+										>
+									{/if}
 								</span>
 							</div>
 							<div class="flex gap-2">
-								<Button
-									variant="outline"
-									size="sm"
-									data-testid="admin-invite-reveal"
-									onclick={() => requestReveal(invitation)}
-								>
-									{t('app.admin.new_link')}
-								</Button>
+								<!-- A new link keeps the invitation's expiry, so on an expired one
+								     it would be dead on arrival: only Revoke frees the address. -->
+								{#if !invitationExpired(invitation.expires_at, Date.now())}
+									<Button
+										variant="outline"
+										size="sm"
+										data-testid="admin-invite-reveal"
+										onclick={() => requestReveal(invitation)}
+									>
+										{t('app.admin.new_link')}
+									</Button>
+								{/if}
 								<Button
 									variant="outline"
 									size="sm"

@@ -60,6 +60,13 @@ export function inviteRequestBody(email: string, role: Role): { email: string; r
 	return { email: email.trim(), role };
 }
 
+// The open-invitations list does not filter on expiry, and a re-minted link
+// keeps the invitation's expiry, so an expired row needs to read as expired.
+export function invitationExpired(expiresAt: string, now: number): boolean {
+	const at = Date.parse(expiresAt);
+	return Number.isFinite(at) && at <= now;
+}
+
 // The 403 this route answers when inviting an administrator without a recent
 // sign-in. Matched by value, the same way auth-flow.ts reads other details,
 // so the studio can show a hint that is specific to this one cause.
