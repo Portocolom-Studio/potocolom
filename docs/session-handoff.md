@@ -6,12 +6,12 @@ Start here. The user requested cleanup, safe merges, current docs and a clear ne
 
 1. Read the local `AGENTS.md` instructions, then the routing table in `docs/internals/AGENTS.md`. Local internals are ignored and must stay local.
 2. Read [audit_report.md](audit_report.md) for shipped state and [implementation_spec.md](implementation_spec.md) for the work order and gates. Read the nine authoritative documents named in the local instructions before changing a contract.
-3. Check `git status --short`, `git worktree list`, remote main and the live issue/PR tracker. The source baseline for this audit is `006f408ab1ed8148639cfc804553c13420ae8c0c`; this cleanup PR adds the handoff and reset-test repair.
+3. Check `git status --short`, `git worktree list`, remote main and the live issue/PR tracker. The source baseline for this audit is `006f408ab1ed8148639cfc804553c13420ae8c0c`; PR #650 added the handoff and reset-test repair.
 4. Keep optimizer PR118 and ratings PR483 unmerged. Their original branch refs and local work were saved. Do not delete remote branches: deletion can close their PRs.
 
 PRs [648](https://github.com/Portocolom-Studio/potocolom/pull/648) and [649](https://github.com/Portocolom-Studio/potocolom/pull/649) are merged. They contain only admin pagination and isolated simulation CI fixes. The broad foundation candidates remain local drafts.
 
-All 109 reviewed old worktrees were removed after archive and restore checks. The primary checkout is back on main and clean. The two open PR worktrees and the temporary cleanup PR worktree remain. Their source is committed; no untracked source remains in those retained trees. The cleanup worktree can be removed after its PR merge and the primary fast-forward.
+All 109 reviewed old worktrees were removed after archive and restore checks. At the cleanup snapshot, PR #118 and PR #483 were open, and their two worktrees remained. PR #650 had merged, the primary checkout had fast-forwarded to its merge, and the temporary PR #650 worktree had been removed. The local `.local/cleanup-20261005/final-state.json` records the repository, PR and worktree state for that snapshot.
 
 ## Saved work: one local archive
 
@@ -32,7 +32,7 @@ In the primary checkout, the local archive is:
 | `index-history/` | Initial staged and unstaged binary patches |
 | `verification/`, `verification-v2/` | Initial and final local test logs, source origins, coverage and owned SQL resource closure |
 | `fixture-cleanup/` | Private database/assets backups and owned fixture shutdown receipts |
-| `final-state.json` | Final main/PR/worktree state and cleanup receipts |
+| `.local/cleanup-20261005/final-state.json` | Repository, PR and worktree state for the cleanup snapshot |
 | `reviews/` | Cleanup source, archive safety and final document reviews |
 
 Keep the archive private. It includes private/local evidence and may include credentials. Its receipts certify saved bytes and selected restores; they do not certify runtime behavior. Old sockets are omitted. The cache was retained separately after tar could not read it; the tar creation failure remains recorded.
@@ -75,7 +75,7 @@ Every restored packet must bind the source, review verdict, finite cases and new
 
 ## Verification and delivery
 
-The final cleanup full `make verify` passed locally: 1,183 backend tests, 373 worker tests, 296 frontend unit tests, 63 canvas checks, one landing browser check and one real API sign-in check. All reported zero skips. Both builds and CSP checks passed; all 33 Mermaid diagrams rendered. Backend and worker combined line/branch coverage was 85% and 80%; XML line/branch rates were 88.29%/75.05% and 81.91%/73.99%. Frontend type checking had zero errors and six existing warnings. Borrowed dependencies were used with verified source paths; this was not a clean install or GPU test. The focused recovery file passed 18 tests. Source was unchanged during the gate, and the owned test databases, role and isolated fixture container were removed. Final logs and XML reports are in `verification-v2/`; the earlier pass remains in `verification/`. PR CI is a separate check.
+The verification-v2 full `make verify` passed locally: 1,183 backend tests, 373 worker tests, 296 frontend unit tests, 63 canvas checks, one landing browser check and one real API sign-in check. All reported zero skips. Both builds and CSP checks passed; all 33 Mermaid diagrams rendered. Backend and worker combined line/branch coverage was 85% and 80%; XML line/branch rates were 88.29%/75.05% and 81.91%/73.99%. Frontend type checking had zero errors and six existing warnings. Borrowed dependencies were used with verified source paths; this was not a clean install or GPU test. The focused recovery file passed 18 tests. Source was unchanged during the gate, and the owned test databases, role and isolated fixture container were removed. Logs and XML reports are in `.local/cleanup-20261005/verification-v2/`; the earlier pass remains in `verification/`. PR CI is a separate check.
 
 Run a focused suite first, then full `make verify` under `/usr/bin/tmux`. From a worktree force `PYTHONPATH=<worktree>/backend:<worktree>/worker`; borrowed editable installs otherwise test another checkout. Use a new owned PostgreSQL role/database and set both `DATABASE_URL` and `POSTGRES_ADMIN_URL`. CPU inference, Compose, restore, diagrams, GPU and provider checks are separate gates. Do not claim clean installation from borrowed dependencies.
 
