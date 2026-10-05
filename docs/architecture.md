@@ -33,7 +33,7 @@ FastAPI API server. It provides:
 - A WebSocket endpoint for real time generation sessions.
 - Admin endpoints behind an admin role flag: connected worker status, user lookup and disable, job and session debugging. A managed fleet console is part of the cloud target.
 
-Generation queues and realtime socket ownership are process-local. In `accounts` mode, a PostgreSQL advisory lock allows only one API process per installation. Stateless multi-replica serving is a cloud target, not the current runtime.
+Generation queues and realtime socket ownership are process-local. After database initialization succeeds, `accounts` mode takes a PostgreSQL advisory lock that refuses another accounts startup. If the database probe, version check or migration fails, the API starts degraded without that lock; health stays up and readiness returns 503. Stateless multi-replica serving is a cloud target, not the current runtime.
 
 ### worker/
 
@@ -171,7 +171,7 @@ flowchart TB
 
 In this cloud target, `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. Its realtime path avoids PostgreSQL per frame by relaying browser frames to workers through Redis pub/sub.
 
-> Shipped status (2026-10-05): **partially implemented.** Generation jobs use an in-process heap. Realtime admission is also in process; the relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, shared queue, FrameBus, or cross-replica control state. In `accounts` mode, a PostgreSQL advisory lock limits an installation to one API process. Protocol 5 is current and protocol 4 is the compatibility floor. The Redis-backed queue, shared realtime state, and multi-process cloud target are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-10-05): **partially implemented.** Generation jobs use an in-process heap. Realtime admission is also in process; the relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, shared queue, FrameBus, or cross-replica control state. After successful database initialization, `accounts` mode takes the PostgreSQL startup lock; degraded startup after a database probe, version check or migration failure skips it. Protocol 5 is current and protocol 4 is the compatibility floor. The Redis-backed queue, shared realtime state, and multi-process cloud target are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
 
 ## Pluggable seams
 

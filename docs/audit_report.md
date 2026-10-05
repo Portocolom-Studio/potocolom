@@ -20,7 +20,7 @@ The local archive has one entry folder, `.local/cleanup-20261005/`. Its Git bund
 
 | Area | Main behavior | Evidence |
 |---|---|---|
-| API and state | FastAPI; PostgreSQL accounts, jobs, assets and usage; an accounts-mode advisory lock admits one API process per installation | `backend/app/main.py:97`, `backend/app/db.py:216` |
+| API and state | FastAPI; PostgreSQL accounts, jobs, assets and usage; after successful database initialization, an accounts-mode advisory lock refuses another accounts startup | `backend/app/main.py:97`, `backend/app/db.py:216` |
 | Dispatch | In-process job heap; startup rebuilds queued jobs and retries interrupted jobs | `backend/app/jobs.py:75`, `backend/app/jobs.py:2140` |
 | Realtime | Process-local workers, sessions and admission queue; API owns browser/worker sockets and directly awaits fleet sends | `backend/app/realtime.py:42`, `backend/app/realtime.py:741` |
 | Protocol | Worker protocol 5; API compatibility floor 4; browser frame versions are translated by the API | `backend/app/realtime.py:42`, `worker/worker/client.py:36` |
@@ -29,7 +29,7 @@ The local archive has one entry folder, `.local/cleanup-20261005/`. Its Git bund
 | Product | Drawing document, replay files, canvas tools, lineage, account/auth/admin and usage surfaces | `frontend/src/lib/drawing-document.ts`, `frontend/src/lib/components`, `backend/app/accounts.py` |
 | Site | One SvelteKit source; landing/product build gate controls presentation, not authorization | `frontend/src/routes`, `frontend/.env` |
 
-Shared Redis queues, FrameBus, cross-process socket ownership, HTTP quota callers, durable late-usage settlement, a managed fleet, gateway and tickets are targets. Main does not implement those services. Adding Redis configuration alone does not enable scale-out. The accounts startup lock must remain until real shared authority and storage admission are proved.
+Shared Redis queues, FrameBus, cross-process socket ownership, HTTP quota callers, durable late-usage settlement, a managed fleet, gateway and tickets are targets. Main does not implement those services. Adding Redis configuration alone does not enable scale-out. The accounts startup lock must remain until real shared authority and storage admission are proved. A database probe, version check or migration failure starts the API degraded without the lock: health stays up and readiness returns 503. DB-backed account requests and accounts-mode browser sessions are refused; unauthenticated-mode browser and fleet-token handshakes remain possible. Later auth-mode, key-ring or local-user initialization errors fail startup instead.
 
 The core design remains sound: PostgreSQL is durable authority; Redis is advisory and reconstructible; the API owns sockets; the worker reports physical execution completion; private billing and fleet systems use HTTP contracts. Scale tests must prove these rules through actual callers, not adapter tests alone.
 

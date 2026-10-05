@@ -15,9 +15,9 @@ All 109 reviewed old worktrees were removed after archive and restore checks. Th
 
 ## Saved work: one local archive
 
-On this machine the archive is:
+In the primary checkout, the local archive is:
 
-`/home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom/.local/cleanup-20261005/`
+`.local/cleanup-20261005/`
 
 | File | Purpose |
 |---|---|
@@ -30,17 +30,20 @@ On this machine the archive is:
 | `restore-drill.json`, `removal-manifest.json`, `worktree-removal.json` | Selected restore, fresh clean/bundled source checks and completed worktree cleanup |
 | `retained-trivy-cache/fanal/` | The unreadable root-owned cache, retained with the same inode, owner and permissions |
 | `index-history/` | Initial staged and unstaged binary patches |
-| `verification/` | Cleanup local test logs, source origins, coverage and owned SQL resource closure |
+| `verification/`, `verification-v2/` | Initial and final local test logs, source origins, coverage and owned SQL resource closure |
+| `fixture-cleanup/` | Private database/assets backups and owned fixture shutdown receipts |
+| `final-state.json` | Final main/PR/worktree state and cleanup receipts |
 | `reviews/` | Cleanup source, archive safety and final document reviews |
 
 Keep the archive private. It includes private/local evidence and may include credentials. Its receipts certify saved bytes and selected restores; they do not certify runtime behavior. Old sockets are omitted. The cache was retained separately after tar could not read it; the tar creation failure remains recorded.
 
 The old source trees are not a second live checkout fleet. Restore only the candidate needed for the next slice. The checkpoint manifest maps every source tree to its saved branch. The main integration candidate was `foundation-20261003`; its original large specification and review contracts remain saved with it.
 
-To recover source, verify the bundle and clone it into a new empty folder:
+Run these commands from the primary checkout that contains the local archive. Verify the bundle and clone it into a new empty folder:
 
 ```sh
-cd /home/leon/Nextcloud/ETSIIT/ETSHIT/Github/potocolom
+cd "$(git rev-parse --show-toplevel)"
+test -f .local/cleanup-20261005/work-checkpoints.bundle
 git bundle verify .local/cleanup-20261005/work-checkpoints.bundle
 git clone --no-checkout .local/cleanup-20261005/work-checkpoints.bundle /tmp/potocolom-restored
 git -C /tmp/potocolom-restored switch --detach <checkpoint-commit-from-checkpoints.json>
@@ -72,7 +75,7 @@ Every restored packet must bind the source, review verdict, finite cases and new
 
 ## Verification and delivery
 
-The cleanup full `make verify` passed locally: 1,183 backend tests, 373 worker tests, 296 frontend unit tests, 63 canvas checks, one landing browser check and one real API sign-in check. All reported zero skips. Both builds and CSP checks passed; all 33 Mermaid diagrams rendered. Backend and worker combined line/branch coverage was 85% and 80%; XML line/branch rates were 88.31%/75.10% and 81.91%/73.99%. Frontend type checking had zero errors and six existing warnings. Borrowed dependencies were used with verified source paths; this was not a clean install or GPU test. The focused recovery file passed 18 tests. Source was unchanged during the gate, and the owned test databases and role were removed. Logs and XML reports are in `verification/`. PR CI is a separate check.
+The final cleanup full `make verify` passed locally: 1,183 backend tests, 373 worker tests, 296 frontend unit tests, 63 canvas checks, one landing browser check and one real API sign-in check. All reported zero skips. Both builds and CSP checks passed; all 33 Mermaid diagrams rendered. Backend and worker combined line/branch coverage was 85% and 80%; XML line/branch rates were 88.29%/75.05% and 81.91%/73.99%. Frontend type checking had zero errors and six existing warnings. Borrowed dependencies were used with verified source paths; this was not a clean install or GPU test. The focused recovery file passed 18 tests. Source was unchanged during the gate, and the owned test databases, role and isolated fixture container were removed. Final logs and XML reports are in `verification-v2/`; the earlier pass remains in `verification/`. PR CI is a separate check.
 
 Run a focused suite first, then full `make verify` under `/usr/bin/tmux`. From a worktree force `PYTHONPATH=<worktree>/backend:<worktree>/worker`; borrowed editable installs otherwise test another checkout. Use a new owned PostgreSQL role/database and set both `DATABASE_URL` and `POSTGRES_ADMIN_URL`. CPU inference, Compose, restore, diagrams, GPU and provider checks are separate gates. Do not claim clean installation from borrowed dependencies.
 
