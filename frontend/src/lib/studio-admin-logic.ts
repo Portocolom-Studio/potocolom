@@ -54,6 +54,19 @@ export function adminErrorMessage(detail: unknown, fallback: string): string {
 	return fallback;
 }
 
+// Mirrors POST /api/v1/invitations: a trimmed address, so a pasted link's
+// surrounding whitespace does not become part of the invited email.
+export function inviteRequestBody(email: string, role: Role): { email: string; role: Role } {
+	return { email: email.trim(), role };
+}
+
+// The 403 this route answers when inviting an administrator without a recent
+// sign-in. Matched by value, the same way auth-flow.ts reads other details,
+// so the studio can show a hint that is specific to this one cause.
+export function isRecentAuthenticationRequired(detail: unknown): boolean {
+	return detail === 'recent authentication required';
+}
+
 // Called on a 403 from any admin route: an account that was demoted while
 // the view stayed open gets the same re-read the studio does at startup, so
 // its account.current (and the openViewFor fallback that watches it from

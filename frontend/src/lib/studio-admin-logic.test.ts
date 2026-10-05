@@ -6,6 +6,8 @@ import {
 	buildAdminConfirmation,
 	buildAuditQuery,
 	buildUsersQuery,
+	inviteRequestBody,
+	isRecentAuthenticationRequired,
 	needsAdminAttestation
 } from './studio-admin-logic.ts';
 
@@ -68,4 +70,21 @@ test('an unreadable detail falls back to the response status text', () => {
 	assert.equal(adminErrorMessage([], 'fallback'), 'fallback');
 	assert.equal(adminErrorMessage([{}], 'fallback'), 'fallback');
 	assert.equal(adminErrorMessage([{ msg: 42 }], 'fallback'), 'fallback');
+});
+
+test('the invite request body trims the address and keeps the chosen role', () => {
+	assert.deepEqual(inviteRequestBody('  ada@example.com  ', 'admin'), {
+		email: 'ada@example.com',
+		role: 'admin'
+	});
+	assert.deepEqual(inviteRequestBody('ada@example.com', 'viewer'), {
+		email: 'ada@example.com',
+		role: 'viewer'
+	});
+});
+
+test('only the recent-authentication detail triggers the hint', () => {
+	assert.equal(isRecentAuthenticationRequired('recent authentication required'), true);
+	assert.equal(isRecentAuthenticationRequired('that address already has an account'), false);
+	assert.equal(isRecentAuthenticationRequired(undefined), false);
 });

@@ -51,6 +51,7 @@ def _minted(
         "email": email,
         "role": role,
         "token": token,
+        "link": _invitation_link(token),
         "expires_at": expires_at.isoformat(),
     }
 

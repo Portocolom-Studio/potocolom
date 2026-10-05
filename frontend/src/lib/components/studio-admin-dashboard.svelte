@@ -3,6 +3,7 @@
 	import StudioAdminAudit from '$lib/components/studio-admin-audit.svelte';
 	import StudioAdminBanner from '$lib/components/studio-admin-banner.svelte';
 	import StudioAdminFleet from '$lib/components/studio-admin-fleet.svelte';
+	import StudioAdminInvitations from '$lib/components/studio-admin-invitations.svelte';
 	import StudioAdminUsers from '$lib/components/studio-admin-users.svelte';
 	import { studio } from '$lib/studio.svelte';
 
@@ -13,7 +14,9 @@
 				? t('app.admin.audit')
 				: studio.adminTab === 'fleet'
 					? t('app.admin.fleet')
-					: t('app.admin.banner')
+					: studio.adminTab === 'banner'
+						? t('app.admin.banner')
+						: t('app.admin.invitations')
 	);
 	const description = $derived(
 		studio.adminTab === 'users'
@@ -22,7 +25,9 @@
 				? t('app.admin.audit_search_sub')
 				: studio.adminTab === 'fleet'
 					? t('app.admin.fleet_history_sub')
-					: t('app.admin.banner_sub')
+					: studio.adminTab === 'banner'
+						? t('app.admin.banner_sub')
+						: t('app.admin.invitations_sub')
 	);
 </script>
 
@@ -39,8 +44,10 @@
 			<StudioAdminAudit />
 		{:else if studio.adminTab === 'fleet'}
 			<StudioAdminFleet />
-		{:else}
+		{:else if studio.adminTab === 'banner'}
 			<StudioAdminBanner />
+		{:else}
+			<StudioAdminInvitations />
 		{/if}
 	</div>
 </div>

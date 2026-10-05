@@ -52,7 +52,11 @@
 		}
 		if (
 			studio.shellView === 'admin' &&
-			(tab === 'users' || tab === 'audit' || tab === 'fleet' || tab === 'banner')
+			(tab === 'users' ||
+				tab === 'audit' ||
+				tab === 'fleet' ||
+				tab === 'banner' ||
+				tab === 'invitations')
 		) {
 			studio.adminTab = tab;
 		}

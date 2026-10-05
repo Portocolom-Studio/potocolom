@@ -96,6 +96,7 @@ def test_an_invitation_is_email_bound_one_use_and_lasts_seventy_two_hours(accoun
         assert body["email"] == "Guest@Example.com"
         assert body["role"] == "user"
         assert body["token"]
+        assert body["link"].endswith("/join#" + body["token"])
 
         async def stored():
             async with db.session_factory() as session:
