@@ -11,7 +11,7 @@ The four path-filtered product workflows plus deploy, docs and toolchain:
 | backend | Docker (postgres service container), Python 3.11 |
 | worker | Python 3.11 |
 | frontend | Node 24, Chrome or Chromium, Docker (postgres service container), Python 3.11 (backend venv) |
-| simulation | Python 3.11, host postgres database `potocolom_ci` |
+| simulation | Docker (postgres service container), Python 3.11 |
 | deploy | Docker (`verify-compose` + compose-smoke) |
 | docs | mermaid-cli + Chrome (`verify-mermaid`) |
 | toolchain | Python 3.11, Node (`verify-guards` + `make setup`) |
@@ -32,7 +32,7 @@ service container and creates the backend venv the test drives.
 On the machine that will run jobs (this desktop):
 
 ```bash
-# Docker for the backend postgres service container
+# Docker for the backend and simulation postgres service containers
 docker --version
 
 # System interpreters (setup-python/setup-node do not install on self-hosted Debian).
@@ -41,7 +41,7 @@ python3.11 --version
 node --version   # 24.x
 ```
 
-Keep Docker running (`systemctl enable --now docker`). The backend workflow maps postgres to a free host port so two backend jobs do not collide, and so it does not clash with `make deps` on :5432.
+Keep Docker running (`systemctl enable --now docker`). The backend and simulation workflows map each postgres service to a Docker-selected host port. Simulation binds its port to loopback and stores PostgreSQL data in a 512 MiB tmpfs at `/var/lib/postgresql/data`; Actions removes the service container when its job ends.
 
 ### 2. Register and start the runners
 
@@ -60,9 +60,7 @@ Every target installs and controls `CI_RUNNERS` runner instances (default **4**)
 
 Change the count with `make ci-runner-install CI_RUNNERS=6`, and pass the same value to the start, stop, and status targets. The reference desktop has 32 CPUs and 61 GB of RAM, so 4 concurrent jobs are comfortable.
 
-Backend PostgreSQL uses a Docker-selected host port, and each job reads that port into its own `DATABASE_URL`, so backend runs can execute in parallel. Simulation still declares a `concurrency` group because its runs share the host `potocolom_ci` database. Add a `concurrency` group to any new workflow that uses a shared mutable host resource.
-
-Simulation talks to the host PostgreSQL, not the backend job's Docker postgres. It uses the database `potocolom_ci`, created on first run, and never the developer database `potocolom`. A local `make auth-enable` therefore cannot redden `main`. The script refuses to start in CI if `DATABASE_URL` still names `potocolom`.
+Each backend job reads its PostgreSQL service's Docker-selected host port into its own `DATABASE_URL`. Simulation uses its own PostgreSQL service and database, `potocolom_ci`, with a loopback-only port and temporary data mount; Actions removes the service container when the job ends. The workflow keeps its existing concurrency group. The script refuses to start in CI if `DATABASE_URL` names the developer database `potocolom`.
 
 To add instances later, run `make ci-runner-install` again: it skips the directories that are already configured.
 

@@ -28,6 +28,21 @@ jobs:
   simulation:
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: potocolom
+          POSTGRES_PASSWORD: potocolom
+          POSTGRES_DB: potocolom_ci
+        ports:
+          - "127.0.0.1::5432"
+        options: >-
+          --health-cmd "pg_isready -U potocolom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --tmpfs /var/lib/postgresql/data:rw,nosuid,noexec,size=512m
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: python3.11 -m venv .ci-venv
@@ -35,6 +50,6 @@ jobs:
       - run: .ci-venv/bin/python scripts/simulate.py
         timeout-minutes: 3
         env:
-          DATABASE_URL: postgresql://potocolom:potocolom@localhost:5432/potocolom_ci
+          DATABASE_URL: postgresql://potocolom:potocolom@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/potocolom_ci
           FLEET_TOKEN_KEY: test-fleet-token
           FLEET_TOKEN: test-fleet-token

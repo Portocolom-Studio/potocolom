@@ -2808,8 +2808,8 @@ def test_a_frame_on_an_idle_session_replaces_it(monkeypatch):
 
                 canvas = canvas_frame(session_id, b"resume-me", 1)
                 browser_ws.send_bytes(canvas)
-                assert session.input_revision == 1
                 reopened = expect(worker_ws, "open_session")
+                assert session.input_revision == 1
                 assert reopened["session_id"] == opened["session_id"]
                 assert reopened["control_generation"] == 2
                 answer_ready(worker_ws, reopened)
