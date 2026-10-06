@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { canUnlink, deleteConfirmed, linkableProviders, signInAgainHref } from './account-logic.ts';
+import {
+	canUnlink,
+	canUnlinkIdentity,
+	deleteConfirmed,
+	isFollowableRedirect,
+	linkableProviders,
+	signInAgainHref
+} from './account-logic.ts';
 import { studioReturnSearch } from './auth-flow.ts';
 
 test('deleteConfirmed accepts the account email as typed', () => {
@@ -59,4 +66,53 @@ test('canUnlink is true while more than one identity is left', () => {
 	assert.equal(canUnlink(['google']), false);
 	assert.equal(canUnlink(['password', 'google']), true);
 	assert.equal(canUnlink(['google', 'github', 'password']), true);
+});
+
+test('canUnlinkIdentity never offers the password row', () => {
+	// The server accepts no provider outside its unlinkable list, and a
+	// password is not on it, so the control is absent whatever else is linked.
+	assert.equal(canUnlinkIdentity('password', ['password']), false);
+	assert.equal(canUnlinkIdentity('password', ['password', 'github']), false);
+	assert.equal(canUnlinkIdentity('password', ['password', 'google', 'github']), false);
+});
+
+test('canUnlinkIdentity follows canUnlink for the other providers', () => {
+	// One identity left is the last way in, whatever provider it is.
+	assert.equal(canUnlinkIdentity('google', ['google']), false);
+	assert.equal(canUnlinkIdentity('github', ['github']), false);
+	// Two identities: the provider that is not the password may go.
+	assert.equal(canUnlinkIdentity('google', ['password', 'google']), true);
+	assert.equal(canUnlinkIdentity('github', ['password', 'github']), true);
+	assert.equal(canUnlinkIdentity('google', ['google', 'github']), true);
+});
+
+test('isFollowableRedirect follows https addresses anywhere', () => {
+	assert.equal(
+		isFollowableRedirect('https://provider.example/redirect', 'http://localhost:5173'),
+		true
+	);
+	assert.equal(isFollowableRedirect('https://studio.example/app', 'https://studio.example'), true);
+});
+
+test('isFollowableRedirect follows http only on the page origin', () => {
+	assert.equal(isFollowableRedirect('http://localhost:5173/next', 'http://localhost:5173'), true);
+	assert.equal(
+		isFollowableRedirect('http://provider.example/next', 'http://localhost:5173'),
+		false
+	);
+	assert.equal(isFollowableRedirect('http://localhost:5173/next', 'https://studio.example'), false);
+});
+
+test('isFollowableRedirect refuses schemes that are not web addresses', () => {
+	assert.equal(isFollowableRedirect('javascript:alert(1)', 'http://localhost:5173'), false);
+	assert.equal(
+		isFollowableRedirect('data:text/html,<script></script>', 'http://localhost:5173'),
+		false
+	);
+});
+
+test('isFollowableRedirect refuses anything that does not parse as a URL', () => {
+	assert.equal(isFollowableRedirect('', 'http://localhost:5173'), false);
+	assert.equal(isFollowableRedirect('not a url', 'http://localhost:5173'), false);
+	assert.equal(isFollowableRedirect('/relative/path', 'http://localhost:5173'), false);
 });

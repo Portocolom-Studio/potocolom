@@ -740,6 +740,7 @@
 	"app.account.saving": "Saving...",
 	"app.account.password_saved": "Your password was changed, and your other devices were signed out.",
 	"app.account.recent_auth_note": "Changing your password needs a fresh sign-in.",
+	"app.account.recent_auth_needed": "This change needs a fresh sign-in.",
 	"app.account.sign_in_again": "Sign in again",
 	"app.account.your_data": "Your data",
 	"app.account.your_data_sub": "Download everything this account has stored.",

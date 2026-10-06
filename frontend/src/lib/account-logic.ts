@@ -26,6 +26,30 @@ export function canUnlink(identities: string[]): boolean {
 	return identities.length > 1;
 }
 
+// The server's DELETE /api/v1/account/identities/{provider} answers 404 for
+// anything outside its own unlinkable list, and a password is not on it: the
+// password row never offers an Unlink the request would refuse outright.
+export function canUnlinkIdentity(identity: string, identities: string[]): boolean {
+	if (identity === 'password') return false;
+	return canUnlink(identities);
+}
+
+// The server hands back an address to send the browser to, and the browser
+// will follow a redirect whatever it says: only https anywhere and http on
+// this very origin (local development) are followed. Everything else --
+// another script's scheme, another origin over plain http, or a string that
+// is not an address at all -- is answered with the generic failure instead.
+export function isFollowableRedirect(redirect: string, pageOrigin: string): boolean {
+	let parsed: URL;
+	try {
+		parsed = new URL(redirect);
+	} catch {
+		return false;
+	}
+	if (parsed.protocol === 'https:') return true;
+	return parsed.protocol === 'http:' && parsed.origin === pageOrigin;
+}
+
 // Signing in again has to land back on this view, so the login page needs the
 // app address with the view query still attached. The path itself comes from
 // the router, the same way every other /login link in the studio is built.

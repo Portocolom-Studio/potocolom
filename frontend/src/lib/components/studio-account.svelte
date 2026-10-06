@@ -4,8 +4,9 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import {
-		canUnlink,
+		canUnlinkIdentity,
 		deleteConfirmed,
+		isFollowableRedirect,
 		linkableProviders,
 		signInAgainHref
 	} from '$lib/account-logic';
@@ -80,13 +81,20 @@
 	let savingEmail = $state(false);
 	let identityBusy = $state<string | null>(null);
 	let identityError = $state('');
+	// Set when the view unmounts, so a setup answer that lands after that
+	// point is dropped instead of being written into a panel that is gone.
+	let destroyed = false;
 
 	const deleteReady = $derived(detail !== null && deleteConfirmed(deleteTyped, detail.email));
-	// Read once here rather than in each list below: both the unlink control
-	// and the offer to link something else follow from the same two facts.
-	const mayUnlink = $derived(detail !== null && canUnlink(detail.identities));
 	const linkable = $derived(
 		detail === null ? [] : linkableProviders(authMethods, detail.identities)
+	);
+	// Saving the address the account already holds would only reset the
+	// verification the address already has, so the offer goes rather than
+	// sending a no-op the server has to refuse. Trimmed and case-insensitive,
+	// the way the server compares them.
+	const emailUnchanged = $derived(
+		detail !== null && newEmail.trim().toLowerCase() === detail.email.trim().toLowerCase()
 	);
 	// The remove dialog sits outside the section that only renders while the
 	// account is on screen, so the condition the forms gate on is spelled once.
@@ -303,7 +311,11 @@
 				await refuse(response, (message) => (setupError = message));
 				return;
 			}
-			setup = (await response.json()) as PendingSetup;
+			const pending = (await response.json()) as PendingSetup;
+			// The answer can land after this view is gone, and the secret in it
+			// is the only copy: nothing is written into state that late.
+			if (destroyed) return;
+			setup = pending;
 			replacing = mode === 'replace';
 		} catch {
 			setupError = t('app.account.request_failed');
@@ -346,6 +358,12 @@
 				// The setup stays open on purpose: the secret is still on
 				// screen, so the next code needs no new enrolment.
 				await refuse(response, (message) => (setupError = message));
+				// Another tab or device may have confirmed a factor meanwhile,
+				// and the refusal is about what this account holds now: the
+				// re-read says so, and a first enrolment then has to carry the
+				// code proving that factor too.
+				await loadAccount();
+				if (detail !== null && detail.totp && !replacing) replacing = true;
 				return;
 			}
 			// 204 means the factor stands. The secret, the enrolment and the
@@ -399,6 +417,10 @@
 			});
 			if (!response.ok) {
 				await refuse(response, (message) => (removeError = message));
+				// A session too old for the change is answered behind this
+				// dialog, and the note offering a fresh sign-in is on the
+				// section underneath it: the dialog closes to let it show.
+				if (detail !== null && !detail.recent_auth) cancelRemove();
 				return;
 			}
 			cancelRemove();
@@ -412,7 +434,7 @@
 
 	async function saveEmail(event?: SubmitEvent): Promise<void> {
 		event?.preventDefault();
-		if (detail === null || !detail.recent_auth || savingEmail) return;
+		if (detail === null || !detail.recent_auth || savingEmail || emailUnchanged) return;
 		const address = newEmail.trim();
 		if (address === '') return;
 		emailNotice = '';
@@ -475,13 +497,17 @@
 				return;
 			}
 			const body = (await response.json()) as { redirect?: unknown };
-			if (typeof body.redirect !== 'string' || body.redirect === '') {
+			// The redirect is a navigation, so only an address the browser can
+			// be sent to without question is followed: https anywhere, and
+			// http on this very origin while developing locally.
+			const redirect = typeof body.redirect === 'string' ? body.redirect : '';
+			if (!isFollowableRedirect(redirect, location.origin)) {
 				identityError = t('app.account.request_failed');
 				return;
 			}
 			// The provider finishes the act on its own page; this view ends
 			// with the navigation rather than with an error.
-			location.assign(body.redirect);
+			location.assign(redirect);
 		} catch {
 			identityError = t('app.account.request_failed');
 		} finally {
@@ -522,14 +548,15 @@
 	// and its secret is the only copy: dropping it here is what keeps it from
 	// outliving the view that showed it.
 	onDestroy(() => {
+		destroyed = true;
 		cancelSetup();
 	});
 </script>
 
-{#snippet freshSignIn()}
+{#snippet freshSignIn(noteKey: Parameters<typeof t>[0])}
 	{#if detail !== null && !detail.recent_auth}
 		<div class="border-border bg-muted/30 rounded-lg border px-4 py-3 text-sm">
-			<p>{t('app.account.recent_auth_note')}</p>
+			<p>{t(noteKey)}</p>
 			<Button class="mt-2" variant="outline" size="sm" onclick={() => void signInAgain()}>
 				{t('app.account.sign_in_again')}
 			</Button>
@@ -627,7 +654,7 @@
 					{#if passwordNotice}
 						<p role="status" class="text-muted-foreground text-sm">{passwordNotice}</p>
 					{/if}
-					{@render freshSignIn()}
+					{@render freshSignIn('app.account.recent_auth_note')}
 					<form class="grid gap-3 sm:grid-cols-2" onsubmit={savePassword}>
 						<label class="flex flex-col gap-1 text-xs font-medium">
 							{t('app.account.current_password')}
@@ -668,7 +695,7 @@
 					<Card.Description>{t('app.account.totp_sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn()}
+					{@render freshSignIn('app.account.recent_auth_needed')}
 					<p class="text-sm">
 						{detail.totp ? t('app.account.totp_on') : t('app.account.totp_off')}
 					</p>
@@ -732,9 +759,10 @@
 							{#if replacing}
 								<label class="flex flex-col gap-1 text-xs font-medium">
 									{t('app.account.totp_current_code_label')}
+									<!-- A recovery code carries letters, so the keyboard cannot be numeric. -->
 									<Input
 										type="text"
-										inputmode="numeric"
+										inputmode="text"
 										autocomplete="off"
 										disabled={!detail.recent_auth || setupBusy}
 										bind:value={currentCode}
@@ -795,7 +823,7 @@
 					<Card.Description>{t('app.account.email_sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn()}
+					{@render freshSignIn('app.account.recent_auth_needed')}
 					{#if emailNotice}
 						<p role="status" class="text-muted-foreground text-sm">{emailNotice}</p>
 					{/if}
@@ -816,7 +844,10 @@
 						<div class="flex items-end">
 							<Button
 								type="submit"
-								disabled={!detail.recent_auth || savingEmail || newEmail.trim() === ''}
+								disabled={!detail.recent_auth ||
+									savingEmail ||
+									emailUnchanged ||
+									newEmail.trim() === ''}
 							>
 								{savingEmail ? t('app.account.saving') : t('app.account.save_email')}
 							</Button>
@@ -834,7 +865,7 @@
 					<Card.Description>{t('app.account.identities_sub')}</Card.Description>
 				</Card.Header>
 				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn()}
+					{@render freshSignIn('app.account.recent_auth_needed')}
 					{#if identityError}
 						<p role="alert" class="text-destructive text-sm">{identityError}</p>
 					{/if}
@@ -842,7 +873,7 @@
 						{#each detail.identities as identity (identity)}
 							<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
 								<p class="text-sm font-medium">{providerLabel(identity)}</p>
-								{#if mayUnlink}
+								{#if canUnlinkIdentity(identity, detail.identities)}
 									<Button
 										variant="outline"
 										size="sm"
@@ -951,9 +982,10 @@
 			</Dialog.Description>
 			<label class="mt-4 flex flex-col gap-1 text-xs font-medium">
 				{t('app.account.totp_current_code_label')}
+				<!-- A recovery code carries letters, so the keyboard cannot be numeric. -->
 				<Input
 					type="text"
-					inputmode="numeric"
+					inputmode="text"
 					autocomplete="off"
 					disabled={!mayChange || removing}
 					bind:value={removeCode}

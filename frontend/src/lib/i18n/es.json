@@ -740,6 +740,7 @@
 	"app.account.saving": "Guardando...",
 	"app.account.password_saved": "Tu contraseña se ha cambiado y tus otros dispositivos han cerrado sesión.",
 	"app.account.recent_auth_note": "Cambiar tu contraseña necesita un inicio de sesión reciente.",
+	"app.account.recent_auth_needed": "Este cambio necesita que vuelvas a iniciar sesión.",
 	"app.account.sign_in_again": "Iniciar sesión de nuevo",
 	"app.account.your_data": "Tus datos",
 	"app.account.your_data_sub": "Descarga todo lo que guarda esta cuenta.",

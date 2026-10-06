@@ -52,3 +52,17 @@ def test_linked_providers_are_reported_sorted(accounts):
         me = client.get("/api/v1/account").json()
     assert me["identities"] == ["github", "password"]
     assert me["totp"] is False
+
+
+@pytest.mark.db
+def test_a_provider_linked_twice_is_listed_once(accounts):
+    """Two rows for one provider are two identities to the server but one
+    door to the account, and the account view lists doors."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "overviewdupe@example.com")
+        client.portal.call(_link, user.id, "github", "dupe-one")
+        client.portal.call(_link, user.id, "github", "dupe-two")
+        assert _login(client, "overviewdupe@example.com").status_code == 204
+        me = client.get("/api/v1/account").json()
+    assert me["identities"] == ["github", "password"]
+    assert me["totp"] is False
