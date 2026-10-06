@@ -5,6 +5,7 @@ The socket-level protocol 6 flows (hello, registered, grant_request over the
 wire) live in tests/test_fleet_protocol6.py.
 """
 
+import asyncio
 import uuid
 
 import pytest
@@ -314,3 +315,32 @@ def test_touch_worker_records_a_heartbeat_until_the_row_closes():
                                   "lifecycle, closed_at")["lifecycle"] == "ended"
         with pytest.raises(worker_authority.AuthorityUnavailable):
             client.portal.call(worker_authority.touch_worker, worker_id, incarnation, None)
+
+
+def test_lease_maintenance_survives_an_unexpected_database_error(monkeypatch):
+    calls = 0
+    second_call = asyncio.Event()
+
+    async def flaky() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("connection reset")
+        second_call.set()
+
+    monkeypatch.setattr(worker_authority, "acquire_scheduler_lease", flaky)
+    monkeypatch.setattr(worker_authority, "_lease", None)
+    monkeypatch.setattr(worker_authority.db, "session_factory", object())
+
+    async def scenario() -> None:
+        task = asyncio.create_task(worker_authority.maintain_scheduler_lease())
+        try:
+            # One loop interval (3 s) separates the failed call from the retry.
+            await asyncio.wait_for(second_call.wait(), 5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(scenario())
+    assert calls >= 2

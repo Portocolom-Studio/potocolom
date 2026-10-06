@@ -1287,7 +1287,9 @@ async def fleet(ws: WebSocket) -> None:
                 # key ring behind it. With none, a protocol 6 worker is
                 # admitted only to speak the protocol this API has always
                 # spoken, and only if it offered to.
-                if get_settings().auth_mode != "none" or 5 not in hello["compatible_versions"]:
+                compatible = hello["compatible_versions"]
+                if (get_settings().auth_mode != "none" or not isinstance(compatible, list)
+                        or 5 not in compatible):
                     await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
                                         "min_supported_version": 5})
                     await ws.close(code=CLOSE_UNSUPPORTED_VERSION)

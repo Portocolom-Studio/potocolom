@@ -66,7 +66,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("protocol_version IN (5,6)", name="worker_connections_protocol"),
         sa.CheckConstraint("owner_epoch > 0", name="worker_connections_epoch"),
-        sa.CheckConstraint("realtime_slots > 0", name="worker_connections_slots"),
+        sa.CheckConstraint("realtime_slots >= 0", name="worker_connections_slots"),
     )
     op.create_index(
         "worker_connections_one_current",

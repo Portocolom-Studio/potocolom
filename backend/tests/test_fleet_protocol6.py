@@ -353,3 +353,48 @@ def test_a_v6_hello_with_a_ref_parameter_schema_is_refused(monkeypatch):
             assert worker_id not in realtime.workers
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_a_v6_hello_with_zero_realtime_slots_registers(monkeypatch):
+    """Protocol 6 admits zero slots (a jobs-only worker); the row must too."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-zero-{uuid.uuid4()}"
+    try:
+        with protocol6_client(worker_id) as client:
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as ws:
+                message = hello(worker_id, [manifest(f"{worker_id}-model")])
+                message["realtime_slots"] = 0
+                ws.send_json(message)
+                registered = ws.receive_json()
+                assert registered["type"] == "registered"
+                assert registered["protocol_version"] == 6
+                ws.send_json({
+                    "type": "grant_request",
+                    "worker_id": worker_id,
+                    "incarnation": message["incarnation"],
+                    "region": worker_authority.REGION,
+                    "grant_nonce": str(uuid.uuid4()),
+                })
+                assert ws.receive_json()["ready"] is True
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_v6_fallback_with_a_malformed_version_list_is_refused(monkeypatch):
+    monkeypatch.delenv("ROOT_KEYS", raising=False)
+    get_settings.cache_clear()
+    worker_id = f"p6-badlist-{uuid.uuid4()}"
+    try:
+        client = TestClient(app, headers=FLEET_HEADERS)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            message = hello(worker_id, [manifest(f"{worker_id}-model")])
+            message["compatible_versions"] = 5
+            ws.send_json(message)
+            reply = ws.receive_json()
+            assert reply["type"] == "rejected"
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+    finally:
+        get_settings.cache_clear()
