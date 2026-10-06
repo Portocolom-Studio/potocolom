@@ -663,6 +663,42 @@ test('a change during an idle stretch restarts the idle deadline', async () => {
 	}
 });
 
+test('ticks held back by backpressure do not count toward the idle deadline', async () => {
+	const harness = sessionHarness();
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		await Promise.resolve();
+		harness.session.markChanged();
+		socket.bufferedAmount = 1;
+		// Ten fast ticks of a stalled socket: 2500 ms with a change pending.
+		for (let tick = 0; tick < 10; tick += 1) {
+			harness.tick();
+			await Promise.resolve();
+		}
+		socket.bufferedAmount = 0;
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(sentFrames(socket).length, 2, 'the held change goes out once the socket drains');
+		let idleTicks = 0;
+		while (harness.timerCount() > 0) {
+			idleTicks += 1;
+			assert.ok(idleTicks <= 10, `still arming after ${idleTicks} idle ticks`);
+			harness.tick();
+			await Promise.resolve();
+		}
+		assert.equal(idleTicks, IDLE_STOP_MS / FAST_INTERVAL_MS, 'the full pause follows the stall');
+	} finally {
+		harness.session.destroy();
+	}
+});
+
 test('a change after the loop stopped is captured at once, with no warm-up interval', async () => {
 	const harness = sessionHarness({ isCanvasBlank: () => true });
 	try {
@@ -828,18 +864,14 @@ test('a second change before the capture is folded into one frame, and the fold 
 		const socket = harness.sockets[0];
 		ready(socket);
 		harness.session.markChanged();
-		assert.equal(harness.counters.at(-1)?.replaced, 0, 'a first change is not a replacement');
 		harness.session.markChanged();
-		assert.equal(
-			harness.counters.at(-1)?.replaced,
-			1,
-			'a change on top of a waiting one folds into it'
-		);
 
 		harness.tick();
 		await Promise.resolve();
 		assert.equal(sentFrames(socket).length, 1, 'the next capture sends once');
-		assert.equal(harness.counters.at(-1)?.replaced, 1, 'folding does not repeat itself');
+		// Two changes, one frame: the first is the capture's own change and
+		// the second folds into it, and the capture publishes the count.
+		assert.equal(harness.counters.at(-1)?.replaced, 1, 'one fold, counted once');
 	} finally {
 		harness.session.destroy();
 	}

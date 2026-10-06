@@ -541,7 +541,9 @@ export function createRealtimeCanvasSession(
 			})
 		) {
 			const interval = nextIntervalMs(generation.lastFrameCostMs);
-			generation.idleMs += interval;
+			// A tick held back by a pending change (backpressure, an encode in
+			// flight) is not idle, and counting it would cut the next real pause short.
+			if (!generation.changed) generation.idleMs += interval;
 			if (shouldStopPolling(generation.idleMs, generation.changed)) return;
 			armCapture(generation, interval);
 			return;
@@ -802,10 +804,9 @@ export function createRealtimeCanvasSession(
 			// A change on top of one already waiting folds into the capture
 			// after it; the latest canvas wins either way, but the fold is a
 			// frame the loop chose not to send twice.
-			if (current.changed) {
-				replaced += 1;
-				publishCounters();
-			}
+			// Counted without publishing: this runs on every pointer move, and
+			// the next capture publishes the total anyway.
+			if (current.changed) replaced += 1;
 			current.changed = true;
 			current.idleMs = 0;
 			// Nothing is armed and no encode is running, so the loop has
