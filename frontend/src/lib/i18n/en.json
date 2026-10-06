@@ -754,7 +754,7 @@
 	"app.account.deleting": "Deleting...",
 	"app.account.cancel": "Cancel",
 	"app.account.totp": "Two-factor sign-in",
-	"app.account.totp_sub": "A six-digit code from your authenticator, in front of your password.",
+	"app.account.totp_sub": "A six-digit code from your authenticator, asked for in addition to your password.",
 	"app.account.totp_off": "Two-factor sign-in is off for this account.",
 	"app.account.totp_on": "Two-factor sign-in is on for this account.",
 	"app.account.totp_setup": "Set up",

@@ -84,6 +84,8 @@
 	// Set when the view unmounts, so a setup answer that lands after that
 	// point is dropped instead of being written into a panel that is gone.
 	let destroyed = false;
+	// Bumped by every cancel, so a setup answer from before it is dropped.
+	let setupGeneration = 0;
 
 	const deleteReady = $derived(detail !== null && deleteConfirmed(deleteTyped, detail.email));
 	const linkable = $derived(
@@ -299,6 +301,7 @@
 	// there is, and it goes as soon as the enrolment is done with it.
 	async function beginSetup(mode: 'enrol' | 'replace'): Promise<void> {
 		if (detail === null || !detail.recent_auth || setupBusy) return;
+		const generation = setupGeneration;
 		setupBusy = true;
 		setupError = '';
 		codesNotice = '';
@@ -312,9 +315,10 @@
 				return;
 			}
 			const pending = (await response.json()) as PendingSetup;
-			// The answer can land after this view is gone, and the secret in it
+			// The answer can land after this view is gone, or after the setup
+			// was cancelled or the account lost meanwhile, and the secret in it
 			// is the only copy: nothing is written into state that late.
-			if (destroyed) return;
+			if (destroyed || generation !== setupGeneration) return;
 			setup = pending;
 			replacing = mode === 'replace';
 		} catch {
@@ -325,6 +329,7 @@
 	}
 
 	function cancelSetup(): void {
+		setupGeneration += 1;
 		setup = null;
 		replacing = false;
 		setupCode = '';

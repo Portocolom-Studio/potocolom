@@ -754,7 +754,7 @@
 	"app.account.deleting": "Eliminando...",
 	"app.account.cancel": "Cancelar",
 	"app.account.totp": "Verificación en dos pasos",
-	"app.account.totp_sub": "Un código de seis dígitos de tu autenticador, delante de tu contraseña.",
+	"app.account.totp_sub": "Un código de seis dígitos de tu autenticador, que se pide además de tu contraseña.",
 	"app.account.totp_off": "La verificación en dos pasos está desactivada en esta cuenta.",
 	"app.account.totp_on": "La verificación en dos pasos está activada en esta cuenta.",
 	"app.account.totp_setup": "Configurar",
