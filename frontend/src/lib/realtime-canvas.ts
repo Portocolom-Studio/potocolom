@@ -23,8 +23,11 @@ const REVISION_OFFSET = 17;
 export const FAST_INTERVAL_MS = 250;
 export const SLOW_INTERVAL_MS = 500;
 
-/** Ticks with nothing to send before the capture loop stops arming itself. */
-export const IDLE_TICKS_BEFORE_STOP = 8;
+/** Idle time with nothing to send before the capture loop stops arming itself.
+ * A tick count would make the deadline depend on the interval it is armed
+ * with: the same eight ticks are 2 s at the fast end of the band and 4 s at
+ * the slow one. */
+export const IDLE_STOP_MS = 1500;
 
 const UUID_HEX = /^[0-9a-f]{32}$/i;
 
@@ -117,6 +120,19 @@ export function shouldSendFrame(state: {
 	buffered: number;
 }): boolean {
 	return state.changed && !state.encoding && state.buffered === 0;
+}
+
+/**
+ * Whether the capture loop has been idle long enough to stop arming itself.
+ *
+ * `idleMs` is the sum of the intervals already armed, never a reading of a
+ * clock: the injected setTimeout is the only time source the loop has, so the
+ * deadline moves in tests exactly as it moves in a browser. A pending change
+ * holds the loop open past the deadline, because a loop that stopped on a
+ * change would strand the drawing until the next one arrived.
+ */
+export function shouldStopPolling(idleMs: number, changed: boolean): boolean {
+	return idleMs >= IDLE_STOP_MS && !changed;
 }
 
 /**
@@ -301,7 +317,8 @@ interface SessionGeneration {
 	/** The revision of the newest frame actually drawn to the output. */
 	shownRevision: number;
 	timer: ReturnType<typeof setTimeout> | null;
-	idleTicks: number;
+	/** Idle milliseconds already waited, summed from the armed intervals. */
+	idleMs: number;
 	lastFrameCostMs: number;
 	userClosing: boolean;
 }
@@ -337,6 +354,25 @@ export function isTerminalNotice(notice: RealtimeCanvasNotice): boolean {
 	return notice === 'session_revoked' || notice === 'refused_forbidden';
 }
 
+/**
+ * How far frames have travelled through one session, stage by stage.
+ *
+ * There is no `accepted` counter: the server says nothing when a frame lands,
+ * so the last thing this client can observe is the frame leaving the socket.
+ * `attempted` is a tick that started an encode, `replaced` a change folded
+ * into the capture after it, `encoded` an encode that resolved, `sent` a frame
+ * on the wire, `generated` a frame that arrived back for this session, and
+ * `presented` one actually drawn.
+ */
+export type FrameCounters = {
+	attempted: number;
+	replaced: number;
+	encoded: number;
+	sent: number;
+	generated: number;
+	presented: number;
+};
+
 export interface RealtimeCanvasSessionOptions {
 	getDrawCanvas: () => HTMLCanvasElement | undefined;
 	getOutputCanvas: () => HTMLCanvasElement | undefined;
@@ -344,7 +380,7 @@ export interface RealtimeCanvasSessionOptions {
 	onState: (state: ConnectionState) => void;
 	onQueuePosition: (position: number) => void;
 	onNotice: (notice: RealtimeCanvasNotice) => void;
-	onCounters: (sent: number, rendered: number) => void;
+	onCounters: (counters: FrameCounters) => void;
 	onAppliedParams: (
 		params: Partial<{ prompt: string; structure_strength: number; steps: number }>
 	) => void;
@@ -414,13 +450,23 @@ export function createRealtimeCanvasSession(
 	const schedule = options.setTimeout ?? globalThis.setTimeout;
 	const cancel = options.clearTimeout ?? globalThis.clearTimeout;
 	let current: SessionGeneration | null = null;
+	let attempted = 0;
+	let replaced = 0;
+	let encoded = 0;
 	let sent = 0;
-	let rendered = 0;
+	let generated = 0;
+	let presented = 0;
 	let destroyed = false;
 	let notice: RealtimeCanvasNotice = '';
 
 	function isCurrent(generation: SessionGeneration): boolean {
 		return !destroyed && current === generation;
+	}
+
+	/** Hand the caller a fresh snapshot, so a panel holding the last one can
+	 * see which stage moved without comparing against a mutated object. */
+	function publishCounters(): void {
+		options.onCounters({ attempted, replaced, encoded, sent, generated, presented });
 	}
 
 	function setNotice(value: RealtimeCanvasNotice): void {
@@ -494,9 +540,10 @@ export function createRealtimeCanvasSession(
 				buffered: generation.socket.bufferedAmount
 			})
 		) {
-			generation.idleTicks += 1;
-			if (generation.idleTicks >= IDLE_TICKS_BEFORE_STOP && !generation.changed) return;
-			armCapture(generation, nextIntervalMs(generation.lastFrameCostMs));
+			const interval = nextIntervalMs(generation.lastFrameCostMs);
+			generation.idleMs += interval;
+			if (shouldStopPolling(generation.idleMs, generation.changed)) return;
+			armCapture(generation, interval);
 			return;
 		}
 
@@ -504,8 +551,16 @@ export function createRealtimeCanvasSession(
 		const started = performance.now();
 		generation.changed = false;
 		generation.encoding = true;
+		attempted += 1;
+		publishCounters();
 		try {
 			const image = await encode(canvas);
+			// A reconnect resets the counters, and an encode it outlived must
+			// not count toward the new session.
+			if (canContinue(generation)) {
+				encoded += 1;
+				publishCounters();
+			}
 			if (canContinue(generation) && generation.socket.readyState === OPEN) {
 				if (sending(generation)) {
 					if (frameFitsLimits(image.length, generation.limits)) {
@@ -515,7 +570,7 @@ export function createRealtimeCanvasSession(
 						generation.socket.send(canvasFrame(forSession, generation.inputRevision, image));
 						if (notice === 'frame_too_large') setNotice('');
 						sent += 1;
-						options.onCounters(sent, rendered);
+						publishCounters();
 					} else {
 						// The drawing did not change, so re-encoding it would
 						// hit the same cap; the notice stands until a frame
@@ -558,8 +613,8 @@ export function createRealtimeCanvasSession(
 								draw(bitmap, canvas);
 								// Only a drawn frame moves what is on screen.
 								generation.shownRevision = frame.revision;
-								rendered += 1;
-								options.onCounters(sent, rendered);
+								presented += 1;
+								publishCounters();
 							}
 						}
 					} finally {
@@ -622,7 +677,7 @@ export function createRealtimeCanvasSession(
 		if (control.type === 'resumed') {
 			setState(generation, 'active');
 			generation.changed = true;
-			generation.idleTicks = 0;
+			generation.idleMs = 0;
 			armCapture(generation, FAST_INTERVAL_MS);
 			return;
 		}
@@ -640,7 +695,7 @@ export function createRealtimeCanvasSession(
 			if (typeof params.steps === 'number') applied.steps = params.steps;
 			options.onAppliedParams(applied);
 			generation.changed = true;
-			generation.idleTicks = 0;
+			generation.idleMs = 0;
 			if (sending(generation)) armCapture(generation, FAST_INTERVAL_MS);
 			return;
 		}
@@ -673,6 +728,8 @@ export function createRealtimeCanvasSession(
 			if (!generation.sessionId || !(event.data instanceof ArrayBuffer)) return;
 			const frame = parseGeneratedFrame(new Uint8Array(event.data), generation.sessionId);
 			if (frame === null || frame.image.length === 0) return;
+			generated += 1;
+			publishCounters();
 			// Dropped on arrival, so an old frame neither costs a decode nor
 			// occupies the slot a newer frame should take.
 			if (isStaleOutput(frame.revision, generation.shownRevision)) return;
@@ -715,14 +772,18 @@ export function createRealtimeCanvasSession(
 				inputRevision: 0,
 				shownRevision: 0,
 				timer: null,
-				idleTicks: 0,
+				idleMs: 0,
 				lastFrameCostMs: 0,
 				userClosing: false
 			};
 			current = generation;
+			attempted = 0;
+			replaced = 0;
+			encoded = 0;
 			sent = 0;
-			rendered = 0;
-			options.onCounters(sent, rendered);
+			generated = 0;
+			presented = 0;
+			publishCounters();
 			setNotice('');
 			options.onState('connecting');
 			attach(generation);
@@ -738,10 +799,20 @@ export function createRealtimeCanvasSession(
 		},
 		markChanged() {
 			if (!current) return;
+			// A change on top of one already waiting folds into the capture
+			// after it; the latest canvas wins either way, but the fold is a
+			// frame the loop chose not to send twice.
+			if (current.changed) {
+				replaced += 1;
+				publishCounters();
+			}
 			current.changed = true;
-			current.idleTicks = 0;
+			current.idleMs = 0;
+			// Nothing is armed and no encode is running, so the loop has
+			// stopped: waiting out an interval first would show the person a
+			// stroke that lags behind them, and there is no backlog to clear.
 			if (sending(current) && current.timer === null && !current.encoding) {
-				armCapture(current, FAST_INTERVAL_MS);
+				armCapture(current, 0);
 			}
 		},
 		destroy() {
