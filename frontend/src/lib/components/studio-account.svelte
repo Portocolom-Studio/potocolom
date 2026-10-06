@@ -8,6 +8,7 @@
 		deleteConfirmed,
 		isFollowableRedirect,
 		linkableProviders,
+		refusalKey,
 		signInAgainHref
 	} from '$lib/account-logic';
 	import { account } from '$lib/account.svelte';
@@ -114,16 +115,28 @@
 	// stop, false when the response is an error worth showing.
 	async function handleUnauthorized(response: Response): Promise<boolean> {
 		if (response.status !== 401) return false;
+		// The view is gone by then, and so is the reason to leave it: an
+		// answer that lands after unmount must not drag whoever is now in
+		// front of the screen off to the sign-in page.
+		if (destroyed) return true;
 		account.current = null;
 		await goto(resolve('/login'));
 		return true;
+	}
+
+	// A refusal this build has a translation for is shown in the reader's
+	// language; anything else keeps the server's own text.
+	function explain(body: { detail?: unknown } | null): string {
+		const key = refusalKey(body?.detail);
+		if (key !== null) return t(key);
+		return adminErrorMessage(body?.detail, t('app.account.request_failed'));
 	}
 
 	// The server's own detail explains a refusal (a wrong current password, a
 	// weak one); the fallback covers an answer with no body.
 	async function messageFor(response: Response): Promise<string> {
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return adminErrorMessage(body?.detail, t('app.account.request_failed'));
+		return explain(body);
 	}
 
 	// Every refusal is answered in the same order: a session that is over
@@ -139,7 +152,7 @@
 				if (detail !== null) detail.recent_auth = false;
 				return;
 			}
-			report(adminErrorMessage(body?.detail, t('app.account.request_failed')));
+			report(explain(body));
 			return;
 		}
 		report(await messageFor(response));
@@ -152,20 +165,25 @@
 		cancelSetup();
 	}
 
+	// A reload that fails keeps what is already on screen: the sections were
+	// fine a moment ago and a failed read says nothing about them, so the
+	// error goes beside them rather than in their place. Only the first load
+	// has nothing to keep, and that one falls back to the error alone.
 	async function loadAccount(): Promise<void> {
+		const keeping = detail !== null;
 		loadError = '';
 		try {
 			const response = await apiFetch('/api/v1/account');
 			if (!response.ok) {
 				if (await handleUnauthorized(response)) return;
 				loadError = await messageFor(response);
-				loseAccount();
+				if (!keeping) loseAccount();
 				return;
 			}
 			detail = (await response.json()) as AccountDetail;
 		} catch {
 			loadError = t('app.account.request_failed');
-			loseAccount();
+			if (!keeping) loseAccount();
 		} finally {
 			loading = false;
 		}
@@ -364,11 +382,16 @@
 				// screen, so the next code needs no new enrolment.
 				await refuse(response, (message) => (setupError = message));
 				// Another tab or device may have confirmed a factor meanwhile,
-				// and the refusal is about what this account holds now: the
-				// re-read says so, and a first enrolment then has to carry the
-				// code proving that factor too.
+				// or removed the one this replace was aimed at, and the refusal
+				// is about what this account holds now: the re-read says so, so
+				// a first enrolment then has to carry the code proving that
+				// factor too, and a replace whose factor is gone is a first
+				// enrolment again.
 				await loadAccount();
-				if (detail !== null && detail.totp && !replacing) replacing = true;
+				if (detail !== null) {
+					if (detail.totp && !replacing) replacing = true;
+					if (!detail.totp && replacing) replacing = false;
+				}
 				return;
 			}
 			// 204 means the factor stands. The secret, the enrolment and the
@@ -578,9 +601,10 @@
 
 		{#if loading}
 			<p class="text-muted-foreground text-sm">{t('app.account.loading')}</p>
-		{:else if loadError}
-			<p role="alert" class="text-destructive text-sm">{loadError}</p>
 		{:else if detail}
+			{#if loadError}
+				<p role="alert" class="text-destructive text-sm">{loadError}</p>
+			{/if}
 			<Card.Root class="p-0 [--card-spacing:0]">
 				<Card.Header class="border-border border-b px-4 py-3">
 					<Card.Title class="text-base">{t('app.account.profile')}</Card.Title>
@@ -636,9 +660,9 @@
 										variant="outline"
 										size="sm"
 										disabled={endingSession !== null}
-										aria-label={t('app.account.sign_out_session').replace('{date}', () =>
-											displayDate(session.created_at)
-										)}
+										aria-label={t('app.account.sign_out_session')
+											.replace('{date}', () => displayDate(session.created_at))
+											.replace('{seen}', () => displayDate(session.last_seen_at))}
 										onclick={() => void endSession(session)}
 									>
 										{t('app.account.sign_out')}
@@ -940,6 +964,8 @@
 					</Button>
 				</Card.Content>
 			</Card.Root>
+		{:else if loadError}
+			<p role="alert" class="text-destructive text-sm">{loadError}</p>
 		{/if}
 	</div>
 </div>

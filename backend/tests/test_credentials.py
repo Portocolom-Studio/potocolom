@@ -151,6 +151,32 @@ def test_changing_the_primary_address_drops_the_assurance_with_it(accounts):
 
 
 @pytest.mark.db
+def test_saving_the_address_the_account_already_holds_changes_nothing(accounts):
+    """The same address in different capitals is not a change. Writing it
+    anyway would drop the verification that address already has, and rotate
+    the session over nothing."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "SameEmail@example.com")
+        assert _login(client, "SameEmail@example.com").status_code == 204
+
+        async def assure():
+            async with db.session_factory() as session:
+                await session.execute(text("UPDATE users SET mail_verified = true "
+                                           "WHERE id = :id"), {"id": user.id})
+                await session.commit()
+
+        client.portal.call(assure)
+        held = _session_cookie(client)
+        assert _change_email(client, "sameemail@EXAMPLE.com").status_code == 204
+        me = client.get("/api/v1/account").json()
+        after = _session_cookie(client)
+    assert me["email"] == "SameEmail@example.com"
+    assert me["mail_verified"] is True
+    # Nothing was written, so nothing was rotated either.
+    assert after == held
+
+
+@pytest.mark.db
 def test_the_password_identity_follows_the_address(accounts):
     """Login matches on the identity subject, so leaving it behind would sign
     somebody in under an address they no longer hold."""
