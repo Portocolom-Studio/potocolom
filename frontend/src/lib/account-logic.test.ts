@@ -19,6 +19,9 @@ test('deleteConfirmed refuses anything that is not the account email', () => {
 
 test('signInAgainHref carries the account view back through the login next parameter', () => {
 	const href = signInAgainHref();
+	// The path half comes from resolve('/login'), which the test loader stubs
+	// as the identity, so the built link is the literal login path plus the
+	// encoded address of this view.
 	assert.equal(href, '/login?next=' + encodeURIComponent('/app?view=account'));
 	const next = new URL(href, 'https://studio.test').searchParams.get('next');
 	assert.equal(next, '/app?view=account');

@@ -4,8 +4,9 @@
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import { deleteConfirmed, signInAgainHref } from '$lib/account-logic';
+	import { account } from '$lib/account.svelte';
 	import { accountRoleLabelKey, type Role } from '$lib/account-display';
-	import { adminErrorMessage } from '$lib/studio-admin-logic';
+	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -16,7 +17,7 @@
 		id: string;
 		current: boolean;
 		created_at: string;
-		last_seen_at: string;
+		last_seen_at: string | null;
 	};
 	type AccountDetail = {
 		id: string;
@@ -48,9 +49,21 @@
 
 	const deleteReady = $derived(detail !== null && deleteConfirmed(deleteTyped, detail.email));
 
-	function displayDate(value: string): string {
+	function displayDate(value: string | null): string {
+		if (value === null) return '-';
 		const parsed = Date.parse(value);
 		return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+	}
+
+	// A 401 is not a refusal to report: the session is over, so the store
+	// drops the account and this view leaves for the sign-in page instead of
+	// writing an inline error nobody can answer. True when the caller must
+	// stop, false when the response is an error worth showing.
+	async function handleUnauthorized(response: Response): Promise<boolean> {
+		if (response.status !== 401) return false;
+		account.current = null;
+		await goto(resolve('/login'));
+		return true;
 	}
 
 	// The server's own detail explains a refusal (a wrong current password, a
@@ -65,6 +78,7 @@
 		try {
 			const response = await apiFetch('/api/v1/account');
 			if (!response.ok) {
+				if (await handleUnauthorized(response)) return;
 				loadError = await messageFor(response);
 				detail = null;
 				return;
@@ -88,6 +102,7 @@
 				{ method: 'DELETE' }
 			);
 			if (!response.ok) {
+				if (await handleUnauthorized(response)) return;
 				sessionError = await messageFor(response);
 				return;
 			}
@@ -117,9 +132,21 @@
 				body: JSON.stringify({ password: newPassword, current_password: currentPassword })
 			});
 			if (!response.ok) {
-				passwordError = await messageFor(response);
+				if (await handleUnauthorized(response)) return;
+				const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+				if (response.status === 403 && isRecentAuthenticationRequired(body?.detail)) {
+					// The server wants a fresh sign-in, so the offer below takes over:
+					// flip the flag that shows it and disables the form, and keep the
+					// raw detail string out of the alert.
+					detail.recent_auth = false;
+					return;
+				}
+				passwordError = adminErrorMessage(body?.detail, t('app.account.request_failed'));
 				return;
 			}
+			// The change signs every other session out, so the list above has to
+			// be read again before the notice claims it.
+			await loadAccount();
 			passwordNotice = t('app.account.password_saved');
 			currentPassword = '';
 			newPassword = '';
@@ -147,6 +174,7 @@
 		try {
 			const response = await apiFetch('/api/v1/account/export');
 			if (!response.ok) {
+				if (await handleUnauthorized(response)) return;
 				exportError = await messageFor(response);
 				return;
 			}
@@ -154,7 +182,7 @@
 			const url = URL.createObjectURL(blob);
 			const anchor = document.createElement('a');
 			anchor.href = url;
-			anchor.download = 'potocolom-account.json';
+			anchor.download = 'potocolom-export.json';
 			document.body.appendChild(anchor);
 			anchor.click();
 			anchor.remove();
@@ -186,6 +214,7 @@
 		try {
 			const response = await apiFetch('/api/v1/account', { method: 'DELETE' });
 			if (!response.ok) {
+				if (await handleUnauthorized(response)) return;
 				deleteError = await messageFor(response);
 				return;
 			}
@@ -269,6 +298,9 @@
 										variant="outline"
 										size="sm"
 										disabled={endingSession !== null}
+										aria-label={t('app.account.sign_out_session').replace('{date}', () =>
+											displayDate(session.created_at)
+										)}
 										onclick={() => void endSession(session)}
 									>
 										{t('app.account.sign_out')}
@@ -317,7 +349,10 @@
 							/>
 						</label>
 						<div class="flex items-end sm:col-span-2">
-							<Button type="submit" disabled={!detail.recent_auth || savingPassword}>
+							<Button
+								type="submit"
+								disabled={!detail.recent_auth || savingPassword || newPassword === ''}
+							>
 								{savingPassword ? t('app.account.saving') : t('app.account.save_password')}
 							</Button>
 						</div>
@@ -384,7 +419,7 @@
 					{t('app.account.cancel')}
 				</Button>
 				<Button variant="destructive" disabled={deleting || !deleteReady} onclick={deleteAccount}>
-					{deleting ? t('app.account.saving') : t('app.account.delete_confirm')}
+					{deleting ? t('app.account.deleting') : t('app.account.delete_confirm')}
 				</Button>
 			</div>
 		</Dialog.Content>
