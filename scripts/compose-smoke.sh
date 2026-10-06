@@ -142,12 +142,18 @@ fi
 
 # Health answers before the simulated worker registers, and a job for a model
 # no worker offers yet is a 404, so wait until sd-sim is listed.
+model_listed=0
 for _ in $(seq 1 60); do
   if curl -sf "${base}/api/v1/models" | grep -q '"id":"sd-sim"'; then
+    model_listed=1
     break
   fi
   sleep 1
 done
+if [[ "$model_listed" != 1 ]]; then
+  echo "the simulated worker never offered sd-sim" >&2
+  exit 1
+fi
 
 job_id=$(curl -sf -X POST "${base}/api/v1/generations" \
   -H 'Content-Type: application/json' \
