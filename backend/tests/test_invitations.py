@@ -323,6 +323,60 @@ def test_an_administrator_invitation_records_who_it_was_for(accounts):
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("role,severity", [("user", "info"), ("admin", "high")])
+def test_revealing_records_the_invitation_it_re_minted(accounts, role, severity):
+    """The route row can only name the path. Which invitation lost its link,
+    and whether an administrator's did, is this row's to carry."""
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        created = client.post("/api/v1/invitations", headers=headers,
+                              json={"email": f"Revealed-{role}@example.com",
+                                    "role": role})
+        assert created.status_code == 201
+        body = created.json()
+        assert client.post(f"/api/v1/invitations/{body['id']}/reveal",
+                           headers=headers).status_code == 200
+        rows = client.portal.call(_audit)
+    revealed = [row for row in rows if row["action"] == "invitation.revealed"]
+    assert len(revealed) == 1
+    assert revealed[0]["object_ids"] == [body["id"], body["email"], role]
+    assert revealed[0]["severity"] == severity
+
+
+@pytest.mark.db
+def test_revoking_records_the_invitation_it_revoked(accounts):
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        created = client.post("/api/v1/invitations", headers=headers,
+                              json={"email": "Revoked@example.com", "role": "user"})
+        assert created.status_code == 201
+        body = created.json()
+        assert client.delete(f"/api/v1/invitations/{body['id']}",
+                             headers=headers).status_code == 204
+        rows = client.portal.call(_audit)
+    revoked = [row for row in rows if row["action"] == "invitation.revoked"]
+    assert len(revoked) == 1
+    assert revoked[0]["object_ids"] == [body["id"], body["email"], "user"]
+
+
+@pytest.mark.db
+def test_a_missing_invitation_writes_no_reveal_or_revoke_row(accounts):
+    """A row naming an invitation that does not exist would send whoever reads
+    the audit chasing an id that was never there."""
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        missing = str(uuid.uuid4())
+        assert client.post(f"/api/v1/invitations/{missing}/reveal",
+                           headers=headers).status_code == 404
+        assert client.delete(f"/api/v1/invitations/{missing}",
+                             headers=headers).status_code == 404
+        rows = client.portal.call(_audit)
+    named = [row["action"] for row in rows
+             if row["action"] in ("invitation.revealed", "invitation.revoked")]
+    assert named == []
+
+
+@pytest.mark.db
 def test_an_invitation_queues_its_mail_in_the_same_transaction(accounts, monkeypatch):
     """The capability and the mail carrying it are one write. An invitation
     that exists but was never queued, or a queued mail for an invitation that

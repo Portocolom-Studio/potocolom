@@ -140,27 +140,34 @@ async def open_invitations() -> list[dict]:
     ]
 
 
-@router.delete("/api/v1/invitations/{invitation_id}", status_code=204,
-               dependencies=[Depends(require_role("admin"))])
-async def revoke(invitation_id: uuid.UUID) -> Response:
+@router.delete("/api/v1/invitations/{invitation_id}", status_code=204)
+async def revoke(
+    invitation_id: uuid.UUID,
+    admin: User = Depends(require_role("admin")),
+) -> Response:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
-            revoked = (await session.execute(
+            row = (await session.execute(
                 update(Invitation)
                 .where(Invitation.id == invitation_id, Invitation.accepted_at.is_(None))
                 .values(revoked_at=func.now())
-                .returning(Invitation.id)
+                .returning(Invitation.id, Invitation.email, Invitation.role)
             )).first()
-    if revoked is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    # The role check's row names only the route; this one names the invitation.
+    await audit.record("invitation.revoked", actor=admin,
+                       object_ids=[str(invitation_id), row.email, row.role])
     return Response(status_code=204)
 
 
-@router.post("/api/v1/invitations/{invitation_id}/reveal",
-             dependencies=[Depends(require_role("admin"))])
-async def reveal(invitation_id: uuid.UUID) -> dict:
+@router.post("/api/v1/invitations/{invitation_id}/reveal")
+async def reveal(
+    invitation_id: uuid.UUID,
+    admin: User = Depends(require_role("admin")),
+) -> dict:
     """Re-mints rather than shows: a link nobody can see may have leaked on the
     way, so the copy it replaces has to stop working."""
     if db.session_factory is None:
@@ -180,6 +187,9 @@ async def reveal(invitation_id: uuid.UUID) -> dict:
             )).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    await audit.record("invitation.revealed", actor=admin,
+                       object_ids=[str(invitation_id), row.email, row.role],
+                       severity="high" if row.role == "admin" else "info")
     return _minted(invitation_id, row.email, row.role, token, row.expires_at)
 
 

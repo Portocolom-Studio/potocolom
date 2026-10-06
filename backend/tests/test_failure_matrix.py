@@ -105,11 +105,18 @@ def test_two_administrators_revoking_one_invitation_at_once_agree(invited):
                     .where(Invitation.email == "revoked@example.com"))).scalar_one()
 
         which = client.portal.call(invitation_id)
+
+        async def admin() -> User:
+            async with db.session_factory() as session:
+                return (await session.execute(
+                    select(User).where(User.email == "admin17@example.com"))).scalar_one()
+
+        actor = client.portal.call(admin)
         async def both():
             # Dispatched together: awaiting the first would only prove that
             # revoking twice in a row is safe, which nobody doubted.
             return await asyncio.gather(
-                invitations.revoke(which), invitations.revoke(which),
+                invitations.revoke(which, actor), invitations.revoke(which, actor),
                 return_exceptions=True,
             )
 
