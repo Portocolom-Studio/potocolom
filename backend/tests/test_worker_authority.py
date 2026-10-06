@@ -344,3 +344,25 @@ def test_lease_maintenance_survives_an_unexpected_database_error(monkeypatch):
 
     asyncio.run(scenario())
     assert calls >= 2
+
+
+def test_lease_maintenance_stops_when_cancelled_as_a_call_completes(monkeypatch):
+    """Shutdown cancels the loop. If the cancel lands just as a renewal
+    returns, the loop must still stop, or lifespan shutdown waits forever."""
+    loop_task: asyncio.Task | None = None
+
+    async def completes_while_cancelled() -> None:
+        assert loop_task is not None
+        loop_task.cancel()
+
+    monkeypatch.setattr(worker_authority, "acquire_scheduler_lease", completes_while_cancelled)
+    monkeypatch.setattr(worker_authority, "_lease", None)
+    monkeypatch.setattr(worker_authority.db, "session_factory", object())
+
+    async def scenario() -> None:
+        nonlocal loop_task
+        loop_task = asyncio.create_task(worker_authority.maintain_scheduler_lease())
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(loop_task), 5)
+
+    asyncio.run(scenario())

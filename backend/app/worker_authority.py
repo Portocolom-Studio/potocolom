@@ -165,11 +165,15 @@ async def maintain_scheduler_lease() -> None:
         # three attempts inside one LEASE_SECONDS window after a success. A
         # lease held by another owner is the normal standby state, so it
         # waits the full interval.
+        # asyncio.timeout, not wait_for: on Python 3.11 wait_for returns the
+        # result when a cancel lands as the call completes, which swallows
+        # shutdown's cancel and leaves this loop running forever.
         try:
-            await asyncio.wait_for(
-                acquire_scheduler_lease() if _lease is None else renew_scheduler_lease(),
-                2,
-            )
+            async with asyncio.timeout(2):
+                if _lease is None:
+                    await acquire_scheduler_lease()
+                else:
+                    await renew_scheduler_lease()
         except AuthorityUnavailable as error:
             logger.warning("regional scheduler authority unavailable: %s", error)
         except Exception as error:
