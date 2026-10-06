@@ -11,7 +11,7 @@ import {
 	FAST_INTERVAL_MS,
 	FRAME_HEADER_BYTES,
 	GENERATED_FRAME,
-	IDLE_TICKS_BEFORE_STOP,
+	IDLE_STOP_MS,
 	SLOW_INTERVAL_MS,
 	canvasFrame,
 	frameFitsLimits,
@@ -22,12 +22,14 @@ import {
 	parseGeneratedFrame,
 	readyLimits,
 	shouldSendFrame,
+	shouldStopPolling,
 	stateForCloseCode,
 	updateParamsMessage,
 	uuidBytes,
 	createRealtimeCanvasSession,
 	isTerminalNotice,
 	type ConnectionState,
+	type FrameCounters,
 	type RealtimeCanvasLimits,
 	type RealtimeCanvasMask,
 	type RealtimeCanvasNotice,
@@ -146,6 +148,16 @@ test('a frame is sent only when there is a change, no encode, and an empty socke
 	assert.ok(!shouldSendFrame({ changed: true, encoding: true, buffered: 0 }));
 	// Anything still queued on the socket: the backlog would only grow.
 	assert.ok(!shouldSendFrame({ changed: true, encoding: false, buffered: 1 }));
+});
+
+test('the idle deadline is reached at 1500 ms, and a pending change holds the loop open', () => {
+	assert.equal(shouldStopPolling(0, false), false);
+	assert.equal(shouldStopPolling(IDLE_STOP_MS - 1, false), false);
+	assert.equal(shouldStopPolling(IDLE_STOP_MS, false), true);
+	assert.equal(shouldStopPolling(IDLE_STOP_MS + 1, false), true);
+	// A change waiting for the next capture must not be stranded by a stop.
+	assert.equal(shouldStopPolling(IDLE_STOP_MS, true), false);
+	assert.equal(shouldStopPolling(IDLE_STOP_MS * 4, true), false);
 });
 
 test('the cadence stays inside the two to four fps band', () => {
@@ -373,7 +385,7 @@ function sessionHarness(
 	queuePositions: number[];
 	notices: string[];
 	applied: Array<Record<string, unknown>>;
-	counters: Array<[number, number]>;
+	counters: FrameCounters[];
 	draws: number[];
 	timerDelays: number[];
 	tick(): void;
@@ -396,7 +408,7 @@ function sessionHarness(
 	const queuePositions: number[] = [];
 	const notices: string[] = [];
 	const applied: Array<Record<string, unknown>> = [];
-	const counters: Array<[number, number]> = [];
+	const counters: FrameCounters[] = [];
 	const draws: number[] = [];
 	const session = createRealtimeCanvasSession({
 		getDrawCanvas: () => ({}) as HTMLCanvasElement,
@@ -405,7 +417,7 @@ function sessionHarness(
 		onState: (state) => states.push(state),
 		onQueuePosition: (position) => queuePositions.push(position),
 		onNotice: (notice) => notices.push(notice),
-		onCounters: (sent, rendered) => counters.push([sent, rendered]),
+		onCounters: (snapshot) => counters.push(snapshot),
 		onAppliedParams: (params) => applied.push(params),
 		webSocketFactory: () => {
 			const socket = new TestSocket();
@@ -530,7 +542,7 @@ test('a busy socket retries at a bounded rate after a slow encode and keeps the 
 	assert.equal(harness.timerCount(), 0);
 });
 
-test('a slow encode backs off idle ticks, stops, and wakes for a new edit', async (context) => {
+test('a slow encode backs off the idle interval, stops on idle time, and wakes for a new edit', async (context) => {
 	let now = 0;
 	context.mock.method(performance, 'now', () => now);
 	let encodes = 0;
@@ -553,7 +565,10 @@ test('a slow encode backs off idle ticks, stops, and wakes for a new edit', asyn
 		await Promise.resolve();
 		assert.equal(harness.timerDelays.at(-1), 0);
 
-		for (let index = 0; index < IDLE_TICKS_BEFORE_STOP - 1; index += 1) {
+		// Three slow intervals are IDLE_STOP_MS, so the third idle tick is
+		// the one that stops instead of arming.
+		const stopTicks = IDLE_STOP_MS / SLOW_INTERVAL_MS;
+		for (let index = 0; index < stopTicks - 1; index += 1) {
 			harness.tick();
 			const delay = harness.timerDelays.at(-1)!;
 			assert.ok(delay >= 250 && delay <= 500, `idle retry waited ${delay} ms`);
@@ -564,11 +579,145 @@ test('a slow encode backs off idle ticks, stops, and wakes for a new edit', asyn
 
 		harness.session.markChanged();
 		assert.equal(harness.timerCount(), 1);
-		assert.equal(harness.timerDelays.at(-1), FAST_INTERVAL_MS);
+		// A stopped loop has no warm-up left to wait out.
+		assert.equal(harness.timerDelays.at(-1), 0);
 		harness.tick();
 		await Promise.resolve();
 		assert.equal(encodes, 2);
 		assert.equal(socket.sent.filter((data) => typeof data !== 'string').length, 2);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('the loop stops on idle time at either end of the band: six ticks fast, three slow', async (context) => {
+	let now = 0;
+	context.mock.method(performance, 'now', () => now);
+	/** Idle ticks a session armed before it stopped, at one encode cost. */
+	const idleTicksUntilStop = async (costMs: number): Promise<number> => {
+		now = 0;
+		const harness = sessionHarness({
+			encode: async () => {
+				now += costMs;
+				return new Uint8Array([1]);
+			}
+		});
+		try {
+			harness.session.connect({
+				modelId: 'vega-rt',
+				prompt: 'a cat',
+				params: { structure_strength: 0.5, steps: 10 }
+			});
+			ready(harness.sockets[0]);
+			harness.tick();
+			await Promise.resolve();
+			let idleTicks = 0;
+			while (harness.timerCount() > 0) {
+				idleTicks += 1;
+				assert.ok(idleTicks <= 10, `still arming after ${idleTicks} idle ticks`);
+				harness.tick();
+				await Promise.resolve();
+			}
+			return idleTicks;
+		} finally {
+			harness.session.destroy();
+		}
+	};
+	// Six fast intervals and three slow ones are both IDLE_STOP_MS, so the
+	// deadline is the same wall of time whichever end of the band is armed.
+	assert.equal(await idleTicksUntilStop(0), IDLE_STOP_MS / FAST_INTERVAL_MS);
+	assert.equal(await idleTicksUntilStop(600), IDLE_STOP_MS / SLOW_INTERVAL_MS);
+});
+
+test('a change during an idle stretch restarts the idle deadline', async () => {
+	const harness = sessionHarness();
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		ready(harness.sockets[0]);
+		harness.tick();
+		await Promise.resolve();
+		// Five idle ticks: 1250 ms, one short of the deadline.
+		for (let tick = 0; tick < 5; tick += 1) {
+			harness.tick();
+			await Promise.resolve();
+		}
+		harness.session.markChanged();
+		harness.tick();
+		await Promise.resolve();
+		// The change was sent, and the full deadline starts again after it:
+		// without the reset the loop would stop on the very next idle tick.
+		let idleTicks = 0;
+		while (harness.timerCount() > 0) {
+			idleTicks += 1;
+			assert.ok(idleTicks <= 10, `still arming after ${idleTicks} idle ticks`);
+			harness.tick();
+			await Promise.resolve();
+		}
+		assert.equal(idleTicks, IDLE_STOP_MS / FAST_INTERVAL_MS);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('ticks held back by backpressure do not count toward the idle deadline', async () => {
+	const harness = sessionHarness();
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		await Promise.resolve();
+		harness.session.markChanged();
+		socket.bufferedAmount = 1;
+		// Ten fast ticks of a stalled socket: 2500 ms with a change pending.
+		for (let tick = 0; tick < 10; tick += 1) {
+			harness.tick();
+			await Promise.resolve();
+		}
+		socket.bufferedAmount = 0;
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(sentFrames(socket).length, 2, 'the held change goes out once the socket drains');
+		let idleTicks = 0;
+		while (harness.timerCount() > 0) {
+			idleTicks += 1;
+			assert.ok(idleTicks <= 10, `still arming after ${idleTicks} idle ticks`);
+			harness.tick();
+			await Promise.resolve();
+		}
+		assert.equal(idleTicks, IDLE_STOP_MS / FAST_INTERVAL_MS, 'the full pause follows the stall');
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('a change after the loop stopped is captured at once, with no warm-up interval', async () => {
+	const harness = sessionHarness({ isCanvasBlank: () => true });
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		for (let tick = 0; tick < IDLE_STOP_MS / FAST_INTERVAL_MS; tick += 1) harness.tick();
+		assert.equal(harness.timerCount(), 0, 'the loop stopped while the canvas was blank');
+
+		harness.session.markChanged();
+		assert.equal(harness.timerCount(), 1);
+		assert.equal(harness.timerDelays.at(-1), 0, 'the first change after idle waits out nothing');
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(sentFrames(socket).length, 1);
 	} finally {
 		harness.session.destroy();
 	}
@@ -699,6 +848,79 @@ test('one session numbers its frames 1, 2, 3 and keeps counting across controls'
 		await Promise.resolve();
 
 		assert.deepEqual(sentFrames(socket).map(revisionOf), [1, 2, 3, 4, 5]);
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('a second change before the capture is folded into one frame, and the fold is counted', async () => {
+	const harness = sessionHarness({ isCanvasBlank: () => true });
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.session.markChanged();
+		harness.session.markChanged();
+
+		harness.tick();
+		await Promise.resolve();
+		assert.equal(sentFrames(socket).length, 1, 'the next capture sends once');
+		// Two changes, one frame: the first is the capture's own change and
+		// the second folds into it, and the capture publishes the count.
+		assert.equal(harness.counters.at(-1)?.replaced, 1, 'one fold, counted once');
+	} finally {
+		harness.session.destroy();
+	}
+});
+
+test('one send and receive round trip moves each stage counter exactly once', async () => {
+	const harness = sessionHarness();
+	try {
+		harness.session.connect({
+			modelId: 'vega-rt',
+			prompt: 'a cat',
+			params: { structure_strength: 0.5, steps: 10 }
+		});
+		const socket = harness.sockets[0];
+		ready(socket);
+		harness.tick();
+		await Promise.resolve();
+		assert.deepEqual(harness.counters.at(-1), {
+			attempted: 1,
+			replaced: 0,
+			encoded: 1,
+			sent: 1,
+			generated: 0,
+			presented: 0
+		});
+
+		socket.message(generated(SESSION, 1));
+		await Promise.resolve();
+		assert.deepEqual(harness.counters.at(-1), {
+			attempted: 1,
+			replaced: 0,
+			encoded: 1,
+			sent: 1,
+			generated: 1,
+			presented: 1
+		});
+
+		// Arrival is counted ahead of the stale check, so a frame too old to
+		// draw is still a frame this session received.
+		socket.message(generated(SESSION, 0));
+		await Promise.resolve();
+		assert.deepEqual(harness.counters.at(-1), {
+			attempted: 1,
+			replaced: 0,
+			encoded: 1,
+			sent: 1,
+			generated: 2,
+			presented: 1
+		});
 	} finally {
 		harness.session.destroy();
 	}
@@ -989,7 +1211,7 @@ test('params acknowledgement updates controls and wakes capture', () => {
 		params: { structure_strength: 0.5, steps: 10 }
 	});
 	ready(harness.sockets[0]);
-	for (let tick = 0; tick < IDLE_TICKS_BEFORE_STOP; tick += 1) harness.tick();
+	for (let tick = 0; tick < IDLE_STOP_MS / FAST_INTERVAL_MS; tick += 1) harness.tick();
 	assert.equal(harness.timerCount(), 0);
 	harness.sockets[0].message(
 		JSON.stringify({
@@ -1083,7 +1305,7 @@ test('binary frames before ready and empty generated frames are ignored', async 
 	socket.message(emptyGenerated());
 	await Promise.resolve();
 	assert.equal(harness.draws.length, 0);
-	assert.equal(harness.counters.at(-1)?.[1], 0);
+	assert.equal(harness.counters.at(-1)?.presented, 0);
 });
 
 test('a frame below the shown revision is not decoded, drawn or counted', async () => {
@@ -1106,21 +1328,21 @@ test('a frame below the shown revision is not decoded, drawn or counted', async 
 		socket.message(generated(SESSION, 5));
 		await Promise.resolve();
 		assert.equal(harness.draws.length, 1);
-		assert.equal(harness.counters.at(-1)?.[1], 1);
+		assert.equal(harness.counters.at(-1)?.presented, 1);
 
 		// 4 arrived after 5 was on screen: an old worker response.
 		socket.message(generated(SESSION, 4));
 		await Promise.resolve();
 		assert.equal(decodes, 1, 'a stale frame must not be decoded');
 		assert.equal(harness.draws.length, 1, 'a stale frame must not be drawn');
-		assert.equal(harness.counters.at(-1)?.[1], 1, 'a stale frame must not be counted');
+		assert.equal(harness.counters.at(-1)?.presented, 1, 'a stale frame must not be shown');
 
 		// Equal is not stale: the same input can render a second time.
 		socket.message(generated(SESSION, 5));
 		await Promise.resolve();
 		assert.equal(decodes, 2, 'an equal revision is not dropped');
 		assert.equal(harness.draws.length, 2, 'an equal revision draws again');
-		assert.equal(harness.counters.at(-1)?.[1], 2);
+		assert.equal(harness.counters.at(-1)?.presented, 2);
 	} finally {
 		harness.session.destroy();
 	}
@@ -1152,7 +1374,7 @@ test('a frame that goes stale while it waits its turn is dropped before the deco
 
 		assert.deepEqual(decoded, [6]);
 		assert.equal(harness.draws.length, 1);
-		assert.equal(harness.counters.at(-1)?.[1], 1);
+		assert.equal(harness.counters.at(-1)?.presented, 1);
 	} finally {
 		harness.session.destroy();
 	}
@@ -1186,7 +1408,7 @@ test('a stale frame cannot take the slot of a newer one still waiting', async ()
 
 		assert.deepEqual(decoded, [5, 6, 7]);
 		assert.equal(harness.draws.length, 3);
-		assert.equal(harness.counters.at(-1)?.[1], 3);
+		assert.equal(harness.counters.at(-1)?.presented, 3);
 	} finally {
 		harness.session.destroy();
 	}
@@ -1219,7 +1441,7 @@ test('a newer frame replaces the pending one while an older still decodes', asyn
 
 		assert.deepEqual(decoded, [6, 8]);
 		assert.equal(harness.draws.length, 2);
-		assert.equal(harness.counters.at(-1)?.[1], 2);
+		assert.equal(harness.counters.at(-1)?.presented, 2);
 	} finally {
 		harness.session.destroy();
 	}

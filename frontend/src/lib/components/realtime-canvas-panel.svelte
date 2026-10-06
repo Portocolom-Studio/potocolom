@@ -35,6 +35,7 @@
 		createRealtimeCanvasSession,
 		isTerminalNotice,
 		type ConnectionState,
+		type FrameCounters,
 		type RealtimeCanvasMask,
 		type RealtimeCanvasNotice
 	} from '$lib/realtime-canvas';
@@ -103,6 +104,25 @@
 	let drawingNotice = $state<NoticeKey | ''>('');
 	let sentFrames = $state(0);
 	let renderedFrames = $state(0);
+	// Every stage of the frame path behind the two numbers above, shown as the
+	// readout's title rather than on it: the row has room for sent and shown.
+	let stageCounters = $state<FrameCounters>({
+		attempted: 0,
+		replaced: 0,
+		encoded: 0,
+		sent: 0,
+		generated: 0,
+		presented: 0
+	});
+	const frameCounterTitle = $derived(
+		t('app.realtime_canvas.frame_counters')
+			.replace('{attempted}', () => String(stageCounters.attempted))
+			.replace('{replaced}', () => String(stageCounters.replaced))
+			.replace('{encoded}', () => String(stageCounters.encoded))
+			.replace('{sent}', () => String(stageCounters.sent))
+			.replace('{generated}', () => String(stageCounters.generated))
+			.replace('{presented}', () => String(stageCounters.presented))
+	);
 	// The params the API last confirmed for this session, from the open message
 	// and from params_updated. The Update button and the slider debounce compare
 	// against these rather than against the inputs, so a rejected update leaves
@@ -203,9 +223,10 @@
 		onNotice: (key: RealtimeCanvasNotice) => {
 			rawNotice = key;
 		},
-		onCounters: (sent, rendered) => {
-			sentFrames = sent;
-			renderedFrames = rendered;
+		onCounters: (counters) => {
+			sentFrames = counters.sent;
+			renderedFrames = counters.presented;
+			stageCounters = counters;
 		},
 		onAppliedParams: (params) => {
 			if (params.prompt !== undefined) appliedPrompt = params.prompt;
@@ -729,7 +750,7 @@
 						onchange={openDrawing}
 					/>
 				</div>
-				<span class="text-muted-foreground text-xs tabular-nums">
+				<span class="text-muted-foreground text-xs tabular-nums" title={frameCounterTitle}>
 					{sentFrames} / {renderedFrames}
 				</span>
 			</div>
