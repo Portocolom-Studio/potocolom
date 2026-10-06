@@ -140,6 +140,15 @@ if ! curl -sfD - -o /dev/null "${base}/app" \
   exit 1
 fi
 
+# Health answers before the simulated worker registers, and a job for a model
+# no worker offers yet is a 404, so wait until sd-sim is listed.
+for _ in $(seq 1 60); do
+  if curl -sf "${base}/api/v1/models" | grep -q '"id":"sd-sim"'; then
+    break
+  fi
+  sleep 1
+done
+
 job_id=$(curl -sf -X POST "${base}/api/v1/generations" \
   -H 'Content-Type: application/json' \
   -d '{"model_id":"sd-sim","params":{"prompt":"compose smoke test"}}' \
