@@ -77,8 +77,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/auth/callback/{provider}` | implemented | finish a provider sign-in or a link; never creates an account; a link ends the account's other sessions and re-issues this one's cookies |
 | POST `/api/v1/invitations` | implemented | invite an address to a role; returns `{id, email, role, token, link, expires_at}`, `link` being `_invitation_link(token)`, admin only |
 | GET `/api/v1/invitations` | implemented | the open invitations, without their links; admin only |
-| DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation; admin only |
-| POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; returns the same shape as create, `link` included; admin only |
+| DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation (404 once it is revoked or accepted); records `invitation.revoked` with the invitation id, address and role; admin only |
+| POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; returns the same shape as create, `link` included; records `invitation.revealed` with the invitation id, address and role, high severity for an administrator invitation; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
 | POST `/api/v1/users/{id}/state` | implemented | suspend, disable, or mark an account for deletion; admin only |
 | POST `/api/v1/generations/{id}/cancel` | implemented | stop a queued or running job |
