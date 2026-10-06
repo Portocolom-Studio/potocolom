@@ -676,12 +676,13 @@ def test_update_params_reaches_the_worker_and_browser():
             assert session.params == {"prompt": "a blue house", "seed": seed}
 
 
-@pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 1])
+@pytest.mark.parametrize("version", [MIN_SUPPORTED_VERSION, PROTOCOL_VERSION + 2])
 def test_update_params_follows_the_workers_advertised_version(version):
     """The version the worker advertised in hello decides the frame width it
     is sent, not the API's own: the N-1 floor worker still gets every update
     and reads 17 byte frames, a worker newer than the API reads the 21 byte
-    ones. Neither dialect is refused.
+    ones. Neither dialect is refused. The newer worker skips 6, whose hello is
+    a closed shape (test_fleet_protocol6.py).
     """
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(version=version, worker_id=f"w-ver-{version}",

@@ -23,6 +23,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
 
+from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -106,6 +107,10 @@ SESSION_READY_TIMEOUT = 10.0
 # account sessions behind its sockets are still live.
 SESSION_SWEEP_SECONDS = 30.0
 WORKER_DEAD_SECONDS = 90.0  # 3 missed heartbeats, docs/connection-handling.md
+# How long a disconnect waits for the durable authority to record the close.
+# Shielded: a socket cancelled out from under the handler must still give the
+# database its closed_at, or the row outlives the connection it describes.
+WORKER_CLOSE_TIMEOUT_SECONDS = 2.0
 # A live session whose last canvas input is older than this is released by
 # the sweep. The sweep interval bounds the delay, which is what the "about
 # 60 s" contract in docs/connection-handling.md promises.
@@ -283,7 +288,26 @@ async def refuse(ws: WebSocket, code: int, message: str) -> None:
         return
 
 
-def parse_control(text: str) -> dict:
+def parse_control(
+    text: str,
+    *,
+    protocol_version: int | None = None,
+    expected_worker_id: str | None = None,
+    expected_incarnation: uuid.UUID | None = None,
+) -> dict:
+    if protocol_version == 6:
+        from app.protocol6 import Protocol6Error, decode_control, validate_message
+
+        try:
+            control = decode_control(text)
+            validate_message(
+                control,
+                expected_worker_id=expected_worker_id,
+                expected_incarnation=expected_incarnation,
+            )
+        except Protocol6Error as error:
+            raise ProtocolError(str(error)) from error
+        return control
     try:
         control = json.loads(text)
     except (ValueError, RecursionError) as error:
@@ -315,7 +339,13 @@ async def first_control(ws: WebSocket) -> dict | None:
         return None
     if message.get("text") is None:
         raise ProtocolError("first message must be text")
-    return parse_control(message["text"])
+    control = parse_control(message["text"])
+    if control.get("type") == "hello" and control.get("protocol_version") == 6:
+        # A protocol 6 hello is a closed shape: re-read it under the protocol
+        # 6 validator so identity and field set are settled before anything
+        # downstream keys a registration off them.
+        return parse_control(message["text"], protocol_version=6)
+    return control
 
 
 def peer_uuid(value: object) -> uuid.UUID:
@@ -409,6 +439,23 @@ def parse_batch_ms(raw: object) -> dict[str, list[int]] | None:
     return measured
 
 
+def _schema_carries_ref(node: object) -> bool:
+    """Whether a parameter schema holds a `$ref` key at any depth.
+
+    Protocol 6 resolves no references: a worker that points its schema
+    somewhere else would describe parameters this API cannot validate, so the
+    hello is refused like any other bad manifest. parse_manifests already
+    bounds the tree depth, so this walk cannot outgrow the stack.
+    """
+    if isinstance(node, dict):
+        if "$ref" in node:
+            return True
+        return any(_schema_carries_ref(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_schema_carries_ref(item) for item in node)
+    return False
+
+
 @dataclass
 class Worker:
     id: str
@@ -425,6 +472,16 @@ class Worker:
     # rather than None so that gate fails closed rather than granting the
     # leniency that exists only for an older worker (issue #282).
     protocol_version: int = PROTOCOL_VERSION
+    # Protocol 6 identity and lease, set from the hello and the registration
+    # it earns; None and empty are what a protocol 4 or 5 worker keeps for
+    # the life of the connection.
+    incarnation: uuid.UUID | None = None
+    grant_nonce: uuid.UUID | None = None
+    capabilities: list[str] = field(default_factory=list)
+    region: str = "local"
+    owner_epoch: int | None = None
+    lease_id: uuid.UUID | None = None
+    lease_expires_at: str | None = None
     slots_in_use: int = 0
     jobs_in_flight: int = 0  # queued jobs; capped at JOB_DISPATCH_DEPTH in jobs.py
     last_seen: float = field(default_factory=time.monotonic)
@@ -444,6 +501,13 @@ class Worker:
     @property
     def free_slots(self) -> int:
         return self.realtime_slots - self.slots_in_use
+
+
+def _require_worker_incarnation(worker: Worker) -> uuid.UUID:
+    incarnation = worker.incarnation
+    if incarnation is None:
+        raise ProtocolError("worker incarnation is missing")
+    return incarnation
 
 
 SessionState = Literal["queued", "assigning", "live", "idle", "ending", "ended"]
@@ -746,6 +810,13 @@ gpu_requests: dict[str, asyncio.Future] = {}
 closing_sessions: dict[tuple[uuid.UUID, int], tuple[uuid.UUID, str, Worker]] = {}
 
 
+def takes_work(worker: Worker) -> bool:
+    """A worker registered through the durable protocol 6 path gets no work
+    yet. Every other worker, including one ahead of this API that speaks the
+    older dialect, keeps the N-1 behavior in docs/connection-handling.md."""
+    return worker.incarnation is None
+
+
 def pick_any_worker() -> Worker | None:
     """Return a connected worker, pruning sockets already closed under us.
 
@@ -759,12 +830,16 @@ def pick_any_worker() -> Worker | None:
             if workers.get(worker_id) is worker:
                 del workers[worker_id]
             continue
+        if not takes_work(worker):
+            continue
         return worker
     return None
 
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
     for worker in workers.values():
+        if not takes_work(worker):
+            continue
         if model_id in worker.models:
             return worker
     return None
@@ -845,6 +920,8 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
     for worker in workers.values():
         if exclude_ids is not None and worker.id in exclude_ids:
             continue
+        if not takes_work(worker):
+            continue
         if model_id not in worker.models:
             continue
         if worker.admission_p95_ms is None:
@@ -862,7 +939,7 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
 
 
 def model_known(model_id: str) -> bool:
-    return any(model_id in w.models for w in workers.values())
+    return any(model_id in w.models and takes_work(w) for w in workers.values())
 
 
 async def close_abandoned_session(worker: Worker, session: Session,
@@ -1160,6 +1237,23 @@ async def reap_dead_workers() -> None:
         await reap_once()
 
 
+async def close_durable_worker(worker: Worker) -> None:
+    if worker.protocol_version != 6 or worker.incarnation is None:
+        return
+    from app import worker_authority
+
+    try:
+        with CancelScope(shield=True):
+            await asyncio.wait_for(
+                worker_authority.close_worker(worker.id, worker.incarnation),
+                WORKER_CLOSE_TIMEOUT_SECONDS,
+            )
+    except TimeoutError:
+        logger.warning("worker authority close timed out for %s", worker.id)
+    except Exception:
+        logger.warning("worker authority close failed for %s", worker.id)
+
+
 @router.websocket("/api/v1/fleet")
 async def fleet(ws: WebSocket) -> None:
     if not origin_allowed(ws):
@@ -1187,13 +1281,32 @@ async def fleet(ws: WebSocket) -> None:
         if hello["type"] != "hello":
             raise ProtocolError("first message must be hello")
         version = hello["protocol_version"]
+        if version == 6:
+            if not get_settings().root_keys:
+                # A durable registration is only as recoverable as the root
+                # key ring behind it. With none, a protocol 6 worker is
+                # admitted only to speak the protocol this API has always
+                # spoken, and only if it offered to.
+                if get_settings().auth_mode != "none" or 5 not in hello["compatible_versions"]:
+                    await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
+                                        "min_supported_version": 5})
+                    await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
+                    return
+                version = 5
         try:
             worker_manifests = parse_manifests(hello["models"])
         except ValueError as error:
             raise ProtocolError(str(error)) from error
+        if hello.get("protocol_version") == 6 and any(
+            _schema_carries_ref(manifest.parameters) for manifest in worker_manifests
+        ):
+            raise ProtocolError("parameter schema must not use $ref")
         worker = Worker(id=hello["worker_id"], ws=ws, manifests=worker_manifests,
                         realtime_slots=hello["realtime_slots"],
                         protocol_version=version,
+                        incarnation=(uuid.UUID(hello["incarnation"]) if version == 6 else None),
+                        grant_nonce=(uuid.UUID(hello["grant_nonce"]) if version == 6 else None),
+                        capabilities=hello.get("capabilities", []),
                         device=hello.get("device"),
                         memory_mode=hello.get("memory_mode"))
         if "realtime_p95_ms" in hello:
@@ -1261,10 +1374,65 @@ async def fleet(ws: WebSocket) -> None:
         logger.warning("worker id %s already connected from %s", worker.id, ws.client)
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason="worker id already connected")
         return
+    if version == 6:
+        from app import worker_authority
+
+        incarnation = _require_worker_incarnation(worker)
+        try:
+            lease = await worker_authority.register_worker(
+                worker_id=worker.id,
+                incarnation=incarnation,
+                protocol_version=6,
+                grant_nonce=uuid.UUID(hello["grant_nonce"]),
+                capabilities=worker.capabilities,
+                manifests=[manifest.model_dump(mode="json") for manifest in worker.manifests],
+                device=worker.device,
+                memory_mode=worker.memory_mode,
+                realtime_slots=worker.realtime_slots,
+                realtime_p95_ms=worker.admission_p95_ms,
+                realtime_batch_ms=worker.admission_batch_ms,
+            )
+        except worker_authority.AuthorityUnavailable as error:
+            logger.warning("worker registration authority refused: %s", error)
+            await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
+                                "min_supported_version": 5})
+            await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
+            return
+        worker.region = lease.region
+        worker.owner_epoch = lease.owner_epoch
+        worker.lease_id = lease.lease_id
+        worker.lease_expires_at = lease.expires_at.isoformat().replace("+00:00", "Z")
     workers[worker.id] = worker
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
-    await ws.send_json({"type": "registered"})
+    if version == 6:
+        await ws.send_json({
+            "type": "registered",
+            "protocol_version": 6,
+            "worker_id": worker.id,
+            "incarnation": str(_require_worker_incarnation(worker)),
+            "transport_owner_id": str(worker_authority.TRANSPORT_OWNER_ID),
+            "region": worker.region,
+            "grant_nonce": hello["grant_nonce"],
+            "lease_id": str(worker.lease_id),
+            "owner_epoch": worker.owner_epoch,
+            "lease_expires_at": worker.lease_expires_at,
+            "ready": False,
+            "remaining_ms": 0,
+        })
+        try:
+            await worker_authority.activate_initial_worker(
+                worker.id, _require_worker_incarnation(worker)
+            )
+        except Exception:
+            logger.warning("initial worker barrier could not be committed for %s", worker.id)
+    elif hello.get("protocol_version") == 6:
+        # A protocol 6 hello that had to fall back: say which protocol this
+        # connection will actually speak, so the worker does not wait for
+        # registration fields that are not coming.
+        await ws.send_json({"type": "registered", "protocol_version": 5})
+    else:
+        await ws.send_json({"type": "registered"})
     # A new worker means a queued session may finally have room.
     admit_queued()
     from app import gpu_samples, registry  # late import; registry reads this module's state
@@ -1309,8 +1477,29 @@ async def fleet(ws: WebSocket) -> None:
                             raise ProtocolError("binary frame shorter than the header")
                         post_frame(session, to_browser_frame(session, data))
                 elif message.get("text") is not None:
-                    control = parse_control(message["text"])
+                    control = parse_control(
+                        message["text"],
+                        protocol_version=worker.protocol_version,
+                        expected_worker_id=(
+                            worker.id if worker.protocol_version == 6 else None
+                        ),
+                        expected_incarnation=(
+                            _require_worker_incarnation(worker)
+                            if worker.protocol_version == 6 else None
+                        ),
+                    )
                     worker.last_seen = time.monotonic()
+                    if control["type"] == "heartbeat" and worker.protocol_version == 6:
+                        from app import worker_authority
+
+                        durable_samples = parse_frame_p95(control.get("frame_p95_ms"))
+                        try:
+                            await worker_authority.touch_worker(
+                                worker.id, _require_worker_incarnation(worker),
+                                durable_samples
+                            )
+                        except worker_authority.AuthorityUnavailable:
+                            raise ProtocolError("worker authority expired") from None
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
                         generation = message_generation(control)
@@ -1333,6 +1522,35 @@ async def fleet(ws: WebSocket) -> None:
                             session.ready.set()
                         elif session.state == "live":
                             schedule_reassign(session)
+                    elif control["type"] == "grant_request" and worker.protocol_version == 6:
+                        from app import worker_authority
+
+                        nonce = uuid.UUID(control["grant_nonce"])
+                        try:
+                            grant = await worker_authority.renew_worker_grant(
+                                worker.id, _require_worker_incarnation(worker), nonce
+                            )
+                        except worker_authority.AuthorityUnavailable:
+                            raise ProtocolError(
+                                "worker grant authority is unavailable") from None
+                        worker.grant_nonce = grant.grant_nonce
+                        worker.owner_epoch = grant.owner_epoch
+                        worker.lease_id = grant.lease_id
+                        worker.lease_expires_at = grant.lease_expires_at.isoformat().replace(
+                            "+00:00", "Z"
+                        )
+                        await safe_send(ws.send_json({
+                            "type": "work_grant",
+                            "worker_id": grant.worker_id,
+                            "incarnation": str(grant.incarnation),
+                            "region": grant.region,
+                            "grant_nonce": str(grant.grant_nonce),
+                            "lease_id": str(grant.lease_id),
+                            "owner_epoch": grant.owner_epoch,
+                            "lease_expires_at": worker.lease_expires_at,
+                            "ready": grant.ready,
+                            "remaining_ms": grant.remaining_ms,
+                        }))
                     elif control["type"] in ("job_progress", "job_done", "job_failed",
                                              "job_cancelled"):
                         from app import jobs  # late import; jobs reads this module's state
@@ -1417,6 +1635,7 @@ async def fleet(ws: WebSocket) -> None:
     finally:
         if workers.get(worker.id) is worker:
             del workers[worker.id]
+        await close_durable_worker(worker)
         for key, owner in list(closing_sessions.items()):
             if owner[2] is worker:
                 closing_sessions.pop(key, None)

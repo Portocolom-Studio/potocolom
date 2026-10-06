@@ -1302,7 +1302,8 @@ def job_dispatch_depth(worker: realtime.Worker) -> int:
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     candidates = [
         worker for worker in realtime.workers.values()
-        if model_id in worker.models
+        if realtime.takes_work(worker)
+        and model_id in worker.models
         and worker.jobs_in_flight < job_dispatch_depth(worker)
     ]
     return min(candidates, key=lambda worker: worker.jobs_in_flight, default=None)
@@ -1385,7 +1386,8 @@ async def _dispatch_step_body() -> None:
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
-            if not any(w.jobs_in_flight < job_dispatch_depth(w)
+            if not any(realtime.takes_work(w)
+                       and w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break
             hint = await queues.pop(JOB_QUEUE)

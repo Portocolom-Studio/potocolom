@@ -1746,3 +1746,19 @@ Implements issue #46. The banner is one `status_banner` row, read by every `GET 
 Automatically setting `high_demand` when the fleet autoscaler reports its ceiling, and clearing it when the fleet recovers (the "Autoscaler spend" decision above), is designed but not shipped here: the autoscaler it would read lives in the private cloud repository behind the QuotaService boundary (docs/repository-boundary.md), not in this one. The manual and `degraded`/`maintenance` paths need no autoscaler and ship now.
 
 Rejected alternatives: a Redis-backed cache matching the cloud profile's session store (no Redis exists in the self-hosted profile this table has to work in, and a row an administrator changes by hand does not need sub-second propagation); storing the banner as an environment-driven `Settings` field (`get_settings()` is cached for the process lifetime with no invalidation, so it cannot be changed live from the admin area, which the issue asks for).
+
+## Protocol 6 workers register under a PostgreSQL scheduler lease
+
+A protocol 6 worker sends a fresh random incarnation UUID with every hello. The API records the connection in `worker_connections`, keyed by worker id and incarnation, under the region's current row in `scheduler_leases`. That row names one scheduler owner, a lease id and an owner epoch. The owner renews it every few seconds. When it lapses, another owner takes it, and the epoch goes up. A worker gets work only under a short work grant. The grant is tied to its incarnation and the current epoch, and the worker renews it with `grant_request`. A reconnect is a new incarnation, so nothing granted to the old connection carries over. Registering closes an open row the same API left behind, or one fenced out by a newer lease, so a crash cannot lock a fixed `WORKER_ID` out; an open row another owner holds under the current lease refuses the hello.
+
+This amends "Scheduler: leader elected inside the API replicas" on one point: the lease lives in PostgreSQL, not Redis. PostgreSQL is already the durable authority for jobs. A fence that sits in the same database as the rows it protects can be checked inside the same transaction. Redis stays advisory.
+
+A new incarnation becomes ready as soon as its manifests are valid. No v6 job or session can exist before the durable command store lands. When it lands, an incarnation stays not ready while an older incarnation of the same worker id has unfinished work. The existing `requeue_or_fail` requeues that work when the old connection closes. The drain-receipt handover in the C2 v4 design replaces this rule when it ships.
+
+The v6 hello is accepted only when `ROOT_KEYS` is set, because later protocol 6 commands are stored encrypted. Without it, a none-mode worker that also speaks 5 is registered as protocol 5, and any other worker is refused. Protocol 4 and 5 workers are unchanged.
+
+Rejected alternatives:
+- A Redis lease, as originally recorded. Its fencing token cannot be checked in the PostgreSQL transaction that commits a job claim.
+- Identifying a connection by worker id alone. A fixed `WORKER_ID` reconnecting before its old socket is reaped would inherit the old connection's work.
+
+> Shipped status (2026-10-06): registration, work grant, heartbeat and the scheduler lease ship. Protocol 6 workers get no jobs or sessions yet. The protocol constants stay at 5, with floor 4.
