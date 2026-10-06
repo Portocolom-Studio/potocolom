@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import BadgeCheckIcon from '@lucide/svelte/icons/badge-check';
 	import BellIcon from '@lucide/svelte/icons/bell';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
@@ -9,15 +11,37 @@
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { apiFetch } from '$lib/api';
 	import { accountInitial, accountRoleLabelKey } from '$lib/account-display';
-	import type { Account } from '$lib/account.svelte';
+	import { account as accountState, type Account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
+	import { openAccount } from '$lib/studio.svelte';
 
 	let { account }: { account: Account } = $props();
 
 	const sidebar = Sidebar.useSidebar();
 	const initial = $derived(accountInitial(account.email));
 	const roleLabel = $derived(t(accountRoleLabelKey(account.role)));
+
+	let logOutFailed = $state(false);
+
+	// Only the server can end the session: its cookie is httpOnly. A failed
+	// request leaves this browser signed in, so landing on /login would tell
+	// someone on a shared computer they had left when they had not.
+	async function logOut(): Promise<void> {
+		logOutFailed = false;
+		try {
+			const response = await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+			if (!response.ok) {
+				logOutFailed = true;
+				return;
+			}
+		} catch {
+			logOutFailed = true;
+			return;
+		}
+		await goto(resolve('/login'));
+	}
 </script>
 
 <Sidebar.Menu>
@@ -67,10 +91,13 @@
 				</DropdownMenu.Group>
 				<DropdownMenu.Separator />
 				<DropdownMenu.Group>
-					<DropdownMenu.Item>
-						<BadgeCheckIcon />
-						{t('app.shell.account')}
-					</DropdownMenu.Item>
+					{#if accountState.current}
+						<!-- Hidden without a signed-in account: AUTH_MODE=none has none to open. -->
+						<DropdownMenu.Item onclick={openAccount}>
+							<BadgeCheckIcon />
+							{t('app.shell.account')}
+						</DropdownMenu.Item>
+					{/if}
 					<DropdownMenu.Item>
 						<CreditCardIcon />
 						{t('app.shell.billing')}
@@ -81,11 +108,14 @@
 					</DropdownMenu.Item>
 				</DropdownMenu.Group>
 				<DropdownMenu.Separator />
-				<DropdownMenu.Item>
+				<DropdownMenu.Item onclick={logOut}>
 					<LogOutIcon />
 					{t('app.shell.log_out')}
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
 	</Sidebar.MenuItem>
+	{#if logOutFailed}
+		<p role="alert" class="text-destructive px-2 pt-1 text-xs">{t('app.shell.log_out_failed')}</p>
+	{/if}
 </Sidebar.Menu>

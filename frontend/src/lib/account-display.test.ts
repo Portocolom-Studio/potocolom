@@ -110,6 +110,16 @@ test('openViewFor keeps models and images open to a viewer', () => {
 	assert.equal(openViewFor('images', 'usage', 'viewer'), 'images');
 });
 
+test('openViewFor keeps the account view for every signed-in role', () => {
+	for (const role of ['viewer', 'user', 'admin'] as const) {
+		assert.equal(openViewFor('account', 'usage', role), 'account');
+	}
+});
+
+test('openViewFor refuses the account view when there is no account to show', () => {
+	assert.equal(openViewFor('account', 'usage', null), 'generate');
+});
+
 test('openViewFor keeps every view but admin when there is no role', () => {
 	for (const view of [
 		'generate',

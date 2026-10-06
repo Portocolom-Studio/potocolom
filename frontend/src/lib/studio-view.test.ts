@@ -56,6 +56,16 @@ test('the admin view has users, audit, fleet, banner, and invitations tabs that 
 	assert.equal(studioViewSearch('', 'admin', 'users'), '?view=admin');
 });
 
+test('the account view carries no tab and round-trips', () => {
+	assert.deepEqual(readStudioView(at('?view=account')), { view: 'account', tab: 'usage' });
+	const search = studioViewSearch('', 'account', 'usage');
+	assert.equal(search, '?view=account');
+	assert.deepEqual(readStudioView(at(search)), { view: 'account', tab: 'usage' });
+	// The view has no tabs, so a stray one is dropped rather than kept alive.
+	assert.equal(studioViewSearch('?view=account&tab=audit', 'account', 'usage'), '?view=account');
+	assert.equal(studioViewSearch('?tab=audit', 'account', 'usage'), '?view=account');
+});
+
 test('Generate and the usage tab leave the URL bare', () => {
 	assert.equal(studioViewSearch('?view=images', 'generate', 'usage'), '');
 	assert.equal(studioViewSearch('', 'metrics', 'usage'), '?view=metrics');
@@ -100,7 +110,8 @@ test('every view and tab round trips through the URL', () => {
 		'images',
 		'models',
 		'metrics',
-		'admin'
+		'admin',
+		'account'
 	];
 	for (const view of views) {
 		const tabs: StudioTab[] =

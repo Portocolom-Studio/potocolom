@@ -348,7 +348,7 @@ export function openPlayground(): void {
 	openView('generate');
 }
 
-export function openService(view: Exclude<ShellView, 'metrics' | 'admin'>): void {
+export function openService(view: Exclude<ShellView, 'metrics' | 'admin' | 'account'>): void {
 	openView(view);
 }
 
@@ -358,6 +358,10 @@ export function openMetrics(tab: MetricsTab = 'usage'): void {
 
 export function openAdmin(tab: AdminTab = 'users'): void {
 	openView('admin', tab);
+}
+
+export function openAccount(): void {
+	openView('account');
 }
 
 let polling = false;

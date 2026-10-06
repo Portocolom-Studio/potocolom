@@ -64,14 +64,22 @@ function metricsSection(tab: StudioTab): GatedSection {
 	return 'metrics_usage';
 }
 
+// Every refusal lands here: generate first, and images for the one role
+// locked out of generate.
+function refusedView(role: Role | null): ShellView {
+	return sectionNeeds('generate', role) === null ? 'generate' : 'images';
+}
+
 // A view the role may use stays; otherwise fall back to generate, the main
 // panel, and then images, which no role is locked out of.
 export function openViewFor(view: ShellView, tab: StudioTab, role: Role | null): ShellView {
 	// models and images are open to every role; metrics picks its section by
 	// tab; admin and every other view share their section's name.
 	if (view === 'models' || view === 'images') return view;
+	// The account view needs a signed-in account: AUTH_MODE=none has a null
+	// role and no account to show, so it is refused with everything else.
+	if (view === 'account') return role === null ? refusedView(role) : view;
 	const section: GatedSection = view === 'metrics' ? metricsSection(tab) : view;
 	if (sectionNeeds(section, role) === null) return view;
-	if (sectionNeeds('generate', role) === null) return 'generate';
-	return 'images';
+	return refusedView(role);
 }

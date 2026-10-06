@@ -8,7 +8,8 @@ const SHELL_VIEWS = [
 	'images',
 	'models',
 	'metrics',
-	'admin'
+	'admin',
+	'account'
 ] as const;
 const METRICS_TABS = ['usage', 'benchmarks', 'mine'] as const;
 export const ADMIN_TABS = ['users', 'audit', 'fleet', 'banner', 'invitations'] as const;
