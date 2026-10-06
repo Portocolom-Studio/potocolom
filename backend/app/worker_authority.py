@@ -161,16 +161,21 @@ async def maintain_scheduler_lease() -> None:
             continue
         # Any failure, a hung query included, must leave the loop running:
         # once it stops, the lease lapses and every v6 worker is fenced out
-        # until the process restarts.
+        # until the process restarts. The 2 s bound and the 1 s retry keep
+        # three attempts inside one LEASE_SECONDS window after a success.
         try:
             await asyncio.wait_for(
                 acquire_scheduler_lease() if _lease is None else renew_scheduler_lease(),
-                LEASE_SECONDS / 2,
+                2,
             )
         except AuthorityUnavailable as error:
             logger.warning("regional scheduler authority unavailable: %s", error)
+            await asyncio.sleep(1)
+            continue
         except Exception as error:
             logger.warning("scheduler lease maintenance failed: %s", type(error).__name__)
+            await asyncio.sleep(1)
+            continue
         await asyncio.sleep(3)
 
 

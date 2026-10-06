@@ -356,8 +356,10 @@ def test_a_v6_hello_with_a_ref_parameter_schema_is_refused(monkeypatch):
 
 
 @pytest.mark.db
-def test_a_v6_hello_with_zero_realtime_slots_registers(monkeypatch):
-    """Protocol 6 admits zero slots (a jobs-only worker); the row must too."""
+@pytest.mark.parametrize("slots", [0, 2**31])
+def test_a_v6_hello_registers_at_the_edges_of_realtime_slots(monkeypatch, slots):
+    """Protocol 6 admits zero slots (a jobs-only worker) and any signed 64 bit
+    count; the row must store both instead of failing the insert."""
     root_keys(monkeypatch)
     worker_id = f"p6-zero-{uuid.uuid4()}"
     try:
@@ -365,7 +367,7 @@ def test_a_v6_hello_with_zero_realtime_slots_registers(monkeypatch):
             client.portal.call(worker_authority.acquire_scheduler_lease)
             with client.websocket_connect("/api/v1/fleet") as ws:
                 message = hello(worker_id, [manifest(f"{worker_id}-model")])
-                message["realtime_slots"] = 0
+                message["realtime_slots"] = slots
                 ws.send_json(message)
                 registered = ws.receive_json()
                 assert registered["type"] == "registered"

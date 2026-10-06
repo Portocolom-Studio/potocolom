@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("grant_nonce", sa.Uuid(), nullable=False),
         sa.Column("grant_expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("grant_ready", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("realtime_slots", sa.Integer(), nullable=False),
+        sa.Column("realtime_slots", sa.BigInteger(), nullable=False),
         sa.Column("protocol_version", sa.SmallInteger(), nullable=False),
         sa.Column("capabilities", JSONB(), nullable=False),
         sa.Column("manifests", JSONB(), nullable=False),
