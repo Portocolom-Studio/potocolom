@@ -465,7 +465,10 @@ async def _link(provider: str, identity: ProviderIdentity, user_id: uuid.UUID,
     # After the transaction, never inside it: a revoked row stops the next
     # request and does not reach a socket that already bound its principal.
     await sessions.close_other_sockets(linker)
-    response = RedirectResponse(settings.public_url, status_code=307)
+    # The link was started in the account view, so the browser that finishes
+    # it goes back to that view rather than to the install root.
+    response = RedirectResponse(
+        settings.public_url.rstrip("/") + "/app?view=account", status_code=307)
     issue_session(response, issued)
     return response
 

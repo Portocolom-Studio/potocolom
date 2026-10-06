@@ -466,6 +466,19 @@ def test_a_link_attaches_the_identity_to_the_account_that_asked(accounts, monkey
     assert [row.subject for row in linked if row.provider == "github"] == ["h-42"]
 
 
+@pytest.mark.db
+def test_a_link_lands_back_on_the_account_view_it_started_from(accounts, monkeypatch):
+    """The link was started in the account view, so the browser that finishes
+    it is sent back to that view rather than to the install root."""
+    _fake_provider(monkeypatch, "github", subject="h-return", email="returnlink@example.com")
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "returnlink@example.com")
+        _sign_in(client, "returnlink@example.com")
+        linked = _linked_through(client, "github")
+        assert linked.status_code == 307
+        assert linked.headers["location"] == f"{ORIGIN}/app?view=account"
+
+
 def _sign_in(client, email):
     assert client.post("/api/v1/auth/login", headers={"Origin": ORIGIN},
                        json={"email": email, "password": PASSWORD,

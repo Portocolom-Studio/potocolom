@@ -7,9 +7,12 @@ import {
 	deleteConfirmed,
 	isFollowableRedirect,
 	linkableProviders,
+	refusalKey,
 	signInAgainHref
 } from './account-logic.ts';
 import { studioReturnSearch } from './auth-flow.ts';
+import en from './i18n/en.json';
+import es from './i18n/es.json';
 
 test('deleteConfirmed accepts the account email as typed', () => {
 	assert.equal(deleteConfirmed('ada@example.com', 'ada@example.com'), true);
@@ -86,12 +89,84 @@ test('canUnlinkIdentity follows canUnlink for the other providers', () => {
 	assert.equal(canUnlinkIdentity('google', ['google', 'github']), true);
 });
 
-test('isFollowableRedirect follows https addresses anywhere', () => {
+const REFUSAL_KEYS: Array<[string, string]> = [
+	['that address is already in use', 'app.account.refusal_address_taken'],
+	['invalid email address', 'app.account.refusal_invalid_email'],
+	['that is the only way in', 'app.account.refusal_only_way_in'],
+	['that code is not valid', 'app.account.refusal_code_invalid'],
+	['the current password is required', 'app.account.refusal_current_password'],
+	['password does not meet the policy', 'app.account.refusal_password_policy'],
+	['this account already has a password', 'app.account.refusal_has_password'],
+	['a second factor was enrolled already', 'app.account.refusal_factor_exists'],
+	['this session changed while that was in flight', 'app.account.refusal_session_changed'],
+	['too many changes to this account at once', 'app.account.refusal_busy'],
+	['account suspended', 'app.account.refusal_suspended']
+];
+
+test('refusalKey maps each server detail to a key of its own', () => {
+	assert.equal(REFUSAL_KEYS.length, 11);
+	for (const [detail, key] of REFUSAL_KEYS) {
+		assert.equal(refusalKey(detail), key, detail);
+	}
+});
+
+test('refusalKey answers null for anything else, so the server text shows', () => {
+	assert.equal(refusalKey(null), null);
+	assert.equal(refusalKey(undefined), null);
+	assert.equal(refusalKey(''), null);
+	assert.equal(refusalKey('recent authentication required'), null);
+	assert.equal(refusalKey('invalid or expired sign-in attempt'), null);
+	// Exact matches only: a detail that differs is not this build's to translate.
+	assert.equal(refusalKey('Account suspended'), null);
+	assert.equal(refusalKey('account suspended. '), null);
+	assert.equal(refusalKey(['account suspended']), null);
+	assert.equal(refusalKey({ detail: 'account suspended' }), null);
+});
+
+test('refusalKey answers null for a name the table only inherits', () => {
+	// Object.prototype lends every object these names, and none of them is a
+	// refusal: only a detail the table itself holds may be translated.
+	assert.equal(refusalKey('toString'), null);
+	assert.equal(refusalKey('constructor'), null);
+	assert.equal(refusalKey('hasOwnProperty'), null);
+	assert.equal(refusalKey('__proto__'), null);
+	assert.equal(refusalKey('valueOf'), null);
+});
+
+test('every key refusalKey names exists in both dictionaries', () => {
+	for (const [detail, key] of REFUSAL_KEYS) {
+		assert.ok(key in en, `${key} is missing from en.json (${detail})`);
+		assert.ok(key in es, `${key} is missing from es.json (${detail})`);
+	}
+});
+
+test('isFollowableRedirect follows the two provider authorize hosts', () => {
 	assert.equal(
-		isFollowableRedirect('https://provider.example/redirect', 'http://localhost:5173'),
+		isFollowableRedirect(
+			'https://accounts.google.com/o/oauth2/v2/auth?state=x',
+			'http://localhost:5173'
+		),
 		true
 	);
-	assert.equal(isFollowableRedirect('https://studio.example/app', 'https://studio.example'), true);
+	assert.equal(
+		isFollowableRedirect(
+			'https://github.com/login/oauth/authorize?state=x',
+			'https://studio.example'
+		),
+		true
+	);
+});
+
+test('isFollowableRedirect refuses an https host that is not a provider', () => {
+	assert.equal(
+		isFollowableRedirect('https://provider.example/redirect', 'http://localhost:5173'),
+		false
+	);
+	assert.equal(isFollowableRedirect('https://studio.example/app', 'https://studio.example'), false);
+	assert.equal(
+		isFollowableRedirect('https://evil.example/login/oauth/authorize', 'https://studio.example'),
+		false
+	);
 });
 
 test('isFollowableRedirect follows http only on the page origin', () => {

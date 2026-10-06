@@ -132,6 +132,14 @@ async def change_email(
         async with db.session_factory() as session:
             async with session.begin():
                 await hold_the_account(session, principal.user.id)
+                current = (await session.execute(
+                    select(User.email).where(User.id == principal.user.id)
+                )).scalar_one()
+                if address.strip().lower() == current.strip().lower():
+                    # Saving the address the account already holds, only
+                    # spelled differently, would drop the verification that
+                    # address has and rotate the session over no change.
+                    return Response(status_code=204)
                 held = (await session.execute(
                     select(User.id).where(func.lower(func.btrim(User.email)) == normalized,
                                           User.id != principal.user.id)
