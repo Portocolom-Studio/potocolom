@@ -335,7 +335,7 @@ def test_lease_maintenance_survives_an_unexpected_database_error(monkeypatch):
     async def scenario() -> None:
         task = asyncio.create_task(worker_authority.maintain_scheduler_lease())
         try:
-            # One loop interval (3 s) separates the failed call from the retry.
+            # A failed call is retried after 1 s.
             await asyncio.wait_for(second_call.wait(), 5)
         finally:
             task.cancel()
