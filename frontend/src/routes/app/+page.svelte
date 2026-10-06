@@ -18,6 +18,7 @@
 	import ServiceSketchPanel from '$lib/components/service-sketch-panel.svelte';
 	import SiteHeader from '$lib/components/site-header.svelte';
 	import StatusBanner from '$lib/components/status-banner.svelte';
+	import StudioAccount from '$lib/components/studio-account.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -181,6 +182,8 @@
 							{:catch}
 								<p class="text-muted-foreground text-sm">{t('app.admin.load_failed')}</p>
 							{/await}
+						{:else if studio.shellView === 'account'}
+							<StudioAccount />
 						{:else if studio.shellView === 'models'}
 							<ModelPanel />
 						{:else if studio.shellView === 'images'}
