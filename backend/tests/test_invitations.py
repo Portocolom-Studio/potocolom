@@ -353,6 +353,10 @@ def test_revoking_records_the_invitation_it_revoked(accounts):
         body = created.json()
         assert client.delete(f"/api/v1/invitations/{body['id']}",
                              headers=headers).status_code == 204
+        # A second revoke finds nothing open: it must neither stamp a new
+        # revocation time nor record a revocation that did not happen.
+        assert client.delete(f"/api/v1/invitations/{body['id']}",
+                             headers=headers).status_code == 404
         rows = client.portal.call(_audit)
     revoked = [row for row in rows if row["action"] == "invitation.revoked"]
     assert len(revoked) == 1

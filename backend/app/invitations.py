@@ -151,7 +151,11 @@ async def revoke(
         async with session.begin():
             row = (await session.execute(
                 update(Invitation)
-                .where(Invitation.id == invitation_id, Invitation.accepted_at.is_(None))
+                .where(
+                    Invitation.id == invitation_id,
+                    Invitation.accepted_at.is_(None),
+                    Invitation.revoked_at.is_(None),
+                )
                 .values(revoked_at=func.now())
                 .returning(Invitation.id, Invitation.email, Invitation.role)
             )).first()
