@@ -47,15 +47,20 @@ const REFUSALS: Readonly<Record<string, keyof typeof en>> = {
 	'password does not meet the policy': 'app.account.refusal_password_policy',
 	'this account already has a password': 'app.account.refusal_has_password',
 	'a second factor was enrolled already': 'app.account.refusal_factor_exists',
-	'that provider account is already linked to an account': 'app.account.refusal_provider_linked',
+	'this session changed while that was in flight': 'app.account.refusal_session_changed',
+	'too many changes to this account at once': 'app.account.refusal_busy',
 	'account suspended': 'app.account.refusal_suspended'
 };
 
 // The key that says this refusal in the reader's language, or null for a
 // detail this build does not translate, which the caller shows as sent.
+// The table is asked whether the detail is its own before it is read, so a
+// detail naming something the object inherits ("toString") finds nothing
+// there to translate.
 export function refusalKey(detail: unknown): keyof typeof en | null {
 	if (typeof detail !== 'string') return null;
-	return REFUSALS[detail] ?? null;
+	if (!Object.hasOwn(REFUSALS, detail)) return null;
+	return REFUSALS[detail];
 }
 
 // The two authorize hosts the backend builds its provider links from. A link

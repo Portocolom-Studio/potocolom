@@ -168,25 +168,37 @@
 	// A reload that fails keeps what is already on screen: the sections were
 	// fine a moment ago and a failed read says nothing about them, so the
 	// error goes beside them rather than in their place. Only the first load
-	// has nothing to keep, and that one falls back to the error alone.
-	async function loadAccount(): Promise<void> {
+	// has nothing to keep, and that one falls back to the error alone. True
+	// when the account was read, false when the answer never came.
+	async function loadAccount(): Promise<boolean> {
 		const keeping = detail !== null;
 		loadError = '';
 		try {
 			const response = await apiFetch('/api/v1/account');
 			if (!response.ok) {
-				if (await handleUnauthorized(response)) return;
+				if (await handleUnauthorized(response)) return false;
 				loadError = await messageFor(response);
 				if (!keeping) loseAccount();
-				return;
+				return false;
 			}
 			detail = (await response.json()) as AccountDetail;
+			return true;
 		} catch {
 			loadError = t('app.account.request_failed');
 			if (!keeping) loseAccount();
+			return false;
 		} finally {
 			loading = false;
 		}
+	}
+
+	// Every credential change ends the sessions other than the one making it,
+	// and a read back that fails leaves the list on screen as it was. Without
+	// this patch the kept list would go on showing the sessions the change
+	// just ended, so the change is applied to it by hand until a read lands.
+	function keepOnlyCurrentSession(): void {
+		if (detail === null) return;
+		detail.sessions = detail.sessions.filter((session) => session.current);
 	}
 
 	async function endSession(session: AccountSession): Promise<void> {
@@ -208,7 +220,13 @@
 				await goto(resolve('/login'));
 				return;
 			}
-			await loadAccount();
+			// The list is read again to show what is left of it. A read that
+			// fails keeps it as it was, and this session is over by now, so
+			// its row goes even though no list answered.
+			const reloaded = await loadAccount();
+			if (!reloaded && detail !== null) {
+				detail.sessions = detail.sessions.filter((row) => row.id !== session.id);
+			}
 		} catch {
 			sessionError = t('app.account.request_failed');
 		} finally {
@@ -233,8 +251,10 @@
 				return;
 			}
 			// The change signs every other session out, so the list above has to
-			// be read again before the notice claims it.
-			await loadAccount();
+			// be read again before the notice claims it. A read that fails keeps
+			// the list on screen, and it is patched down to this session.
+			const reloaded = await loadAccount();
+			if (!reloaded) keepOnlyCurrentSession();
 			passwordNotice = t('app.account.password_saved');
 			currentPassword = '';
 			newPassword = '';
@@ -383,12 +403,14 @@
 				await refuse(response, (message) => (setupError = message));
 				// Another tab or device may have confirmed a factor meanwhile,
 				// or removed the one this replace was aimed at, and the refusal
-				// is about what this account holds now: the re-read says so, so
-				// a first enrolment then has to carry the code proving that
-				// factor too, and a replace whose factor is gone is a first
-				// enrolment again.
-				await loadAccount();
-				if (detail !== null) {
+				// is about what this account holds now: a re-read that lands
+				// says so, so a first enrolment then has to carry the code
+				// proving that factor too, and a replace whose factor is gone
+				// is a first enrolment again. A re-read that fails says nothing
+				// about it, so `replacing` is left alone and the setup stays
+				// open with the refusal under it.
+				const reloaded = await loadAccount();
+				if (reloaded && detail !== null) {
 					if (detail.totp && !replacing) replacing = true;
 					if (!detail.totp && replacing) replacing = false;
 				}
@@ -452,7 +474,10 @@
 				return;
 			}
 			cancelRemove();
-			await loadAccount();
+			// The section is read again to show the factor gone. A read that
+			// fails keeps it as it was, and the factor is removed by now.
+			const reloaded = await loadAccount();
+			if (!reloaded && detail !== null) detail.totp = false;
 		} catch {
 			removeError = t('app.account.request_failed');
 		} finally {
@@ -480,7 +505,10 @@
 			}
 			// The change ends the other sessions and drops the assurance with
 			// the old address, so the account is read again before the notice.
-			await loadAccount();
+			// A read that fails keeps the list on screen, and it is patched
+			// down to this session.
+			const reloaded = await loadAccount();
+			if (!reloaded) keepOnlyCurrentSession();
 			emailNotice = t('app.account.email_saved');
 			newEmail = '';
 		} catch {
@@ -503,7 +531,11 @@
 				await refuse(response, (message) => (identityError = message));
 				return;
 			}
-			await loadAccount();
+			// Unlinking a provider is a credential change like the others, so
+			// the list is read again. A read that fails keeps it on screen,
+			// and it is patched down to this session.
+			const reloaded = await loadAccount();
+			if (!reloaded) keepOnlyCurrentSession();
 		} catch {
 			identityError = t('app.account.request_failed');
 		} finally {
@@ -526,8 +558,9 @@
 			}
 			const body = (await response.json()) as { redirect?: unknown };
 			// The redirect is a navigation, so only an address the browser can
-			// be sent to without question is followed: https anywhere, and
-			// http on this very origin while developing locally.
+			// be sent to without question is followed: the two provider
+			// authorize hosts over https, and http on this very origin while
+			// developing locally.
 			const redirect = typeof body.redirect === 'string' ? body.redirect : '';
 			if (!isFollowableRedirect(redirect, location.origin)) {
 				identityError = t('app.account.request_failed');

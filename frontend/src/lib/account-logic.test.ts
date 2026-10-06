@@ -98,12 +98,13 @@ const REFUSAL_KEYS: Array<[string, string]> = [
 	['password does not meet the policy', 'app.account.refusal_password_policy'],
 	['this account already has a password', 'app.account.refusal_has_password'],
 	['a second factor was enrolled already', 'app.account.refusal_factor_exists'],
-	['that provider account is already linked to an account', 'app.account.refusal_provider_linked'],
+	['this session changed while that was in flight', 'app.account.refusal_session_changed'],
+	['too many changes to this account at once', 'app.account.refusal_busy'],
 	['account suspended', 'app.account.refusal_suspended']
 ];
 
 test('refusalKey maps each server detail to a key of its own', () => {
-	assert.equal(REFUSAL_KEYS.length, 10);
+	assert.equal(REFUSAL_KEYS.length, 11);
 	for (const [detail, key] of REFUSAL_KEYS) {
 		assert.equal(refusalKey(detail), key, detail);
 	}
@@ -120,6 +121,16 @@ test('refusalKey answers null for anything else, so the server text shows', () =
 	assert.equal(refusalKey('account suspended. '), null);
 	assert.equal(refusalKey(['account suspended']), null);
 	assert.equal(refusalKey({ detail: 'account suspended' }), null);
+});
+
+test('refusalKey answers null for a name the table only inherits', () => {
+	// Object.prototype lends every object these names, and none of them is a
+	// refusal: only a detail the table itself holds may be translated.
+	assert.equal(refusalKey('toString'), null);
+	assert.equal(refusalKey('constructor'), null);
+	assert.equal(refusalKey('hasOwnProperty'), null);
+	assert.equal(refusalKey('__proto__'), null);
+	assert.equal(refusalKey('valueOf'), null);
 });
 
 test('every key refusalKey names exists in both dictionaries', () => {
