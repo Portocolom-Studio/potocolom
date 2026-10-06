@@ -850,6 +850,7 @@
 	"app.shell.account": "Account",
 	"app.shell.billing": "Billing",
 	"app.shell.notifications": "Notifications",
+	"app.shell.log_out_failed": "Could not sign out. You are still signed in; try again.",
 	"app.shell.log_out": "Log out",
 	"app.shell.role_admin": "Admin",
 	"app.shell.role_user": "User",

@@ -23,13 +23,22 @@
 	const initial = $derived(accountInitial(account.email));
 	const roleLabel = $derived(t(accountRoleLabelKey(account.role)));
 
-	// A failed request still signs this browser out of the studio: the sign-in
-	// page decides what a missing session means.
+	let logOutFailed = $state(false);
+
+	// Only the server can end the session: its cookie is httpOnly. A failed
+	// request leaves this browser signed in, so landing on /login would tell
+	// someone on a shared computer they had left when they had not.
 	async function logOut(): Promise<void> {
+		logOutFailed = false;
 		try {
-			await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+			const response = await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+			if (!response.ok) {
+				logOutFailed = true;
+				return;
+			}
 		} catch {
-			// No answer from the API: leave for /login anyway.
+			logOutFailed = true;
+			return;
 		}
 		await goto(resolve('/login'));
 	}
@@ -106,4 +115,7 @@
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
 	</Sidebar.MenuItem>
+	{#if logOutFailed}
+		<p role="alert" class="text-destructive px-2 pt-1 text-xs">{t('app.shell.log_out_failed')}</p>
+	{/if}
 </Sidebar.Menu>

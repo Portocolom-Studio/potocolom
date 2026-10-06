@@ -850,6 +850,7 @@
 	"app.shell.account": "Cuenta",
 	"app.shell.billing": "Facturación",
 	"app.shell.notifications": "Notificaciones",
+	"app.shell.log_out_failed": "No se pudo cerrar la sesión. Sigues con la sesión iniciada; inténtalo de nuevo.",
 	"app.shell.log_out": "Cerrar sesión",
 	"app.shell.role_admin": "Administrador",
 	"app.shell.role_user": "Usuario",
