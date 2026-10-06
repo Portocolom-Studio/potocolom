@@ -25,7 +25,6 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from itertools import count
 from typing import Literal, Protocol
 from urllib.parse import urlencode
 
@@ -72,27 +71,34 @@ MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
 PENDING_DELETE_TIMEOUT = 60.0  # seconds for one delete, so a wedged mount cannot stall the pass
 
 
-class Queues(Protocol):
-    async def push(self, queue: str, id: str, tier: int) -> None: ...
+@dataclass(frozen=True, order=True)
+class QueueHint:
+    """Queue order: tier, then the job's original age, then id as a tiebreak."""
+    tier: int
+    enqueued_at: datetime
+    id: str
 
-    async def pop(self, queue: str) -> str | None: ...
+
+class Queues(Protocol):
+    async def push(self, queue: str, hint: QueueHint) -> None: ...
+
+    async def pop(self, queue: str) -> QueueHint | None: ...
 
 
 class InProcessQueues:
     """A heap in the single API process; RedisQueues replaces it in the cloud."""
 
     def __init__(self) -> None:
-        self._heaps: dict[str, list[tuple[int, int, str]]] = {}
-        self._seq = count()
+        self._heaps: dict[str, list[QueueHint]] = {}
 
-    async def push(self, queue: str, id: str, tier: int) -> None:
-        heapq.heappush(self._heaps.setdefault(queue, []), (tier, next(self._seq), id))
+    async def push(self, queue: str, hint: QueueHint) -> None:
+        heapq.heappush(self._heaps.setdefault(queue, []), hint)
 
-    async def pop(self, queue: str) -> str | None:
+    async def pop(self, queue: str) -> QueueHint | None:
         heap = self._heaps.get(queue)
         if not heap:
             return None
-        return heapq.heappop(heap)[2]
+        return heapq.heappop(heap)
 
 
 queues: Queues = InProcessQueues()
@@ -443,7 +449,9 @@ async def create_generation(
               source_asset_id=source_asset_id)
     session.add(job)
     await session.commit()
-    await queues.push(JOB_QUEUE, str(job.id), TIER_DEFAULT)
+    # A server default: not on the instance, and async cannot lazy-load it.
+    await session.refresh(job, ["created_at"])
+    await queues.push(JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job.id)))
     return {"job_id": str(job.id)}
 
 
@@ -1373,17 +1381,17 @@ async def _dispatch_step_body() -> None:
     # allowed to stop the pass. Skipped ids are parked here and requeued once
     # the pass has tried everyone else, so one undispatchable job cannot starve
     # the jobs behind it (issue #497).
-    skipped: list[str] = []
+    skipped: list[QueueHint] = []
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
             if not any(w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break
-            job_id = await queues.pop(JOB_QUEUE)
-            if job_id is None:
+            hint = await queues.pop(JOB_QUEUE)
+            if hint is None:
                 break
-            job_uuid = uuid.UUID(job_id)
+            job_uuid = uuid.UUID(hint.id)
             try:
                 dispatched = await dispatch(job_uuid)
             except Exception:
@@ -1391,21 +1399,21 @@ async def _dispatch_step_body() -> None:
                     # Worker may already be running; requeue would double-dispatch.
                     logger.exception(
                         "dispatch failed after worker send for job %s; skipping requeue",
-                        job_id,
+                        hint.id,
                     )
                     return
-                await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)  # never lose the entry
+                await queues.push(JOB_QUEUE, hint)  # never lose the entry
                 raise
             if not dispatched:
                 # No capacity for this job's model right now; try the next job
                 # instead of ending the pass.
-                skipped.append(job_id)
+                skipped.append(hint)
                 continue
     finally:
         # The return and raise paths above also park skipped ids: a dropped one
         # stays `queued` in Postgres with no queue entry until a restart.
-        for job_id in skipped:
-            await queues.push(JOB_QUEUE, job_id, TIER_DEFAULT)
+        for hint in skipped:
+            await queues.push(JOB_QUEUE, hint)
 
 
 async def locked_job(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
@@ -2104,14 +2112,18 @@ async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:
         if job is None or job.state in TERMINAL_STATES:
             return
         if job.state == "queued":
-            await queues.push(JOB_QUEUE, str(job_id), TIER_DEFAULT)
+            await queues.push(
+                JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job_id))
+            )
             logger.info("job %s requeued after %s (never left queued)", job_id, reason)
             return
         if job.attempt == 1:
             job.attempt = 2
             job.state = "queued"
             await session.commit()
-            await queues.push(JOB_QUEUE, str(job_id), TIER_DEFAULT)
+            await queues.push(
+                JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job_id))
+            )
             publish(job_id, {"state": "queued", "attempt": 2})
             logger.info("job %s requeued after %s", job_id, reason)
             return
@@ -2150,4 +2162,6 @@ async def recover() -> None:
         if job.state == "running":
             await requeue_or_fail(job.id, "restart while running")
         else:
-            await queues.push(JOB_QUEUE, str(job.id), TIER_DEFAULT)
+            await queues.push(
+                JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job.id))
+            )

@@ -1559,18 +1559,25 @@ def test_an_undispatchable_job_does_not_end_the_dispatch_pass(monkeypatch):
                         parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
                     ))
                 await session.flush()
+                older = datetime.now(timezone.utc) - timedelta(minutes=2)
+                newer = older + timedelta(minutes=1)
                 session.add_all([
                     Job(id=blocked_id, user_id=db.local_user_id,
                         model_id="no-such-model", params={"prompt": "blocked"},
-                        state="queued"),
+                        state="queued", created_at=older),
                     Job(id=runnable_id, user_id=db.local_user_id,
-                        model_id="sd-test", params={"prompt": "runs"}, state="queued"),
+                        model_id="sd-test", params={"prompt": "runs"},
+                        state="queued", created_at=newer),
                 ])
                 await session.commit()
-            # The heap hands the older push out first, so the undispatchable
+            # The heap hands the older job out first, so the undispatchable
             # job is ahead of the runnable one.
-            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
-            await jobs.queues.push(jobs.JOB_QUEUE, str(runnable_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, older, str(blocked_id))
+            )
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, newer, str(runnable_id))
+            )
             return blocked_id, runnable_id
 
         real_dispatch_step = jobs.dispatch_step
@@ -1619,18 +1626,25 @@ def test_an_undispatchable_job_takes_no_row_lock(monkeypatch):
                         parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
                     ))
                 await session.flush()
+                older = datetime.now(timezone.utc) - timedelta(minutes=2)
+                newer = older + timedelta(minutes=1)
                 session.add_all([
                     Job(id=blocked_id, user_id=db.local_user_id,
                         model_id="no-such-model", params={"prompt": "blocked"},
-                        state="queued"),
+                        state="queued", created_at=older),
                     Job(id=runnable_id, user_id=db.local_user_id,
-                        model_id="sd-test", params={"prompt": "runs"}, state="queued"),
+                        model_id="sd-test", params={"prompt": "runs"},
+                        state="queued", created_at=newer),
                 ])
                 await session.commit()
-            # The heap hands the older push out first, so the undispatchable
+            # The heap hands the older job out first, so the undispatchable
             # job is ahead of the runnable one.
-            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
-            await jobs.queues.push(jobs.JOB_QUEUE, str(runnable_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, older, str(blocked_id))
+            )
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, newer, str(runnable_id))
+            )
             return blocked_id, runnable_id
 
         real_dispatch_step = jobs.dispatch_step
@@ -1660,7 +1674,7 @@ def test_an_undispatchable_job_takes_no_row_lock(monkeypatch):
         blocked = client.get(f"/api/v1/generations/{blocked_id}").json()
         assert blocked["state"] == "queued"
         queued_ids = {
-            entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+            entry.id for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
         }
         assert str(blocked_id) in queued_ids, \
             "the skipped job must be requeued at the end of the pass"
@@ -1688,17 +1702,25 @@ def test_skipped_jobs_are_requeued_when_a_later_dispatch_raises(monkeypatch):
                         parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
                     ))
                 await session.flush()
+                older = datetime.now(timezone.utc) - timedelta(minutes=2)
+                newer = older + timedelta(minutes=1)
                 session.add_all([
                     Job(id=blocked_id, user_id=db.local_user_id, model_id="sd-test",
-                        params={"prompt": "blocked"}, state="queued", attempt=1),
+                        params={"prompt": "blocked"}, state="queued", attempt=1,
+                        created_at=older),
                     Job(id=raising_id, user_id=db.local_user_id, model_id="sd-test",
-                        params={"prompt": "raises"}, state="queued", attempt=1),
+                        params={"prompt": "raises"}, state="queued", attempt=1,
+                        created_at=newer),
                 ])
                 await session.commit()
-            # The heap hands the older push out first, so the undispatchable
+            # The heap hands the older job out first, so the undispatchable
             # job is ahead of the raising one.
-            await jobs.queues.push(jobs.JOB_QUEUE, str(blocked_id), jobs.TIER_DEFAULT)
-            await jobs.queues.push(jobs.JOB_QUEUE, str(raising_id), jobs.TIER_DEFAULT)
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, older, str(blocked_id))
+            )
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, newer, str(raising_id))
+            )
             return blocked_id, raising_id
 
         real_dispatch_step = jobs.dispatch_step
@@ -1723,7 +1745,7 @@ def test_skipped_jobs_are_requeued_when_a_later_dispatch_raises(monkeypatch):
                 client.portal.call(real_dispatch_step)
 
             queued_ids = {
-                entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+                entry.id for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
             }
             assert str(blocked_id) in queued_ids, \
                 "a raise dropped the ids parked ahead of the failing dispatch"
@@ -1749,16 +1771,24 @@ def test_dispatch_pass_stops_when_no_worker_has_a_free_slot(monkeypatch):
                         parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
                     ))
                 await session.flush()
-                for prompt in ("one", "two", "three"):
+                base = datetime.now(timezone.utc) - timedelta(minutes=3)
+                stamps: dict[uuid.UUID, datetime] = {}
+                for i, prompt in enumerate(("one", "two", "three")):
                     job_id = uuid.uuid4()
+                    created_at = base + timedelta(seconds=i)
                     session.add(Job(
                         id=job_id, user_id=db.local_user_id, model_id="sd-test",
                         params={"prompt": prompt}, state="queued", attempt=1,
+                        created_at=created_at,
                     ))
                     ids.append(job_id)
+                    stamps[job_id] = created_at
                 await session.commit()
             for job_id in ids:
-                await jobs.queues.push(jobs.JOB_QUEUE, str(job_id), jobs.TIER_DEFAULT)
+                await jobs.queues.push(
+                    jobs.JOB_QUEUE,
+                    jobs.QueueHint(jobs.TIER_DEFAULT, stamps[job_id], str(job_id)),
+                )
             return ids
 
         real_dispatch_step = jobs.dispatch_step
@@ -1781,9 +1811,130 @@ def test_dispatch_pass_stops_when_no_worker_has_a_free_slot(monkeypatch):
 
         assert calls == [], "dispatch() ran without any worker capacity"
         queued_ids = {
-            entry[2] for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+            entry.id for entry in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
         }
         assert queued_ids == {str(job_id) for job_id in ids}
+
+
+@pytest.mark.db
+def test_a_lost_worker_retry_keeps_its_original_place(monkeypatch):
+    """A retry carries the job's created_at, so the job returns to where it
+    stood in line instead of going behind jobs created after it."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            a_id, b_id = uuid.uuid4(), uuid.uuid4()
+            older = datetime.now(timezone.utc) - timedelta(minutes=5)
+            newer = older + timedelta(minutes=1)
+            async with db.session_factory() as session:
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test",
+                        capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                session.add_all([
+                    Job(id=a_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "older"}, state="queued", attempt=1,
+                        created_at=older),
+                    Job(id=b_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "newer"}, state="queued", attempt=1,
+                        created_at=newer),
+                ])
+                await session.commit()
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, older, str(a_id))
+            )
+            await jobs.queues.push(
+                jobs.JOB_QUEUE, jobs.QueueHint(jobs.TIER_DEFAULT, newer, str(b_id))
+            )
+            return a_id, b_id
+
+        async def dispatch_a() -> None:
+            # What dispatch leaves behind when the worker then dies: the row
+            # is running at attempt 1 with nothing left in the queue but B.
+            assert db.session_factory is not None
+            async with db.session_factory() as session:
+                job = await session.get(Job, a_id)
+                assert job is not None
+                job.state = "running"
+                await session.commit()
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        a_id, b_id = client.portal.call(seed)
+
+        popped = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+        assert popped is not None and popped.id == str(a_id)
+        client.portal.call(dispatch_a)
+        client.portal.call(jobs.requeue_or_fail, a_id, "test")
+
+        retried = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+        assert retried is not None and retried.id == str(a_id), \
+            "the retry went behind the job created after it"
+        rest = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+        assert rest is not None and rest.id == str(b_id)
+
+        job = client.get(f"/api/v1/generations/{a_id}").json()
+        assert job["state"] == "queued"
+        assert job["attempt"] == 2
+
+
+@pytest.mark.db
+def test_recover_rebuilds_the_queue_in_created_at_order(monkeypatch):
+    """The rebuilt queue follows the age each entry carries, not the order the
+    rows happened to come back from PostgreSQL in."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def seed() -> tuple[uuid.UUID, uuid.UUID]:
+            assert db.local_user_id is not None
+            assert db.session_factory is not None
+            newer_id, older_id = uuid.uuid4(), uuid.uuid4()
+            newer = datetime.now(timezone.utc) - timedelta(minutes=4)
+            older = newer - timedelta(minutes=1)
+            async with db.session_factory() as session:
+                # Leftovers from an earlier case would join this rebuild.
+                await session.execute(
+                    delete(Job).where(Job.state.in_(("queued", "running")))
+                )
+                if await session.get(Model, "sd-test") is None:
+                    session.add(Model(
+                        id="sd-test", name="SD Test",
+                        capabilities=["text_to_image"],
+                        parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                    ))
+                await session.flush()
+                # The newest row is inserted first, so the physical row order
+                # runs opposite to the age order the pops must follow.
+                session.add_all([
+                    Job(id=newer_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "newer"}, state="queued", attempt=1,
+                        created_at=newer),
+                    Job(id=older_id, user_id=db.local_user_id, model_id="sd-test",
+                        params={"prompt": "older"}, state="queued", attempt=1,
+                        created_at=older),
+                ])
+                await session.commit()
+            return newer_id, older_id
+
+        async def parked():
+            return None
+
+        monkeypatch.setattr(jobs, "dispatch_step", parked)
+        newer_id, older_id = client.portal.call(seed)
+        client.portal.call(jobs.recover)
+
+        first = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+        second = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+        assert first is not None and first.id == str(older_id), \
+            "the rebuild queued by row order, not by the job's age"
+        assert second is not None and second.id == str(newer_id)
+        assert client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE) is None
 
 
 @pytest.mark.db
