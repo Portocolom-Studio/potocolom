@@ -125,9 +125,14 @@ Queue position for the waiting room UI is one call: `ZRANK queue:admission {requ
 Self-hosted installs set no `REDIS_URL` and get in-process implementations of the same interfaces, which is the whole trick that keeps Redis out of the compose file:
 
 ```python
+class QueueHint:                    # ordered: tier, then the job's created_at, then id
+    tier: int
+    enqueued_at: datetime
+    id: str
+
 class Queues(Protocol):
-    async def push(self, queue: str, id: str, tier: int) -> None
-    async def pop(self, queue: str) -> str | None
+    async def push(self, queue: str, hint: QueueHint) -> None
+    async def pop(self, queue: str) -> QueueHint | None
 
 class RedisQueues(Queues): ...      # sorted sets + pop_best.lua
 class InProcessQueues(Queues): ...  # a heap in the single API process
