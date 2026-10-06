@@ -46,6 +46,9 @@ export function isFollowableRedirect(redirect: string, pageOrigin: string): bool
 	} catch {
 		return false;
 	}
+	// A provider's authorize address never carries credentials; one that does
+	// is built to look like one host while naming another.
+	if (parsed.username !== '' || parsed.password !== '') return false;
 	if (parsed.protocol === 'https:') return true;
 	return parsed.protocol === 'http:' && parsed.origin === pageOrigin;
 }

@@ -116,3 +116,14 @@ test('isFollowableRedirect refuses anything that does not parse as a URL', () =>
 	assert.equal(isFollowableRedirect('not a url', 'http://localhost:5173'), false);
 	assert.equal(isFollowableRedirect('/relative/path', 'http://localhost:5173'), false);
 });
+
+test('isFollowableRedirect refuses an address that carries credentials', () => {
+	assert.equal(
+		isFollowableRedirect('https://accounts.google.com@evil.example/', 'http://localhost'),
+		false
+	);
+	assert.equal(
+		isFollowableRedirect('https://user:pass@github.com/login', 'http://localhost'),
+		false
+	);
+});

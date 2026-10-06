@@ -129,8 +129,6 @@ async def account(principal: sessions.Resolved = Depends(current_principal)) -> 
         factor = await factors.enrolled_factor(session, principal.user.id)
         # Each provider once: two rows for one provider are two identities to
         # the server but one door to the account, and the view lists doors.
-        # Each provider once: two rows for one provider are two identities to
-        # the server but one door to the account, and the view lists doors.
         identities = sorted(set((await session.execute(
             select(AuthIdentity.provider).where(AuthIdentity.user_id == principal.user.id)
         )).scalars().all()))
