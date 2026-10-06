@@ -97,9 +97,10 @@ The FrameBus contract is normative:
 Scoring for both queues, lower pops first:
 
 ```python
-def score(tier: int, now_ms: int) -> float:
+def score(tier: int, enqueued_ms: int) -> float:
     # tier: 0 = resuming idle session, 1 = paid, 2 = trial
-    return tier * 1e13 + now_ms
+    # enqueued_ms: a job's created_at, so a retry keeps its original age
+    return tier * 1e13 + enqueued_ms
 ```
 
 Atomic pop, so two schedulers (during a leader handover) can never dispatch the same entry:
