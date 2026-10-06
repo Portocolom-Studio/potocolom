@@ -92,7 +92,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/account/identities/{provider}` | implemented | unlink a provider; refuses the last way in |
 | POST `/api/v1/account/password` | implemented | change or add a password; needs recent authentication |
 | POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance |
-| GET `/api/v1/account` | implemented | this account, and its live sessions |
+| GET `/api/v1/account` | implemented | this account, its live sessions, `totp` (true only when a second factor is confirmed) and `identities` (the account's providers, sorted) |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON |
 | DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { deleteConfirmed, signInAgainHref } from './account-logic.ts';
+import { canUnlink, deleteConfirmed, linkableProviders, signInAgainHref } from './account-logic.ts';
 import { studioReturnSearch } from './auth-flow.ts';
 
 test('deleteConfirmed accepts the account email as typed', () => {
@@ -28,4 +28,35 @@ test('signInAgainHref carries the account view back through the login next param
 	// The login page only returns to a same-origin /app address, so the link it
 	// hands back must still name this view.
 	assert.equal(studioReturnSearch(next), '?view=account');
+});
+
+test('linkableProviders offers the installed providers the account does not have', () => {
+	assert.deepEqual(linkableProviders(['password', 'google', 'github'], []), ['google', 'github']);
+	assert.deepEqual(linkableProviders(['password', 'google', 'github'], ['github']), ['google']);
+	assert.deepEqual(linkableProviders(['password', 'google'], ['google']), []);
+	assert.deepEqual(linkableProviders([], ['password']), []);
+});
+
+test('linkableProviders never offers a password or an identity already linked', () => {
+	// A password is not a provider to send anybody to, and a second copy of
+	// an identity the account already holds is not linking anything.
+	assert.deepEqual(linkableProviders(['password'], ['password']), []);
+	assert.deepEqual(linkableProviders(['password', 'google'], ['password', 'google']), []);
+	assert.deepEqual(linkableProviders(['google'], ['google', 'github']), []);
+});
+
+test('linkableProviders keeps the order the install offers them in', () => {
+	assert.deepEqual(linkableProviders(['github', 'google', 'password'], ['google']), ['github']);
+	assert.notDeepEqual(
+		linkableProviders(['github', 'google'], ['password']),
+		linkableProviders(['google', 'github'], ['password'])
+	);
+});
+
+test('canUnlink is true while more than one identity is left', () => {
+	assert.equal(canUnlink([]), false);
+	assert.equal(canUnlink(['password']), false);
+	assert.equal(canUnlink(['google']), false);
+	assert.equal(canUnlink(['password', 'google']), true);
+	assert.equal(canUnlink(['google', 'github', 'password']), true);
 });

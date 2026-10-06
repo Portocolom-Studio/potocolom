@@ -124,6 +124,12 @@ async def account(principal: sessions.Resolved = Depends(current_principal)) -> 
                    or_(Session.idle_expires_at.is_(None), Session.idle_expires_at > func.now()))
             .order_by(Session.created_at)
         )).scalars().all()
+        # Same session as the query above: the factor and the providers belong
+        # to the same read of the account as the sessions listed with them.
+        factor = await factors.enrolled_factor(session, principal.user.id)
+        identities = sorted((await session.execute(
+            select(AuthIdentity.provider).where(AuthIdentity.user_id == principal.user.id)
+        )).scalars().all())
     return {
         "id": str(principal.user.id),
         "email": principal.user.email,
@@ -131,6 +137,10 @@ async def account(principal: sessions.Resolved = Depends(current_principal)) -> 
         "state": principal.user.state,
         "mail_verified": principal.user.mail_verified,
         "recent_auth": sessions.is_recent(principal.session),
+        # Only a confirmed factor gates sign-in, which is what enrolled_factor
+        # counts: an enrolment started and abandoned is not a second factor.
+        "totp": factor is not None,
+        "identities": identities,
         "sessions": [
             {
                 "id": str(row.id),
