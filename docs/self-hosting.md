@@ -49,6 +49,20 @@ Docker and nothing else. `make compose-up`, `make compose-down` and
 `make compose-logs` wrap the same commands and detect the profile, for hosts
 that already have `make`; they are a shortcut and never a requirement.
 
+## Installing a release
+
+```bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/download/v0.1.0/install.sh | bash
+```
+
+It needs Docker, `curl` and `openssl`, installs into `~/potocolom`
+(`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
+stack. Rerun the install script of a newer release to upgrade in place. The
+script verifies the downloaded bundle against the release's `SHA256SUMS`, sets
+`POTOCOLOM_VERSION` in `deploy/compose/.env`, and refuses a machine with no
+GPU, because the released images need one. Everything below is the same stack
+built from a source checkout instead.
+
 ## Checking a machine before you start
 
 `scripts/preflight.sh` (or `make preflight`) checks everything on this page

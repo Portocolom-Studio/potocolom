@@ -266,8 +266,15 @@ fi
 
 ((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"
 
+# A source checkout has the Dockerfiles and builds the images; a release
+# install only has the compose file, so it pulls what the image: tags name.
+build_flag=""
+if [[ -d "$ROOT/deploy/docker" ]]; then
+  build_flag=" --build"
+fi
+
 case "$profile" in
-  gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
-  rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
+  gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d%s\n\n  Then open http://localhost:%s\n' "$build_flag" "$PORT" ;;
+  rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d%s\n\n  Then open http://localhost:%s\n' "$build_flag" "$PORT" ;;
   smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    scripts/compose-smoke.sh\n' ;;
 esac

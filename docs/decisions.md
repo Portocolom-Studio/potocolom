@@ -1803,3 +1803,16 @@ Rejected alternatives:
 - Keeping sessions on protocol 5 while jobs use protocol 6. One connection would then speak two protocols with two different fencing rules.
 
 > Shipped status (2026-10-07): v6 sessions ship on local sockets, and the worker speaks protocol 6 since #681.
+
+## Self-hosted releases install from published images with one script
+
+Implements issue #667. A release attaches `install.sh` and a small self-host bundle: the compose file, the env example, the preflight, env and auth-enable scripts, and the model manifests that preflight reads. The script downloads the bundle, checks it against the release's `SHA256SUMS`, runs preflight, writes `POTOCOLOM_VERSION` into `deploy/compose/.env`, then pulls and starts the tagged images. `compose.yml` names those images next to its `build:` entries, so a source checkout still builds with `up --build` and a release install never builds. Running a newer release's script upgrades in place: the bundle never carries `.env`, so the secrets stay, and the API migrates on startup.
+
+This keeps "Docker and nothing else": the script adds only curl and openssl, which preflight already needs. It adds no network call to the installed product: the operator runs the script, and the only outbound report stays the opt-out daily aggregate. That aggregate's `version` field now reads the release, because the release workflow refuses a tag that differs from the package versions.
+
+A machine without a GPU is refused, because no simulated-worker image is published. That path is for evaluating the protocol, and a clone serves it.
+
+Rejected alternatives:
+- Clone and build as the only path. Every self-hoster then builds a multi-GB CUDA image that CI has already built, tested and scanned, and runs code that no release check covered.
+- A script that follows `main` or a `latest` image tag. The installed version would then be whatever was pushed last, which breaks "one project version" and the N-1 worker promise.
+- Distribution packages (deb, rpm) or a Helm chart. Each one is a second install surface to maintain for an audience that already needs Docker for the GPU passthrough.

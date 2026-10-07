@@ -1,5 +1,7 @@
 # Self-hosted stack: one API (SPA + backend), PostgreSQL and one GPU worker.
 # Shape matches docs/blueprint.md; no Redis, billing or safety services.
+# A release install (scripts/install.sh) pulls the image: tags below; a source
+# checkout builds them with `up --build`, tagged :dev unless POTOCOLOM_VERSION is set.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -10,6 +12,7 @@ services:
   api:
     logging: *default-logging
     restart: unless-stopped
+    image: ghcr.io/portocolom-studio/potocolom-api:${POTOCOLOM_VERSION:-dev}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
@@ -51,6 +54,7 @@ services:
     logging: *default-logging
     restart: unless-stopped
     profiles: ["gpu"]
+    image: ghcr.io/portocolom-studio/potocolom-worker:${POTOCOLOM_VERSION:-dev}-cuda
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.worker-cuda
@@ -83,6 +87,7 @@ services:
     logging: *default-logging
     restart: unless-stopped
     profiles: ["rocm"]
+    image: ghcr.io/portocolom-studio/potocolom-worker:${POTOCOLOM_VERSION:-dev}-rocm
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.worker-rocm

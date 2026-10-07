@@ -37,6 +37,18 @@ jobs:
           persist-credentials: false
       - run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          want="${VERSION#v}"
+          expect_version() {
+            found="$1"
+            file="$2"
+            if [[ "$found" != "$want" ]]; then
+              echo "::error::$file version $found does not match tag $VERSION"
+              exit 1
+            fi
+          }
+          expect_version "$(sed -n 's/^version = "\(.*\)"/\1/p' backend/pyproject.toml)" backend/pyproject.toml
+          expect_version "$(sed -n 's/^version = "\(.*\)"/\1/p' worker/pyproject.toml)" worker/pyproject.toml
+          expect_version "$(node -p "require('./frontend/package.json').version")" frontend/package.json
           git merge-base --is-ancestor HEAD origin/main
       - run: make setup
       - run: make verify
@@ -128,6 +140,9 @@ jobs:
           mkdir release-static
           docker cp "$container:/app/static/." release-static/
           tar -czf "potocolom-$VERSION-static.tar.gz" -C release-static .
+          tar -czf "potocolom-$VERSION-selfhost.tar.gz" deploy/compose/compose.yml deploy/compose/.env.example \
+            scripts/preflight.sh scripts/ensure-env.sh scripts/auth-enable.sh worker/models/*.json
+          sed "s/__POTOCOLOM_VERSION__/$VERSION/" scripts/install.sh > install.sh
           gh release create "$VERSION" --verify-tag --draft --title "potocolom $VERSION" \
             --notes-file docs/release-checklist.md
           for image in "$REGISTRY/potocolom-api:$VERSION" \
@@ -135,9 +150,10 @@ jobs:
             docker push "$image"
             docker inspect --format '{{index .RepoDigests 0}}' "$image" >> images.txt
           done
-          sha256sum "potocolom-$VERSION-static.tar.gz" > SHA256SUMS
+          sha256sum "potocolom-$VERSION-static.tar.gz" "potocolom-$VERSION-selfhost.tar.gz" install.sh > SHA256SUMS
           gh release upload "$VERSION" \
-            "potocolom-$VERSION-static.tar.gz" images.txt SHA256SUMS trivy-*.txt
+            "potocolom-$VERSION-static.tar.gz" "potocolom-$VERSION-selfhost.tar.gz" install.sh \
+            images.txt SHA256SUMS trivy-*.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
