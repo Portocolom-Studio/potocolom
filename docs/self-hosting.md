@@ -44,8 +44,9 @@ A machine without a supported GPU can still run the full stack against the
 simulated worker (flat colored images, real protocol):
 `scripts/compose-smoke.sh`.
 
-Every command on this page is `docker compose`, because self-hosting requires
-Docker and nothing else. `make compose-up`, `make compose-down` and
+Apart from the release install script, every command on this page is
+`docker compose`, because self-hosting requires Docker and nothing else.
+`make compose-up`, `make compose-down` and
 `make compose-logs` wrap the same commands and detect the profile, for hosts
 that already have `make`; they are a shortcut and never a requirement.
 
@@ -63,6 +64,10 @@ installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
 a specific one. The script verifies the downloaded bundle against the
 release's `SHA256SUMS`, sets `POTOCOLOM_VERSION` in `deploy/compose/.env`, and
 refuses a machine with no GPU, because the released images need one.
+A release install is Compose project `potocolom`, separate from a source
+checkout's project `compose`; to move an existing checkout's data over, set
+`COMPOSE_PROJECT_NAME=compose` and copy that checkout's `deploy/compose/.env`
+into the install before running the script.
 Everything below is the same stack built from a source checkout instead.
 
 ## Checking a machine before you start

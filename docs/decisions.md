@@ -1810,7 +1810,9 @@ Implements issue #667. A release attaches `install.sh` and a small self-host bun
 
 The landing page and README give `releases/latest/download/install.sh`. GitHub serves that address from the newest published release, and the script it serves installs only its own tag, so the advertised command needs no edit per release and still installs one exact version.
 
-This keeps "Docker and nothing else": the script adds only curl and openssl, which preflight already needs. It adds no network call to the installed product: the operator runs the script, and the only outbound report stays the opt-out daily aggregate. That aggregate's `version` field now reads the release, because the release workflow refuses a tag that differs from the package versions.
+A release install uses Compose project `potocolom`, set as `COMPOSE_PROJECT_NAME` in its `.env`, so it never shares containers or volumes with a source checkout, whose project is `compose`. The script refuses to create a new `.env` next to an existing `potocolom_pgdata` volume, because the new password would not open the old database and the API would start without one.
+
+This keeps "Docker and nothing else" in spirit: the script adds curl, tar and sha256sum, which every Linux base system carries, and openssl, which preflight already needs. It adds no network call to the installed product: the operator runs the script, and the only outbound report stays the opt-out daily aggregate. That aggregate's `version` field now reads the release, because the release workflow refuses a tag that differs from the package versions.
 
 A machine without a GPU is refused, because no simulated-worker image is published. That path is for evaluating the protocol, and a clone serves it.
 

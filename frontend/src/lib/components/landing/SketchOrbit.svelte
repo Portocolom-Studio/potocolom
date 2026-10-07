@@ -1147,7 +1147,7 @@
 	}
 
 	.install button:focus-visible {
-		outline: 2px solid var(--k-accent);
+		outline: 2px solid var(--k-ink);
 		outline-offset: 2px;
 	}
 

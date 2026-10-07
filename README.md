@@ -44,7 +44,7 @@ the `make` targets further down are for working *on* potocolom, not running it.
 curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
 ```
 
-It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
+It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, plus an NVIDIA or AMD GPU (the simulated worker runs from a source checkout only), installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
 stack. Rerun the install script of a newer release to upgrade in place. The
 `latest` address always serves the newest release's script, and that script
