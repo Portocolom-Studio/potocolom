@@ -1,4 +1,10 @@
-FROM rocm/pytorch:rocm6.3_ubuntu22.04_py3.11_pytorch_2.9.0
+FROM python:3.11-slim
+
+# torch in rocm/pytorch:rocm7.0.2 has no gfx1102 (RX 7600) kernels: a real
+# generation failed with "invalid device function". The rocm6.3 wheels carry
+# their own ROCm libraries and kernels for gfx1030-gfx1201, the same build
+# `make setup-rocm` installs, so the base needs no ROCm userspace.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -7,7 +13,9 @@ COPY worker/worker ./worker
 # Default manifests seed the empty models volume on first boot.
 COPY worker/models /models
 
-RUN pip install --no-cache-dir ".[inference]"
+RUN pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/rocm6.3 \
+	&& pip install --no-cache-dir ".[inference]" \
+	&& pip install --no-cache-dir --upgrade setuptools wheel
 
 ENV DEVICE=rocm
 ENV PYTHONUNBUFFERED=1

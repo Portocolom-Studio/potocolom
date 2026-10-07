@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "potocolom-backend"
-version = "0.1.0"
+version = "0.1.1"
 description = "potocolom API server"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "boto3>=1.34,<2",
     "argon2-cffi>=23,<26",
-    "cryptography>=43,<48",
+    "cryptography>=50,<51",
     "httpx>=0.27,<1",
     "jsonschema>=4.21,<5",
     "referencing>=0.35,<1",  # manifests.py catches Unresolvable directly

@@ -1,5 +1,9 @@
 FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
 
+# Vendor GPU base images lag their distribution's security updates, and the
+# release scan blocks any HIGH or CRITICAL finding that has a fix.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY worker/pyproject.toml .
@@ -7,7 +11,8 @@ COPY worker/worker ./worker
 # Default manifests seed the empty models volume on first boot.
 COPY worker/models /models
 
-RUN pip install --no-cache-dir ".[inference]"
+RUN pip install --no-cache-dir ".[inference]" \
+	&& pip install --no-cache-dir --upgrade setuptools wheel urllib3 fsspec msgpack soupsieve brotli
 
 ENV DEVICE=cuda
 ENV PYTHONUNBUFFERED=1

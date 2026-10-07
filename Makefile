@@ -342,6 +342,12 @@ verify-compose: ## validate every compose file and profile (no containers starte
 	docker compose --env-file $$ENV_FILE -f dev.yml config -q \
 		&& docker compose --env-file $$ENV_FILE -f dev.yml --profile cloud-sim config -q \
 		&& docker compose --env-file $$ENV_FILE -f compose.smoke.yml config -q
+	@# The GPU images are only built on a release tag, so a base image that does
+	@# not exist would otherwise surface there and cost a version number.
+	@for img in $$(awk '/^FROM /{print $$2}' deploy/docker/Dockerfile.* | sort -u); do \
+		docker buildx imagetools inspect "$$img" >/dev/null 2>&1 || \
+			{ echo "error: base image $$img in deploy/docker/ not found in its registry" >&2; exit 1; }; \
+	done
 
 verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
 	python3 scripts/verify-mermaid.py

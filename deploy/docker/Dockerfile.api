@@ -13,7 +13,11 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/alembic.ini ./
 COPY backend/app ./app
 COPY backend/migrations ./migrations
-RUN pip install --no-cache-dir .
+# The release scan blocks any HIGH or CRITICAL finding that has a fix, and
+# base images lag both their distribution's updates and setuptools' vendored
+# wheel and jaraco.context.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+	&& pip install --no-cache-dir --upgrade setuptools && pip install --no-cache-dir .
 
 COPY --from=frontend /build/build /app/static
 
