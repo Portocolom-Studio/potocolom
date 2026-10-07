@@ -125,6 +125,25 @@ def default_steps(manifest: Manifest) -> object | None:
     return steps.get("default")
 
 
+def planned_job_steps(
+    manifest: Manifest, params: dict, *, input_image: bytes | None = None,
+) -> int:
+    """Step count the engine uses for progress callbacks on this job."""
+    properties = manifest.parameters.get("properties")
+    schema_steps = 2
+    if isinstance(properties, dict):
+        steps_schema = properties.get("steps")
+        if isinstance(steps_schema, dict) and steps_schema.get("default") is not None:
+            schema_steps = int(steps_schema["default"])
+    if "upscale" in manifest.capabilities:
+        return 1
+    steps = max(1, int(params.get("steps", schema_steps)))
+    if input_image is not None and "image_to_image" in manifest.capabilities:
+        strength = min(max(float(params.get("strength", 0.75)), 0.05), 1.0)
+        return max(1, int(steps * strength))
+    return steps
+
+
 def normalise_seed(value: object) -> int | None:
     """The seed a session's params must hold, normalised at the worker's
     boundary so everything downstream sees an integer.
@@ -228,24 +247,24 @@ def _enrich_protocol6_message(message: dict[str, Any], identity: dict[str, Any])
             "attempt_id",
             "control_generation",
         ]
-        if kind in {"session_ready", "session_refused"}:
+        if kind == "session_ready":
             identity_fields.append("params_revision")
     elif kind in {"job_progress", "job_done", "job_failed", "job_cancelled"}:
         identity_fields = [*common, "job_id", "dispatch_sequence", "dispatch_token"]
     else:
         identity_fields = list(common)
     result.update({key: identity[key] for key in identity_fields if key in identity})
-    if kind in {"session_ready", "session_refused"}:
+    if kind == "session_ready":
         result.setdefault("params_revision", identity.get("params_revision", 1))
-        if kind == "session_refused":
-            reason = result.pop("reason", "model_unavailable")
-            result.setdefault(
-                "code",
-                {
-                    "not_resident": "model_unavailable",
-                    "invalid_params": "invalid_params",
-                }.get(reason, "model_unavailable"),
-            )
+    if kind == "session_refused":
+        reason = result.pop("reason", "model_unavailable")
+        result.setdefault(
+            "code",
+            {
+                "not_resident": "model_unavailable",
+                "invalid_params": "invalid_params",
+            }.get(reason, "model_unavailable"),
+        )
     if kind == "session_closed":
         result.update(
             {
@@ -856,16 +875,37 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
     job_started = time.monotonic()
     progress_tasks: list[asyncio.Task[None]] = []
     last_fraction = 0.0
+    protocol6 = isinstance(ws, Protocol6WebSocket)
+    job_phase = "load"
+    job_step = 0
+    job_steps = 1
 
     def progress(fraction: float) -> None:
-        nonlocal last_fraction
+        nonlocal last_fraction, job_phase, job_step, job_steps
         last_fraction = fraction
+        if protocol6:
+            if fraction > 0:
+                job_phase = "inference"
+                if fraction < 1.0 and job_step > 0:
+                    job_steps = max(job_steps, round(job_step / fraction))
+                job_step = min(job_steps, max(1, int(round(fraction * job_steps))))
+                if fraction >= 1.0:
+                    job_step = job_steps
         progress_tasks.append(asyncio.create_task(send_progress(fraction)))
 
     async def send_progress(fraction: float) -> None:
         with suppress(websockets.WebSocketException):
-            await ws.send(json.dumps({"type": "job_progress", "job_id": job_id,
-                                      "progress": round(fraction, 4), **stamp}))
+            payload: dict[str, Any] = {
+                "type": "job_progress",
+                "job_id": job_id,
+                "progress": round(fraction, 4),
+                **stamp,
+            }
+            if protocol6:
+                payload["phase"] = job_phase
+                payload["step"] = job_step
+                payload["steps"] = job_steps
+            await ws.send(json.dumps(payload))
 
     async def progress_keepalive() -> None:
         while True:
@@ -892,6 +932,8 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
     postprocess_ms = 0
     try:
         params = manifest.with_defaults(control.get("params") or {})
+        if protocol6:
+            job_steps = planned_job_steps(manifest, params, input_image=None)
         upload = control["upload"]
         thumb_upload = control.get("thumb_upload")
         has_thumbnail = False
@@ -906,6 +948,8 @@ async def run_job(ws, engine: Engine, manifest: Manifest, control: dict,
                 response.raise_for_status()
                 input_image = response.content
             input_fetch_ms = int((time.monotonic() - fetch_start) * 1000)
+            if protocol6:
+                job_steps = planned_job_steps(manifest, params, input_image=input_image)
         if stop.is_set():
             # Asked to stop while the input was still downloading: the GPU
             # never ran, so there is no time to charge and nothing to upload.
@@ -1172,9 +1216,6 @@ async def _serve_protocol6(
                 "gpu": gpu,
                 "frame_p95_ms": frame_p95_payload(engine),
             }
-            batch = batch_ms_payload(engine)
-            if batch:
-                message["realtime_batch_ms"] = batch
             await output.send_message(message)
 
     async def apply_command(command: dict[str, Any]) -> tuple[str, str | None]:
@@ -1190,17 +1231,6 @@ async def _serve_protocol6(
                 identity = dict(runner._p6_identity)
                 identity.update(_command_identity(command))
                 runner._p6_identity = identity
-                token = _protocol6_identity.set(identity)
-                try:
-                    await output.send_message({
-                        "type": "session_ready",
-                        "session_id": command["session_id"],
-                        "attempt_id": command["attempt_id"],
-                        "control_generation": command["control_generation"],
-                        "params_revision": command.get("params_revision", 1),
-                    })
-                finally:
-                    _protocol6_identity.reset(token)
             return "accepted", None
         if kind == "close_session":
             await sessions.close(command)
