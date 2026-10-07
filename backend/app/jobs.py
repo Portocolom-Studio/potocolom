@@ -1439,6 +1439,7 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
         if job is None or job.state != "queued":
             return True
         attempt = job.attempt
+        previous_sequence = job.current_dispatch_sequence
         user_id = job.user_id
         model_id = job.model_id
         params = job.params
@@ -1477,6 +1478,21 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
         }
     from app import command_store
 
+    # Published before the claim commits, as protocol 5 does under its row
+    # lock: a cancel that commits right after the claim must find this entry,
+    # or it marks the row cancelled and never tells the worker.
+    current = InFlight(
+        worker=worker,
+        storage_key=storage_key,
+        thumb_storage_key=thumb_storage_key,
+        user_id=user_id,
+        dispatch_token=dispatch_token,
+        attempt=attempt,
+        dispatch_sequence=previous_sequence + 1,
+    )
+    worker.jobs_in_flight += 1
+    inflight[job_id] = current
+    last_progress_at[job_id] = time.monotonic()
     try:
         command = await command_store.commit_command(
             worker.id,
@@ -1488,21 +1504,14 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             job_context={"source_asset_id": source_asset_id},
         )
     except command_store.CommandRefused as error:
+        if inflight.get(job_id) is current:
+            del inflight[job_id]
+            last_progress_at.pop(job_id, None)
+            release_job_slot(worker)
         if str(error) == "job claim is stale":
             return True
         return False
-    current = InFlight(
-        worker=worker,
-        storage_key=storage_key,
-        thumb_storage_key=thumb_storage_key,
-        user_id=user_id,
-        dispatch_token=dispatch_token,
-        attempt=attempt,
-        dispatch_sequence=json.loads(command.body)["dispatch_sequence"],
-    )
-    worker.jobs_in_flight += 1
-    inflight[job_id] = current
-    last_progress_at[job_id] = time.monotonic()
+    current.dispatch_sequence = json.loads(command.body)["dispatch_sequence"]
     try:
         await asyncio.wait_for(
             worker.ws.send_text(command.body.decode("utf-8", "strict")),

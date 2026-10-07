@@ -408,3 +408,65 @@ def test_protocol6_an_ack_that_does_not_match_its_command_is_ignored(monkeypatch
             assert client.portal.call(command_store.acknowledge, ack) is True
             assert client.portal.call(
                 command_store.read_exact_pending, worker_id, incarnation) is None
+
+
+@pytest.mark.db
+def test_protocol6_a_cancel_landing_right_after_the_claim_reaches_the_worker(monkeypatch):
+    """The cancel commits after the claim but before dispatch resumes. It
+    must still find the in-flight entry and send cancel_job."""
+    root_keys(monkeypatch)
+    worker_id = f"job-gap-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-gap-model-{uuid.uuid4()}"
+    real_commit = command_store.commit_command
+
+    async def commit_then_cancel(*args, **kwargs):
+        command = await real_commit(*args, **kwargs)
+        if args[2] == "dispatch_job":
+            await jobs.cancel(uuid.UUID(decode_control(command.body)["job_id"]))
+        return command
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            monkeypatch.setattr(command_store, "commit_command", commit_then_cancel)
+            client.portal.start_task_soon(jobs.dispatch, job_id)
+            received = [worker.receive_json(), worker.receive_json()]
+            kinds = sorted(message["type"] for message in received)
+            assert kinds == ["cancel_job", "dispatch_job"]
+            dispatch = next(m for m in received if m["type"] == "dispatch_job")
+            cancel = next(m for m in received if m["type"] == "cancel_job")
+            assert cancel["dispatch_sequence"] == dispatch["dispatch_sequence"]
+            assert cancel["command_sequence"] == dispatch["command_sequence"] + 1
+
+
+@pytest.mark.db
+def test_protocol6_a_pending_command_replays_after_the_grant_renews(monkeypatch):
+    """Replay sends the exact stored bytes, so a newer grant nonce on the
+    connection must not make the pending command unreadable."""
+    root_keys(monkeypatch)
+    worker_id = f"job-replay-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-replay-model-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            assert client.portal.call(jobs.dispatch, job_id) is True
+            command = worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            pending = client.portal.call(
+                command_store.read_exact_pending, worker_id, incarnation)
+            assert pending is not None
+            assert decode_control(pending.body) == command

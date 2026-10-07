@@ -348,7 +348,7 @@ async def read_exact_pending(
     async with db.session_factory() as session:
         authority = (await session.execute(
             text(
-                "SELECT worker.owner_epoch, worker.lease_id, worker.grant_nonce "
+                "SELECT worker.owner_epoch, worker.lease_id "
                 "FROM worker_connections worker JOIN scheduler_leases lease "
                 "ON lease.region = worker.region AND lease.owner_epoch = worker.owner_epoch "
                 "AND lease.lease_id = worker.lease_id "
@@ -387,7 +387,6 @@ async def read_exact_pending(
             ("incarnation", str(incarnation)),
             ("owner_epoch", authority["owner_epoch"]),
             ("lease_id", str(authority["lease_id"])),
-            ("grant_nonce", str(authority["grant_nonce"])),
         )):
             raise CommandRefused("pending worker command authority is stale")
         digest = hashlib.sha256(canonical_bytes({
@@ -467,18 +466,21 @@ async def acknowledge(message: dict) -> bool:
                     "ack_body": ack_body,
                 },
             )
+            # The connection row first: commit_command holds it while it
+            # allocates the next sequence, so the pending minimum read after
+            # this lock cannot miss a command committed in between.
+            next_sequence = await session.scalar(
+                text(
+                    "SELECT next_command_sequence FROM worker_connections "
+                    "WHERE worker_id = :worker_id AND incarnation = :incarnation FOR UPDATE"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation},
+            )
             first_pending = await session.scalar(
                 text(
                     "SELECT min(command_sequence) FROM worker_commands "
                     "WHERE worker_id = :worker_id AND incarnation = :incarnation "
                     "AND state = 'pending'"
-                ),
-                {"worker_id": worker_id, "incarnation": incarnation},
-            )
-            next_sequence = await session.scalar(
-                text(
-                    "SELECT next_command_sequence FROM worker_connections "
-                    "WHERE worker_id = :worker_id AND incarnation = :incarnation FOR UPDATE"
                 ),
                 {"worker_id": worker_id, "incarnation": incarnation},
             )

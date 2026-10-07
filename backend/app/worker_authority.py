@@ -211,6 +211,10 @@ async def register_worker(
             )).mappings().one_or_none()
             if current is None:
                 raise AuthorityUnavailable("regional scheduler lease was lost")
+            if current["owner_id"] != SCHEDULER_OWNER_ID:
+                # Only the lease holder can commit work to this worker; one
+                # registered elsewhere would wait for work that never comes.
+                raise AuthorityUnavailable("regional scheduler lease is held by another owner")
             lease = SchedulerLease(**current)
             if await session.scalar(
                 text(

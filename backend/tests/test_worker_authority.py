@@ -434,3 +434,13 @@ def test_lease_maintenance_stops_when_cancelled_as_a_call_completes(monkeypatch)
             await asyncio.wait_for(asyncio.shield(loop_task), 5)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.db
+def test_a_worker_registers_only_with_the_lease_holder(monkeypatch):
+    with TestClient(app) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        monkeypatch.setattr(worker_authority, "SCHEDULER_OWNER_ID", uuid.uuid4())
+        with pytest.raises(worker_authority.AuthorityUnavailable):
+            client.portal.call(
+                _register, _register_kwargs(f"authority-{uuid.uuid4()}", uuid.uuid4()))
