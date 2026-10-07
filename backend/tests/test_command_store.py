@@ -470,3 +470,29 @@ def test_protocol6_a_pending_command_replays_after_the_grant_renews(monkeypatch)
                 command_store.read_exact_pending, worker_id, incarnation)
             assert pending is not None
             assert decode_control(pending.body) == command
+
+
+@pytest.mark.db
+def test_protocol6_a_claim_that_errors_frees_the_slot_and_requeues(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"job-error-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-error-model-{uuid.uuid4()}"
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("database went away")
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            monkeypatch.setattr(command_store, "commit_command", broken)
+            with pytest.raises(RuntimeError):
+                client.portal.call(jobs.dispatch, job_id)
+            from app import realtime
+            assert job_id not in jobs.inflight
+            assert realtime.workers[worker_id].jobs_in_flight == 0
