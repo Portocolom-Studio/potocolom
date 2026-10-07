@@ -33,7 +33,17 @@ def protocol6_client(worker_id: str):
         try:
             yield client
         finally:
+            client.portal.call(fresh_pool)
             client.portal.call(drop_worker_rows, worker_id)
+
+
+async def fresh_pool() -> None:
+    """Replace the pool before cleanup. Closing a socket while its handler
+    is still in a query makes TestClient cancel the handler through an anyio
+    cancel scope, which also cancels SQLAlchemy's terminate of that
+    connection, so a closed connection can go back into the pool."""
+    assert db.engine is not None
+    await db.engine.dispose()
 
 
 def root_keys(monkeypatch, letter: str = "z") -> None:
