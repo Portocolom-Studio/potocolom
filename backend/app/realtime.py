@@ -1659,9 +1659,33 @@ async def fleet(ws: WebSocket) -> None:
                             "ready": grant.ready,
                             "remaining_ms": grant.remaining_ms,
                         }))
+                    elif control["type"] == "checkpoint" and worker.protocol_version == 6:
+                        from app import worker_authority
+
+                        try:
+                            ack = await worker_authority.commit_worker_report(
+                                worker.id, _require_worker_incarnation(worker), control
+                            )
+                        except worker_authority.AuthorityUnavailable:
+                            raise ProtocolError("worker checkpoint was refused") from None
+                        await safe_send(ws.send_text(ack.decode("utf-8", "strict")))
                     elif control["type"] in ("job_progress", "job_done", "job_failed",
                                              "job_cancelled"):
                         from app import jobs  # late import; jobs reads this module's state
+                        if worker.protocol_version == 6 and control["type"] != "job_progress":
+                            from app import worker_authority
+
+                            try:
+                                ack = await worker_authority.commit_worker_report(
+                                    worker.id, _require_worker_incarnation(worker), control
+                                )
+                            except worker_authority.AuthorityUnavailable:
+                                raise ProtocolError("worker report was refused") from None
+                            await safe_send(ws.send_text(ack.decode("utf-8", "strict")))
+                            # A refused receipt (a sequence below the floor)
+                            # must not finish the job either.
+                            if json.loads(ack)["status"] != "accepted":
+                                continue
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
                         session_id = peer_uuid(control["session_id"])

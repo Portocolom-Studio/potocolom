@@ -1769,10 +1769,22 @@ A protocol 6 job dispatch is one PostgreSQL transaction. The job moves from queu
 
 This is why `ROOT_KEYS` is required before a worker registers as protocol 6: without the key ring, no command can be stored. A worker registers only with the API process that holds the scheduler lease, because only that process can commit its work.
 
-A cancel names the dispatch sequence and token, so it cannot stop a newer dispatch of the same job. A report from an older dispatch is refused by its dispatch token. The journal holds at most 256 retained rows and 4 MiB of pending bytes per incarnation. Acknowledged rows at or below the acknowledged floor are deleted, so a long-lived connection never fills it. Protocol 6 job reports still finish the job through the same handlers as protocol 5. Durable report receipts, per-dispatch work ranges and recovery from receipts are the next step.
+A cancel names the dispatch sequence and token, so it cannot stop a newer dispatch of the same job. A report from an older dispatch is refused by its dispatch token. The journal holds at most 256 retained rows and 4 MiB of pending bytes per incarnation. Acknowledged rows at or below the acknowledged floor are deleted, so a long-lived connection never fills it. Protocol 6 job reports finish the job through the same handlers as protocol 5, after their receipt (next entry).
 
 Rejected alternatives:
 - Sending the command first and recording it after. A crash between the two leaves a running job with no durable record of what was sent, which the coming recovery work cannot reconcile.
 - Storing command bodies in plaintext. They carry presigned upload URLs and the dispatch token, so a database read would hand out write access to a user's outputs.
 
 > Shipped status (2026-10-07): job dispatch, ACK and cancel ship for protocol 6. Realtime sessions stay protocol 4 and 5 only. No shipped worker speaks protocol 6 yet.
+
+## Protocol 6 job reports become durable receipts before they take effect
+
+Each protocol 6 dispatch gets a work range, one `worker_physical_ranges` row created in the claim transaction. Every job report a v6 worker sends is committed as a receipt in `worker_report_receipts` before anything else happens: a `checkpoint`, `job_done`, `job_failed` or `job_cancelled`. The receipt is keyed by range and `report_sequence`, and it stores the exact `checkpoint_ack` bytes the API sends back. The same sequence with the same hash returns those bytes again, so a worker that lost an ACK can resend safely. The same sequence with a different hash is refused. A terminal report must carry its dispatch token, checked against the hash in `job_attempts`. The range and the attempt keep the largest gpu time, image count and duration reported. Only the current dispatch writes the job's terminal measurements. At most 256 receipts are kept per range. Older ones are evicted, and the range's `report_floor` rises so an evicted sequence cannot be replayed.
+
+This gives the next step a durable record to reconcile from: after a restart, the API can tell that an attempt already reported its result. Restart recovery itself is unchanged in this step: a running job is still retried or failed by `requeue_or_fail`.
+
+Rejected alternatives:
+- Applying the report first and recording it after. A crash between the two loses the only evidence that the work finished, and the job runs and is charged again.
+- Keeping receipts in memory. They are lost with the process, which is exactly when they are needed.
+
+> Shipped status (2026-10-07): ranges, receipts and ACKs ship for protocol 6 jobs. Recovery from receipts after a restart is the next step.
