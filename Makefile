@@ -346,7 +346,7 @@ verify-compose: ## validate every compose file and profile (no containers starte
 	@# not exist would otherwise surface there and cost a version number.
 	@for img in $$(awk '/^FROM /{print $$2}' deploy/docker/Dockerfile.* | sort -u); do \
 		docker buildx imagetools inspect "$$img" >/dev/null 2>&1 || \
-			{ echo "error: base image $$img in deploy/docker/ not found in its registry" >&2; exit 1; }; \
+			{ echo "error: base image $$img in deploy/docker/ not found, or its registry did not answer" >&2; exit 1; }; \
 	done
 
 verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
