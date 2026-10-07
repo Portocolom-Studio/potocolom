@@ -2590,8 +2590,9 @@ async def _recover_or_requeue(job_id: uuid.UUID) -> None:
 
 
 async def recover() -> None:
-    """Rebuild the queue from job rows after a restart; running jobs lost
-    their worker reply with the process, so they get their retry."""
+    """Rebuild the queue from job rows after a restart. A running job whose
+    terminal report was receipted is finished from that receipt; any other
+    running job lost its worker reply with the process and gets its retry."""
     assert db.session_factory is not None
     async with db.session_factory() as session:
         rows = await session.execute(
