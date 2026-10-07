@@ -180,7 +180,7 @@ Still open:
   last, fleet card only.
 - Shipped: PR #339 self-hosted runners and concurrency groups; PR #366 isolated
   ports and compose projects; PR #382 simulation free port; PR #464
-  `potocolom_ci`. Image publish on a `v*` tag and GHCR push are still open.
+  `potocolom_ci`. A `v*` tag publishes the images to GHCR and a draft release with install.sh (issue #667).
 
 ### M6 Launch and beta
 

@@ -130,7 +130,9 @@ if [[ -e /dev/kfd ]]; then
   for g in video render; do
     if id -nG | tr ' ' '\n' | grep -qx "$g"; then groups_have="${groups_have} ${g}"; fi
   done
-  if [[ "$groups_have" == *video* ]]; then
+  if [[ "$(id -u)" -eq 0 ]]; then
+    pass "running as root"
+  elif [[ "$groups_have" == *video* ]]; then
     pass "user in group(s):${groups_have}"
   else
     fail "user not in the 'video' group"
@@ -266,8 +268,16 @@ fi
 
 ((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"
 
+# A source checkout has the Dockerfiles and builds the images; a release
+# install only has the compose file, so it pulls what the image: tags name
+# and never builds.
+up_flags="--no-build"
+if [[ -d "$ROOT/deploy/docker" ]]; then
+  up_flags="--build"
+fi
+
 case "$profile" in
-  gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
-  rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d --build\n\n  Then open http://localhost:%s\n' "$PORT" ;;
+  gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
+  rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
   smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    scripts/compose-smoke.sh\n' ;;
 esac

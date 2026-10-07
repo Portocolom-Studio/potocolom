@@ -22,14 +22,19 @@ release before pushing any image. An existing draft or published release stops
 a rerun before it can overwrite an image. The image names are
 `ghcr.io/portocolom-studio/potocolom-api:vMAJOR.MINOR.PATCH` and
 `ghcr.io/portocolom-studio/potocolom-worker:vMAJOR.MINOR.PATCH-cuda` or `-rocm`. It attaches image digests, scan reports,
-and the static site extracted from the tested API image with its SHA-256 hash.
-It does not deploy a service or update a `latest` tag. Image publication can
+the static site extracted from the tested API image with its SHA-256 hash, the
+self-host bundle (`potocolom-vMAJOR.MINOR.PATCH-selfhost.tar.gz`) and
+`install.sh`, the script a self-hoster curls to install the release without a
+clone. It does not deploy a service or update a `latest` tag. Image publication can
 partly succeed if the registry fails; the reserved draft then needs manual
 repair or a new version. Do not delete the reservation, move a version tag or
 reuse a version. Publish the draft only after all attachments and checks exist.
 
 Before publishing the draft:
 
+- Confirm the backend, worker and frontend versions match the tag (the verify
+  job refuses a mismatch); bump with `npm version X.Y.Z --no-git-tag-version`
+  in frontend/ and the `version =` line of both pyproject files.
 - Confirm the full test and CPU inference results for this commit.
 - Run one real image and one canvas session on CUDA and on ROCm. Check image
   output, cancellation, worker restart and continued frames. Keep GPU memory
@@ -43,6 +48,10 @@ Before publishing the draft:
   installation backup test.
 - Review scan results and write release notes for users. Publish the draft
   only when these checks pass.
+
+After publishing: on the first release, set the three GHCR packages to public
+in the organization's package settings, then run install.sh from the published
+release in an empty POTOCOLOM_DIR.
 
 The workflow needs Docker, Python 3.11, Node 24 and Chrome on the trusted
 self-hosted runner. Both GPU base images are large; check free disk space

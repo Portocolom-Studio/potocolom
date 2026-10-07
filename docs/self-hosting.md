@@ -44,10 +44,32 @@ A machine without a supported GPU can still run the full stack against the
 simulated worker (flat colored images, real protocol):
 `scripts/compose-smoke.sh`.
 
-Every command on this page is `docker compose`, because self-hosting requires
-Docker and nothing else. `make compose-up`, `make compose-down` and
+Apart from the release install script, every command on this page is
+`docker compose`, because self-hosting requires Docker and nothing else.
+`make compose-up`, `make compose-down` and
 `make compose-logs` wrap the same commands and detect the profile, for hosts
 that already have `make`; they are a shortcut and never a requirement.
+
+## Installing a release
+
+```bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
+```
+
+It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
+(`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
+stack. Rerun the install script of a newer release to upgrade in place. The
+`latest` address always serves the newest release's script, and that script
+installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
+a specific one. The script verifies the downloaded bundle against the
+release's `SHA256SUMS`, sets `POTOCOLOM_VERSION` in `deploy/compose/.env`, and
+refuses a machine with no GPU, because the released images need one.
+A release install is Compose project `potocolom`, separate from a source
+checkout's project `compose`. To keep a checkout's data, before the first run
+create `~/potocolom/deploy/compose/`, copy the checkout's `deploy/compose/.env`
+into it, and add the line `COMPOSE_PROJECT_NAME=compose` to that copy; the
+script keeps a project name it finds in `.env` and reads none from the shell.
+Everything below is the same stack built from a source checkout instead.
 
 ## Checking a machine before you start
 

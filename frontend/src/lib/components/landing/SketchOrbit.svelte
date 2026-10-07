@@ -11,6 +11,7 @@
 	import { t } from '$lib/i18n.svelte';
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import CopyIcon from '@lucide/svelte/icons/copy';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
 	import LandingFaq from './LandingFaq.svelte';
 	import LandingWaitlist from './LandingWaitlist.svelte';
@@ -25,6 +26,8 @@
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
+	const installCommand =
+		'curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash';
 	const wall: SalonTile[] = makingImages.map((image) => ({
 		key: image.id,
 		alt: image.alt,
@@ -109,6 +112,9 @@
 	let workStage: HTMLElement | undefined = $state();
 	let orbitName = $state<string | null>(null);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
+	let installCopied = $state(false);
+	let installCopiedTimeout: ReturnType<typeof setTimeout> | undefined;
+	let installCode: HTMLElement | undefined = $state();
 	let entrancePhase: LandingEntrancePhase = $state(
 		hasCompletedLandingEntrance() ? 'ready' : 'loading'
 	);
@@ -136,6 +142,20 @@
 		});
 	}
 
+	async function copyInstall() {
+		try {
+			await navigator.clipboard.writeText(installCommand);
+			installCopied = true;
+			clearTimeout(installCopiedTimeout);
+			installCopiedTimeout = setTimeout(() => {
+				installCopied = false;
+			}, 1800);
+		} catch {
+			// No clipboard on insecure origins or when denied: select it for a manual copy.
+			if (installCode) window.getSelection()?.selectAllChildren(installCode);
+		}
+	}
+
 	$effect(() => {
 		if (entrancePhase !== 'ready') return;
 		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -161,6 +181,10 @@
 			promptIndex = (promptIndex + 1) % promptMarqueePrompts.length;
 		}, 55);
 		return () => clearInterval(timer);
+	});
+
+	$effect(() => {
+		return () => clearTimeout(installCopiedTimeout);
 	});
 </script>
 
@@ -360,6 +384,26 @@
 						<span class="quiet">{t('split.oss_title')}</span>
 						{t('fork.title')}
 					</h2>
+					<div class="install">
+						<code bind:this={installCode}>{installCommand}</code>
+						<button
+							type="button"
+							onclick={copyInstall}
+							aria-label={installCopied ? t('split.install_copied') : t('split.install_copy')}
+							title={installCopied ? t('split.install_copied') : t('split.install_copy')}
+						>
+							{#if installCopied}
+								<CheckIcon size={16} aria-hidden="true" />
+							{:else}
+								<CopyIcon size={16} aria-hidden="true" />
+							{/if}
+						</button>
+						<span class="sr-only" role="status" aria-live="polite">
+							{#if installCopied}
+								{t('split.install_copied')}
+							{/if}
+						</span>
+					</div>
 					<a class="pill pill-solid" href={repoUrl}>{t('fork.cta_source')}</a>
 				</div>
 				<div
@@ -1054,6 +1098,68 @@
 		display: grid;
 		gap: 0.15rem;
 		max-width: 16ch;
+	}
+
+	.install {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		max-width: 34rem;
+		min-width: 0;
+		padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+		border: 1px solid var(--k-line);
+		border-radius: 0.75rem;
+		background: oklch(0.14 0.018 265 / 55%);
+		backdrop-filter: blur(10px);
+		text-align: left;
+	}
+
+	:global(:root[data-landing-mode='light']) .install {
+		background: oklch(1 0 0 / 55%);
+	}
+
+	.install code {
+		flex: 1;
+		min-width: 0;
+		overflow-x: auto;
+		white-space: nowrap;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.78rem;
+		user-select: all;
+		scrollbar-width: thin;
+	}
+
+	.install button {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: 2rem;
+		height: 2rem;
+		border: 1px solid var(--k-line);
+		border-radius: 0.5rem;
+		background: transparent;
+		color: var(--k-muted);
+		cursor: pointer;
+	}
+
+	.install button:hover,
+	.install button:focus-visible {
+		color: var(--k-ink);
+	}
+
+	.install button:focus-visible {
+		outline: 2px solid var(--k-ink);
+		outline-offset: 2px;
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 
 	.quiet {

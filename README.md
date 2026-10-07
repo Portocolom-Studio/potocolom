@@ -8,7 +8,7 @@ potocolom is an open source realtime generative image platform: sketch on a canv
 
 ## Status
 
-Pre-alpha, under active development in the open. The architecture, protocols and economics are fully documented below; the walking skeleton (a real generation, end to end, on a self-hosted install) is the current milestone, and v0.1 tags when it passes. The cloud service opens later as an invite-only beta - the waitlist lives at [potocolom.leonfuller.com](https://potocolom.leonfuller.com).
+Pre-alpha, under active development in the open. The architecture, protocols and economics are fully documented below; the walking skeleton (a real generation, end to end, on a self-hosted install) is v0.1.0, the first tagged release. The cloud service opens later as an invite-only beta - the waitlist lives at [potocolom.leonfuller.com](https://potocolom.leonfuller.com).
 
 ## What makes it different
 
@@ -41,6 +41,19 @@ purpose, so nothing beyond the table above has to be installed on the host -
 the `make` targets further down are for working *on* potocolom, not running it.
 
 ```bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
+```
+
+It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, plus an NVIDIA or AMD GPU (the simulated worker runs from a source checkout only), installs into `~/potocolom`
+(`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
+stack. Rerun the install script of a newer release to upgrade in place. The
+`latest` address always serves the newest release's script, and that script
+installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
+a specific one.
+
+From a source checkout:
+
+```bash
 scripts/preflight.sh          # checks this machine; writes deploy/compose/.env when missing
 docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # AMD card: use --profile rocm instead of --profile gpu
@@ -59,7 +72,7 @@ If you happen to have `make`, `make selfhost` is preflight plus compose-up.
 commands and pick the profile from the GPU they find. They are a shortcut,
 never a requirement: the `docker compose` lines are the supported path.
 
-The install starts single-operator: `AUTH_MODE` is `none` and every request resolves to one implicit local administrator, so keep it on a trusted network. `make auth-enable` turns on accounts, generates the root key ring and prints a one-use call that claims the administrator account, which adopts the implicit user so nothing made before accounts existed is stranded. It is one way, and from there people sign in with a password, or with Google or GitHub where those are configured; only an offline command turns accounts off again. See [docs/self-hosting.md](docs/self-hosting.md).
+The install starts single-operator: `AUTH_MODE` is `none` and every request resolves to one implicit local administrator, so keep it on a trusted network. `make auth-enable` (`scripts/auth-enable.sh` in a release install) turns on accounts, generates the root key ring and prints a one-use call that claims the administrator account, which adopts the implicit user so nothing made before accounts existed is stranded. It is one way, and from there people sign in with a password, or with Google or GitHub where those are configured; only an offline command turns accounts off again. See [docs/self-hosting.md](docs/self-hosting.md).
 
 Open http://localhost:8080. Hardware requirements, NVIDIA and AMD GPU passthrough, first-run notes and what persists in which volume are covered in [docs/self-hosting.md](docs/self-hosting.md). The fleet WebSocket (`/api/v1/fleet`) authenticates workers with the shared `FLEET_SECRET` from your compose environment. An unset key refuses the handshake; preflight is what writes the secret on a fresh install. Signed cloud tokens remain issue #225. Validate the stack without a GPU: `scripts/compose-smoke.sh` (uses port 18080 by default; override with `COMPOSE_SMOKE_PORT`).
 
