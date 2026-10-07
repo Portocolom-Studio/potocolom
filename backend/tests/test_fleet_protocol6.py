@@ -150,6 +150,19 @@ async def wait_for_sample(worker_id: str) -> None:
     raise AssertionError("the heartbeat sample never persisted")
 
 
+async def wait_for_identity(worker_id: str) -> None:
+    assert db.session_factory is not None
+    for _ in range(500):
+        async with db.session_factory() as session:
+            if await session.scalar(
+                text("SELECT count(*) FROM workers WHERE worker_id = :worker_id"),
+                {"worker_id": worker_id},
+            ):
+                return
+        await asyncio.sleep(0.02)
+    raise AssertionError("the worker identity row never persisted")
+
+
 async def drop_worker_rows(worker_id: str) -> None:
     """Delete the identity and heartbeat sample rows this file wrote.
 
@@ -339,6 +352,10 @@ def test_a_v6_worker_is_never_picked_for_work(monkeypatch):
             with client.websocket_connect("/api/v1/fleet") as ws:
                 ws.send_json(hello(worker_id, [manifest(model_id)]))
                 assert ws.receive_json()["protocol_version"] == 6
+                # The identity row is scheduled after the post-registration
+                # database work; closing before then would cancel the handler
+                # first and leave cleanup waiting for a row that never comes.
+                client.portal.call(wait_for_identity, worker_id)
                 job_id = client.portal.call(seed_queued_job, model_id)
 
                 real_dispatch_step = jobs.dispatch_step

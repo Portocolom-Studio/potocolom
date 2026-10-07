@@ -1761,7 +1761,7 @@ Rejected alternatives:
 - A Redis lease, as originally recorded. Its fencing token cannot be checked in the PostgreSQL transaction that commits a job claim.
 - Identifying a connection by worker id alone. A fixed `WORKER_ID` reconnecting before its old socket is reaped would inherit the old connection's work.
 
-> Shipped status (2026-10-07): registration, work grant, heartbeat and the scheduler lease ship, and protocol 6 workers take jobs (next entry). They get no realtime sessions yet. The protocol constants stay at 5, with floor 4.
+> Shipped status (2026-10-07): registration, work grant, heartbeat and the scheduler lease ship, and protocol 6 workers take jobs and realtime sessions. The protocol constants stay at 5, with floor 4.
 
 ## Protocol 6 job commands are committed with the claim, encrypted, and acknowledged
 
@@ -1775,7 +1775,7 @@ Rejected alternatives:
 - Sending the command first and recording it after. A crash between the two leaves a running job with no durable record of what was sent, which the coming recovery work cannot reconcile.
 - Storing command bodies in plaintext. They carry presigned upload URLs and the dispatch token, so a database read would hand out write access to a user's outputs.
 
-> Shipped status (2026-10-07): job dispatch, ACK and cancel ship for protocol 6. Realtime sessions stay protocol 4 and 5 only. No shipped worker speaks protocol 6 yet.
+> Shipped status (2026-10-07): job dispatch, ACK and cancel ship for protocol 6; sessions use the same journal (see "Protocol 6 workers take realtime sessions through the same journal and receipts").
 
 ## Protocol 6 job reports become durable receipts before they take effect
 
@@ -1789,3 +1789,17 @@ Rejected alternatives:
 - Keeping receipts in memory. They are lost with the process, which is exactly when they are needed.
 
 > Shipped status (2026-10-07): ranges, receipts, ACKs and recovery from receipts after a restart ship for protocol 6 jobs.
+
+## Protocol 6 workers take realtime sessions through the same journal and receipts
+
+A protocol 6 worker with a current grant now takes realtime sessions as well as jobs. Opening a session is one transaction: it upserts the `realtime_sessions` row and inserts a `realtime_session_attempts` row for the fresh attempt id and a session work range. It also stores the encrypted `open_session` command, the same way a job claim does. The session goes live only after the worker's `session_ready` is accepted against that attempt, the live lease and a current grant. The grant nonce is not compared, because every `grant_request` rotates it. Parameter changes are `update_session` commands with a rising `params_revision`, and closing is a `close_session` command. The worker's `session_closed` and session checkpoints are committed as receipts before they take effect; an accepted `session_closed` receipt ends the attempt and the session; abandoning an attempt or a worker disconnect ends the attempt without one, and closing ends the session row while its attempt waits for that receipt.
+
+Frames still travel on the one local socket in the existing frame format. The API process that holds the socket is the authority for its frames, so no frame touches the database. Cross-process frame routing comes with the shared FrameBus work.
+
+This removes the last reason a protocol 6 worker would serve less than a protocol 5 one. That lets the protocol 6 worker client ship without costing installs with `ROOT_KEYS` their live drawing.
+
+Rejected alternatives:
+- Checking each frame against the database, as the cross-owner design does. For a socket this process holds, it adds a query per frame and answers nothing the in-memory session does not already know.
+- Keeping sessions on protocol 5 while jobs use protocol 6. One connection would then speak two protocols with two different fencing rules.
+
+> Shipped status (2026-10-07): v6 sessions ship on local sockets. No shipped worker speaks protocol 6 yet; the worker client is the next step.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,7 +50,7 @@ def _aad(worker_id: str, incarnation: uuid.UUID, sequence: int,
 
 
 def _size_limit(kind: str) -> int:
-    if kind == "dispatch_job":
+    if kind in {"dispatch_job", "open_session", "update_session"}:
         return MAX_PARAMETER_COMMAND_BYTES
     return MAX_SMALL_COMMAND_BYTES
 
@@ -58,6 +59,9 @@ def _ack_matches(command: dict, ack: dict) -> bool:
     common = ("worker_id", "incarnation", "region", "owner_epoch", "lease_id",
               "grant_nonce", "command_sequence", "command_id", "body_hash")
     subjects = {
+        "open_session": ("session_id", "attempt_id", "control_generation"),
+        "update_session": ("session_id", "attempt_id", "control_generation"),
+        "close_session": ("session_id", "attempt_id", "control_generation"),
         "dispatch_job": ("job_id", "dispatch_sequence"),
         "cancel_job": ("job_id", "dispatch_sequence"),
     }
@@ -76,9 +80,12 @@ async def commit_command(
     grant_nonce: uuid.UUID,
     transport_owner_id: uuid.UUID | None = None,
     account_user_id: uuid.UUID | None = None,
+    session_context: dict | None = None,
     job_context: dict | None = None,
 ) -> StoredCommand:
-    if command_type not in {"dispatch_job", "cancel_job"}:
+    if command_type not in {
+        "open_session", "update_session", "close_session", "dispatch_job", "cancel_job",
+    }:
         raise CommandRefused("command type is not supported")
     if db.session_factory is None:
         raise CommandRefused("durable command store unavailable")
@@ -96,7 +103,105 @@ async def commit_command(
             claim = None
             cancel_attempt = None
             message_fields = fields
-            if command_type == "dispatch_job":
+            if command_type == "open_session":
+                if not isinstance(account_user_id, uuid.UUID) or not isinstance(session_context, dict):
+                    raise CommandRefused("session claim identity is unavailable")
+                await hold_the_account(session, account_user_id, wait=True)
+                session_id = uuid.UUID(fields["session_id"])
+                existing = (await session.execute(
+                    text(
+                        "SELECT user_id, browser_owner_id, control_generation FROM realtime_sessions "
+                        "WHERE id = :session_id FOR UPDATE"
+                    ),
+                    {"session_id": session_id},
+                )).mappings().one_or_none()
+                if existing is not None and (
+                    existing["user_id"] != account_user_id
+                    or existing["browser_owner_id"] != session_context["browser_owner_id"]
+                    or existing["control_generation"] > fields["control_generation"]
+                ):
+                    raise CommandRefused("session claim identity is stale")
+                claim = {
+                    "kind": "session",
+                    "subject_id": session_id,
+                    "attempt_id": uuid.UUID(fields["attempt_id"]),
+                    "control_generation": fields["control_generation"],
+                    "range_id": uuid.UUID(fields["work_budget"]["range_id"]),
+                    "account_user_id": account_user_id,
+                    "session_context": session_context,
+                }
+            elif command_type == "update_session":
+                if not isinstance(account_user_id, uuid.UUID):
+                    raise CommandRefused("session update identity is unavailable")
+                await hold_the_account(session, account_user_id, wait=True)
+                session_id = uuid.UUID(fields["session_id"])
+                attempt_id = uuid.UUID(fields["attempt_id"])
+                generation = fields["control_generation"]
+                revision = fields["params_revision"]
+                entity = (await session.execute(
+                    text(
+                        "SELECT user_id, model_id, params_revision FROM realtime_sessions "
+                        "WHERE id = :session_id AND control_generation = :generation FOR UPDATE"
+                    ),
+                    {"session_id": session_id, "generation": generation},
+                )).mappings().one_or_none()
+                attempt = (await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation FROM realtime_session_attempts "
+                        "WHERE session_id = :session_id AND control_generation = :generation "
+                        "AND attempt_id = :attempt_id AND state IN ('opening', 'running') "
+                        "FOR UPDATE"
+                    ),
+                    {"session_id": session_id, "generation": generation,
+                     "attempt_id": attempt_id},
+                )).mappings().one_or_none()
+                if (entity is None or entity["user_id"] != account_user_id
+                        or attempt is None or attempt["worker_id"] != worker_id
+                        or attempt["incarnation"] != incarnation
+                        or revision <= entity["params_revision"]):
+                    raise CommandRefused("session update is stale")
+                await session.execute(
+                    text(
+                        "UPDATE realtime_sessions SET effective_params = CAST(:params AS jsonb), "
+                        "desired_params = CAST(:params AS jsonb), params_revision = :revision, "
+                        "desired_revision = :revision WHERE id = :session_id"
+                    ),
+                    {
+                        "params": json.dumps(fields["params"]),
+                        "revision": revision,
+                        "session_id": session_id,
+                    },
+                )
+                message_fields = {**fields, "model_id": entity["model_id"]}
+            elif command_type == "close_session":
+                if not isinstance(account_user_id, uuid.UUID):
+                    raise CommandRefused("session close identity is unavailable")
+                await hold_the_account(session, account_user_id, wait=True)
+                session_id = uuid.UUID(fields["session_id"])
+                attempt_id = uuid.UUID(fields["attempt_id"])
+                generation = fields["control_generation"]
+                entity = (await session.execute(
+                    text(
+                        "SELECT user_id FROM realtime_sessions WHERE id = :session_id "
+                        "AND control_generation = :generation FOR UPDATE"
+                    ),
+                    {"session_id": session_id, "generation": generation},
+                )).mappings().one_or_none()
+                attempt = (await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation FROM realtime_session_attempts "
+                        "WHERE session_id = :session_id AND control_generation = :generation "
+                        "AND attempt_id = :attempt_id AND state IN ('opening', 'running') "
+                        "FOR UPDATE"
+                    ),
+                    {"session_id": session_id, "generation": generation,
+                     "attempt_id": attempt_id},
+                )).mappings().one_or_none()
+                if (entity is None or entity["user_id"] != account_user_id
+                        or attempt is None or attempt["worker_id"] != worker_id
+                        or attempt["incarnation"] != incarnation):
+                    raise CommandRefused("session close is stale")
+            elif command_type == "dispatch_job":
                 if not isinstance(account_user_id, uuid.UUID):
                     raise CommandRefused("job claim account is unavailable")
                 await hold_the_account(session, account_user_id, wait=True)
@@ -132,6 +237,7 @@ async def commit_command(
                     raise CommandRefused("job dispatch sequence is exhausted")
                 message_fields = {**fields, "dispatch_sequence": dispatch_sequence}
                 claim = {
+                    "kind": "job",
                     "subject_id": job_id,
                     "previous_dispatch_sequence": job["current_dispatch_sequence"],
                     "dispatch_sequence": dispatch_sequence,
@@ -182,8 +288,8 @@ async def commit_command(
             worker = (await session.execute(
                 text(
                     "SELECT region, owner_epoch, lease_id, lease_expires_at, grant_nonce, "
-                    "grant_expires_at, grant_ready, next_command_sequence, acknowledged_floor, "
-                    "transport_owner_id "
+                    "grant_expires_at, grant_ready, realtime_slots, next_command_sequence, "
+                    "acknowledged_floor, transport_owner_id "
                     "FROM worker_connections WHERE worker_id = :worker_id "
                     "AND incarnation = :incarnation "
                     "AND closed_at IS NULL "
@@ -279,56 +385,124 @@ async def commit_command(
                     {"range_id": claim["range_id"]},
                 ):
                     raise CommandRefused("physical range identity is already used")
-                await session.execute(
-                    text(
-                        "INSERT INTO job_attempts "
-                        "(job_id, dispatch_sequence, command_id, worker_id, incarnation, owner_epoch, "
-                        "state, dispatch_token_hash, range_id, created_at) VALUES (:job_id, "
-                        ":dispatch_sequence, :command_id, :worker_id, :incarnation, :owner_epoch, "
-                        "'dispatching', :token_hash, :range_id, clock_timestamp())"
-                    ),
-                    {
-                        "job_id": claim["subject_id"],
-                        "dispatch_sequence": claim["dispatch_sequence"],
-                        "command_id": command_id,
-                        "worker_id": worker_id,
-                        "incarnation": incarnation,
-                        "owner_epoch": worker["owner_epoch"],
-                        "token_hash": hashlib.sha256(claim["dispatch_token"].encode()).hexdigest(),
-                        "range_id": claim["range_id"],
-                    },
-                )
-                updated = await session.execute(
-                    text(
-                        "UPDATE jobs SET state = 'running', current_dispatch_sequence = :sequence, "
-                        "dispatched_at = clock_timestamp() WHERE id = :job_id AND state = 'queued' "
-                        "AND current_dispatch_sequence = :previous_sequence RETURNING id"
-                    ),
-                    {
-                        "sequence": claim["dispatch_sequence"],
-                        "job_id": claim["subject_id"],
-                        "previous_sequence": claim["previous_dispatch_sequence"],
-                    },
-                )
-                if updated.scalar_one_or_none() is None:
-                    raise CommandRefused("job claim changed before commit")
-                await session.execute(
-                    text(
-                        "INSERT INTO worker_physical_ranges "
-                        "(range_id, worker_id, incarnation, region, owner_epoch, kind, subject_id, "
-                        "dispatch_sequence, state) VALUES (:range_id, :worker_id, :incarnation, "
-                        ":region, :owner_epoch, 'job', :job_id, :dispatch_sequence, 'outstanding')"
-                    ),
-                    {
-                        "range_id": claim["range_id"],
-                        "worker_id": worker_id,
-                        "incarnation": incarnation,
-                        "region": worker["region"],
-                        "owner_epoch": worker["owner_epoch"],
-                        "job_id": claim["subject_id"],
-                        "dispatch_sequence": claim["dispatch_sequence"],
-                    },
-                )
+                if claim["kind"] == "session":
+                    context = claim["session_context"]
+                    await session.execute(
+                        text(
+                            "INSERT INTO realtime_sessions "
+                            "(id, user_id, auth_session_id, browser_owner_id, region, model_id, "
+                            "effective_params, desired_params, params_revision, desired_revision, "
+                            "state, control_generation, owner_epoch, input_revision, created_at) "
+                            "VALUES (:id, :user_id, :auth_session_id, :browser_owner_id, :region, "
+                            ":model_id, CAST(:params AS jsonb), CAST(:params AS jsonb), 1, 1, "
+                            "'assigning', :control_generation, :owner_epoch, 0, clock_timestamp()) "
+                            "ON CONFLICT (id) DO UPDATE SET model_id = EXCLUDED.model_id, "
+                            "effective_params = EXCLUDED.effective_params, "
+                            "desired_params = EXCLUDED.desired_params, "
+                            "desired_revision = EXCLUDED.desired_revision, state = 'assigning', "
+                            "control_generation = EXCLUDED.control_generation, started_at = NULL, "
+                            "ended_at = NULL, owner_epoch = EXCLUDED.owner_epoch"
+                        ),
+                        {
+                            "id": claim["subject_id"],
+                            "user_id": claim["account_user_id"],
+                            "auth_session_id": context.get("auth_session_id"),
+                            "browser_owner_id": context["browser_owner_id"],
+                            "region": worker["region"],
+                            "model_id": context["model_id"],
+                            "params": json.dumps(context["params"]),
+                            "control_generation": claim["control_generation"],
+                            "owner_epoch": worker["owner_epoch"],
+                        },
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO realtime_session_attempts "
+                            "(session_id, control_generation, worker_id, incarnation, owner_epoch, "
+                            "attempt_id, state, range_id, created_at) VALUES (:session_id, :generation, "
+                            ":worker_id, :incarnation, :owner_epoch, :attempt_id, 'opening', "
+                            ":range_id, clock_timestamp())"
+                        ),
+                        {
+                            "session_id": claim["subject_id"],
+                            "generation": claim["control_generation"],
+                            "worker_id": worker_id,
+                            "incarnation": incarnation,
+                            "owner_epoch": worker["owner_epoch"],
+                            "attempt_id": claim["attempt_id"],
+                            "range_id": claim["range_id"],
+                        },
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO worker_physical_ranges "
+                            "(range_id, worker_id, incarnation, region, owner_epoch, kind, subject_id, "
+                            "attempt_id, control_generation, state) VALUES (:range_id, :worker_id, "
+                            ":incarnation, :region, :owner_epoch, 'session', :subject_id, :attempt_id, "
+                            ":generation, 'outstanding')"
+                        ),
+                        {
+                            "range_id": claim["range_id"],
+                            "worker_id": worker_id,
+                            "incarnation": incarnation,
+                            "region": worker["region"],
+                            "owner_epoch": worker["owner_epoch"],
+                            "subject_id": claim["subject_id"],
+                            "attempt_id": claim["attempt_id"],
+                            "generation": claim["control_generation"],
+                        },
+                    )
+                else:
+                    await session.execute(
+                        text(
+                            "INSERT INTO job_attempts "
+                            "(job_id, dispatch_sequence, command_id, worker_id, incarnation, owner_epoch, "
+                            "state, dispatch_token_hash, range_id, created_at) VALUES (:job_id, "
+                            ":dispatch_sequence, :command_id, :worker_id, :incarnation, :owner_epoch, "
+                            "'dispatching', :token_hash, :range_id, clock_timestamp())"
+                        ),
+                        {
+                            "job_id": claim["subject_id"],
+                            "dispatch_sequence": claim["dispatch_sequence"],
+                            "command_id": command_id,
+                            "worker_id": worker_id,
+                            "incarnation": incarnation,
+                            "owner_epoch": worker["owner_epoch"],
+                            "token_hash": hashlib.sha256(claim["dispatch_token"].encode()).hexdigest(),
+                            "range_id": claim["range_id"],
+                        },
+                    )
+                    updated = await session.execute(
+                        text(
+                            "UPDATE jobs SET state = 'running', current_dispatch_sequence = :sequence, "
+                            "dispatched_at = clock_timestamp() WHERE id = :job_id AND state = 'queued' "
+                            "AND current_dispatch_sequence = :previous_sequence RETURNING id"
+                        ),
+                        {
+                            "sequence": claim["dispatch_sequence"],
+                            "job_id": claim["subject_id"],
+                            "previous_sequence": claim["previous_dispatch_sequence"],
+                        },
+                    )
+                    if updated.scalar_one_or_none() is None:
+                        raise CommandRefused("job claim changed before commit")
+                    await session.execute(
+                        text(
+                            "INSERT INTO worker_physical_ranges "
+                            "(range_id, worker_id, incarnation, region, owner_epoch, kind, subject_id, "
+                            "dispatch_sequence, state) VALUES (:range_id, :worker_id, :incarnation, "
+                            ":region, :owner_epoch, 'job', :job_id, :dispatch_sequence, 'outstanding')"
+                        ),
+                        {
+                            "range_id": claim["range_id"],
+                            "worker_id": worker_id,
+                            "incarnation": incarnation,
+                            "region": worker["region"],
+                            "owner_epoch": worker["owner_epoch"],
+                            "job_id": claim["subject_id"],
+                            "dispatch_sequence": claim["dispatch_sequence"],
+                        },
+                    )
             created_at = await session.scalar(
                 text(
                     "INSERT INTO worker_commands "
