@@ -46,6 +46,7 @@ from app.body_limit import RequestBodyLimitMiddleware
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.storage import get_storage
+from app.worker_authority import maintain_scheduler_lease
 from app.studio import router as studio_router
 from app.mail import check_configuration as check_mail_configuration, mail_loop
 from app.mail import router as mail_router
@@ -112,6 +113,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             asyncio.create_task(telemetry_loop()),
             asyncio.create_task(mail_loop()),
             asyncio.create_task(purge_loop()),
+            # Last: the lease is held for the life of the process and this
+            # task starts with a database round trip, so it must not push the
+            # loops above it (gpu sample maintenance especially) later into
+            # their first run than they are today.
+            asyncio.create_task(maintain_scheduler_lease()),
         ]
         yield
         await jobs.drain_blob_cleanup()
