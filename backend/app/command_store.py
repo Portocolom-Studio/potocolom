@@ -271,6 +271,14 @@ async def commit_command(
             except KeyRingError:
                 raise CommandRefused("worker command key is unavailable") from None
             if claim is not None:
+                if await session.scalar(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM worker_physical_ranges "
+                        "WHERE range_id = :range_id)"
+                    ),
+                    {"range_id": claim["range_id"]},
+                ):
+                    raise CommandRefused("physical range identity is already used")
                 await session.execute(
                     text(
                         "INSERT INTO job_attempts "
@@ -304,6 +312,23 @@ async def commit_command(
                 )
                 if updated.scalar_one_or_none() is None:
                     raise CommandRefused("job claim changed before commit")
+                await session.execute(
+                    text(
+                        "INSERT INTO worker_physical_ranges "
+                        "(range_id, worker_id, incarnation, region, owner_epoch, kind, subject_id, "
+                        "dispatch_sequence, state) VALUES (:range_id, :worker_id, :incarnation, "
+                        ":region, :owner_epoch, 'job', :job_id, :dispatch_sequence, 'outstanding')"
+                    ),
+                    {
+                        "range_id": claim["range_id"],
+                        "worker_id": worker_id,
+                        "incarnation": incarnation,
+                        "region": worker["region"],
+                        "owner_epoch": worker["owner_epoch"],
+                        "job_id": claim["subject_id"],
+                        "dispatch_sequence": claim["dispatch_sequence"],
+                    },
+                )
             created_at = await session.scalar(
                 text(
                     "INSERT INTO worker_commands "

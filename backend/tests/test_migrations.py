@@ -244,3 +244,77 @@ def test_0030_upgrade_adds_command_journal_and_downgrade_drops_it(portal_runner)
 
         asyncio.run(drop_database())
         portal_runner(db.dispose())
+
+
+@pytest.mark.db
+def test_0031_upgrade_adds_report_receipts_and_downgrade_drops_them(portal_runner):
+    assert portal_runner(db.connect(serving=False)) is True
+    admin_url = make_url(os.environ["DATABASE_URL"]).set(database="postgres")
+    database = f"p6m_{secrets.token_hex(8)}"
+    test_url = admin_url.set(database=database, drivername="postgresql+asyncpg")
+    url = test_url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+    async def create_database() -> None:
+        connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+        try:
+            await connection.execute(f'CREATE DATABASE "{database}"')
+        finally:
+            await connection.close()
+
+    config = Config(str(_VERSIONS.parents[1] / "alembic.ini"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        test_url.render_as_string(hide_password=False).replace("%", "%%"),
+    )
+    try:
+        asyncio.run(create_database())
+        command.upgrade(config, "0031")
+
+        async def verify_upgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_physical_ranges') IS NOT NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_report_receipts') IS NOT NULL")
+                attempt_columns = set(await connection.fetchval(
+                    "SELECT array_agg(column_name) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'job_attempts'"
+                ))
+                assert {"gpu_ms", "frames", "duration_ms", "report_sequence",
+                        "terminal_at"} <= attempt_columns
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_upgrade())
+        command.downgrade(config, "0030")
+
+        async def verify_downgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_physical_ranges') IS NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_report_receipts') IS NULL")
+                attempt_columns = set(await connection.fetchval(
+                    "SELECT array_agg(column_name) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'job_attempts'"
+                ))
+                assert "gpu_ms" not in attempt_columns
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_downgrade())
+    finally:
+        async def drop_database() -> None:
+            connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+            try:
+                exists = await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", database)
+                if exists:
+                    await connection.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
+            finally:
+                await connection.close()
+
+        asyncio.run(drop_database())
+        portal_runner(db.dispose())

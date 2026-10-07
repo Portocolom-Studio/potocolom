@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import uuid
@@ -12,6 +14,8 @@ from datetime import datetime
 from sqlalchemy import text
 
 from app import db
+from app.account_lock import hold_the_account
+from app.protocol6 import preflight_worker_control
 
 logger = logging.getLogger("potocolom.worker_authority")
 
@@ -455,3 +459,237 @@ async def renew_worker_grant(
             raise AuthorityUnavailable("worker connection is no longer current")
         await session.commit()
     return WorkGrant(**row)
+
+
+async def commit_worker_report(
+    transport_worker_id: str,
+    transport_incarnation: uuid.UUID,
+    report: dict,
+) -> bytes:
+    if db.session_factory is None:
+        raise AuthorityUnavailable("worker report authority is unavailable")
+    worker_id = report["worker_id"]
+    incarnation = uuid.UUID(report["incarnation"])
+    if worker_id != transport_worker_id or incarnation != transport_incarnation:
+        raise AuthorityUnavailable("worker report identity is not current")
+    if "session_id" in report:
+        raise AuthorityUnavailable("worker report attempt is unknown")
+    subject_id = uuid.UUID(report["job_id"])
+    dispatch_sequence = report.get("dispatch_sequence")
+    range_id = uuid.UUID(report["range_id"])
+    sequence = report["report_sequence"]
+    report_hash = report["report_hash"]
+    gpu_ms = report["gpu_ms"]
+    frames = report.get("frames", report.get("images", 0))
+    duration_ms = report["duration_ms"]
+    ack_type = {
+        "type": "checkpoint_ack",
+        "worker_id": worker_id,
+        "incarnation": str(incarnation),
+        "region": report["region"],
+        "owner_epoch": report["owner_epoch"],
+        "range_id": str(range_id),
+        "report_sequence": sequence,
+        "report_hash": report_hash,
+        "gpu_ms": gpu_ms,
+        "duration_ms": duration_ms,
+        "status": "accepted",
+        "job_id": str(subject_id),
+        "dispatch_sequence": dispatch_sequence,
+        "images": frames,
+    }
+    async with db.session_factory() as session:
+        async with session.begin():
+            user_id = await session.scalar(
+                text("SELECT user_id FROM jobs WHERE id = :id"),
+                {"id": subject_id},
+            )
+            if user_id is None:
+                raise AuthorityUnavailable("worker report attempt is unknown")
+            await hold_the_account(session, user_id, wait=True)
+            entity = (await session.execute(
+                text(
+                    "SELECT id, state, current_dispatch_sequence FROM jobs "
+                    "WHERE id = :id AND user_id = :user_id FOR UPDATE"
+                ),
+                {"id": subject_id, "user_id": user_id},
+            )).mappings().one_or_none()
+            if entity is None:
+                raise AuthorityUnavailable("worker report attempt is unknown")
+            attempt = (await session.execute(
+                text(
+                    "SELECT worker_id, incarnation, owner_epoch, dispatch_token_hash, range_id, "
+                    "gpu_ms, frames, duration_ms, report_sequence FROM job_attempts "
+                    "WHERE job_id = :job_id AND dispatch_sequence = :dispatch_sequence FOR UPDATE"
+                ),
+                {"job_id": subject_id, "dispatch_sequence": dispatch_sequence},
+            )).mappings().one_or_none()
+            if (attempt is None or attempt["worker_id"] != worker_id
+                    or attempt["incarnation"] != incarnation
+                    or attempt["owner_epoch"] != report["owner_epoch"]
+                    or attempt["range_id"] != range_id):
+                raise AuthorityUnavailable("worker report range identity is unknown")
+            if report["type"] in {"job_done", "job_failed", "job_cancelled"}:
+                token = report.get("dispatch_token")
+                if (not isinstance(token, str) or not token.isascii()
+                        or not hmac.compare_digest(
+                            attempt["dispatch_token_hash"],
+                            hashlib.sha256(token.encode("ascii")).hexdigest(),
+                        )):
+                    raise AuthorityUnavailable("worker report dispatch token is stale")
+            job_is_current = entity["current_dispatch_sequence"] == dispatch_sequence
+            physical = (await session.execute(
+                text(
+                    "SELECT kind, subject_id, attempt_id, control_generation, dispatch_sequence, "
+                    "state, report_sequence, report_floor, report_hash, gpu_ms, frames, duration_ms "
+                    "FROM worker_physical_ranges WHERE range_id = :range_id AND worker_id = :worker_id "
+                    "AND incarnation = :incarnation FOR UPDATE"
+                ),
+                {"range_id": range_id, "worker_id": worker_id, "incarnation": incarnation},
+            )).mappings().one_or_none()
+            if (physical is None or physical["kind"] != "job"
+                    or physical["subject_id"] != subject_id
+                    or physical["attempt_id"] is not None
+                    or physical["control_generation"] is not None
+                    or physical["dispatch_sequence"] != dispatch_sequence):
+                raise AuthorityUnavailable("worker report range does not match")
+            lease = (await session.execute(
+                text(
+                    "SELECT owner_id, owner_epoch, lease_id, expires_at FROM scheduler_leases "
+                    "WHERE region = :region FOR UPDATE"
+                ),
+                {"region": report["region"]},
+            )).mappings().one_or_none()
+            current = (await session.execute(
+                text(
+                    "SELECT region, owner_epoch, lease_id, grant_ready FROM worker_connections "
+                    "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                    "AND transport_owner_id = :transport_owner_id AND closed_at IS NULL FOR UPDATE"
+                ),
+                {"worker_id": transport_worker_id, "incarnation": transport_incarnation,
+                 "transport_owner_id": TRANSPORT_OWNER_ID},
+            )).mappings().one_or_none()
+            if (lease is None or current is None
+                    or lease["owner_epoch"] != current["owner_epoch"]
+                    or lease["lease_id"] != current["lease_id"]
+                    or current["region"] != report["region"]):
+                raise AuthorityUnavailable("worker report authority is stale")
+            lease_live = await session.scalar(
+                text("SELECT :expires_at > clock_timestamp()"),
+                {"expires_at": lease["expires_at"]},
+            )
+            if not lease_live:
+                raise AuthorityUnavailable("worker report authority has expired")
+            receipt = (await session.execute(
+                text(
+                    "SELECT report_hash, ack_body FROM worker_report_receipts "
+                    "WHERE range_id = :range_id AND report_sequence = :sequence FOR UPDATE"
+                ),
+                {"range_id": range_id, "sequence": sequence},
+            )).mappings().one_or_none()
+            if receipt is not None:
+                if receipt["report_hash"] != report_hash:
+                    raise AuthorityUnavailable("worker report sequence changed bytes")
+                return receipt["ack_body"]
+            if sequence <= physical["report_floor"]:
+                ack_type.update({"status": "refused", "code": "stale_report",
+                                 "gpu_ms": physical["gpu_ms"],
+                                 "images": physical["frames"],
+                                 "duration_ms": physical["duration_ms"]})
+                return preflight_worker_control(ack_type)
+            maxima = {
+                "gpu_ms": max(physical["gpu_ms"], gpu_ms),
+                "frames": max(physical["frames"], frames),
+                "duration_ms": max(physical["duration_ms"], duration_ms),
+            }
+            ack_type.update({
+                "gpu_ms": maxima["gpu_ms"],
+                "images": maxima["frames"],
+                "duration_ms": maxima["duration_ms"],
+            })
+            ack_body = preflight_worker_control(ack_type)
+            await session.execute(
+                text(
+                    "UPDATE worker_physical_ranges SET report_sequence = :sequence, "
+                    "report_hash = :report_hash, gpu_ms = :gpu_ms, frames = :frames, "
+                    "duration_ms = :duration_ms WHERE range_id = :range_id"
+                ),
+                {"sequence": sequence, "report_hash": report_hash, **maxima,
+                 "range_id": range_id},
+            )
+            terminal_state = {
+                "job_done": "completed",
+                "job_failed": "failed",
+                "job_cancelled": "cancelled",
+            }.get(report["type"])
+            await session.execute(
+                text(
+                    "UPDATE job_attempts SET report_sequence = :sequence, gpu_ms = :gpu_ms, "
+                    "frames = :frames, duration_ms = :duration_ms, "
+                    "state = CASE WHEN :complete AND CAST(:terminal_state AS text) IS NOT NULL "
+                    "THEN CAST(:terminal_state AS text) ELSE state END, "
+                    "terminal_at = CASE WHEN :complete THEN clock_timestamp() ELSE terminal_at END, "
+                    "input_fetch_ms = CASE WHEN :complete AND :is_done AND :is_current "
+                    "AND :has_input_fetch_ms "
+                    "THEN :input_fetch_ms ELSE input_fetch_ms END, "
+                    "load_ms = CASE WHEN :complete AND :is_done AND :is_current AND :has_load_ms "
+                    "THEN :load_ms ELSE load_ms END, "
+                    "postprocess_ms = CASE WHEN :complete AND :is_done AND :is_current "
+                    "AND :has_postprocess_ms "
+                    "THEN :postprocess_ms ELSE postprocess_ms END, "
+                    "terminal_category = CASE WHEN :complete AND :is_done AND :is_current "
+                    "THEN :category ELSE terminal_category END, "
+                    "terminal_category_score = CASE WHEN :complete AND :is_done AND :is_current "
+                    "THEN :category_score ELSE terminal_category_score END, "
+                    "terminal_has_thumbnail = CASE WHEN :complete AND :is_done AND :is_current "
+                    "THEN :has_thumbnail ELSE terminal_has_thumbnail END, "
+                    "terminal_failure_code = CASE WHEN :complete AND :is_failed AND :is_current "
+                    "THEN :failure_code ELSE terminal_failure_code END "
+                    "WHERE job_id = :subject_id AND dispatch_sequence = :identity"
+                ),
+                {"sequence": sequence, **maxima, "subject_id": subject_id,
+                 "complete": report.get("physical_complete", False),
+                 "identity": dispatch_sequence,
+                 "terminal_state": terminal_state,
+                 "is_done": report["type"] == "job_done",
+                 "is_failed": report["type"] == "job_failed",
+                 "is_current": job_is_current,
+                 "has_input_fetch_ms": "input_fetch_ms" in report,
+                 "input_fetch_ms": report.get("input_fetch_ms"),
+                 "has_load_ms": "load_ms" in report,
+                 "load_ms": report.get("load_ms"),
+                 "has_postprocess_ms": "postprocess_ms" in report,
+                 "postprocess_ms": report.get("postprocess_ms"),
+                 "category": report.get("category"),
+                 "category_score": report.get("category_score"),
+                 "has_thumbnail": report.get("has_thumbnail", False),
+                 "failure_code": report.get("failure_code")},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO worker_report_receipts "
+                    "(range_id, report_sequence, report_hash, gpu_ms, frames, duration_ms, ack_body) "
+                    "VALUES (:range_id, :sequence, :report_hash, :gpu_ms, :frames, :duration_ms, :ack_body)"
+                ),
+                {"range_id": range_id, "sequence": sequence, "report_hash": report_hash,
+                 **maxima, "ack_body": ack_body},
+            )
+            evicted_floor = await session.scalar(
+                text(
+                    "WITH old AS (SELECT report_sequence FROM worker_report_receipts "
+                    "WHERE range_id = :range_id ORDER BY report_sequence DESC OFFSET 256), "
+                    "removed AS (DELETE FROM worker_report_receipts receipt USING old "
+                    "WHERE receipt.range_id = :range_id AND receipt.report_sequence = old.report_sequence "
+                    "RETURNING receipt.report_sequence) SELECT max(report_sequence) FROM removed"
+                ),
+                {"range_id": range_id},
+            )
+            if evicted_floor is not None:
+                await session.execute(
+                    text(
+                        "UPDATE worker_physical_ranges SET report_floor = greatest(report_floor, :floor) "
+                        "WHERE range_id = :range_id"
+                    ),
+                    {"floor": evicted_floor, "range_id": range_id},
+                )
+            return ack_body
