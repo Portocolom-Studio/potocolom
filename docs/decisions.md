@@ -1802,4 +1802,4 @@ Rejected alternatives:
 - Checking each frame against the database, as the cross-owner design does. For a socket this process holds, it adds a query per frame and answers nothing the in-memory session does not already know.
 - Keeping sessions on protocol 5 while jobs use protocol 6. One connection would then speak two protocols with two different fencing rules.
 
-> Shipped status (2026-10-07): v6 sessions ship on local sockets. No shipped worker speaks protocol 6 yet; the worker client is the next step.
+> Shipped status (2026-10-07): v6 sessions ship on local sockets, and the worker speaks protocol 6 since #681.

@@ -73,25 +73,25 @@ The archived "API v6" candidate was split and landed on main in reviewed slices,
 | #663 | Compose smoke test waits for the simulated worker's model |
 | #664 | Protocol 6 worker registration under a PostgreSQL scheduler lease (migration 0029) |
 | #677 | Protocol 6 job dispatch through an encrypted, acknowledged command journal (0030) |
-| #678 | Protocol 6 job reports committed as durable receipts before they take effect (0031) |
+| #678 | Protocol 6 checkpoints and terminal job reports committed as durable receipts before they take effect (0031) |
 | #679 | F1: after a restart, a receipted protocol 6 job is finished from its receipt instead of re-run |
 | #680 | Protocol 6 realtime sessions through the same journal and receipts (0032) |
 | #681 | The worker speaks protocol 6, with a protocol 5 fallback |
 
-With `ROOT_KEYS` set, which is every accounts install, workers now register as protocol 6. Without it, or while durable authority is briefly missing, they are served as protocol 5. The API keeps `PROTOCOL_VERSION` 5 with floor 4. `scripts/simulate.py` runs real API and worker processes on protocol 6 in CI.
+`scripts/auth-enable.sh` sets `ROOT_KEYS`, so accounts installs have it, and their workers now register as protocol 6. In none mode without `ROOT_KEYS`, and whenever durable authority is briefly missing, a worker that also lists 5 is served as protocol 5; in accounts mode without `ROOT_KEYS` a protocol 6 hello is refused with `recovery_unavailable`. The API keeps `PROTOCOL_VERSION` 5 with floor 4. `scripts/simulate.py` runs real API and worker processes on protocol 6 in CI.
 
-The archived F1 contract v4 and harness v3 targeted the candidate's runtime, not main. The F1 defect that applies to main (a receipted job re-run after a crash, and the candidate's recovery deleting the recovered image) was fixed test first in #679. The candidate's in-tick recovery slot and shutdown barrier have no counterpart on main and were not ported.
+The archived F1 contract v4 and harness v3 targeted the candidate's runtime, not main. The F1 defect that applies to main (a receipted job re-run after a crash, and the candidate's recovery deleting the recovered image) was fixed in #679, with the failing tests shown on unchanged code first (recorded in the PR). The candidate's in-tick recovery slot and shutdown barrier have no counterpart on main and were not ported.
 
 ## Next work
 
 Deliberately not ported, each to land only under its own issue:
 - worker drain and predecessor handover (worker maintenance);
 - shared Redis queues, FrameBus and cross-owner routing (#191, #20, #194);
-- work-budget enforcement and quota callers (#21);
+- work-budget enforcement (budgets are sent as null) and quota callers (#21);
 - pause/resume;
 - the candidate's schema work budgets;
 - content-free error codes;
-- input upload and an explicit parent (#54);
+- the input upload endpoint and a job-level parent column (#54);
 - the tar export.
 
 The slice plan with file-level detail is in the primary checkout at `.local/api6-slice-plan.md` (local, gitignored). Open low findings from the protocol 6 reviews are in #665. The flaky canvas browser checks are #670.
