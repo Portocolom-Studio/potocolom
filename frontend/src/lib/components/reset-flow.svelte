@@ -147,15 +147,15 @@
 							name="email"
 							type="email"
 							autocomplete="email"
+							spellcheck={false}
 							required
 							bind:value={email}
-							aria-label={t('auth.reset.email_label')}
 						/>
 					</Field.Field>
 					{#if error}
 						<p class="text-destructive text-sm" role="alert">{error}</p>
 					{/if}
-					<Button type="submit" disabled={submitting || !email.trim()}>
+					<Button type="submit" disabled={submitting}>
 						{submitting ? t('auth.submitting') : t('auth.reset.ask_submit')}
 					</Button>
 				</form>
@@ -183,7 +183,6 @@
 						autocomplete="new-password"
 						required
 						bind:value={password}
-						aria-label={t('auth.reset.password_label')}
 					/>
 				</Field.Field>
 				<Field.Field>
@@ -195,17 +194,12 @@
 						autocomplete="new-password"
 						required
 						bind:value={confirmPassword}
-						aria-label={t('auth.reset.confirm_label')}
 					/>
 				</Field.Field>
 				{#if error}
 					<p class="text-destructive text-sm" role="alert">{error}</p>
 				{/if}
-				<Button
-					type="submit"
-					disabled={submitting || !password || !confirmPassword}
-					aria-label={t('auth.reset.submit')}
-				>
+				<Button type="submit" disabled={submitting}>
 					{submitting ? t('auth.submitting') : t('auth.reset.submit')}
 				</Button>
 				{#if invalid && !recovery}

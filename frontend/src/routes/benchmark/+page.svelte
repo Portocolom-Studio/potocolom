@@ -104,7 +104,7 @@
 <Seo titleKey="seo.benchmark_title" descriptionKey="seo.benchmark_description" path="/benchmark" />
 
 <LatentShell current="benchmark">
-	<main>
+	<main id="main">
 		<section class="opening">
 			<h1>{benchmarkTitle}</h1>
 			<p class="lede">{t('bench.sub')}</p>

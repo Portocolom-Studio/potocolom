@@ -14,6 +14,9 @@ export function readLandingMode(): LandingMode {
 
 export function applyLandingMode(mode: LandingMode, remember = true): void {
 	document.documentElement.dataset.landingMode = mode;
+	document
+		.querySelector('meta[name="theme-color"]')
+		?.setAttribute('content', mode === 'light' ? '#f3f5f8' : '#070b14');
 	if (!remember) return;
 	try {
 		localStorage.setItem(KEY, mode);

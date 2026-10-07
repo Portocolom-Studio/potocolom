@@ -12,6 +12,8 @@
 	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import PauseIcon from '@lucide/svelte/icons/pause';
+	import PlayIcon from '@lucide/svelte/icons/play';
 	import LandingFaq from './LandingFaq.svelte';
 	import LandingWaitlist from './LandingWaitlist.svelte';
 	import LandingLoader, {
@@ -108,6 +110,7 @@
 	let plateSide = $state<'start' | 'end'>('start');
 	let workStage: HTMLElement | undefined = $state();
 	let orbitName = $state<string | null>(null);
+	let orbitPaused = $state(false);
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
 	let entrancePhase: LandingEntrancePhase = $state(
 		hasCompletedLandingEntrance() ? 'ready' : 'loading'
@@ -171,6 +174,7 @@
 	class:entrance-ready={entrancePhase === 'ready'}
 	aria-busy={entrancePhase !== 'ready'}
 >
+	<a class="skip-link" href="#main">{t('nav.skip')}</a>
 	<LandingLoader assets={orbitAssets} onphase={(phase) => (entrancePhase = phase)} />
 
 	<header
@@ -189,6 +193,7 @@
 
 	<main
 		class="landing-content"
+		id="main"
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
@@ -198,7 +203,8 @@
 				<h1>
 					<span class="line">{t('hero.title1')}</span>
 					<span class="line typing">
-						<span>{typed}</span><span class="caret" aria-hidden="true"></span>
+						<span aria-hidden="true">{typed}</span><span class="caret" aria-hidden="true"></span>
+						<span class="sr-only">{promptMarqueePrompts[0].primary}</span>
 					</span>
 				</h1>
 				<p class="lede">{t('hero.sub')}</p>
@@ -209,7 +215,7 @@
 				<p class="orbit-name" aria-live="polite">{orbitName ?? ''}</p>
 			</div>
 
-			<div class="arc" aria-label={t('gallery.kicker')}>
+			<div class="arc" class:paused={orbitPaused} role="group" aria-label={t('gallery.kicker')}>
 				<div class="arc-spin">
 					{#each arcs as layer (layer.radius)}
 						{#each layer.tiles as tile (`${layer.radius}-${tile.angle}`)}
@@ -237,6 +243,19 @@
 						{/each}
 					{/each}
 				</div>
+				<button
+					type="button"
+					class="orbit-pause"
+					aria-pressed={orbitPaused}
+					aria-label={orbitPaused ? t('orbit.play') : t('orbit.pause')}
+					onclick={() => (orbitPaused = !orbitPaused)}
+				>
+					{#if orbitPaused}
+						<PlayIcon aria-hidden="true" />
+					{:else}
+						<PauseIcon aria-hidden="true" />
+					{/if}
+				</button>
 			</div>
 		</section>
 
@@ -592,6 +611,33 @@
 
 	.arc .chip {
 		pointer-events: auto;
+	}
+
+	.orbit-pause {
+		position: absolute;
+		inset-block-end: 1rem;
+		inset-inline-end: clamp(1rem, 3vw, 2.5rem);
+		pointer-events: auto;
+		z-index: 6;
+		display: grid;
+		place-items: center;
+		width: 2.4rem;
+		height: 2.4rem;
+		padding: 0;
+		border: 1px solid var(--k-line);
+		border-radius: 999px;
+		background: var(--k-panel);
+		color: var(--k-muted);
+		cursor: pointer;
+	}
+
+	.orbit-pause:hover {
+		color: var(--k-ink);
+	}
+
+	.orbit-pause :global(svg) {
+		width: 0.95rem;
+		height: 0.95rem;
 	}
 
 	.orbit-name {
@@ -1095,8 +1141,9 @@
 	/* Keyed on a picture being under the cursor, not on the band. Hovering .arc
 	   froze the orbit from anywhere in the strip, including the empty sky.
 	   Not behind a hover media query: the enlarge is the point of the section. */
-	.arc-spin:has(.chip:hover),
-	.arc-spin:has(.chip:focus-visible) {
+	.arc.paused :is(.arc-spin, .chip img),
+	.arc:has(.chip:hover) :is(.arc-spin, .chip img),
+	.arc:has(.chip:focus-visible) :is(.arc-spin, .chip img) {
 		animation-play-state: paused;
 	}
 
@@ -1158,6 +1205,10 @@
 
 		.work-plate {
 			transition: none;
+		}
+
+		.orbit-pause {
+			display: none;
 		}
 	}
 </style>

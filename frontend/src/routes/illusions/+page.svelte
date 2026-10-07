@@ -172,7 +172,7 @@
 <Seo titleKey="seo.illusions_title" descriptionKey="seo.illusions_description" path="/illusions" />
 
 <LatentShell current="illusions">
-	<main>
+	<main id="main">
 		<section class="opening">
 			<h1>{t('ill.title')}</h1>
 			<p class="lede">{t('ill.sub')}</p>

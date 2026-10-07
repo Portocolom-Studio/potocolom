@@ -10,6 +10,7 @@
 	--k-line: oklch(1 0 0 / 16%);
 	--k-accent: oklch(0.32 0.09 265);
 	--k-accent-ink: oklch(0.96 0.01 265);
+	--k-focus: oklch(0.72 0.18 255);
 	--k-display: 'Lato', ui-sans-serif, system-ui, sans-serif;
 	--k-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', monospace;
 	--k-ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -28,7 +29,12 @@
 	--k-line: oklch(0.2 0.02 262 / 18%);
 	--k-accent: oklch(0.52 0.22 258);
 	--k-accent-ink: oklch(0.99 0.003 255);
+	--k-focus: oklch(0.52 0.22 258);
 	--latent-scheme: light;
+}
+
+:root[data-landing-mode='light']:has(.landing-surface) {
+	color-scheme: light;
 }
 
 .landing-surface *,
@@ -66,9 +72,39 @@
 }
 
 .landing-surface a:focus-visible,
-.landing-surface button:focus-visible {
-	outline: 2px solid var(--k-accent);
+.landing-surface button:focus-visible,
+.landing-surface summary:focus-visible,
+.landing-surface input:focus-visible {
+	outline: 2px solid var(--k-focus);
 	outline-offset: 3px;
+}
+
+.landing-surface a,
+.landing-surface button,
+.landing-surface summary {
+	touch-action: manipulation;
+}
+
+.landing-surface .skip-link {
+	position: absolute;
+	inset-inline-start: 1rem;
+	inset-block-start: 1rem;
+	z-index: 300;
+	padding: 0.6rem 1rem;
+	border-radius: 999px;
+	background: var(--k-ink);
+	color: var(--k-paper);
+	font-weight: 700;
+	transform: translateY(-200%);
+}
+
+.landing-surface .skip-link:focus-visible,
+.landing-surface .skip-link:focus {
+	transform: none;
+}
+
+html:has(.latent-page) {
+	scroll-padding-block-start: 6rem;
 }
 
 /* One pill system across every sketch. */

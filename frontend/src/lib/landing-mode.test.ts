@@ -4,9 +4,17 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { applyLandingMode, readLandingMode } from './landing-mode.ts';
 
+const themeColor = {
+	content: '#070b14',
+	setAttribute: (_: string, value: string) => void (themeColor.content = value)
+};
+
 function page(storage: Pick<Storage, 'getItem' | 'setItem'>) {
 	const dataset: Record<string, string> = {};
-	Object.assign(globalThis, { document: { documentElement: { dataset } }, localStorage: storage });
+	Object.assign(globalThis, {
+		document: { documentElement: { dataset }, querySelector: () => themeColor },
+		localStorage: storage
+	});
 	return dataset;
 }
 
@@ -24,6 +32,14 @@ test('the theme defaults to dark and remembers a switch to light', () => {
 	applyLandingMode('light');
 	assert.equal(dataset.landingMode, 'light');
 	assert.equal(readLandingMode(), 'light');
+});
+
+test('the browser chrome color follows the theme', () => {
+	page(memoryStorage());
+	applyLandingMode('light');
+	assert.equal(themeColor.content, '#f3f5f8');
+	applyLandingMode('dark');
+	assert.equal(themeColor.content, '#070b14');
 });
 
 test('applying the stored theme on load does not write it back', () => {

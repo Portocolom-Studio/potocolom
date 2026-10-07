@@ -18,6 +18,7 @@
 </script>
 
 <div class="landing-surface latent-page">
+	<a class="skip-link" href="#main">{t('nav.skip')}</a>
 	<div class="canvas" aria-hidden="true">
 		<LatentCanvas followCursor animate warmupFrames={1400} />
 	</div>
