@@ -271,6 +271,7 @@ class Job(Base):
     params: Mapped[dict] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(Text, default="queued")  # running, succeeded, failed
     attempt: Mapped[int] = mapped_column(default=1)  # retry once, then fail (docs/decisions.md)
+    current_dispatch_sequence: Mapped[int] = mapped_column(server_default=text("0"))
     gpu_ms: Mapped[int | None]
     input_fetch_ms: Mapped[int | None]
     load_ms: Mapped[int | None]

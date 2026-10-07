@@ -33,7 +33,17 @@ def protocol6_client(worker_id: str):
         try:
             yield client
         finally:
+            client.portal.call(fresh_pool)
             client.portal.call(drop_worker_rows, worker_id)
+
+
+async def fresh_pool() -> None:
+    """Replace the pool before cleanup. Closing a socket while its handler
+    is still in a query makes TestClient cancel the handler through an anyio
+    cancel scope, which also cancels SQLAlchemy's terminate of that
+    connection, so a closed connection can go back into the pool."""
+    assert db.engine is not None
+    await db.engine.dispose()
 
 
 def root_keys(monkeypatch, letter: str = "z") -> None:
@@ -52,6 +62,21 @@ def manifest(model_id: str, parameters: dict | None = None) -> dict:
             "required": ["prompt"],
         } if parameters is None else parameters),
     }
+
+
+def request_work_grant(ws, worker_id: str, incarnation: uuid.UUID) -> dict:
+    renewal_nonce = uuid.uuid4()
+    ws.send_json({
+        "type": "grant_request",
+        "worker_id": worker_id,
+        "incarnation": str(incarnation),
+        "region": worker_authority.REGION,
+        "grant_nonce": str(renewal_nonce),
+    })
+    grant = ws.receive_json()
+    assert grant["type"] == "work_grant"
+    assert grant["ready"] is True
+    return grant
 
 
 def hello(worker_id: str, models: list[dict], *, incarnation: uuid.UUID | None = None,

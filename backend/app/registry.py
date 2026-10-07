@@ -35,7 +35,7 @@ def available() -> dict[str, Manifest]:
     manifests: dict[str, Manifest] = {}
     measured: dict[str, list[int]] = {}
     for worker in realtime.workers.values():
-        if not realtime.takes_work(worker):
+        if not realtime.takes_work(worker) and not worker.has_current_work_grant:
             continue
         for manifest in worker.manifests:
             # A live heartbeat measurement supersedes the calibration estimate

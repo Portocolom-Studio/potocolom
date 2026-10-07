@@ -277,6 +277,82 @@ async def safe_send(sending: "Coroutine[object, object, None]") -> None:
         return
 
 
+async def send_v6_command(
+    worker: "Worker",
+    command_type: str,
+    fields: dict,
+    *,
+    account_user_id: uuid.UUID | None = None,
+):
+    if (worker.protocol_version != 6 or not worker.has_current_work_grant
+            or worker.incarnation is None or worker.grant_nonce is None
+            or workers.get(worker.id) is not worker):
+        raise ProtocolError("worker has no current protocol6 work grant")
+    from app import command_store
+
+    try:
+        command = await command_store.commit_command(
+            worker.id,
+            worker.incarnation,
+            command_type,
+            fields,
+            grant_nonce=worker.grant_nonce,
+            account_user_id=account_user_id,
+        )
+    except command_store.CommandRefused:
+        raise ProtocolError("worker command was refused") from None
+    await safe_send(worker.ws.send_text(command.body.decode("utf-8", "strict")))
+    note_command_sent(worker, command.sequence)
+    return command
+
+
+def note_command_sent(worker: "Worker", sequence: int) -> None:
+    if worker.incarnation is not None:
+        _sent_command_sequences[(worker.id, worker.incarnation)] = (
+            sequence, time.monotonic()
+        )
+
+
+async def _deliver_pending_worker_command(worker: "Worker") -> None:
+    if (worker.protocol_version != 6 or worker.incarnation is None
+            or workers.get(worker.id) is not worker):
+        return
+    from app import command_store
+
+    try:
+        command = await command_store.read_exact_pending(worker.id, worker.incarnation)
+    except command_store.CommandRefused:
+        logger.warning("pending command for worker %s failed authority checks", worker.id)
+        return
+    if command is None:
+        return
+    key = (worker.id, worker.incarnation)
+    previous = _sent_command_sequences.get(key)
+    now = time.monotonic()
+    if previous is not None and previous[0] == command.sequence and now - previous[1] < 1:
+        return
+    message = json.loads(command.body)
+    if message["type"] == "dispatch_job":
+        from app import jobs
+
+        # Sent even when the claim is no longer current: commands apply in
+        # sequence, so a held-back head would stall every later command on
+        # this connection. A stale dispatch's reports fail its token check.
+        await jobs.track_dispatched_command(worker, command)
+    try:
+        await asyncio.wait_for(
+            worker.ws.send_text(command.body.decode("utf-8", "strict")), CLOSE_TIMEOUT
+        )
+    except Exception:
+        if workers.get(worker.id) is worker:
+            del workers[worker.id]
+        from app import jobs
+
+        jobs.on_worker_lost(worker)
+        return
+    note_command_sent(worker, command.sequence)
+
+
 async def refuse(ws: WebSocket, code: int, message: str) -> None:
     """Send a terminal error and close, tolerating a peer that is already gone."""
     try:
@@ -493,6 +569,8 @@ class Worker:
     # may raise entries; it must not lower them on this connection.
     admission_p95_ms: dict[str, int] | None = None
     admission_batch_ms: dict[str, list[int]] | None = None
+    admission_ready: bool = False
+    grant_deadline: float | None = None
 
     @property
     def models(self) -> list[str]:
@@ -501,6 +579,14 @@ class Worker:
     @property
     def free_slots(self) -> int:
         return self.realtime_slots - self.slots_in_use
+
+    @property
+    def has_current_work_grant(self) -> bool:
+        return (
+            self.protocol_version != 6
+            or self.admission_ready
+            and (self.grant_deadline is None or time.monotonic() < self.grant_deadline)
+        )
 
 
 def _require_worker_incarnation(worker: Worker) -> uuid.UUID:
@@ -803,6 +889,7 @@ def with_generation(payload: dict, generation: int) -> dict:
 
 
 workers: dict[str, Worker] = {}
+_sent_command_sequences: dict[tuple[str, uuid.UUID], tuple[int, float]] = {}
 sessions: dict[uuid.UUID, Session] = {}
 gpu_requests: dict[str, asyncio.Future] = {}
 # Keyed per attempt, not per session: an idle release and a resume give one
@@ -1309,6 +1396,10 @@ async def fleet(ws: WebSocket) -> None:
                         incarnation=(uuid.UUID(hello["incarnation"]) if version == 6 else None),
                         grant_nonce=(uuid.UUID(hello["grant_nonce"]) if version == 6 else None),
                         capabilities=hello.get("capabilities", []),
+                        admission_ready=(
+                            isinstance(version, int) and not isinstance(version, bool)
+                            and version < 6
+                        ),
                         device=hello.get("device"),
                         memory_mode=hello.get("memory_mode"))
         if "realtime_p95_ms" in hello:
@@ -1524,6 +1615,16 @@ async def fleet(ws: WebSocket) -> None:
                             session.ready.set()
                         elif session.state == "live":
                             schedule_reassign(session)
+                    elif control["type"] == "command_ack" and worker.protocol_version == 6:
+                        from app import command_store
+
+                        try:
+                            acknowledged = await command_store.acknowledge(control)
+                        except command_store.CommandRefused:
+                            raise ProtocolError("command acknowledgement refused") from None
+                        if acknowledged and worker.incarnation is not None:
+                            _sent_command_sequences.pop((worker.id, worker.incarnation), None)
+                            await _deliver_pending_worker_command(worker)
                     elif control["type"] == "grant_request" and worker.protocol_version == 6:
                         from app import worker_authority
 
@@ -1536,6 +1637,11 @@ async def fleet(ws: WebSocket) -> None:
                             raise ProtocolError(
                                 "worker grant authority is unavailable") from None
                         worker.grant_nonce = grant.grant_nonce
+                        worker.admission_ready = grant.ready
+                        worker.grant_deadline = (
+                            time.monotonic() + grant.remaining_ms / 1000
+                            if grant.ready and grant.remaining_ms > 0 else None
+                        )
                         worker.owner_epoch = grant.owner_epoch
                         worker.lease_id = grant.lease_id
                         worker.lease_expires_at = grant.lease_expires_at.isoformat().replace(
@@ -1637,6 +1743,8 @@ async def fleet(ws: WebSocket) -> None:
     finally:
         if workers.get(worker.id) is worker:
             del workers[worker.id]
+        if worker.incarnation is not None:
+            _sent_command_sequences.pop((worker.id, worker.incarnation), None)
         await close_durable_worker(worker)
         for key, owner in list(closing_sessions.items()):
             if owner[2] is worker:

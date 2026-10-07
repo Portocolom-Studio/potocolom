@@ -37,9 +37,10 @@ WORKER_COLUMNS = {
 # Columns the protocol 6 slice deliberately does not carry yet; later slices
 # add them back with the code that reads them.
 ABSENT_WORKER_COLUMNS = {
-    "measurement_id", "drain_id", "next_command_sequence", "acknowledged_floor",
-    "drain_requested_at", "physical_complete", "previous_incarnation",
+    "measurement_id", "drain_id", "drain_requested_at", "physical_complete",
+    "previous_incarnation",
 }
+WORKER_COLUMNS_0030 = WORKER_COLUMNS | {"next_command_sequence", "acknowledged_floor"}
 
 
 @pytest.mark.db
@@ -152,6 +153,84 @@ def test_0029_upgrade_creates_the_authority_tables_and_downgrade_drops_them(port
                 await connection.close()
 
         asyncio.run(verify_reupgrade())
+    finally:
+        async def drop_database() -> None:
+            connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+            try:
+                exists = await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", database)
+                if exists:
+                    await connection.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
+            finally:
+                await connection.close()
+
+        asyncio.run(drop_database())
+        portal_runner(db.dispose())
+
+
+@pytest.mark.db
+def test_0030_upgrade_adds_command_journal_and_downgrade_drops_it(portal_runner):
+    assert portal_runner(db.connect(serving=False)) is True
+    admin_url = make_url(os.environ["DATABASE_URL"]).set(database="postgres")
+    database = f"p6m_{secrets.token_hex(8)}"
+    test_url = admin_url.set(database=database, drivername="postgresql+asyncpg")
+    url = test_url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+    async def create_database() -> None:
+        connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+        try:
+            await connection.execute(f'CREATE DATABASE "{database}"')
+        finally:
+            await connection.close()
+
+    config = Config(str(_VERSIONS.parents[1] / "alembic.ini"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        test_url.render_as_string(hide_password=False).replace("%", "%%"),
+    )
+    try:
+        asyncio.run(create_database())
+        command.upgrade(config, "0030")
+
+        async def verify_upgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                worker_columns = set(await connection.fetchval(
+                    "SELECT array_agg(column_name) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'worker_connections'"
+                ))
+                assert WORKER_COLUMNS_0030 <= worker_columns
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_commands') IS NOT NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.job_attempts') IS NOT NULL")
+                job_columns = set(await connection.fetchval(
+                    "SELECT array_agg(column_name) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'jobs'"
+                ))
+                assert "current_dispatch_sequence" in job_columns
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_upgrade())
+        command.downgrade(config, "0029")
+
+        async def verify_downgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.worker_commands') IS NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.job_attempts') IS NULL")
+                worker_columns = set(await connection.fetchval(
+                    "SELECT array_agg(column_name) FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'worker_connections'"
+                ))
+                assert "next_command_sequence" not in worker_columns
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_downgrade())
     finally:
         async def drop_database() -> None:
             connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))

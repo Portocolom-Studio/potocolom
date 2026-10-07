@@ -112,6 +112,7 @@ class InFlight:
     user_id: uuid.UUID
     dispatch_token: str
     attempt: int = 1
+    dispatch_sequence: int | None = None
 
 
 inflight: dict[uuid.UUID, InFlight] = {}
@@ -1291,6 +1292,10 @@ async def generation_events(
     )
 
 
+def takes_jobs(worker: realtime.Worker) -> bool:
+    return realtime.takes_work(worker) or worker.has_current_work_grant
+
+
 def job_dispatch_depth(worker: realtime.Worker) -> int:
     # Sessions-first: while a realtime slot is live, do not stack a second
     # queued job behind the one already waiting on the GPU lock.
@@ -1302,7 +1307,7 @@ def job_dispatch_depth(worker: realtime.Worker) -> int:
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     candidates = [
         worker for worker in realtime.workers.values()
-        if realtime.takes_work(worker)
+        if takes_jobs(worker)
         and model_id in worker.models
         and worker.jobs_in_flight < job_dispatch_depth(worker)
     ]
@@ -1386,7 +1391,7 @@ async def _dispatch_step_body() -> None:
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
-            if not any(realtime.takes_work(w)
+            if not any(takes_jobs(w)
                        and w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break
@@ -1426,6 +1431,177 @@ async def locked_job(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
     return result.scalar_one_or_none()
 
 
+def _drop_early_entry(job_id: uuid.UUID, current: InFlight, worker: realtime.Worker) -> None:
+    if inflight.get(job_id) is current:
+        del inflight[job_id]
+        last_progress_at.pop(job_id, None)
+        release_job_slot(worker)
+
+
+async def _claim_committed(job_id: uuid.UUID, worker: realtime.Worker,
+                           previous_sequence: int) -> bool:
+    """Whether this worker's claim of the job reached PostgreSQL: the attempt
+    row is written only in the claim's own transaction."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        return bool(await session.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM job_attempts WHERE job_id = :job_id "
+                "AND worker_id = :worker_id AND incarnation = :incarnation "
+                "AND dispatch_sequence > :previous_sequence)"
+            ),
+            {"job_id": job_id, "worker_id": worker.id, "incarnation": worker.incarnation,
+             "previous_sequence": previous_sequence},
+        ))
+
+
+async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: int) -> bool:
+    if db.session_factory is None or worker.incarnation is None or worker.grant_nonce is None:
+        return False
+    async with db.session_factory() as session:
+        job = await session.get(Job, job_id)
+        if job is None or job.state != "queued":
+            return True
+        attempt = job.attempt
+        previous_sequence = job.current_dispatch_sequence
+        user_id = job.user_id
+        model_id = job.model_id
+        params = job.params
+        source_asset_id = job.source_asset_id
+        source = None
+        if source_asset_id is not None:
+            source = await session.get(Asset, source_asset_id)
+            if source is None:
+                return False
+            source_storage_key = source.storage_key
+        else:
+            source_storage_key = None
+    if epoch != _dispatch_epoch:
+        return True
+    storage_key, thumb_storage_key = dispatch_keys_for_attempt(user_id, job_id, attempt)
+    dispatch_token = secrets.token_urlsafe(16)
+    target = await get_storage().upload_target(storage_key, dispatch_token)
+    thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
+    fields = {
+        "job_id": str(job_id),
+        "model_id": model_id,
+        "params": params,
+        "dispatch_token": dispatch_token,
+        "upload": {"url": target.url, "headers": target.headers},
+        "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
+        "work_budget": {
+            "range_id": str(uuid.uuid4()),
+            "start_gpu_ms": 0,
+            "gpu_ms_limit": None,
+            "remaining_wall_ms": None,
+        },
+    }
+    if source_storage_key is not None:
+        fields["input"] = {
+            "url": await get_storage().worker_fetch_url(source_storage_key),
+        }
+    from app import command_store
+
+    # Published before the claim commits, as protocol 5 does under its row
+    # lock: a cancel that commits right after the claim must find this entry,
+    # or it marks the row cancelled and never tells the worker.
+    current = InFlight(
+        worker=worker,
+        storage_key=storage_key,
+        thumb_storage_key=thumb_storage_key,
+        user_id=user_id,
+        dispatch_token=dispatch_token,
+        attempt=attempt,
+        dispatch_sequence=previous_sequence + 1,
+    )
+    worker.jobs_in_flight += 1
+    inflight[job_id] = current
+    last_progress_at[job_id] = time.monotonic()
+    try:
+        command = await command_store.commit_command(
+            worker.id,
+            worker.incarnation,
+            "dispatch_job",
+            fields,
+            grant_nonce=worker.grant_nonce,
+            account_user_id=user_id,
+            job_context={"source_asset_id": source_asset_id},
+        )
+    except command_store.CommandRefused as error:
+        _drop_early_entry(job_id, current, worker)
+        return str(error) == "job claim is stale"
+    except Exception:
+        logger.exception("protocol6 claim for job %s failed; reading its outcome", job_id)
+        try:
+            committed = await _claim_committed(job_id, worker, previous_sequence)
+        except Exception:
+            # Outcome unknown: the entry stays, so the stall sweep recovers
+            # the job either way, as it does for protocol 5.
+            logger.exception("protocol6 claim outcome for job %s is unknown", job_id)
+            return True
+        if committed:
+            # The claim is durable and its command pending: deliver it.
+            await realtime._deliver_pending_worker_command(worker)
+            return True
+        _drop_early_entry(job_id, current, worker)
+        lost_jobs.append(job_id)
+        return True
+    current.dispatch_sequence = json.loads(command.body)["dispatch_sequence"]
+    try:
+        await asyncio.wait_for(
+            worker.ws.send_text(command.body.decode("utf-8", "strict")),
+            realtime.CLOSE_TIMEOUT,
+        )
+    except Exception:
+        if realtime.workers.get(worker.id) is worker:
+            del realtime.workers[worker.id]
+        on_worker_lost(worker)
+        return True
+    publish(job_id, {"state": "running"})
+    logger.info("job %s dispatched to protocol6 worker %s", job_id, worker.id)
+    return True
+
+
+async def track_dispatched_command(worker: realtime.Worker, command) -> bool:
+    message = json.loads(command.body)
+    job_id = uuid.UUID(message["job_id"])
+    sequence = message["dispatch_sequence"]
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        row = (await session.execute(
+            text(
+                "SELECT job.user_id, job.attempt, job.state, job.current_dispatch_sequence, "
+                "attempt.worker_id, attempt.incarnation, attempt.dispatch_sequence "
+                "FROM jobs AS job JOIN job_attempts AS attempt ON attempt.job_id = job.id "
+                "AND attempt.dispatch_sequence = job.current_dispatch_sequence "
+                "WHERE job.id = :job_id"
+            ),
+            {"job_id": job_id},
+        )).mappings().one_or_none()
+    if (row is None or row["state"] != "running"
+            or row["current_dispatch_sequence"] != sequence
+            or row["worker_id"] != worker.id or row["incarnation"] != worker.incarnation):
+        return False
+    current = inflight.get(job_id)
+    if current is not None:
+        return current.worker is worker and current.dispatch_sequence == sequence
+    storage_key, thumb_storage_key = dispatch_keys_for_attempt(
+        row["user_id"], job_id, row["attempt"]
+    )
+    inflight[job_id] = InFlight(
+        worker=worker,
+        storage_key=storage_key,
+        thumb_storage_key=thumb_storage_key,
+        user_id=row["user_id"],
+        dispatch_token=message["dispatch_token"],
+        attempt=row["attempt"],
+        dispatch_sequence=sequence,
+    )
+    worker.jobs_in_flight += 1
+    last_progress_at[job_id] = time.monotonic()
+    return True
+
+
 async def dispatch(job_id: uuid.UUID) -> bool:
     epoch = _dispatch_epoch
     assert db.session_factory is not None
@@ -1438,8 +1614,11 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             select(Job.model_id).where(Job.id == job_id))).scalar_one_or_none()
         if model_id is None:
             return True  # stale queue entry; drop it
-        if pick_job_worker(model_id) is None:
+        worker = pick_job_worker(model_id)
+        if worker is None:
             return False
+        if worker.protocol_version == 6:
+            return await dispatch_protocol6(job_id, worker, epoch)
         job = await locked_job(session, job_id)
         if job is None or job.state != "queued":
             return True  # stale queue entry; drop it
@@ -2099,6 +2278,25 @@ async def _ask_worker_to_stop(job_id: uuid.UUID, entry: InFlight) -> None:
     if realtime.workers.get(entry.worker.id) is not entry.worker:
         return
     with suppress(asyncio.TimeoutError):
+        if entry.worker.protocol_version == 6:
+            if entry.dispatch_sequence is None:
+                logger.warning("protocol6 worker %s has no dispatch sequence for job %s",
+                               entry.worker.id, job_id)
+                return
+            try:
+                await asyncio.wait_for(realtime.send_v6_command(
+                    entry.worker,
+                    "cancel_job",
+                    {
+                        "job_id": str(job_id),
+                        "dispatch_sequence": entry.dispatch_sequence,
+                        "dispatch_token": entry.dispatch_token,
+                    },
+                    account_user_id=entry.user_id,
+                ), realtime.CLOSE_TIMEOUT)
+            except realtime.ProtocolError:
+                logger.warning("protocol6 cancel command was refused for job %s", job_id)
+            return
         await asyncio.wait_for(realtime.safe_send(entry.worker.ws.send_json({
             "type": "cancel_job",
             "job_id": str(job_id),
