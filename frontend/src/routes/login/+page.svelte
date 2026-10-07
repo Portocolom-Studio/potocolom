@@ -206,6 +206,7 @@
 								inputmode="text"
 								spellcheck={false}
 								required
+								pattern=".*\S.*"
 								bind:value={code}
 							/>
 							<Field.Description>{t('auth.challenge.code_hint')}</Field.Description>
