@@ -44,7 +44,7 @@ the `make` targets further down are for working *on* potocolom, not running it.
 curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/download/v0.1.0/install.sh | bash
 ```
 
-It needs Docker, `curl` and `openssl`, installs into `~/potocolom`
+It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
 stack. Rerun the install script of a newer release to upgrade in place.
 
