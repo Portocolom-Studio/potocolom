@@ -1,6 +1,6 @@
 # Session handoff
 
-Start here. The user requested cleanup, safe merges, current docs and a clear next-work document. The full feature programme remains incomplete. Resume it only as a new task, through small PRs.
+Start here. The cleanup (PRs #648 to #651) is done, and protocol 6 with F1 recovery has since landed on main in small PRs (see "Landed since the cleanup"). The full feature programme remains incomplete. Resume it only as new tasks, through small PRs.
 
 ## Read and check first
 
@@ -63,15 +63,40 @@ The central archive receipt and removal/restore receipts are the current authori
 - Use PR workflows. The user authorized suitable cleanup merges in this session. Future feature PRs follow the normal user-merge rule unless the user authorizes otherwise.
 - Use up to six Luna HIGH implementation/test agents in disjoint scopes; Sol6.1 HIGH adversarial reviews; Sol6.1 XHIGH or Astra XHIGH final gates. The current tool limit is three active children, so run the six workstreams in batches.
 
+## Landed since the cleanup
+
+The archived "API v6" candidate was split and landed on main in reviewed slices, each with a new decision entry in `docs/decisions.md`:
+
+| PR | What it ships |
+|---|---|
+| #657 | Job queue ordered by tier, then the job's original age |
+| #663 | Compose smoke test waits for the simulated worker's model |
+| #664 | Protocol 6 worker registration under a PostgreSQL scheduler lease (migration 0029) |
+| #677 | Protocol 6 job dispatch through an encrypted, acknowledged command journal (0030) |
+| #678 | Protocol 6 checkpoints and terminal job reports committed as durable receipts before they take effect (0031) |
+| #679 | F1: after a restart, a receipted protocol 6 job is finished from its receipt instead of re-run |
+| #680 | Protocol 6 realtime sessions through the same journal and receipts (0032) |
+| #681 | The worker speaks protocol 6, with a protocol 5 fallback |
+
+`scripts/auth-enable.sh` sets `ROOT_KEYS`, so accounts installs have it, and their workers now register as protocol 6. In none mode without `ROOT_KEYS`, and whenever durable authority is briefly missing, a worker that also lists 5 is served as protocol 5; in accounts mode without `ROOT_KEYS` a protocol 6 hello is refused with `recovery_unavailable`. The API keeps `PROTOCOL_VERSION` 5 with floor 4. `scripts/simulate.py` runs real API and worker processes on protocol 6 in CI.
+
+The archived F1 contract v4 and harness v3 targeted the candidate's runtime, not main. The F1 defect that applies to main (a receipted job re-run after a crash, and the candidate's recovery deleting the recovered image) was fixed in #679, with the failing tests shown on unchanged code first (recorded in the PR). The candidate's in-tick recovery slot and shutdown barrier have no counterpart on main and were not ported.
+
 ## Next work
 
-Start with current main and one isolated branch. Restore the F1 recovery contract v4 and harness v3; verify their exact saved source identities, then run the approved actual-caller RED on new owned resources. The harness source passed review, but no recovery runtime or production repair ran. Do not skip RED or infer it from a source pass.
+Deliberately not ported, each to land only under its own issue:
+- worker drain and predecessor handover (worker maintenance);
+- shared Redis queues, FrameBus and cross-owner routing (#191, #20, #194);
+- work-budget enforcement (budgets are sent as null) and quota callers (#21);
+- pause/resume;
+- the candidate's schema work budgets;
+- content-free error codes;
+- the input upload endpoint and a job-level parent column (#54);
+- the tar export.
 
-The shared backend sequence is **F1 recovery, S1 journal, S2 purge, S3 claim, then maintenance**. One agent owns the overlapping backend files. F2 startup admission is a separate blocking gate: queue/frame regional identity and reciprocal storage proof must be exact. Matching rate-limit endpoints, path strings, bucket names or readiness responses are not sufficient.
+The slice plan with file-level detail is in the primary checkout at `.local/api6-slice-plan.md` (local, gitignored). Open low findings from the protocol 6 reviews are in #665. The flaky canvas browser checks are #670.
 
-The worker maintenance repair needs independent source review before paired runtime tests. The P8 diagnostic repair needs source review before any capture. Keep the original strict 60 FPS failure. The roadmap has the remaining product, quota, fleet, gateway, capacity, portability, release and research slices and their dependencies.
-
-Every restored packet must bind the source, review verdict, finite cases and new resource ownership. Archive manifests do not grant runtime leases. Never point destructive helpers at the developer database or an unknown container. No cloud expense, production rollout or GPU benchmark is needed for the first source/test slice.
+F2 startup admission, the worker maintenance repair and the P8 lineage diagnostic keep the gates described below and in [implementation_spec.md](implementation_spec.md). Never point destructive helpers at the developer database or an unknown container.
 
 ## Verification and delivery
 
