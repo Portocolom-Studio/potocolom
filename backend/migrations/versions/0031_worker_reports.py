@@ -38,7 +38,8 @@ def upgrade() -> None:
                   server_default=sa.text("now()")),
         sa.CheckConstraint("kind IN ('job')", name="physical_ranges_kind"),
         sa.CheckConstraint(
-            "attempt_id IS NULL AND control_generation IS NULL AND dispatch_sequence > 0",
+            "attempt_id IS NULL AND control_generation IS NULL "
+            "AND dispatch_sequence IS NOT NULL AND dispatch_sequence > 0",
             name="physical_ranges_identity",
         ),
         sa.CheckConstraint(
