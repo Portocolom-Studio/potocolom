@@ -26,6 +26,16 @@ from test_fleet_protocol6 import (
 )
 
 
+@pytest.fixture(autouse=True)
+def park_dispatch_loop(monkeypatch):
+    """Every test here dispatches by hand; the lifespan's own dispatch loop
+    would otherwise race it for the same queued jobs and slots."""
+    async def parked():
+        return None
+
+    monkeypatch.setattr(jobs, "dispatch_step", parked)
+
+
 def png_bytes(width=512, height=512):
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data
@@ -473,7 +483,7 @@ def test_protocol6_a_pending_command_replays_after_the_grant_renews(monkeypatch)
 
 
 @pytest.mark.db
-def test_protocol6_a_claim_that_errors_frees_the_slot_and_requeues(monkeypatch):
+def test_protocol6_a_claim_with_an_unknown_outcome_frees_the_slot_and_requeues(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"job-error-{uuid.uuid4()}"
     incarnation = uuid.uuid4()
@@ -481,6 +491,7 @@ def test_protocol6_a_claim_that_errors_frees_the_slot_and_requeues(monkeypatch):
 
     async def broken(*_args, **_kwargs):
         raise RuntimeError("database went away")
+
 
     with protocol6_client(worker_id) as client:
         client.portal.call(worker_authority.acquire_scheduler_lease)
@@ -491,8 +502,17 @@ def test_protocol6_a_claim_that_errors_frees_the_slot_and_requeues(monkeypatch):
 
             job_id = client.portal.call(seed_queued_job, model_id)
             monkeypatch.setattr(command_store, "commit_command", broken)
-            with pytest.raises(RuntimeError):
-                client.portal.call(jobs.dispatch, job_id)
+            # As the dispatch pass does: the hint leaves the queue first.
+            popped = client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+            assert popped is not None and popped.id == str(job_id)
+            assert client.portal.call(jobs.dispatch, job_id) is True
             from app import realtime
             assert job_id not in jobs.inflight
             assert realtime.workers[worker_id].jobs_in_flight == 0
+            # The outcome is unknown, so the row decides: requeue_or_fail on
+            # the still-queued row puts its hint back.
+            assert job_id in jobs.lost_jobs
+            jobs.lost_jobs.remove(job_id)
+            client.portal.call(jobs.requeue_or_fail, job_id, "test")
+            heap = jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+            assert [hint.id for hint in heap].count(str(job_id)) == 1

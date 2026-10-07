@@ -1504,15 +1504,19 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             job_context={"source_asset_id": source_asset_id},
         )
     except Exception as error:
-        # Any failure undoes the early entry, so the dispatch loop requeues
-        # the job now rather than leaving it to the stall sweep.
         if inflight.get(job_id) is current:
             del inflight[job_id]
             last_progress_at.pop(job_id, None)
             release_job_slot(worker)
-        if not isinstance(error, command_store.CommandRefused):
-            raise
-        return str(error) == "job claim is stale"
+        if isinstance(error, command_store.CommandRefused):
+            return str(error) == "job claim is stale"
+        # The claim may have committed before this surfaced. requeue_or_fail
+        # reads the row and covers both: a queued row gets its hint back, a
+        # running one its retry. Re-raising would let the dispatch pass push
+        # a second hint for the same job.
+        logger.exception("protocol6 claim for job %s failed with an unknown outcome", job_id)
+        lost_jobs.append(job_id)
+        return True
     current.dispatch_sequence = json.loads(command.body)["dispatch_sequence"]
     try:
         await asyncio.wait_for(
