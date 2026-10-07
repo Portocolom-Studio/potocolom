@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
+from app.account_lock import hold_the_account
 from app.auth import current_user, require_role
 from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
@@ -221,6 +222,18 @@ def dispatch_keys_for_attempt(user_id: uuid.UUID, job_id: uuid.UUID, attempt: in
     """Temporary upload keys under dispatch/; an S3 lifecycle rule expires this prefix."""
     prefix = f"{DISPATCH_PREFIX}{user_id}/{job_id}-attempt-{attempt}"
     return f"{prefix}.png", f"{prefix}-thumb.webp"
+
+
+def success_orphan_keys(user_id: uuid.UUID, job_id: uuid.UUID, attempt: int) -> list[str]:
+    """Keys left over once an attempt's output is in the library: every
+    attempt's dispatch uploads, and earlier attempts' library keys. Never
+    this attempt's library keys: the new asset rows name them."""
+    orphans: list[str] = []
+    for earlier in range(1, attempt + 1):
+        orphans.extend(dispatch_keys_for_attempt(user_id, job_id, earlier))
+        if earlier < attempt:
+            orphans.extend(storage_keys_for_attempt(user_id, job_id, earlier))
+    return orphans
 
 # Latest reported denoising fraction per running job. Transient by design:
 # the job row is the source of truth for state, progress is display only.
@@ -1963,13 +1976,11 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             logger.exception("could not mark job %s succeeded", job_id)
             return
         clear_if_current(worker, job_id, current)
-        orphans: list[str] = []
-        for attempt in range(1, current.attempt + 1):
-            orphans.extend(dispatch_keys_for_attempt(current.user_id, job_id, attempt))
-            if attempt < current.attempt:
-                orphans.extend(storage_keys_for_attempt(current.user_id, job_id, attempt))
         schedule_blob_cleanup(
-            purge_keys(orphans, what=f"dispatch orphans for job {job_id}"),
+            purge_keys(
+                success_orphan_keys(current.user_id, job_id, current.attempt),
+                what=f"dispatch orphans for job {job_id}",
+            ),
             what=f"dispatch orphans for job {job_id}",
         )
         publish(job_id, {"state": "succeeded", "url": asset_url(full.id)})
@@ -2349,6 +2360,235 @@ def on_worker_lost(worker: realtime.Worker) -> None:
             lost_jobs.append(job_id)
 
 
+async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
+    """Finish a running job from its committed protocol 6 receipt, if any."""
+    session_factory = db.session_factory
+    if session_factory is None:
+        return False
+    async with session_factory() as session:
+        snapshot = (await session.execute(
+            text(
+                "SELECT job.user_id, job.state, job.attempt AS job_attempt_number, "
+                "job.current_dispatch_sequence, job.source_asset_id, "
+                "attempt.dispatch_sequence, attempt.state AS attempt_state, "
+                "attempt.range_id, attempt.report_sequence, attempt.gpu_ms, "
+                "attempt.duration_ms, "
+                "attempt.input_fetch_ms, attempt.load_ms, attempt.postprocess_ms, "
+                "attempt.terminal_category, attempt.terminal_category_score, "
+                "attempt.terminal_has_thumbnail, attempt.terminal_failure_code, "
+                "attempt.terminal_at, physical.report_hash "
+                "FROM jobs AS job "
+                "JOIN job_attempts AS attempt ON attempt.job_id = job.id "
+                "AND attempt.dispatch_sequence = job.current_dispatch_sequence "
+                "JOIN worker_physical_ranges AS physical ON physical.range_id = attempt.range_id "
+                "WHERE job.id = :job_id"
+            ),
+            {"job_id": job_id},
+        )).mappings().one_or_none()
+        if (snapshot is None or snapshot["state"] != "running"
+                or snapshot["attempt_state"] not in {"completed", "failed"}
+                or snapshot["report_sequence"] <= 0 or snapshot["report_hash"] is None):
+            return False
+        receipt = await session.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM worker_report_receipts "
+                "WHERE range_id = :range_id AND report_sequence = :sequence "
+                "AND report_hash = :report_hash)"
+            ),
+            {"range_id": snapshot["range_id"], "sequence": snapshot["report_sequence"],
+             "report_hash": snapshot["report_hash"]},
+        )
+        if not receipt:
+            return False
+
+    sequence = snapshot["dispatch_sequence"]
+    user_id = snapshot["user_id"]
+    job_attempt = snapshot["job_attempt_number"]
+    if snapshot["attempt_state"] == "failed":
+        reason = ("generation failed" if snapshot["terminal_failure_code"] == "generation_failed"
+                  else "input image invalid" if snapshot["terminal_failure_code"] == "input_image_invalid"
+                  else "worker reported failure")
+        async with session_factory() as session:
+            async with session.begin():
+                await hold_the_account(session, user_id, wait=True)
+                job = await locked_job(session, job_id)
+                attempt_state = await session.scalar(
+                    text("SELECT state FROM job_attempts WHERE job_id = :job_id "
+                         "AND dispatch_sequence = :sequence FOR UPDATE"),
+                    {"job_id": job_id, "sequence": sequence},
+                )
+                if (job is not None and job.state == "running"
+                        and job.current_dispatch_sequence == sequence
+                        and attempt_state == "failed"):
+                    job.state = "failed"
+                    job.failure_reason = reason
+                    job.finished_at = snapshot["terminal_at"]
+                    await session.flush()
+                else:
+                    return True
+        publish(job_id, {"state": "failed", "reason": reason})
+        await purge_attempt_blobs(user_id, job_id, job_attempt)
+        return True
+
+    async def fail_output(reason: str) -> bool:
+        async with session_factory() as session:
+            async with session.begin():
+                await hold_the_account(session, user_id, wait=True)
+                job = await locked_job(session, job_id)
+                state = await session.scalar(
+                    text("SELECT state FROM job_attempts WHERE job_id = :job_id "
+                         "AND dispatch_sequence = :sequence FOR UPDATE"),
+                    {"job_id": job_id, "sequence": sequence},
+                )
+                if (job is None or job.state != "running"
+                        or job.current_dispatch_sequence != sequence or state != "completed"):
+                    return False
+                job.state = "failed"
+                job.failure_reason = reason
+                job.finished_at = snapshot["terminal_at"]
+        publish(job_id, {"state": "failed", "reason": reason})
+        await purge_attempt_blobs(user_id, job_id, job_attempt)
+        return True
+
+    dispatch_key, dispatch_thumb_key = dispatch_keys_for_attempt(user_id, job_id, job_attempt)
+    library_key, library_thumb_key = storage_keys_for_attempt(user_id, job_id, job_attempt)
+    storage = get_storage()
+    image = await storage.image_info(dispatch_key)
+    if image is None or image.size <= 0 or image.content_type != "image/png":
+        await fail_output("worker output was missing or invalid")
+        return True
+    thumb = None
+    if snapshot["terminal_has_thumbnail"]:
+        thumb = await storage.image_info(dispatch_thumb_key)
+        if (thumb is None or thumb.size <= 0 or thumb.content_type != "image/webp"
+                or max(thumb.width, thumb.height) > THUMBNAIL_MAX_EDGE):
+            thumb = None
+    promoted: list[str] = []
+    try:
+        if dispatch_key != library_key:
+            await storage.promote(dispatch_key, library_key)
+            promoted.append(library_key)
+        if thumb is not None and dispatch_thumb_key != library_thumb_key:
+            await storage.promote(dispatch_thumb_key, library_thumb_key)
+            promoted.append(library_thumb_key)
+    except Exception:
+        logger.exception("could not recover output for job %s", job_id)
+        await fail_output("could not commit output to the library")
+        return True
+
+    asset_id = None
+    committed = False
+    async with session_factory() as session:
+        async with session.begin():
+            await hold_the_account(session, user_id, wait=True)
+            job = await locked_job(session, job_id)
+            attempt = (await session.execute(
+                text("SELECT state, dispatch_sequence, range_id, report_sequence, gpu_ms, "
+                     "input_fetch_ms, load_ms, postprocess_ms, terminal_at "
+                     "FROM job_attempts WHERE job_id = :job_id AND dispatch_sequence = :sequence "
+                     "FOR UPDATE"),
+                {"job_id": job_id, "sequence": sequence},
+            )).mappings().one_or_none()
+            if (job is None or attempt is None or job.state != "running"
+                    or job.current_dispatch_sequence != sequence
+                    or attempt["state"] != "completed"):
+                if promoted:
+                    schedule_blob_cleanup(
+                        purge_keys(
+                            promoted, what=f"uncommitted library copies for job {job_id}"
+                        ),
+                        what=f"uncommitted library copies for job {job_id}",
+                    )
+                return True
+            durable_hash = await session.scalar(
+                text(
+                    "SELECT physical.report_hash FROM worker_physical_ranges AS physical "
+                    "WHERE physical.range_id = :range_id AND physical.report_sequence = :report_sequence "
+                    "AND EXISTS (SELECT 1 FROM worker_report_receipts AS receipt "
+                    "WHERE receipt.range_id = physical.range_id "
+                    "AND receipt.report_sequence = physical.report_sequence "
+                    "AND receipt.report_hash = physical.report_hash)"
+                ),
+                {"range_id": attempt["range_id"], "report_sequence": attempt["report_sequence"]},
+            )
+            if durable_hash is None:
+                if promoted:
+                    schedule_blob_cleanup(
+                        purge_keys(
+                            promoted, what=f"uncommitted library copies for job {job_id}"
+                        ),
+                        what=f"uncommitted library copies for job {job_id}",
+                    )
+                return True
+            existing = await session.scalar(
+                select(Asset).where(Asset.job_id == job_id, Asset.mime == "image/png")
+                    .order_by(Asset.id).limit(1).with_for_update()
+            )
+            if existing is None:
+                full = Asset(
+                    user_id=user_id,
+                    job_id=job_id,
+                    parent_asset_id=job.source_asset_id,
+                    storage_key=library_key,
+                    mime="image/png",
+                    width=image.width,
+                    height=image.height,
+                )
+                session.add(full)
+                await session.flush()
+                if thumb is not None:
+                    session.add(Asset(
+                        user_id=user_id,
+                        job_id=job_id,
+                        parent_asset_id=full.id,
+                        storage_key=library_thumb_key,
+                        mime="image/webp",
+                        width=thumb.width,
+                        height=thumb.height,
+                    ))
+                asset_id = full.id
+            else:
+                asset_id = existing.id
+            job.state = "succeeded"
+            job.gpu_ms = attempt["gpu_ms"]
+            for field in ("input_fetch_ms", "load_ms", "postprocess_ms"):
+                setattr(job, field, attempt[field])
+            job.finished_at = attempt["terminal_at"]
+            committed = True
+    if not committed:
+        return True
+    publish(job_id, {"state": "succeeded", "url": asset_url(asset_id)})
+    from app import usage_events
+    usage_events.schedule_job(job_id, {
+        "type": "job_done",
+        "category": snapshot["terminal_category"] or "other",
+        "category_score": snapshot["terminal_category_score"],
+        "gpu_ms": snapshot["gpu_ms"],
+        "duration_ms": snapshot["duration_ms"],
+    })
+    schedule_blob_cleanup(
+        purge_keys(
+            success_orphan_keys(user_id, job_id, job_attempt),
+            what=f"dispatch orphans for job {job_id}",
+        ),
+        what=f"dispatch orphans for job {job_id}",
+    )
+    return True
+
+
+async def _recover_or_requeue(job_id: uuid.UUID) -> None:
+    """Startup must finish even when storage does not answer: receipt recovery
+    is bounded, and any failure falls back to the retry this job got before
+    receipts existed."""
+    try:
+        async with asyncio.timeout(PENDING_DELETE_TIMEOUT):
+            if await _recover_receipted_attempt(job_id):
+                return
+    except Exception:
+        logger.exception("receipt recovery for job %s failed; retrying the job instead", job_id)
+    await requeue_or_fail(job_id, "restart while running")
+
+
 async def recover() -> None:
     """Rebuild the queue from job rows after a restart; running jobs lost
     their worker reply with the process, so they get their retry."""
@@ -2360,7 +2600,7 @@ async def recover() -> None:
         pending = list(rows.scalars())
     for job in pending:
         if job.state == "running":
-            await requeue_or_fail(job.id, "restart while running")
+            await _recover_or_requeue(job.id)
         else:
             await queues.push(
                 JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job.id))
