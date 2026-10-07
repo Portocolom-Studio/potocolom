@@ -4,6 +4,8 @@ Audit date: 2026-10-05. Source baseline: main `006f408ab1ed8148639cfc804553c1342
 
 The user changed the current task to cleanup and handoff. The full implementation programme is incomplete. This report separates main from saved local drafts. Start a new session with [session-handoff.md](session-handoff.md); the remaining work is in [implementation_spec.md](implementation_spec.md).
 
+> Update 2026-10-07: this audit is a snapshot of main at `006f408`. Since then, protocol 6 and the F1 recovery fix have landed (#657, #663, #664, #677 to #681). The Protocol, Dispatch and Realtime rows below describe the snapshot; [session-handoff.md](session-handoff.md) lists what changed.
+
 ## Evidence and saved work
 
 The audit read the authoritative architecture, blueprint, wire protocol, API, profiles, decisions, local development, repository boundary and runner documents. It used routed local internals, source, tests, issue bodies and discussions, Git ancestry, and independent reviews. Source and tests establish shipped behavior; accepted decisions establish intended behavior.
