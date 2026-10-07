@@ -1755,7 +1755,7 @@ This amends "Scheduler: leader elected inside the API replicas" on one point: th
 
 A new incarnation becomes ready as soon as its manifests, device and memory mode are valid. An incarnation stays not ready while a running job's current dispatch belongs to another incarnation of the same worker id; it is retried on each `grant_request`. The existing `requeue_or_fail` requeues that work when the old connection closes. The drain-receipt handover in the C2 v4 design replaces this rule when it ships.
 
-A v6 hello registers as protocol 6 only when `ROOT_KEYS` is set, because later protocol 6 commands are stored encrypted. Without it, a none-mode worker that also speaks 5 is registered as protocol 5, and any other worker is refused. Protocol 4 and 5 workers are unchanged.
+A v6 hello registers as protocol 6 only when `ROOT_KEYS` is set, because later protocol 6 commands are stored encrypted. Without it, a none-mode worker that also speaks 5 is registered as protocol 5, and any other worker is refused. When the key ring is set but durable authority is briefly missing (no lease yet just after a restart, or the database down), a worker that also speaks 5 is registered as protocol 5 for that connection, and one that does not is told `recovery_unavailable`, which the worker treats as a reason to reconnect, not to stop. Protocol 4 and 5 workers are unchanged.
 
 Rejected alternatives:
 - A Redis lease, as originally recorded. Its fencing token cannot be checked in the PostgreSQL transaction that commits a job claim.

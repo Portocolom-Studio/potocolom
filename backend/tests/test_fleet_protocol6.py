@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, jobs, realtime, registry, worker_authority
@@ -120,11 +121,13 @@ async def seed_queued_job(model_id: str) -> uuid.UUID:
     assert db.session_factory is not None
     job_id = uuid.uuid4()
     async with db.session_factory() as session:
-        if await session.get(Model, model_id) is None:
-            session.add(Model(id=model_id, name=model_id,
-                              capabilities=["text_to_image"],
-                              parameters_schema={"type": "object"}, min_vram_gb=0))
-        await session.flush()
+        # The fleet handler persists the same model row concurrently.
+        await session.execute(
+            pg_insert(Model).values(id=model_id, name=model_id,
+                                    capabilities=["text_to_image"],
+                                    parameters_schema={"type": "object"}, min_vram_gb=0)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
         job = Job(id=job_id, user_id=db.local_user_id, model_id=model_id,
                   params={"prompt": "queued"}, state="queued", attempt=1)
         session.add(job)
@@ -443,5 +446,28 @@ def test_a_v6_fallback_with_a_malformed_version_list_is_refused(monkeypatch):
             assert reply["type"] == "rejected"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_v6_hello_without_durable_authority_registers_as_protocol5(monkeypatch):
+    """Right after a restart the lease may not be held yet, or the database
+    may be down. A worker that also speaks 5 is served as 5, not turned away."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-noauth-{uuid.uuid4()}"
+
+    async def unavailable(**_kwargs):
+        raise worker_authority.AuthorityUnavailable("regional scheduler lease was lost")
+
+    monkeypatch.setattr(worker_authority, "register_worker", unavailable)
+    try:
+        client = TestClient(app, headers=FLEET_HEADERS)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(f"{worker_id}-model")]))
+            assert ws.receive_json() == {"type": "registered", "protocol_version": 5}
+            worker = realtime.workers[worker_id]
+            assert worker.protocol_version == 5
+            assert worker.incarnation is None
+            assert realtime.takes_work(worker)
     finally:
         get_settings.cache_clear()

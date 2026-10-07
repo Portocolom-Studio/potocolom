@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import hashlib
 import io
 import json
 import threading
@@ -26,6 +28,7 @@ from worker.client import (
 from worker.engine import Cancelled, GeneratedFrame, NotResidentError, PromptCache, SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
+from worker.protocol6 import canonical_bytes, decode_control, validate_message
 
 
 class FakeSocket:
@@ -772,10 +775,11 @@ def test_hello_carries_manifests():
     assert "realtime_p95_ms" not in hello
     assert hello["device"] == "cpu"
     assert hello["memory_mode"] == "auto"
-    # The API reads this to choose the frame width it sends: protocol 5
-    # carries the input revision, so announcing it is what gets this worker
-    # 21 byte frames rather than the 17 byte N-1 form.
-    assert hello["protocol_version"] == PROTOCOL_VERSION == 5
+    assert hello["protocol_version"] == PROTOCOL_VERSION == 6
+    assert hello["compatible_versions"] == [6, 5]
+    assert hello["capabilities"]
+    assert hello["incarnation"]
+    assert hello["grant_nonce"]
 
 
 def test_hello_carries_measured_realtime_p95_ms():
@@ -1949,3 +1953,572 @@ def test_run_closes_the_engine_when_the_worker_stops(monkeypatch):
     cancelled, remaining = asyncio.run(scenario())
     assert cancelled
     assert remaining is None
+
+
+PROTOCOL6_REGION = "local"
+
+
+def _sign_command(command: dict) -> dict:
+    signed = dict(command)
+    source = {key: value for key, value in signed.items() if key != "body_hash"}
+    signed["body_hash"] = hashlib.sha256(canonical_bytes(source)).hexdigest()
+    return signed
+
+
+def _lease_fields(worker_id: str) -> dict:
+    lease_id = str(uuid.uuid4())
+    return {
+        "worker_id": worker_id,
+        "region": PROTOCOL6_REGION,
+        "owner_epoch": 1,
+        "lease_id": lease_id,
+        "lease_expires_at": "2026-12-31T00:00:00Z",
+        "grant_nonce": str(uuid.uuid4()),
+    }
+
+
+class Protocol6ApiSocket:
+    """Minimal fleet API for protocol 6 worker tests."""
+
+    def __init__(
+        self,
+        worker_id: str,
+        commands: list[dict],
+        *,
+        protocol_version: int = 6,
+        hold_open_seconds: float = 0,
+        command_spacing: float = 0,
+    ):
+        self.worker_id = worker_id
+        self.commands = list(commands)
+        self.protocol_version = protocol_version
+        self.hold_open_seconds = hold_open_seconds
+        self.command_spacing = command_spacing
+        self.sent: list[str | bytes] = []
+        self._hello_incarnation: str | None = None
+        self._hello_grant: str | None = None
+        self._grant_stage = 0
+
+    async def send(self, data):
+        self.sent.append(data)
+
+    async def recv(self):
+        hello = json.loads(self.sent[0])
+        self._hello_incarnation = hello["incarnation"]
+        self._hello_grant = hello["grant_nonce"]
+        if self.protocol_version == 6:
+            return json.dumps({
+                "type": "registered",
+                "protocol_version": 6,
+                "worker_id": self.worker_id,
+                "incarnation": self._hello_incarnation,
+                "transport_owner_id": str(uuid.uuid4()),
+                "region": PROTOCOL6_REGION,
+                "grant_nonce": self._hello_grant,
+                "lease_id": str(uuid.uuid4()),
+                "owner_epoch": 1,
+                "lease_expires_at": "2026-12-31T00:00:00Z",
+                "ready": False,
+                "remaining_ms": 0,
+            })
+        return json.dumps({"type": "registered", "protocol_version": 5})
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._grant_stage == 0:
+            self._grant_stage = 1
+            return json.dumps({
+                "type": "work_grant",
+                "worker_id": self.worker_id,
+                "incarnation": self._hello_incarnation,
+                "region": PROTOCOL6_REGION,
+                "grant_nonce": str(uuid.uuid4()),
+                "lease_id": str(uuid.uuid4()),
+                "owner_epoch": 1,
+                "lease_expires_at": "2026-12-31T00:00:00Z",
+                "ready": True,
+                "remaining_ms": 10_000,
+            })
+        if self.commands:
+            if self.command_spacing:
+                await asyncio.sleep(self.command_spacing)
+            message = self.commands.pop(0)
+            if isinstance(message, dict):
+                bound = dict(message)
+                bound["incarnation"] = self._hello_incarnation
+                bound["worker_id"] = self.worker_id
+                return json.dumps(_sign_command(bound))
+            return message
+        if self.hold_open_seconds:
+            await asyncio.sleep(self.hold_open_seconds)
+            raise StopAsyncIteration
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if any(
+                decode_control(item)["type"] in {
+                    "job_done", "job_failed", "job_cancelled", "session_closed",
+                }
+                for item in self.sent
+                if isinstance(item, str) and item.startswith("{")
+            ):
+                break
+        raise StopAsyncIteration
+
+    async def close(self, code=1000):
+        return None
+
+
+def _worker_controls(socket: Protocol6ApiSocket) -> list[dict]:
+    controls = []
+    for item in socket.sent:
+        if isinstance(item, (bytes, bytearray)):
+            continue
+        controls.append(decode_control(item))
+    return controls
+
+
+def test_protocol6_hello_uses_fresh_incarnation_and_registered5_falls_back():
+    worker_id = "w-p6-hello"
+    sockets = []
+
+    class ReconnectSocket(Protocol6ApiSocket):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            sockets.append(self)
+
+    async def scenario():
+        for version in (6, 5):
+            socket = ReconnectSocket(worker_id, [], protocol_version=version)
+            await serve_connection(socket, Settings(worker_id=worker_id),
+                                     [SIMULATED_MANIFEST], SimulatedEngine(0.01))
+        return sockets
+
+    sockets = asyncio.run(scenario())
+    assert sockets[0]._hello_incarnation != sockets[1]._hello_incarnation
+    assert json.loads(sockets[1].sent[0])["protocol_version"] == 6
+    assert not any(
+        '"grant_request"' in item for item in sockets[1].sent if isinstance(item, str)
+    )
+
+
+def test_protocol6_command_sequence_replay_and_gap():
+    worker_id = "w-p6-seq"
+    lease = _lease_fields(worker_id)
+    job_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    dispatch = {
+        "type": "dispatch_job",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "job_id": job_id,
+        "model_id": "sd-sim",
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+        "params": {"prompt": "x"},
+        "upload": {"url": "http://127.0.0.1/put", "headers": {}},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+    gap = {
+        "type": "cancel_job",
+        "command_sequence": 3,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "job_id": job_id,
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+    }
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [dispatch, dispatch, gap])
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        await asyncio.sleep(0.8)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    acks = [m for m in _worker_controls(socket) if m["type"] == "command_ack"]
+    assert len(acks) >= 2
+    assert acks[0]["status"] == "accepted"
+    assert acks[1] == acks[0]
+    gap_ack = next(m for m in acks if m.get("code") == "sequence_gap")
+    assert gap_ack["expected_sequence"] == 2
+
+
+def test_protocol6_dispatch_job_reports_job_done_with_receipt_fields(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    worker_id = "w-p6-job"
+    lease = _lease_fields(worker_id)
+    job_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    dispatch = {
+        "type": "dispatch_job",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "job_id": job_id,
+        "model_id": "sd-sim",
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+        "params": {"prompt": "x"},
+        "upload": {"url": "http://127.0.0.1/put", "headers": {}},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [dispatch])
+        await serve_connection(socket, Settings(worker_id=worker_id),
+                               [SIMULATED_MANIFEST], SimulatedEngine(0.01))
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = json.loads(socket.sent[0])["incarnation"]
+    controls = _worker_controls(socket)
+    done = next(m for m in controls if m["type"] == "job_done")
+    assert done["physical_complete"] is True
+    assert done["report_sequence"] == 1
+    source = {key: value for key, value in done.items() if key != "report_hash"}
+    assert done["report_hash"] == hashlib.sha256(canonical_bytes(source)).hexdigest()
+    for message in controls:
+        if message["type"] in {"grant_request", "heartbeat", "command_ack"}:
+            validate_message(message, expected_worker_id=worker_id)
+        elif message["type"] in {"job_progress", "job_done"}:
+            validate_message(
+                message,
+                expected_worker_id=worker_id,
+                expected_incarnation=uuid.UUID(incarnation),
+            )
+
+
+def test_protocol6_session_open_update_close():
+    worker_id = "w-p6-session"
+    lease = _lease_fields(worker_id)
+    session_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    open_cmd = {
+        "type": "open_session",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+        "model_id": "sd-sim",
+        "params": {"prompt": "x"},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+    update_cmd = {
+        "type": "update_session",
+        "command_sequence": 2,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+        "params_revision": 2,
+        "model_id": "sd-sim",
+        "params": {"prompt": "y"},
+    }
+    close_cmd = {
+        "type": "close_session",
+        "command_sequence": 3,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+    }
+
+    async def scenario():
+        socket = Protocol6ApiSocket(
+            worker_id,
+            [open_cmd, update_cmd, close_cmd],
+            command_spacing=0.15,
+        )
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        await asyncio.sleep(0.8)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = json.loads(socket.sent[0])["incarnation"]
+    controls = _worker_controls(socket)
+    ready = [m for m in controls if m["type"] == "session_ready"]
+    closed = next(m for m in controls if m["type"] == "session_closed")
+    assert len(ready) == 1
+    assert closed["physical_complete"] is True
+    validate_message(
+        closed,
+        expected_worker_id=worker_id,
+        expected_incarnation=uuid.UUID(incarnation),
+    )
+
+
+def test_protocol6_job_progress_and_keepalive_validate(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    monkeypatch.setattr("worker.client.PROGRESS_KEEPALIVE_SECONDS", 0.05)
+    worker_id = "w-p6-progress"
+    lease = _lease_fields(worker_id)
+    job_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    dispatch = {
+        "type": "dispatch_job",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "job_id": job_id,
+        "model_id": "sd-sim",
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+        "params": {"prompt": "x", "steps": 4},
+        "upload": {"url": "http://127.0.0.1/put", "headers": {}},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [dispatch])
+        await serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.5),
+        )
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = uuid.UUID(json.loads(socket.sent[0])["incarnation"])
+    controls = _worker_controls(socket)
+    progress = [m for m in controls if m["type"] == "job_progress"]
+    assert progress
+    keepalive = next(m for m in progress if m["phase"] == "load" and m["step"] == 0)
+    assert keepalive["steps"] == 4
+    inference = [m for m in progress if m["phase"] == "inference"]
+    assert inference
+    for message in progress:
+        validate_message(
+            message,
+            expected_worker_id=worker_id,
+            expected_incarnation=incarnation,
+        )
+
+
+def test_protocol6_heartbeat_omits_realtime_batch_ms(monkeypatch):
+    class BatchEngine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+
+        def realtime_batch_ms(self, model_id):
+            return [200, 400] if model_id == "sd-sim" else None
+
+        def p95_model_ids(self):
+            return ["sd-sim"]
+
+    worker_id = "w-p6-hb"
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=0.2)
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id, heartbeat_seconds=0.05),
+            [SIMULATED_MANIFEST], BatchEngine()))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = uuid.UUID(json.loads(socket.sent[0])["incarnation"])
+    heartbeats = [m for m in _worker_controls(socket) if m["type"] == "heartbeat"]
+    assert heartbeats
+    assert "realtime_batch_ms" not in heartbeats[0]
+    validate_message(
+        heartbeats[0],
+        expected_worker_id=worker_id,
+        expected_incarnation=incarnation,
+    )
+
+
+def test_protocol6_session_refused_validates():
+    worker_id = "w-p6-refused"
+    lease = _lease_fields(worker_id)
+    session_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    open_cmd = {
+        "type": "open_session",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+        "model_id": "sd-sim",
+        "params": {"prompt": "x"},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+
+    class NotResidentEngine(SimulatedEngine):
+        async def ensure_realtime_resident(self, manifest):
+            return False
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [open_cmd])
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], NotResidentEngine(0.01)))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = uuid.UUID(json.loads(socket.sent[0])["incarnation"])
+    refused = next(m for m in _worker_controls(socket) if m["type"] == "session_refused")
+    assert refused["code"] == "model_unavailable"
+    assert "params_revision" not in refused
+    validate_message(
+        refused,
+        expected_worker_id=worker_id,
+        expected_incarnation=incarnation,
+    )
+
+
+def test_protocol6_worker_messages_all_validate(monkeypatch):
+    monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
+    worker_id = "w-p6-all"
+    lease = _lease_fields(worker_id)
+    job_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    range_id = str(uuid.uuid4())
+    dispatch = {
+        "type": "dispatch_job",
+        "command_sequence": 1,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "job_id": job_id,
+        "model_id": "sd-sim",
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+        "params": {"prompt": "job", "steps": 4},
+        "upload": {"url": "http://127.0.0.1/put", "headers": {}},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+    open_cmd = {
+        "type": "open_session",
+        "command_sequence": 2,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+        "model_id": "sd-sim",
+        "params": {"prompt": "x"},
+        "work_budget": {"range_id": range_id, "gpu_ms_limit": None},
+    }
+    update_cmd = {
+        "type": "update_session",
+        "command_sequence": 3,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+        "params_revision": 2,
+        "model_id": "sd-sim",
+        "params": {"prompt": "y"},
+    }
+    close_cmd = {
+        "type": "close_session",
+        "command_sequence": 4,
+        "command_id": str(uuid.uuid4()),
+        **lease,
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "control_generation": 1,
+    }
+
+    async def scenario():
+        socket = Protocol6ApiSocket(
+            worker_id,
+            [dispatch, open_cmd, update_cmd, close_cmd],
+            command_spacing=0.15,
+        )
+        await serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01),
+        )
+        return socket
+
+    socket = asyncio.run(scenario())
+    incarnation = uuid.UUID(json.loads(socket.sent[0])["incarnation"])
+    controls = _worker_controls(socket)
+    assert len([m for m in controls if m["type"] == "session_ready"]) == 1
+    assert any(m["type"] == "job_progress" for m in controls)
+    skip_types = {"hello"}
+    for item in socket.sent:
+        if isinstance(item, (bytes, bytearray)):
+            continue
+        message = decode_control(item)
+        if message["type"] in skip_types:
+            continue
+        validate_message(
+            message,
+            expected_worker_id=worker_id,
+            expected_incarnation=incarnation,
+        )
+
+
+def test_protocol6_grant_request_uses_fresh_nonce_each_time():
+    worker_id = "w-p6-grant"
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=10)
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        await asyncio.sleep(5.5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    grants = [decode_control(item) for item in socket.sent
+              if isinstance(item, str) and '"grant_request"' in item]
+    assert len(grants) >= 2
+    assert grants[0]["grant_nonce"] != grants[1]["grant_nonce"]
+
+
+def test_recovery_unavailable_is_a_reconnect_not_an_exit():
+    """recovery_unavailable means the API's durable authority is briefly
+    missing; the worker must reconnect, not stop for good."""
+    closed = []
+
+    class DeferringSocket:
+        async def send(self, data):
+            pass
+
+        async def recv(self):
+            return json.dumps({"type": "rejected", "reason": "recovery_unavailable",
+                               "min_supported_version": 5})
+
+        async def close(self, code=1000, reason=""):
+            closed.append(code)
+
+    async def scenario():
+        await serve_connection(DeferringSocket(), Settings(worker_id="w-deferred"),
+                               [SIMULATED_MANIFEST], SimulatedEngine(0.01))
+
+    asyncio.run(scenario())
+    assert closed

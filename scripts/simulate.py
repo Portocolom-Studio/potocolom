@@ -10,12 +10,15 @@ Run from the repository root, after the setup in docs/local-development.md:
 """
 
 import asyncio
+import base64
 import json
 import os
+import secrets
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import uuid
@@ -67,8 +70,22 @@ def log(who: str, text: str) -> None:
     print(f"[{time.monotonic() - START:6.2f}] {who:<9} {text}", flush=True)
 
 
+_SIMULATE_STORAGE = tempfile.mkdtemp(prefix="potocolom-simulate-")
+
+
 def spawn_api() -> subprocess.Popen:
-    env = os.environ | {"FLEET_TOKEN_KEY": _FLEET_TOKEN}
+    root_key = base64.b64encode(secrets.token_bytes(32)).decode()
+    database_url = os.environ.get("DATABASE_URL", DEFAULT_URL)
+    env = os.environ | {
+        "FLEET_TOKEN_KEY": _FLEET_TOKEN,
+        "ROOT_KEYS": f"1:{root_key}",
+        "DATABASE_URL": database_url,
+        "STORAGE_BACKEND": "local",
+        "STORAGE_LOCAL_PATH": _SIMULATE_STORAGE,
+        "TELEMETRY": "false",
+        "EMAIL_BACKEND": "none",
+        "BILLING_ENABLED": "false",
+    }
     return subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
          "--port", str(PORT), "--log-level", "warning",
