@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from starlette.websockets import WebSocketDisconnect
 
 from app import db, jobs, realtime, registry, worker_authority
@@ -120,11 +121,13 @@ async def seed_queued_job(model_id: str) -> uuid.UUID:
     assert db.session_factory is not None
     job_id = uuid.uuid4()
     async with db.session_factory() as session:
-        if await session.get(Model, model_id) is None:
-            session.add(Model(id=model_id, name=model_id,
-                              capabilities=["text_to_image"],
-                              parameters_schema={"type": "object"}, min_vram_gb=0))
-        await session.flush()
+        # The fleet handler persists the same model row concurrently.
+        await session.execute(
+            pg_insert(Model).values(id=model_id, name=model_id,
+                                    capabilities=["text_to_image"],
+                                    parameters_schema={"type": "object"}, min_vram_gb=0)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
         job = Job(id=job_id, user_id=db.local_user_id, model_id=model_id,
                   params={"prompt": "queued"}, state="queued", attempt=1)
         session.add(job)
