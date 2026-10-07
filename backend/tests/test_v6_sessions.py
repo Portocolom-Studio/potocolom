@@ -1,5 +1,6 @@
 """Protocol 6 realtime sessions on local fleet sockets."""
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -587,3 +588,52 @@ def test_a_refused_update_session_does_not_close_the_browser(monkeypatch):
         finally:
             browser_ctx.__exit__(None, None, None)
             fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_a_refused_v6_session_is_closed_on_the_worker_before_its_attempt_ends(monkeypatch):
+    """close_session needs the attempt still open; abandoning first would get
+    the close refused and leave the worker holding the runner."""
+    root_keys(monkeypatch)
+    worker_id = f"v6-refused-{uuid.uuid4()}"
+    model_id = f"v6-rt-refused-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        incarnation = uuid.uuid4()
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            ws.receive_json()
+            grant = request_work_grant(ws, worker_id, incarnation)
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({"type": "open", "model_id": model_id,
+                                      "params": {"prompt": "house"}, "frame_header": 2})
+                open_cmd = decode_control(ws.receive_text().encode("utf-8"))
+                ws.send_json(command_ack(open_cmd))
+                refused = {
+                    key: open_cmd[key]
+                    for key in ("worker_id", "incarnation", "region", "owner_epoch",
+                                "lease_id", "lease_expires_at", "session_id",
+                                "attempt_id", "control_generation")
+                }
+                refused.update({"type": "session_refused", "code": "model_unavailable",
+                                "grant_nonce": grant["grant_nonce"]})
+                validate_message(refused)
+                ws.send_json(refused)
+                close = decode_control(ws.receive_text().encode("utf-8"))
+                assert close["type"] == "close_session"
+                assert close["attempt_id"] == open_cmd["attempt_id"]
+
+                async def attempt_state():
+                    async with db.session_factory() as session:
+                        return await session.scalar(
+                            text("SELECT state FROM realtime_session_attempts "
+                                 "WHERE attempt_id = :attempt_id"),
+                            {"attempt_id": uuid.UUID(open_cmd["attempt_id"])},
+                        )
+
+                for _ in range(200):
+                    if client.portal.call(attempt_state) == "ended":
+                        break
+                    client.portal.call(asyncio.sleep, 0.01)
+                assert client.portal.call(attempt_state) == "ended"

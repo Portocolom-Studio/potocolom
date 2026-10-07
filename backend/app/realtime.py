@@ -1039,9 +1039,10 @@ def model_known(model_id: str) -> bool:
     return any(model_id in w.models and takes_sessions(w) for w in workers.values())
 
 
-async def _send_v6_close_session(worker: Worker, session: Session,
-                                 generation: int) -> None:
-    if worker.protocol_version != 6 or session.attempt_id is None:
+async def _send_v6_close_session(worker: Worker, session: Session, generation: int,
+                                 attempt_id: uuid.UUID | None = None) -> None:
+    attempt_id = attempt_id or session.attempt_id
+    if worker.protocol_version != 6 or attempt_id is None:
         return
     if session.user_id is None:
         return
@@ -1051,7 +1052,7 @@ async def _send_v6_close_session(worker: Worker, session: Session,
             "close_session",
             {
                 "session_id": str(session.id),
-                "attempt_id": str(session.attempt_id),
+                "attempt_id": str(attempt_id),
                 "control_generation": generation,
             },
             account_user_id=session.user_id,
@@ -1077,11 +1078,13 @@ async def close_abandoned_session(worker: Worker, session: Session,
     if worker.protocol_version == 6:
         from app import worker_authority
 
-        if session.attempt_id is not None:
-            await worker_authority.abandon_realtime_attempt(
-                session.id, generation, session.attempt_id
-            )
-        await _send_v6_close_session(worker, session, generation)
+        # close_session first: it needs the attempt still open, and once the
+        # attempt is abandoned the command is refused and the worker never
+        # learns to drop the runner.
+        attempt_id = session.attempt_id
+        await _send_v6_close_session(worker, session, generation, attempt_id)
+        if attempt_id is not None:
+            await worker_authority.abandon_realtime_attempt(session.id, generation, attempt_id)
         return
     payload = {"type": "close_session", "session_id": str(session.id)}
     await safe_send(worker.ws.send_json(with_generation(payload, generation)))
@@ -1138,11 +1141,11 @@ async def assign(session: Session, worker: Worker) -> bool:
                 session.attempt_id = None
                 raise
             if session.worker is not worker or not session.is_live:
+                if workers.get(worker.id) is worker:
+                    await _send_v6_close_session(worker, session, sent_generation, attempt_id)
                 await worker_authority.abandon_realtime_attempt(
                     session.id, sent_generation, attempt_id
                 )
-                if workers.get(worker.id) is worker:
-                    await _send_v6_close_session(worker, session, sent_generation)
                 if session.worker is worker:
                     worker.slots_in_use -= 1
                     session.worker = None

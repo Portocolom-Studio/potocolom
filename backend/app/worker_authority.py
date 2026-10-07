@@ -540,6 +540,7 @@ async def accept_session_ready(worker_id: str, incarnation: uuid.UUID, message: 
                 {"session_id": session_id, "generation": generation},
             )).mappings().one_or_none()
             if (entity is None or entity["user_id"] != user_id
+                    or entity["state"] != "assigning"
                     or entity["control_generation"] != generation
                     or attempt is None or attempt["worker_id"] != worker_id
                     or attempt["incarnation"] != incarnation
