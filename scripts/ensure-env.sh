@@ -88,7 +88,7 @@ database_state() {
 	fi
 	local project candidates=() name
 	project="$(env_value COMPOSE_PROJECT_NAME)"
-	for name in "${COMPOSE_PROJECT_NAME:-}" "$project" compose potocolom-smoke; do
+	for name in "${COMPOSE_PROJECT_NAME:-}" "$project" compose potocolom potocolom-smoke; do
 		[[ -n "$name" ]] && candidates+=("${name}_pgdata")
 	done
 	for name in "${candidates[@]}"; do

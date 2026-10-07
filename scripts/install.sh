@@ -33,6 +33,14 @@ main() {
 		echo "error: docker compose is required" >&2
 		exit 1
 	fi
+	# The volume guard below runs `docker volume inspect`; when Docker does
+	# not answer, that means "no volume" and preflight would write a new .env
+	# next to a database it cannot see, so ask for the daemon first.
+	if ! docker info >/dev/null 2>&1; then
+		echo 'error: cannot reach Docker. Start the daemon, or add this user to the docker group' >&2
+		echo '  (sudo usermod -aG docker "$USER", then log out and back in), and run this again.' >&2
+		exit 1
+	fi
 
 	ENV_FILE="$DIR/deploy/compose/.env"
 	# The project a release install owns is potocolom; a name the operator
@@ -120,7 +128,7 @@ main() {
 	' "$ENV_FILE" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
 
-	"${compose[@]}" up -d --no-build
+	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
 	public_url="$(sed -n 's/^PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1 | tr -d '"' | tr -d '\r')"
 	public_url="${public_url:-http://localhost:8080}"

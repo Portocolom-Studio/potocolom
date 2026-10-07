@@ -65,9 +65,10 @@ a specific one. The script verifies the downloaded bundle against the
 release's `SHA256SUMS`, sets `POTOCOLOM_VERSION` in `deploy/compose/.env`, and
 refuses a machine with no GPU, because the released images need one.
 A release install is Compose project `potocolom`, separate from a source
-checkout's project `compose`; to move an existing checkout's data over, set
-`COMPOSE_PROJECT_NAME=compose` and copy that checkout's `deploy/compose/.env`
-into the install before running the script.
+checkout's project `compose`. To keep a checkout's data, before the first run
+create `~/potocolom/deploy/compose/`, copy the checkout's `deploy/compose/.env`
+into it, and add the line `COMPOSE_PROJECT_NAME=compose` to that copy; the
+script keeps a project name it finds in `.env` and reads none from the shell.
 Everything below is the same stack built from a source checkout instead.
 
 ## Checking a machine before you start

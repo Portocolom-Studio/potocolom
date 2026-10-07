@@ -114,6 +114,7 @@
 	let hoveredHalf = $state<'oss' | 'cloud' | null>(null);
 	let installCopied = $state(false);
 	let installCopiedTimeout: ReturnType<typeof setTimeout> | undefined;
+	let installCode: HTMLElement | undefined = $state();
 	let entrancePhase: LandingEntrancePhase = $state(
 		hasCompletedLandingEntrance() ? 'ready' : 'loading'
 	);
@@ -150,7 +151,8 @@
 				installCopied = false;
 			}, 1800);
 		} catch {
-			// Clipboard can fail on insecure contexts or denied permissions.
+			// No clipboard on insecure origins or when denied: select it for a manual copy.
+			if (installCode) window.getSelection()?.selectAllChildren(installCode);
 		}
 	}
 
@@ -383,7 +385,7 @@
 						{t('fork.title')}
 					</h2>
 					<div class="install">
-						<code>{installCommand}</code>
+						<code bind:this={installCode}>{installCommand}</code>
 						<button
 							type="button"
 							onclick={copyInstall}
