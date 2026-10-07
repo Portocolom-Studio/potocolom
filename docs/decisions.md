@@ -1753,7 +1753,7 @@ A protocol 6 worker sends a fresh random incarnation UUID with every hello. The 
 
 This amends "Scheduler: leader elected inside the API replicas" on one point: the lease lives in PostgreSQL, not Redis. PostgreSQL is already the durable authority for jobs. A fence that sits in the same database as the rows it protects can be checked inside the same transaction. Redis stays advisory.
 
-A new incarnation becomes ready as soon as its manifests, device and memory mode are valid. No v6 job or session can exist before the durable command store lands. When it lands, an incarnation stays not ready while an older incarnation of the same worker id has unfinished work. The existing `requeue_or_fail` requeues that work when the old connection closes. The drain-receipt handover in the C2 v4 design replaces this rule when it ships.
+A new incarnation becomes ready as soon as its manifests, device and memory mode are valid. An incarnation stays not ready while a running job's current dispatch belongs to another incarnation of the same worker id; it is retried on each `grant_request`. The existing `requeue_or_fail` requeues that work when the old connection closes. The drain-receipt handover in the C2 v4 design replaces this rule when it ships.
 
 A v6 hello registers as protocol 6 only when `ROOT_KEYS` is set, because later protocol 6 commands are stored encrypted. Without it, a none-mode worker that also speaks 5 is registered as protocol 5, and any other worker is refused. Protocol 4 and 5 workers are unchanged.
 
@@ -1761,4 +1761,18 @@ Rejected alternatives:
 - A Redis lease, as originally recorded. Its fencing token cannot be checked in the PostgreSQL transaction that commits a job claim.
 - Identifying a connection by worker id alone. A fixed `WORKER_ID` reconnecting before its old socket is reaped would inherit the old connection's work.
 
-> Shipped status (2026-10-06): registration, work grant, heartbeat and the scheduler lease ship. Protocol 6 workers get no jobs or sessions yet. The protocol constants stay at 5, with floor 4.
+> Shipped status (2026-10-07): registration, work grant, heartbeat and the scheduler lease ship, and protocol 6 workers take jobs (next entry). They get no realtime sessions yet. The protocol constants stay at 5, with floor 4.
+
+## Protocol 6 job commands are committed with the claim, encrypted, and acknowledged
+
+A protocol 6 job dispatch is one PostgreSQL transaction. The job moves from queued to running, `current_dispatch_sequence` goes up by one, a `job_attempts` row records the worker incarnation, owner epoch and a hash of the dispatch token, and the exact `dispatch_job` bytes are stored in `worker_commands`. Those bytes are encrypted with the existing root key ring, bound to the worker, incarnation, sequence, command id and body hash. The worker answers each command with `command_ack`, and only then is the next pending command sent. A cancel is a durable `cancel_job` command for the same dispatch sequence and token.
+
+This is why `ROOT_KEYS` is required before a worker registers as protocol 6: without the key ring, no command can be stored.
+
+The command carries a dispatch sequence, so a report or cancel for an older dispatch of the same job is recognisable as stale. The journal holds at most 256 retained rows and 4 MiB of pending bytes per incarnation. Acknowledged rows at or below the acknowledged floor are deleted, so a long-lived connection never fills it. Protocol 6 job reports still finish the job through the same handlers as protocol 5. Durable report receipts, per-dispatch work ranges and recovery from receipts are the next step.
+
+Rejected alternatives:
+- Sending the command first and recording it after. A crash between the two leaves a running job with no durable record of what was sent, which the coming recovery work cannot reconcile.
+- Storing command bodies in plaintext. They carry presigned upload URLs and the dispatch token, so a database read would hand out write access to a user's outputs.
+
+> Shipped status (2026-10-07): job dispatch, ACK and cancel ship for protocol 6. Realtime sessions stay protocol 4 and 5 only. No shipped worker speaks protocol 6 yet.

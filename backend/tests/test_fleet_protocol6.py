@@ -54,6 +54,21 @@ def manifest(model_id: str, parameters: dict | None = None) -> dict:
     }
 
 
+def request_work_grant(ws, worker_id: str, incarnation: uuid.UUID) -> dict:
+    renewal_nonce = uuid.uuid4()
+    ws.send_json({
+        "type": "grant_request",
+        "worker_id": worker_id,
+        "incarnation": str(incarnation),
+        "region": worker_authority.REGION,
+        "grant_nonce": str(renewal_nonce),
+    })
+    grant = ws.receive_json()
+    assert grant["type"] == "work_grant"
+    assert grant["ready"] is True
+    return grant
+
+
 def hello(worker_id: str, models: list[dict], *, incarnation: uuid.UUID | None = None,
           compatible: tuple[int, ...] = (6, 5)) -> dict:
     return {

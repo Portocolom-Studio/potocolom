@@ -12,8 +12,9 @@ import pytest
 from sqlalchemy import text
 from starlette.testclient import TestClient
 
-from app import db, worker_authority
+from app import db, jobs, worker_authority
 from app.main import app
+from app.tables import Job, Model
 
 
 def _register_kwargs(worker_id: str, incarnation: uuid.UUID, **overrides) -> dict:
@@ -264,7 +265,7 @@ def test_renew_worker_grant_is_ready_only_for_an_activated_connection():
             ready = await worker_authority.renew_worker_grant(
                 activated_worker, activated_incarnation, nonce)
             await worker_authority.register_worker(
-                **_register_kwargs(connecting_worker, connecting_incarnation))
+                **_register_kwargs(connecting_worker, connecting_incarnation, manifests=[]))
             pending = await worker_authority.renew_worker_grant(
                 connecting_worker, connecting_incarnation, uuid.uuid4())
             return ready, pending, nonce
@@ -315,6 +316,73 @@ def test_touch_worker_records_a_heartbeat_until_the_row_closes():
                                   "lifecycle, closed_at")["lifecycle"] == "ended"
         with pytest.raises(worker_authority.AuthorityUnavailable):
             client.portal.call(worker_authority.touch_worker, worker_id, incarnation, None)
+
+
+@pytest.mark.db
+def test_activation_waits_for_a_running_job_on_another_incarnation():
+    worker_id = f"authority-block-{uuid.uuid4()}"
+    first_incarnation = uuid.uuid4()
+    second_incarnation = uuid.uuid4()
+    model_id = f"authority-block-model-{uuid.uuid4()}"
+
+    with TestClient(app) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        client.portal.call(_register, _register_kwargs(worker_id, first_incarnation))
+        assert client.portal.call(worker_authority.activate_initial_worker,
+                                worker_id, first_incarnation)
+
+        async def seed_running_job():
+            async with db.session_factory() as session:
+                if await session.get(Model, model_id) is None:
+                    session.add(Model(
+                        id=model_id, name=model_id, capabilities=["text_to_image"],
+                        parameters_schema={"type": "object"}, min_vram_gb=0,
+                    ))
+                    await session.flush()
+                job = Job(
+                    user_id=db.local_user_id, model_id=model_id,
+                    params={"prompt": "blocked"}, state="running", attempt=1,
+                    current_dispatch_sequence=1,
+                )
+                session.add(job)
+                await session.flush()
+                await session.execute(
+                    text(
+                        "INSERT INTO job_attempts "
+                        "(job_id, dispatch_sequence, command_id, worker_id, incarnation, "
+                        "owner_epoch, state, dispatch_token_hash, range_id) "
+                        "VALUES (:job_id, 1, :command_id, :worker_id, :incarnation, 1, "
+                        "'dispatching', :token_hash, :range_id)"
+                    ),
+                    {
+                        "job_id": job.id,
+                        "command_id": uuid.uuid4(),
+                        "worker_id": worker_id,
+                        "incarnation": first_incarnation,
+                        "token_hash": "0" * 64,
+                        "range_id": uuid.uuid4(),
+                    },
+                )
+                await session.commit()
+                return job.id
+
+        job_id = client.portal.call(seed_running_job)
+        client.portal.call(_register, _register_kwargs(worker_id, second_incarnation))
+        assert not client.portal.call(worker_authority.activate_initial_worker,
+                                      worker_id, second_incarnation)
+
+        pending_nonce = uuid.uuid4()
+        pending = client.portal.call(
+            worker_authority.renew_worker_grant, worker_id, second_incarnation, pending_nonce
+        )
+        assert pending.ready is False
+
+        client.portal.call(jobs.requeue_or_fail, job_id, "test requeue")
+        activated_nonce = uuid.uuid4()
+        ready = client.portal.call(
+            worker_authority.renew_worker_grant, worker_id, second_incarnation, activated_nonce
+        )
+        assert ready.ready is True
 
 
 def test_lease_maintenance_survives_an_unexpected_database_error(monkeypatch):

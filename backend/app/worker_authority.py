@@ -320,6 +320,18 @@ async def activate_initial_worker(worker_id: str, incarnation: uuid.UUID) -> boo
                     or worker["owner_epoch"] != lease["owner_epoch"]
                     or worker["lease_id"] != lease["lease_id"]):
                 return False
+            blocked = await session.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM jobs AS job "
+                    "JOIN job_attempts AS attempt ON attempt.job_id = job.id "
+                    "AND attempt.dispatch_sequence = job.current_dispatch_sequence "
+                    "WHERE job.state = 'running' AND attempt.worker_id = :worker_id "
+                    "AND attempt.incarnation <> :incarnation)"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation},
+            )
+            if blocked:
+                return False
             result = await session.execute(
                 text(
                     "UPDATE worker_connections SET lifecycle = 'ready' "
@@ -396,6 +408,10 @@ async def renew_worker_grant(
 ) -> WorkGrant:
     if db.session_factory is None:
         raise AuthorityUnavailable("durable authority unavailable")
+    try:
+        await activate_initial_worker(worker_id, incarnation)
+    except Exception:
+        logger.warning("worker activation could not be retried for %s", worker_id)
     async with db.session_factory() as session:
         result = await session.execute(
             text(
