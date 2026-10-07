@@ -1431,6 +1431,30 @@ async def locked_job(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
     return result.scalar_one_or_none()
 
 
+def _drop_early_entry(job_id: uuid.UUID, current: InFlight, worker: realtime.Worker) -> None:
+    if inflight.get(job_id) is current:
+        del inflight[job_id]
+        last_progress_at.pop(job_id, None)
+        release_job_slot(worker)
+
+
+async def _claim_committed(job_id: uuid.UUID, worker: realtime.Worker,
+                           previous_sequence: int) -> bool:
+    """Whether this worker's claim of the job reached PostgreSQL: the attempt
+    row is written only in the claim's own transaction."""
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        return bool(await session.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM job_attempts WHERE job_id = :job_id "
+                "AND worker_id = :worker_id AND incarnation = :incarnation "
+                "AND dispatch_sequence > :previous_sequence)"
+            ),
+            {"job_id": job_id, "worker_id": worker.id, "incarnation": worker.incarnation,
+             "previous_sequence": previous_sequence},
+        ))
+
+
 async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: int) -> bool:
     if db.session_factory is None or worker.incarnation is None or worker.grant_nonce is None:
         return False
@@ -1503,18 +1527,23 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             account_user_id=user_id,
             job_context={"source_asset_id": source_asset_id},
         )
-    except Exception as error:
-        if inflight.get(job_id) is current:
-            del inflight[job_id]
-            last_progress_at.pop(job_id, None)
-            release_job_slot(worker)
-        if isinstance(error, command_store.CommandRefused):
-            return str(error) == "job claim is stale"
-        # The claim may have committed before this surfaced. requeue_or_fail
-        # reads the row and covers both: a queued row gets its hint back, a
-        # running one its retry. Re-raising would let the dispatch pass push
-        # a second hint for the same job.
-        logger.exception("protocol6 claim for job %s failed with an unknown outcome", job_id)
+    except command_store.CommandRefused as error:
+        _drop_early_entry(job_id, current, worker)
+        return str(error) == "job claim is stale"
+    except Exception:
+        logger.exception("protocol6 claim for job %s failed; reading its outcome", job_id)
+        try:
+            committed = await _claim_committed(job_id, worker, previous_sequence)
+        except Exception:
+            # Outcome unknown: the entry stays, so the stall sweep recovers
+            # the job either way, as it does for protocol 5.
+            logger.exception("protocol6 claim outcome for job %s is unknown", job_id)
+            return True
+        if committed:
+            # The claim is durable and its command pending: deliver it.
+            await realtime._deliver_pending_worker_command(worker)
+            return True
+        _drop_early_entry(job_id, current, worker)
         lost_jobs.append(job_id)
         return True
     current.dispatch_sequence = json.loads(command.body)["dispatch_sequence"]

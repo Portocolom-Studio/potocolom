@@ -483,7 +483,7 @@ def test_protocol6_a_pending_command_replays_after_the_grant_renews(monkeypatch)
 
 
 @pytest.mark.db
-def test_protocol6_a_claim_with_an_unknown_outcome_frees_the_slot_and_requeues(monkeypatch):
+def test_protocol6_a_claim_that_rolled_back_frees_the_slot_and_requeues(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"job-error-{uuid.uuid4()}"
     incarnation = uuid.uuid4()
@@ -509,10 +509,71 @@ def test_protocol6_a_claim_with_an_unknown_outcome_frees_the_slot_and_requeues(m
             from app import realtime
             assert job_id not in jobs.inflight
             assert realtime.workers[worker_id].jobs_in_flight == 0
-            # The outcome is unknown, so the row decides: requeue_or_fail on
-            # the still-queued row puts its hint back.
+            # No attempt row, so the claim rolled back: requeue_or_fail on the
+            # still-queued row puts its hint back.
             assert job_id in jobs.lost_jobs
             jobs.lost_jobs.remove(job_id)
             client.portal.call(jobs.requeue_or_fail, job_id, "test")
             heap = jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
             assert [hint.id for hint in heap].count(str(job_id)) == 1
+
+
+@pytest.mark.db
+def test_protocol6_a_claim_that_committed_before_its_error_is_still_delivered(monkeypatch):
+    """The error surfaces after COMMIT. The claim is durable, so the job keeps
+    its entry and the worker gets the pending command; it is not retried."""
+    root_keys(monkeypatch)
+    worker_id = f"job-late-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-late-model-{uuid.uuid4()}"
+    real_commit = command_store.commit_command
+
+    async def commit_then_fail(*args, **kwargs):
+        await real_commit(*args, **kwargs)
+        raise RuntimeError("connection reset after COMMIT")
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+            monkeypatch.setattr(command_store, "commit_command", commit_then_fail)
+            assert client.portal.call(jobs.dispatch, job_id) is True
+            command = worker.receive_json()
+            assert command["type"] == "dispatch_job"
+            assert command["job_id"] == str(job_id)
+            assert job_id in jobs.inflight
+            assert jobs.inflight[job_id].dispatch_sequence == command["dispatch_sequence"]
+            assert job_id not in jobs.lost_jobs
+
+
+@pytest.mark.db
+def test_protocol6_a_claim_whose_outcome_cannot_be_read_keeps_its_entry(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"job-unknown-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-unknown-model-{uuid.uuid4()}"
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("database went away")
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+            monkeypatch.setattr(command_store, "commit_command", broken)
+            monkeypatch.setattr(jobs, "_claim_committed", broken)
+            assert client.portal.call(jobs.dispatch, job_id) is True
+            # The stall sweep owns it now: entry and slot stay.
+            assert job_id in jobs.inflight
+            assert job_id not in jobs.lost_jobs
+            jobs.inflight.pop(job_id)
