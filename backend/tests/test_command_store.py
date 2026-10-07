@@ -577,3 +577,41 @@ def test_protocol6_a_claim_whose_outcome_cannot_be_read_keeps_its_entry(monkeypa
             assert job_id in jobs.inflight
             assert job_id not in jobs.lost_jobs
             jobs.inflight.pop(job_id)
+
+
+@pytest.mark.db
+def test_protocol6_a_pending_dispatch_for_a_cancelled_job_still_goes_out_in_order(monkeypatch):
+    """A cancel takes the row while the claim's error is surfacing. The
+    pending dispatch_job is still sent, then its cancel_job, so the worker's
+    sequence never stalls."""
+    root_keys(monkeypatch)
+    worker_id = f"job-order-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"job-order-model-{uuid.uuid4()}"
+    real_commit = command_store.commit_command
+
+    async def commit_cancel_then_fail(*args, **kwargs):
+        command = await real_commit(*args, **kwargs)
+        if args[2] == "dispatch_job":
+            job = uuid.UUID(decode_control(command.body)["job_id"])
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE jobs SET state = 'cancelled' WHERE id = :id"), {"id": job})
+                await session.commit()
+            raise RuntimeError("connection reset after COMMIT")
+        return command
+
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            request_work_grant(worker, worker_id, incarnation)
+
+            job_id = client.portal.call(seed_queued_job, model_id)
+            client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
+            monkeypatch.setattr(command_store, "commit_command", commit_cancel_then_fail)
+            assert client.portal.call(jobs.dispatch, job_id) is True
+            command = worker.receive_json()
+            assert command["type"] == "dispatch_job"
+            assert command["job_id"] == str(job_id)

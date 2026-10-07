@@ -335,8 +335,10 @@ async def _deliver_pending_worker_command(worker: "Worker") -> None:
     if message["type"] == "dispatch_job":
         from app import jobs
 
-        if not await jobs.track_dispatched_command(worker, command):
-            return
+        # Sent even when the claim is no longer current: commands apply in
+        # sequence, so a held-back head would stall every later command on
+        # this connection. A stale dispatch's reports fail its token check.
+        await jobs.track_dispatched_command(worker, command)
     try:
         await asyncio.wait_for(
             worker.ws.send_text(command.body.decode("utf-8", "strict")), CLOSE_TIMEOUT
