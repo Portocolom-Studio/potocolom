@@ -1808,6 +1808,8 @@ Rejected alternatives:
 
 Implements issue #667. A release attaches `install.sh` and a small self-host bundle: the compose file, the env example, the preflight, env and auth-enable scripts, and the model manifests that preflight reads. The script downloads the bundle, checks it against the release's `SHA256SUMS`, runs preflight, writes `POTOCOLOM_VERSION` into `deploy/compose/.env`, then pulls and starts the tagged images. `compose.yml` names those images next to its `build:` entries, so a source checkout still builds with `up --build` and a release install never builds. Running a newer release's script upgrades in place: the bundle never carries `.env`, so the secrets stay, and the API migrates on startup.
 
+The landing page and README give `releases/latest/download/install.sh`. GitHub serves that address from the newest published release, and the script it serves installs only its own tag, so the advertised command needs no edit per release and still installs one exact version.
+
 This keeps "Docker and nothing else": the script adds only curl and openssl, which preflight already needs. It adds no network call to the installed product: the operator runs the script, and the only outbound report stays the opt-out daily aggregate. That aggregate's `version` field now reads the release, because the release workflow refuses a tag that differs from the package versions.
 
 A machine without a GPU is refused, because no simulated-worker image is published. That path is for evaluating the protocol, and a clone serves it.

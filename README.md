@@ -41,12 +41,15 @@ purpose, so nothing beyond the table above has to be installed on the host -
 the `make` targets further down are for working *on* potocolom, not running it.
 
 ```bash
-curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/download/v0.1.0/install.sh | bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
 ```
 
 It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
-stack. Rerun the install script of a newer release to upgrade in place.
+stack. Rerun the install script of a newer release to upgrade in place. The
+`latest` address always serves the newest release's script, and that script
+installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
+a specific one.
 
 From a source checkout:
 

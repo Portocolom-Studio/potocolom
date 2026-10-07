@@ -52,16 +52,18 @@ that already have `make`; they are a shortcut and never a requirement.
 ## Installing a release
 
 ```bash
-curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/download/v0.1.0/install.sh | bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
 ```
 
 It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
 stack. Rerun the install script of a newer release to upgrade in place. The
-script verifies the downloaded bundle against the release's `SHA256SUMS`, sets
-`POTOCOLOM_VERSION` in `deploy/compose/.env`, and refuses a machine with no
-GPU, because the released images need one. Everything below is the same stack
-built from a source checkout instead.
+`latest` address always serves the newest release's script, and that script
+installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
+a specific one. The script verifies the downloaded bundle against the
+release's `SHA256SUMS`, sets `POTOCOLOM_VERSION` in `deploy/compose/.env`, and
+refuses a machine with no GPU, because the released images need one.
+Everything below is the same stack built from a source checkout instead.
 
 ## Checking a machine before you start
 
