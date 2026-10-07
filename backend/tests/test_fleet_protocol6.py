@@ -100,10 +100,13 @@ async def seed_queued_job(model_id: str) -> uuid.UUID:
                               capabilities=["text_to_image"],
                               parameters_schema={"type": "object"}, min_vram_gb=0))
         await session.flush()
-        session.add(Job(id=job_id, user_id=db.local_user_id, model_id=model_id,
-                        params={"prompt": "queued"}, state="queued", attempt=1))
+        job = Job(id=job_id, user_id=db.local_user_id, model_id=model_id,
+                  params={"prompt": "queued"}, state="queued", attempt=1)
+        session.add(job)
         await session.commit()
-    await jobs.queues.push(jobs.JOB_QUEUE, str(job_id), jobs.TIER_DEFAULT)
+        await session.refresh(job, ["created_at"])
+    await jobs.queues.push(jobs.JOB_QUEUE,
+                           jobs.QueueHint(jobs.TIER_DEFAULT, job.created_at, str(job_id)))
     return job_id
 
 
