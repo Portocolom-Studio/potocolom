@@ -461,6 +461,142 @@ async def renew_worker_grant(
     return WorkGrant(**row)
 
 
+async def end_realtime_session(session_id: uuid.UUID, generation: int,
+                               browser_owner_id: uuid.UUID) -> bool:
+    if db.session_factory is None:
+        return False
+    async with db.session_factory() as session:
+        async with session.begin():
+            result = await session.execute(
+                text(
+                    "UPDATE realtime_sessions SET state = 'ended', ended_at = clock_timestamp() "
+                    "WHERE id = :session_id AND control_generation = :generation "
+                    "AND browser_owner_id = :browser_owner_id "
+                    "AND state IN ('assigning', 'live', 'idle') RETURNING id"
+                ),
+                {"session_id": session_id, "generation": generation,
+                 "browser_owner_id": browser_owner_id},
+            )
+    return result.scalar_one_or_none() is not None
+
+
+async def abandon_realtime_attempt(session_id: uuid.UUID, generation: int,
+                                   attempt_id: uuid.UUID) -> bool:
+    if db.session_factory is None:
+        return False
+    async with db.session_factory() as session:
+        async with session.begin():
+            result = await session.execute(
+                text(
+                    "UPDATE realtime_session_attempts SET state = 'ended', "
+                    "ended_at = coalesce(ended_at, clock_timestamp()) "
+                    "WHERE session_id = :session_id AND control_generation = :generation "
+                    "AND attempt_id = :attempt_id AND state IN ('opening', 'running') "
+                    "RETURNING attempt_id"
+                ),
+                {"session_id": session_id, "generation": generation,
+                 "attempt_id": attempt_id},
+            )
+    return result.scalar_one_or_none() is not None
+
+
+async def accept_session_ready(worker_id: str, incarnation: uuid.UUID, message: dict) -> bool:
+    if db.session_factory is None:
+        return False
+    session_id = uuid.UUID(message["session_id"])
+    generation = message["control_generation"]
+    async with db.session_factory() as session:
+        async with session.begin():
+            user_id = await session.scalar(
+                text("SELECT user_id FROM realtime_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            )
+            if user_id is None:
+                return False
+            await hold_the_account(session, user_id, wait=True)
+            entity = (await session.execute(
+                text(
+                    "SELECT user_id, state, control_generation FROM realtime_sessions "
+                    "WHERE id = :session_id FOR UPDATE"
+                ),
+                {"session_id": session_id},
+            )).mappings().one_or_none()
+            attempt = (await session.execute(
+                text(
+                    "SELECT worker_id, incarnation, owner_epoch, attempt_id, state, range_id "
+                    "FROM realtime_session_attempts WHERE session_id = :session_id "
+                    "AND control_generation = :generation FOR UPDATE"
+                ),
+                {"session_id": session_id, "generation": generation},
+            )).mappings().one_or_none()
+            if (entity is None or entity["user_id"] != user_id
+                    or entity["control_generation"] != generation
+                    or attempt is None or attempt["worker_id"] != worker_id
+                    or attempt["incarnation"] != incarnation
+                    or attempt["attempt_id"] != uuid.UUID(message["attempt_id"])
+                    or attempt["state"] != "opening"):
+                return False
+            physical = (await session.execute(
+                text(
+                    "SELECT state FROM worker_physical_ranges WHERE range_id = :range_id "
+                    "AND worker_id = :worker_id AND incarnation = :incarnation FOR UPDATE"
+                ),
+                {"range_id": attempt["range_id"], "worker_id": worker_id,
+                 "incarnation": incarnation},
+            )).mappings().one_or_none()
+            if physical is None or physical["state"] != "outstanding":
+                return False
+            lease = (await session.execute(
+                text(
+                    "SELECT owner_id, owner_epoch, lease_id, expires_at FROM scheduler_leases "
+                    "WHERE region = :region FOR UPDATE"
+                ),
+                {"region": REGION},
+            )).mappings().one_or_none()
+            worker = (await session.execute(
+                text(
+                    "SELECT region, owner_epoch, lease_id, grant_expires_at, grant_ready "
+                    "FROM worker_connections WHERE worker_id = :worker_id "
+                    "AND incarnation = :incarnation AND transport_owner_id = :transport_owner_id "
+                    "AND closed_at IS NULL FOR UPDATE"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation,
+                 "transport_owner_id": TRANSPORT_OWNER_ID},
+            )).mappings().one_or_none()
+            if (lease is None or worker is None
+                    or lease["owner_epoch"] != worker["owner_epoch"]
+                    or lease["lease_id"] != worker["lease_id"]
+                    or worker["owner_epoch"] != attempt["owner_epoch"]
+                    or not worker["grant_ready"]):
+                return False
+            live = await session.scalar(
+                text(
+                    "SELECT :lease_expires_at > clock_timestamp() AND "
+                    ":grant_expires_at > clock_timestamp()"
+                ),
+                {"lease_expires_at": lease["expires_at"],
+                 "grant_expires_at": worker["grant_expires_at"]},
+            )
+            if not live:
+                return False
+            await session.execute(
+                text(
+                    "UPDATE realtime_session_attempts SET state = 'running', "
+                    "started_at = clock_timestamp() "
+                    "WHERE session_id = :session_id AND control_generation = :generation"
+                ),
+                {"session_id": session_id, "generation": generation},
+            )
+            await session.execute(
+                text(
+                    "UPDATE realtime_sessions SET state = 'live', owner_epoch = :owner_epoch, "
+                    "started_at = clock_timestamp() WHERE id = :session_id"
+                ),
+                {"session_id": session_id, "owner_epoch": worker["owner_epoch"]},
+            )
+            return True
+
+
 async def commit_worker_report(
     transport_worker_id: str,
     transport_incarnation: uuid.UUID,
@@ -472,9 +608,10 @@ async def commit_worker_report(
     incarnation = uuid.UUID(report["incarnation"])
     if worker_id != transport_worker_id or incarnation != transport_incarnation:
         raise AuthorityUnavailable("worker report identity is not current")
-    if "session_id" in report:
-        raise AuthorityUnavailable("worker report attempt is unknown")
-    subject_id = uuid.UUID(report["job_id"])
+    is_session = "session_id" in report
+    subject_id = uuid.UUID(report["session_id"] if is_session else report["job_id"])
+    generation = report.get("control_generation")
+    attempt_id = uuid.UUID(report["attempt_id"]) if is_session else None
     dispatch_sequence = report.get("dispatch_sequence")
     range_id = uuid.UUID(report["range_id"])
     sequence = report["report_sequence"]
@@ -494,14 +631,27 @@ async def commit_worker_report(
         "gpu_ms": gpu_ms,
         "duration_ms": duration_ms,
         "status": "accepted",
-        "job_id": str(subject_id),
-        "dispatch_sequence": dispatch_sequence,
-        "images": frames,
     }
+    if is_session:
+        ack_type.update({
+            "session_id": str(subject_id),
+            "attempt_id": str(attempt_id),
+            "control_generation": generation,
+            "frames": frames,
+        })
+    else:
+        ack_type.update({
+            "job_id": str(subject_id),
+            "dispatch_sequence": dispatch_sequence,
+            "images": frames,
+        })
     async with db.session_factory() as session:
         async with session.begin():
             user_id = await session.scalar(
-                text("SELECT user_id FROM jobs WHERE id = :id"),
+                text(
+                    "SELECT user_id FROM realtime_sessions WHERE id = :id"
+                    if is_session else "SELECT user_id FROM jobs WHERE id = :id"
+                ),
                 {"id": subject_id},
             )
             if user_id is None:
@@ -509,6 +659,8 @@ async def commit_worker_report(
             await hold_the_account(session, user_id, wait=True)
             entity = (await session.execute(
                 text(
+                    "SELECT id FROM realtime_sessions WHERE id = :id AND user_id = :user_id FOR UPDATE"
+                    if is_session else
                     "SELECT id, state, current_dispatch_sequence FROM jobs "
                     "WHERE id = :id AND user_id = :user_id FOR UPDATE"
                 ),
@@ -516,20 +668,31 @@ async def commit_worker_report(
             )).mappings().one_or_none()
             if entity is None:
                 raise AuthorityUnavailable("worker report attempt is unknown")
-            attempt = (await session.execute(
-                text(
-                    "SELECT worker_id, incarnation, owner_epoch, dispatch_token_hash, range_id, "
-                    "gpu_ms, frames, duration_ms, report_sequence FROM job_attempts "
-                    "WHERE job_id = :job_id AND dispatch_sequence = :dispatch_sequence FOR UPDATE"
-                ),
-                {"job_id": subject_id, "dispatch_sequence": dispatch_sequence},
-            )).mappings().one_or_none()
+            if is_session:
+                attempt = (await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation, owner_epoch, attempt_id, range_id, "
+                        "gpu_ms, frames, duration_ms, report_sequence FROM realtime_session_attempts "
+                        "WHERE session_id = :session_id AND control_generation = :generation FOR UPDATE"
+                    ),
+                    {"session_id": subject_id, "generation": generation},
+                )).mappings().one_or_none()
+            else:
+                attempt = (await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation, owner_epoch, dispatch_token_hash, range_id, "
+                        "gpu_ms, frames, duration_ms, report_sequence FROM job_attempts "
+                        "WHERE job_id = :job_id AND dispatch_sequence = :dispatch_sequence FOR UPDATE"
+                    ),
+                    {"job_id": subject_id, "dispatch_sequence": dispatch_sequence},
+                )).mappings().one_or_none()
             if (attempt is None or attempt["worker_id"] != worker_id
                     or attempt["incarnation"] != incarnation
                     or attempt["owner_epoch"] != report["owner_epoch"]
-                    or attempt["range_id"] != range_id):
+                    or attempt["range_id"] != range_id
+                    or (is_session and attempt["attempt_id"] != attempt_id)):
                 raise AuthorityUnavailable("worker report range identity is unknown")
-            if report["type"] in {"job_done", "job_failed", "job_cancelled"}:
+            if not is_session and report["type"] in {"job_done", "job_failed", "job_cancelled"}:
                 token = report.get("dispatch_token")
                 if (not isinstance(token, str) or not token.isascii()
                         or not hmac.compare_digest(
@@ -537,7 +700,8 @@ async def commit_worker_report(
                             hashlib.sha256(token.encode("ascii")).hexdigest(),
                         )):
                     raise AuthorityUnavailable("worker report dispatch token is stale")
-            job_is_current = entity["current_dispatch_sequence"] == dispatch_sequence
+            job_is_current = (not is_session
+                              and entity["current_dispatch_sequence"] == dispatch_sequence)
             physical = (await session.execute(
                 text(
                     "SELECT kind, subject_id, attempt_id, control_generation, dispatch_sequence, "
@@ -547,10 +711,10 @@ async def commit_worker_report(
                 ),
                 {"range_id": range_id, "worker_id": worker_id, "incarnation": incarnation},
             )).mappings().one_or_none()
-            if (physical is None or physical["kind"] != "job"
+            if (physical is None or physical["kind"] != ("session" if is_session else "job")
                     or physical["subject_id"] != subject_id
-                    or physical["attempt_id"] is not None
-                    or physical["control_generation"] is not None
+                    or physical["attempt_id"] != attempt_id
+                    or physical["control_generation"] != generation
                     or physical["dispatch_sequence"] != dispatch_sequence):
                 raise AuthorityUnavailable("worker report range does not match")
             lease = (await session.execute(
@@ -594,8 +758,8 @@ async def commit_worker_report(
             if sequence <= physical["report_floor"]:
                 ack_type.update({"status": "refused", "code": "stale_report",
                                  "gpu_ms": physical["gpu_ms"],
-                                 "images": physical["frames"],
                                  "duration_ms": physical["duration_ms"]})
+                ack_type["frames" if is_session else "images"] = physical["frames"]
                 return preflight_worker_control(ack_type)
             maxima = {
                 "gpu_ms": max(physical["gpu_ms"], gpu_ms),
@@ -604,9 +768,9 @@ async def commit_worker_report(
             }
             ack_type.update({
                 "gpu_ms": maxima["gpu_ms"],
-                "images": maxima["frames"],
                 "duration_ms": maxima["duration_ms"],
             })
+            ack_type["frames" if is_session else "images"] = maxima["frames"]
             ack_body = preflight_worker_control(ack_type)
             await session.execute(
                 text(
@@ -624,6 +788,12 @@ async def commit_worker_report(
             }.get(report["type"])
             await session.execute(
                 text(
+                    "UPDATE realtime_session_attempts SET report_sequence = :sequence, "
+                    "gpu_ms = :gpu_ms, frames = :frames, duration_ms = :duration_ms, "
+                    "state = CASE WHEN :complete THEN 'ended' ELSE state END, "
+                    "ended_at = CASE WHEN :complete THEN clock_timestamp() ELSE ended_at END "
+                    "WHERE session_id = :subject_id AND control_generation = :identity"
+                    if is_session else
                     "UPDATE job_attempts SET report_sequence = :sequence, gpu_ms = :gpu_ms, "
                     "frames = :frames, duration_ms = :duration_ms, "
                     "state = CASE WHEN :complete AND CAST(:terminal_state AS text) IS NOT NULL "
@@ -649,7 +819,7 @@ async def commit_worker_report(
                 ),
                 {"sequence": sequence, **maxima, "subject_id": subject_id,
                  "complete": report.get("physical_complete", False),
-                 "identity": dispatch_sequence,
+                 "identity": generation if is_session else dispatch_sequence,
                  "terminal_state": terminal_state,
                  "is_done": report["type"] == "job_done",
                  "is_failed": report["type"] == "job_failed",
@@ -665,6 +835,14 @@ async def commit_worker_report(
                  "has_thumbnail": report.get("has_thumbnail", False),
                  "failure_code": report.get("failure_code")},
             )
+            if is_session and report.get("physical_complete"):
+                await session.execute(
+                    text(
+                        "UPDATE realtime_sessions SET state = 'ended', ended_at = clock_timestamp() "
+                        "WHERE id = :session_id AND control_generation = :generation"
+                    ),
+                    {"session_id": subject_id, "generation": generation},
+                )
             await session.execute(
                 text(
                     "INSERT INTO worker_report_receipts "

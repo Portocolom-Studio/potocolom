@@ -318,3 +318,78 @@ def test_0031_upgrade_adds_report_receipts_and_downgrade_drops_them(portal_runne
 
         asyncio.run(drop_database())
         portal_runner(db.dispose())
+
+
+@pytest.mark.db
+def test_0032_upgrade_adds_realtime_session_tables_and_widens_ranges(portal_runner):
+    assert portal_runner(db.connect(serving=False)) is True
+    admin_url = make_url(os.environ["DATABASE_URL"]).set(database="postgres")
+    database = f"p6m_{secrets.token_hex(8)}"
+    test_url = admin_url.set(database=database, drivername="postgresql+asyncpg")
+    url = test_url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+    async def create_database() -> None:
+        connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+        try:
+            await connection.execute(f'CREATE DATABASE "{database}"')
+        finally:
+            await connection.close()
+
+    config = Config(str(_VERSIONS.parents[1] / "alembic.ini"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        test_url.render_as_string(hide_password=False).replace("%", "%%"),
+    )
+    try:
+        asyncio.run(create_database())
+        command.upgrade(config, "0032")
+
+        async def verify_upgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.realtime_sessions') IS NOT NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.realtime_session_attempts') IS NOT NULL")
+                rejected = False
+                try:
+                    await connection.execute(
+                        "INSERT INTO worker_physical_ranges "
+                        "(range_id, worker_id, incarnation, region, owner_epoch, kind, "
+                        "subject_id, dispatch_sequence, state) "
+                        "VALUES ($1, 'w', $2, 'local', 1, 'job', $3, NULL, 'outstanding')",
+                        uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+                    )
+                except asyncpg.CheckViolationError:
+                    rejected = True
+                assert rejected
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_upgrade())
+        command.downgrade(config, "0031")
+
+        async def verify_downgrade() -> None:
+            connection = await asyncpg.connect(url)
+            try:
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.realtime_sessions') IS NULL")
+                assert await connection.fetchval(
+                    "SELECT to_regclass('public.realtime_session_attempts') IS NULL")
+            finally:
+                await connection.close()
+
+        asyncio.run(verify_downgrade())
+    finally:
+        async def drop_database() -> None:
+            connection = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+            try:
+                exists = await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", database)
+                if exists:
+                    await connection.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
+            finally:
+                await connection.close()
+
+        asyncio.run(drop_database())
+        portal_runner(db.dispose())

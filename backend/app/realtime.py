@@ -283,6 +283,7 @@ async def send_v6_command(
     fields: dict,
     *,
     account_user_id: uuid.UUID | None = None,
+    session_context: dict | None = None,
 ):
     if (worker.protocol_version != 6 or not worker.has_current_work_grant
             or worker.incarnation is None or worker.grant_nonce is None
@@ -298,6 +299,7 @@ async def send_v6_command(
             fields,
             grant_nonce=worker.grant_nonce,
             account_user_id=account_user_id,
+            session_context=session_context,
         )
     except command_store.CommandRefused:
         raise ProtocolError("worker command was refused") from None
@@ -637,6 +639,8 @@ class Session:
     # to the socket rather than to an attempt: reassignment, an idle release
     # and the queue all leave it where it is.
     input_revision: int = 0
+    attempt_id: uuid.UUID | None = None
+    params_revision: int = 1
     # Revision of the newest canvas forwarded to the worker holding this
     # session. A protocol 4 worker cannot stamp its own generated frame, so
     # this is what its answer is stamped with on the way to the browser.
@@ -904,6 +908,10 @@ def takes_work(worker: Worker) -> bool:
     return worker.incarnation is None
 
 
+def takes_sessions(worker: Worker) -> bool:
+    return takes_work(worker) or worker.has_current_work_grant
+
+
 def pick_any_worker() -> Worker | None:
     """Return a connected worker, pruning sockets already closed under us.
 
@@ -925,7 +933,7 @@ def pick_any_worker() -> Worker | None:
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
     for worker in workers.values():
-        if not takes_work(worker):
+        if not takes_sessions(worker):
             continue
         if model_id in worker.models:
             return worker
@@ -1007,9 +1015,11 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
     for worker in workers.values():
         if exclude_ids is not None and worker.id in exclude_ids:
             continue
-        if not takes_work(worker):
+        if not takes_sessions(worker):
             continue
         if model_id not in worker.models:
+            continue
+        if not worker.has_current_work_grant:
             continue
         if worker.admission_p95_ms is None:
             if worker.free_slots > 0:
@@ -1026,7 +1036,28 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
 
 
 def model_known(model_id: str) -> bool:
-    return any(model_id in w.models and takes_work(w) for w in workers.values())
+    return any(model_id in w.models and takes_sessions(w) for w in workers.values())
+
+
+async def _send_v6_close_session(worker: Worker, session: Session,
+                                 generation: int) -> None:
+    if worker.protocol_version != 6 or session.attempt_id is None:
+        return
+    if session.user_id is None:
+        return
+    try:
+        await send_v6_command(
+            worker,
+            "close_session",
+            {
+                "session_id": str(session.id),
+                "attempt_id": str(session.attempt_id),
+                "control_generation": generation,
+            },
+            account_user_id=session.user_id,
+        )
+    except ProtocolError:
+        return
 
 
 async def close_abandoned_session(worker: Worker, session: Session,
@@ -1041,9 +1072,18 @@ async def close_abandoned_session(worker: Worker, session: Session,
     """
     if workers.get(worker.id) is not worker:
         return
-    payload = {"type": "close_session", "session_id": str(session.id)}
     if generation is None:
         generation = session.control_generation
+    if worker.protocol_version == 6:
+        from app import worker_authority
+
+        if session.attempt_id is not None:
+            await worker_authority.abandon_realtime_attempt(
+                session.id, generation, session.attempt_id
+            )
+        await _send_v6_close_session(worker, session, generation)
+        return
+    payload = {"type": "close_session", "session_id": str(session.id)}
     await safe_send(worker.ws.send_json(with_generation(payload, generation)))
 
 
@@ -1064,15 +1104,46 @@ async def assign(session: Session, worker: Worker) -> bool:
     worker.slots_in_use += 1
     sent_generation = session.control_generation
     try:
-        payload = {
-            "type": "open_session",
-            "session_id": str(session.id),
-            "model_id": session.model_id,
-            "params": session.params,
-        }
-        await worker.ws.send_json(with_generation(payload, sent_generation))
+        if worker.protocol_version == 6:
+            from app import worker_authority
+
+            attempt_id = uuid.uuid4()
+            await send_v6_command(
+                worker,
+                "open_session",
+                {
+                    "session_id": str(session.id),
+                    "attempt_id": str(attempt_id),
+                    "control_generation": sent_generation,
+                    "model_id": session.model_id,
+                    "params": session.params,
+                    "work_budget": {
+                        "gpu_ms_limit": None,
+                        "range_id": str(uuid.uuid4()),
+                        "remaining_wall_ms": None,
+                        "start_gpu_ms": 0,
+                    },
+                },
+                account_user_id=session.user_id,
+                session_context={
+                    "auth_session_id": session.auth_session_id,
+                    "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
+                    "model_id": session.model_id,
+                    "params": session.params,
+                },
+            )
+            session.attempt_id = attempt_id
+        else:
+            payload = {
+                "type": "open_session",
+                "session_id": str(session.id),
+                "model_id": session.model_id,
+                "params": session.params,
+            }
+            await worker.ws.send_json(with_generation(payload, sent_generation))
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
-    except (TimeoutError, RuntimeError):  # unresponsive worker, or its socket just closed
+    # A refused protocol 6 command is this worker's failure, not the browser's.
+    except (TimeoutError, RuntimeError, ProtocolError):  # unresponsive worker, or its socket just closed
         if session.worker is worker:
             # release() and assign() are two writers of one counter, so the
             # compensation is ownership-checked rather than assumed: the
@@ -1151,10 +1222,20 @@ async def release(session: Session) -> None:
         # would otherwise hold up whatever asked for this session to end,
         # including the revocation that has other sockets waiting behind it.
         with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
-                {"type": "close_session", "session_id": str(session.id)},
-                generation,
-            ))), CLOSE_TIMEOUT)
+            if worker.protocol_version == 6:
+                from app import worker_authority
+
+                await worker_authority.end_realtime_session(
+                    session.id, generation, worker_authority.TRANSPORT_OWNER_ID
+                )
+                await asyncio.wait_for(
+                    _send_v6_close_session(worker, session, generation), CLOSE_TIMEOUT
+                )
+            else:
+                await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
+                    {"type": "close_session", "session_id": str(session.id)},
+                    generation,
+                ))), CLOSE_TIMEOUT)
     # The slot is free, or the session was queued and left: either shifts
     # positions, so the queue reposts itself on the way out.
     admit_queued()
@@ -1596,9 +1677,17 @@ async def fleet(ws: WebSocket) -> None:
                     if control["type"] == "session_ready":
                         session = sessions.get(peer_uuid(control["session_id"]))
                         generation = message_generation(control)
+                        durable_ready = True
+                        if worker.protocol_version == 6 and generation is not None:
+                            from app import worker_authority
+
+                            durable_ready = await worker_authority.accept_session_ready(
+                                worker.id, _require_worker_incarnation(worker), control
+                            )
                         if (session is not None and session.worker is worker
                                 and generation is not None
                                 and generation == session.control_generation
+                                and durable_ready
                                 and transition(session, "assigning", "live")):
                             session.assigned_at = time.monotonic()
                             session.attempt_ok = True
@@ -1688,6 +1777,20 @@ async def fleet(ws: WebSocket) -> None:
                                 continue
                         await jobs.on_worker_message(worker, control)
                     elif control["type"] == "session_closed":
+                        accepted = True
+                        if worker.protocol_version == 6:
+                            from app import worker_authority
+
+                            try:
+                                ack = await worker_authority.commit_worker_report(
+                                    worker.id, _require_worker_incarnation(worker), control
+                                )
+                            except worker_authority.AuthorityUnavailable:
+                                raise ProtocolError("worker report was refused") from None
+                            await safe_send(ws.send_text(ack.decode("utf-8", "strict")))
+                            accepted = json.loads(ack)["status"] == "accepted"
+                        if not accepted:
+                            continue
                         session_id = peer_uuid(control["session_id"])
                         # Peek before popping: a worker that held this session
                         # earlier still knows its id, and popping on its word
@@ -2077,11 +2180,32 @@ async def realtime(ws: WebSocket) -> None:
                         session.params.update(params)
                         session.last_input = time.monotonic()
                         if session.worker is not None:
-                            await safe_send(session.worker.ws.send_json(with_generation({
-                                "type": "update_session",
-                                "session_id": str(session.id),
-                                "params": session.params,
-                            }, session.control_generation)))
+                            if session.worker.protocol_version == 6:
+                                session.params_revision += 1
+                                try:
+                                    await send_v6_command(
+                                        session.worker,
+                                        "update_session",
+                                        {
+                                            "session_id": str(session.id),
+                                            "attempt_id": str(session.attempt_id),
+                                            "control_generation": session.control_generation,
+                                            "params": session.params,
+                                            "params_revision": session.params_revision,
+                                        },
+                                        account_user_id=session.user_id,
+                                    )
+                                except ProtocolError:
+                                    # The worker can no longer take commands (its grant
+                                    # lapsed, say); that ends its attempt, not the
+                                    # browser's session.
+                                    schedule_reassign(session)
+                            else:
+                                await safe_send(session.worker.ws.send_json(with_generation({
+                                    "type": "update_session",
+                                    "session_id": str(session.id),
+                                    "params": session.params,
+                                }, session.control_generation)))
                         post(session, {
                             "type": "params_updated",
                             "params": session.params,
