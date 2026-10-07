@@ -388,6 +388,189 @@ def test_a_refused_open_session_frees_the_slot_and_keeps_the_browser(monkeypatch
 
 
 @pytest.mark.db
+def test_v6_second_session_on_same_worker_after_close(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-reopen-{uuid.uuid4()}"
+    model_id = f"v6-rt-reopen-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        try:
+            browser_ws.send_json({"type": "close"})
+            close_cmd = decode_control(ws.receive_text().encode("utf-8"))
+            assert close_cmd["type"] == "close_session"
+            ws.send_json(command_ack(close_cmd))
+            closed = session_closed_message(worker, open_cmd, grant["grant_nonce"])
+            ws.send_text(json.dumps(closed, separators=(",", ":")))
+            decode_control(ws.receive_text().encode("utf-8"))
+        finally:
+            browser_ctx.__exit__(None, None, None)
+
+        with client.websocket_connect("/api/v1/realtime") as browser_ws2:
+            browser_ws2.send_json({
+                "type": "open",
+                "model_id": model_id,
+                "params": {"prompt": "again"},
+            })
+            open_cmd2 = decode_control(ws.receive_text().encode("utf-8"))
+            assert open_cmd2["type"] == "open_session"
+            ws.send_json(command_ack(open_cmd2))
+            ws.send_json(session_ready_message(worker, open_cmd2, grant["grant_nonce"]))
+            expect(browser_ws2, "ready")
+        fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_release_during_open_session_commit_ends_attempt(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-relcommit-{uuid.uuid4()}"
+    model_id = f"v6-rt-relcommit-{uuid.uuid4()}"
+    real_commit = command_store.commit_command
+
+    async def commit_then_release(*args, **kwargs):
+        result = await real_commit(*args, **kwargs)
+        if args[2] == "open_session":
+            session_id = uuid.UUID(args[3]["session_id"])
+            session = realtime.sessions.get(session_id)
+            if session is not None:
+                await realtime.release(session)
+        return result
+
+    monkeypatch.setattr(command_store, "commit_command", commit_then_release)
+
+    with protocol6_client(worker_id) as client:
+        incarnation = uuid.uuid4()
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            ws.receive_json()
+            request_work_grant(ws, worker_id, incarnation)
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({
+                    "type": "open",
+                    "model_id": model_id,
+                    "params": {"prompt": "house"},
+                })
+                queued = browser_ws.receive_json()
+                assert queued["type"] == "queued"
+                live_sessions = [
+                    session for session in realtime.sessions.values()
+                    if session.model_id == model_id
+                ]
+                assert len(live_sessions) == 1
+                session_id = live_sessions[0].id
+
+                async def read_attempt():
+                    async with db.session_factory() as session:
+                        return await session.scalar(
+                            text(
+                                "SELECT state FROM realtime_session_attempts "
+                                "WHERE session_id = :id"
+                            ),
+                            {"id": session_id},
+                        )
+
+                assert client.portal.call(read_attempt) == "ended"
+                assert realtime.sessions[session_id].state == "queued"
+
+
+@pytest.mark.db
+def test_v6_accept_session_ready_refuses_ended_session(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-lateready-{uuid.uuid4()}"
+    model_id = f"v6-rt-lateready-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        incarnation = uuid.uuid4()
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            ws.receive_json()
+            grant = request_work_grant(ws, worker_id, incarnation)
+            worker = realtime.workers[worker_id]
+            with client.websocket_connect("/api/v1/realtime") as browser_ws:
+                browser_ws.send_json({
+                    "type": "open",
+                    "model_id": model_id,
+                    "params": {"prompt": "house"},
+                })
+                open_cmd = decode_control(ws.receive_text().encode("utf-8"))
+                ws.send_json(command_ack(open_cmd))
+                session_id = uuid.UUID(open_cmd["session_id"])
+
+                async def end_session_row():
+                    async with db.session_factory() as session:
+                        async with session.begin():
+                            await session.execute(
+                                text(
+                                    "UPDATE realtime_sessions SET state = 'ended', "
+                                    "ended_at = clock_timestamp() WHERE id = :id"
+                                ),
+                                {"id": session_id},
+                            )
+
+                client.portal.call(end_session_row)
+                ready_msg = session_ready_message(worker, open_cmd, grant["grant_nonce"])
+                accepted = client.portal.call(
+                    worker_authority.accept_session_ready,
+                    worker_id,
+                    worker.incarnation,
+                    ready_msg,
+                )
+                assert accepted is False
+
+
+@pytest.mark.db
+def test_v6_worker_disconnect_ends_running_session_attempt(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-disc-{uuid.uuid4()}"
+    model_id = f"v6-rt-disc-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+
+            async def read_attempt():
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        text(
+                            "SELECT state FROM realtime_session_attempts "
+                            "WHERE session_id = :id"
+                        ),
+                        {"id": session_id},
+                    )
+
+            assert client.portal.call(read_attempt) == "running"
+            client.portal.call(worker_authority.close_worker, worker_id, worker.incarnation)
+            assert client.portal.call(read_attempt) == "ended"
+        finally:
+            browser_ctx.__exit__(None, None, None)
+            fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_pick_worker_for_model_skips_protocol6_workers(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-bench-{uuid.uuid4()}"
+    model_id = f"v6-rt-bench-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        incarnation = uuid.uuid4()
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            ws.receive_json()
+            request_work_grant(ws, worker_id, incarnation)
+            assert realtime.pick_worker(model_id) is not None
+            assert realtime.pick_worker_for_model(model_id) is None
+
+
+@pytest.mark.db
 def test_a_refused_update_session_does_not_close_the_browser(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"v6-refupd-{uuid.uuid4()}"

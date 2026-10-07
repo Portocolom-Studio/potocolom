@@ -357,19 +357,29 @@ async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
     if db.session_factory is None:
         return
     async with db.session_factory() as session:
-        await session.execute(
-            text(
-                "UPDATE worker_connections SET lifecycle = 'ended', closed_at = clock_timestamp() "
-                "WHERE worker_id = :worker_id AND incarnation = :incarnation "
-                "AND transport_owner_id = :owner_id AND closed_at IS NULL"
-            ),
-            {
-                "worker_id": worker_id,
-                "incarnation": incarnation,
-                "owner_id": TRANSPORT_OWNER_ID,
-            },
-        )
-        await session.commit()
+        async with session.begin():
+            await session.execute(
+                text(
+                    "UPDATE worker_connections SET lifecycle = 'ended', "
+                    "closed_at = clock_timestamp() "
+                    "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                    "AND transport_owner_id = :owner_id AND closed_at IS NULL"
+                ),
+                {
+                    "worker_id": worker_id,
+                    "incarnation": incarnation,
+                    "owner_id": TRANSPORT_OWNER_ID,
+                },
+            )
+            await session.execute(
+                text(
+                    "UPDATE realtime_session_attempts SET state = 'ended', "
+                    "ended_at = coalesce(ended_at, clock_timestamp()) "
+                    "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                    "AND state IN ('opening', 'running')"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation},
+            )
 
 
 async def touch_worker(

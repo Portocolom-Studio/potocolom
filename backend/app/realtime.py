@@ -933,7 +933,7 @@ def pick_any_worker() -> Worker | None:
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
     for worker in workers.values():
-        if not takes_sessions(worker):
+        if not takes_work(worker):
             continue
         if model_id in worker.models:
             return worker
@@ -1108,31 +1108,45 @@ async def assign(session: Session, worker: Worker) -> bool:
             from app import worker_authority
 
             attempt_id = uuid.uuid4()
-            await send_v6_command(
-                worker,
-                "open_session",
-                {
-                    "session_id": str(session.id),
-                    "attempt_id": str(attempt_id),
-                    "control_generation": sent_generation,
-                    "model_id": session.model_id,
-                    "params": session.params,
-                    "work_budget": {
-                        "gpu_ms_limit": None,
-                        "range_id": str(uuid.uuid4()),
-                        "remaining_wall_ms": None,
-                        "start_gpu_ms": 0,
-                    },
-                },
-                account_user_id=session.user_id,
-                session_context={
-                    "auth_session_id": session.auth_session_id,
-                    "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
-                    "model_id": session.model_id,
-                    "params": session.params,
-                },
-            )
             session.attempt_id = attempt_id
+            try:
+                await send_v6_command(
+                    worker,
+                    "open_session",
+                    {
+                        "session_id": str(session.id),
+                        "attempt_id": str(attempt_id),
+                        "control_generation": sent_generation,
+                        "model_id": session.model_id,
+                        "params": session.params,
+                        "work_budget": {
+                            "gpu_ms_limit": None,
+                            "range_id": str(uuid.uuid4()),
+                            "remaining_wall_ms": None,
+                            "start_gpu_ms": 0,
+                        },
+                    },
+                    account_user_id=session.user_id,
+                    session_context={
+                        "auth_session_id": session.auth_session_id,
+                        "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
+                        "model_id": session.model_id,
+                        "params": session.params,
+                    },
+                )
+            except ProtocolError:
+                session.attempt_id = None
+                raise
+            if session.worker is not worker or not session.is_live:
+                await worker_authority.abandon_realtime_attempt(
+                    session.id, sent_generation, attempt_id
+                )
+                if workers.get(worker.id) is worker:
+                    await _send_v6_close_session(worker, session, sent_generation)
+                if session.worker is worker:
+                    worker.slots_in_use -= 1
+                    session.worker = None
+                return False
         else:
             payload = {
                 "type": "open_session",

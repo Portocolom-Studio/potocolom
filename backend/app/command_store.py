@@ -325,16 +325,6 @@ async def commit_command(
                 raise CommandRefused("regional scheduler lease has expired")
             if not deadlines["grant_live"]:
                 raise CommandRefused("worker grant has expired")
-            if claim is not None and claim["kind"] == "session":
-                outstanding = await session.scalar(
-                    text(
-                        "SELECT count(*) FROM worker_physical_ranges WHERE worker_id = :worker_id "
-                        "AND state <> 'drained'"
-                    ),
-                    {"worker_id": worker_id},
-                )
-                if outstanding >= worker["realtime_slots"]:
-                    raise CommandRefused("worker has no free durable slot")
             sequence = worker["next_command_sequence"]
             message = {
                 **message_fields,

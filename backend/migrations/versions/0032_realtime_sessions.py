@@ -88,6 +88,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DELETE FROM worker_physical_ranges WHERE kind = 'session'")
     op.drop_constraint("physical_ranges_identity", "worker_physical_ranges", type_="check")
     op.drop_constraint("physical_ranges_kind", "worker_physical_ranges", type_="check")
     op.create_check_constraint(
