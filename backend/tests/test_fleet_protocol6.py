@@ -445,3 +445,26 @@ def test_a_v6_fallback_with_a_malformed_version_list_is_refused(monkeypatch):
                 ws.receive_json()
     finally:
         get_settings.cache_clear()
+
+
+def test_a_v6_hello_without_durable_authority_registers_as_protocol5(monkeypatch):
+    """Right after a restart the lease may not be held yet, or the database
+    may be down. A worker that also speaks 5 is served as 5, not turned away."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-noauth-{uuid.uuid4()}"
+
+    async def unavailable(**_kwargs):
+        raise worker_authority.AuthorityUnavailable("regional scheduler lease was lost")
+
+    monkeypatch.setattr(worker_authority, "register_worker", unavailable)
+    try:
+        client = TestClient(app, headers=FLEET_HEADERS)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            ws.send_json(hello(worker_id, [manifest(f"{worker_id}-model")]))
+            assert ws.receive_json() == {"type": "registered", "protocol_version": 5}
+            worker = realtime.workers[worker_id]
+            assert worker.protocol_version == 5
+            assert worker.incarnation is None
+            assert realtime.takes_work(worker)
+    finally:
+        get_settings.cache_clear()

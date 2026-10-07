@@ -1584,15 +1584,26 @@ async def fleet(ws: WebSocket) -> None:
                 realtime_batch_ms=worker.admission_batch_ms,
             )
         except worker_authority.AuthorityUnavailable as error:
-            logger.warning("worker registration authority refused: %s", error)
-            await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
-                                "min_supported_version": 5})
-            await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
-            return
-        worker.region = lease.region
-        worker.owner_epoch = lease.owner_epoch
-        worker.lease_id = lease.lease_id
-        worker.lease_expires_at = lease.expires_at.isoformat().replace("+00:00", "Z")
+            compatible = hello["compatible_versions"]
+            if not (isinstance(compatible, list) and 5 in compatible):
+                logger.warning("worker registration authority refused: %s", error)
+                await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
+                                    "min_supported_version": 5})
+                await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
+                return
+            # Durable authority is briefly missing (the lease right after a
+            # restart, or the database down). Protocol 5 needs none, so this
+            # connection serves as protocol 5 instead of turning the worker away.
+            logger.warning("worker %s registered as protocol 5: %s", worker.id, error)
+            version = 5
+            worker.protocol_version = 5
+            worker.incarnation = None
+            worker.grant_nonce = None
+        else:
+            worker.region = lease.region
+            worker.owner_epoch = lease.owner_epoch
+            worker.lease_id = lease.lease_id
+            worker.lease_expires_at = lease.expires_at.isoformat().replace("+00:00", "Z")
     workers[worker.id] = worker
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
