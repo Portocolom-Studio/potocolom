@@ -17,7 +17,7 @@ The reference development desktop, measured:
 The GPU is the one that matters: the worker supports three device targets (see [decisions.md](decisions.md)):
 
 - `DEVICE=cuda`: NVIDIA, what the cloud fleet and most self-hosters run.
-- `DEVICE=rocm`: AMD, a fully supported target. Published as its own worker image variant built on the ROCm PyTorch base. This desktop is the standing AMD test machine.
+- `DEVICE=rocm`: AMD, a fully supported target. Published as its own worker image variant: `python:3.11-slim` with the PyTorch rocm6.3 wheels, the same build `make setup-rocm` installs. This desktop is the standing AMD test machine.
 - `DEVICE=cpu`: no GPU, used by CI with a tiny model and by contributors without a GPU. Functional, not fast.
 
 ROCm notes for this machine: the in-kernel amdgpu driver is enough for the containerized worker; the container brings the ROCm userspace. The container needs `/dev/kfd` and `/dev/dri` passed through and the `video` group added. The RX 7600 is gfx1102; torch 2.9+rocm6.3 wheels ship gfx1102 kernels natively, so do not set `HSA_OVERRIDE_GFX_VERSION` (on other RDNA3 cards it forces the wrong ISA).
