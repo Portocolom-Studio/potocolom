@@ -1838,3 +1838,11 @@ Only the serving engine carries the statement timeout. The operator collapse is 
 Rejected alternatives:
 - A caller `asyncio.wait_for` around the call alone. It stops the await, not the thread: the read keeps running and the thread never comes back, so the bound has to sit inside the call.
 - A statement timeout on every process. It would break the collapse wait, which is the reason that wait has no timeout at all.
+
+## Security and recovery checks are part of implementation review
+
+Adopted 2026-10-08, tracked in #686. Each change to input, accounts, data, workers, external services, configuration or CI must apply the relevant checks in [security-checklist.md](security-checklist.md) and record test or operational evidence. The contribution guide, PR template and implementation roadmap point to that one checklist. Its current-state table keeps unshipped controls tied to their issues; a design or skipped test does not count as proof.
+
+Existing profile and boundary decisions still apply: trusted-network AUTH_MODE=none, server auth in accounts mode, admin and share permissions, protocol N-1, separate fail-open audit, accepted lock waits, and 429 for client limits versus 503 with Retry-After for a busy service. Billing and cloud backup operations remain private. A new behavior that changes an accepted exception needs its own decision entry.
+
+Rejected alternative: a one-time audit as the only record. A later endpoint or configuration change can remove a control that the audit once found working, so affected changes need fresh checks.
