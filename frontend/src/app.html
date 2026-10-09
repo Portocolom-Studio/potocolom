@@ -3,10 +3,14 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#070b14" />
 		<script>
 			try {
-				if (localStorage.getItem('landing-mode') === 'light')
+				if (localStorage.getItem('landing-mode') === 'light') {
 					document.documentElement.dataset.landingMode = 'light';
+					if (/^\/(whitepaper|benchmark|illusions)?\/?$/.test(location.pathname))
+						document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f3f5f8');
+				}
 			} catch (e) {}
 		</script>
 		%sveltekit.head%
