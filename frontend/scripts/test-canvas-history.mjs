@@ -9,7 +9,10 @@ import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
-const WAIT_MS = 5000;
+// A ceiling, never a delay: every use waits on a condition or polls for one.
+// The self-hosted runners share one machine with other work, and 5 s failed
+// under load on checks that pass on rerun (issue #670).
+const WAIT_MS = 20000;
 // The frame header this build writes on the canvas socket: one kind byte, the
 // 16 byte session id and a 4 byte big endian revision, then the image.
 const FRAME_HEADER_BYTES = 21;
