@@ -104,10 +104,19 @@ def test_params_validator_is_cached():
     assert first is second
 
 
-def test_validate_params_accepts_on_invalid_schema():
+def test_validate_params_refuses_on_invalid_schema():
+    # A schema that cannot be compiled can check nothing, so it must not
+    # read as "params acceptable" (issue #687).
     manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
                         parameters={"required": "prompt"})
-    assert validate_params(manifest, {"anything": True}) is None
+    assert validate_params(manifest, {"anything": True}) == "model parameter schema is invalid"
+
+
+def test_validate_param_update_refuses_on_invalid_schema():
+    manifest = Manifest(id="m1", name="M1", capabilities=["text_to_image"],
+                        parameters={"type": 12})
+    assert (validate_param_update(manifest, {"anything": True})
+            == "model parameter schema is invalid")
 
 
 def test_prompt_token_limit_crosses_the_wire():
@@ -180,6 +189,67 @@ def test_parse_manifests_rejects_remote_schema_reference():
         assert "same-document fragment" in str(error)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_refuses_a_schema_that_does_not_compile():
+    try:
+        parse_manifests([{
+            "id": "uncompilable",
+            "name": "Uncompilable",
+            "capabilities": ["text_to_image"],
+            "parameters": {"type": 12},
+        }])
+    except ValueError as error:
+        assert "parameter schema is invalid" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_refuses_a_reference_that_does_not_resolve():
+    try:
+        parse_manifests([{
+            "id": "missing-ref",
+            "name": "Missing ref",
+            "capabilities": ["text_to_image"],
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": {"$ref": "#/$defs/missing"}},
+            },
+        }])
+    except ValueError as error:
+        assert "$ref '#/$defs/missing' does not resolve" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_parse_manifests_accepts_a_resolving_fragment_reference():
+    parsed = parse_manifests([{
+        "id": "fragment",
+        "name": "Fragment",
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "$defs": {"p": {"type": "string", "minLength": 1}},
+            "type": "object",
+            "properties": {"prompt": {"$ref": "#/$defs/p"}},
+            "required": ["prompt"],
+        },
+    }])
+    assert validate_params(parsed[0], {"prompt": "hello"}) is None
+    assert validate_params(parsed[0], {"prompt": ""}) is not None
+    assert validate_params(parsed[0], {}) is not None
+
+
+def test_parse_manifests_does_not_treat_a_default_that_looks_like_a_reference():
+    parsed = parse_manifests([{
+        "id": "default-fragment",
+        "name": "Default fragment",
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "type": "object",
+            "properties": {"target": {"type": "string", "default": "#/nope"}},
+        },
+    }])
+    assert parsed[0].id == "default-fragment"
 
 
 def test_parse_manifests_rejects_pattern_keyword():
@@ -271,21 +341,22 @@ def test_remote_schema_reference_does_not_fetch_at_validate_time():
                     "properties": {"prompt": {"$ref": "https://example.com/a.json"}}},
     )
     with patch.object(urllib.request, "urlopen") as urlopen:
-        validate_params(manifest, {"prompt": "x"})
+        assert validate_params(manifest, {"prompt": "x"}) == "model parameter schema is invalid"
     urlopen.assert_not_called()
 
 
-def test_unresolvable_schema_reference_does_not_escape():
+def test_unresolvable_schema_reference_is_refused_without_fetching():
     # jsonschema raises Unresolvable past ValidationError, so an unhandled one
     # would reach the request handler as a 500 (issue #203). A missing fragment
-    # must not fetch over the network.
+    # must not fetch over the network, and the uncheckable schema refuses the
+    # request rather than accepting it unchecked (issue #687).
     manifest = Manifest(
         id="broken", name="broken", capabilities=["text_to_image"],
         parameters={"type": "object",
                     "properties": {"prompt": {"$ref": "#/$defs/missing"}}},
     )
     with patch.object(urllib.request, "urlopen") as urlopen:
-        assert validate_params(manifest, {"prompt": "x"}) is None
+        assert validate_params(manifest, {"prompt": "x"}) == "model parameter schema is invalid"
     urlopen.assert_not_called()
 
 

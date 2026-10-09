@@ -1820,3 +1820,9 @@ Rejected alternatives:
 - Clone and build as the only path. Every self-hoster then builds a multi-GB CUDA image that CI has already built, tested and scanned, and runs code that no release check covered.
 - A script that follows `main` or a `latest` image tag. The installed version would then be whatever was pushed last, which breaks "one project version" and the N-1 worker promise.
 - Distribution packages (deb, rpm) or a Helm chart. Each one is a second install surface to maintain for an audience that already needs Docker for the GPU passthrough.
+
+## Model parameter schemas fail closed
+
+A worker's manifest carries the JSON Schema that validates every call against its model: generations, upscale requests, realtime opens and live parameter updates all pass through it, so it is the only parameter gate the API has. A schema that cannot be compiled, or whose same-document `$ref` does not resolve, can check nothing, so it is refused. The hello refuses the manifest (close 4000), and a manifest that still reaches validation, for example one read back from the database, refuses the request instead of letting it through.
+
+Rejected alternatives: accepting params unchecked when the schema cannot be evaluated. A worker-supplied schema is the only parameter gate there is, and treating it as valid when it cannot be evaluated removes that gate: any request would pass.

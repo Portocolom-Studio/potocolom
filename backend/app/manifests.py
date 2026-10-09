@@ -14,6 +14,7 @@ import jsonschema
 from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger("potocolom.manifests")
@@ -157,6 +158,60 @@ def _reject_schema_node(node: object, manifest_id: str) -> None:
             _reject_schema_node(item, manifest_id)
 
 
+def _schema_references(node: object) -> list[str]:
+    """Every $ref value in the tree.
+
+    Walks schema keywords exactly like _reject_schema_node, so annotation
+    values (default, const, enum, examples) are data and never counted as a
+    reference.
+    """
+    refs: list[str] = []
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            refs.append(ref)
+        for key, value in node.items():
+            if key in _SCHEMA_DATA_KEYS:
+                continue
+            if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+                for item in value.values():
+                    refs.extend(_schema_references(item))
+            elif key in _SCHEMA_ARRAY_KEYS and isinstance(value, list):
+                for item in value:
+                    refs.extend(_schema_references(item))
+            else:
+                refs.extend(_schema_references(value))
+    elif isinstance(node, list):
+        for item in node:
+            refs.extend(_schema_references(item))
+    return refs
+
+
+def _reject_invalid_parameter_schema(schema: dict, manifest_id: str) -> None:
+    """Refuse a schema this API cannot compile or evaluate.
+
+    The hello is the only gate a manifest passes, and validate_params is the
+    only gate between a request and a worker, so a schema that cannot be
+    compiled or whose $ref does not resolve has to be refused here rather
+    than reach validation as an uncheckable schema.
+    """
+    try:
+        Draft202012Validator.check_schema(schema)
+    except jsonschema.SchemaError as error:
+        raise ValueError(
+            f"manifest {manifest_id}: parameter schema is invalid") from error
+    # The registry has no retrieve function, so every lookup stays inside
+    # this document and nothing is ever fetched.
+    resolver = Registry().resolver_with_root(DRAFT202012.create_resource(schema))
+    for ref in _schema_references(schema):
+        try:
+            resolver.lookup(ref)
+        except Unresolvable as error:
+            raise ValueError(
+                f"manifest {manifest_id}: parameter schema $ref {ref!r} does not resolve"
+            ) from error
+
+
 @lru_cache(maxsize=128)
 def _params_validator(schema_json: str) -> Draft202012Validator:
     schema = json.loads(schema_json)
@@ -223,9 +278,10 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
         schema_json = json.dumps(manifest.parameters, sort_keys=True)
         validator = _params_validator(schema_json)
     except jsonschema.SchemaError:
-        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
-                       manifest.id)
-        return None
+        # A worker-supplied schema that cannot be compiled can check nothing,
+        # so accepting on it would remove the only parameter gate the API has.
+        logger.warning("model %s has an invalid parameter schema", manifest.id)
+        return "model parameter schema is invalid"
     except RecursionError:
         # check_schema walks the schema, so it raises this before validate can.
         return "schema nests too deeply to validate"
@@ -240,12 +296,10 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
         return "params or schema nest too deeply to validate"
     except Unresolvable:
         # A $ref naming something the schema does not define raises past
-        # ValidationError, so it would reach the request handler as a 500.
-        # A manifest is worker-supplied, not user-supplied, so treat it like
-        # the invalid-schema case above and blame the log, not the caller.
-        logger.warning("model %s has an unusable schema reference; "
-                       "accepting params unchecked", manifest.id)
-        return None
+        # ValidationError. The schema cannot be evaluated, so the request is
+        # refused rather than accepted unchecked (issue #687).
+        logger.warning("model %s has an unusable schema reference", manifest.id)
+        return "model parameter schema is invalid"
     return None
 
 
@@ -272,9 +326,10 @@ def validate_param_update(manifest: Manifest, params: dict) -> str | None:
         schema_json = json.dumps(schema, sort_keys=True)
         validator = _params_validator(schema_json)
     except jsonschema.SchemaError:
-        logger.warning("model %s has an invalid parameter schema; accepting params unchecked",
-                       manifest.id)
-        return None
+        # A worker-supplied schema that cannot be compiled can check nothing,
+        # so accepting on it would remove the only parameter gate the API has.
+        logger.warning("model %s has an invalid parameter schema", manifest.id)
+        return "model parameter schema is invalid"
     except RecursionError:
         # check_schema walks the schema, so it raises this before validate can.
         return "schema nests too deeply to validate"
@@ -289,12 +344,10 @@ def validate_param_update(manifest: Manifest, params: dict) -> str | None:
         return "params or schema nest too deeply to validate"
     except Unresolvable:
         # A $ref naming something the schema does not define raises past
-        # ValidationError, so it would reach the request handler as a 500.
-        # A manifest is worker-supplied, not user-supplied, so treat it like
-        # the invalid-schema case above and blame the log, not the caller.
-        logger.warning("model %s has an unusable schema reference; "
-                       "accepting params unchecked", manifest.id)
-        return None
+        # ValidationError. The schema cannot be evaluated, so the request is
+        # refused rather than accepted unchecked (issue #687).
+        logger.warning("model %s has an unusable schema reference", manifest.id)
+        return "model parameter schema is invalid"
     return None
 
 
@@ -318,4 +371,5 @@ def parse_manifests(raw: object) -> list[Manifest]:
                 "a value JSON storage cannot hold"
             )
         _reject_unsafe_parameter_schema(manifest.parameters, manifest.id)
+        _reject_invalid_parameter_schema(manifest.parameters, manifest.id)
     return manifests

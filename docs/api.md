@@ -214,6 +214,9 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              used as source_asset_id and returns 422.
                              202 {"job_id": "..."}
                              422 when params fail the model's schema.
+                             422 "params: model parameter schema is invalid" when the
+                             model's own parameter schema cannot be compiled or
+                             evaluated, so nothing can be checked against it.
                              Cloud rate limit, prompt screen, quota reserve and 402
                              are designed and not on this handler.
 
