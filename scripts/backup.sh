@@ -114,10 +114,14 @@ echo "copying $ENV_FILE into $OUT/env"
 cp "$ENV_FILE" "$OUT/env.new"
 chmod 600 "$OUT/env.new"
 
+# The manifest is computed before anything is swapped, so a failure here
+# (a full disk) still leaves the previous backup whole. What follows is
+# renames within one directory, which do not fail for lack of space.
+(cd "$OUT" && sha256sum database.dump.new assets.tar.new env.new \
+	| sed 's/\.new$//' >SHA256SUMS.new)
+chmod 600 "$OUT/SHA256SUMS.new"
 rm -f "$OUT/SHA256SUMS"
 for name in database.dump assets.tar env; do mv "$OUT/$name.new" "$OUT/$name"; done
-(cd "$OUT" && sha256sum database.dump assets.tar env >SHA256SUMS.new)
-chmod 600 "$OUT/SHA256SUMS.new"
 mv "$OUT/SHA256SUMS.new" "$OUT/SHA256SUMS"
 
 echo "backup written to $OUT"

@@ -383,8 +383,9 @@ A backup holds three files and their checksums:
 `backup.sh` stops the `api` service before it reads anything, because the API
 is the only writer of database rows and asset files, so the dump and the
 volume are one point in time. That means a short outage: the install serves
-nothing while the backup runs. The API is started again when the backup
-finishes or fails. The directory and its files are readable by the owner
+nothing while the backup runs. An API that was running is started again when
+the backup finishes or fails; one you had stopped stays stopped. A failed
+backup leaves the previous one in the same directory whole. The directory and its files are readable by the owner
 only; keep the backup private, because `env` holds every secret the
 installation has. There is no retention policy and nothing is copied off the
 machine: the backup is the directory you named.
@@ -395,7 +396,8 @@ restores the dump, unpacks `assets.tar` into the new `assets` volume, and
 starts the stack with the backup's env file, which carries `AUTH_MODE`,
 `ROOT_KEYS` and every other setting. The target project is
 `COMPOSE_PROJECT_NAME` when it is set, else the name recorded in the backup's
-env file, so a restore onto a machine whose installation is gone replaces it
+env file, else the name of the compose file's directory (as Docker Compose
+picks it), so a restore onto a machine whose installation is gone replaces it
 under its own name.
 
 Two things stay with you. Compose keeps reading settings from the backup's
