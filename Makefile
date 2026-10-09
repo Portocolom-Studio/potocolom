@@ -246,7 +246,7 @@ verify-frontend:
 		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing \
 		&& PUBLIC_SITE_MODE= npm run build && npm run test:canvas && npm run test:signin
 
-verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 
 test-db-clean: ## drop per-checkout databases (test, stress and worktree dev), keep shared dev
 	@docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \

@@ -305,7 +305,7 @@ GPU inference is never in CI. The release checklist runs it manually twice: ROCm
 
 ### Secret scanning
 
-`secret-scan.yml` runs on every pull request (no path filter) and on every push to `main`, on the self-hosted runner like the other workflows. Each run downloads gitleaks v8.30.1 from the pinned release URL, checks the tarball against a pinned SHA-256 and refuses to run on a mismatch, and then starts with a canary self-test: a GitHub token generated at run time is planted in a temp directory, and the job fails unless the scanner catches it and never prints it. The scan itself covers the commits the pull request adds (`base..head`) on pull requests, and the pushed working tree on `main`.
+`secret-scan.yml` runs on every pull request (no path filter) and on every push to `main`, on the self-hosted runner like the other workflows. Each run downloads gitleaks v8.30.1 from the pinned release URL, checks the tarball against a pinned SHA-256 and refuses to run on a mismatch, and then starts with a canary self-test: a GitHub-token-shaped fake value generated at run time is planted in a temp directory, and the job fails unless the scanner catches it and never prints it. The self-test also checks that a token added only while resolving a merge conflict is caught. The scan itself covers the commits the pull request adds (`base..head`, including each merge commit's diff against its first parent) on pull requests, and the pushed working tree on `main`.
 
 Locally:
 

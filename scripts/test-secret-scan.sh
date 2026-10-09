@@ -17,7 +17,7 @@ cleanup() {
 	done
 	return 0
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 scan_out=""
 scan_code=0
@@ -41,7 +41,7 @@ fi
 # repository itself never contains a detectable credential.
 canary_dir=$(mktemp -d)
 temp_dirs+=("$canary_dir")
-canary="ghp_$(head -c 1000 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 36)"
+canary="ghp_$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36)))')"
 printf 'GITHUB_TOKEN=%s\n' "$canary" >"$canary_dir/canary.env"
 run_tree_scan "$canary_dir"
 
@@ -50,11 +50,11 @@ if [ "$scan_code" -eq 0 ]; then
 	echo "FAIL: canary: the scan exited 0; a planted GitHub token was not detected"
 	case_failed=1
 fi
-if printf '%s' "$scan_out" | grep -qF "$canary"; then
+if grep -qF "$canary" <<<"$scan_out"; then
 	echo "FAIL: canary: the scanner printed the token it was meant to find"
 	case_failed=1
 fi
-if ! printf '%s' "$scan_out" | grep -qF 'canary.env'; then
+if ! grep -qF 'canary.env' <<<"$scan_out"; then
 	echo "FAIL: canary: the output never names canary.env, so the finding was not reported"
 	case_failed=1
 fi
@@ -77,6 +77,39 @@ if [ "$scan_code" -eq 0 ]; then
 else
 	echo "FAIL: benign: placeholders were flagged (scan exit ${scan_code}); scanner output follows:"
 	printf '%s\n' "$scan_out"
+	failures=$((failures + 1))
+fi
+
+# Case 3: a token added only while resolving a merge conflict lives in no
+# parent's diff, so the range scan must read merge diffs too.
+merge_dir=$(mktemp -d)
+temp_dirs+=("$merge_dir")
+merge_token="ghp_$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36)))')"
+(
+	cd "$merge_dir"
+	g() { git -c user.name=self-test -c user.email=self-test@example.invalid "$@"; }
+	git init -q
+	echo base >a.txt
+	g add a.txt
+	g commit -qm base
+	git checkout -qb side
+	echo side >a.txt
+	g commit -qam side
+	git checkout -q -
+	echo main >a.txt
+	g commit -qam main
+	g merge -q side >/dev/null 2>&1 || true
+	printf 'resolved\nGITHUB_TOKEN=%s\n' "$merge_token" >a.txt
+	g add a.txt
+	g commit -qm merge
+)
+scan_code=0
+scan_out=$(cd "$merge_dir" && bash "$scan" range "$(git -C "$merge_dir" rev-list --max-parents=0 HEAD)" HEAD 2>&1) || scan_code=$?
+if [ "$scan_code" -ne 0 ] && ! grep -qF "$merge_token" <<<"$scan_out"; then
+	echo "PASS: merge: a token added in a merge resolution is detected (scan exit ${scan_code}) and not printed"
+else
+	echo "FAIL: merge: scan exit ${scan_code}; scanner output follows, with the token masked:"
+	printf '%s\n' "$scan_out" | sed "s/${merge_token}/<masked>/g"
 	failures=$((failures + 1))
 fi
 

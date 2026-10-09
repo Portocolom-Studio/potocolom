@@ -41,7 +41,7 @@ cleanup() {
 	fi
 	return 0
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 install_gitleaks() {
 	work_dir=$(mktemp -d)
@@ -70,10 +70,12 @@ case "$mode" in
 		;;
 	range)
 		[ "$#" -eq 3 ] || usage
-		scan_args=(git --log-opts "$2..$3")
+		# git log shows no diff for a merge commit by default, so a secret
+		# added only while resolving a conflict would pass unseen.
+		scan_args=(git --log-opts "--diff-merges=first-parent $2..$3")
 		;;
 	history)
-		scan_args=(git --log-opts HEAD)
+		scan_args=(git --log-opts "--diff-merges=first-parent HEAD")
 		;;
 	*)
 		usage
