@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import { t } from '$lib/i18n.svelte';
+	import { t, getLocale } from '$lib/i18n.svelte';
 	import { formatMs, leaderboardRows } from '$lib/benchmark';
 	import {
 		loadBenchmarkSessionReport,
@@ -150,7 +150,7 @@
 		if (!iso) return '-';
 		const parsed = Date.parse(iso);
 		if (Number.isNaN(parsed)) return iso;
-		return new Date(parsed).toLocaleString(undefined, {
+		return new Date(parsed).toLocaleString(getLocale(), {
 			month: 'short',
 			day: 'numeric',
 			hour: '2-digit',

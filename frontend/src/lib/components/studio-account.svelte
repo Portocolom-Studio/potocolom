@@ -14,7 +14,7 @@
 	import { account } from '$lib/account.svelte';
 	import { accountRoleLabelKey, type Role } from '$lib/account-display';
 	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
-	import { t } from '$lib/i18n.svelte';
+	import { t, formatDateTime } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -102,12 +102,6 @@
 	// The remove dialog sits outside the section that only renders while the
 	// account is on screen, so the condition the forms gate on is spelled once.
 	const mayChange = $derived(detail !== null && detail.recent_auth);
-
-	function displayDate(value: string | null): string {
-		if (value === null) return '-';
-		const parsed = Date.parse(value);
-		return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
-	}
 
 	// A 401 is not a refusal to report: the session is over, so the store
 	// drops the account and this view leaves for the sign-in page instead of
@@ -683,9 +677,9 @@
 											{/if}
 										</p>
 										<p class="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
-											<span>{t('app.account.created')}: {displayDate(session.created_at)}</span>
+											<span>{t('app.account.created')}: {formatDateTime(session.created_at)}</span>
 											<span>
-												{t('app.account.last_seen')}: {displayDate(session.last_seen_at)}
+												{t('app.account.last_seen')}: {formatDateTime(session.last_seen_at)}
 											</span>
 										</p>
 									</div>
@@ -694,8 +688,8 @@
 										size="sm"
 										disabled={endingSession !== null}
 										aria-label={t('app.account.sign_out_session')
-											.replace('{date}', () => displayDate(session.created_at))
-											.replace('{seen}', () => displayDate(session.last_seen_at))}
+											.replace('{date}', () => formatDateTime(session.created_at))
+											.replace('{seen}', () => formatDateTime(session.last_seen_at))}
 										onclick={() => void endSession(session)}
 									>
 										{t('app.account.sign_out')}

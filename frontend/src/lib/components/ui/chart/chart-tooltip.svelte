@@ -4,6 +4,7 @@
 	import { getPayloadConfigFromPayload, useChart, type TooltipPayload } from './chart-utils.js';
 	import { getChartContext, Tooltip as TooltipPrimitive } from 'layerchart';
 	import type { Snippet } from 'svelte';
+	import { getLocale } from '$lib/i18n.svelte';
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	function defaultFormatter(value: any, _payload: TooltipPayload[]) {
@@ -169,7 +170,7 @@
 							</div>
 							{#if item.value !== undefined}
 								<span class="text-foreground font-medium tabular-nums">
-									{item.value.toLocaleString()}
+									{item.value.toLocaleString(getLocale())}
 								</span>
 							{/if}
 						</div>
