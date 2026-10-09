@@ -3,7 +3,7 @@ import logging
 import os
 import stat
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -95,37 +95,55 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger("potocolom.telemetry").info(
             "anonymous daily telemetry disabled by TELEMETRY=false"
         )
-    async with AsyncExitStack() as running:
+    running = AsyncExitStack()
+    tasks = []
+    admitted = False
+    try:
+        await running.enter_async_context(db.hold_local_startup_lock())
+        admitted = True
+        running.push_async_callback(db.dispose)
         if await db.connect():
-            if settings.auth_mode == "accounts":
-                # Before recovery, and held for the life of the process. Two
-                # accounts processes without Redis do not fail loudly, they
-                # disagree quietly about who owns a socket, and a process that
-                # is about to refuse must not requeue anybody's jobs first.
-                await running.enter_async_context(db.hold_accounts_startup_lock())
             await jobs.recover()
-        tasks = [
-            asyncio.create_task(reap_dead_workers()),
-            asyncio.create_task(sweep_dead_sessions()),
-            asyncio.create_task(jobs.dispatch_loop()),
-            asyncio.create_task(maintain_loop()),
-            asyncio.create_task(maintain_deletes_loop()),
-            asyncio.create_task(telemetry_loop()),
-            asyncio.create_task(mail_loop()),
-            asyncio.create_task(purge_loop()),
+        task_factories = (
+            reap_dead_workers,
+            sweep_dead_sessions,
+            jobs.dispatch_loop,
+            maintain_loop,
+            maintain_deletes_loop,
+            telemetry_loop,
+            mail_loop,
+            purge_loop,
             # Last: the lease is held for the life of the process and this
             # task starts with a database round trip, so it must not push the
             # loops above it (gpu sample maintenance especially) later into
             # their first run than they are today.
-            asyncio.create_task(maintain_scheduler_lease()),
-        ]
+            maintain_scheduler_lease,
+        )
+        for start_task in task_factories:
+            tasks.append(asyncio.create_task(start_task()))
         yield
-        await jobs.drain_blob_cleanup()
-        for task in tasks:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        await db.dispose()
+    finally:
+        async def shutdown():
+            try:
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if admitted:
+                    await jobs.drain_blob_cleanup()
+            finally:
+                await running.aclose()
+
+        cleanup = asyncio.create_task(shutdown())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 _reject_unset_fleet_token_key(get_settings().fleet_token_key)

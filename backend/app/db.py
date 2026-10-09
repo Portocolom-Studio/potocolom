@@ -9,7 +9,9 @@ balancer health check, which answers from process state only.
 """
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,6 +39,7 @@ logger = logging.getLogger("potocolom.db")
 LOCAL_USER_EMAIL = "local@localhost"
 MIN_POSTGRES_VERSION = (13, 0)
 ACCOUNTS_STARTUP_LOCK_KEY = 184467
+STARTUP_LOCK_TIMEOUT_SECONDS = 5
 
 engine: AsyncEngine | None = None
 session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -90,7 +93,22 @@ async def connect(serving: bool = True) -> bool:
                 f"PostgreSQL {minimum} or newer is required; found PostgreSQL {found}"
             )
         # Alembic's env.py runs its own event loop, so migrate off this one.
-        await asyncio.to_thread(_migrate, settings.database_url)
+        migration = asyncio.create_task(asyncio.to_thread(_migrate, settings.database_url))
+        try:
+            await asyncio.shield(migration)
+        except asyncio.CancelledError as cancelled:
+            while not migration.done():
+                try:
+                    await asyncio.shield(migration)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            try:
+                migration.result()
+            except BaseException:
+                pass
+            raise cancelled
     except Exception as error:
         logger.warning("database unavailable (%s); generations and history are disabled", error)
         return False
@@ -209,13 +227,18 @@ async def validate_startup_auth_mode(configured: str) -> None:
         raise RuntimeError("accounts installation cannot start in none mode")
 
 
+_lock_guard = threading.Lock()
 _lock_holders = 0
 _lock_connection = None
+_lock_owner_loop = None
+_lock_acquisition: concurrent.futures.Future[None] | None = None
+_lock_borrowers_done: concurrent.futures.Future[None] | None = None
+_lock_closing = False
 
 
 @asynccontextmanager
-async def hold_accounts_startup_lock() -> AsyncIterator[None]:
-    """One accounts process per installation, on a connection of its own.
+async def hold_local_startup_lock() -> AsyncIterator[None]:
+    """One API process per installation, on a connection of its own.
 
     Without Redis there is no shared state between processes: a realtime
     socket binds in whichever process accepted it and dispatch refuses to
@@ -227,32 +250,143 @@ async def hold_accounts_startup_lock() -> AsyncIterator[None]:
     separate process with its own count and its own connection, so it still
     meets the lock.
     """
-    global _lock_holders, _lock_connection
-    if _lock_holders == 0:
-        connection = await asyncpg.connect(get_settings().database_url)
+    global _lock_holders, _lock_connection, _lock_owner_loop
+    global _lock_acquisition, _lock_borrowers_done
+    loop = asyncio.get_running_loop()
+    acquisition: concurrent.futures.Future[None] | None
+    with _lock_guard:
+        if _lock_closing:
+            raise RuntimeError("API startup lock is closing")
+        first = _lock_holders == 0
+        _lock_holders += 1
+        if first:
+            acquisition = concurrent.futures.Future()
+            _lock_acquisition = acquisition
+            _lock_borrowers_done = concurrent.futures.Future()
+        else:
+            acquisition = _lock_acquisition
+    if not first and acquisition is not None:
         try:
-            acquired = await connection.fetchval(
-                "SELECT pg_try_advisory_lock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
-            )
+            await asyncio.shield(asyncio.wrap_future(acquisition))
         except BaseException:
-            await connection.close()
+            _release_startup_lock_borrower()
             raise
-        if not acquired:
-            await connection.close()
-            raise RuntimeError("another accounts startup is in progress")
-        _lock_connection = connection
-    _lock_holders += 1
+    elif first:
+        assert acquisition is not None
+        connection = None
+        try:
+            connection = await asyncpg.connect(
+                get_settings().database_url,
+                timeout=STARTUP_LOCK_TIMEOUT_SECONDS,
+                command_timeout=STARTUP_LOCK_TIMEOUT_SECONDS,
+            )
+            acquired = await connection.fetchval(
+                "SELECT pg_try_advisory_lock($1::bigint)",
+                ACCOUNTS_STARTUP_LOCK_KEY,
+                timeout=STARTUP_LOCK_TIMEOUT_SECONDS,
+            )
+            if not acquired:
+                raise RuntimeError("another API startup is in progress")
+        except BaseException as error:
+            if connection is not None:
+                try:
+                    await connection.close(timeout=STARTUP_LOCK_TIMEOUT_SECONDS)
+                except BaseException:
+                    try:
+                        connection.terminate()
+                    except BaseException:
+                        pass
+            with _lock_guard:
+                _lock_holders -= 1
+                if _lock_holders == 0:
+                    _lock_acquisition = None
+                    _lock_borrowers_done = None
+                acquisition.set_exception(error)
+            raise
+        with _lock_guard:
+            _lock_connection = connection
+            _lock_owner_loop = loop
+            _lock_acquisition = None
+            acquisition.set_result(None)
     try:
         yield
     finally:
-        _lock_holders -= 1
-        if _lock_holders == 0 and _lock_connection is not None:
-            held, _lock_connection = _lock_connection, None
-            await held.fetchval(
-                "SELECT pg_advisory_unlock($1::bigint)", ACCOUNTS_STARTUP_LOCK_KEY
-            )
-            await held.close()
+        if first:
+            await _finish_startup_lock_owner()
+        else:
+            _release_startup_lock_borrower()
 
+
+def _release_startup_lock_borrower() -> None:
+    global _lock_holders, _lock_acquisition, _lock_borrowers_done
+    with _lock_guard:
+        _lock_holders -= 1
+        if _lock_closing and _lock_holders == 1 and _lock_borrowers_done is not None:
+            _lock_borrowers_done.set_result(None)
+        if _lock_holders == 0 and _lock_connection is None:
+            _lock_acquisition = None
+            _lock_borrowers_done = None
+
+
+async def _finish_startup_lock_owner() -> None:
+    global _lock_holders, _lock_connection, _lock_owner_loop
+    global _lock_acquisition, _lock_borrowers_done, _lock_closing
+    with _lock_guard:
+        _lock_closing = True
+        borrowers_done = _lock_borrowers_done
+        wait_for_borrowers = _lock_holders > 1
+    cancelled = None
+    if wait_for_borrowers:
+        assert borrowers_done is not None
+        while not borrowers_done.done():
+            try:
+                await asyncio.shield(asyncio.wrap_future(borrowers_done))
+            except asyncio.CancelledError as error:
+                cancelled = error
+    with _lock_guard:
+        if _lock_holders != 1:
+            raise RuntimeError("API startup lock borrower count is invalid")
+        _lock_holders = 0
+        connection, _lock_connection = _lock_connection, None
+        owner_loop, _lock_owner_loop = _lock_owner_loop, None
+    try:
+        if connection is not None:
+            await _close_startup_lock_connection(connection, owner_loop)
+    finally:
+        with _lock_guard:
+            _lock_acquisition = None
+            _lock_borrowers_done = None
+            _lock_closing = False
+    if cancelled is not None:
+        raise cancelled
+
+
+async def _close_startup_lock_connection(connection, owner_loop) -> None:
+    if asyncio.get_running_loop() is not owner_loop:
+        raise RuntimeError("startup lock connection must close on its owner loop")
+    close_task = asyncio.create_task(connection.close(timeout=STARTUP_LOCK_TIMEOUT_SECONDS))
+    cancelled = None
+    close_error = None
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except BaseException as error:
+            close_error = error
+    if close_error is None:
+        try:
+            close_task.result()
+        except BaseException as error:
+            close_error = error
+    if close_error is not None:
+        try:
+            connection.terminate()
+        except BaseException:
+            pass
+        raise close_error
+    if cancelled is not None:
+        raise cancelled
 
 @asynccontextmanager
 async def accounts_startup_lock(asyncpg_connection) -> AsyncIterator[None]:

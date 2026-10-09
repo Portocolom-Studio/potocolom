@@ -35,7 +35,7 @@ def test_a_second_accounts_process_refuses_to_start(accounts):
 
     other = accounts(hold())
     try:
-        with pytest.raises(RuntimeError, match="another accounts startup"):
+        with pytest.raises(RuntimeError, match="another API startup"):
             with TestClient(app, base_url=ORIGIN):
                 pass
     finally:

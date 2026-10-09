@@ -1820,3 +1820,19 @@ Rejected alternatives:
 - Clone and build as the only path. Every self-hoster then builds a multi-GB CUDA image that CI has already built, tested and scanned, and runs code that no release check covered.
 - A script that follows `main` or a `latest` image tag. The installed version would then be whatever was pushed last, which breaks "one project version" and the N-1 worker promise.
 - Distribution packages (deb, rpm) or a Helm chart. Each one is a second install surface to maintain for an audience that already needs Docker for the GPU passthrough.
+
+## Local API startup admission precedes initialization in both auth modes
+
+Every local API startup takes the existing PostgreSQL advisory key 184467 before database version checks, migrations, auth initialization or job recovery. The numeric key stays unchanged so an older accounts process excludes a newer startup. Both none and accounts modes use the same guard. The dedicated connection stays held through startup, serving and shutdown cleanup, and closing it releases the session lock.
+
+If the admission database cannot be reached or another process holds the key, startup refuses before it changes durable state or starts serving loops. This narrows the earlier degraded-startup policy: version or migration failure can still start a degraded process only after startup ownership was acquired. Health remains process liveness; readiness still reports unavailable stores.
+
+Cancellation does not release ownership while a migration thread is still running. The startup task retains and joins that thread until actual return. Initialization and shutdown failures cancel the serving loops, finish owned cleanup and dispose database resources before releasing the startup guard.
+
+This proves local startup exclusion. It does not prove continuous ownership after loss of the advisory-lock connection, or admission of a shared profile. Those F2 gates remain open. Shared admission requires real regional queue, frame and context identity and reciprocal storage authority; a setting, path, bucket name or readiness response is insufficient. The accounts guard stays in place until that evidence exists.
+
+Rejected alternatives:
+- Guarding accounts mode alone. None mode has the same process-local socket and queue state.
+- Taking the lock after initialization or recovery. A refused contender can already have changed the installation.
+- Treating a cancelled migration await as a completed migration. The thread can continue after the await ends.
+- Explicitly unlocking before closing the connection. A failed unlock can leak the lock, while connection closure releases it directly.
