@@ -1,0 +1,20 @@
+# scripts/compose-smoke.sh line 45 in this commit: the RFC 6455 sample
+# Sec-WebSocket-Key, a public example value printed by the specification.
+f31903d4734c927d7de567ce7438b866ff95c024:scripts/compose-smoke.sh:generic-api-key:45
+# scripts/compose-smoke.sh line 122 today: the same RFC 6455 sample
+# Sec-WebSocket-Key, a public example value printed by the specification.
+scripts/compose-smoke.sh:generic-api-key:122
+# hero-images.json line 189 in this commit: a generated image file name and its
+# content hash, not a credential.
+5f617fae2fd49ad93b416891af23ca4d12d63ca2:frontend/src/lib/hero-images.json:generic-api-key:189
+# hero-images.json line 117 in this commit: a generated image file name and its
+# content hash, not a credential.
+6ca08f05912d43855bdbb3c25f256f4d7404d2bf:frontend/src/lib/hero-images.json:generic-api-key:117
+# hero-images.json line 117 today: a generated image file name and its content
+# hash, not a credential.
+frontend/src/lib/hero-images.json:generic-api-key:117
+# hero-images.json line 189 today: a generated image file name and its content
+# hash, not a credential.
+frontend/src/lib/hero-images.json:generic-api-key:189
+# benchmark/results.json line 1: the benchmark cell_key hash of one result row.
+frontend/static/benchmark/results.json:generic-api-key:1

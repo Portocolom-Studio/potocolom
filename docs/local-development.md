@@ -303,6 +303,23 @@ flowchart LR
 
 GPU inference is never in CI. The release checklist runs it manually twice: ROCm on this desktop, CUDA on a rented machine for an hour.
 
+### Secret scanning
+
+`secret-scan.yml` runs on every pull request (no path filter) and on every push to `main`, on the self-hosted runner like the other workflows. Each run downloads gitleaks v8.30.1 from the pinned release URL, checks the tarball against a pinned SHA-256 and refuses to run on a mismatch, and then starts with a canary self-test: a GitHub token generated at run time is planted in a temp directory, and the job fails unless the scanner catches it and never prints it. The scan itself covers the commits the pull request adds (`base..head`) on pull requests, and the pushed working tree on `main`.
+
+Locally:
+
+```bash
+make verify-secrets              # canary self-test, then a scan of the working tree
+scripts/secret-scan.sh history   # the full history of the current branch
+```
+
+`make verify-secrets` is deliberately not part of `make verify`; run it when the change adds configuration, scripts or fixtures. Set `GITLEAKS_BIN=/path/to/gitleaks` to scan with an installed binary instead of downloading the pinned release. Findings are printed as rule, file, line, commit and fingerprint; the matched value is never printed.
+
+A reviewed false positive is allowed by its exact fingerprint, for example `frontend/src/lib/hero-images.json:generic-api-key:117`. Copy the fingerprint the scan printed, add exactly that one line to `.gitleaksignore`, and put a `#` comment above it explaining why it is safe. Allow one fingerprint at a time; never allow a path, a whole file or a whole rule, because each of those hides every future secret of the same shape.
+
+If a scan finds a real credential, revoke or rotate it first, then remove it from the working tree, and only then consider rewriting history. A rewrite cleans the repository but does not un-leak the value: anyone who fetched the old commits, and anyone the value was ever sent to, still has it.
+
 ### Before a release, with accounts on
 
 Everything below is a rung-1 test already, so the checklist is a reading rather than a run: it is here so that a release is not the moment somebody discovers a guarantee had no test behind it.
