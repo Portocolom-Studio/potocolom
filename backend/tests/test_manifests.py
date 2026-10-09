@@ -1,5 +1,6 @@
 import urllib.request
 from unittest.mock import patch
+import pytest
 
 from app.manifests import (
     Manifest,
@@ -386,3 +387,23 @@ def test_self_referential_schema_reference_does_not_escape():
                     "properties": {"prompt": {"$ref": "#/$defs/a"}}},
     )
     assert "too deeply" in (validate_params(manifest, {"prompt": "x"}) or "")
+
+
+@pytest.mark.parametrize("schema", [
+    # A pointer that lands on a keyword's value, not a schema.
+    {"type": "object", "required": ["prompt"],
+     "properties": {"prompt": {"$ref": "#/required"}}},
+    # A pointer that walks through a list with a non-numeric segment.
+    {"type": "object", "allOf": [{}], "properties": {"prompt": {"$ref": "#/allOf/x"}}},
+    # A pointer that walks through a boolean schema.
+    {"type": "object", "properties": {"x": True, "prompt": {"$ref": "#/properties/x/y"}}},
+])
+def test_a_reference_to_something_that_is_not_a_schema_is_refused(schema):
+    raw = [{"id": "odd-ref", "name": "Odd ref", "capabilities": ["text_to_image"],
+            "parameters": schema}]
+    with pytest.raises(ValueError, match="does not resolve|does not name a schema"):
+        parse_manifests(raw)
+    manifest = Manifest(id="odd-ref", name="Odd ref", capabilities=["text_to_image"],
+                        parameters=schema)
+    assert validate_params(manifest, {"prompt": "x"}) == "model parameter schema is invalid"
+    assert validate_param_update(manifest, {"prompt": "x"}) == "model parameter schema is invalid"

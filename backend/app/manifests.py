@@ -205,11 +205,19 @@ def _reject_invalid_parameter_schema(schema: dict, manifest_id: str) -> None:
     resolver = Registry().resolver_with_root(DRAFT202012.create_resource(schema))
     for ref in _schema_references(schema):
         try:
-            resolver.lookup(ref)
-        except Unresolvable as error:
+            target = resolver.lookup(ref).contents
+        # referencing raises plain ValueError or TypeError for a pointer that
+        # walks through a list or a scalar, not only Unresolvable.
+        except (Unresolvable, ValueError, TypeError) as error:
             raise ValueError(
                 f"manifest {manifest_id}: parameter schema $ref {ref!r} does not resolve"
             ) from error
+        # A pointer can land on a keyword's value, such as a required list;
+        # evaluating that as a schema raises instead of validating.
+        if not isinstance(target, (dict, bool)):
+            raise ValueError(
+                f"manifest {manifest_id}: parameter schema $ref {ref!r} does not name a schema"
+            )
 
 
 @lru_cache(maxsize=128)
@@ -294,10 +302,11 @@ def validate_params(manifest: Manifest, params: dict) -> str | None:
         # deep to walk would silently skip the only validation gate the API
         # has. Fail closed: not validated is not the same as valid.
         return "params or schema nest too deeply to validate"
-    except Unresolvable:
-        # A $ref naming something the schema does not define raises past
-        # ValidationError. The schema cannot be evaluated, so the request is
-        # refused rather than accepted unchecked (issue #687).
+    except (Unresolvable, AttributeError, TypeError, ValueError):
+        # A $ref naming something the schema does not define, or naming a
+        # value that is not a schema, raises past ValidationError. The schema
+        # cannot be evaluated, so the request is refused rather than accepted
+        # unchecked (issue #687).
         logger.warning("model %s has an unusable schema reference", manifest.id)
         return "model parameter schema is invalid"
     return None
@@ -342,10 +351,11 @@ def validate_param_update(manifest: Manifest, params: dict) -> str | None:
         # deep to walk would silently skip the only validation gate the API
         # has. Fail closed: not validated is not the same as valid.
         return "params or schema nest too deeply to validate"
-    except Unresolvable:
-        # A $ref naming something the schema does not define raises past
-        # ValidationError. The schema cannot be evaluated, so the request is
-        # refused rather than accepted unchecked (issue #687).
+    except (Unresolvable, AttributeError, TypeError, ValueError):
+        # A $ref naming something the schema does not define, or naming a
+        # value that is not a schema, raises past ValidationError. The schema
+        # cannot be evaluated, so the request is refused rather than accepted
+        # unchecked (issue #687).
         logger.warning("model %s has an unusable schema reference", manifest.id)
         return "model parameter schema is invalid"
     return None
