@@ -104,6 +104,12 @@ jobs:
             COMPOSE_SMOKE_PROJECT="release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${image}" \
               COMPOSE_SMOKE_API_IMAGE="$REGISTRY/potocolom-api:$VERSION" \
               COMPOSE_SMOKE_WORKER_IMAGE="$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" scripts/compose-smoke.sh
+            # The same published images, this time as one recovery point:
+            # back up, delete the stack, restore and sign in to the restored
+            # account (issue #693).
+            COMPOSE_SMOKE_API_IMAGE="$REGISTRY/potocolom-api:$VERSION" \
+              COMPOSE_SMOKE_WORKER_IMAGE="$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" \
+              scripts/test-backup-restore.sh
           done
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:

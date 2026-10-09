@@ -18,7 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
-	verify-secrets \
+	verify-secrets verify-backup \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -247,6 +247,11 @@ verify-frontend:
 		&& PUBLIC_SITE_MODE= npm run build && npm run test:canvas && npm run test:signin
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
+
+# Deliberately not part of verify: it needs the Docker daemon and starts and
+# removes compose projects and volumes of its own (docs/self-hosting.md).
+verify-backup: ## prove a self-hosted backup restores the database and the asset files together
+	bash "$(CURDIR)/scripts/test-backup-restore.sh"
 
 test-db-clean: ## drop per-checkout databases (test, stress and worktree dev), keep shared dev
 	@docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \

@@ -11,7 +11,7 @@ worker is killed. The browser must see `interrupted`, then `resumed`, and keep
 the same session ID. The same stack tests a
 populated schema upgrade from revision 0023 to head, then a PostgreSQL dump and
 restore. These checks use temporary containers and volumes. They do not test
-GPU execution, asset-file backup, or a previous released worker image.
+GPU execution or a previous released worker image.
 
 Trivy blocks publication when it finds a HIGH or CRITICAL vulnerability with
 an available fix. Scan reports are retained. Vulnerabilities without an available patch
@@ -44,7 +44,11 @@ Before publishing the draft:
 - Check sign-in over HTTPS, the `__Host-` cookies, TOTP, invitations, session
   revocation and logout on the deployed profile.
 - Restore the installation's database and asset files together in an isolated
-  environment, then open a saved image. The SQL-only CI restore is not an
+  environment, then open a saved image. `scripts/test-backup-restore.sh` runs
+  this proof automatically in this workflow and
+  [docs/self-hosting.md](self-hosting.md#backup-and-restore) documents
+  `scripts/backup.sh` and `scripts/restore.sh`; run the two commands once by
+  hand on the deployed profile as well. The SQL-only CI restore is not an
   installation backup test.
 - Review scan results and write release notes for users. Publish the draft
   only when these checks pass.
