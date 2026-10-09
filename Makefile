@@ -18,6 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
+	verify-secrets \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -245,7 +246,7 @@ verify-frontend:
 		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing \
 		&& PUBLIC_SITE_MODE= npm run build && npm run test:canvas && npm run test:signin
 
-verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally
+verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 
 test-db-clean: ## drop per-checkout databases (test, stress and worktree dev), keep shared dev
 	@docker exec $(DEV_POSTGRES) psql -U potocolom -d postgres -tAc \
@@ -351,6 +352,10 @@ verify-compose: ## validate every compose file and profile (no containers starte
 
 verify-mermaid: ## render every Mermaid diagram under docs/ (requires mmdc and Chrome)
 	python3 scripts/verify-mermaid.py
+
+verify-secrets: ## canary self-test plus a gitleaks scan of the working tree (docs/local-development.md)
+	bash scripts/test-secret-scan.sh
+	bash scripts/secret-scan.sh tree
 
 simulate: ## live connection-handling demo (docs/connection-handling.md)
 	backend/.venv/bin/python scripts/simulate.py
