@@ -41,6 +41,10 @@ class User(Base):
         CheckConstraint(_one_of("state", ACCOUNT_STATES), name="users_state"),
         # Two addresses that differ only by case or padding are one account.
         Index("users_email_normalized", NORMALIZED_EMAIL, unique=True),
+        # Not partial on the purge states: the sweep binds them as parameters,
+        # and a generic plan cannot prove a partial predicate from a parameter,
+        # so it falls back to a scan of the whole table (issue #692).
+        Index("users_purge_due", "state", "deletion_requested_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -287,6 +291,7 @@ class Job(Base):
 
 class Asset(Base):
     __tablename__ = "assets"
+    __table_args__ = (Index("assets_user", "user_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
@@ -564,6 +569,10 @@ class AuditEvent(Base):
         CheckConstraint(_one_of("severity", AUDIT_SEVERITIES), name="audit_events_severity"),
         Index("audit_events_occurred", "occurred_at"),
         Index("audit_events_actor", "actor_user_id", "occurred_at"),
+        # A search by target and by action together reads both of these as a
+        # bitmap AND, so a three-column index would buy nothing (issue #692).
+        Index("audit_events_target", "target_user_id", "occurred_at"),
+        Index("audit_events_action", "action", "occurred_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
