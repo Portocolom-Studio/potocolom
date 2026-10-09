@@ -183,7 +183,8 @@
 	async function backToRecent(): Promise<void> {
 		await resetHistoryToRecent();
 		await tick();
-		stripEl?.scrollTo({ left: 0, behavior: 'smooth' });
+		const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		stripEl?.scrollTo({ left: 0, behavior: reduced ? 'auto' : 'smooth' });
 	}
 
 	function select(generation: Generation): void {
@@ -273,14 +274,14 @@
 			onpointermove={onStripPointerMove}
 			onpointerup={endStripDrag}
 			onpointercancel={endStripDrag}
-			role="list"
+			role="group"
 			aria-label={t('app.gen.history_strip')}
 		>
 			{#each stripItems as item (item.generation.id)}
 				{#if item.generation.assets.length > 0}
 					<button
 						type="button"
-						class="relative shrink-0"
+						class="relative shrink-0 hover:opacity-90 focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none rounded-md"
 						title={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
 						tabindex={item.thumbIndex === tabStop ? 0 : -1}
 						aria-current={shownId === item.generation.id ? 'true' : undefined}
@@ -293,6 +294,9 @@
 							alt={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
 							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
 								(shownId === item.generation.id ? 'border-primary' : 'border-border')}
+							width="96"
+							height="96"
+							loading="lazy"
 							draggable="false"
 						/>
 						{#if isStarred(item.generation.id)}
@@ -326,8 +330,13 @@
 						{#if item.generation.state === 'running' && item.generation.progress !== null}
 							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
 								<div
-									class="bg-primary h-1 rounded-full transition-[width]"
-									style={`width: ${Math.round(item.generation.progress * 100)}%`}
+									role="progressbar"
+									aria-valuemin="0"
+									aria-valuemax="100"
+									aria-valuenow={Math.round(item.generation.progress * 100)}
+									aria-label={t('app.gen.badge_working')}
+									class="bg-primary h-1 w-full origin-left rounded-full transition-transform motion-reduce:transition-none"
+									style={`transform: scaleX(${item.generation.progress})`}
 								></div>
 							</div>
 						{/if}
@@ -350,7 +359,7 @@
 		{/if}
 	</div>
 	{#if loadError !== ''}
-		<p class="text-muted-foreground text-xs">{loadError}</p>
+		<p role="alert" class="text-muted-foreground text-xs">{loadError}</p>
 	{/if}
 	{#if cancelError !== ''}
 		<p role="status" class="text-destructive text-xs">{cancelError}</p>

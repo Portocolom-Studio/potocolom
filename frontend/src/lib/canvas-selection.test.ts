@@ -36,6 +36,26 @@ test('a lasso is clamped to the frame and normalised to 0..1', () => {
 	]);
 });
 
+test('the whole-canvas corners select the whole frame', () => {
+	const mask = lassoToMask(
+		[
+			{ x: 0, y: 0 },
+			{ x: 512, y: 0 },
+			{ x: 512, y: 512 },
+			{ x: 0, y: 512 }
+		],
+		512,
+		512
+	);
+	assert.ok(mask, 'a frame filling square is a selection');
+	assert.deepEqual(mask.polygons[0], [
+		[0, 0],
+		[1, 0],
+		[1, 1],
+		[0, 1]
+	]);
+});
+
 test('points nearer than 3 canvas pixels to the last kept one are dropped', () => {
 	const mask = lassoToMask(
 		[

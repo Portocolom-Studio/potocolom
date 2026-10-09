@@ -93,6 +93,22 @@ test('setLocale still switches the dictionary and the language when storage is b
 	assert.equal(i18n.t('nav.launch'), 'Abrir la app');
 });
 
+test('formatDateTime formats an ISO date per locale and passes unusable values through', async () => {
+	const i18n = await freshI18n();
+	stubDocument();
+	stub('localStorage', storage(new Map()));
+
+	assert.equal(i18n.formatDateTime(null), '-');
+	assert.equal(i18n.formatDateTime('the other day'), 'the other day');
+
+	const iso = '2024-05-06T15:30:00.000Z';
+	i18n.setLocale('en');
+	const english = i18n.formatDateTime(iso);
+	i18n.setLocale('es');
+	const spanish = i18n.formatDateTime(iso);
+	assert.notEqual(english, spanish, 'the same instant reads differently per locale');
+});
+
 test('wiring: the layout restores the locale once it mounts', () => {
 	const layout = readFileSync(join(here, '../routes/+layout.svelte'), 'utf8');
 	assert.match(layout, /initializeLocale/);

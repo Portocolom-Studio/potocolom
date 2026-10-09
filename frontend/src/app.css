@@ -31,7 +31,7 @@
 	--destructive: oklch(0.704 0.191 22.2);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.32 0.09 265);
+	--ring: oklch(0.82 0.13 255);
 	/* Categorical chart palette (dark, validated via .local/validate_palette.js;
 	   adjacent-pair CVD checks pass for all six slots) */
 	--chart-1: #5588e8;
@@ -52,7 +52,7 @@
 	--sidebar-accent: oklch(0.24 0.05 268);
 	--sidebar-accent-foreground: oklch(0.985 0.002 265);
 	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.32 0.09 265);
+	--sidebar-ring: oklch(0.82 0.13 255);
 	/* the one flourish that survives the redesign: the hero headline gradient */
 	--gradient-accent: linear-gradient(120deg, #112377, #1e328f);
 	color-scheme: dark;

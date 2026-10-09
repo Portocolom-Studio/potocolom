@@ -1,3 +1,5 @@
+import { getLocale } from './i18n.svelte';
+
 export type BenchmarkResult = {
 	prompt_id: number;
 	title: string;
@@ -40,8 +42,15 @@ export type BenchmarkReport = {
 
 export function formatMs(ms: number | null | undefined): string {
 	if (ms == null) return '-';
-	if (ms >= 1000) return `${(ms / 1000).toFixed(1)} s`;
-	return `${Math.round(ms)} ms`;
+	if (ms >= 1000) {
+		const seconds = new Intl.NumberFormat(getLocale(), {
+			minimumFractionDigits: 1,
+			maximumFractionDigits: 1
+		});
+		return `${seconds.format(ms / 1000)} s`;
+	}
+	const millis = new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 0 });
+	return `${millis.format(ms)} ms`;
 }
 
 export function formatSeconds(seconds: number | null | undefined): string {

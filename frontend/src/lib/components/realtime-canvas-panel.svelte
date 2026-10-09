@@ -504,6 +504,16 @@
 		realtimeSession.updateParams({ mask: selection });
 	}
 
+	function selectWholeCanvas(): void {
+		lassoPoints = [
+			{ x: 0, y: 0 },
+			{ x: CANVAS_SIZE, y: 0 },
+			{ x: CANVAS_SIZE, y: CANVAS_SIZE },
+			{ x: 0, y: CANVAS_SIZE }
+		];
+		finishLasso();
+	}
+
 	function toggleSelecting(): void {
 		selecting = !selecting;
 		if (!selecting) dropLasso();
@@ -563,6 +573,10 @@
 		const target = event.target as HTMLElement | null;
 		if (event.defaultPrevented || target?.closest('input, textarea, select')) return;
 		clearSelection();
+	}
+
+	function onBeforeUnload(event: BeforeUnloadEvent): void {
+		if (!blank) event.preventDefault();
 	}
 
 	function clearCanvas(): void {
@@ -686,7 +700,7 @@
 
 <!-- Escape clears the selection while focus is inside the panel, so the window
      handler asks the panel's own root before acting. -->
-<svelte:window onkeydown={onWindowKeydown} />
+<svelte:window onkeydown={onWindowKeydown} onbeforeunload={onBeforeUnload} />
 
 <div class="no-scrollbar h-full overflow-y-auto" bind:this={panelRoot}>
 	<div class="mx-auto flex h-full w-full max-w-6xl flex-col gap-4">
@@ -697,7 +711,9 @@
 					{t('app.realtime_canvas.sub')}
 				</p>
 			</div>
-			<Badge variant={connection === 'active' ? 'default' : 'outline'}>{statusLabel}</Badge>
+			<span role="status">
+				<Badge variant={connection === 'active' ? 'default' : 'outline'}>{statusLabel}</Badge>
+			</span>
 		</div>
 
 		<div class="grid flex-none gap-4 lg:min-h-[32rem] lg:flex-1 lg:grid-cols-2">
@@ -786,6 +802,11 @@
 								>
 									{t('app.realtime_canvas.select_area')}
 								</Button>
+								{#if selecting}
+									<Button variant="outline" disabled={!connected} onclick={selectWholeCanvas}>
+										{t('app.realtime_canvas.select_all')}
+									</Button>
+								{/if}
 								{#if selection}
 									<Button variant="outline" disabled={!connected} onclick={clearSelection}>
 										{t('app.realtime_canvas.clear_selection')}
@@ -803,6 +824,8 @@
 							<div class="flex gap-2">
 								<Input
 									id="realtime-edit-prompt"
+									name="edit_prompt"
+									autocomplete="off"
 									bind:value={editPrompt}
 									class="min-w-0"
 									onkeydown={onEditPromptKeydown}
@@ -866,7 +889,11 @@
 							</div>
 						</Field.Field>
 					</Field.Group>
-					<div class="relative mx-auto w-fit max-w-full">
+					<div
+						class="relative mx-auto w-fit max-w-full"
+						role="img"
+						aria-label={t('app.realtime_canvas.draw_surface')}
+					>
 						<canvas
 							bind:this={drawCanvas}
 							width={CANVAS_SIZE}
@@ -894,11 +921,13 @@
 							{t('app.realtime_canvas.selection_hint')}
 						</p>
 					{/if}
-					{#if drawingNotice}
-						<p class="text-destructive text-sm" role="status" aria-live="polite">
-							{t(drawingNotice)}
-						</p>
-					{/if}
+					<div role="status">
+						{#if drawingNotice}
+							<p class="text-destructive text-sm" aria-live="polite">
+								{t(drawingNotice)}
+							</p>
+						{/if}
+					</div>
 				</Card.Content>
 			</Card.Root>
 
@@ -909,7 +938,11 @@
 				</Card.Header>
 				<Card.Content class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 					<div class="relative">
-						<div class="relative mx-auto w-fit max-w-full">
+						<div
+							class="relative mx-auto w-fit max-w-full"
+							role="img"
+							aria-label={t('app.realtime_canvas.output_title')}
+						>
 							<canvas
 								bind:this={outputCanvas}
 								width={CANVAS_SIZE}
@@ -991,6 +1024,8 @@
 						<div class="flex gap-2">
 							<Input
 								id="realtime-prompt"
+								name="prompt"
+								autocomplete="off"
 								bind:value={prompt}
 								class="min-w-0"
 								placeholder={t('app.realtime_canvas.prompt_placeholder')}
@@ -1008,19 +1043,21 @@
 					{#if modelId === ''}
 						<p class="text-muted-foreground text-sm">{t('app.realtime_canvas.no_model')}</p>
 					{/if}
-					{#if notice}
-						<p class="text-destructive text-sm" role="status" aria-live="polite">
-							{t(notice)}
-							{#if notice === 'app.realtime_canvas.session_revoked'}
-								{' '}
-								<a
-									class="text-foreground underline underline-offset-4"
-									href={`${resolve('/login')}${loginSearchFor('?view=realtime_canvas')}`}
-									>{t('app.realtime_canvas.sign_in_again')}</a
-								>
-							{/if}
-						</p>
-					{/if}
+					<div role="status">
+						{#if notice}
+							<p class="text-destructive text-sm" aria-live="polite">
+								{t(notice)}
+								{#if notice === 'app.realtime_canvas.session_revoked'}
+									{' '}
+									<a
+										class="text-foreground underline underline-offset-4"
+										href={`${resolve('/login')}${loginSearchFor('?view=realtime_canvas')}`}
+										>{t('app.realtime_canvas.sign_in_again')}</a
+									>
+								{/if}
+							</p>
+						{/if}
+					</div>
 					{#if busy}
 						<Button variant="secondary" onclick={disconnect}>
 							{t('app.realtime_canvas.disconnect')}

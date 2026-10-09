@@ -149,7 +149,9 @@
 			{#if historyError}
 				<p role="alert" class="text-destructive text-sm">{historyError}</p>
 			{:else if workerLoading || historyLoading}
-				<p class="text-muted-foreground text-sm">{t('app.admin.loading_fleet')}</p>
+				<p role="status" class="text-muted-foreground text-sm">
+					{t('app.admin.loading_fleet')}
+				</p>
 			{:else if workers.length === 0}
 				<p class="text-muted-foreground text-sm">{t('app.admin.workers_empty')}</p>
 			{:else}
