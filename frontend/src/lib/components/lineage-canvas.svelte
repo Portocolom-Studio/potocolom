@@ -118,6 +118,7 @@
 	type PointerSample = { x: number; y: number; time: number };
 	const restoredViewport = studio.lineageViewport;
 
+	let sectionEl = $state<HTMLDivElement | null>(null);
 	let viewportEl = $state<HTMLDivElement | null>(null);
 	let inspectorEl = $state<HTMLElement | null>(null);
 	let viewportWidth = $state(0);
@@ -1061,13 +1062,17 @@
 		return data.generation?.params.prompt?.trim() || actionLabel(data.entry.action);
 	}
 
-	function timeLabel(createdAt: string): string {
-		return new Intl.DateTimeFormat(getLocale(), {
+	const timeFormatter = $derived(
+		new Intl.DateTimeFormat(getLocale(), {
 			month: 'short',
 			day: 'numeric',
 			hour: '2-digit',
 			minute: '2-digit'
-		}).format(new Date(createdAt));
+		})
+	);
+
+	function timeLabel(createdAt: string): string {
+		return timeFormatter.format(new Date(createdAt));
 	}
 
 	function paramValue(value: unknown): string {
@@ -1120,8 +1125,16 @@
 		void tick().then(() => target?.focus());
 	}
 
+	function modalIsOpen(): boolean {
+		return document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]') !== null;
+	}
+
 	function onWindowKeyDown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape' || studio.lineageSelectedAssetId === null) return;
+		if (modalIsOpen() || event.defaultPrevented) return;
+		const target = event.target as HTMLElement | null;
+		if (target?.closest('input, textarea, select')) return;
+		if (!sectionEl?.contains(document.activeElement)) return;
 		event.preventDefault();
 		closeInspector();
 	}
@@ -1349,12 +1362,24 @@
 <svelte:window onkeydown={onWindowKeyDown} />
 
 <div
+	bind:this={sectionEl}
 	class="lineage-section relative grid h-full min-h-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-[auto_minmax(0,1fr)] gap-3"
 >
 	<header class="col-span-2 shrink-0">
 		<h1 class="text-xl font-semibold">{t('app.images.title')}</h1>
 		<p class="text-muted-foreground mt-1 text-sm">{t('app.images.sub')}</p>
 	</header>
+	<p class="sr-only" role="status">
+		{#if rootsLoading && roots.length === 0}
+			{t('app.images.loading')}
+		{:else if rootsFailed}
+			{t('app.images.load_failed')}
+		{:else if persistedRoots.length === 0}
+			{starredOnly ? t('app.images.no_starred_roots') : t('app.gen.result_hint')}
+		{:else if searchQuery !== ''}
+			{t('app.images.matches').replace('{count}', String(searchMatchIds?.size ?? 0))}
+		{/if}
+	</p>
 	<!-- A focusable canvas region owns the documented pan and zoom keyboard controls. -->
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 	<div
@@ -1371,6 +1396,9 @@
 				<SearchIcon class="text-muted-foreground size-4 shrink-0" aria-hidden="true" />
 				<Input
 					type="search"
+					name="q"
+					autocomplete="off"
+					spellcheck={false}
 					class="h-8 w-40 rounded-md text-sm"
 					bind:value={searchDraft}
 					placeholder={t('app.images.search')}
@@ -2055,6 +2083,15 @@
 		cursor: pointer;
 	}
 
+	.edge-delta-expand:hover {
+		background: var(--accent);
+	}
+
+	.edge-delta-expand:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: 2px;
+	}
+
 	.cluster-time {
 		position: absolute;
 		width: max-content;
@@ -2223,8 +2260,13 @@
 		outline-offset: 2px;
 	}
 
-	.selection-inspector:focus {
+	.selection-inspector:focus:not(:focus-visible) {
 		outline: none;
+	}
+
+	.selection-inspector:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: 2px;
 	}
 
 	.micro-content,

@@ -8,7 +8,7 @@
 		needsAdminAttestation,
 		recheckAdminAccess
 	} from '$lib/studio-admin-logic';
-	import { t } from '$lib/i18n.svelte';
+	import { formatDateTime, t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -110,12 +110,6 @@
 		if (response.status === 403) void recheckAdminAccess();
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
 		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
-	function displayDate(value: string | null): string {
-		if (!value) return '-';
-		const date = Date.parse(value);
-		return Number.isFinite(date) ? new Date(date).toLocaleString() : value;
 	}
 
 	async function loadUsers(
@@ -313,6 +307,9 @@
 			</div>
 			<Input
 				type="search"
+				name="q"
+				autocomplete="off"
+				spellcheck={false}
 				data-testid="admin-user-search"
 				class="mt-3"
 				aria-label={t('app.admin.search_users')}
@@ -322,7 +319,9 @@
 		</Card.Header>
 		<Card.Content class="max-h-[55svh] overflow-auto p-0 xl:max-h-none xl:h-full">
 			{#if usersLoading}
-				<p class="text-muted-foreground p-4 text-sm">{t('app.admin.loading_users')}</p>
+				<p role="status" class="text-muted-foreground p-4 text-sm">
+					{t('app.admin.loading_users')}
+				</p>
 			{:else if usersError}
 				<p role="alert" class="text-destructive p-4 text-sm">{usersError}</p>
 			{:else if users.length === 0}
@@ -338,7 +337,7 @@
 							aria-pressed={selectedId === user.id}
 							onclick={() => selectUser(user.id)}
 						>
-							<span class="truncate text-sm font-medium">{user.email}</span>
+							<span class="max-w-full truncate text-sm font-medium">{user.email}</span>
 							<span class="text-muted-foreground flex flex-wrap gap-x-2 text-xs">
 								<span>{t(roleLabelKey(user.role))}</span>
 								<span>{t(stateLabelKey(user.state))}</span>
@@ -368,14 +367,16 @@
 
 	<Card.Root class="min-h-0 overflow-auto p-0 [--card-spacing:0]">
 		{#if detailLoading && !detail}
-			<p class="text-muted-foreground p-5 text-sm">{t('app.admin.loading_user')}</p>
+			<p role="status" class="text-muted-foreground p-5 text-sm">
+				{t('app.admin.loading_user')}
+			</p>
 		{:else if detailError && !detail}
 			<p role="alert" class="text-destructive p-5 text-sm">{detailError}</p>
 		{:else if detail}
 			<Card.Header class="border-border border-b px-5 py-4">
 				<Card.Title class="break-all text-lg">{detail.email}</Card.Title>
 				<Card.Description>
-					{t('app.admin.created')}: {displayDate(detail.created_at)}
+					{t('app.admin.created')}: {formatDateTime(detail.created_at)}
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="flex flex-col gap-5 p-5">
@@ -482,6 +483,8 @@
 										alt={generation.params.prompt ?? t('app.admin.untitled_generation')}
 										title={generation.params.prompt ?? generation.model_id}
 										class="border-border h-24 w-24 shrink-0 rounded-lg border object-cover"
+										width="96"
+										height="96"
 										loading="lazy"
 									/>
 								{/if}

@@ -5,7 +5,6 @@
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import StarIcon from '@lucide/svelte/icons/star';
-	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -497,7 +496,7 @@
 	<Card.Root class="no-scrollbar flex min-h-0 flex-col overflow-y-auto">
 		<Card.Header class="gap-3">
 			<div class="flex flex-col gap-1.5">
-				<Card.Title>{panelTitle}</Card.Title>
+				<h1 data-slot="card-title" class="text-base font-medium">{panelTitle}</h1>
 				<Card.Description>{panelSub}</Card.Description>
 			</div>
 		</Card.Header>
@@ -536,7 +535,7 @@
 						</div>
 						{#if mode === 'image_to_image'}
 							<div class="flex flex-col gap-2">
-								<Label>{t('app.image_to_image.source')}</Label>
+								<p class="text-sm font-medium leading-none">{t('app.image_to_image.source')}</p>
 								<div
 									class="border-border bg-muted/20 flex min-h-20 items-center gap-3 rounded-lg border border-dashed p-3"
 								>
@@ -545,6 +544,8 @@
 											src={sourceAsset.thumbnail_url ?? sourceAsset.url}
 											alt={t('app.image_to_image.source')}
 											class="size-14 rounded-md object-cover"
+											width="56"
+											height="56"
 										/>
 										<p class="min-w-0 flex-1 truncate text-sm">{t('app.image_to_image.ready')}</p>
 									{:else}
@@ -583,6 +584,8 @@
 							<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
 							<textarea
 								id="gen-prompt"
+								name="prompt"
+								autocomplete="off"
 								class={fieldClass + ' no-scrollbar h-44 resize-none overflow-y-auto py-2'}
 								placeholder={t('app.gen.prompt_placeholder')}
 								aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
@@ -604,6 +607,9 @@
 								<Label for="gen-count">{t('app.gen.count')}</Label>
 								<Input
 									id="gen-count"
+									name="count"
+									autocomplete="off"
+									inputmode="numeric"
 									class="tabular-nums"
 									type="number"
 									min="1"
@@ -623,6 +629,9 @@
 								<Label for="gen-seed">{t('app.gen.seed')}</Label>
 								<Input
 									id="gen-seed"
+									name="seed"
+									autocomplete="off"
+									inputmode="numeric"
 									class="tabular-nums"
 									type="number"
 									placeholder={t('app.gen.seed_placeholder')}
@@ -637,9 +646,10 @@
 							</div>
 						</div>
 						<div class="flex flex-col gap-2">
-							<Label>{t('app.gen.size')}</Label>
+							<Label id="gen-size-label">{t('app.gen.size')}</Label>
 							<ToggleGroup.Root
 								type="single"
+								aria-labelledby="gen-size-label"
 								variant="outline"
 								spacing={0}
 								class="flex w-full"
@@ -737,29 +747,20 @@
 									<PencilIcon />
 									{t('app.image_to_image.use_action')}
 								</Button>
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									class="justify-start"
-									disabled
-									title={t('app.gen.coming_soon')}
-								>
-									<Trash2Icon />
-									{t('app.gen.delete')}
-								</Button>
 							</div>
 						</div>
 						{#if working > 0}
 							<p class="text-muted-foreground text-sm tabular-nums">
-								{working}
-								{t('app.gen.working_suffix')}{runningProgress !== null
-									? ` (${Math.round(runningProgress * 100)}%)`
-									: ''}
+								<span role="status">{working} {t('app.gen.working_suffix')}</span><span
+									aria-hidden="true"
+									>{runningProgress !== null
+										? ` (${Math.round(runningProgress * 100)}%)`
+										: ''}</span
+								>
 							</p>
 						{/if}
 						{#if errorText !== ''}
-							<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
+							<p role="alert" class="text-destructive text-sm leading-relaxed">{errorText}</p>
 						{/if}
 					</form>
 				{/if}
@@ -786,7 +787,7 @@
 			{:else}
 				<div class="flex min-h-0 flex-1 flex-col gap-4">
 					<div class="flex flex-col gap-2">
-						<Label>{t('app.upscale.source')}</Label>
+						<p class="text-sm font-medium leading-none">{t('app.upscale.source')}</p>
 						<p class="text-muted-foreground truncate text-sm">
 							{shownPrompt !== '' ? shownPrompt : t('app.gen.result')}
 						</p>
@@ -814,9 +815,10 @@
 						{/if}
 					</div>
 					<div class="flex flex-col gap-2">
-						<Label>{t('app.upscale.factor')}</Label>
+						<Label id="upscale-factor-label">{t('app.upscale.factor')}</Label>
 						<ToggleGroup.Root
 							type="single"
+							aria-labelledby="upscale-factor-label"
 							variant="outline"
 							spacing={0}
 							class="flex w-full"
@@ -855,14 +857,14 @@
 					</div>
 					{#if working > 0}
 						<p class="text-muted-foreground text-sm tabular-nums">
-							{working}
-							{t('app.gen.working_suffix')}{runningProgress !== null
-								? ` (${Math.round(runningProgress * 100)}%)`
-								: ''}
+							<span role="status">{working} {t('app.gen.working_suffix')}</span><span
+								aria-hidden="true"
+								>{runningProgress !== null ? ` (${Math.round(runningProgress * 100)}%)` : ''}</span
+							>
 						</p>
 					{/if}
 					{#if errorText !== ''}
-						<p class="text-destructive text-sm leading-relaxed">{errorText}</p>
+						<p role="alert" class="text-destructive text-sm leading-relaxed">{errorText}</p>
 					{/if}
 				</div>
 			{/if}
@@ -881,12 +883,13 @@
 							</p>
 							<div
 								class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
+								role="group"
 								aria-label={t('app.lineage.ancestors')}
 							>
 								{#each lineage.ancestors as entry (entry.asset_id)}
 									<button
 										type="button"
-										class="border-border bg-muted/30 hover:bg-muted flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem] disabled:cursor-default"
+										class="border-border bg-muted/30 hover:bg-muted focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem] disabled:cursor-default"
 										disabled={entry.job_id === null}
 										title={lineageActionLabel(entry.action)}
 										onclick={() => selectLineage(entry)}
@@ -896,6 +899,9 @@
 												src={entry.thumbnail_url}
 												alt={lineageActionLabel(entry.action)}
 												class="size-12 rounded object-cover"
+												width="48"
+												height="48"
+												loading="lazy"
 											/>
 										{:else}
 											<span
@@ -910,13 +916,16 @@
 								{/each}
 								<div
 									class="border-primary bg-primary/10 flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
-									aria-current="page"
+									aria-current="true"
 								>
 									{#if shownThumbnail !== null}
 										<img
 											src={shownThumbnail}
 											alt={shown.params.prompt ?? t('app.gen.result')}
 											class="size-12 rounded object-cover"
+											width="48"
+											height="48"
+											loading="lazy"
 										/>
 									{:else}
 										<span
@@ -945,6 +954,8 @@
 									src={shown.assets[0].url}
 									alt={shown.params.prompt ?? t('app.gen.result')}
 									class="h-full w-full rounded-lg object-contain"
+									width={shown.assets[0].width}
+									height={shown.assets[0].height}
 								/>
 							</a>
 							<Button
@@ -989,7 +1000,7 @@
 									{#each lineage.children as entry (entry.asset_id)}
 										<button
 											type="button"
-											class="border-border bg-muted/30 hover:bg-muted flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
+											class="border-border bg-muted/30 hover:bg-muted focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
 											title={lineageActionLabel(entry.action)}
 											onclick={() => selectLineage(entry)}
 										>
@@ -998,6 +1009,9 @@
 													src={entry.thumbnail_url}
 													alt={lineageActionLabel(entry.action)}
 													class="size-12 rounded object-cover"
+													width="48"
+													height="48"
+													loading="lazy"
 												/>
 											{:else}
 												<span

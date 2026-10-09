@@ -1441,7 +1441,13 @@ test('saved drawing reopens with exact pixels and undo redo history', async () =
 		assert.equal(basename(savedPath), 'drawing.potocolom.json');
 		assert.match(await readFile(savedPath, 'utf8'), /"version"\s*:\s*4/);
 
+		let unloadWarning = '';
+		page.once('dialog', (dialog) => {
+			unloadWarning = dialog.type();
+			void dialog.accept();
+		});
 		await page.reload({ waitUntil: 'networkidle0' });
+		assert.equal(unloadWarning, 'beforeunload', 'leaving a drawn canvas must warn first');
 		await page.waitForFunction(
 			(name) =>
 				[...document.querySelectorAll('button')].some(
@@ -3382,9 +3388,9 @@ test('the history strip has an aria-label', async () => {
 		await waitForStrip(page, 6);
 		const label = await page.$eval(
 			'button[data-strip-thumb]',
-			(thumb) => thumb.closest('[role="list"]')?.getAttribute('aria-label') ?? ''
+			(thumb) => thumb.closest('[role="group"]')?.getAttribute('aria-label') ?? ''
 		);
-		assert.notEqual(label.trim(), '', 'the strip list must be named');
+		assert.notEqual(label.trim(), '', 'the strip group must be named');
 	} finally {
 		await harness.close();
 	}

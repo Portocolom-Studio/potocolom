@@ -7,7 +7,7 @@
 		recheckAdminAccess,
 		type AuditFilters
 	} from '$lib/studio-admin-logic';
-	import { t } from '$lib/i18n.svelte';
+	import { formatDateTime, t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 
@@ -62,11 +62,6 @@
 		if (response.status === 403) void recheckAdminAccess();
 		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
 		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
-	function displayDate(value: string): string {
-		const parsed = Date.parse(value);
-		return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
 	}
 
 	async function loadSummary(): Promise<void> {
@@ -171,7 +166,9 @@
 			</Card.Header>
 			<Card.Content class="p-4">
 				{#if summaryLoading}
-					<p class="text-muted-foreground text-sm">{t('app.admin.loading_summary')}</p>
+					<p role="status" class="text-muted-foreground text-sm">
+						{t('app.admin.loading_summary')}
+					</p>
 				{:else if summaryError}
 					<p role="alert" class="text-destructive text-sm">{summaryError}</p>
 				{:else if summary}
@@ -207,7 +204,9 @@
 			</Card.Header>
 			<Card.Content class="max-h-36 overflow-auto p-4">
 				{#if anomaliesLoading}
-					<p class="text-muted-foreground text-sm">{t('app.admin.loading_anomalies')}</p>
+					<p role="status" class="text-muted-foreground text-sm">
+						{t('app.admin.loading_anomalies')}
+					</p>
 				{:else if anomaliesError}
 					<p role="alert" class="text-destructive text-sm">{anomaliesError}</p>
 				{:else if anomalies.length === 0}
@@ -262,6 +261,9 @@
 					{t('app.admin.actor_user_id')}
 					<input
 						class="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm"
+						name="actor_user_id"
+						autocomplete="off"
+						spellcheck={false}
 						bind:value={filters.actor_user_id}
 					/>
 				</label>
@@ -269,6 +271,9 @@
 					{t('app.admin.target_user_id')}
 					<input
 						class="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm"
+						name="target_user_id"
+						autocomplete="off"
+						spellcheck={false}
 						bind:value={filters.target_user_id}
 					/>
 				</label>
@@ -276,6 +281,9 @@
 					{t('app.admin.action_filter')}
 					<input
 						class="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm"
+						name="action"
+						autocomplete="off"
+						spellcheck={false}
 						bind:value={filters.action}
 					/>
 				</label>
@@ -283,6 +291,9 @@
 					{t('app.admin.limit')}
 					<input
 						class="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm"
+						name="limit"
+						autocomplete="off"
+						inputmode="numeric"
 						type="number"
 						min="1"
 						max="1000"
@@ -295,7 +306,9 @@
 			</form>
 
 			{#if eventsLoading}
-				<p class="text-muted-foreground text-sm">{t('app.admin.loading_audit')}</p>
+				<p role="status" class="text-muted-foreground text-sm">
+					{t('app.admin.loading_audit')}
+				</p>
 			{:else if eventsError}
 				<p role="alert" class="text-destructive text-sm">{eventsError}</p>
 			{:else if events.length === 0}
@@ -319,7 +332,7 @@
 							{#each events as entry (entry.id)}
 								<tr data-testid="admin-audit-row" class="border-border/60 border-t align-top">
 									<td class="text-muted-foreground px-3 py-2 text-xs whitespace-nowrap">
-										{displayDate(entry.occurred_at)}
+										{formatDateTime(entry.occurred_at)}
 									</td>
 									<td class="px-3 py-2 font-medium">{entry.action}</td>
 									<td class="px-3 py-2 font-mono text-xs">{entry.actor_user_id ?? '-'}</td>

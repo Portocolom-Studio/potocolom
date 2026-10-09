@@ -39,3 +39,12 @@ export function setLocale(locale: Locale): void {
 export function t(key: keyof typeof en): string {
 	return dictionaries[state.locale][key] ?? dictionaries.en[key] ?? key;
 }
+
+export function formatDateTime(value: string | null): string {
+	if (!value) return '-';
+	const date = Date.parse(value);
+	if (!Number.isFinite(date)) return value;
+	return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
+		date
+	);
+}

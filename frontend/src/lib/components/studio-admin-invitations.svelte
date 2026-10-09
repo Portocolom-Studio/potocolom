@@ -8,7 +8,7 @@
 		isRecentAuthenticationRequired,
 		recheckAdminAccess
 	} from '$lib/studio-admin-logic';
-	import { t } from '$lib/i18n.svelte';
+	import { formatDateTime, t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -86,7 +86,13 @@
 		linkCopyHint = '';
 	}
 
+	function submitInvite(event: SubmitEvent): void {
+		event.preventDefault();
+		requestInvite();
+	}
+
 	function requestInvite(): void {
+		if (email.trim() === '') return;
 		formError = '';
 		formRecentAuthHint = false;
 		if (role === 'admin') {
@@ -204,11 +210,6 @@
 		}
 	}
 
-	function displayDate(value: string): string {
-		const date = Date.parse(value);
-		return Number.isFinite(date) ? new Date(date).toLocaleString() : value;
-	}
-
 	const confirmationTitle = $derived(
 		pendingAction?.kind === 'invite'
 			? t('app.admin.invite_confirm_title')
@@ -239,11 +240,15 @@
 			<Card.Description>{t('app.admin.invitations_sub')}</Card.Description>
 		</Card.Header>
 		<Card.Content class="flex flex-col gap-4 p-4">
-			<div class="flex flex-wrap items-end gap-3">
+			<form class="flex flex-wrap items-end gap-3" onsubmit={submitInvite}>
 				<label class="flex min-w-56 flex-col gap-1 text-xs font-medium">
 					{t('app.admin.invite_email_label')}
 					<Input
 						type="email"
+						name="email"
+						required
+						autocomplete="off"
+						spellcheck={false}
 						data-testid="admin-invite-email"
 						placeholder={t('app.admin.invite_email_label')}
 						bind:value={email}
@@ -261,14 +266,10 @@
 						<option value="admin">{t('app.admin.role_admin')}</option>
 					</select>
 				</label>
-				<Button
-					data-testid="admin-invite-submit"
-					disabled={submitting || email.trim() === ''}
-					onclick={requestInvite}
-				>
+				<Button type="submit" data-testid="admin-invite-submit" disabled={submitting}>
 					{submitting ? t('app.admin.saving') : t('app.admin.invite_submit')}
 				</Button>
-			</div>
+			</form>
 
 			{#if formError}
 				<div role="alert" class="text-destructive text-sm">
@@ -307,7 +308,7 @@
 					</div>
 					<p class="text-muted-foreground text-xs" aria-live="polite">{linkCopyHint}</p>
 					<p class="text-muted-foreground text-xs">
-						{t('app.admin.invite_link_expires')}: {displayDate(minted.expires_at)}
+						{t('app.admin.invite_link_expires')}: {formatDateTime(minted.expires_at)}
 					</p>
 					<p class="text-muted-foreground text-xs">{t('app.admin.invite_link_note')}</p>
 					<Button
@@ -331,7 +332,9 @@
 		</Card.Header>
 		<Card.Content class="p-0">
 			{#if listLoading}
-				<p class="text-muted-foreground p-4 text-sm">{t('app.admin.loading_invitations')}</p>
+				<p role="status" class="text-muted-foreground p-4 text-sm">
+					{t('app.admin.loading_invitations')}
+				</p>
 			{:else if listError}
 				<p role="alert" class="text-destructive p-4 text-sm">{listError}</p>
 			{:else if invitations.length === 0}
@@ -343,15 +346,15 @@
 							data-testid="admin-invitation-row"
 							class="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
 						>
-							<div class="flex flex-col gap-1">
-								<span class="text-sm font-medium">{invitation.email}</span>
+							<div class="flex min-w-0 flex-col gap-1">
+								<span class="break-all text-sm font-medium">{invitation.email}</span>
 								<span class="text-muted-foreground flex flex-wrap gap-x-2 text-xs">
 									<span>{t(roleLabelKey(invitation.role))}</span>
 									{#if invitationExpired(invitation.expires_at, Date.now())}
 										<span class="text-destructive">{t('app.admin.invite_expired')}</span>
 									{:else}
 										<span
-											>{t('app.admin.invite_link_expires')}: {displayDate(
+											>{t('app.admin.invite_link_expires')}: {formatDateTime(
 												invitation.expires_at
 											)}</span
 										>

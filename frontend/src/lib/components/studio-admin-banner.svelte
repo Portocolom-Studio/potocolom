@@ -120,7 +120,9 @@
 			{#if loadError}
 				<p role="alert" class="text-destructive text-sm">{loadError}</p>
 			{:else if loading}
-				<p class="text-muted-foreground text-sm">{t('app.admin.loading')}</p>
+				<p role="status" class="text-muted-foreground text-sm">
+					{t('app.admin.loading')}
+				</p>
 			{:else}
 				<p class="text-muted-foreground text-sm" data-testid="admin-banner-current">
 					{t('app.admin.banner_current')}:
