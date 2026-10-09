@@ -412,6 +412,17 @@ class LocalStorage:
         await loop.run_in_executor(_delete_threads(), self.path(key).unlink, True)
 
 
+# Worst case for one S3 call is attempts x (connect + read) plus backoff:
+# 3 x (5 + 10) s and a few seconds of standard-mode retry backoff, so a little
+# under a minute for any single call (issue #688).
+S3_CONNECT_TIMEOUT = 5
+S3_READ_TIMEOUT = 10
+S3_MAX_ATTEMPTS = 3
+# One whole read gets its own bound: read_timeout above applies per read call,
+# so a store trickling bytes in could hold a reader past it.
+S3_READ_DEADLINE = 30
+
+
 class S3Storage:
     """S3 compatible bucket with presigned PUT and GET URLs (MinIO in development)."""
 
@@ -426,7 +437,10 @@ class S3Storage:
             endpoint_url=settings.storage_s3_endpoint or None,
             aws_access_key_id=settings.storage_s3_access_key or None,
             aws_secret_access_key=settings.storage_s3_secret_key or None,
-            config=Config(signature_version="s3v4"),  # MinIO requires SigV4
+            config=Config(signature_version="s3v4",  # MinIO requires SigV4
+                          connect_timeout=S3_CONNECT_TIMEOUT,
+                          read_timeout=S3_READ_TIMEOUT,
+                          retries={"mode": "standard", "total_max_attempts": S3_MAX_ATTEMPTS}),
         )
 
     async def ready(self) -> bool:
@@ -435,6 +449,10 @@ class S3Storage:
             _ready_threads(), partial(self.client.head_bucket, Bucket=self.bucket)
         )
         try:
+            # wait_for abandons the await, not the thread: the probe keeps
+            # running until the client bounds end it, at most attempts x
+            # (connect + read) plus backoff, and READY_THREADS caps how many
+            # can be outstanding.
             await asyncio.wait_for(probe, timeout=2)
         except Exception:
             return False
@@ -462,9 +480,11 @@ class S3Storage:
                                               "If-None-Match": "*"})
 
     async def image_info(self, key: str) -> ImageInfo | None:
-        from botocore.exceptions import ClientError
+        from botocore.exceptions import ClientError, IncompleteReadError
+        from botocore.httpchecksum import StreamingChecksumBody
 
         def read_object() -> tuple[dict, bytes]:
+            started = time.monotonic()
             response = self.client.get_object(Bucket=self.bucket, Key=key)
             body = response["Body"]
             try:
@@ -474,15 +494,39 @@ class S3Storage:
                 # EOF or one byte past the bound, which is what makes the
                 # bound mean anything: the presigned PUT constrains bucket,
                 # key and content type only, never size.
+                #
+                # read on the body waits for the whole amount, so a store
+                # trickling bytes in would hold this thread and the deadline
+                # below would never be checked. read1 on the raw stream
+                # underneath returns on the first bytes to arrive; a body
+                # with no raw stream keeps the read it always had.
+                stream = getattr(body, "_raw_stream", body)
+                read = getattr(stream, "read1", stream.read)
                 chunks = []
                 remaining = MAX_VERIFY_BYTES + 1
                 while remaining > 0:
-                    chunk = body.read(remaining)
+                    if time.monotonic() - started >= S3_READ_DEADLINE:
+                        raise TimeoutError(
+                            f"reading {key} took longer than {S3_READ_DEADLINE}s"
+                        )
+                    chunk = read(remaining)
                     if not chunk:
                         break
                     chunks.append(chunk)
                     remaining -= len(chunk)
-                return response, b"".join(chunks)
+                data = b"".join(chunks)
+                length = response.get("ContentLength")
+                if remaining > 0 and length is not None and len(data) != length:
+                    # read1 skips the body's own content-length check, and a
+                    # download that stopped short must still say so.
+                    raise IncompleteReadError(actual_bytes=len(data), expected_bytes=length)
+                if remaining > 0 and isinstance(body, StreamingChecksumBody):
+                    # And the response checksum, which that body only checks
+                    # on its own reads. Past the size bound the object is
+                    # refused anyway, so only a complete read is checked.
+                    body._checksum.update(data)
+                    body._validate_checksum()
+                return response, data
             finally:
                 body.close()
 

@@ -37,6 +37,10 @@ logger = logging.getLogger("potocolom.db")
 LOCAL_USER_EMAIL = "local@localhost"
 MIN_POSTGRES_VERSION = (13, 0)
 ACCOUNTS_STARTUP_LOCK_KEY = 184467
+# Constants rather than settings so a test can shrink them (issue #688).
+DB_CONNECT_TIMEOUT = 10  # seconds for one TCP connect and startup handshake
+DB_STATEMENT_TIMEOUT_MS = 30000
+DB_POOL_TIMEOUT = 10  # seconds waiting for a free pooled connection
 
 engine: AsyncEngine | None = None
 session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -51,6 +55,10 @@ def async_url(url: str) -> str:
 
 
 def _migrate(database_url: str) -> None:
+    # Alembic runs on its own engine inside migrations/env.py, which takes a
+    # URL and nothing else, so no bound of ours reaches it: DDL on a big
+    # table can run long, and the bounded version check above has connected
+    # successfully by the time this starts.
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", async_url(database_url))
     command.upgrade(config, "head")
@@ -61,7 +69,8 @@ def _postgres_version_supported(version: tuple[int | str, ...]) -> bool:
 
 
 async def _postgres_version(database_url: str) -> tuple[int | str, ...]:
-    check_engine = create_async_engine(async_url(database_url), poolclass=NullPool)
+    check_engine = create_async_engine(async_url(database_url), poolclass=NullPool,
+                                       connect_args={"timeout": DB_CONNECT_TIMEOUT})
     try:
         async with check_engine.connect() as connection:
             version = connection.dialect.server_version_info
@@ -97,8 +106,16 @@ async def connect(serving: bool = True) -> bool:
         # hide_parameters: an outbox insert carries a live invitation link as a bind
     # parameter, and SQLAlchemy prints parameters into the traceback that
     # uvicorn then logs. Before the outbox no statement carried a capability.
+    # The statement timeout is for serving only. Offline commands include the
+    # operator collapse, which waits on the account key with no bound on
+    # purpose (docs/decisions.md), and a statement cut off mid-wait would
+    # leave it half done (issue #688).
+    connect_args: dict[str, object] = {"timeout": DB_CONNECT_TIMEOUT}
+    if serving:
+        connect_args["server_settings"] = {"statement_timeout": f"{DB_STATEMENT_TIMEOUT_MS}"}
     engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10,
-                                 hide_parameters=True)
+                                 hide_parameters=True, pool_timeout=DB_POOL_TIMEOUT,
+                                 connect_args=connect_args)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     if serving:
         await validate_startup_auth_mode(settings.auth_mode)
