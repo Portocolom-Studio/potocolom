@@ -50,7 +50,7 @@
 	}
 
 	.mode:focus-visible {
-		outline: 2px solid var(--mode-toggle-focus, var(--k-accent));
+		outline: 2px solid var(--mode-toggle-focus, var(--k-focus));
 		outline-offset: 1px;
 	}
 

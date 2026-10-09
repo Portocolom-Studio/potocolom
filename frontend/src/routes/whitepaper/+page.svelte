@@ -118,7 +118,7 @@
 />
 
 <LatentShell current="whitepaper">
-	<main>
+	<main id="main">
 		<section class="opening">
 			<h1>{t('wp.title')}</h1>
 			<p class="lede">{t('wp.sub')}</p>

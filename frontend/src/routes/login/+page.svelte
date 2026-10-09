@@ -204,16 +204,17 @@
 								name="code"
 								autocomplete="one-time-code"
 								inputmode="text"
+								spellcheck={false}
 								required
+								pattern=".*\S.*"
 								bind:value={code}
-								aria-label={t('auth.challenge.code_label')}
 							/>
 							<Field.Description>{t('auth.challenge.code_hint')}</Field.Description>
 						</Field.Field>
 						{#if error}
 							<p class="text-destructive text-sm" role="alert">{error}</p>
 						{/if}
-						<Button type="submit" disabled={submitting || !code.trim()}>
+						<Button type="submit" disabled={submitting}>
 							{submitting ? t('auth.submitting') : t('auth.challenge.submit')}
 						</Button>
 						<Button type="button" variant="ghost" onclick={backToPassword}>
@@ -240,9 +241,9 @@
 								name="email"
 								type="email"
 								autocomplete="username"
+								spellcheck={false}
 								required
 								bind:value={email}
-								aria-label={t('auth.login.email_label')}
 							/>
 						</Field.Field>
 						<Field.Field>
@@ -254,7 +255,6 @@
 								autocomplete="current-password"
 								required
 								bind:value={password}
-								aria-label={t('auth.login.password_label')}
 							/>
 						</Field.Field>
 						<label class="flex items-center gap-2 text-sm">
@@ -264,11 +264,7 @@
 						{#if error}
 							<p class="text-destructive text-sm" role="alert">{error}</p>
 						{/if}
-						<Button
-							type="submit"
-							disabled={submitting || !email.trim() || !password}
-							aria-label={t('auth.login.submit')}
-						>
+						<Button type="submit" disabled={submitting}>
 							{submitting ? t('auth.submitting') : t('auth.login.submit')}
 						</Button>
 					</form>

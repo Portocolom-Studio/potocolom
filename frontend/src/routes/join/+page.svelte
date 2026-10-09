@@ -129,7 +129,6 @@
 								autocomplete="new-password"
 								required
 								bind:value={password}
-								aria-label={t('auth.join.password_label')}
 							/>
 						</Field.Field>
 						<Field.Field>
@@ -141,17 +140,12 @@
 								autocomplete="new-password"
 								required
 								bind:value={confirmPassword}
-								aria-label={t('auth.join.confirm_label')}
 							/>
 						</Field.Field>
 						{#if error}
 							<p class="text-destructive text-sm" role="alert">{error}</p>
 						{/if}
-						<Button
-							type="submit"
-							disabled={submitting || !password || !confirmPassword}
-							aria-label={t('auth.join.submit')}
-						>
+						<Button type="submit" disabled={submitting}>
 							{submitting ? t('auth.submitting') : t('auth.join.submit')}
 						</Button>
 					</form>

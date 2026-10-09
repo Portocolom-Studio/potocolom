@@ -92,11 +92,6 @@
 		display: none;
 	}
 
-	summary:focus-visible {
-		outline: 2px solid var(--k-accent);
-		outline-offset: 4px;
-	}
-
 	.toggle {
 		display: grid;
 		width: 2.25rem;

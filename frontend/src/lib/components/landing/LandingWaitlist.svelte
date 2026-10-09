@@ -85,9 +85,12 @@
 		<p>{t('wl.sub')}</p>
 
 		{#if endpoint}
-			{#if status === 'done' || status === 'already'}
-				<p class="note ok" role="status">{status === 'done' ? t('wl.done') : t('wl.already')}</p>
-			{:else}
+			<div role="status">
+				{#if status === 'done' || status === 'already'}
+					<p class="note ok">{status === 'done' ? t('wl.done') : t('wl.already')}</p>
+				{/if}
+			</div>
+			{#if status !== 'done' && status !== 'already'}
 				<form onsubmit={submit}>
 					<label class="sr-only" for="waitlist-email">{t('wl.email_label')}</label>
 					<input
@@ -95,6 +98,8 @@
 						type="email"
 						name="email"
 						required
+						autocomplete="email"
+						spellcheck={false}
 						placeholder={t('wl.placeholder')}
 						bind:value={email}
 						disabled={status === 'sending'}
@@ -213,11 +218,6 @@
 		font: inherit;
 	}
 
-	input[type='email']:focus-visible {
-		outline: 2px solid var(--k-accent);
-		outline-offset: 2px;
-	}
-
 	.honey {
 		position: absolute;
 		left: -9999px;
@@ -248,7 +248,7 @@
 
 	.pill-accent {
 		background: var(--k-accent);
-		color: oklch(0.14 0.02 265);
+		color: var(--k-accent-ink);
 	}
 
 	.pill-ghost {
@@ -271,7 +271,7 @@
 	}
 
 	.note.ok {
-		color: var(--k-accent);
+		color: var(--k-ink);
 	}
 
 	.note.err {
