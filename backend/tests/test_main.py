@@ -17,9 +17,10 @@ from app.main import SPAStaticFiles, app
 from app.settings import Settings, get_settings
 
 
-def _stub_lifespan_tasks(monkeypatch):
-    async def idle():
-        await asyncio.Future()
+def _stub_lifespan_tasks(monkeypatch, idle=None):
+    if idle is None:
+        async def idle():
+            await asyncio.Future()
 
     for name in (
         "reap_dead_workers",
@@ -183,18 +184,7 @@ def test_lifespan_holds_startup_admission_before_database_and_cleanup(monkeypatc
     monkeypatch.setattr(main_module.db, "connect", connect)
     monkeypatch.setattr(main_module.db, "dispose", dispose)
     monkeypatch.setattr(main_module.jobs, "recover", recover)
-    for name in (
-        "reap_dead_workers",
-        "sweep_dead_sessions",
-        "maintain_loop",
-        "maintain_deletes_loop",
-        "telemetry_loop",
-        "mail_loop",
-        "purge_loop",
-        "maintain_scheduler_lease",
-    ):
-        monkeypatch.setattr(main_module, name, idle)
-    monkeypatch.setattr(main_module.jobs, "dispatch_loop", idle)
+    _stub_lifespan_tasks(monkeypatch, idle)
     monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
 
     async def exercise():
@@ -247,19 +237,7 @@ def test_existing_startup_lock_refuses_lifespan_before_connect_or_work(
     monkeypatch.setattr(main_module.db, "dispose", dispose)
     monkeypatch.setattr(main_module.jobs, "recover", recover)
     monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
-    _stub_lifespan_tasks(monkeypatch)
-    for name in (
-        "reap_dead_workers",
-        "sweep_dead_sessions",
-        "maintain_loop",
-        "maintain_deletes_loop",
-        "telemetry_loop",
-        "mail_loop",
-        "purge_loop",
-        "maintain_scheduler_lease",
-    ):
-        monkeypatch.setattr(main_module, name, idle)
-    monkeypatch.setattr(main_module.jobs, "dispatch_loop", idle)
+    _stub_lifespan_tasks(monkeypatch, idle)
 
     async def exercise():
         holder = await asyncpg.connect(database_url)
@@ -419,18 +397,7 @@ def test_unreachable_admission_database_refuses_lifespan(monkeypatch, mode):
     monkeypatch.setattr(main_module.db, "dispose", dispose)
     monkeypatch.setattr(main_module.jobs, "recover", recover)
     monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
-    for name in (
-        "reap_dead_workers",
-        "sweep_dead_sessions",
-        "maintain_loop",
-        "maintain_deletes_loop",
-        "telemetry_loop",
-        "mail_loop",
-        "purge_loop",
-        "maintain_scheduler_lease",
-    ):
-        monkeypatch.setattr(main_module, name, idle)
-    monkeypatch.setattr(main_module.jobs, "dispatch_loop", idle)
+    _stub_lifespan_tasks(monkeypatch, idle)
 
     async def exercise():
         with pytest.raises(OSError, match="admission database unavailable"):
@@ -476,18 +443,7 @@ def test_migration_failure_serves_degraded_only_while_admitted(monkeypatch, mode
     monkeypatch.setattr(main_module.db, "dispose", dispose)
     monkeypatch.setattr(main_module.jobs, "recover", recover)
     monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
-    for name in (
-        "reap_dead_workers",
-        "sweep_dead_sessions",
-        "maintain_loop",
-        "maintain_deletes_loop",
-        "telemetry_loop",
-        "mail_loop",
-        "purge_loop",
-        "maintain_scheduler_lease",
-    ):
-        monkeypatch.setattr(main_module, name, idle)
-    monkeypatch.setattr(main_module.jobs, "dispatch_loop", idle)
+    _stub_lifespan_tasks(monkeypatch, idle)
 
     async def exercise():
         async with main_module.lifespan(app):
