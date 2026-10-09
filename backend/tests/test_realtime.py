@@ -610,6 +610,31 @@ def test_open_without_the_required_prompt_is_refused():
             assert response["code"] == 4000
 
 
+def test_open_against_a_broken_model_schema_is_refused():
+    """A manifest that never passed parse_manifests refuses the open.
+
+    A schema that cannot be compiled can check nothing, so validate_params
+    refuses instead of accepting unchecked (issue #687); a database row read
+    back is how such a manifest reaches validation.
+    """
+    manifest = Manifest(
+        id="sd-broken-schema", name="sd-broken-schema",
+        capabilities=["realtime"],
+        parameters={"type": 12},
+    )
+    worker = realtime.Worker(id="w-broken-schema", ws=None, manifests=[manifest],
+                             realtime_slots=1)
+    realtime.workers[worker.id] = worker
+    try:
+        with client.websocket_connect("/api/v1/realtime") as browser_ws:
+            browser_ws.send_json({"type": "open", "model_id": "sd-broken-schema"})
+            response = expect(browser_ws, "error")
+            assert response["code"] == 4000
+            assert response["message"] == "invalid params"
+    finally:
+        realtime.workers.pop(worker.id, None)
+
+
 def test_open_carrying_the_required_prompt_opens_the_session():
     with client.websocket_connect("/api/v1/fleet") as worker_ws:
         worker_ws.send_json(hello(worker_id="w-prompt-ok", parameters=REQUIRES_PROMPT))
@@ -1289,6 +1314,28 @@ def test_hello_wrong_types_close_with_protocol_violation():
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
         assert closed.value.code == 4000
+
+
+def test_hello_with_an_uncompilable_schema_is_refused():
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(worker_id="w-uncompilable", parameters={"type": 12}))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert "parameter schema is invalid" in (closed.value.reason or "")
+
+
+def test_hello_with_an_unresolvable_schema_reference_is_refused():
+    with client.websocket_connect("/api/v1/fleet") as ws:
+        ws.send_json(hello(
+            worker_id="w-missing-ref",
+            parameters={"type": "object",
+                        "properties": {"prompt": {"$ref": "#/$defs/missing"}}},
+        ))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000
+        assert "$ref" in (closed.value.reason or "")
 
 
 def test_frame_for_another_session_closes_with_protocol_violation():

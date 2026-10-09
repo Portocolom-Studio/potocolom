@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from app import db, jobs, realtime, registry
 from app.jobs import generation_download_name
 from app.main import app
+from app.manifests import Manifest
 from app.realtime import PROTOCOL_VERSION
 from app.tables import Asset, Job, Model, PendingDelete, UsageEvent, User
 
@@ -598,6 +599,41 @@ def test_unknown_model_and_invalid_params():
             invalid = client.post("/api/v1/generations",
                                   json={"model_id": "sd-test", "params": {}})
             assert invalid.status_code == 422  # prompt is required by the manifest schema
+
+
+@pytest.mark.db
+def test_a_generation_against_a_broken_model_schema_is_refused():
+    """A manifest that never passed parse_manifests still refuses requests.
+
+    A schema that cannot be compiled can check nothing, so validate_params
+    refuses instead of accepting unchecked (issue #687); a row read back from
+    the models table is how such a manifest reaches validation.
+    """
+    manifest = Manifest(
+        id="sd-broken-schema", name="SD Broken Schema",
+        capabilities=["text_to_image", "image_to_image", "upscale"],
+        parameters={"type": 12},
+    )
+    worker = realtime.Worker(id="w-broken-schema", ws=None, manifests=[manifest],
+                             realtime_slots=1)
+    realtime.workers[worker.id] = worker
+    try:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
+            refused = client.post("/api/v1/generations",
+                                  json={"model_id": "sd-broken-schema",
+                                        "params": {"prompt": "x"}})
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == "params: model parameter schema is invalid"
+            upscale = client.post("/api/v1/generations", json={
+                "model_id": "sd-broken-schema",
+                "capability": "upscale",
+                "params": {"prompt": "x"},
+                "source_asset_id": str(uuid.uuid4()),
+            })
+            assert upscale.status_code == 422
+            assert upscale.json()["detail"] == "params: model parameter schema is invalid"
+    finally:
+        realtime.workers.pop(worker.id, None)
 
 
 @pytest.mark.db
