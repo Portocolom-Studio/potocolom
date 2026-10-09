@@ -1,4 +1,5 @@
 import { PUBLIC_SITE_MODE } from '$env/static/public';
+import { getLocale } from '$lib/i18n.svelte';
 import type { BenchmarkReport } from '$lib/benchmark';
 
 // The marketing build is a static artifact with no API behind it, so asking for
@@ -16,7 +17,7 @@ export type BenchmarkSession = {
 function sessionLabel(createdAt: string): string {
 	const date = new Date(createdAt);
 	if (Number.isNaN(date.getTime())) return createdAt;
-	return date.toLocaleString(undefined, {
+	return date.toLocaleString(getLocale(), {
 		year: 'numeric',
 		month: 'short',
 		day: 'numeric',

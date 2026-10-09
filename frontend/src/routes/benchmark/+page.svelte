@@ -18,7 +18,7 @@
 		type BenchmarkReport
 	} from '$lib/benchmark';
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
-	import { t } from '$lib/i18n.svelte';
+	import { t, getLocale } from '$lib/i18n.svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import '../../landing-tokens.css';
 
@@ -57,7 +57,7 @@
 
 	const runDate = $derived(
 		report?.created_at
-			? new Date(report.created_at).toLocaleString(undefined, {
+			? new Date(report.created_at).toLocaleString(getLocale(), {
 					dateStyle: 'medium',
 					timeStyle: 'short'
 				})
