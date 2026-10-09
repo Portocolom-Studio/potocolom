@@ -346,9 +346,9 @@ upgrade an initial plain-HTTP connection.
 | `models` | model manifests (JSON) | re-seeded from the image on next boot |
 | `hf-cache` | downloaded model weights | re-downloaded on next use (2-7 GB per model) |
 
-Back up `pgdata` and `assets` together: jobs and asset rows reference files
-by storage key, so restoring one without the other leaves dangling
-references. `hf-cache` and `models` are reproducible.
+Back up `pgdata` and `assets` together (see Backup and restore below): jobs
+and asset rows reference files by storage key, so restoring one without the
+other leaves dangling references. `hf-cache` and `models` are reproducible.
 
 The API deletes what a failed or retried job left behind, and a delete it
 cannot make is recorded and retried every five minutes rather than logged and
@@ -356,6 +356,64 @@ forgotten. If those retries keep failing, the cause is usually the `assets`
 volume: a full disk, or permissions the container cannot write through. The log
 line to look for names the key and says `still cannot delete`, and the
 `pending_deletes` table is the list of what is waiting.
+
+## Backup and restore
+
+`scripts/backup.sh <out-dir>` writes one recovery point, and
+`scripts/restore.sh <backup-dir>` puts it back:
+
+```bash
+scripts/backup.sh /backups/potocolom-2026-10-09
+COMPOSE_PROJECT_NAME=potocolom-restored scripts/restore.sh /backups/potocolom-2026-10-09
+```
+
+A backup holds three files and their checksums:
+
+- `database.dump`, a dump of PostgreSQL: accounts, jobs, prompts and the
+  asset rows.
+- `assets.tar`, the whole `assets` volume: the PNG masters and the WebP
+  thumbnails.
+- `env`, the env file. It holds `ROOT_KEYS`, `POSTGRES_PASSWORD` and
+  `FLEET_SECRET`; without `ROOT_KEYS` a restored installation cannot read
+  encrypted account data such as second factors, so an env file that was lost
+  cannot be rebuilt from the database.
+- `SHA256SUMS`, over those three files. `restore.sh` verifies it first and
+  refuses a backup that is incomplete or does not match.
+
+`backup.sh` stops the `api` service before it reads anything, because the API
+is the only writer of database rows and asset files, so the dump and the
+volume are one point in time. That means a short outage: the install serves
+nothing while the backup runs. The API is started again when the backup
+finishes or fails. The directory and its files are readable by the owner
+only; keep the backup private, because `env` holds every secret the
+installation has. There is no retention policy and nothing is copied off the
+machine: the backup is the directory you named.
+
+`restore.sh` restores into a new, empty project. It refuses a project that
+already has a `pgdata` or `assets` volume, then starts PostgreSQL alone,
+restores the dump, unpacks `assets.tar` into the new `assets` volume, and
+starts the stack with the backup's env file, which carries `AUTH_MODE`,
+`ROOT_KEYS` and every other setting. The target project is
+`COMPOSE_PROJECT_NAME` when it is set, else the name recorded in the backup's
+env file, so a restore onto a machine whose installation is gone replaces it
+under its own name.
+
+Two things stay with you. Compose keeps reading settings from the backup's
+env file, so pass `--env-file <backup-dir>/env` to later commands, or copy
+that file over `deploy/compose/.env` when the restore took the name recorded
+in it. And no worker profile is guessed: the shipped compose file starts
+`api` and `postgres`, so start yours with `--profile gpu` (or `--profile
+rocm`) as usual.
+
+The two commands cover local asset storage (`STORAGE_BACKEND=local`, which is
+what the shipped compose file uses). An S3-compatible bucket needs its own
+versioned backup; these scripts do not touch it, and cloud backups are out of
+scope. An account purge that the stop interrupts can leave rows whose files are
+already gone; the purge resumes when the restored API starts and removes them. `scripts/test-backup-restore.sh` (or `make verify-backup`) proves the
+whole flow end to end on the smoke stack with the simulated worker: it claims
+an administrator account with a password and a second factor, saves an image
+with its thumbnail, backs up, deletes the stack, restores it, and signs back
+in and opens both images.
 
 ## Logs
 

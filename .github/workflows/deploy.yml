@@ -12,6 +12,9 @@ on:
       - "deploy/**"
       - "scripts/compose-smoke.sh"
       - "scripts/smoke-*"
+      - "scripts/backup.sh"
+      - "scripts/restore.sh"
+      - "scripts/test-backup-restore.sh"
       - "Makefile"
       - ".github/workflows/deploy.yml"
   push:
@@ -22,6 +25,9 @@ on:
       - "deploy/**"
       - "scripts/compose-smoke.sh"
       - "scripts/smoke-*"
+      - "scripts/backup.sh"
+      - "scripts/restore.sh"
+      - "scripts/test-backup-restore.sh"
       - "Makefile"
       - ".github/workflows/deploy.yml"
 
@@ -44,3 +50,8 @@ jobs:
           # run at once. With one project name they reused and then removed
           # each other's containers mid-test.
           COMPOSE_SMOKE_PROJECT: potocolom-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      # Backs up a populated stack, removes it, restores the backup into a
+      # second project and signs in to the restored account (issue #693). The
+      # script names its own p693-* projects and removes them on exit.
+      - run: scripts/test-backup-restore.sh
+        timeout-minutes: 20

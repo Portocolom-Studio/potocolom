@@ -8,7 +8,11 @@ services:
     ports:
       - "127.0.0.1:${COMPOSE_SMOKE_PORT:-18080}:8080"
     environment:
-      AUTH_MODE: none
+      # Names of their own, not AUTH_MODE and ROOT_KEYS: compose-smoke.sh reads
+      # the operator's deploy/compose/.env, which may well enable accounts. The
+      # backup and restore test sets these to run the same stack with accounts.
+      AUTH_MODE: ${SMOKE_AUTH_MODE:-none}
+      ROOT_KEYS: ${SMOKE_ROOT_KEYS:-}
       DATABASE_URL: postgresql://potocolom:${POSTGRES_PASSWORD}@postgres/potocolom
       STORAGE_BACKEND: local
       PUBLIC_URL: http://localhost:${COMPOSE_SMOKE_PORT:-18080}
