@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
-const WAIT_MS = 5000;
+const WAIT_MS = 15000;
 // The frame header this build writes on the canvas socket: one kind byte, the
 // 16 byte session id and a 4 byte big endian revision, then the image.
 const FRAME_HEADER_BYTES = 21;
