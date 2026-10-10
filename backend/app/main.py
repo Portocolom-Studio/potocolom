@@ -43,6 +43,7 @@ from app.roles import router as roles_router
 from app.states import router as states_router
 from app.shares import router as shares_router
 from app.body_limit import RequestBodyLimitMiddleware
+from app.request_id import RequestIdMiddleware
 from app.security import SecurityHeadersMiddleware, unhandled_exception_response
 from app.settings import get_settings
 from app.storage import get_storage
@@ -141,10 +142,13 @@ app = FastAPI(
     redoc_url=None,
 )
 # Body limit is inside the headers wrapper so a 413 still carries
-# SECURITY_HEADERS. Unhandled 500s are emitted by ServerErrorMiddleware
-# outside that stack, so they get headers from the Exception handler below.
+# SECURITY_HEADERS. Request id wraps both so every HTTP answer carries
+# X-Request-ID; it also answers unhandled 500s itself with the Exception
+# handler below, because ServerErrorMiddleware is outside this whole stack
+# and by the time it fires the id's contextvar is reset.
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIdMiddleware)
 app.add_exception_handler(Exception, unhandled_exception_response)
 app.include_router(realtime_router)
 if get_settings().benchmark_api:
