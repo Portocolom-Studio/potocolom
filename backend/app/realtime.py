@@ -1442,7 +1442,7 @@ async def close_durable_worker(worker: Worker) -> None:
 @router.websocket("/api/v1/fleet")
 async def fleet(ws: WebSocket) -> None:
     if not origin_allowed(ws):
-        logger.warning("fleet handshake refused from origin %s", ws.headers.get("origin"))
+        logger.warning("fleet handshake refused: origin not allowed")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     if not fleet_token_allowed(ws):
@@ -1535,8 +1535,10 @@ async def fleet(ws: WebSocket) -> None:
     except (ProtocolError, KeyError) as error:
         # Logged: a rejected hello is otherwise silent on both sides, so an
         # operator with a bad manifest sees a worker that starts and never
-        # registers, with nothing explaining why.
-        logger.warning("fleet hello refused: %s", error)
+        # registers, with nothing explaining why. Only the kind of failure is
+        # logged: the message can carry worker-supplied manifest text, which
+        # must not reach the log (issue #690).
+        logger.warning("fleet hello refused: %s", type(error).__name__)
         # Reason on the wire: the worker logs the close it receives, and
         # without it an operator with a bad manifest sees only a reconnect
         # loop with no cause on either side. Truncate in BYTES, not code
@@ -2004,7 +2006,7 @@ async def _still_live(handshake: Handshake) -> bool:
 @router.websocket("/api/v1/realtime")
 async def realtime(ws: WebSocket) -> None:
     if not origin_allowed(ws):
-        logger.warning("realtime handshake refused from origin %s", ws.headers.get("origin"))
+        logger.warning("realtime handshake refused: origin not allowed")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
     handshake = await _handshake_principal(ws)

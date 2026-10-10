@@ -200,7 +200,7 @@ async def worker_input(token: StorableStr | None = None,
     try:
         path = storage.path(key)
     except ValueError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+        raise HTTPException(status_code=403, detail="input not authorized") from error
     if not path.is_file():
         raise HTTPException(status_code=403, detail="input not authorized")
     return FileResponse(path)

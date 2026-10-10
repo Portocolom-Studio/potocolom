@@ -15,7 +15,7 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from app import db, jobs
+from app import access_log, db, jobs
 from app.benchmark import router as benchmark_router
 from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     check_mail_configuration(settings)
     check_oauth_configuration(settings)
     setup_logging(settings.log_format)
+    access_log.install()
     if not settings.fleet_token_key.isascii():
         # HTTP headers are latin-1 on the wire, so a non-ASCII secret may not
         # survive the trip intact. Say so here rather than let the operator
