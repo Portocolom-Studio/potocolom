@@ -21,6 +21,14 @@ Use these gate names precisely:
 
 Do not promote a result from one gate to another. Record source identity, exact commands, real exit status, skips, and environment for each claimed pass.
 
+## Security and recovery checks
+
+Apply [security-checklist.md](security-checklist.md) to each affected path before
+calling an implementation complete. Its evidence table links each remaining
+gap to its public or private issue. These
+checks do not replace the ordered dependencies below or imply that designed
+controls ship.
+
 ## Ordered next work
 
 The F1 recovery and F2 startup names below identify later C2 defects. They are different from the original foundation F1 pending-frame and F2 calibration tasks. Use the contract name and saved path when assigning work.
