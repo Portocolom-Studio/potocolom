@@ -433,7 +433,8 @@ To change the approximately 50 MB per-container limit, edit `max-size` or
 `max-file` in the `x-logging` block and recreate the services. Job state,
 `jobs.failure_reason`, phase timings, GPU sample history, and usage events are
 operational records in PostgreSQL; container logs retain the remaining process
-detail such as startup, protocol, driver, and traceback messages.
+detail such as startup, protocol, driver, and traceback messages. Access log
+lines carry no query strings.
 
 The API sends the anonymous daily aggregate documented in
 [metrics.md](metrics.md) by default. Set `TELEMETRY=false` in

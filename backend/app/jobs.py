@@ -1984,14 +1984,14 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             what=f"dispatch orphans for job {job_id}",
         )
         publish(job_id, {"state": "succeeded", "url": asset_url(full.id)})
-        logger.info("job %s succeeded, gpu_ms=%s", job_id, control.get("gpu_ms"))
+        logger.info("job %s succeeded, gpu_ms=%s", job_id, gpu_ms)
         from app import usage_events
         usage_events.schedule_job(job_id, control)
     else:
         reason = str(control.get("reason", "worker reported failure"))
         if not storable_text(reason):
             logger.warning("worker %s sent an unstorable failure reason for job %s; "
-                           "storing the default: %r", worker.id, job_id, reason)
+                           "storing the default", worker.id, job_id)
             reason = "worker reported failure"
         try:
             committed = await mark_failed(job_id, reason,
@@ -2237,7 +2237,9 @@ async def mark_failed(job_id: uuid.UUID, reason: str,
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
     publish(job_id, {"state": "failed", "reason": reason})
-    logger.warning("job %s failed: %s", job_id, reason)
+    # Never the reason: the worker path passes worker-supplied text and this
+    # call cannot tell the two apart (issue #690). The row and the event keep it.
+    logger.warning("job %s failed", job_id)
     return True
 
 
