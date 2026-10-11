@@ -38,7 +38,8 @@ uses server auth. Admin access and bearer share links are explicit permissions,
 not failures of ownership checks. Worker releases keep protocol N-1 support.
 
 Audit delivery remains a separate, fail-open transaction with its bounded
-spool. Preserve the accepted waits when adding deadlines: the 3 second
+process-memory spool. A process crash during a database outage loses records
+still in that spool. Preserve the accepted waits when adding deadlines: the 3 second
 account-lock timeout, the 30 second cap on a later row lock, and the unbounded
 operator-collapse wait. Login identifier exhaustion returns 429; the busy
 caller queue returns 503 with Retry-After. A change to an accepted rule needs
@@ -65,10 +66,10 @@ This does not prove production readiness.
 | Deadlines | Key HTTP and SMTP calls have limits. Serving database calls have connect, pool-wait and statement bounds; offline commands and migrations have no statement bound on purpose. S3 calls have connect, read and retry bounds, and the image read has a total bound ([#710](https://github.com/Portocolom-Studio/potocolom/pull/710)). | Regression checks above |
 | API rate limits and public quota | Login/reset limits ship. General limits and the public quota caller/fake/outbox remain open. | [#21](https://github.com/Portocolom-Studio/potocolom/issues/21) |
 | Payments | Private main contains docs, not a billing implementation or replay proof. | Portocolom-Studio/potocolom-cloud#1 |
-| Database integrity and readiness | Core related writes use transactions; Alembic revisions 0001-0033 and store readiness ship. | Regression checks above |
+| Database integrity and readiness | Core related writes use transactions; Alembic revisions 0001-0033 and store readiness ship. [`test_auth_r2.py`](../backend/tests/test_auth_r2.py) covers `test_health_and_readiness_when_connect_fails`, `test_readiness_when_required_stores_are_available` and `test_readiness_reports_unavailable_asset_store`; [`test_deadlines.py`](../backend/tests/test_deadlines.py) proves the probe ends within its bound. | Regression checks above |
 | Indexes | Audit search, the admin asset count and the purge sweep have measured indexes ([#709](https://github.com/Portocolom-Studio/potocolom/pull/709)). | Regression checks above |
-| Logs | Every HTTP response carries a server request ID that is also on its log records ([#712](https://github.com/Portocolom-Studio/potocolom/pull/712)). Access lines carry no query string, and worker failure text is not logged ([#713](https://github.com/Portocolom-Studio/potocolom/pull/713)). | Regression checks above |
-| Recovery | `scripts/backup.sh` and `scripts/restore.sh` restore the database, assets and root keys into a new project; CI proves sign-in and image access after restore ([#711](https://github.com/Portocolom-Studio/potocolom/pull/711)). | Cloud operations: Portocolom-Studio/potocolom-cloud#5 |
+| Logs | Every HTTP response carries a server request ID included on API application log records ([#712](https://github.com/Portocolom-Studio/potocolom/pull/712)); this does not cover Uvicorn access lines, worker logs or a shared API-to-worker trace. Access lines carry no query string, and worker failure text is not logged ([#713](https://github.com/Portocolom-Studio/potocolom/pull/713)). See [`test_request_id.py`](../backend/tests/test_request_id.py) and [`test_log_secrets.py`](../backend/tests/test_log_secrets.py). CloudWatch export, operational metrics/alerts and Sentry are designed, not shipped. | Regression checks above |
+| Recovery | `scripts/backup.sh` and `scripts/restore.sh` restore the database, assets and root keys into a new project; CI proves this local self-hosted integration path with sign-in and image access after restore ([#711](https://github.com/Portocolom-Studio/potocolom/pull/711)). This does not prove cloud PITR or production RPO/RTO. | Cloud operations: Portocolom-Studio/potocolom-cloud#5 |
 
 Before closing an item, record the exact source, commands, result, skips and
 environment. Keep the [release checks](release-checklist.md) and the routed

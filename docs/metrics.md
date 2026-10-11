@@ -6,11 +6,12 @@ Self-hosted and local: GPU samples land in PostgreSQL (`gpu_samples`). Redis wor
 
 ## The questions this answers
 
-Designed product questions. Shipped today: GPU samples, usage_events without prompt/image/IP,
-output categories, and TELEMETRY aggregates. Tier routing is not shipped.
+Designed product questions. Shipped today: GPU samples, `usage_events` without prompt/image/IP,
+output categories, TELEMETRY aggregates, and tier routing. When `model_id` is omitted, the
+generation API can route by tier and capability; an explicit `model_id` stays pinned.
 
 - What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan.
-- Which models they choose. Optional `model_id` routing by tier is designed, not shipped.
+- Which models they choose. Usage events record the selected model ID, but not the routed tier or capability.
 - How much time they spend: realtime drawing minutes, queued generations per session, days active per week.
 - Retention and cohorts: DAU/WAU, how usage changes after the first week, which categories retain.
 - The self-hosted install base: how many installs exist, which versions, which GPUs and memory ladder rungs.
@@ -65,7 +66,7 @@ Every completed job and every closed realtime session writes one row to a `usage
 | user_id | FK to users; deleted with the account purge |
 | kind | `job` or `realtime` |
 | action | `generate`, `edit`, `enhance` or `draw` |
-| model_id, tier | what actually ran, after routing |
+| model_id, tier | selected model ID; tier is currently `NULL`, and the routed capability is not stored |
 | category, category_score | top label from the output categorizer below |
 | gpu_ms, duration_ms, frames | cost and effort of the event |
 | created_at | timestamp |
@@ -179,13 +180,20 @@ A failed send is dropped, never queued: telemetry must never affect the install 
 
 ## Operational metrics: planes and export paths
 
-Usage events and telemetry are the product plane. Three more planes cover operating the system, each with one export path and one rule about where detail lives:
+Usage events and TELEMETRY aggregates are product measures, not service monitoring. The current
+API supports plain or JSON application logs. Each HTTP response carries a server-generated
+request ID, which is added to API application log records. Uvicorn access log records do not carry
+that ID, worker logs have no request ID, and there is no shared trace across API and worker work.
+CloudWatch log and metric export, alarms and dashboards, and Sentry exception reporting are
+designed cloud operations; they are not wired in this repository.
+
+Three operational planes are designed, each with one export path and one rule about where detail lives:
 
 | Plane | Source | Export path | Where it lands |
 |---|---|---|---|
 | Fleet and GPU | worker heartbeat samples | the existing WSS connection - workers are never AWS principals | PostgreSQL `gpu_samples` today. Redis worker hash, CloudWatch fleet aggregates, and JSON log fan-out are designed (cloud) |
-| Service | API and private services | `PutMetricData` in the `potocolom` namespace + structured JSON logs | CloudWatch metrics, Logs Insights |
-| Money path | API outbox, billing webhooks, autoscaler | same as service plane | CloudWatch metrics and alarms; machine-hour rows in the autoscaler's store |
+| Service | API and private services | designed: `PutMetricData` in the `potocolom` namespace + structured JSON log export | designed: CloudWatch metrics and Logs Insights |
+| Money path | API outbox, billing webhooks, autoscaler | designed: same as service plane | designed: CloudWatch metrics and alarms; machine-hour rows in the autoscaler's store |
 
 The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, detail stays in Redis (live) and logs (history). Per-worker CloudWatch dimensions would multiply ephemeral worker ids by metric names at a price per metric; the admin fleet view and Logs Insights already answer per-worker questions for free.
 

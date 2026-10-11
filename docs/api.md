@@ -193,8 +193,6 @@ Registered models, each with its JSON-Schema `parameters` and its measured GPU-t
 
 The five licence fields say what may be done with the model's weights. `license_id` is the licence's name (`apache-2.0`, `stability-ai-community`, `openrail++`); `license_url` points at the licence text. `commercial_max_revenue_usd` is the annual revenue at which commercial use needs a separate enterprise licence; null or absent means the licence sets no cap. `license_registration_url` is where a commercial user registers when the licence requires it. `requires_attribution` is the attribution string the studio renders beneath the model picker, empty when the licence demands none. All five are informational today and cross the wire for future cloud-side gating (decisions.md).
 
-<!-- Corrected 2026-07-23: removed the "tier" field from this example (the wire Manifest has no "tier"; tier-based routing is unshipped) and added the shipped "default"/"benchmark_only"/"estimated_gpu_ms_default" fields. -->
-
 ### Generations and history
 
 `POST` queues a job; the job endpoint and the SSE stream report progress; the list endpoint is the history.
@@ -310,8 +308,6 @@ every row, streamed or not.
 Job progress on this path is SSE (`/events`) and history polling. Realtime WebSocket
 progress for queued jobs, credit refunds, and a retry button wait on billing and
 issue #19. A failed job after its single automatic retry stays `failed`.
-
-<!-- Corrected 2026-07-23: model_id is required (was documented optional with tier routing, which is unshipped); history is GET /api/v1/generations (was mislabeled GET /api/v1/assets); added shipped response fields and the SSE events endpoint. -->
 
 ### Studio, metrics, benchmark and local files
 
