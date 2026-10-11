@@ -1853,7 +1853,7 @@ Every local API startup takes the existing PostgreSQL advisory key 184467 before
 
 If the admission database cannot be reached or another process holds the key, startup refuses before it changes durable state or starts serving loops. This narrows the earlier degraded-startup policy: version or migration failure can still start a degraded process only after startup ownership was acquired. Health remains process liveness; readiness still reports unavailable stores.
 
-Cancellation does not release ownership while a migration thread is still running. The startup task retains and joins that thread until actual return. Initialization and shutdown failures cancel the serving loops, finish owned cleanup and dispose database resources before releasing the startup guard.
+Cancellation does not release ownership while a migration thread is still running. The startup task retains and joins that thread until actual return. Cancelling startup retains its owned initialization task until database work and actual session close return. Initialization and shutdown failures cancel the serving loops, finish owned cleanup and dispose database resources before releasing the startup guard.
 
 This proves local startup exclusion. It does not prove continuous ownership after loss of the advisory-lock connection, or admission of a shared profile. Those F2 gates remain open. Shared admission requires real regional queue, frame and context identity and reciprocal storage authority; a setting, path, bucket name or readiness response is insufficient. The accounts guard stays in place until that evidence exists.
 

@@ -4,8 +4,10 @@ import asyncio
 import importlib
 import re
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -594,7 +596,10 @@ def test_cancellation_waits_for_migration_before_releasing_admission(monkeypatch
 
 
 @pytest.mark.parametrize("path", ["local", "recovery"])
-def test_startup_cancellation_holds_session_close_before_admission_release(monkeypatch, path):
+@pytest.mark.parametrize("mode", ["query-held", "normal-close"])
+def test_startup_cancellation_holds_session_close_before_admission_release(
+    monkeypatch, path, mode
+):
     events = []
     execute_started = asyncio.Event()
     finish_execute = asyncio.Event()
@@ -610,14 +615,22 @@ def test_startup_cancellation_holds_session_close_before_admission_release(monke
         finally:
             events.append("released")
 
+    class QueryResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(role="admin", id=uuid.uuid4())
+
+        def scalars(self):
+            return ()
+
     class HeldSession(AsyncSession):
         holding = False
 
         async def execute(self, *args, **kwargs):
             self.holding = True
             execute_started.set()
-            await finish_execute.wait()
-            return await super().execute(*args, **kwargs)
+            if mode == "query-held":
+                await finish_execute.wait()
+            return QueryResult()
 
         async def get(self, *args, **kwargs):
             return None
@@ -676,19 +689,33 @@ def test_startup_cancellation_holds_session_close_before_admission_release(monke
 
     async def exercise():
         lifespan = asyncio.create_task(main_module.lifespan(app).__aenter__())
-        await asyncio.wait_for(execute_started.wait(), 1)
-        lifespan.cancel()
-        await asyncio.wait_for(close_started.wait(), 1)
-        lifespan.cancel()
-        await asyncio.sleep(0.05)
-        assert not lifespan.done()
-        assert "released" not in events
-        assert "engine-disposed" not in events
-        finish_close.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(lifespan, 1)
-        assert events.index("close-returned") < events.index("engine-disposed")
-        assert events.index("engine-disposed") < events.index("released")
+        try:
+            if mode == "query-held":
+                await asyncio.wait_for(execute_started.wait(), 1)
+                lifespan.cancel()
+                await asyncio.sleep(0.05)
+                assert not lifespan.done()
+                assert "released" not in events
+                assert "engine-disposed" not in events
+                finish_execute.set()
+            await asyncio.wait_for(close_started.wait(), 1)
+            lifespan.cancel()
+            await asyncio.sleep(0.05)
+            lifespan.cancel()
+            await asyncio.sleep(0.05)
+            assert not lifespan.done()
+            assert "released" not in events
+            assert "engine-disposed" not in events
+            finish_close.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(lifespan, 1)
+            assert events.index("close-returned") < events.index("engine-disposed")
+            assert events.index("engine-disposed") < events.index("released")
+        finally:
+            finish_execute.set()
+            finish_close.set()
+            lifespan.cancel()
+            await asyncio.gather(lifespan, return_exceptions=True)
 
     asyncio.run(exercise())
 

@@ -12,7 +12,7 @@ The self-hosted version is the base and the cloud is a configuration of it, neve
 
 The proof mechanism is the cloud-sim compose in [local-development.md](local-development.md): Redis, MinIO and Mailpit. MinIO vs S3 is the storage seam. nginx vs ALB, two API replicas, and a fake QuotaService are designed and are not in that compose file.
 
-> Shipped status (2026-10-09): **partially implemented.** Storage, the generation-job in-process heap, and the in-process realtime admission queue are shipped. Realtime workers and sessions live in process-local dictionaries. There is no Redis dependency, Redis queue adapter, FrameBus, shared invalidation, or multi-owner scheduler. Both auth modes take PostgreSQL advisory key `184467` before initialization. Another holder or an unreachable admission database refuses startup. Version or migration failure may start degraded only while holding the guard. Protocol 5 is current and protocol 4 is the compatibility floor. The cloud profile, including HTTP quota service, fleet autoscaling, and gateway, remains a target. "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts" govern the queue and relay target.
+> Shipped status (2026-10-11): **partially implemented.** Storage, the generation-job in-process heap, and the in-process realtime admission queue are shipped. Realtime workers and sessions live in process-local dictionaries. There is no Redis dependency, Redis queue adapter, FrameBus, shared invalidation, or multi-owner scheduler. Both auth modes take PostgreSQL advisory key `184467` before initialization. Another holder or an unreachable admission database refuses startup. Version or migration failure may start degraded only while holding the guard. Protocol 5 is current and protocol 4 is the compatibility floor. The cloud profile, including HTTP quota service, fleet autoscaling, and gateway, remains a target. "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts" govern the queue and relay target.
 
 ## The profile spectrum
 
@@ -126,7 +126,7 @@ The switch is one way. An install that has enabled accounts refuses to start in 
 
 ### Adding Redis and more workers (self-hosted scale-out)
 
-> Shipped status (2026-10-09): **not yet implemented.** These are target migration steps, not an available switch today. Both auth modes acquire the startup lock before initialization; unavailable admission or contention refuses startup. The guard stays in place until shared authority is proved. They depend on "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
+> Shipped status (2026-10-11): **not yet implemented.** These are target migration steps, not an available switch today. Both auth modes acquire the startup lock before initialization; unavailable admission or contention refuses startup. The guard stays in place until shared authority is proved. They depend on "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
 
 1. Add a Redis container and set `REDIS_URL`.
 2. Restart the API: queues rebuild from PostgreSQL job rows (Redis is never the source of truth, so there is nothing to migrate into it), the session cache warms lazily, and the frame relay switches to pub/sub.

@@ -104,9 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await running.enter_async_context(db.hold_local_startup_lock())
         admitted = True
         running.push_async_callback(db.dispose)
-        # A session close is shielded in a task of SQLAlchemy's own, so a
-        # cancelled startup still owns live session cleanup: join the child's
-        # real exit before drain or disposal touch its engine.
+        # SQLAlchemy closes its session in a shielded child task, so
+        # initialization must finish before its engine is disposed.
         async def initialize_database():
             if await db.connect():
                 await jobs.recover()
@@ -117,9 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 await asyncio.shield(initialization)
             except asyncio.CancelledError:
-                if not startup_cancelled:
-                    startup_cancelled = True
-                    initialization.cancel()
+                startup_cancelled = True
         if startup_cancelled:
             try:
                 initialization.result()
