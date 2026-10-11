@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -590,6 +591,106 @@ def test_cancellation_waits_for_migration_before_releasing_admission(monkeypatch
 
     asyncio.run(exercise())
     assert events == ["admitted", "migration-finished", "drained", "disposed", "released"]
+
+
+@pytest.mark.parametrize("path", ["local", "recovery"])
+def test_startup_cancellation_holds_session_close_before_admission_release(monkeypatch, path):
+    events = []
+    execute_started = asyncio.Event()
+    finish_execute = asyncio.Event()
+    close_started = asyncio.Event()
+    finish_close = asyncio.Event()
+    settings = Settings(auth_mode="none", fleet_token_key="test-fleet-token")
+
+    @asynccontextmanager
+    async def admission():
+        events.append("admitted")
+        try:
+            yield
+        finally:
+            events.append("released")
+
+    class HeldSession(AsyncSession):
+        holding = False
+
+        async def execute(self, *args, **kwargs):
+            self.holding = True
+            execute_started.set()
+            await finish_execute.wait()
+            return await super().execute(*args, **kwargs)
+
+        async def get(self, *args, **kwargs):
+            return None
+
+        async def close(self):
+            if not self.holding:
+                await super().close()
+                return
+            close_started.set()
+            await finish_close.wait()
+            await super().close()
+            events.append("close-returned")
+
+    def sessionmaker(*args, **kwargs):
+        def open_session():
+            return HeldSession()
+
+        return open_session
+
+    class FakeEngine:
+        async def dispose(self):
+            events.append("engine-disposed")
+
+    async def version(_):
+        return (16, 3)
+
+    def migrate(_):
+        pass
+
+    async def install_engine():
+        main_module.db.engine = FakeEngine()
+        main_module.db.session_factory = sessionmaker()
+        return True
+
+    async def idle():
+        await asyncio.Future()
+
+    async def drain():
+        pass
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module.db, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module.db, "hold_local_startup_lock", admission)
+    monkeypatch.setattr(main_module.db, "engine", None)
+    monkeypatch.setattr(main_module.db, "session_factory", None)
+    monkeypatch.setattr(main_module.db, "local_user_id", None)
+    monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
+    _stub_lifespan_tasks(monkeypatch, idle)
+    if path == "local":
+        monkeypatch.setattr(main_module.db, "_postgres_version", version)
+        monkeypatch.setattr(main_module.db, "_migrate", migrate)
+        monkeypatch.setattr(main_module.db, "create_async_engine", lambda *a, **k: FakeEngine())
+        monkeypatch.setattr(main_module.db, "async_sessionmaker", sessionmaker)
+    else:
+        monkeypatch.setattr(main_module.db, "connect", install_engine)
+
+    async def exercise():
+        lifespan = asyncio.create_task(main_module.lifespan(app).__aenter__())
+        await asyncio.wait_for(execute_started.wait(), 1)
+        lifespan.cancel()
+        await asyncio.wait_for(close_started.wait(), 1)
+        lifespan.cancel()
+        await asyncio.sleep(0.05)
+        assert not lifespan.done()
+        assert "released" not in events
+        assert "engine-disposed" not in events
+        finish_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(lifespan, 1)
+        assert events.index("close-returned") < events.index("engine-disposed")
+        assert events.index("engine-disposed") < events.index("released")
+
+    asyncio.run(exercise())
 
 
 def _prerendered_build(tmp_path: Path) -> Path:

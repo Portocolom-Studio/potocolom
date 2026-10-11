@@ -420,18 +420,19 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
                     f'CREATE DATABASE "{supplied}"'))
     try:
         asyncio.run(sql(url, "CREATE TABLE jobs (id int)", "INSERT INTO jobs VALUES (42)"))
-        monkeypatch.setattr(conftest, "_OURS", False)
-        monkeypatch.setattr(conftest, "_DATABASE_URL", url)
-        assert conftest._prepare_database() is True
-        assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
+        with monkeypatch.context() as patch:
+            patch.setattr(conftest, "_OURS", False)
+            patch.setattr(conftest, "_DATABASE_URL", url)
+            assert conftest._prepare_database() is True
+            assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
 
-        # Stamped at a revision this tree cannot resolve: a database of this
-        # suite's own would be rebuilt, and a supplied one must be refused
-        # instead, which is the other half of the same promise.
-        asyncio.run(sql(url, "CREATE TABLE alembic_version (version_num varchar(32))",
-                        "INSERT INTO alembic_version VALUES ('9999')"))
-        with pytest.raises(RuntimeError, match="not mine to drop"):
-            conftest._prepare_database()
-        assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
+            # Stamped at a revision this tree cannot resolve: a database of this
+            # suite's own would be rebuilt, and a supplied one must be refused
+            # instead, which is the other half of the same promise.
+            asyncio.run(sql(url, "CREATE TABLE alembic_version (version_num varchar(32))",
+                             "INSERT INTO alembic_version VALUES ('9999')"))
+            with pytest.raises(RuntimeError, match="not mine to drop"):
+                conftest._prepare_database()
+            assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
     finally:
         asyncio.run(sql(admin, f'DROP DATABASE IF EXISTS "{supplied}" WITH (FORCE)'))
