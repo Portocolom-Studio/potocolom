@@ -11,7 +11,7 @@ output categories, TELEMETRY aggregates, and tier routing. When `model_id` is om
 generation API can route by tier and capability; an explicit `model_id` stays pinned.
 
 - What are users creating: art, photo editing, design assets, characters, NSFW content, split by day and by plan.
-- Which models they choose, including the tier and capability used for generation routing.
+- Which models they choose. Usage events record the selected model ID, but not the routed tier or capability.
 - How much time they spend: realtime drawing minutes, queued generations per session, days active per week.
 - Retention and cohorts: DAU/WAU, how usage changes after the first week, which categories retain.
 - The self-hosted install base: how many installs exist, which versions, which GPUs and memory ladder rungs.
@@ -66,7 +66,7 @@ Every completed job and every closed realtime session writes one row to a `usage
 | user_id | FK to users; deleted with the account purge |
 | kind | `job` or `realtime` |
 | action | `generate`, `edit`, `enhance` or `draw` |
-| model_id, tier | what actually ran, after routing |
+| model_id, tier | selected model ID; tier is currently `NULL`, and the routed capability is not stored |
 | category, category_score | top label from the output categorizer below |
 | gpu_ms, duration_ms, frames | cost and effort of the event |
 | created_at | timestamp |
