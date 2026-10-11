@@ -11,6 +11,51 @@ This document describes the architecture of potocolom: an open source, real time
 - Real time interaction: drawing on a canvas produces generated frames continuously (issue #3).
 - Realistic target scale is hundreds to thousands of users. The design must allow growing past that by adding replicas and workers, not by rewriting.
 
+## System design review baseline
+
+Use this map to trace each system design area to its design record and evidence. The linked documents are the detailed contracts; this section records their scope and current evidence without copying them.
+
+**Scope and assumptions (0).** The actors are a browser user, a self-hosted operator, API and GPU worker processes, and the managed-cloud operator. The open repository owns the browser, API, worker, PostgreSQL schema, and storage/queue interfaces. Billing, fleet orchestration, and cloud operations are private services behind documented boundaries ([repository-boundary.md](repository-boundary.md)). The shipped self-hosted profile can run on one host without Redis; the worker dials out to the API. Multi-process ownership and cloud services are targets, not implied by the shared interfaces. See [deployment-profiles.md](deployment-profiles.md) for profile assumptions and migration limits.
+
+| # | Topic | Design record and current evidence |
+|---:|---|---|
+| 0 | Scope and assumptions | This section; [Deployment profiles](deployment-profiles.md); [Repository boundary](repository-boundary.md). |
+| 1 | Functional requirements | [Workflows](#workflows), [API contract](api.md), and the functional traces below. Existing checks include `backend/tests/test_jobs.py`, `test_realtime.py`, and `test_storage.py`. |
+| 2 | Non-functional requirements | The acceptance matrix below distinguishes accepted targets, shipped behavior, local measurements, and open gates. |
+| 3 | API design | [API contract](api.md) defines REST and WebSocket requests, responses, and errors; [connection handling](connection-handling.md) defines realtime transport and recovery. Protocol 5 is the API baseline with protocol 4 as its floor; protocol 6 needs `ROOT_KEYS`, or `AUTH_MODE=none` and a worker offering protocol 5 compatibility to use the protocol 5 path. |
+| 4 | High level design | [Components](#components), [Deployment profiles](#deployment-profiles), and the diagrams below. |
+| 5 | Core components | [Components](#components) and [Infrastructure](#infrastructure) describe the browser, FastAPI API, Python worker, PostgreSQL, and object storage. |
+| 6 | Database design | [Data model](#data-model) and versioned Alembic migrations describe public tables. Credit balances and invoices belong to the private billing service. |
+| 7 | Data flow | [Job generation](#job-based-generation), [realtime sessions](#real-time-drawing-session), and [asset access](#asset-storage-and-access) trace work through the system. |
+| 8 | Storage, caching, queues | [Asset storage](#asset-storage-and-access) describes bytes and access. [Blueprint Redis layout](blueprint.md#redis-layout) describes the designed cache, rate limits, queues, and frame bus. Redis is an optional shared-profile target; current queues and socket ownership are process-local. |
+| 10 | Scaling, load balancing, fault tolerance | [Scaling](#scaling), [Blueprint scheduler and load balancer](blueprint.md#scheduler), and [connection recovery](connection-handling.md#reconnection-and-resume) define targets and shipped limits. |
+| 11 | Security | [Security checklist](security-checklist.md) is the review contract for authentication, ownership, storage, secrets, and recovery. |
+| 12 | Observability | [Metrics](metrics.md) describes product usage and GPU data. Operational logs and cloud monitoring status are stated below. |
+| 13 | Enhancements | Accepted choices and rejected alternatives are in [decisions.md](decisions.md). Existing work is tracked by [#19](https://github.com/Portocolom-Studio/potocolom/issues/19), [#20](https://github.com/Portocolom-Studio/potocolom/issues/20), and [#48](https://github.com/Portocolom-Studio/potocolom/issues/48); this is not approval for speculative features. |
+
+### Functional traces
+
+| User operation | API and component path | Existing verification |
+|---|---|---|
+| Generate or upscale an image | `POST /api/v1/generations` -> FastAPI validation and job row -> in-process queue -> worker WebSocket -> storage adapter -> PostgreSQL history; progress uses SSE. Model tier routing is shipped when `model_id` is omitted. | `backend/tests/test_jobs.py`, `test_registry.py`, `test_storage.py`, and `test_receipt_recovery.py`. |
+| Draw in realtime | Browser `/api/v1/realtime` -> owning API process -> worker's outbound `/api/v1/fleet` WebSocket -> GPU inference -> generated frame to browser. Current session and socket ownership is in process. | `backend/tests/test_realtime.py`, `test_realtime_queue.py`, and `test_fleet_protocol6.py`; `make simulate` exercises the live protocol with simulated inference. |
+| Browse and retrieve saved work | Authenticated API reads owned PostgreSQL rows, then returns a local asset route or signed object URL through the storage adapter. | `backend/tests/test_storage.py` and the ownership/history cases in `backend/tests/test_jobs.py`. |
+
+These are trace links to existing checks, not a claim that they were run for this review or that they prove production capacity.
+
+### Non-functional acceptance matrix
+
+| Area | Accepted target or rule | Shipped behavior and local evidence | Remaining gate |
+|---|---|---|---|
+| Realtime frame service | 2-4 generated frames/s at 512 px; admission uses a 500 ms per-frame p95 budget. See [GPU scheduling](#gpu-scheduling). | Workers measure slot capacity at warmup and batch compatible frames. `backend/tests/test_realtime.py` checks admission. The local `slow-consumer` stress scenario measured neighbor p95 at 125 ms after mailbox changes; it uses synthetic workers and does not prove fleet capacity ([connection handling](connection-handling.md#reconnection-and-resume)). | Issue [#48](https://github.com/Portocolom-Studio/potocolom/issues/48) owns the 1,000-session load harness. No 1,000-session capacity result is accepted here. |
+| Workload and capacity | For `N` live sessions, offered ingress is `N * f_in` frames/s and offered egress is `N * f_out` frames/s. At the 1,000-session target, both rates imply 2,000-4,000 messages/s per direction only in a synthetic steady workload where both rates are fixed at 2-4 fps. These are offered messages, not delivered or rendered counts or universal demand; latest-input-wins can make actual input and output counts differ. GPU capacity is bounded by the sum of ready, model-compatible, calibrated slots, not configured slots alone. | The API keeps realtime ownership in one process today; workers advertise measured slot and frame-cost data. These facts are implemented, but do not establish a fleet limit. | Before any capacity claim, measure representative encoded ingress and generated-frame byte distributions, then test both directions and the ready-slot sum under the target worker and relay topology. Payload caps are not representative frame sizes. |
+| Queueing and scale | Add workers for GPU throughput. A cloud target adds API replicas, a shared queue/frame bus, and a socket gateway at the accepted 1,000-active-session target. | Job queue, realtime admission, idle release, and frame relay are process-local. `backend/tests/test_realtime_queue.py` and `test_realtime.py` cover local admission and idle release. | Paid/resume priority, job preemption, Redis shared ownership, and gateway scale remain open under [#19](https://github.com/Portocolom-Studio/potocolom/issues/19), [#20](https://github.com/Portocolom-Studio/potocolom/issues/20), and [#48](https://github.com/Portocolom-Studio/potocolom/issues/48). |
+| Load balancing | Cloud target: ALB WebSocket idle timeout and deregistration delay are 120 s; worker heartbeat is 30 s; no stickiness once the shared frame bus exists. | The worker dial-out protocol and heartbeat ship. Multiple socket-owning API replicas and their frame bus do not. | Cloud ALB routing and drain behavior need deployment evidence; see the [blueprint](blueprint.md#load-balancer). |
+| Fault tolerance and restore | Job retries are limited to one; PostgreSQL is authoritative. The accepted cloud RDS target is single-AZ PITR, up to five minutes of lost writes and about one hour of manual recovery ([decision](decisions.md#resilience-posture-single-az-with-point-in-time-recovery)). | Job retry/recovery and graceful database readiness behavior ship. Local backup/restore CI restores the database, assets, and protected keys and proves sign-in and image access ([security checklist](security-checklist.md#current-evidence-and-open-work)). | Local restore proof does not prove cloud PITR. The cloud restore drill remains under [potocolom-cloud #5](https://github.com/Portocolom-Studio/potocolom-cloud/issues/5). Realtime sessions still cannot survive loss of their owning API process. |
+| Service objectives | No REST latency or availability SLO, or cloud alert threshold, is accepted or proven here. | Existing request and usage measurements are not service-level evidence. | Agree and measure REST latency/availability objectives and cloud alert thresholds under existing load and operations work before making a production claim. |
+
+Operational monitoring has a narrower boundary than product metrics. The API ships app logs and HTTP request IDs; JSON log formatting is configurable. Sentry, CloudWatch alarms, and cloud export are designed cloud operations, not shipped monitoring proof. `usage_events` and anonymous `TELEMETRY` describe product usage; they do not prove service health. No worker or cross-service trace is claimed. See [metrics.md](metrics.md) and [security-checklist.md](security-checklist.md).
+
 ## Components
 
 The same three deployable components exist in every mode.
@@ -48,13 +93,13 @@ The worker supports three device targets behind one `DEVICE` setting: `cuda` (NV
 
 The worker accepts no inbound connections. It dials out to the API server's fleet endpoint and holds one persistent connection; registration, job dispatch, real time frames and heartbeats are all multiplexed over it. The direction is identical in both modes, which is what lets the same worker image run on a home GPU and on rented cloud machines.
 
-The connection protocol carries a version, and each API release keeps supporting workers from the previous release (N-1). The current API and worker use protocol 5; the API accepts protocol 4 as its compatibility floor. This allows adjacent worker and API versions to communicate during an upgrade, with an outdated worker warning in the logs and admin view. A hosted fleet deployment is not shipped.
+The connection protocol carries a version, and each API release keeps supporting workers from the previous release (N-1). The API baseline is protocol 5 with protocol 4 as its compatibility floor. It accepts protocol 6 workers when `ROOT_KEYS` is configured for durable worker authority. Without that key ring, a protocol 6 worker is downgraded only when `AUTH_MODE=none` and it offers protocol 5 compatibility; accounts mode rejects it as `recovery_unavailable`. This allows adjacent worker and API versions to communicate during an upgrade. A hosted fleet deployment is not shipped.
 
 ### Infrastructure
 
 - PostgreSQL stores users, sessions, the model registry, jobs and generation history.
 - Object storage sits behind a storage adapter: local disk by default when self-hosted, any S3 compatible service in the cloud.
-- Redis is part of the cloud target for queues, session scheduling and rate limiting. The backend does not use Redis today; queues and realtime ownership stay in process.
+- Redis is an optional shared-profile target for queues, session scheduling, rate limiting, and frame relay, including scaled self-hosted installs. The backend does not use Redis today; queues and realtime ownership stay in process.
 
 ## Deployment profiles
 
@@ -171,7 +216,7 @@ flowchart TB
 
 In this cloud target, `AUTH` is the authentication seam (`none` short-circuits it), `SCHED` and the Redis queues are the dispatch seam, `QC` is the quota seam, and `STOR` is the storage seam. Its realtime path avoids PostgreSQL per frame by relaying browser frames to workers through Redis pub/sub.
 
-> Shipped status (2026-10-05): **partially implemented.** Generation jobs use an in-process heap. Realtime admission is also in process; the relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, shared queue, FrameBus, or cross-replica control state. After successful database initialization, `accounts` mode takes the PostgreSQL startup lock; degraded startup after a database probe, version check or migration failure skips it. Protocol 5 is current and protocol 4 is the compatibility floor. The Redis-backed queue, shared realtime state, and multi-process cloud target are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-10-11): **partially implemented.** Generation jobs use an in-process heap. Realtime admission is also in process; the relay keeps workers and sessions in process-local dictionaries and directly awaits socket sends. The backend has no Redis dependency, shared queue, FrameBus, or cross-replica control state. After successful database initialization, `accounts` mode takes the PostgreSQL startup lock; degraded startup after a database probe, version check or migration failure skips it. Protocol 5 is the API baseline, with protocol 4 as its compatibility floor; protocol 6 workers are conditionally supported when `ROOT_KEYS` is configured. The Redis-backed queue, shared realtime state, and multi-process target are governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
 
 ## Pluggable seams
 
@@ -209,7 +254,7 @@ A worker's VRAM holds roughly one or two models, so balancing users onto models 
 
 A request that pins a `model_id` gets that model. A request that does not is resolved by the API to the cheapest registered model whose `tier` (`draft`, `standard`, `premium`, from the manifest), capabilities and parameter schema satisfy it. Difficulty needs no classifier because the interface states it: drawing strokes are realtime work on a draft-tier turbo model, a refine action is a queued job routed to a heavier tier. This is a selection function inside dispatch, not a service; the draft-then-refine loop it enables is frontend composition of the two workflows below.
 
-> Shipped status (2026-07-23): **not yet implemented.** `model_id` is required on `POST /api/v1/generations`, and the manifest has no `tier` field, so there is no routing path today. This section describes a designed policy.
+> Shipped status (2026-10-11): **tier routing ships.** When `model_id` is omitted, the API selects a model by requested tier, capability, parameter schema, and estimated GPU time. `backend/app/jobs.py` and `backend/app/manifests.py` implement this path; `backend/tests/test_registry.py` and `test_jobs.py` cover routing. The draft-then-refine product flow remains a combination of separate workflows.
 
 ### Low VRAM operation: the memory ladder
 
@@ -266,7 +311,7 @@ stateDiagram-v2
 
 Credits are metered only in the live state. These are the states of the one machine specified in [connection-handling.md](connection-handling.md), named the same way on purpose: this diagram is the scheduler's view of it, and `ending` and `ended` are collapsed into the terminal node here because admission has nothing to decide once a session is over.
 
-> Shipped status (2026-07-30): **not yet implemented.** The browser handler does not track input idle time, release a slot after 60 seconds, or implement `idle` and `resuming` controls. Issue #19, "Real-Time Generation Protocol", owns the wire behavior and issue #20, "Multi-Worker Scheduling", owns release and reacquisition. The state diagram above is the designed policy.
+> Shipped status (2026-10-11): **partially implemented.** Process-local admission queueing, idle release after about 60 seconds, and transparent resume ship; `backend/tests/test_realtime_queue.py` and `test_realtime.py` cover admission and idle release. Paid/resume priority, preemption, and shared multi-process ownership remain unshipped under issues #19 and #20.
 
 ### Frame relay across API replicas
 
@@ -294,7 +339,7 @@ sequenceDiagram
     participant W as Worker
     participant S as Storage
     B->>A: POST /api/v1/generations
-    A->>A: resolve model by model_id (tier routing is designed, not shipped)
+    A->>A: resolve model_id, or route by requested tier and capability
     A->>A: quota reserve, create job row
     A-->>B: job id
     A->>W: dispatch with a per-dispatch token, direct self-hosted or Redis queue in cloud
@@ -575,7 +620,7 @@ Every model the worker can serve is described by a manifest. Example:
 
 `min_vram_gb` is the full residency requirement; a worker with less VRAM can still serve the model through the memory ladder (see Low VRAM operation under GPU scheduling), just without the `realtime` capability. A request that pins a `model_id` gets that model; one that does not is resolved by the API.
 
-> Shipped status (2026-08-14): **not yet implemented.** The wire `Manifest` has no `tier` field in either the worker's or the API's model, so tier-based routing is a recorded design and not behavior today (see Model routing under GPU scheduling and [decisions.md](decisions.md)).
+> Shipped status (2026-10-11): model manifests include a routing tier, and the API uses it when a generation request omits `model_id` (see [Model routing](#model-routing)). The API defaults a missing worker tier to `standard` for protocol compatibility.
 
 `prompt_token_limit` is the model's native text encoder window in tokens, so the studio warns when a prompt runs past it (issue #148). The shipped CLIP based manifests declare 77. For those models, the worker encodes longer prompts in successive native-size chunks and concatenates their embeddings instead of letting diffusers truncate the prompt. Positive and negative embeddings are padded to the same number of chunks; SDXL applies the same strategy to both text encoders and takes its pooled embedding from the first chunk. This does not make the weights native to a larger window: text in later chunks influences the image more weakly. A model with a different encoder declares its own figure, which is why the field is not a constant in the frontend. Omitting it means the window is unknown and the studio says nothing, so a manifest that forgets the field stays quiet rather than claiming a limit its encoder does not have. Upscale manifests take no prompt and leave it unset.
 
@@ -683,7 +728,7 @@ no client side analytics anywhere.
 
 The tables owned by the open source backend. Credit balances and invoices belong to the private billing service and are never stored here; the backend only emits metering events. Assets are private, and a share is a row in `asset_shares` rather than a flag on the asset. They carry an optional expiry, which the cloud sets for trial accounts (subscribers keep their library indefinitely, trial assets expire after 30 days).
 
-Twenty-six of these tables exist at migration head 0024. Four are designed and not yet created: `realtime_sessions` and `realtime_session_attempts` with the drawing loop's own history and its per-attempt settlement, `settlement_outbox` with the exactly-once usage event that commits alongside a session's terminal state, and `metering_events` with billing. The outbox is keyed by its source key rather than by a surrogate id, because that key is what makes a retried delivery a no-op instead of a second charge: the session's settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
+Migrations are at head 0033. Protocol 6 durable state is shipped: `scheduler_leases` and `worker_connections` (0029), `worker_commands` and `job_attempts` (0030), `worker_physical_ranges` and `worker_report_receipts` (0031), and `realtime_sessions` and `realtime_session_attempts` (0032). Migration 0033 adds measured indexes. The ERD below summarizes the account, generation, asset, and metrics relationships; it does not show the full current protocol 6 schema or exact migrated columns. The [migrations](../backend/migrations/versions/) define the full schema, including raw SQL tables; [tables.py](../backend/app/tables.py) maps the ORM tables. `settlement_outbox` and `metering_events` remain designed, not created. The outbox is keyed by its source key rather than by a surrogate id, because that key makes a retried delivery a no-op instead of a second charge: the session settlement key for the aggregate event, and that key plus a generation for a late attempt's correction.
 
 One shipped table is a work list rather than a record of anything: `pending_deletes` holds the storage keys a terminal path tried to delete and could not. Job cleanup and account purge both pass their keys to the same `jobs.purge_keys` routine. It swallows per-key failures so one bad key does not stop the rest, and attempts to record each key still pending when cleanup is cancelled. Recording is best effort: a database failure leaves the key visible only in the log. Recorded rows are retried by a sweep, backing off to an hour, and a row leaves only when its object is gone. It has no foreign key to `jobs`, because the object outlives the row that named it and the whole point is to collect a key nothing else references any more.
 
@@ -1048,7 +1093,7 @@ Account view (issue #10). The first slice is `/login`, `/join`, `/reset` and `/r
 
 - REST capacity is designed to grow by adding API replicas. Realtime socket ownership cannot scale that way today: the shipped relay is process-local, and the accepted 1000-active-session design moves sockets to the gateway under "Realtime relay: Go gateway required for the 1000-active-session target".
 - Job throughput grows with the number of workers. Queue depth drives the fleet autoscaler.
-- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU currently carries one or two sessions at the 2 to 4 fps, 512 px bar. Admission queueing, tier priority, and idle release are designed but not shipped; issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern them.
+- A real time session pins GPU capacity for its whole duration, which makes it the most expensive resource in the system. One GPU currently carries one or two sessions at the 2 to 4 fps, 512 px bar. Process-local admission queueing and 60-second idle release ship. Paid/resume priority, preemption, and shared multi-process ownership are not shipped; issue #19, "Real-Time Generation Protocol", and issue #20, "Multi-Worker Scheduling", govern the remaining work.
 - No Redis topology is predeclared sufficient for the target. Adding an availability replica does not split frame publication ingress. The cloud-sim profile already runs Redis 7, whose [sharded Pub/Sub](https://redis.io/docs/latest/develop/pubsub/#sharded-pubsub) in cluster mode uses `SSUBSCRIBE` and `SPUBLISH` to confine propagation to one cluster shard. Whether the FrameBus needs a dedicated endpoint or sharding remains measurement-driven under issue #48, "Gateway load harness: 1000 active sessions at 2 and 4 fps", and "Split FrameBus pub/sub onto its own endpoint".
 - The practical scaling constraint is GPU fleet cost, not the web tier.
 
@@ -1069,7 +1114,7 @@ They integrate over HTTP through interfaces defined in this repository (QuotaSer
 | API server | FastAPI (Python) |
 | Inference worker | Hugging Face diffusers + PyTorch |
 | Database | PostgreSQL (SQLAlchemy + Alembic) |
-| Queue and cache | Redis, cloud profile only |
+| Queue and cache | In-process by default; optional Redis target for shared profiles |
 | Object storage | Local filesystem or S3 compatible |
 | Packaging | Docker images, docker compose for self-hosting |
 | GPU targets | NVIDIA CUDA and AMD ROCm; CPU mode for CI and development |
