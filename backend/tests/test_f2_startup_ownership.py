@@ -3,9 +3,10 @@ pending-delete caller waits out the actual session close."""
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app import db, jobs
 from app.settings import Settings
@@ -225,7 +226,7 @@ def test_record_pending_delete_waits_for_actual_session_close(monkeypatch):
     release_close = asyncio.Event()
     order: list[str] = []
 
-    class FocusSession(AsyncSession):
+    class FocusSession(db.OwnedSession):
         async def execute(self, *args, **kwargs):
             return None
 
@@ -257,5 +258,414 @@ def test_record_pending_delete_waits_for_actual_session_close(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await caller
         assert order.index("close-returned") < order.index("caller-finished")
+
+    asyncio.run(exercise())
+
+
+FAKE_DATABASE_URL = "postgresql://f2:fake@127.0.0.1/f2"
+
+
+def _prepare_lazy_database(monkeypatch, settings=None):
+    settings = settings or Settings(database_url=FAKE_DATABASE_URL)
+
+    async def postgres_version(database_url):
+        assert database_url == settings.database_url
+        return (16, 0)
+
+    def migrate(database_url):
+        assert database_url == settings.database_url
+
+    monkeypatch.setattr(db, "get_settings", lambda: settings)
+    monkeypatch.setattr(db, "_postgres_version", postgres_version)
+    monkeypatch.setattr(db, "_migrate", migrate)
+    monkeypatch.setattr(db, "engine", None)
+    monkeypatch.setattr(db, "session_factory", None)
+    monkeypatch.setattr(db, "local_user_id", None)
+    return settings
+
+
+async def _connect_lazy_database():
+    connected = await db.connect(serving=False)
+    assert connected, "fake-version database connect did not succeed"
+    assert db.engine is not None, "connect did not create its lazy engine"
+    assert db.session_factory is not None, "connect did not create its session factory"
+    return db.engine, db.session_factory.class_
+
+
+@pytest.mark.parametrize("close_fails", [False, True], ids=["close-ok", "close-error"])
+def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, close_fails):
+    from app import gpu_samples
+    import app.main as main
+
+    settings = Settings(
+        database_url=FAKE_DATABASE_URL,
+        fleet_token_key="f2-test-key",
+        auth_mode="none",
+        telemetry=False,
+        email_backend="none",
+    )
+    _prepare_lazy_database(monkeypatch, settings)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "check_mail_configuration", lambda _: None)
+    monkeypatch.setattr(main, "check_oauth_configuration", lambda _: None)
+    monkeypatch.setattr(main, "setup_logging", lambda _: None)
+    monkeypatch.setattr(main.access_log, "install", lambda: None)
+
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    close_returned = asyncio.Event()
+    guard_released = asyncio.Event()
+    dispose_started = asyncio.Event()
+    loop_stopped = asyncio.Event()
+    refresh_calls = 0
+    execute_calls = 0
+    commit_calls = 0
+    close_tasks = []
+    maintenance_tasks = []
+    engine_box = []
+    close_error = RuntimeError("actual session close failed after closing") if close_fails else None
+    real_connect = db.connect
+
+    @asynccontextmanager
+    async def startup_guard():
+        try:
+            yield
+        finally:
+            guard_released.set()
+
+    async def dispose_event():
+        dispose_started.set()
+
+    async def fake_connect():
+        connected = await real_connect(serving=False)
+        assert connected
+        engine_box.append(db.engine)
+        selected_class = db.session_factory.class_
+
+        class FocusSession(selected_class):
+            async def execute(self, *args, **kwargs):
+                nonlocal execute_calls
+                execute_calls += 1
+                return None
+
+            async def commit(self):
+                nonlocal commit_calls
+                commit_calls += 1
+
+            async def close(self):
+                close_tasks.append(asyncio.current_task())
+                close_started.set()
+                await release_close.wait()
+                await super().close()
+                close_returned.set()
+                if close_error is not None:
+                    raise close_error
+
+        db.session_factory = async_sessionmaker(
+            db.engine, class_=FocusSession, expire_on_commit=False
+        )
+        return False
+
+    async def parked_loop():
+        await asyncio.Future()
+
+    async def no_op():
+        return None
+
+    async def refresh_estimates():
+        nonlocal refresh_calls
+        refresh_calls += 1
+
+    async def tracked_maintenance_loop():
+        maintenance_tasks.append(asyncio.current_task())
+        try:
+            await gpu_samples.maintain_loop()
+        finally:
+            loop_stopped.set()
+
+    monkeypatch.setattr(db, "hold_local_startup_lock", startup_guard)
+    monkeypatch.setattr(db, "connect", fake_connect)
+    monkeypatch.setattr(db, "dispose", dispose_event)
+    monkeypatch.setattr(main.jobs, "drain_blob_cleanup", no_op)
+    monkeypatch.setattr(gpu_samples.estimates, "refresh_observed_timings", refresh_estimates)
+    for name in (
+        "reap_dead_workers",
+        "sweep_dead_sessions",
+        "maintain_deletes_loop",
+        "telemetry_loop",
+        "mail_loop",
+        "purge_loop",
+        "maintain_scheduler_lease",
+    ):
+        monkeypatch.setattr(main, name, parked_loop)
+    monkeypatch.setattr(main.jobs, "dispatch_loop", parked_loop)
+    monkeypatch.setattr(main, "maintain_loop", tracked_maintenance_loop)
+
+    async def exercise():
+        lifespan = main.lifespan(main.app)
+        entered = False
+        exit_task = None
+        exit_result = None
+        observed_execute_calls = None
+        failure = None
+        cleanup_failures = []
+        try:
+            await lifespan.__aenter__()
+            entered = True
+            await asyncio.wait_for(close_started.wait(), BOUND)
+            observed_execute_calls = execute_calls
+            assert observed_execute_calls > 0, "real maintain_once did not run its database body"
+            assert commit_calls == 1, "real maintain_once did not commit before closing"
+
+            exit_task = asyncio.create_task(lifespan.__aexit__(None, None, None))
+            await asyncio.sleep(0.05)
+            exit_task.cancel()
+            await asyncio.sleep(0.05)
+            exit_task.cancel()
+            await asyncio.sleep(0.05)
+
+            assert not close_returned.is_set(), "actual session close returned before release"
+            assert not dispose_started.is_set(), "engine disposal started during actual session close"
+            assert not guard_released.is_set(), "startup guard released during actual session close"
+            assert not exit_task.done(), "lifespan shutdown returned during actual session close"
+        except BaseException as error:
+            failure = error
+        finally:
+            release_close.set()
+            if entered and exit_task is None:
+                exit_task = asyncio.create_task(lifespan.__aexit__(None, None, None))
+
+            if close_started.is_set():
+                try:
+                    await asyncio.wait_for(close_returned.wait(), 15)
+                except BaseException as error:
+                    cleanup_failures.append(error)
+
+            if exit_task is not None:
+                _, pending = await asyncio.wait({exit_task}, timeout=15)
+                if pending:
+                    cleanup_failures.append(
+                        AssertionError("lifespan shutdown did not finish after actual session close")
+                    )
+                    if maintenance_tasks:
+                        maintenance_task = maintenance_tasks[0]
+                        if not maintenance_task.done():
+                            maintenance_task.cancel()
+
+                    owned_tasks = {exit_task, *close_tasks, *maintenance_tasks}
+                    done, pending = await asyncio.wait(owned_tasks, timeout=15)
+                    finished_tasks = set(done)
+                    if pending:
+                        cleanup_failures.append(
+                            AssertionError("owned shutdown tasks did not finish after maintenance cancellation")
+                        )
+                        for task in pending:
+                            task.cancel()
+                        done, pending = await asyncio.wait(pending, timeout=15)
+                        finished_tasks.update(done)
+                    if pending:
+                        cleanup_failures.append(
+                            AssertionError("owned shutdown tasks remained after bounded cleanup")
+                        )
+                    if finished_tasks:
+                        await asyncio.gather(*finished_tasks, return_exceptions=True)
+
+                if exit_task.done():
+                    exit_result = await asyncio.gather(exit_task, return_exceptions=True)
+
+            await asyncio.gather(*(task for task in close_tasks if task.done()), return_exceptions=True)
+            if engine_box:
+                try:
+                    await engine_box[0].dispose()
+                except BaseException as error:
+                    cleanup_failures.append(error)
+        if failure is not None:
+            raise failure
+        if cleanup_failures:
+            raise cleanup_failures[0]
+
+        assert close_returned.is_set(), "actual session close did not finish after release"
+        assert loop_stopped.is_set(), "real GPU maintenance loop did not stop"
+        assert dispose_started.is_set(), "lifespan did not dispose its database"
+        assert guard_released.is_set(), "lifespan did not release its startup guard"
+        assert exit_task is not None and exit_task.done(), "lifespan shutdown did not finish"
+        assert exit_result and isinstance(exit_result[0], asyncio.CancelledError), (
+            "two cancellations of the outer shutdown caller must preserve cancellation"
+        )
+        assert refresh_calls == 1, "maintenance retried after cancellation during close"
+        assert execute_calls == observed_execute_calls, "maintenance restarted after cancellation during close"
+        assert len(close_tasks) == 1, "maintenance opened another session after close failure"
+
+    asyncio.run(exercise())
+
+
+def test_factory_selected_session_class_propagates_ordinary_close_error(monkeypatch):
+    _prepare_lazy_database(monkeypatch)
+
+    async def exercise():
+        engine, selected_class = await _connect_lazy_database()
+        close_error = RuntimeError("ordinary close failed")
+
+        class FocusSession(selected_class):
+            async def close(self):
+                await super().close()
+                raise close_error
+
+        factory = async_sessionmaker(engine, class_=FocusSession, expire_on_commit=False)
+        try:
+            with pytest.raises(RuntimeError) as raised:
+                async with factory():
+                    pass
+            assert raised.value is close_error
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_factory_selected_session_class_preserves_body_cancellation_on_close_error(monkeypatch):
+    _prepare_lazy_database(monkeypatch)
+
+    async def exercise():
+        engine, selected_class = await _connect_lazy_database()
+        body_cancelled = asyncio.CancelledError("maintenance stopped")
+        close_error = RuntimeError("actual close failed")
+
+        class FocusSession(selected_class):
+            async def close(self):
+                await super().close()
+                raise close_error
+
+        factory = async_sessionmaker(engine, class_=FocusSession, expire_on_commit=False)
+        try:
+            with pytest.raises(asyncio.CancelledError) as raised:
+                async with factory():
+                    raise body_cancelled
+            assert raised.value is body_cancelled, "close error replaced the body cancellation"
+            assert raised.value.__cause__ is close_error, "close error was not retained as the cause"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_factory_selected_session_class_waits_through_repeated_close_cancellation(monkeypatch):
+    _prepare_lazy_database(monkeypatch)
+
+    async def exercise():
+        engine, selected_class = await _connect_lazy_database()
+        close_started = asyncio.Event()
+        release_close = asyncio.Event()
+        close_returned = asyncio.Event()
+        close_tasks = []
+
+        class FocusSession(selected_class):
+            async def close(self):
+                close_tasks.append(asyncio.current_task())
+                close_started.set()
+                await release_close.wait()
+                await super().close()
+                close_returned.set()
+
+        factory = async_sessionmaker(engine, class_=FocusSession, expire_on_commit=False)
+
+        async def use_session():
+            async with factory():
+                pass
+
+        caller = asyncio.create_task(use_session())
+        failure = None
+        try:
+            await asyncio.wait_for(close_started.wait(), BOUND)
+            caller.cancel()
+            await asyncio.sleep(0)
+            caller.cancel()
+            await asyncio.sleep(0.05)
+            assert not caller.done(), "caller exited before actual close finished"
+            assert not close_returned.is_set(), "actual close returned before release"
+            release_close.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, BOUND)
+        except BaseException as error:
+            failure = error
+        finally:
+            release_close.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(caller, *close_tasks, return_exceptions=True), 15
+                )
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+            try:
+                await engine.dispose()
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
+        assert close_returned.is_set(), "actual close did not finish after release"
+
+    asyncio.run(exercise())
+
+
+def test_factory_selected_session_class_joins_self_cancelled_close_task(monkeypatch):
+    _prepare_lazy_database(monkeypatch)
+
+    async def exercise():
+        engine, selected_class = await _connect_lazy_database()
+        close_tasks = []
+        close_finished = asyncio.Event()
+
+        class FocusSession(selected_class):
+            async def close(self):
+                close_tasks.append(asyncio.current_task())
+                try:
+                    asyncio.current_task().cancel()
+                    await asyncio.sleep(0)
+                finally:
+                    close_finished.set()
+
+        factory = async_sessionmaker(engine, class_=FocusSession, expire_on_commit=False)
+
+        async def use_session():
+            async with factory():
+                pass
+
+        caller = asyncio.create_task(use_session())
+        failure = None
+        caller_result = None
+        close_results = None
+        try:
+            await asyncio.wait_for(close_finished.wait(), BOUND)
+            caller_result = await asyncio.wait_for(
+                asyncio.gather(caller, return_exceptions=True), BOUND
+            )
+            close_results = await asyncio.wait_for(
+                asyncio.gather(*close_tasks, return_exceptions=True), BOUND
+            )
+        except BaseException as error:
+            failure = error
+        finally:
+            for task in (caller, *close_tasks):
+                if not task.done():
+                    task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(caller, *close_tasks, return_exceptions=True), 15
+                )
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+            try:
+                await engine.dispose()
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
+        assert caller_result and isinstance(caller_result[0], asyncio.CancelledError)
+        assert close_results and isinstance(close_results[0], asyncio.CancelledError)
+        assert len(close_tasks) == 1, "self-cancelled close task was restarted"
 
     asyncio.run(exercise())

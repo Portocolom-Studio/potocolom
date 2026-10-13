@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -622,7 +621,7 @@ def test_startup_cancellation_holds_session_close_before_admission_release(
         def scalars(self):
             return ()
 
-    class HeldSession(AsyncSession):
+    class HeldSession(main_module.db.OwnedSession):
         holding = False
 
         async def execute(self, *args, **kwargs):
@@ -737,7 +736,7 @@ def test_startup_cancellation_waits_for_receipt_close_before_timeout_fallback(mo
         finally:
             events.append("guard-released")
 
-    class HeldSession(AsyncSession):
+    class HeldSession(main_module.db.OwnedSession):
         def __init__(self):
             nonlocal sessions_opened
             super().__init__()

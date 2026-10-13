@@ -2099,7 +2099,7 @@ async def record_pending_delete(storage_key: str, last_error: str) -> None:
                        storage_key)
         return
     try:
-        async with db.owned_session(db.session_factory) as session:
+        async with db.session_factory() as session:
             now = datetime.now(timezone.utc)
             statement = insert(PendingDelete).values(
                 storage_key=storage_key,
@@ -2367,7 +2367,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
     session_factory = db.session_factory
     if session_factory is None:
         return False
-    async with db.owned_session(session_factory) as session:
+    async with session_factory() as session:
         snapshot = (await session.execute(
             text(
                 "SELECT job.user_id, job.state, job.attempt AS job_attempt_number, "
@@ -2410,7 +2410,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
         reason = ("generation failed" if snapshot["terminal_failure_code"] == "generation_failed"
                   else "input image invalid" if snapshot["terminal_failure_code"] == "input_image_invalid"
                   else "worker reported failure")
-        async with db.owned_session(session_factory) as session:
+        async with session_factory() as session:
             async with session.begin():
                 await hold_the_account(session, user_id, wait=True)
                 job = await locked_job(session, job_id)
@@ -2433,7 +2433,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
         return True
 
     async def fail_output(reason: str) -> bool:
-        async with db.owned_session(session_factory) as session:
+        async with session_factory() as session:
             async with session.begin():
                 await hold_the_account(session, user_id, wait=True)
                 job = await locked_job(session, job_id)
@@ -2480,7 +2480,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
 
     asset_id = None
     committed = False
-    async with db.owned_session(session_factory) as session:
+    async with session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id, wait=True)
             job = await locked_job(session, job_id)

@@ -3,9 +3,11 @@
 Self-hosted installs migrate automatically on startup (docs/decisions.md); the
 cloud profile will run the same migrations as a gated deploy step instead.
 
-Startup tolerates an unreachable database: the API comes up degraded (realtime
-relay works, anything touching rows answers 503) rather than flapping the load
-balancer health check, which answers from process state only.
+Serving startup admission refuses an unreachable database or a contended
+startup guard. After admission, a version check or migration failure can leave
+the API running degraded (realtime relay works, anything touching rows answers
+503) rather than flapping the load balancer health check, which answers from
+process state only.
 """
 
 import asyncio
@@ -13,9 +15,10 @@ import concurrent.futures
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import TracebackType
 
 import asyncpg
 from alembic import command
@@ -44,6 +47,37 @@ DB_CONNECT_TIMEOUT = 10  # seconds for one TCP connect and startup handshake
 DB_STATEMENT_TIMEOUT_MS = 30000
 DB_POOL_TIMEOUT = 10  # seconds waiting for a free pooled connection
 STARTUP_LOCK_TIMEOUT_SECONDS = 5
+
+
+class OwnedSession(AsyncSession):
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        _exc_tb: TracebackType | None,
+    ) -> None:
+        # The inherited exit detaches close; this override owns and joins it.
+        cancelled = exc_value if isinstance(exc_value, asyncio.CancelledError) else None
+        close_task = asyncio.create_task(self.close())
+        while not close_task.done():
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError as error:
+                cancelled = error
+            except BaseException:
+                break
+        try:
+            close_task.result()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            if cancelled is not None:
+                raise cancelled from error
+            raise
+        if cancelled is not None:
+            raise cancelled
+        return None
+
 
 engine: AsyncEngine | None = None
 session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -134,7 +168,9 @@ async def connect(serving: bool = True) -> bool:
     engine = create_async_engine(async_url(settings.database_url), pool_size=5, max_overflow=10,
                                  hide_parameters=True, pool_timeout=DB_POOL_TIMEOUT,
                                  connect_args=connect_args)
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_factory = async_sessionmaker(
+        engine, class_=OwnedSession, expire_on_commit=False
+    )
     if serving:
         await validate_startup_auth_mode(settings.auth_mode)
         await validate_startup_key_ring()
@@ -181,29 +217,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with session_factory() as session:
         yield session
-
-
-@asynccontextmanager
-async def owned_session(
-    factory: Callable[[], AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    """Yield one session whose close really finishes, cancelling or not."""
-    session = factory()
-    try:
-        yield session
-    finally:
-        # SQLAlchemy's close carries no shield of its own, so a cancelled
-        # caller would abandon the connection mid-close.
-        close = asyncio.create_task(session.close())
-        cancelled = None
-        while not close.done():
-            try:
-                await asyncio.shield(close)
-            except asyncio.CancelledError as error:
-                cancelled = error
-        close.result()
-        if cancelled is not None:
-            raise cancelled
 
 
 async def require_account_dependencies() -> None:
