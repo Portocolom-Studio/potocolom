@@ -531,6 +531,127 @@ def test_repeated_shutdown_cancellation_keeps_admission_until_cleanup_returns(mo
     assert events == ["admitted", "loop-returned", "drain-returned", "dispose-returned", "released"]
 
 
+@pytest.mark.parametrize("exit_mode", ("normal", "repeated-cancel", "body-cancel"))
+def test_lifespan_propagates_serving_loop_failure_after_cleanup(monkeypatch, exit_mode):
+    async def exercise():
+        events = []
+        gates = {name: asyncio.Event() for name in (
+            "started", "fail", "failed", "sibling-stopping", "sibling", "drain-started",
+            "drain", "dispose-started", "dispose",
+        )}
+        loop_error = RuntimeError("reaper failed")
+        body_error = asyncio.CancelledError("body cancelled")
+
+        def mark(starting):
+            name = "loop-started" if starting else "loop-finished"
+            events.append(name)
+            if events.count(name) == 9:
+                if starting:
+                    gates["started"].set()
+                else:
+                    events.append("loops-joined")
+
+        async def serving_loop(mode="idle"):
+            mark(True)
+            try:
+                if mode == "reaper":
+                    await asyncio.wait_for(gates["fail"].wait(), 8)
+                    raise loop_error
+                await asyncio.Future()
+            finally:
+                if mode == "sibling":
+                    gates["sibling-stopping"].set()
+                    await asyncio.wait_for(gates["sibling"].wait(), 8)
+                mark(False)
+                if mode == "reaper":
+                    gates["failed"].set()
+
+        @asynccontextmanager
+        async def admission():
+            events.append("admitted")
+            try:
+                yield
+            finally:
+                events.append("released")
+
+        async def unavailable():
+            return False
+
+        async def drain():
+            events.append("drain-started")
+            gates["drain-started"].set()
+            await asyncio.wait_for(gates["drain"].wait(), 8)
+            events.append("drained")
+
+        async def dispose():
+            events.append("dispose-started")
+            gates["dispose-started"].set()
+            await asyncio.wait_for(gates["dispose"].wait(), 8)
+            events.append("disposed")
+
+        async def lifespan_owner():
+            async with main_module.lifespan(app):
+                await asyncio.wait_for(gates["started"].wait(), 8)
+                gates["fail"].set()
+                await asyncio.wait_for(gates["failed"].wait(), 8)
+                if exit_mode == "body-cancel":
+                    raise body_error
+
+        settings = Settings(auth_mode="none", fleet_token_key="test-fleet-token")
+        monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+        monkeypatch.setattr(main_module.db, "hold_local_startup_lock", admission)
+        monkeypatch.setattr(main_module.db, "connect", unavailable)
+        monkeypatch.setattr(main_module.db, "dispose", dispose)
+        monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
+        _stub_lifespan_tasks(monkeypatch, lambda: serving_loop())
+        monkeypatch.setattr(main_module, "reap_dead_workers", lambda: serving_loop("reaper"))
+        monkeypatch.setattr(main_module, "sweep_dead_sessions", lambda: serving_loop("sibling"))
+        exit_task = asyncio.create_task(lifespan_owner())
+        blocked = []
+
+        async def cancel_shutdown():
+            for _ in range(2):
+                exit_task.cancel()
+                await asyncio.sleep(0)
+            return not exit_task.done()
+
+        try:
+            await asyncio.wait_for(gates["sibling-stopping"].wait(), 8)
+            if exit_mode == "repeated-cancel":
+                blocked.append(await cancel_shutdown())
+            gates["sibling"].set()
+            await asyncio.wait_for(gates["drain-started"].wait(), 8)
+            if exit_mode == "repeated-cancel":
+                blocked.append(await cancel_shutdown())
+            gates["drain"].set()
+            await asyncio.wait_for(gates["dispose-started"].wait(), 8)
+            gates["dispose"].set()
+        finally:
+            for gate in gates.values():
+                gate.set()
+            done, _ = await asyncio.wait((exit_task,), timeout=8)
+            if not done:
+                exit_task.cancel()
+                done, _ = await asyncio.wait((exit_task,), timeout=8)
+            if done:
+                await asyncio.gather(exit_task, return_exceptions=True)
+
+        assert events.index("loops-joined") < events.index("drain-started")
+        assert (
+            events.index("drained") < events.index("dispose-started")
+            < events.index("disposed") < events.index("released")
+        )
+        error_type = RuntimeError if exit_mode == "normal" else asyncio.CancelledError
+        with pytest.raises(error_type) as raised:
+            await exit_task
+        actual_error = raised.value if exit_mode == "normal" else raised.value.__cause__
+        assert actual_error is loop_error
+        assert exit_mode != "repeated-cancel" or blocked == [True, True]
+        assert exit_mode != "body-cancel" or raised.value.args == body_error.args
+
+    asyncio.run(exercise())
+
+
 def test_cancellation_waits_for_migration_before_releasing_admission(monkeypatch):
     events = []
     migration_started = threading.Event()

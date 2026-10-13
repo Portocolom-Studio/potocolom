@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     running = AsyncExitStack()
     tasks = []
     admitted = False
+    cancelled = None
     try:
         await running.enter_async_context(db.hold_local_startup_lock())
         admitted = True
@@ -141,28 +142,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for start_task in task_factories:
             tasks.append(asyncio.create_task(start_task()))
         yield
+    except asyncio.CancelledError as exc:
+        cancelled = exc
     finally:
         async def shutdown():
             try:
                 for task in tasks:
                     task.cancel()
                 if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                if admitted:
-                    await jobs.drain_blob_cleanup()
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, BaseException) and not isinstance(
+                            result, asyncio.CancelledError
+                        ):
+                            raise result
             finally:
-                await running.aclose()
+                try:
+                    if admitted:
+                        await jobs.drain_blob_cleanup()
+                finally:
+                    await running.aclose()
 
         cleanup = asyncio.create_task(shutdown())
-        cancelled = False
         while not cleanup.done():
             try:
                 await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled = True
-        cleanup.result()
-        if cancelled:
-            raise asyncio.CancelledError
+            except asyncio.CancelledError as exc:
+                if not cleanup.cancelled():
+                    cancelled = exc
+            except BaseException:
+                break
+        try:
+            cleanup.result()
+        except BaseException as error:
+            if cancelled is not None:
+                raise cancelled from error
+            raise
+        if cancelled is not None:
+            raise cancelled
 
 
 _reject_unset_fleet_token_key(get_settings().fleet_token_key)
