@@ -262,7 +262,7 @@ def test_record_pending_delete_waits_for_actual_session_close(monkeypatch):
     asyncio.run(exercise())
 
 
-FAKE_DATABASE_URL = "postgresql://f2:fake@127.0.0.1/f2"
+FAKE_DATABASE_URL = "postgresql://f2@127.0.0.1/f2"
 
 
 def _prepare_lazy_database(monkeypatch, settings=None):
