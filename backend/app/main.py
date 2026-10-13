@@ -154,12 +154,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 for task in tasks:
                     task.cancel()
                 if tasks:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for result in results:
-                        if isinstance(result, BaseException) and not isinstance(
-                            result, asyncio.CancelledError
-                        ):
-                            raise result
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    for task in tasks:
+                        try:
+                            task.result()
+                        except asyncio.CancelledError as error:
+                            if error.__cause__ is not None and not isinstance(
+                                error.__cause__, asyncio.CancelledError
+                            ):
+                                raise error.__cause__
             finally:
                 try:
                     if admitted:

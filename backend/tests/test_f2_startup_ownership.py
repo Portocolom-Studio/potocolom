@@ -292,8 +292,14 @@ async def _connect_lazy_database():
     return db.engine, db.session_factory.class_
 
 
-@pytest.mark.parametrize("close_fails", [False, True], ids=["close-ok", "close-error"])
-def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, close_fails):
+@pytest.mark.parametrize(
+    ("close_fails", "cancel_shutdown"),
+    [(False, False), (True, False), (False, True), (True, True)],
+    ids=["close-ok", "close-error", "cancel-close-ok", "cancel-close-error"],
+)
+def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(
+    monkeypatch, close_fails, cancel_shutdown
+):
     from app import gpu_samples
     import app.main as main
 
@@ -406,6 +412,7 @@ def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, c
         entered = False
         exit_task = None
         exit_result = None
+        exit_error = None
         observed_execute_calls = None
         failure = None
         cleanup_failures = []
@@ -418,11 +425,12 @@ def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, c
             assert commit_calls == 1, "real maintain_once did not commit before closing"
 
             exit_task = asyncio.create_task(lifespan.__aexit__(None, None, None))
-            await asyncio.sleep(0.05)
-            exit_task.cancel()
-            await asyncio.sleep(0.05)
-            exit_task.cancel()
-            await asyncio.sleep(0.05)
+            if cancel_shutdown:
+                await asyncio.sleep(0.05)
+                exit_task.cancel()
+                await asyncio.sleep(0.05)
+                exit_task.cancel()
+                await asyncio.sleep(0.05)
 
             assert not close_returned.is_set(), "actual session close returned before release"
             assert not dispose_started.is_set(), "engine disposal started during actual session close"
@@ -471,7 +479,10 @@ def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, c
                         await asyncio.gather(*finished_tasks, return_exceptions=True)
 
                 if exit_task.done():
-                    exit_result = await asyncio.gather(exit_task, return_exceptions=True)
+                    try:
+                        exit_result = await exit_task
+                    except BaseException as error:
+                        exit_error = error
 
             await asyncio.gather(*(task for task in close_tasks if task.done()), return_exceptions=True)
             if engine_box:
@@ -489,9 +500,15 @@ def test_lifespan_shutdown_waits_for_actual_gpu_maintenance_close(monkeypatch, c
         assert dispose_started.is_set(), "lifespan did not dispose its database"
         assert guard_released.is_set(), "lifespan did not release its startup guard"
         assert exit_task is not None and exit_task.done(), "lifespan shutdown did not finish"
-        assert exit_result and isinstance(exit_result[0], asyncio.CancelledError), (
-            "two cancellations of the outer shutdown caller must preserve cancellation"
-        )
+        if cancel_shutdown:
+            assert isinstance(exit_error, asyncio.CancelledError)
+            if close_fails:
+                assert exit_error.__cause__ is close_error
+        elif close_fails:
+            assert exit_error is close_error
+        else:
+            assert exit_error is None
+            assert exit_result is False
         assert refresh_calls == 1, "maintenance retried after cancellation during close"
         assert execute_calls == observed_execute_calls, "maintenance restarted after cancellation during close"
         assert len(close_tasks) == 1, "maintenance opened another session after close failure"
