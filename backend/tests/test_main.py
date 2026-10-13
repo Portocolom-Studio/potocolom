@@ -720,6 +720,116 @@ def test_startup_cancellation_holds_session_close_before_admission_release(
     asyncio.run(exercise())
 
 
+def test_startup_cancellation_waits_for_receipt_close_before_timeout_fallback(monkeypatch):
+    events = []
+    close_started = asyncio.Event()
+    finish_close = asyncio.Event()
+    close_returned = asyncio.Event()
+    job_id = uuid.uuid4()
+    sessions_opened = 0
+    settings = Settings(auth_mode="none", fleet_token_key="test-fleet-token")
+
+    @asynccontextmanager
+    async def admission():
+        events.append("admitted")
+        try:
+            yield
+        finally:
+            events.append("guard-released")
+
+    class HeldSession(AsyncSession):
+        def __init__(self):
+            nonlocal sessions_opened
+            super().__init__()
+            sessions_opened += 1
+            self.number = sessions_opened
+
+        async def execute(self, *args, **kwargs):
+            if self.number == 1:
+                events.append("recover-running-job-read")
+                return SimpleNamespace(
+                    scalars=lambda: [SimpleNamespace(id=job_id, state="running")]
+                )
+            if self.number == 2:
+                events.append("receipt-snapshot-read")
+                return SimpleNamespace(
+                    mappings=lambda: SimpleNamespace(one_or_none=lambda: None)
+                )
+            if self.number == 3:
+                events.append("timeout-fallback-job-read")
+                return SimpleNamespace(
+                    scalar_one_or_none=lambda: SimpleNamespace(state="failed")
+                )
+            raise AssertionError(f"unexpected session {self.number}")
+
+        async def close(self):
+            if self.number != 2:
+                await super().close()
+                return
+            events.append("receipt-session-close-started")
+            close_started.set()
+            await finish_close.wait()
+            await super().close()
+            events.append("receipt-session-close-returned")
+            close_returned.set()
+
+    class FakeEngine:
+        async def dispose(self):
+            events.append("engine-disposed")
+
+    async def install_engine():
+        main_module.db.engine = FakeEngine()
+        main_module.db.session_factory = HeldSession
+        return True
+
+    async def idle():
+        await asyncio.Future()
+
+    async def drain():
+        events.append("blob-drained")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module.db, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module.db, "hold_local_startup_lock", admission)
+    monkeypatch.setattr(main_module.db, "engine", None)
+    monkeypatch.setattr(main_module.db, "session_factory", None)
+    monkeypatch.setattr(main_module.db, "local_user_id", None)
+    monkeypatch.setattr(main_module.db, "connect", install_engine)
+    monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
+    monkeypatch.setattr(main_module.jobs, "PENDING_DELETE_TIMEOUT", 0.2)
+    _stub_lifespan_tasks(monkeypatch, idle)
+
+    async def exercise():
+        lifespan = asyncio.create_task(main_module.lifespan(app).__aenter__())
+        try:
+            await asyncio.wait_for(close_started.wait(), 1)
+            lifespan.cancel()
+            await asyncio.sleep(0.05)
+            lifespan.cancel()
+            await asyncio.sleep(0.45)
+            assert "timeout-fallback-job-read" not in events
+            assert not lifespan.done()
+            assert "engine-disposed" not in events
+            assert "guard-released" not in events
+            finish_close.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(lifespan, 1)
+            assert events.index("receipt-session-close-returned") < events.index(
+                "timeout-fallback-job-read"
+            )
+            assert events.index("timeout-fallback-job-read") < events.index("blob-drained")
+            assert events.index("blob-drained") < events.index("engine-disposed")
+            assert events.index("engine-disposed") < events.index("guard-released")
+            assert sessions_opened == 3
+        finally:
+            finish_close.set()
+            lifespan.cancel()
+            await asyncio.gather(lifespan, return_exceptions=True)
+            await asyncio.wait_for(close_returned.wait(), 1)
+
+    asyncio.run(exercise())
+
+
 def _prerendered_build(tmp_path: Path) -> Path:
     dist = tmp_path / "static"
     dist.mkdir()

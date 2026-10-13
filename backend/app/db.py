@@ -13,7 +13,7 @@ import concurrent.futures
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -181,6 +181,29 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with session_factory() as session:
         yield session
+
+
+@asynccontextmanager
+async def owned_session(
+    factory: Callable[[], AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """Yield one session whose close really finishes, cancelling or not."""
+    session = factory()
+    try:
+        yield session
+    finally:
+        # SQLAlchemy's close carries no shield of its own, so a cancelled
+        # caller would abandon the connection mid-close.
+        close = asyncio.create_task(session.close())
+        cancelled = None
+        while not close.done():
+            try:
+                await asyncio.shield(close)
+            except asyncio.CancelledError as error:
+                cancelled = error
+        close.result()
+        if cancelled is not None:
+            raise cancelled
 
 
 async def require_account_dependencies() -> None:
