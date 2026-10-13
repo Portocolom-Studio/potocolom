@@ -750,7 +750,7 @@ def test_gpu_rollups_rebuild_as_one_server_side_statement():
     # prunes. The rewrite is one INSERT ... SELECT ... ON CONFLICT that must
     # produce exactly the rows the Python loop did, including the dropped
     # impossible VRAM ratio and the banker's-rounding of the pct (issue #497).
-    from_ts = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    from_ts = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     to_ts = from_ts + timedelta(minutes=30)
 
     def bucket(ts: datetime) -> datetime:
@@ -863,7 +863,7 @@ def test_gpu_rollups_rebuild_as_one_server_side_statement():
 def test_gpu_rollups_are_utc_floors_regardless_of_the_session_timezone():
     """bucket_start is timestamptz and to_timestamp is epoch-based, so the
     session TimeZone must not move a bucket."""
-    from_ts = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    from_ts = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     to_ts = from_ts + timedelta(minutes=30)
     samples = [
         GpuSample(worker_id="w-tz-a", sampled_at=from_ts + timedelta(minutes=1),
