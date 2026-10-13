@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from conftest import run_on_test_loop
+from faults import fail_next
 from sqlalchemy import delete, event, func, select
 from fastapi.testclient import TestClient
 
@@ -1505,15 +1506,8 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
 
         job_id = client.portal.call(seed)
         lost = [job_id]
-        real_requeue_or_fail = jobs.requeue_or_fail
         real_dispatch_step = jobs.dispatch_step
-        reasons = []
-
-        async def flaky_requeue(job_id, reason):
-            reasons.append(reason)
-            if len(reasons) == 1:
-                raise RuntimeError("simulated lock timeout")
-            await real_requeue_or_fail(job_id, reason)
+        calls = fail_next(monkeypatch, jobs, "requeue_or_fail")
 
         async def parked():
             # The live dispatch loop drains lost_jobs on its own tick and
@@ -1522,7 +1516,6 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
 
         monkeypatch.setattr(jobs, "dispatch_step", parked)
         monkeypatch.setattr(jobs, "lost_jobs", lost)
-        monkeypatch.setattr(jobs, "requeue_or_fail", flaky_requeue)
         try:
             client.portal.call(real_dispatch_step)
         except RuntimeError:
@@ -1531,7 +1524,7 @@ def test_a_failed_recovery_keeps_the_lost_job_retryable(monkeypatch):
 
         client.portal.call(real_dispatch_step)
         assert lost == []
-        assert reasons == ["worker disconnected", "worker disconnected"]
+        assert [reason for _, reason in calls] == ["worker disconnected", "worker disconnected"]
         assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "failed"
 
 
@@ -1568,6 +1561,36 @@ def test_a_failing_recovery_does_not_starve_the_jobs_behind_it(monkeypatch):
         assert recovered == [healthy], "the job behind the failing one never ran"
         assert lost == [stuck], "the failing entry must stay, at the tail"
         assert swept == [True], "the tick stopped before the stall sweep"
+
+
+@pytest.mark.db
+def test_a_failed_stall_requeue_hands_the_job_to_lost_jobs(monkeypatch):
+    """The stall sweep de-tracks a job before awaiting requeue_or_fail, so a
+    raise there must leave the id in lost_jobs or no path retries it."""
+    _stall_safe(monkeypatch)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-stall-requeue-fail")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "stall requeue fail"}},
+            ).json()["job_id"]
+            assert worker.receive_json()["job_id"] == job_id
+            key = uuid.UUID(job_id)
+
+            async def parked():
+                return None
+
+            lost = []
+            monkeypatch.setattr(jobs, "dispatch_step", parked)
+            monkeypatch.setattr(jobs, "lost_jobs", lost)
+            fail_next(monkeypatch, jobs, "requeue_or_fail")
+
+            jobs.last_progress_at[key] = 0.0
+            with pytest.raises(RuntimeError, match="injected fault"):
+                client.portal.call(jobs.sweep_stalled_jobs)
+            assert lost == [key]
+            assert key not in jobs.inflight
 
 
 @pytest.mark.db
