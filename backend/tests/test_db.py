@@ -1,22 +1,9 @@
 import asyncio
-import threading
 from urllib.parse import urlsplit
 
 import pytest
 
 from app.db import _postgres_version_supported
-
-
-def _reset_startup_lock_state(db, connection):
-    with db._lock_guard:
-        db._lock_holders = 0
-        db._lock_connection = None
-        db._lock_owner_loop = None
-        db._lock_acquisition = None
-        db._lock_borrowers_done = None
-        db._lock_closing = False
-    if not connection.closed:
-        connection.closed = True
 
 
 def test_postgres_version_comparison():
@@ -91,301 +78,136 @@ def test_startup_lock_terminates_connection_when_close_fails(monkeypatch):
     asyncio.run(exercise())
     assert connection.terminated
     assert connection.closed
-    assert db._lock_holders == 0
-    assert db._lock_connection is None
-    assert db._lock_owner_loop is None
 
 
-def test_startup_lock_supports_overlapping_same_process_entries(monkeypatch):
+def test_cancelled_startup_lock_exit_waits_for_the_connection_close(monkeypatch):
     import app.db as db
 
-    class Connection:
-        def __init__(self):
-            self.lock_calls = 0
-            self.close_calls = 0
-            self.closed = False
+    events = []
 
-        async def fetchval(self, query, key, **kwargs):
-            assert key == 184467
-            if "try_advisory_lock" in query:
-                self.lock_calls += 1
+    async def exercise():
+        close_started = asyncio.Event()
+        finish_close = asyncio.Event()
+
+        class Connection:
+            async def fetchval(self, query, key, **kwargs):
                 return True
-            raise AssertionError("the session lock must release when the connection closes")
 
-        async def close(self, **kwargs):
-            self.close_calls += 1
-            self.closed = True
+            async def close(self, **kwargs):
+                close_started.set()
+                await finish_close.wait()
+                events.append("closed")
 
-    connection = Connection()
-    connect_calls = []
+        async def connect(_, **kwargs):
+            return Connection()
 
-    async def connect(_, **kwargs):
-        connect_calls.append(True)
-        return connection
+        monkeypatch.setattr(db.asyncpg, "connect", connect)
 
-    monkeypatch.setattr(db.asyncpg, "connect", connect)
-
-    async def exercise():
-        both_entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def holder():
-            async with db.hold_local_startup_lock():
-                if both_entered.is_set():
-                    pass
-                else:
-                    both_entered.set()
-                await release.wait()
-
-        first = asyncio.create_task(holder())
-        await both_entered.wait()
-        second = asyncio.create_task(holder())
-        while db._lock_holders < 2:
-            await asyncio.sleep(0)
-        assert len(connect_calls) == 1
-        release.set()
-        await asyncio.gather(first, second)
-
-    asyncio.run(exercise())
-    assert connection.lock_calls == 1
-    assert connection.close_calls == 1
-    assert connection.closed
-
-
-def test_simultaneous_startup_lock_entries_share_one_acquisition(monkeypatch):
-    import app.db as db
-
-    class Connection:
-        def __init__(self):
-            self.lock_calls = 0
-            self.close_calls = 0
-            self.closed = False
-
-        async def fetchval(self, query, key, **kwargs):
-            assert key == 184467
-            if "try_advisory_lock" in query:
-                self.lock_calls += 1
-                return True
-            raise AssertionError("the session lock must release when the connection closes")
-
-        async def close(self, **kwargs):
-            self.close_calls += 1
-            self.closed = True
-
-    connection = Connection()
-    connect_calls = []
-    connect_started = asyncio.Event()
-    finish_connect = asyncio.Event()
-
-    async def connect(_, **kwargs):
-        connect_calls.append(True)
-        connect_started.set()
-        await finish_connect.wait()
-        return connection
-
-    monkeypatch.setattr(db.asyncpg, "connect", connect)
-
-    async def exercise():
-        both_entered = asyncio.Event()
-        finish_holders = asyncio.Event()
-        entered = 0
-
-        async def holder():
-            nonlocal entered
-            async with db.hold_local_startup_lock():
-                entered += 1
-                if entered == 2:
-                    both_entered.set()
-                await finish_holders.wait()
-
-        first = asyncio.create_task(holder())
-        await connect_started.wait()
-        second = asyncio.create_task(holder())
-        await asyncio.sleep(0)
-        assert len(connect_calls) == 1
-        finish_connect.set()
-        await asyncio.wait_for(both_entered.wait(), timeout=1)
-        finish_holders.set()
-        await asyncio.gather(first, second)
-
-    asyncio.run(exercise())
-    assert connection.lock_calls == 1
-    assert connection.close_calls == 1
-    assert connection.closed
-
-
-def test_cancelled_waiter_releases_last_startup_lock_reservation(monkeypatch):
-    import app.db as db
-
-    class Connection:
-        closed = False
-
-        async def fetchval(self, query, key, **kwargs):
-            assert "try_advisory_lock" in query
-            assert key == 184467
-            return True
-
-        async def close(self, **kwargs):
-            self.closed = True
-
-    connection = Connection()
-    connect_started = asyncio.Event()
-    finish_connect = asyncio.Event()
-    waiter_started = asyncio.Event()
-
-    async def connect(_, **kwargs):
-        connect_started.set()
-        await finish_connect.wait()
-        return connection
-
-    original_wrap_future = asyncio.wrap_future
-    observed = {}
-
-    def hold_waiter_resume(future, loop=None):
-        if future is db._lock_acquisition:
-            waiter_started.set()
-            return (loop or asyncio.get_running_loop()).create_future()
-        return original_wrap_future(future, loop=loop)
-
-    monkeypatch.setattr(db.asyncpg, "connect", connect)
-    monkeypatch.setattr(asyncio, "wrap_future", hold_waiter_resume)
-
-    async def exercise():
         async def holder():
             async with db.hold_local_startup_lock():
                 pass
 
-        first = asyncio.create_task(holder())
-        await connect_started.wait()
-        second = asyncio.create_task(holder())
-        await waiter_started.wait()
-        finish_connect.set()
-        await asyncio.sleep(0.05)
-        owner_exited_before_waiter = first.done()
-        first.cancel()
-        first.cancel()
+        holding = asyncio.create_task(holder())
+        await close_started.wait()
+        holding.cancel()
         await asyncio.sleep(0)
-        connection_held_during_cancellation = not connection.closed
-        second.cancel()
+        holding.cancel()
+        await asyncio.sleep(0)
+        assert not holding.done()
+        finish_close.set()
         with pytest.raises(asyncio.CancelledError):
-            await second
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        observed["owner_exited_before_waiter"] = owner_exited_before_waiter
-        observed["connection_held_during_cancellation"] = connection_held_during_cancellation
-        observed["closed"] = connection.closed
-        observed["holders"] = db._lock_holders
+            await holding
 
-    try:
-        asyncio.run(exercise())
-    finally:
-        monkeypatch.setattr(asyncio, "wrap_future", original_wrap_future)
-        _reset_startup_lock_state(db, connection)
-
-    assert observed == {
-        "owner_exited_before_waiter": False,
-        "connection_held_during_cancellation": True,
-        "closed": True,
-        "holders": 0,
-    }
+    asyncio.run(exercise())
+    assert events == ["closed"]
 
 
-def test_final_cross_loop_startup_lock_exit_closes_on_owner_loop(monkeypatch):
+def test_run_to_completion_returns_the_work_result():
     import app.db as db
 
-    class Connection:
-        owner_loop = None
-        lock_calls = 0
-        close_calls = 0
-        closed = False
+    async def exercise():
+        async def work():
+            await asyncio.sleep(0)
+            return "done"
 
-        async def fetchval(self, query, key, **kwargs):
-            assert asyncio.get_running_loop() is self.owner_loop
-            assert key == 184467
-            if "try_advisory_lock" in query:
-                self.lock_calls += 1
-                return True
-            raise AssertionError("the session lock must release when the connection closes")
+        return await db.run_to_completion(work())
 
-        async def close(self, **kwargs):
-            assert asyncio.get_running_loop() is self.owner_loop
-            self.close_calls += 1
-            self.closed = True
+    assert asyncio.run(exercise()) == "done"
 
-    connection = Connection()
-    outer_entered = threading.Event()
-    inner_entered = threading.Event()
-    finish_outer = threading.Event()
-    finish_inner = threading.Event()
-    thread_errors = []
 
-    async def connect(_, **kwargs):
-        connection.owner_loop = asyncio.get_running_loop()
-        return connection
+def test_run_to_completion_raises_the_work_error():
+    import app.db as db
 
-    monkeypatch.setattr(db.asyncpg, "connect", connect)
+    async def exercise():
+        async def work():
+            raise RuntimeError("work failed")
 
-    def outer_thread():
-        async def hold_outer():
-            async with db.hold_local_startup_lock():
-                outer_entered.set()
-                await asyncio.to_thread(finish_outer.wait)
+        with pytest.raises(RuntimeError, match="work failed"):
+            await db.run_to_completion(work())
 
-        try:
-            asyncio.run(hold_outer())
-        except BaseException as error:
-            thread_errors.append(error)
+    asyncio.run(exercise())
 
-    outer = threading.Thread(target=outer_thread)
-    outer.start()
-    inner = None
-    observed = {}
-    try:
-        assert outer_entered.wait(timeout=1)
 
-        async def hold_inner():
-            async with db.hold_local_startup_lock():
-                inner_entered.set()
-                await asyncio.to_thread(finish_inner.wait)
+def test_run_to_completion_waits_through_repeated_cancellation():
+    import app.db as db
 
-        def inner_thread():
+    async def exercise():
+        finished = False
+        release = asyncio.Event()
+
+        async def work():
+            nonlocal finished
+            await release.wait()
+            finished = True
+
+        async def caller():
+            await db.run_to_completion(work())
+
+        waiting = asyncio.create_task(caller())
+        await asyncio.sleep(0)
+        waiting.cancel()
+        waiting.cancel()
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert finished
+
+    asyncio.run(exercise())
+
+
+def test_run_to_completion_keeps_a_cancellation_over_the_work_error():
+    """db.connect turns any Exception into degraded startup, so a failed
+    migration must not swallow the cancellation that arrived during it."""
+    import app.db as db
+
+    async def exercise():
+        release = asyncio.Event()
+
+        async def work():
+            await release.wait()
+            raise RuntimeError("work failed")
+
+        raised = []
+
+        async def caller():
             try:
-                asyncio.run(hold_inner())
-            except BaseException as error:
-                thread_errors.append(error)
+                await db.run_to_completion(work())
+            except asyncio.CancelledError as error:
+                raised.append(error)
+                raise
 
-        inner = threading.Thread(target=inner_thread)
-        inner.start()
-        assert inner_entered.wait(timeout=1)
-        finish_outer.set()
-        outer.join(timeout=0.05)
-        observed["owner_waited_for_borrower"] = outer.is_alive()
-        observed["connection_held"] = not connection.closed
-        finish_inner.set()
-        inner.join(timeout=1)
-        outer.join(timeout=1)
-        observed["threads_stopped"] = not inner.is_alive() and not outer.is_alive()
-        observed["thread_errors"] = thread_errors.copy()
-        observed["lock_calls"] = connection.lock_calls
-        observed["close_calls"] = connection.close_calls
-        observed["closed"] = connection.closed
-    finally:
-        finish_outer.set()
-        finish_inner.set()
-        if inner is not None:
-            inner.join(timeout=1)
-        outer.join(timeout=1)
-        _reset_startup_lock_state(db, connection)
+        waiting = asyncio.create_task(caller())
+        await asyncio.sleep(0)
+        waiting.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert str(raised[0].__cause__) == "work failed"
 
-    assert observed == {
-        "owner_waited_for_borrower": True,
-        "connection_held": True,
-        "threads_stopped": True,
-        "thread_errors": [],
-        "lock_calls": 1,
-        "close_calls": 1,
-        "closed": True,
-    }
+    asyncio.run(exercise())
 
 
 @pytest.mark.db

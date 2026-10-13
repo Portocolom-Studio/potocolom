@@ -3,7 +3,7 @@ import logging
 import os
 import stat
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -69,6 +69,21 @@ def _reject_unset_fleet_token_key(key: str) -> None:
     raise RuntimeError(FLEET_TOKEN_KEY_UNSET)
 
 
+async def _initialize_database() -> None:
+    if await db.connect():
+        await jobs.recover()
+
+
+async def _shutdown(tasks: list[asyncio.Task[None]]) -> None:
+    try:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await jobs.drain_blob_cleanup()
+    finally:
+        await db.dispose()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -97,72 +112,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.getLogger("potocolom.telemetry").info(
             "anonymous daily telemetry disabled by TELEMETRY=false"
         )
-    running = AsyncExitStack()
-    tasks = []
-    admitted = False
-    try:
-        await running.enter_async_context(db.hold_local_startup_lock())
-        admitted = True
-        running.push_async_callback(db.dispose)
-        # SQLAlchemy closes its session in a shielded child task, so
-        # initialization must finish before its engine is disposed.
-        async def initialize_database():
-            if await db.connect():
-                await jobs.recover()
-
-        initialization = asyncio.create_task(initialize_database())
-        startup_cancelled = False
-        while not initialization.done():
-            try:
-                await asyncio.shield(initialization)
-            except asyncio.CancelledError:
-                startup_cancelled = True
-        if startup_cancelled:
-            try:
-                initialization.result()
-            except BaseException:
-                pass
-            raise asyncio.CancelledError
-        task_factories = (
-            reap_dead_workers,
-            sweep_dead_sessions,
-            jobs.dispatch_loop,
-            maintain_loop,
-            maintain_deletes_loop,
-            telemetry_loop,
-            mail_loop,
-            purge_loop,
-            # Last: the lease is held for the life of the process and this
-            # task starts with a database round trip, so it must not push the
-            # loops above it (gpu sample maintenance especially) later into
-            # their first run than they are today.
-            maintain_scheduler_lease,
-        )
-        for start_task in task_factories:
-            tasks.append(asyncio.create_task(start_task()))
-        yield
-    finally:
-        async def shutdown():
-            try:
-                for task in tasks:
-                    task.cancel()
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                if admitted:
-                    await jobs.drain_blob_cleanup()
-            finally:
-                await running.aclose()
-
-        cleanup = asyncio.create_task(shutdown())
-        cancelled = False
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled = True
-        cleanup.result()
-        if cancelled:
-            raise asyncio.CancelledError
+    async with db.hold_local_startup_lock():
+        tasks: list[asyncio.Task[None]] = []
+        try:
+            # SQLAlchemy closes its session in a shielded child task, so
+            # initialization must really finish before the engine is disposed
+            # and the startup lock released.
+            await db.run_to_completion(_initialize_database())
+            tasks = [asyncio.create_task(loop()) for loop in (
+                reap_dead_workers,
+                sweep_dead_sessions,
+                jobs.dispatch_loop,
+                maintain_loop,
+                maintain_deletes_loop,
+                telemetry_loop,
+                mail_loop,
+                purge_loop,
+                # Last: the lease is held for the life of the process and this
+                # task starts with a database round trip, so it must not push the
+                # loops above it (gpu sample maintenance especially) later into
+                # their first run than they are today.
+                maintain_scheduler_lease,
+            )]
+            yield
+        finally:
+            await db.run_to_completion(_shutdown(tasks))
 
 
 _reject_unset_fleet_token_key(get_settings().fleet_token_key)

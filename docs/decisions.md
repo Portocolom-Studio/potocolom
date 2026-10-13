@@ -1862,3 +1862,4 @@ Rejected alternatives:
 - Taking the lock after initialization or recovery. A refused contender can already have changed the installation.
 - Treating a cancelled migration await as a completed migration. The thread can continue after the await ends.
 - Explicitly unlocking before closing the connection. A failed unlock can leak the lock, while connection closure releases it directly.
+- Sharing one lock connection among lifespans in one process. Only tests start the app twice in one process, and sharing took cross-event-loop reference counting; a second lifespan now meets the lock like any other process.

@@ -258,7 +258,7 @@ def test_existing_startup_lock_refuses_lifespan_before_connect_or_work(
 
 
 @pytest.mark.db
-def test_nested_testclients_share_one_local_startup_lock(monkeypatch, migrated_task_database):
+def test_a_nested_testclient_meets_the_startup_lock(monkeypatch, migrated_task_database):
     settings = Settings(
         auth_mode="none",
         fleet_token_key="test-fleet-token",
@@ -281,8 +281,11 @@ def test_nested_testclients_share_one_local_startup_lock(monkeypatch, migrated_t
     monkeypatch.setattr(main_module.jobs, "drain_blob_cleanup", drain)
     _stub_lifespan_tasks(monkeypatch)
     with TestClient(app):
-        with TestClient(app):
-            pass
+        with pytest.raises(RuntimeError, match="another API startup is in progress"):
+            with TestClient(app):
+                pass
+    with TestClient(app):
+        pass
 
 
 def test_lifespan_startup_error_releases_admission(monkeypatch):
