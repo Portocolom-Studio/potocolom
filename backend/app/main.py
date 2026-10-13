@@ -112,18 +112,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await jobs.recover()
 
         initialization = asyncio.create_task(initialize_database())
-        startup_cancelled = False
         while not initialization.done():
             try:
                 await asyncio.shield(initialization)
-            except asyncio.CancelledError:
-                startup_cancelled = True
-        if startup_cancelled:
-            try:
-                initialization.result()
+            except asyncio.CancelledError as error:
+                if not initialization.cancelled():
+                    cancelled = error
             except BaseException:
                 pass
-            raise asyncio.CancelledError
+        try:
+            initialization.result()
+        except BaseException as error:
+            if cancelled is not None:
+                raise cancelled from error
+            raise
+        if cancelled is not None:
+            raise cancelled
         task_factories = (
             reap_dead_workers,
             sweep_dead_sessions,

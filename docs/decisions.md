@@ -1855,6 +1855,8 @@ If the admission database cannot be reached or another process holds the key, st
 
 Cancellation does not release ownership while a migration thread is still running. The startup task retains and joins that thread until actual return. Cancelling startup retains its owned initialization task until database work and actual session close return. Initialization and shutdown failures cancel the serving loops, finish owned cleanup and dispose database resources before releasing the startup guard.
 
+Delivered startup or shutdown cancellation remains the stop signal when owned initialization or cleanup also fails; that failure remains its cause. Without cancellation, the first non-cancellation serving-loop failure propagates after all loops, blob cleanup, disposal and guard release finish.
+
 The existing application database session factory joins each session's actual close before its context exits, including repeated caller cancellation. This rule covers serving loops and request contexts without separate caller wrappers. A delivered cancellation stays the stop signal if close also fails; the close error remains its cause. A close error without cancellation still propagates, and a self-cancelled close reports cancellation.
 
 This proves local startup exclusion. It does not prove continuous ownership after loss of the advisory-lock connection, or admission of a shared profile. Those F2 gates remain open. Shared admission requires real regional queue, frame and context identity and reciprocal storage authority; a setting, path, bucket name or readiness response is insufficient. The accounts guard stays in place until that evidence exists.
