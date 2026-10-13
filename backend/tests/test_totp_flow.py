@@ -276,12 +276,13 @@ def test_a_challenge_from_one_browser_is_useless_in_another(accounts):
         client.portal.call(_make, "isolated@example.com")
         assert _login(client, "isolated@example.com").status_code == 204
         secret, _ = _enrol(client)
-    with TestClient(app, base_url=ORIGIN) as first:
-        assert _login(first, "isolated@example.com").status_code == 200
-        with TestClient(app, base_url=ORIGIN) as second:
-            assert second.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
-                               json={"code": totp.code_at(secret, int(_now()))
-                                     }).status_code == 403
+    with TestClient(app, base_url=ORIGIN) as browser:
+        assert _login(browser, "isolated@example.com").status_code == 200
+        # A second browser holds none of the first one's cookies.
+        browser.cookies.clear()
+        assert browser.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                            json={"code": totp.code_at(secret, int(_now()))
+                                  }).status_code == 403
 
 
 @pytest.mark.db

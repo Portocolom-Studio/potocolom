@@ -738,8 +738,8 @@ def test_a_flow_completed_in_another_browser_is_refused(accounts, monkeypatch):
 
         # Another browser: same server, no cookie from the redirect that
         # started this flow.
-        with TestClient(app, base_url=ORIGIN) as victim:
-            assert _callback(victim, "github", state).status_code == 403
+        attacker.cookies.clear()
+        assert _callback(attacker, "github", state).status_code == 403
 
 
 @pytest.mark.db
@@ -752,9 +752,10 @@ def test_a_sign_in_flow_cannot_be_planted_in_someone_else_s_browser(accounts, mo
         user = attacker.portal.call(_make, "attacker@example.com")
         attacker.portal.call(_link, user.id, "google", "g-attacker")
         state = _start(attacker, "google")
-        with TestClient(app, base_url=ORIGIN) as victim:
-            assert _callback(victim, "google", state).status_code == 403
-            assert victim.get("/api/v1/account").status_code == 401
+        # The victim's browser holds none of the attacker's cookies.
+        attacker.cookies.clear()
+        assert _callback(attacker, "google", state).status_code == 403
+        assert attacker.get("/api/v1/account").status_code == 401
 
 
 @pytest.mark.db

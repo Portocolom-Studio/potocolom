@@ -750,7 +750,8 @@ def test_gpu_rollups_rebuild_as_one_server_side_statement():
     # prunes. The rewrite is one INSERT ... SELECT ... ON CONFLICT that must
     # produce exactly the rows the Python loop did, including the dropped
     # impossible VRAM ratio and the banker's-rounding of the pct (issue #497).
-    from_ts = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    from_ts = today - timedelta(days=1)
     to_ts = from_ts + timedelta(minutes=30)
 
     def bucket(ts: datetime) -> datetime:
