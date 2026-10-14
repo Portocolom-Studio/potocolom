@@ -14,7 +14,7 @@ import re
 import sys
 
 TOOL = r"(claude|chatgpt|copilot|codex|cursor|gemini|gpt-?\d[\w.-]*)"
-SUFFIX = r"\s+(code|agent|ide|code\s+assist|opus|sonnet|haiku|fable|\d[\w.-]*)\b"
+SUFFIX = r"\s+(code|agent|ide|cli|code\s+assist|opus|sonnet|haiku|fable|\d[\w.-]*)\b"
 PRODUCT = "(" + SUFFIX + ")*"
 # A co-author is judged by an exact AI identity, never by a substring of a
 # human name or a company domain: Jean-Claude Dupont and alice@openai.com are
@@ -26,7 +26,7 @@ AI_CO_AUTHOR = re.compile(
     re.IGNORECASE,
 )
 CO_AUTHOR = re.compile(r"^\s*co-authored-by\s*:(.*)", re.IGNORECASE)
-MARKDOWN = re.compile(r"[*_`\[\]]")
+MARKDOWN = re.compile(r"<[^>]*>|[*_`\[\]]")
 SPACES = re.compile(r"\s+")
 # A product word (Claude Code) is a credit whatever follows it; a bare tool
 # name must end the credit, open its link or take a colon, so "generated with
