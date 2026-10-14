@@ -68,8 +68,17 @@ async def run_to_completion(work):
     try:
         task.result()
     except BaseException as error:
-        raise cancelled from error
+        raise cancelled from failure_cause(error)
     raise cancelled
+
+
+def failure_cause(error: BaseException) -> BaseException:
+    """The first error under a stack of cancellations. A cancellation carries
+    the cleanup failure it interrupted as its direct cause, so shutdown, which
+    looks one cause deep, still sees a failed close behind a second cancel."""
+    while isinstance(error, asyncio.CancelledError) and error.__cause__ is not None:
+        error = error.__cause__
+    return error
 
 
 class OwnedSession(AsyncSession):
@@ -80,19 +89,12 @@ class OwnedSession(AsyncSession):
         _exc_tb: TracebackType | None,
     ) -> None:
         # The inherited exit detaches close; this override owns and joins it.
-        cancelled = exc_value if isinstance(exc_value, asyncio.CancelledError) else None
         try:
             await run_to_completion(self.close())
-        except asyncio.CancelledError as error:
-            if cancelled is not None:
-                raise cancelled from error
-            raise
         except BaseException as error:
-            if cancelled is not None:
-                raise cancelled from error
+            if isinstance(exc_value, asyncio.CancelledError):
+                raise exc_value from failure_cause(error)
             raise
-        if cancelled is not None:
-            raise cancelled
         return None
 
 
@@ -153,15 +155,7 @@ async def connect(serving: bool = True) -> bool:
                 f"PostgreSQL {minimum} or newer is required; found PostgreSQL {found}"
             )
         # Alembic's env.py runs its own event loop, so migrate off this one.
-        migration = asyncio.create_task(asyncio.to_thread(_migrate, settings.database_url))
-        try:
-            await run_to_completion(migration)
-        except asyncio.CancelledError as cancelled:
-            try:
-                migration.result()
-            except BaseException:
-                pass
-            raise cancelled
+        await run_to_completion(asyncio.to_thread(_migrate, settings.database_url))
     except Exception as error:
         logger.warning("database unavailable (%s); generations and history are disabled", error)
         return False

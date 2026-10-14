@@ -22,6 +22,7 @@ from test_fleet_protocol6 import (
     root_keys,
     seed_queued_job,
 )
+from test_s1_handoff_retry import _until
 from test_totp_flow import accounts
 from test_v6_sessions import open_live_session
 
@@ -321,6 +322,8 @@ def test_refused_realtime_end_completes_after_the_gate_frees(accounts, monkeypat
             for holder in holders:
                 client.portal.call(_release_account, holder)
             client.portal.call(_wait_ended, realtime_session_id, 8)
+            # The end commits its rows before it awaits the fenced socket close.
+            client.portal.call(_until, lambda: end_finished == [True], 8)
             async def revoked_state():
                 async with db.session_factory() as session:
                     return await session.scalar(
