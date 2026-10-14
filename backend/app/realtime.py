@@ -365,9 +365,19 @@ def _reserve_worker_delivery(worker: "Worker", *, prepare=None):
         return task, False
     if not worker.delivery_admission_open:
         return None, False
+    prepared = asyncio.get_running_loop().create_future()
+    worker.delivery_prepared = prepared
     task = asyncio.create_task(_run_v6_delivery(
-        worker, worker.ws, db.session_factory, incarnation, prepare=prepare,
+        worker, worker.ws, db.session_factory, incarnation,
+        prepare=prepare, preparation_boundary=prepared,
     ))
+    # Also when the owner ends before its body runs, so a disconnect waiting
+    # on this boundary can never wait on a task that is already gone.
+    def resolve_boundary(_: asyncio.Task) -> None:
+        if not prepared.done():
+            prepared.set_result(None)
+
+    task.add_done_callback(resolve_boundary)
     worker.delivery_task = task
     _worker_delivery_owners[task] = worker
     return task, True
@@ -411,6 +421,7 @@ async def _run_v6_delivery(
     incarnation: uuid.UUID,
     *,
     prepare=None,
+    preparation_boundary: asyncio.Future,
 ):
     current_task = asyncio.current_task()
     preparing = False
@@ -421,10 +432,16 @@ async def _run_v6_delivery(
         prepared_result = None
         if prepare is not None:
             preparing = True
-            prepared_result = await prepare()
+            try:
+                prepared_result = await prepare()
+            finally:
+                if not preparation_boundary.done():
+                    preparation_boundary.set_result(None)
             preparing = False
             if prepared_result is None:
                 return None
+        elif not preparation_boundary.done():
+            preparation_boundary.set_result(None)
         from app import command_store
 
         try:
@@ -805,6 +822,7 @@ class Worker:
     grant_deadline: float | None = None
     transport_owner_id: uuid.UUID | None = None
     delivery_task: asyncio.Task | None = field(default=None, repr=False)
+    delivery_prepared: asyncio.Future | None = field(default=None, repr=False)
     delivery_send_task: asyncio.Task | None = field(default=None, repr=False)
     delivery_close_task: asyncio.Task | None = field(default=None, repr=False)
     delivery_registered: bool = False
@@ -1717,6 +1735,9 @@ async def _finalize_worker(worker: Worker) -> None:
         del workers[worker.id]
     if worker.incarnation is not None:
         _sent_command_sequences.pop((worker.id, worker.incarnation), None)
+
+    if worker.delivery_prepared is not None:
+        await db.run_to_completion(worker.delivery_prepared)
 
     orphaned = [s for s in sessions.values() if s.worker is worker]
     if orphaned:

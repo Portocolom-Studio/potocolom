@@ -8,12 +8,20 @@ from threading import Event, Thread
 import pytest
 from sqlalchemy import text
 
-from app import command_store, db, jobs, realtime, sessions as account_sessions, worker_authority
+from app import command_store, command_subjects, db, jobs, realtime, sessions as account_sessions, worker_authority
+from app.account_lock import hold_the_account
 from app import main as main_module
 from app.protocol6 import decode_control
 from app.settings import get_settings
 from app.tables import User
-from test_fleet_protocol6 import protocol6_client, root_keys, seed_queued_job
+from test_fleet_protocol6 import (
+    hello,
+    manifest,
+    protocol6_client,
+    request_work_grant,
+    root_keys,
+    seed_queued_job,
+)
 from test_totp_flow import accounts
 from test_v6_sessions import command_ack, open_live_session, session_ready_message
 
@@ -456,3 +464,184 @@ def test_held_send_does_not_delay_browser_reassignment(accounts, monkeypatch):
                             browser_two.__exit__(None, None, None)
                     finally:
                         browser.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_reassignment_keeps_an_update_committed_during_disconnect(accounts, monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"s1-finalizer-update-{uuid.uuid4()}"
+    replacement_id = f"s1-finalizer-replacement-{uuid.uuid4()}"
+    model_id = f"s1-finalizer-update-model-{uuid.uuid4()}"
+    account_locked = asyncio.Event()
+    release_account = asyncio.Event()
+    update_at_gate = asyncio.Event()
+    allow_update_claim = asyncio.Event()
+    update_calling_gate = asyncio.Event()
+    update_committed = asyncio.Event()
+    desired_read_started = asyncio.Event()
+    desired_read_captured = asyncio.Event()
+    release_desired_read = asyncio.Event()
+    pause_desired_read = asyncio.Event()
+    second_account_locked = asyncio.Event()
+    release_second_account = asyncio.Event()
+    pause_placement_enabled = asyncio.Event()
+    placement_started = asyncio.Event()
+    release_placement = asyncio.Event()
+    update_patch = {"prompt": "updated during disconnect"}
+
+    with protocol6_client(worker_id) as client:
+        _authenticate_browser(client)
+        worker_ws, worker, _grant, open_command, browser_ws, browser, fleet = (
+            open_live_session(client, worker_id, model_id)
+        )
+        session_id = uuid.UUID(open_command["session_id"])
+        updated_params = {**open_command["params"], **update_patch}
+        replacement_context = client.websocket_connect("/api/v1/fleet")
+        replacement_ws = replacement_context.__enter__()
+        replacement_incarnation = uuid.uuid4()
+        replacement_ws.send_json(hello(
+            replacement_id, [manifest(model_id)], incarnation=replacement_incarnation,
+        ))
+        assert replacement_ws.receive_json()["type"] == "registered"
+        replacement_grant = request_work_grant(
+            replacement_ws, replacement_id, replacement_incarnation,
+        )
+
+        async def hold_account(acquired, release):
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await hold_the_account(
+                        session, db.local_user_id, wait=True,
+                    )
+                    acquired.set()
+                    await asyncio.wait_for(release.wait(), 20)
+
+        original_hold = command_store.hold_the_account
+        original_desired_read = command_subjects.read_committed_desired
+        original_commit = command_store.commit_command
+        original_place = realtime.place_session
+
+        async def observe_update_hold(session, user_id, busy_detail="too many changes to this account at once", *, wait=False):
+            if user_id == db.local_user_id and not update_at_gate.is_set():
+                update_at_gate.set()
+                await asyncio.wait_for(allow_update_claim.wait(), 8)
+                update_calling_gate.set()
+            await original_hold(session, user_id, busy_detail, wait=wait)
+
+        async def observe_desired_read(*args, **kwargs):
+            desired_read_started.set()
+            result = await original_desired_read(*args, **kwargs)
+            desired_read_captured.set()
+            if pause_desired_read.is_set():
+                await asyncio.wait_for(release_desired_read.wait(), 8)
+            return result
+
+        async def observe_commit(*args, **kwargs):
+            command_type = kwargs.get("command_type", args[2] if len(args) > 2 else None)
+            result = await original_commit(*args, **kwargs)
+            if command_type == "update_session":
+                update_committed.set()
+            return result
+
+        async def pause_placement(session, **kwargs):
+            if session.id == session_id and pause_placement_enabled.is_set():
+                placement_started.set()
+                await asyncio.wait_for(release_placement.wait(), 8)
+            return await original_place(session, **kwargs)
+
+        monkeypatch.setattr(command_store, "hold_the_account", observe_update_hold)
+        monkeypatch.setattr(command_subjects, "read_committed_desired", observe_desired_read)
+        monkeypatch.setattr(command_store, "commit_command", observe_commit)
+        monkeypatch.setattr(realtime, "place_session", pause_placement)
+        holder = None
+        second_holder = None
+        closing = None
+        try:
+            holder = client.portal.start_task_soon(
+                hold_account, account_locked, release_account,
+            )
+            client.portal.call(_wait, account_locked)
+            browser_ws.send_json({"type": "update_params", "params": update_patch})
+            client.portal.call(_wait, update_at_gate)
+
+            closing = client.portal.start_task_soon(
+                asyncio.to_thread, fleet.__exit__, None, None, None
+            )
+
+            async def wait_disconnect_progress():
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    preparation = getattr(worker, "delivery_prepared", None)
+                    if desired_read_started.is_set() or (
+                        worker_id not in realtime.workers
+                        and preparation is not None
+                        and not preparation.done()
+                    ):
+                        return
+                    await asyncio.sleep(0.02)
+                raise AssertionError("disconnect did not reach preparation or reassignment")
+
+            client.portal.call(wait_disconnect_progress)
+            if desired_read_started.is_set():
+                client.portal.call(pause_placement_enabled.set)
+                client.portal.call(pause_desired_read.set)
+                client.portal.call(release_account.set)
+                client.portal.call(_wait, desired_read_captured)
+                second_holder = client.portal.start_task_soon(
+                    hold_account, second_account_locked, release_second_account,
+                )
+                client.portal.call(_wait, second_account_locked)
+                client.portal.call(release_desired_read.set)
+                client.portal.call(_wait, placement_started)
+                client.portal.call(allow_update_claim.set)
+                client.portal.call(_wait, update_calling_gate)
+                client.portal.call(release_second_account.set)
+                client.portal.call(_wait, update_committed)
+                client.portal.call(release_placement.set)
+            else:
+                client.portal.call(allow_update_claim.set)
+                client.portal.call(_wait, update_calling_gate)
+                client.portal.call(release_account.set)
+                client.portal.call(_wait, update_committed)
+
+            replacement_open = decode_control(replacement_ws.receive_text().encode("utf-8"))
+            assert replacement_open["type"] == "open_session"
+            assert replacement_open["params"] == updated_params
+            replacement_ws.send_json(command_ack(replacement_open))
+            replacement_ws.send_json(session_ready_message(
+                realtime.workers[replacement_id], replacement_open,
+                replacement_grant["grant_nonce"],
+            ))
+
+            async def read_desired_params():
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        text("SELECT desired_params FROM realtime_sessions WHERE id = :id"),
+                        {"id": session_id},
+                    )
+
+            assert client.portal.call(read_desired_params) == updated_params
+        finally:
+            client.portal.call(allow_update_claim.set)
+            client.portal.call(release_account.set)
+            client.portal.call(release_second_account.set)
+            client.portal.call(release_desired_read.set)
+            client.portal.call(release_placement.set)
+            try:
+                if holder is not None:
+                    holder.result(timeout=8)
+            finally:
+                try:
+                    if second_holder is not None:
+                        second_holder.result(timeout=8)
+                finally:
+                    try:
+                        if closing is not None:
+                            closing.result(timeout=8)
+                        else:
+                            fleet.__exit__(None, None, None)
+                    finally:
+                        try:
+                            replacement_context.__exit__(None, None, None)
+                        finally:
+                            browser.__exit__(None, None, None)
