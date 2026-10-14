@@ -71,7 +71,7 @@ jobs:
                   else:
                       regex.append(re.escape(pattern[i]))
                       i += 1
-              return re.fullmatch("".join(regex), filename) is not None
+              return re.fullmatch("".join(regex), filename, flags=re.DOTALL) is not None
 
           patterns = [line.strip() for line in os.environ["PATHS"].splitlines() if line.strip()]
           matched = next((
@@ -82,7 +82,7 @@ jobs:
           ), None)
           run = force_run or capped or matched is not None
           if matched is not None:
-              print(f"Matched {matched[0]} with {matched[1]}")
+              print(f"A changed file matched {matched[1]}")
           elif capped:
               print("Running because the pull request files API returned the 3000-file cap")
           elif force_run:
