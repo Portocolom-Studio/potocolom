@@ -517,7 +517,7 @@ async def end_realtime_session(session_id: uuid.UUID, generation: int,
             )
             if user_id is None:
                 return False
-            await hold_the_account(session, user_id, wait=True)
+            await hold_the_account(session, user_id)
             entity = (await session.execute(
                 text(
                     "SELECT user_id FROM realtime_sessions WHERE id = :session_id "

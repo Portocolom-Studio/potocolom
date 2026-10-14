@@ -550,16 +550,42 @@ def stop_worker_deliveries() -> None:
 async def drain_worker_deliveries() -> None:
     stop_worker_deliveries()
     owned = list(_worker_delivery_owners.items())
-    if owned:
-        await asyncio.gather(*(asyncio.shield(task) for task, _ in owned),
+    await _join_worker_delivery_owners([task for task, _ in owned])
+
+
+async def _join_worker_delivery_owners(owners: list[asyncio.Task]) -> None:
+    if not owners:
+        return
+
+    async def join() -> None:
+        await asyncio.gather(*(asyncio.shield(task) for task in owners),
                              return_exceptions=True)
-        for task, _ in owned:
+        for task in owners:
             try:
                 task.result()
             except asyncio.CancelledError as error:
                 cause = error.__cause__
                 if cause is not None and not isinstance(cause, asyncio.CancelledError):
                     raise cause
+
+    cleanup = asyncio.create_task(join())
+    cancelled = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as error:
+            if not cleanup.cancelled():
+                cancelled = error
+        except BaseException:
+            break
+    try:
+        cleanup.result()
+    except BaseException as error:
+        if cancelled is not None:
+            raise cancelled from error
+        raise
+    if cancelled is not None:
+        raise cancelled
 
 
 async def close_fenced_worker(worker_id: str, incarnation: uuid.UUID) -> None:
@@ -1494,9 +1520,14 @@ async def release(session: Session) -> None:
                 else:
                     from app import worker_authority
 
-                    await worker_authority.end_realtime_session(
-                        session.id, generation, worker_authority.TRANSPORT_OWNER_ID
-                    )
+                    try:
+                        await worker_authority.end_realtime_session(
+                            session.id, generation, worker_authority.TRANSPORT_OWNER_ID
+                        )
+                    except HTTPException as error:
+                        if error.status_code != 503:
+                            raise
+                        logger.warning("realtime session end refused for %s", session.id)
             else:
                 await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
                     {"type": "close_session", "session_id": str(session.id)},
@@ -2188,10 +2219,18 @@ async def fleet(ws: WebSocket) -> None:
                     await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break
     finally:
+        worker.delivery_admission_open = False
         if workers.get(worker.id) is worker:
             del workers[worker.id]
         if worker.incarnation is not None:
             _sent_command_sequences.pop((worker.id, worker.incarnation), None)
+        owned = [task for task, owner in list(_worker_delivery_owners.items())
+                 if owner is worker]
+        cancelled = None
+        try:
+            await _join_worker_delivery_owners(owned)
+        except asyncio.CancelledError as error:
+            cancelled = error
         await close_durable_worker(worker)
         for key, owner in list(closing_sessions.items()):
             if owner[2] is worker:
@@ -2208,6 +2247,8 @@ async def fleet(ws: WebSocket) -> None:
                 session.ready.set()
             elif session.state == "live":
                 schedule_reassign(session)
+        if cancelled is not None:
+            raise cancelled
 
 
 def session_seed(value: object) -> int | None:

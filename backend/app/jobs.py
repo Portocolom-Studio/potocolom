@@ -2271,10 +2271,10 @@ async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
     """PostgreSQL first, the worker second.
 
     The row is the authority and the message is a courtesy: a worker that is
-    gone, wedged, or running an older protocol changes nothing about whether
-    the job is cancelled. Whatever it uploads afterwards is discarded by the
-    terminal-state check on the verdict, and the GPU time it measured is still
-    charged, because it was still spent.
+    gone or wedged changes nothing about whether the job is cancelled.
+    Protocol 4 and 5 workers receive the existing best-effort stop, and late
+    GPU time is charged. Protocol 6 fences the attempt, creates no stop body,
+    and does not charge from late reports.
     """
     assert db.session_factory is not None
     from app import command_store
@@ -2287,7 +2287,7 @@ async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
             )
             if user_id is None:
                 return False
-            await hold_the_account(session, user_id, wait=True)
+            await hold_the_account(session, user_id)
             job = await locked_job(session, job_id)
             if job is None or job.user_id != user_id or job.state in TERMINAL_STATES:
                 return False
